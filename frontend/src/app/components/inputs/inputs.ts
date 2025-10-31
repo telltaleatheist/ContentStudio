@@ -8,6 +8,7 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { FormsModule } from '@angular/forms';
 import { ElectronService } from '../../services/electron';
+import { TextSubjectDialog } from '../text-subject-dialog/text-subject-dialog';
 
 interface InputItem {
   type: string;
@@ -42,19 +43,24 @@ export class Inputs {
   ) {}
 
   openTextSubjectDialog() {
-    // TODO: Create proper dialog component
-    const subjects = prompt('Enter text subjects (one per line):');
-    if (subjects) {
-      const lines = subjects.split('\n').filter(line => line.trim());
-      lines.forEach(subject => {
-        this.inputItems.update(items => [...items, {
-          type: 'subject',
-          path: subject.trim(),
-          displayName: subject.trim(),
-          icon: 'text_fields'
-        }]);
-      });
-    }
+    const dialogRef = this.dialog.open(TextSubjectDialog, {
+      width: '600px',
+      disableClose: false
+    });
+
+    dialogRef.afterClosed().subscribe(result => {
+      if (result) {
+        const lines = result.split('\n').filter((line: string) => line.trim());
+        lines.forEach((subject: string) => {
+          this.inputItems.update(items => [...items, {
+            type: 'subject',
+            path: subject.trim(),
+            displayName: subject.trim(),
+            icon: 'text_fields'
+          }]);
+        });
+      }
+    });
   }
 
   async browseFiles() {
