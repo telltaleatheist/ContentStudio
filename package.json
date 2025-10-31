@@ -3,15 +3,15 @@
   "version": "1.0.0",
   "description": "AI-powered metadata generation for YouTube and Spreaker",
   "asar": true,
-  "main": "./dist/electron/main.js",
+  "main": "./dist/main/main.js",
   "scripts": {
     "clean": "rm -rf dist *.dmg *.dmg.blockmap",
     "clean:all": "npm run clean && rm -rf node_modules python/venv",
     "build:electron": "tsc -p tsconfig.electron.json",
     "build:preload": "tsc -p tsconfig.preload.json",
     "build:all": "npm run build:electron && npm run build:preload",
-    "electron:dev": "npm run build:all && cross-env NODE_ENV=development electron .",
-    "electron": "npm run build:all && electron .",
+    "electron:dev": "npm run build:all && cross-env NODE_ENV=development ELECTRON_RUN_AS_NODE= electron .",
+    "electron": "npm run build:all && cross-env ELECTRON_RUN_AS_NODE= electron .",
     "package": "npm run clean && npm run build:all && electron-builder build",
     "package:mac": "npm run clean && npm run build:all && electron-builder --mac",
     "setup:python": "cd python && python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt"
@@ -29,7 +29,7 @@
   "devDependencies": {
     "@types/node": "^22.18.13",
     "cross-env": "^7.0.3",
-    "electron": "^36.0.1",
+    "electron": "^30.0.0",
     "electron-builder": "^24.13.3",
     "typescript": "^5.8.3"
   },
