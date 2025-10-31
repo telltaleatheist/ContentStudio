@@ -75,10 +75,22 @@
       mat-raised-button
       color="primary"
       class="generate-button"
-      [disabled]="inputItems().length === 0"
+      [disabled]="inputItems().length === 0 || isGenerating()"
       (click)="generateMetadata()">
-      <mat-icon>rocket_launch</mat-icon>
-      Generate Metadata
+      @if (isGenerating()) {
+        <mat-icon>hourglass_empty</mat-icon>
+        Generating...
+      } @else {
+        <mat-icon>rocket_launch</mat-icon>
+        Generate Metadata
+      }
     </button>
+
+    @if (isGenerating()) {
+      <div class="generating-status">
+        <p>Generating metadata with AI...</p>
+        <p class="hint">This may take a minute depending on content length and model.</p>
+      </div>
+    }
   </div>
 </div>

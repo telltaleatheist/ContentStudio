@@ -6,6 +6,7 @@ import { MatChipsModule } from '@angular/material/chips';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatSelectModule } from '@angular/material/select';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { FormsModule } from '@angular/forms';
 import { ElectronService } from '../../services/electron';
 import { TextSubjectDialog } from '../text-subject-dialog/text-subject-dialog';
@@ -27,6 +28,7 @@ interface InputItem {
     MatFormFieldModule,
     MatSelectModule,
     MatDialogModule,
+    MatProgressBarModule,
     FormsModule
   ],
   templateUrl: './inputs.html',
@@ -36,6 +38,11 @@ export class Inputs {
   inputItems = signal<InputItem[]>([]);
   selectedPlatform = signal('youtube');
   selectedMode = signal('individual');
+  isGenerating = signal(false);
+  generationStartTime = signal<number>(0);
+  elapsedTime = signal<string>('0s');
+
+  private elapsedInterval: any;
 
   constructor(
     private dialog: MatDialog,
@@ -105,10 +112,37 @@ export class Inputs {
     this.inputItems.update(items => items.filter((_, i) => i !== index));
   }
 
+  private startElapsedTimer() {
+    this.generationStartTime.set(Date.now());
+    this.elapsedTime.set('0s');
+
+    this.elapsedInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - this.generationStartTime()) / 1000);
+      if (elapsed < 60) {
+        this.elapsedTime.set(`${elapsed}s`);
+      } else {
+        const minutes = Math.floor(elapsed / 60);
+        const seconds = elapsed % 60;
+        this.elapsedTime.set(`${minutes}m ${seconds}s`);
+      }
+    }, 1000);
+  }
+
+  private stopElapsedTimer() {
+    if (this.elapsedInterval) {
+      clearInterval(this.elapsedInterval);
+      this.elapsedInterval = null;
+    }
+  }
+
   async generateMetadata() {
     if (this.inputItems().length === 0) return;
+    if (this.isGenerating()) return; // Prevent double-clicks
 
     const inputs = this.inputItems().map(item => item.path);
+
+    this.isGenerating.set(true);
+    this.startElapsedTimer();
 
     try {
       const result = await this.electron.generateMetadata({
@@ -119,14 +153,19 @@ export class Inputs {
 
       if (result.success) {
         console.log('Metadata generated successfully:', result);
-        alert('Metadata generated successfully!');
+        const processingTime = result.processing_time ?
+          `\n\nProcessing time: ${result.processing_time.toFixed(1)}s` : '';
+        alert('Metadata generated successfully!' + processingTime + '\n\nOutput files:\n' + result.output_files?.join('\n'));
       } else {
         console.error('Generation failed:', result.error);
         alert('Generation failed: ' + result.error);
       }
     } catch (error) {
       console.error('Error generating metadata:', error);
-      alert('Error generating metadata');
+      alert('Error generating metadata: ' + error);
+    } finally {
+      this.stopElapsedTimer();
+      this.isGenerating.set(false);
     }
   }
 }

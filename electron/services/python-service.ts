@@ -24,8 +24,9 @@ export interface MetadataParams {
 export interface MetadataResult {
   success: boolean;
   metadata?: any;
+  output_files?: string[];
+  processing_time?: number;
   error?: string;
-  processingTime?: number;
 }
 
 export class PythonService {
@@ -141,17 +142,20 @@ export class PythonService {
             try {
               // Parse JSON output from Python
               const result = JSON.parse(stdoutData);
+              // Flatten the result to top level for easier access
               resolve({
-                success: true,
-                metadata: result,
-                processingTime
+                success: result.success !== undefined ? result.success : true,
+                metadata: result.metadata,
+                output_files: result.output_files,
+                processing_time: result.processing_time || processingTime,
+                error: result.error
               });
             } catch (error) {
               log.error('Failed to parse Python output:', error);
               resolve({
                 success: false,
                 error: 'Failed to parse Python output: ' + (error as Error).message,
-                processingTime
+                processing_time: processingTime
               });
             }
           } else {
@@ -160,7 +164,7 @@ export class PythonService {
             resolve({
               success: false,
               error: stderrData || `Python process exited with code ${code}`,
-              processingTime
+              processing_time: processingTime
             });
           }
         });
@@ -171,7 +175,7 @@ export class PythonService {
           resolve({
             success: false,
             error: error.message,
-            processingTime: (Date.now() - startTime) / 1000
+            processing_time: (Date.now() - startTime) / 1000
           });
         });
 
@@ -180,7 +184,7 @@ export class PythonService {
         resolve({
           success: false,
           error: (error as Error).message,
-          processingTime: (Date.now() - startTime) / 1000
+          processing_time: (Date.now() - startTime) / 1000
         });
       }
     });

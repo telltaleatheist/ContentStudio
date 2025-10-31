@@ -11,10 +11,12 @@ import tempfile
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
-import whisper
-import torch
 
 from .config_manager import ConfigManager
+
+# Lazy import whisper and torch only when needed for video processing
+whisper = None
+torch = None
 
 
 @dataclass
@@ -166,8 +168,33 @@ class VideoTranscriber:
     def __init__(self, config: ConfigManager):
         self.config = config
         self.model = None
-        self.device = self._detect_device()
+        self.device = None  # Will be set when loading whisper
         self.whisper_model = getattr(config, 'whisper_model', 'base')
+        self._whisper_loaded = False
+
+    def _load_whisper_libraries(self) -> bool:
+        """Lazy load whisper and torch libraries"""
+        global whisper, torch
+
+        if self._whisper_loaded:
+            return True
+
+        try:
+            import whisper as _whisper
+            import torch as _torch
+
+            whisper = _whisper
+            torch = _torch
+            self._whisper_loaded = True
+
+            # Now detect device
+            self.device = self._detect_device()
+            return True
+
+        except ImportError as e:
+            print(f"Failed to load whisper/torch: {e}", file=sys.stderr)
+            print("Whisper is only needed for video transcription", file=sys.stderr)
+            return False
 
     def _detect_device(self) -> str:
         """Detect best available device for transcription"""
@@ -242,6 +269,11 @@ class VideoTranscriber:
 
     def transcribe_video(self, video_path: str) -> Optional[str]:
         """Transcribe video to text"""
+        # Load whisper libraries first
+        if not self._load_whisper_libraries():
+            print("Cannot transcribe video: whisper/torch not available", file=sys.stderr)
+            return None
+
         if not self._load_model():
             return None
 

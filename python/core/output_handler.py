@@ -18,7 +18,8 @@ class OutputHandler:
 
     def __init__(self, config: ConfigManager):
         self.config = config
-        self.output_dir = config.output_dir
+        # Add 'metadata' subdirectory to the output path
+        self.output_dir = config.output_dir / 'metadata'
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def save_metadata(
