@@ -93,12 +93,13 @@
                 <h3>Titles</h3>
                 <span class="count-badge">{{ metadata()!.titles?.length || 0 }}</span>
               </div>
-              <div class="titles-grid">
+              <div class="list-container">
                 @for (title of metadata()!.titles; track $index) {
-                  <div class="title-card">
-                    <span class="title-number">{{ $index + 1 }}</span>
-                    <p class="title-text">{{ title }}</p>
-                    <span class="title-length">{{ title.length }} chars</span>
+                  <div class="list-item">
+                    <span class="list-item-text">{{ title }}</span>
+                    <button mat-icon-button class="copy-button" (click)="copyToClipboard(title)" title="Copy to clipboard">
+                      <mat-icon>content_copy</mat-icon>
+                    </button>
                   </div>
                 }
               </div>
@@ -111,11 +112,13 @@
                 <h3>Thumbnail Text</h3>
                 <span class="count-badge">{{ metadata()!.thumbnail_text?.length || 0 }}</span>
               </div>
-              <div class="thumbnail-grid">
+              <div class="list-container">
                 @for (text of metadata()!.thumbnail_text; track $index) {
-                  <div class="thumbnail-card">
-                    <span class="thumbnail-number">{{ $index + 1 }}</span>
-                    <p class="thumbnail-text">{{ text }}</p>
+                  <div class="list-item">
+                    <span class="list-item-text">{{ text }}</span>
+                    <button mat-icon-button class="copy-button" (click)="copyToClipboard(text)" title="Copy to clipboard">
+                      <mat-icon>content_copy</mat-icon>
+                    </button>
                   </div>
                 }
               </div>
@@ -126,23 +129,13 @@
               <div class="section-header">
                 <mat-icon>description</mat-icon>
                 <h3>Description</h3>
-                <span class="char-count">{{ metadata()!.description?.length || 0 }} characters</span>
+                <span class="char-count">{{ getDescriptionWithHashtags().length }} characters</span>
+                <button mat-icon-button class="copy-button" (click)="copyToClipboard(getDescriptionWithHashtags())" title="Copy to clipboard">
+                  <mat-icon>content_copy</mat-icon>
+                </button>
               </div>
               <div class="description-card">
-                <p class="description-text">{{ metadata()!.description }}</p>
-              </div>
-            </div>
-
-            <!-- Hashtags Section -->
-            <div class="metadata-section">
-              <div class="section-header">
-                <mat-icon>tag</mat-icon>
-                <h3>Hashtags</h3>
-              </div>
-              <div class="hashtags-container">
-                @for (hashtag of metadata()!.hashtags?.split(' '); track $index) {
-                  <mat-chip class="hashtag-chip">{{ hashtag }}</mat-chip>
-                }
+                <textarea class="description-textarea" readonly [value]="getDescriptionWithHashtags()"></textarea>
               </div>
             </div>
 
@@ -151,6 +144,9 @@
               <div class="section-header">
                 <mat-icon>local_offer</mat-icon>
                 <h3>Tags</h3>
+                <button mat-icon-button class="copy-button" (click)="copyToClipboard(metadata()!.tags)" title="Copy to clipboard">
+                  <mat-icon>content_copy</mat-icon>
+                </button>
               </div>
               <div class="tags-container">
                 @for (tag of metadata()!.tags?.split(','); track $index) {

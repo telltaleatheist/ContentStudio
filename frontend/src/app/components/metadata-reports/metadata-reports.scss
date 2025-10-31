@@ -127,15 +127,20 @@
       color: var(--text-secondary);
       margin-top: 0.25rem;
       align-items: center;
+      flex-wrap: wrap;
     }
 
     .platform-chip {
-      height: 18px !important;
-      font-size: 0.65rem !important;
-      padding: 0 6px !important;
+      height: 20px !important;
+      min-width: 60px !important;
+      font-size: 0.7rem !important;
+      padding: 0 8px !important;
       color: white !important;
       font-weight: 600 !important;
       text-transform: uppercase;
+      display: inline-flex !important;
+      align-items: center;
+      justify-content: center;
     }
 
     button[matListItemMeta] {
@@ -239,129 +244,138 @@
   }
 }
 
-// Titles Grid
-.titles-grid {
-  padding: 1rem;
-  display: grid;
-  gap: 1rem;
-  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
-}
-
-.title-card {
-  background: var(--bg-card);
-  border-left: 3px solid var(--primary-orange);
-  border-radius: 4px;
-  padding: 1rem;
+// List Container (for titles and thumbnail text)
+.list-container {
+  padding: 0.5rem;
   display: flex;
   flex-direction: column;
+  gap: 0.25rem;
+}
+
+.list-item {
+  display: flex;
+  align-items: center;
   gap: 0.5rem;
-  transition: all 0.2s;
-
-  &:hover {
-    box-shadow: var(--shadow-md);
-    transform: translateY(-2px);
-  }
-
-  .title-number {
-    display: inline-block;
-    background: var(--primary-orange);
-    color: white;
-    font-size: 0.75rem;
-    font-weight: 700;
-    padding: 0.25rem 0.5rem;
-    border-radius: 4px;
-    align-self: flex-start;
-  }
-
-  .title-text {
-    margin: 0;
-    color: var(--text-primary);
-    font-size: 1.05rem;
-    line-height: 1.4;
-    font-weight: 500;
-  }
-
-  .title-length {
-    color: var(--text-secondary);
-    font-size: 0.75rem;
-  }
-}
-
-// Thumbnail Grid
-.thumbnail-grid {
-  padding: 1rem;
-  display: grid;
-  gap: 0.75rem;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-}
-
-.thumbnail-card {
+  padding: 0.5rem 0.75rem;
   background: var(--bg-card);
-  border: 2px solid var(--primary-orange);
-  border-radius: 8px;
-  padding: 1rem;
-  text-align: center;
+  border-radius: 4px;
+  border-left: 3px solid transparent;
   transition: all 0.2s;
+  min-height: 40px;
 
   &:hover {
-    box-shadow: var(--shadow-lg);
-    transform: scale(1.05);
+    border-left-color: var(--primary-orange);
+    background: var(--bg-secondary);
+
+    .copy-button {
+      opacity: 1;
+    }
   }
 
-  .thumbnail-number {
-    display: block;
-    color: var(--primary-orange);
-    font-size: 0.7rem;
-    font-weight: 700;
-    margin-bottom: 0.5rem;
-  }
-
-  .thumbnail-text {
-    margin: 0;
+  .list-item-text {
+    flex: 1;
     color: var(--text-primary);
-    font-size: 1.1rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    font-size: 0.9rem;
+    line-height: 1.4;
+  }
+
+  .copy-button {
+    opacity: 0;
+    transition: opacity 0.2s;
+    color: var(--text-secondary);
+    padding: 4px;
+    width: 32px;
+    height: 32px;
+
+    mat-icon {
+      font-size: 18px;
+      width: 18px;
+      height: 18px;
+    }
+
+    &:hover {
+      color: var(--primary-orange);
+      background: var(--bg-tertiary);
+    }
   }
 }
 
 // Description Card
 .description-card {
-  padding: 1.5rem;
+  padding: 1rem;
 
-  .description-text {
-    margin: 0;
+  .description-textarea {
+    width: 100%;
+    min-height: 200px;
+    padding: 1rem;
+    background: var(--bg-card);
     color: var(--text-primary);
-    font-size: 1rem;
-    line-height: 1.7;
-    white-space: pre-wrap;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 0.95rem;
+    line-height: 1.6;
+    resize: vertical;
+
+    &:focus {
+      outline: none;
+      border-color: var(--primary-orange);
+    }
   }
 }
 
-// Hashtags & Tags
-.hashtags-container, .tags-container {
+// Tags
+.tags-container {
   padding: 1rem;
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
 
-  .hashtag-chip, .tag-chip {
+  .tag-chip {
     background: var(--bg-card) !important;
     color: var(--text-primary) !important;
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border-color) !important;
     transition: all 0.2s;
+
+    // Force text color for Material chip internals
+    ::ng-deep {
+      .mdc-evolution-chip__text-label {
+        color: var(--text-primary) !important;
+      }
+    }
 
     &:hover {
       background: var(--primary-orange) !important;
       color: white !important;
-      border-color: var(--primary-orange);
+      border-color: var(--primary-orange) !important;
+
+      ::ng-deep {
+        .mdc-evolution-chip__text-label {
+          color: white !important;
+        }
+      }
     }
   }
+}
 
-  .hashtag-chip {
-    font-weight: 600;
-    color: var(--primary-orange) !important;
+// Copy button in section headers
+.section-header {
+  .copy-button {
+    color: var(--text-secondary);
+    padding: 4px;
+    width: 32px;
+    height: 32px;
+
+    mat-icon {
+      font-size: 18px;
+      width: 18px;
+      height: 18px;
+    }
+
+    &:hover {
+      color: var(--primary-orange);
+      background: var(--bg-tertiary);
+    }
   }
 }
 
@@ -388,10 +402,6 @@
   .page-content {
     grid-template-columns: 300px 1fr;
   }
-
-  .titles-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 900px) {
@@ -402,9 +412,5 @@
 
   .file-browser-panel {
     max-height: 300px;
-  }
-
-  .thumbnail-grid {
-    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   }
 }

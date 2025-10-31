@@ -85,8 +85,17 @@ def main():
 
         # Generate metadata
         if args.mode == 'compilation':
-            # Combine all content for single metadata output
-            combined_content = "\n\n".join([item.content for item in content_items])
+            # Combine all content for single metadata output (EXACTLY like ContentStudio)
+            content_sections = []
+            for i, item in enumerate(content_items, 1):
+                if item.content_type == "subject":
+                    content_sections.append(f"TOPIC {i}: {item.content}")
+                else:
+                    # Include filename for file-based content
+                    source_note = f" (from file: {Path(item.source).name})" if item.source else ""
+                    content_sections.append(f"CONTENT {i}{source_note}:\n{item.content}")
+
+            combined_content = "\n\n".join(content_sections)
             metadata_result = ai_manager.generate_metadata(combined_content, args.platform)
 
             if metadata_result.success:
@@ -107,7 +116,16 @@ def main():
             output_files = []
 
             for item in content_items:
-                metadata_result = ai_manager.generate_metadata(item.content, args.platform)
+                # Get source filename if available (EXACTLY like ContentStudio)
+                source_filename = None
+                if item.source and item.content_type in ["video", "transcript_file"]:
+                    source_filename = Path(item.source).name
+
+                metadata_result = ai_manager.generate_metadata(
+                    item.content,
+                    args.platform,
+                    source_filename=source_filename
+                )
 
                 if metadata_result.success:
                     all_metadata.append(metadata_result.metadata)

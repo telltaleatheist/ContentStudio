@@ -77,6 +77,7 @@ import json
 import re
 import requests
 import tempfile
+import yaml
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass
@@ -136,6 +137,14 @@ class AIManager:
 
         # Platform-specific settings
         self.platform = config.platform.lower()
+
+        # Load prompts from YAML files (exactly like ContentStudio)
+        self.prompts_dir = Path(__file__).parent.parent / "prompts"
+        self.youtube_prompts = None
+        self.spreaker_prompts = None
+        self.summarization_prompts = None
+        self.description_links = None
+        self._load_prompts()
 
     def initialize(self) -> bool:
         """Initialize AI manager and test connectivity"""
@@ -225,6 +234,54 @@ class AIManager:
         except Exception as e:
             print(f"Cannot connect to Claude: {e}", file=sys.stderr)
             return False
+
+    def _load_prompts(self):
+        """Load prompts from YAML files exactly like ContentStudio"""
+        try:
+            # Load YouTube prompts
+            youtube_prompts_path = self.prompts_dir / "prompts.yml"
+            if youtube_prompts_path.exists():
+                with open(youtube_prompts_path, 'r', encoding='utf-8') as f:
+                    self.youtube_prompts = yaml.safe_load(f)
+                print(f"Loaded YouTube prompts from {youtube_prompts_path}", file=sys.stderr)
+            else:
+                print(f"Warning: YouTube prompts file not found at {youtube_prompts_path}", file=sys.stderr)
+
+            # Load Spreaker prompts
+            spreaker_prompts_path = self.prompts_dir / "spreaker_prompts.yml"
+            if spreaker_prompts_path.exists():
+                with open(spreaker_prompts_path, 'r', encoding='utf-8') as f:
+                    self.spreaker_prompts = yaml.safe_load(f)
+                print(f"Loaded Spreaker prompts from {spreaker_prompts_path}", file=sys.stderr)
+            else:
+                print(f"Warning: Spreaker prompts file not found at {spreaker_prompts_path}", file=sys.stderr)
+
+            # Load summarization prompts
+            summarization_prompts_path = self.prompts_dir / "summarization_prompts.yml"
+            if summarization_prompts_path.exists():
+                with open(summarization_prompts_path, 'r', encoding='utf-8') as f:
+                    self.summarization_prompts = yaml.safe_load(f)
+                print(f"Loaded summarization prompts from {summarization_prompts_path}", file=sys.stderr)
+            else:
+                print(f"Warning: Summarization prompts file not found at {summarization_prompts_path}", file=sys.stderr)
+
+            # Load description links
+            description_links_path = self.prompts_dir / "description_links.yml"
+            if description_links_path.exists():
+                with open(description_links_path, 'r', encoding='utf-8') as f:
+                    data = yaml.safe_load(f)
+                    self.description_links = data.get('description_links', '')
+                print(f"Loaded description links from {description_links_path}", file=sys.stderr)
+            else:
+                print(f"Warning: Description links file not found at {description_links_path}", file=sys.stderr)
+
+        except Exception as e:
+            print(f"Error loading prompts: {e}", file=sys.stderr)
+            # Set defaults if loading fails
+            self.youtube_prompts = None
+            self.spreaker_prompts = None
+            self.summarization_prompts = None
+            self.description_links = None
 
     def summarize_transcript(self, transcript: str, source_name: str) -> str:
         """Summarize transcript using fast model with chunking and temp files"""
@@ -324,16 +381,19 @@ class AIManager:
             return fallback
 
     def _final_compression(self, combined_summary: str, source_name: str) -> str:
-        """Final compression if combined summary is still too large"""
+        """Final compression if combined summary is still too large - from YAML"""
         try:
-            prompt = f"""This is a combined summary from multiple chunks of a long transcript. Compress this into a concise 2-3 paragraph summary that captures the main topics, key points, and important names mentioned.
+            if not self.summarization_prompts:
+                raise ValueError("Summarization prompts not loaded. Cannot compress without prompts.")
 
-Source: {source_name}
+            prompt_template = self.summarization_prompts.get('final_compression_prompt', '')
+            if not prompt_template:
+                raise ValueError("final_compression_prompt not found in summarization prompts YAML file")
 
-Combined Summary:
-{combined_summary}
-
-Compressed Summary:"""
+            prompt = prompt_template.format(
+                source_name=source_name,
+                combined_summary=combined_summary
+            )
 
             response = self._make_request(prompt, model=self.summary_model, timeout=180)
 
@@ -348,13 +408,14 @@ Compressed Summary:"""
             print(f"Final compression failed: {e}", file=sys.stderr)
             return combined_summary[:12000] + "... [TRUNCATED]"
 
-    def generate_metadata(self, content: str, platform: str) -> ConsolidatedResult:
+    def generate_metadata(self, content: str, platform: str, source_filename: Optional[str] = None) -> ConsolidatedResult:
         """
         Generate all metadata components in single JSON request using smart model
 
         Args:
             content: The content to analyze (transcript or summary)
             platform: Target platform ('youtube' or 'spreaker')
+            source_filename: Optional filename for context (exactly like ContentStudio)
 
         Returns:
             ConsolidatedResult with metadata dictionary
@@ -364,8 +425,14 @@ Compressed Summary:"""
         start_time = time.time()
 
         try:
+            # Add filename context if provided (EXACTLY like ContentStudio)
+            content_with_context = content
+            if source_filename:
+                content_with_context = f"[Source filename: {source_filename}]\n\n{content}"
+                print(f"   Added filename context: {source_filename}", file=sys.stderr)
+
             # Build platform-specific prompt
-            consolidated_prompt = self._build_consolidated_prompt(content, platform)
+            consolidated_prompt = self._build_consolidated_prompt(content_with_context, platform)
 
             # Make single AI request with smart model
             print(f"   Making consolidated request...", file=sys.stderr)
@@ -395,6 +462,9 @@ Compressed Summary:"""
                     error="Failed to parse or validate JSON response"
                 )
 
+            # Add description links (EXACTLY like ContentStudio)
+            metadata = self._add_description_links(metadata)
+
             print(f"   Consolidated generation completed", file=sys.stderr)
             if fixes_applied:
                 print(f"   Applied {len(fixes_applied)} auto-fixes", file=sys.stderr)
@@ -418,207 +488,121 @@ Compressed Summary:"""
             )
 
     def _build_consolidated_prompt(self, content: str, platform: str) -> str:
-        """Build consolidated prompt based on platform"""
+        """Build consolidated prompt based on platform - EXACTLY like ContentStudio"""
 
         if platform.lower() == 'youtube':
-            return self._build_youtube_prompt(content)
+            return self._build_youtube_prompt_from_yaml(content)
         elif platform.lower() == 'spreaker':
-            return self._build_spreaker_prompt(content)
+            return self._build_spreaker_prompt_from_yaml(content)
         else:
             # Default to YouTube
-            return self._build_youtube_prompt(content)
+            return self._build_youtube_prompt_from_yaml(content)
 
-    def _build_youtube_prompt(self, content: str) -> str:
-        """Build YouTube-specific metadata generation prompt"""
+    def _extract_keywords_from_content(self, content: str) -> Tuple[List[str], List[str]]:
+        """Extract primary and secondary keywords from content - EXACTLY like ContentStudio"""
+        content_lower = content.lower()
 
-        base_instructions = """You know exactly how YouTube works in 2025 - the algorithm, what gets people to click, all of it.
+        # Common political figures
+        political_figures = ['trump', 'biden', 'nancy mace', 'desantis', 'harris', 'pelosi', 'aoc', 'mcconnell']
+        # Common issues/topics
+        political_topics = ['immigration', 'healthcare', 'economy', 'climate', 'abortion', 'gun', 'tax', 'vote', 'election']
+        # Atheist topics
+        atheist_topics = ['religion', 'god', 'atheist', 'atheism', 'christian', 'faith', 'bible', 'prayer', 'church']
+        # Conspiracy topics
+        conspiracy_topics = ['chemtrails', 'fluoride', 'vaccine', 'conspiracy', '5g', 'qanon']
 
-EDITORIAL VOICE: Progressive, grounded in evidence, with a focus on holding people accountable.
-This applies to everything - politics, social media drama, celebrity stuff, pop culture, whatever's happening.
+        primary_keywords = []
+        secondary_keywords = []
 
-CORE APPROACH:
-- Lead with facts and evidence, not hype or guessing
-- Call out what matters - real consequences, actual impact
-- Give people the full picture, not just surface drama
-- Be skeptical but fair when analyzing what people say and do
-- Trust science when it's relevant
+        # Find political figures (primary keywords)
+        for figure in political_figures:
+            if figure in content_lower:
+                primary_keywords.append(figure)
 
-HOW THE ALGORITHM WORKS:
-- Repeating keywords across title, description, and tags multiplies your reach
-- Layer your tags from specific to broad for maximum discovery
-- Mobile users see the first part of your title first - make it count
-- Engagement matters, but so does authenticity - the algorithm can tell when you're faking it"""
+        # Find main topics (secondary keywords)
+        all_topics = political_topics + atheist_topics + conspiracy_topics
+        for topic in all_topics:
+            if topic in content_lower:
+                secondary_keywords.append(topic)
 
-        prompt = f"""{base_instructions}
+        # Extract proper nouns (likely to be important)
+        words = content.split()
+        for word in words:
+            if len(word) > 3 and word[0].isupper() and word.lower() not in [k.lower() for k in primary_keywords]:
+                if len(primary_keywords) < 2:
+                    primary_keywords.append(word)
+                elif len(secondary_keywords) < 3:
+                    secondary_keywords.append(word)
 
-CONTENT: {content}
+        return primary_keywords[:2], secondary_keywords[:3]
 
-CONTENT ANALYSIS & FRAMING:
-Analyze the content and determine appropriate framing based on what's happening:
+    def _build_youtube_prompt_from_yaml(self, content: str) -> str:
+        """Build YouTube prompt from YAML file - EXACTLY like ContentStudio"""
 
-ACCOUNTABILITY FRAMING (person doing something questionable):
-- Use: CAUGHT, EXPOSED, FAILS, BACKFIRES, CALLED OUT, CONSEQUENCES
-- Focus on impact and accountability
-- Highlight real-world effects of actions/statements
+        if not self.youtube_prompts:
+            raise ValueError("YouTube prompts not loaded. Cannot generate metadata without prompts.")
 
-DEBUNKING FRAMING (false claims or misinformation):
-- Use: DEBUNKED, BUSTED, TRUTH, REALITY CHECK, CORRECTED, FACTS
-- Emphasize evidence and factual accuracy
-- Contrast claims with actual reality
+        # Get the consolidated_prompt template from YAML
+        consolidated_template = self.youtube_prompts.get('consolidated_prompt', '')
+        base_instructions = self.youtube_prompts.get('base_instructions', '')
 
-BREAKING NEWS FRAMING (new developments):
-- Use: BREAKING, LEAKED, REVEALED, SHOCKING, URGENT, DEVELOPING
-- Create appropriate urgency without overselling
-- Focus on why this matters now
+        if not consolidated_template:
+            raise ValueError("consolidated_prompt not found in YouTube prompts YAML file")
 
-ANALYSIS FRAMING (providing context/explanation):
-- Use: EXPLAINED, ANALYZED, TRUTH ABOUT, REALITY OF, BEHIND THE SCENES
-- Emphasize deeper understanding and context
-- Educational but engaging approach
+        # Format the prompt exactly like ContentStudio does
+        prompt = consolidated_template.format(
+            base_instructions=base_instructions,
+            content=content,
+            mode='individual'  # Always individual for single content items
+        )
 
-KEYWORD MULTIPLIER SYSTEM:
-1. Identify 1-2 PRIMARY keywords (person names, main topics, events)
-2. Identify 2-3 SECONDARY keywords (related concepts, consequences, context)
-3. PRIMARY keywords must appear in: title, description opening, 5-6 tags, thumbnail text
-4. SECONDARY keywords must appear in: title/description, 3-4 tags each
+        # Extract keywords for multiplier system (optional enhancement)
+        primary_keywords, secondary_keywords = self._extract_keywords_from_content(content)
 
-GENERATION REQUIREMENTS:
-
-THUMBNAIL TEXT (10 options, max 3 words, ALL CAPS):
-- Create urgency and emotional response appropriate to content
-- Universal high-engagement options: EXPOSED, CAUGHT, FAILS, TRUTH, BUSTED, REALITY, BROKEN, LEAKED, CALLED OUT, CONSEQUENCES
-- Match the framing (accountability vs debunking vs breaking news)
-
-TITLES (10 options, 50-60 characters ideal, max 70):
-
-CRITICAL: Title Case only. Zero ALL CAPS words allowed.
-If any word is in ALL CAPS, the title is invalid.
-
-Guidelines:
-- Front-load primary keyword (first 30 characters = mobile visibility)
-- Be specific over generic (numbers, names, concrete details)
-- Shorter is better - aim for 50-60 characters, not max length
-- Clear value: what does the viewer learn or discover?
-
-Avoid these clickbait patterns:
-- Overused words: DEBUNKED, DEBUNKING, EXPOSED, BUSTED, DESTROYED, SLAMMED
-- ALL CAPS words anywhere in title
-- Multiple punctuation (!!!, ???, ...)
-- Prefixes like "BREAKING:" or "EXPOSED:" or "The Truth About"
-- Vague academic language ("misrepresents", "distorts reality")
-
-Strong title patterns:
-- "5 Evolution Facts Chick Tracts Get Wrong"
-- "Trump's $120k Claim: What IRS Data Shows"
-- "Biologist Reads Chick Tract: The Problems"
-- "Why RFK Jr. Dodges Vaccine Questions"
-- "Science vs Chick Tracts: What Evidence Shows"
-
-Be direct, specific, and honest. Front-load the topic. Keep it tight.
-
-DESCRIPTION (complete, no length limit):
-- First 125 characters: primary keyword + hook
-- Provide context and analysis beyond surface drama
-- Include evidence-based perspective
-- Engagement CTA and subscription request
-- NO timestamps, time markers, or "Timestamps:" sections
-- NO ellipsis truncation
-- CRITICAL: Do NOT add hashtags to description - hashtags are generated separately
-- Keep description focused on content explanation and call-to-action only
-
-TAGS (exactly 15 tags, strategic pyramid):
-- Layer 1 (1-3): Exact match, primary keywords
-- Layer 2 (4-8): Variations, synonyms, word changes
-- Layer 3 (9-12): Long-tail, natural language
-- Layer 4 (13-15): Broad categories, discovery terms
-
-HASHTAGS (10 hashtags with # symbols):
-- First 3 appear above title - make them impactful
-- Mix broad and specific hashtags
-- Include trending relevant hashtags when appropriate
-
-OUTPUT FORMAT - JSON ONLY:
-Use only ASCII characters (A-Z, a-z, 0-9, basic punctuation). No emojis or special symbols.
-
-{{
-  "thumbnail_text": [10 content-specific options, ALL CAPS, max 3 words],
-  "titles": [10 titles, EXACTLY 45-70 characters each],
-  "description": "Complete description, no timestamps, no ellipsis, no hashtags",
-  "tags": "15 comma-separated tags implementing pyramid structure",
-  "hashtags": "10 hashtags with # symbols"
-}}
-
-CRITICAL INSTRUCTIONS:
-- Analyze what the person/situation actually represents
-- Apply appropriate framing based on content analysis
-- Generate content-specific metadata that matches the actual subject matter
-- Implement keyword multiplier system for algorithm optimization
-
-DO NOT INCLUDE:
-- Timestamps (0:00, 2:15, etc.)
-- "Timestamps:" sections
-- Time markers of any kind
-- Ellipsis (...) in titles or descriptions
-- Hashtags in the description field (hashtags go in separate field)
-
-Respond with ONLY the JSON object."""
+        # Add keyword multiplier instructions if keywords found
+        if primary_keywords or secondary_keywords:
+            keyword_addition = self.youtube_prompts.get('keyword_multiplier_addition', '')
+            if keyword_addition:
+                keyword_instructions = keyword_addition.format(
+                    primary_keywords=', '.join(primary_keywords) if primary_keywords else 'auto-detect',
+                    secondary_keywords=', '.join(secondary_keywords) if secondary_keywords else 'auto-detect'
+                )
+                prompt = prompt + "\n\n" + keyword_instructions
 
         return prompt
 
-    def _build_spreaker_prompt(self, content: str) -> str:
-        """Build Spreaker (podcast) specific metadata generation prompt"""
+    def _build_spreaker_prompt_from_yaml(self, content: str) -> str:
+        """Build Spreaker prompt from YAML file - EXACTLY like ContentStudio"""
 
-        prompt = f"""You are an expert in podcast metadata optimization for Spreaker platform.
+        if not self.spreaker_prompts:
+            raise ValueError("Spreaker prompts not loaded. Cannot generate metadata without prompts.")
 
-CONTENT: {content}
+        # Get the consolidated_prompt template from YAML
+        consolidated_template = self.spreaker_prompts.get('consolidated_prompt', '')
+        base_instructions = self.spreaker_prompts.get('base_instructions', '')
 
-Generate podcast metadata optimized for discoverability and engagement on Spreaker.
+        if not consolidated_template:
+            raise ValueError("consolidated_prompt not found in Spreaker prompts YAML file")
 
-PODCAST METADATA REQUIREMENTS:
+        # Format the prompt exactly like ContentStudio does
+        prompt = consolidated_template.format(
+            base_instructions=base_instructions,
+            content=content,
+            mode='individual'  # Always individual for single content items
+        )
 
-EPISODE TITLES (10 options, 50-70 characters):
-- Clear, descriptive, SEO-friendly
-- Front-load main topic or guest name
-- Include episode type when relevant (Interview, Solo, Q&A)
-- Avoid clickbait but remain engaging
+        # Extract keywords for multiplier system (optional enhancement)
+        primary_keywords, secondary_keywords = self._extract_keywords_from_content(content)
 
-THUMBNAIL TEXT (10 options, max 3 words, ALL CAPS):
-- Guest names or main topics
-- Episode themes
-- Key takeaways
-- Format: INTERVIEW, SOLO SHOW, Q&A, etc.
-
-DESCRIPTION (complete, no length limit):
-- First paragraph: Hook with main topic and value proposition
-- Key topics covered in episode
-- Guest bio/credentials (if applicable)
-- Call to action (subscribe, rate, review)
-- NO timestamps (Spreaker adds these automatically)
-- Include relevant links placeholder text
-
-TAGS (exactly 15 tags):
-- Topic-specific keywords
-- Genre tags
-- Guest-related tags (if applicable)
-- Broad discovery terms
-- Industry-relevant keywords
-
-HASHTAGS (10 hashtags with # symbols):
-- Platform-specific hashtags
-- Topic and niche hashtags
-- Trending relevant hashtags
-- Community hashtags
-
-OUTPUT FORMAT - JSON ONLY:
-{{
-  "thumbnail_text": [10 options, ALL CAPS, max 3 words],
-  "titles": [10 titles, 50-70 characters each],
-  "description": "Complete description without timestamps",
-  "tags": "15 comma-separated tags",
-  "hashtags": "10 hashtags with # symbols"
-}}
-
-Respond with ONLY the JSON object."""
+        # Add keyword multiplier instructions if keywords found
+        if primary_keywords or secondary_keywords:
+            keyword_addition = self.spreaker_prompts.get('keyword_multiplier_addition', '')
+            if keyword_addition:
+                keyword_instructions = keyword_addition.format(
+                    primary_keywords=', '.join(primary_keywords) if primary_keywords else 'auto-detect',
+                    secondary_keywords=', '.join(secondary_keywords) if secondary_keywords else 'auto-detect'
+                )
+                prompt = prompt + "\n\n" + keyword_instructions
 
         return prompt
 
@@ -701,15 +685,18 @@ Respond with ONLY the JSON object."""
             return None
 
     def _create_summarization_prompt(self, transcript: str, source_name: str) -> str:
-        """Create prompt for transcript summarization with filename context"""
-        return f"""Summarize this transcript into 2-3 detailed sentences that capture the main topics, key points, and any important names or events mentioned. Focus on what would be relevant for creating content metadata.
+        """Create prompt for transcript summarization with filename context - from YAML"""
+        if not self.summarization_prompts:
+            raise ValueError("Summarization prompts not loaded. Cannot summarize without prompts.")
 
-The source filename provides context about the content: {source_name}
+        prompt_template = self.summarization_prompts.get('summarization_prompt', '')
+        if not prompt_template:
+            raise ValueError("summarization_prompt not found in summarization prompts YAML file")
 
-Transcript:
-{transcript}
-
-Summary:"""
+        return prompt_template.format(
+            source_name=source_name,
+            transcript=transcript
+        )
 
     def _fallback_truncate(self, transcript: str, source_name: str) -> str:
         """Fallback truncation when AI summarization fails"""
@@ -908,6 +895,24 @@ Summary:"""
             fixes.append("Converted description to string")
 
         return fixes
+
+    def _add_description_links(self, metadata: Dict) -> Dict:
+        """Add description links to metadata (EXACTLY like ContentStudio)"""
+        if 'description' not in metadata:
+            return metadata
+
+        description_parts = [metadata['description']]
+
+        # Add hashtags if present (they should already be in separate field)
+        # Note: Hashtags are already in metadata, we just keep them separate
+
+        # Add description links if loaded
+        if self.description_links:
+            description_parts.append('\n\n' + self.description_links)
+            print(f"   Added description links to metadata", file=sys.stderr)
+
+        metadata['description'] = ''.join(description_parts)
+        return metadata
 
     def cleanup(self):
         """Clean up all resources"""

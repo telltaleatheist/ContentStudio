@@ -180,6 +180,52 @@ export class MetadataReports implements OnInit {
     });
   }
 
+  copyToClipboard(text: string) {
+    navigator.clipboard.writeText(text).then(() => {
+      // Optional: Show a toast notification
+      console.log('Copied to clipboard');
+    }).catch(err => {
+      console.error('Failed to copy:', err);
+      alert('Failed to copy to clipboard');
+    });
+  }
+
+  getDescriptionWithHashtags(): string {
+    const meta = this.metadata();
+    if (!meta) return '';
+
+    // Build description with hashtags above description links
+    let result = meta.description || '';
+
+    // If description already contains hashtags (they're embedded), return as-is
+    if (meta.hashtags && result.includes(meta.hashtags)) {
+      return result;
+    }
+
+    // Otherwise, we need to insert hashtags
+    // Find where description links start (they usually start with emoji or "Support")
+    const linksMarkers = ['🔥', '📖', '🎥', 'Support the Channel', 'Become a YouTube Member'];
+    let insertPosition = -1;
+
+    for (const marker of linksMarkers) {
+      const pos = result.indexOf(marker);
+      if (pos !== -1) {
+        insertPosition = pos;
+        break;
+      }
+    }
+
+    if (insertPosition !== -1 && meta.hashtags) {
+      // Insert hashtags before description links
+      result = result.substring(0, insertPosition) + '\n\n' + meta.hashtags + '\n\n' + result.substring(insertPosition);
+    } else if (meta.hashtags) {
+      // Just append hashtags at the end
+      result = result + '\n\n' + meta.hashtags;
+    }
+
+    return result;
+  }
+
   private getUserHome(): string {
     // This will be replaced by actual electron call in production
     return '/Users/telltale';
