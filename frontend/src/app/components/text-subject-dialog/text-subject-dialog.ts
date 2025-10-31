@@ -24,8 +24,8 @@ import { FormsModule } from '@angular/forms';
           matInput
           [(ngModel)]="textContent"
           rows="10"
-          placeholder="Enter text subjects, one per line..."></textarea>
-        <mat-hint>Each line will be added as a separate subject</mat-hint>
+          placeholder=""></textarea>
+        <mat-hint>Enter each subject on a separate line</mat-hint>
       </mat-form-field>
     </mat-dialog-content>
     <mat-dialog-actions align="end">
@@ -43,15 +43,21 @@ import { FormsModule } from '@angular/forms';
 
     .full-width {
       width: 100%;
+      margin-top: 8px;
     }
 
     textarea {
       font-family: monospace;
+      min-height: 200px;
     }
 
     mat-dialog-actions {
       padding: 16px 24px;
       gap: 12px;
+    }
+
+    mat-form-field {
+      margin-bottom: 8px;
     }
   `]
 })
