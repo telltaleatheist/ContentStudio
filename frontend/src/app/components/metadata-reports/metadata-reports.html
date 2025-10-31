@@ -37,10 +37,7 @@
                 <mat-icon matListItemIcon [style.color]="getPlatformColor(report.platform)">
                   {{ getPlatformIcon(report.platform) }}
                 </mat-icon>
-                <mat-icon matListItemIcon class="mode-icon" [title]="getModeTitle(report.name)">
-                  {{ getModeIcon(report.name) }}
-                </mat-icon>
-                <div matListItemTitle class="report-title">{{ report.name }}</div>
+                <div matListItemTitle class="report-title">{{ report.displayTitle || report.name }}</div>
                 <div matListItemLine class="report-meta">
                   <span class="report-date">{{ formatDate(report.date) }}</span>
                 </div>
@@ -58,7 +55,7 @@
     <div class="panel report-viewer-panel">
       @if (selectedReport()) {
         <div class="panel-header">
-          <h4 class="panel-title">{{ selectedReport()!.name }}</h4>
+          <h4 class="panel-title">{{ metadata()?._title || selectedReport()!.name }}</h4>
           <div class="panel-actions">
             <button mat-raised-button color="primary" (click)="showInFolder(selectedReport()!)">
               <mat-icon>folder</mat-icon>

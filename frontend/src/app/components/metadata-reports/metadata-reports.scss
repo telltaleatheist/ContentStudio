@@ -1,4 +1,4 @@
-// Creamsicle Theme - Metadata Reports Viewer
+// Creamsicle Theme - Metadata Reports Viewer - Compact List Items
 :host {
   display: flex;
   flex: 1;
@@ -90,12 +90,85 @@
 }
 
 .reports-list {
-  padding: 0;
+  padding: 0 !important;
+
+  mat-list-item.report-item,
+  .report-item.mat-mdc-list-item,
+  .report-item.mdc-list-item {
+    padding-top: 0.25rem !important;
+    padding-bottom: 0.125rem !important;
+  }
+
+  ::ng-deep {
+    .report-item.mat-mdc-list-item {
+      padding-top: 0.25rem !important;
+      padding-bottom: 0.125rem !important;
+    }
+
+    .report-item .mdc-list-item__content {
+      padding: 0.35rem 0 0.15rem 0 !important;
+      margin: 0 !important;
+      height: 100% !important;
+      display: grid !important;
+      grid-template-rows: auto auto !important;
+      gap: 0 !important;
+      row-gap: 0 !important;
+      align-items: start !important;
+    }
+
+    .report-item .mdc-list-item__primary-text,
+    .report-item .mat-mdc-list-item-title {
+      padding: 0 !important;
+      padding-top: 0.35rem !important;
+      margin: 0 !important;
+    }
+
+    .report-item .mdc-list-item__secondary-text,
+    .report-item .mat-mdc-list-item-line {
+      padding: 0 !important;
+      padding-bottom: 0.15rem !important;
+      margin: 0 !important;
+    }
+
+    .mdc-list-item--with-two-lines .mdc-list-item__primary-text {
+      display: block !important;
+    }
+
+    .mdc-list-item--with-two-lines .mdc-list-item__primary-text::before,
+    .mdc-list-item--with-two-lines .mdc-list-item__primary-text::after {
+      content: none !important;
+      display: none !important;
+      height: 0 !important;
+      padding: 0 !important;
+      margin: 0 !important;
+    }
+
+    .mdc-list-item--with-two-lines .mdc-list-item__secondary-text::before,
+    .mdc-list-item--with-two-lines .mdc-list-item__secondary-text::after {
+      content: none !important;
+      display: none !important;
+      height: 0 !important;
+      padding: 0 !important;
+      margin: 0 !important;
+    }
+  }
 
   .report-item {
     cursor: pointer;
     transition: all 0.2s;
     border-bottom: 1px solid var(--border-color);
+    min-height: 52px !important;
+    height: auto !important;
+    padding: 0 0.375rem !important;
+    overflow: hidden !important;
+
+    // Override Material's grid layout
+    display: grid !important;
+    grid-template-columns: 1.25rem minmax(0, 1fr) 24px !important;
+    grid-template-rows: auto auto !important;
+    column-gap: 0.75rem !important;
+    row-gap: 0 !important;
+    align-items: start !important;
 
     &:hover {
       background: var(--bg-secondary);
@@ -107,38 +180,82 @@
     }
 
     mat-icon[matListItemIcon] {
-      font-size: 1.5rem;
-      width: 1.5rem;
-      height: 1.5rem;
-    }
-
-    .mode-icon {
-      color: var(--text-secondary) !important;
       font-size: 1.25rem !important;
       width: 1.25rem !important;
       height: 1.25rem !important;
-      opacity: 0.7;
+      min-width: 1.25rem !important;
+      max-width: 1.25rem !important;
+      margin: 0 !important;
+      margin-left: 0.25rem !important;
+      padding: 0 !important;
+      flex-shrink: 0 !important;
+      grid-row: 1 / 3 !important;
+      grid-column: 1 !important;
+      align-self: center !important;
     }
 
     .report-title {
       font-weight: 500;
       color: var(--text-primary);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      font-size: 0.875rem;
+      line-height: 1.3;
+      overflow: hidden !important;
+      text-overflow: ellipsis !important;
+      display: -webkit-box !important;
+      -webkit-line-clamp: 2 !important;
+      -webkit-box-orient: vertical !important;
+      white-space: normal !important;
+      word-break: break-word !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      padding-right: 0.5rem !important;
+      grid-row: 1 !important;
+      grid-column: 2 !important;
+      align-self: start !important;
+      min-width: 0 !important;
+      max-width: 100% !important;
     }
 
     .report-meta {
       display: flex;
-      gap: 0.75rem;
-      font-size: 0.75rem;
+      gap: 0.5rem;
+      font-size: 0.7rem;
       color: var(--text-secondary);
-      margin-top: 0.25rem;
       align-items: center;
+      margin: 0 !important;
+      padding: 0 !important;
+      grid-row: 2 !important;
+      grid-column: 2 !important;
+      align-self: start !important;
+      min-width: 0 !important;
+      overflow: hidden !important;
+      text-overflow: ellipsis !important;
+      white-space: nowrap !important;
     }
 
     button[matListItemMeta] {
       color: var(--text-secondary);
+      width: 24px !important;
+      height: 24px !important;
+      min-width: 24px !important;
+      max-width: 24px !important;
+      padding: 0 !important;
+      margin: 0 !important;
+      margin-right: 0.25rem !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      flex-shrink: 0 !important;
+      grid-row: 1 / 3 !important;
+      grid-column: 3 !important;
+      align-self: center !important;
+
+      mat-icon {
+        font-size: 16px !important;
+        width: 16px !important;
+        height: 16px !important;
+        line-height: 16px !important;
+      }
 
       &:hover {
         color: var(--primary-orange);

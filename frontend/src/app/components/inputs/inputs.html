@@ -3,7 +3,7 @@
   <div class="header">
     <h2>Inputs</h2>
     <mat-chip-set>
-      <mat-chip>{{ inputItems().length }} items</mat-chip>
+      <mat-chip>{{ inputsState.inputItems().length }} items</mat-chip>
     </mat-chip-set>
   </div>
 
@@ -26,7 +26,7 @@
   <div class="input-list-section">
     <h3>Added Inputs</h3>
 
-    @if (inputItems().length === 0) {
+    @if (inputsState.inputItems().length === 0) {
       <div class="empty-state">
         <mat-icon class="empty-icon">inbox</mat-icon>
         <p>No inputs added yet</p>
@@ -34,7 +34,7 @@
       </div>
     } @else {
       <mat-list class="input-list">
-        @for (item of inputItems(); track item.path) {
+        @for (item of inputsState.inputItems(); track item.path) {
           <mat-list-item class="input-item">
             <mat-icon matListItemIcon>{{ item.icon }}</mat-icon>
             <div matListItemTitle class="item-title">{{ item.displayName }}</div>
@@ -54,7 +54,7 @@
 
     <mat-form-field appearance="outline" class="full-width">
       <mat-label>Platform</mat-label>
-      <mat-select [(value)]="selectedPlatform" (selectionChange)="onPlatformChange()">
+      <mat-select [(value)]="inputsState.selectedPlatform" (selectionChange)="onPlatformChange()">
         <mat-option value="youtube">YouTube</mat-option>
         <mat-option value="spreaker">Spreaker</mat-option>
       </mat-select>
@@ -62,7 +62,7 @@
 
     <mat-form-field appearance="outline" class="full-width">
       <mat-label>Mode</mat-label>
-      <mat-select [(value)]="selectedMode" (selectionChange)="onModeChange()">
+      <mat-select [(value)]="inputsState.selectedMode" (selectionChange)="onModeChange()">
         <mat-option value="individual">Individual</mat-option>
         <mat-option value="compilation">Compilation</mat-option>
       </mat-select>
@@ -75,33 +75,32 @@
       mat-raised-button
       color="primary"
       class="generate-button"
-      [disabled]="inputItems().length === 0 || isGenerating()"
+      [disabled]="inputsState.inputItems().length === 0 || isGenerating()"
       (click)="generateMetadata()">
       @if (isGenerating()) {
-        <mat-icon>hourglass_empty</mat-icon>
+        <ng-container><mat-icon>hourglass_empty</mat-icon></ng-container>
         Generating...
       } @else {
-        <mat-icon>rocket_launch</mat-icon>
+        <ng-container><mat-icon>rocket_launch</mat-icon></ng-container>
         Generate Metadata
       }
     </button>
 
-    @if (isGenerating()) {
-      <div class="generating-status">
-        <p>Generating metadata with AI...</p>
-        <p class="hint">This may take a minute depending on content length and model.</p>
+    <!-- Always reserve space for progress to prevent layout shift -->
+    <div class="generating-status" [class.visible]="isGenerating()">
+      <p>Generating metadata with AI...</p>
+      <p class="hint">This may take a minute depending on content length and model.</p>
 
-        <div class="progress-section">
-          <mat-progress-bar
-            mode="determinate"
-            [value]="generationProgress()">
-          </mat-progress-bar>
-          <div class="progress-info">
-            <span class="progress-text">{{ currentlyProcessing() }}</span>
-            <span class="progress-time">{{ elapsedTime() }}</span>
-          </div>
+      <div class="progress-section">
+        <mat-progress-bar
+          mode="determinate"
+          [value]="generationProgress()">
+        </mat-progress-bar>
+        <div class="progress-info">
+          <span class="progress-text">{{ currentlyProcessing() }}</span>
+          <span class="progress-time">{{ elapsedTime() }}</span>
         </div>
       </div>
-    }
+    </div>
   </div>
 </div>

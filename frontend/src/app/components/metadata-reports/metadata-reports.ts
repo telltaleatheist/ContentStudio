@@ -13,6 +13,7 @@ interface MetadataReport {
   date: Date;
   size: number;
   platform: string;
+  displayTitle?: string; // The actual title from the metadata
 }
 
 interface ParsedMetadata {
@@ -21,6 +22,7 @@ interface ParsedMetadata {
   description: string;
   tags: string;
   hashtags: string;
+  _title?: string; // The display title from the source
 }
 
 @Component({
@@ -57,26 +59,78 @@ export class MetadataReports implements OnInit {
       // Get settings to determine output directory
       const settings = await this.electron.getSettings();
       const baseDir = settings.outputDirectory || `${this.getUserHome()}/Documents/LaunchPad Output`;
-      this.reportsDirectory.set(`${baseDir}/metadata`);
 
-      // Read metadata directory
-      const result = await this.electron.readDirectory(this.reportsDirectory());
+      // Try multiple possible locations for metadata directory
+      const possiblePaths = [
+        `${baseDir}/metadata`,
+        `/Volumes/Callisto/LaunchPad/metadata`, // Legacy path
+        `/Volumes/Callisto/Projects/LaunchPad/output/metadata`,
+        `${this.getUserHome()}/Documents/LaunchPad Output/metadata`
+      ];
+
+      let metadataDir = '';
+      let result: any = null;
+
+      // Find the first path that exists and has contents
+      for (const path of possiblePaths) {
+        try {
+          const testResult = await this.electron.readDirectory(path);
+          if (testResult.success) {
+            metadataDir = path;
+            result = testResult;
+            console.log('Found metadata directory:', path);
+            break;
+          }
+        } catch (e) {
+          // Continue to next path
+        }
+      }
+
+      if (!metadataDir || !result) {
+        console.warn('No metadata directory found in any location');
+        this.reportsDirectory.set(possiblePaths[0]); // Use default for display
+        return;
+      }
+
+      this.reportsDirectory.set(metadataDir);
 
       if (result.success && result.directories) {
         const reports: MetadataReport[] = [];
 
         for (const dir of result.directories) {
-          // Each directory contains metadata.json and metadata.txt
-          const jsonPath = `${dir.path}/metadata.json`;
           const platform = dir.name.includes('youtube') ? 'youtube' :
                           dir.name.includes('spreaker') ? 'spreaker' : 'unknown';
+
+          // Try to read the title from the JSON file
+          let displayTitle = dir.name;
+          try {
+            // Try to find and read any JSON file in the directory
+            const dirContents = await this.electron.readDirectory(dir.path);
+            if (dirContents.success && dirContents.files) {
+              const jsonFile = dirContents.files.find((f: any) => f.name.endsWith('.json'));
+              if (jsonFile) {
+                const jsonPath = `${dir.path}/${jsonFile.name}`;
+                const content = await this.electron.readFile(jsonPath);
+                if (content) {
+                  const parsed = JSON.parse(content);
+                  if (parsed._title) {
+                    displayTitle = parsed._title;
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            // Fallback to folder name if reading fails
+            console.warn('Could not read title for', dir.name);
+          }
 
           reports.push({
             name: dir.name,
             path: dir.path,
             date: new Date(dir.mtime),
             size: dir.size || 0,
-            platform
+            platform,
+            displayTitle
           });
         }
 
@@ -96,9 +150,22 @@ export class MetadataReports implements OnInit {
       this.isLoading.set(true);
       this.selectedReport.set(report);
 
-      // Read the metadata.json file
-      const jsonPath = `${report.path}/metadata.json`;
-      const content = await this.electron.readFile(jsonPath);
+      // Try to read the JSON file with the actual title name first
+      // Fall back to metadata.json if not found
+      let jsonPath = `${report.path}/metadata.json`;
+      let content = await this.electron.readFile(jsonPath);
+
+      // If not found, try finding any .json file in the directory
+      if (!content) {
+        const dirContents = await this.electron.readDirectory(report.path);
+        if (dirContents.success && dirContents.files) {
+          const jsonFile = dirContents.files.find((f: any) => f.name.endsWith('.json'));
+          if (jsonFile) {
+            jsonPath = `${report.path}/${jsonFile.name}`;
+            content = await this.electron.readFile(jsonPath);
+          }
+        }
+      }
 
       if (content) {
         const parsed = JSON.parse(content);
@@ -110,6 +177,15 @@ export class MetadataReports implements OnInit {
     } finally {
       this.isLoading.set(false);
     }
+  }
+
+  getDisplayTitle(report: MetadataReport): string {
+    // If we have loaded metadata with a title, use it
+    if (this.selectedReport()?.path === report.path && this.metadata()?._title) {
+      return this.metadata()!._title!;
+    }
+    // Otherwise use the folder name
+    return report.name;
   }
 
   async showInFolder(report: MetadataReport) {
@@ -125,7 +201,7 @@ export class MetadataReports implements OnInit {
     event.stopPropagation();
 
     const confirmed = confirm(
-      `Are you sure you want to delete "${report.name}"?\n\nThis will permanently delete the metadata files. This action cannot be undone.`
+      `Are you sure you want to delete "${report.displayTitle || report.name}"?\n\nThis will permanently delete the metadata files. This action cannot be undone.`
     );
 
     if (!confirmed) return;
@@ -141,8 +217,6 @@ export class MetadataReports implements OnInit {
         this.selectedReport.set(null);
         this.metadata.set(null);
       }
-
-      alert('Report deleted successfully');
     } catch (error) {
       console.error('Error deleting report:', error);
       alert('Failed to delete report');

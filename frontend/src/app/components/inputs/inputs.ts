@@ -1,4 +1,4 @@
-import { Component, signal, OnInit } from '@angular/core';
+import { Component, signal, OnInit, effect } from '@angular/core';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatListModule } from '@angular/material/list';
@@ -7,15 +7,19 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatSelectModule } from '@angular/material/select';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatCheckboxModule } from '@angular/material/checkbox';
 import { FormsModule } from '@angular/forms';
 import { ElectronService } from '../../services/electron';
 import { TextSubjectDialog } from '../text-subject-dialog/text-subject-dialog';
+import { InputsStateService, InputItem } from '../../services/inputs-state';
 
-interface InputItem {
-  type: string;
-  path: string;
-  displayName: string;
-  icon: string;
+interface QueuedJob {
+  id: string;
+  inputs: InputItem[];
+  platform: string;
+  mode: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  createdAt: Date;
 }
 
 @Component({
@@ -29,40 +33,55 @@ interface InputItem {
     MatSelectModule,
     MatDialogModule,
     MatProgressBarModule,
+    MatCheckboxModule,
     FormsModule
   ],
   templateUrl: './inputs.html',
   styleUrl: './inputs.scss',
 })
 export class Inputs implements OnInit {
-  inputItems = signal<InputItem[]>([]);
-  selectedPlatform = signal('youtube');
-  selectedMode = signal('individual');
+  // Local computed values from generation state
   isGenerating = signal(false);
   generationStartTime = signal<number>(0);
   elapsedTime = signal<string>('0s');
   generationProgress = signal<number>(0);
   currentlyProcessing = signal<string>('');
 
+  jobQueue = signal<QueuedJob[]>([]);
+
   private elapsedInterval: any;
 
   constructor(
     private dialog: MatDialog,
-    private electron: ElectronService
-  ) {}
+    private electron: ElectronService,
+    public inputsState: InputsStateService
+  ) {
+    // Sync generation state from service
+    effect(() => {
+      const state = this.inputsState.generationState();
+      this.isGenerating.set(state.isGenerating);
+      this.generationStartTime.set(state.generationStartTime);
+      this.elapsedTime.set(state.elapsedTime);
+      this.generationProgress.set(state.generationProgress);
+      this.currentlyProcessing.set(state.currentlyProcessing);
+    });
+  }
 
   async ngOnInit() {
-    // Load persisted settings
-    try {
-      const settings = await this.electron.getSettings();
-      if (settings.platform) {
-        this.selectedPlatform.set(settings.platform);
+    // Load persisted settings only on first initialization
+    if (!this.inputsState.hasLoadedSettings()) {
+      try {
+        const settings = await this.electron.getSettings();
+        if (settings.platform) {
+          this.inputsState.setPlatform(settings.platform);
+        }
+        if (settings.mode) {
+          this.inputsState.setMode(settings.mode);
+        }
+        this.inputsState.markSettingsLoaded();
+      } catch (error) {
+        console.error('Error loading settings:', error);
       }
-      if (settings.mode) {
-        this.selectedMode.set(settings.mode);
-      }
-    } catch (error) {
-      console.error('Error loading settings:', error);
     }
   }
 
@@ -76,12 +95,15 @@ export class Inputs implements OnInit {
       if (result) {
         const lines = result.split('\n').filter((line: string) => line.trim());
         lines.forEach((subject: string) => {
-          this.inputItems.update(items => [...items, {
+          this.inputsState.addItem({
             type: 'subject',
             path: subject.trim(),
             displayName: subject.trim(),
-            icon: 'text_fields'
-          }]);
+            icon: 'text_fields',
+            includeInJob: true,
+            isCompilation: false,
+            forSpreaker: false
+          });
         });
       }
     });
@@ -95,12 +117,15 @@ export class Inputs implements OnInit {
         const fileName = filePath.split('/').pop() || filePath;
 
         if (isDir) {
-          this.inputItems.update(items => [...items, {
+          this.inputsState.addItem({
             type: 'directory',
             path: filePath,
             displayName: fileName,
-            icon: 'folder'
-          }]);
+            icon: 'folder',
+            includeInJob: true,
+            isCompilation: false,
+            forSpreaker: false
+          });
         } else {
           const ext = fileName.split('.').pop()?.toLowerCase() || '';
           let icon = 'description';
@@ -114,25 +139,28 @@ export class Inputs implements OnInit {
             type = 'transcript';
           }
 
-          this.inputItems.update(items => [...items, {
+          this.inputsState.addItem({
             type,
             path: filePath,
             displayName: fileName,
-            icon
-          }]);
+            icon,
+            includeInJob: true,
+            isCompilation: false,
+            forSpreaker: false
+          });
         }
       }
     }
   }
 
   removeInput(index: number) {
-    this.inputItems.update(items => items.filter((_, i) => i !== index));
+    this.inputsState.removeItem(index);
   }
 
   async onPlatformChange() {
     // Persist platform selection
     try {
-      await this.electron.updateSettings({ platform: this.selectedPlatform() });
+      await this.electron.updateSettings({ platform: this.inputsState.selectedPlatform() });
     } catch (error) {
       console.error('Error saving platform:', error);
     }
@@ -141,25 +169,30 @@ export class Inputs implements OnInit {
   async onModeChange() {
     // Persist mode selection
     try {
-      await this.electron.updateSettings({ mode: this.selectedMode() });
+      await this.electron.updateSettings({ mode: this.inputsState.selectedMode() });
     } catch (error) {
       console.error('Error saving mode:', error);
     }
   }
 
   private startElapsedTimer() {
-    this.generationStartTime.set(Date.now());
-    this.elapsedTime.set('0s');
+    const startTime = Date.now();
+    this.inputsState.updateGenerationState({
+      generationStartTime: startTime,
+      elapsedTime: '0s'
+    });
 
     this.elapsedInterval = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - this.generationStartTime()) / 1000);
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      let elapsedStr: string;
       if (elapsed < 60) {
-        this.elapsedTime.set(`${elapsed}s`);
+        elapsedStr = `${elapsed}s`;
       } else {
         const minutes = Math.floor(elapsed / 60);
         const seconds = elapsed % 60;
-        this.elapsedTime.set(`${minutes}m ${seconds}s`);
+        elapsedStr = `${minutes}m ${seconds}s`;
       }
+      this.inputsState.updateGenerationState({ elapsedTime: elapsedStr });
     }, 1000);
   }
 
@@ -171,15 +204,17 @@ export class Inputs implements OnInit {
   }
 
   async generateMetadata() {
-    if (this.inputItems().length === 0) return;
+    if (this.inputsState.inputItems().length === 0) return;
     if (this.isGenerating()) return; // Prevent double-clicks
 
-    const inputs = this.inputItems().map(item => item.path);
+    const inputs = this.inputsState.inputItems().map(item => item.path);
     const totalItems = inputs.length;
 
-    this.isGenerating.set(true);
-    this.generationProgress.set(0);
-    this.currentlyProcessing.set('Starting...');
+    this.inputsState.updateGenerationState({
+      isGenerating: true,
+      generationProgress: 0,
+      currentlyProcessing: 'Starting...'
+    });
     this.startElapsedTimer();
 
     // Simulate progress tracking
@@ -196,27 +231,33 @@ export class Inputs implements OnInit {
           // Gradually increase progress but cap at 90% until actual completion
           simulatedProgress += (100 / totalEstimatedTime) * 2; // Update every 2 seconds
           if (simulatedProgress > 90) simulatedProgress = 90;
-          this.generationProgress.set(simulatedProgress);
 
           // Update currently processing text
           const currentItemIndex = Math.floor((simulatedProgress / 100) * totalItems);
           if (currentItemIndex < totalItems) {
-            const currentItem = this.inputItems()[currentItemIndex];
-            this.currentlyProcessing.set(`Processing: ${currentItem.displayName}`);
+            const currentItem = this.inputsState.inputItems()[currentItemIndex];
+            this.inputsState.updateGenerationState({
+              generationProgress: simulatedProgress,
+              currentlyProcessing: `Processing: ${currentItem.displayName}`
+            });
+          } else {
+            this.inputsState.updateGenerationState({ generationProgress: simulatedProgress });
           }
         }
       }, 2000);
 
       const result = await this.electron.generateMetadata({
         inputs,
-        platform: this.selectedPlatform(),
-        mode: this.selectedMode()
+        platform: this.inputsState.selectedPlatform(),
+        mode: this.inputsState.selectedMode()
       });
 
       // Complete progress
       clearInterval(progressInterval);
-      this.generationProgress.set(100);
-      this.currentlyProcessing.set('Complete!');
+      this.inputsState.updateGenerationState({
+        generationProgress: 100,
+        currentlyProcessing: 'Complete!'
+      });
 
       if (result.success) {
         console.log('Metadata generated successfully:', result);
@@ -233,9 +274,11 @@ export class Inputs implements OnInit {
       if (progressInterval) clearInterval(progressInterval);
     } finally {
       this.stopElapsedTimer();
-      this.isGenerating.set(false);
-      this.generationProgress.set(0);
-      this.currentlyProcessing.set('');
+      this.inputsState.updateGenerationState({
+        isGenerating: false,
+        generationProgress: 0,
+        currentlyProcessing: ''
+      });
     }
   }
 }

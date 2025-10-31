@@ -49,25 +49,35 @@ class OutputHandler:
         # Generate timestamp for unique file naming
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # Create a descriptive folder name
+        # Get clean name for files (use actual subject/filename with spaces)
         if source_name:
-            # Clean source name for file system
-            safe_name = self._sanitize_filename(source_name)
-            folder_name = f"{timestamp}_{platform}_{safe_name}"
+            # Extract filename if it's a path
+            if '/' in source_name or '\\' in source_name:
+                from pathlib import Path
+                source_name = Path(source_name).stem  # Get filename without extension
+
+            # Clean source name for file system (keep spaces, remove invalid chars)
+            clean_name = self._clean_name_with_spaces(source_name)
         else:
-            folder_name = f"{timestamp}_{platform}_metadata"
+            clean_name = "metadata"
+
+        # Create folder name with timestamp and platform
+        safe_folder_name = self._sanitize_filename(f"{timestamp}_{platform}_{source_name or 'metadata'}")
 
         # Create output folder
-        output_folder = self.output_dir / folder_name
+        output_folder = self.output_dir / safe_folder_name
         output_folder.mkdir(parents=True, exist_ok=True)
 
+        # Add title to metadata for display purposes
+        metadata['_title'] = clean_name
+
         try:
-            # Save JSON format
+            # Save JSON format (for metadata reports viewer only)
             json_path = output_folder / "metadata.json"
             self._save_json(metadata, json_path)
 
-            # Save readable text format
-            txt_path = output_folder / "metadata.txt"
+            # Save readable text format with clean name
+            txt_path = output_folder / f"{clean_name}.txt"
             self._save_readable(metadata, txt_path, platform)
 
             print(f"Metadata saved to: {output_folder}", file=sys.stderr)
@@ -190,6 +200,34 @@ class OutputHandler:
 
         except Exception as e:
             raise IOError(f"Failed to save readable file: {e}")
+
+    def _clean_name_with_spaces(self, name: str, max_length: int = 100) -> str:
+        """
+        Clean name for file system while preserving spaces
+
+        Args:
+            name: Original name
+            max_length: Maximum length
+
+        Returns:
+            str: Cleaned name with spaces
+        """
+        # Remove only truly invalid filesystem characters
+        invalid_chars = '<>:"/\\|?*\x00'
+        for char in invalid_chars:
+            name = name.replace(char, '')
+
+        # Clean up multiple spaces
+        name = ' '.join(name.split())
+
+        # Truncate if too long
+        if len(name) > max_length:
+            name = name[:max_length].rstrip()
+
+        # Remove trailing dots and spaces
+        name = name.rstrip('. ')
+
+        return name or "metadata"
 
     def _sanitize_filename(self, filename: str, max_length: int = 50) -> str:
         """
