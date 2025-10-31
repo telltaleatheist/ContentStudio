@@ -101,33 +101,52 @@
 
   ::ng-deep {
     .report-item.mat-mdc-list-item {
-      padding-top: 0.25rem !important;
-      padding-bottom: 0.125rem !important;
+      padding: 0.5rem 0.375rem !important;
     }
 
     .report-item .mdc-list-item__content {
-      padding: 0.35rem 0 0.15rem 0 !important;
+      padding: 0 !important;
       margin: 0 !important;
       height: 100% !important;
       display: grid !important;
+      grid-template-columns: 1.25rem minmax(0, 1fr) 24px !important;
       grid-template-rows: auto auto !important;
-      gap: 0 !important;
-      row-gap: 0 !important;
-      align-items: start !important;
+      column-gap: 0.75rem !important;
+      row-gap: 0.15rem !important;
+      align-items: center !important;
+    }
+
+    .report-item .mat-mdc-list-item-icon {
+      grid-row: 1 / 3 !important;
+      grid-column: 1 !important;
+      align-self: center !important;
+      margin: 0 !important;
+      margin-left: 0.25rem !important;
     }
 
     .report-item .mdc-list-item__primary-text,
     .report-item .mat-mdc-list-item-title {
       padding: 0 !important;
-      padding-top: 0.35rem !important;
       margin: 0 !important;
+      line-height: 1.3 !important;
+      grid-row: 1 !important;
+      grid-column: 2 !important;
+      align-self: center !important;
     }
 
     .report-item .mdc-list-item__secondary-text,
     .report-item .mat-mdc-list-item-line {
       padding: 0 !important;
-      padding-bottom: 0.15rem !important;
       margin: 0 !important;
+      grid-row: 2 !important;
+      grid-column: 2 !important;
+      align-self: start !important;
+    }
+
+    .report-item [matListItemMeta] {
+      grid-row: 1 / 3 !important;
+      grid-column: 3 !important;
+      align-self: center !important;
     }
 
     .mdc-list-item--with-two-lines .mdc-list-item__primary-text {
@@ -189,7 +208,7 @@
       margin-left: 0.25rem !important;
       padding: 0 !important;
       flex-shrink: 0 !important;
-      grid-row: 1 / 3 !important;
+      grid-row: 1 !important;
       grid-column: 1 !important;
       align-self: center !important;
     }
@@ -211,7 +230,7 @@
       padding-right: 0.5rem !important;
       grid-row: 1 !important;
       grid-column: 2 !important;
-      align-self: start !important;
+      align-self: center !important;
       min-width: 0 !important;
       max-width: 100% !important;
     }

@@ -119,6 +119,20 @@
       }
     }
 
+    .master-controls {
+      display: flex;
+      gap: 2rem;
+      padding: 1rem;
+      background-color: rgba(255, 107, 53, 0.05);
+      border-radius: 8px;
+      margin-bottom: 1rem;
+      border: 1px solid rgba(255, 107, 53, 0.2);
+
+      mat-checkbox {
+        font-weight: 500;
+      }
+    }
+
     .unified-list {
       display: flex;
       flex-direction: column;
@@ -472,6 +486,205 @@
       &[disabled] {
         display: flex !important;
         visibility: visible !important;
+      }
+    }
+  }
+
+  // Job Queue with unified styling
+  .queue-container-unified {
+    margin-top: 2rem;
+    margin-bottom: 2rem;
+
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+
+      h3 {
+        margin: 0;
+      }
+
+      button {
+        color: #ff6b35;
+      }
+    }
+
+    .unified-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .job-card {
+      background-color: var(--bg-secondary);
+      transition: all 0.2s ease;
+      border: 2px solid transparent;
+      cursor: pointer;
+
+      &.selected {
+        border-color: var(--primary-orange);
+        background-color: var(--bg-card);
+      }
+
+      &:hover {
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      }
+
+      mat-card-content {
+        padding: 0.75rem 1rem;
+      }
+
+      .input-row {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+
+        & > mat-icon:first-child {
+          flex-shrink: 0;
+        }
+
+        .input-info {
+          .input-details {
+            .item-title {
+              color: var(--text-primary);
+            }
+
+            .item-subtitle {
+              color: var(--text-secondary);
+            }
+          }
+        }
+
+        .expand-icon {
+          margin-left: auto;
+          flex-shrink: 0;
+          color: var(--text-muted);
+        }
+
+        button[mat-icon-button] {
+          color: var(--text-muted);
+          flex-shrink: 0;
+
+          &:hover {
+            color: var(--primary-orange);
+          }
+        }
+      }
+
+      .job-details-expanded {
+        margin-top: 1rem;
+        padding-top: 1rem;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+
+        .job-progress {
+          margin-bottom: 1rem;
+
+          mat-progress-bar {
+            height: 6px;
+            border-radius: 3px;
+          }
+
+          .progress-info {
+            margin-top: 0.5rem;
+
+            .progress-text {
+              color: var(--text-secondary);
+              font-size: 0.85rem;
+            }
+          }
+        }
+
+        .job-error {
+          display: flex;
+          align-items: flex-start;
+          gap: 0.5rem;
+          margin-bottom: 1rem;
+          padding: 0.75rem;
+          background-color: rgba(244, 67, 54, 0.15);
+          border-radius: 8px;
+          border: 1px solid rgba(244, 67, 54, 0.3);
+
+          mat-icon {
+            font-size: 20px;
+            width: 20px;
+            height: 20px;
+            color: #f44336;
+          }
+
+          span {
+            color: var(--text-primary);
+            font-size: 0.9rem;
+            flex: 1;
+          }
+        }
+
+        .job-inputs {
+          .inputs-label {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+          }
+
+          .inputs-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+
+            mat-chip,
+            .mat-mdc-chip {
+              font-size: 0.85rem !important;
+              background-color: rgba(255, 107, 53, 0.2) !important;
+
+              // Use ::ng-deep to pierce Material's encapsulation for text color
+              ::ng-deep {
+                .mdc-evolution-chip__text-label,
+                .mat-mdc-chip-action-label {
+                  color: var(--text-primary) !important;
+                }
+              }
+
+              mat-icon {
+                font-size: 16px !important;
+                width: 16px !important;
+                height: 16px !important;
+                margin-right: 0.25rem !important;
+                color: #ff6b35 !important;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    .start-queue-button {
+      width: 100%;
+      height: 56px !important;
+      font-size: 1.05rem !important;
+      font-weight: 700 !important;
+      background: linear-gradient(135deg, #ff6b35 0%, #ff8a65 100%) !important;
+      color: white !important;
+      box-shadow: 0 4px 12px rgba(255, 107, 53, 0.3) !important;
+      display: flex !important;
+      align-items: center;
+      justify-content: center;
+
+      mat-icon {
+        margin-right: 0.75rem !important;
+      }
+
+      &:hover:not(:disabled) {
+        box-shadow: 0 6px 16px rgba(255, 107, 53, 0.4) !important;
+        transform: translateY(-2px);
+        transition: all 0.2s ease;
+      }
+
+      &:disabled, &[disabled] {
+        background: #cc5529 !important;
+        color: white !important;
+        opacity: 0.7 !important;
+        cursor: not-allowed !important;
       }
     }
   }
@@ -897,6 +1110,72 @@
           // Target any text inside the chip
           span, div {
             color: white !important;
+          }
+        }
+      }
+    }
+
+    // Dark mode overrides for queue-container-unified
+    .queue-container-unified {
+      .section-header {
+        h3 {
+          color: white;
+        }
+      }
+
+      .job-card {
+        .input-row {
+          .input-info .input-details {
+            .item-title {
+              color: white !important;
+            }
+
+            .item-subtitle {
+              color: rgba(255, 255, 255, 0.7) !important;
+            }
+          }
+
+          .expand-icon {
+            color: rgba(255, 255, 255, 0.5);
+          }
+        }
+
+        .job-details-expanded {
+          .job-progress .progress-info .progress-text {
+            color: rgba(255, 255, 255, 0.7);
+          }
+
+          .job-error {
+            mat-icon {
+              color: #ff6b6b;
+            }
+
+            span {
+              color: white;
+            }
+          }
+
+          .job-inputs {
+            .inputs-label {
+              color: rgba(255, 255, 255, 0.7);
+            }
+
+            // Force all chips inside to have white text - use ::ng-deep to pierce encapsulation
+            .inputs-chips {
+              mat-chip,
+              .mat-mdc-chip {
+                ::ng-deep {
+                  .mdc-evolution-chip__text-label,
+                  .mat-mdc-chip-action-label {
+                    color: white !important;
+                  }
+
+                  .mdc-evolution-chip__action {
+                    color: white !important;
+                  }
+                }
+              }
+            }
           }
         }
       }

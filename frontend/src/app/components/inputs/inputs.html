@@ -50,13 +50,30 @@
   <div class="inputs-container-unified">
     <div class="section-header">
       <h3>Added Inputs</h3>
-      @if (inputsState.inputItems().length > 0) {
-        <button mat-button (click)="toggleSelectAll()">
-          <mat-icon>{{ allItemsSelected ? 'deselect' : 'select_all' }}</mat-icon>
-          {{ allItemsSelected ? 'Deselect All' : 'Select All' }}
-        </button>
-      }
     </div>
+
+    @if (inputsState.inputItems().length > 0) {
+      <div class="master-controls">
+        <mat-checkbox
+          [checked]="allItemsSelected"
+          (change)="toggleSelectAll()"
+          color="primary">
+          Select All
+        </mat-checkbox>
+        <mat-checkbox
+          [checked]="allItemsSpreaker"
+          (change)="toggleAllSpreaker()"
+          color="primary">
+          All Spreaker
+        </mat-checkbox>
+        <mat-checkbox
+          [checked]="allItemsCompilation"
+          (change)="toggleAllCompilation()"
+          color="primary">
+          All Compilation
+        </mat-checkbox>
+      </div>
+    }
 
     <div class="unified-list">
       @if (inputsState.inputItems().length === 0) {
@@ -129,7 +146,7 @@
 
   <!-- Job Queue -->
   @if (jobQueue.jobs().length > 0) {
-    <div class="queue-section">
+    <div class="queue-container-unified">
       <div class="section-header">
         <h3>Job Queue</h3>
         <button mat-button (click)="clearCompletedJobs()">
@@ -138,98 +155,111 @@
         </button>
       </div>
 
-      <div class="job-list">
+      <div class="unified-list">
         @for (job of jobQueue.jobs(); track job.id) {
-          <mat-card class="job-card" [class]="'status-' + job.status">
+          <mat-card class="job-card" [class.selected]="job.status === 'processing'">
             <mat-card-content>
-              <div class="job-header">
-                <div class="job-info">
-                  <mat-icon [color]="getJobStatusColor(job.status)">
-                    {{ getJobStatusIcon(job.status) }}
-                  </mat-icon>
-                  <div class="job-details">
-                    <div class="job-name">{{ job.name }}</div>
-                    <div class="job-meta">
-                      <span class="job-status">{{ job.status }}</span>
+              <div class="input-row" (click)="toggleJobExpansion(job.id)">
+                <!-- Status Icon -->
+                <mat-icon [style.color]="job.status === 'processing' ? '#ff6b35' : job.status === 'completed' ? '#4caf50' : job.status === 'failed' ? '#f44336' : '#999'">
+                  {{ getJobStatusIcon(job.status) }}
+                </mat-icon>
+
+                <!-- Job Info -->
+                <div class="input-info">
+                  <div class="input-details">
+                    <div class="item-title">{{ job.name }}</div>
+                    <div class="item-subtitle">
+                      {{ job.status }}
                       @if (job.completedAt) {
-                        <span class="job-time">{{ job.processingTime?.toFixed(1) }}s</span>
+                        · {{ job.processingTime?.toFixed(1) }}s
                       }
                     </div>
                   </div>
                 </div>
 
+                <!-- Expand/Collapse Icon -->
+                <mat-icon class="expand-icon">
+                  {{ isJobExpanded(job.id) ? 'expand_less' : 'expand_more' }}
+                </mat-icon>
+
+                <!-- Remove Button -->
                 @if (job.status !== 'processing') {
-                  <button mat-icon-button (click)="removeJob(job.id)" matTooltip="Remove">
+                  <button mat-icon-button (click)="removeJob(job.id); $event.stopPropagation()" matTooltip="Remove">
                     <mat-icon>close</mat-icon>
                   </button>
                 }
               </div>
 
-              <!-- Progress Bar for Processing Jobs -->
-              @if (job.status === 'processing') {
-                <div class="job-progress">
-                  <mat-progress-bar
-                    mode="determinate"
-                    [value]="job.progress">
-                  </mat-progress-bar>
-                  <div class="progress-info">
-                    <span class="progress-text">{{ job.currentlyProcessing }}</span>
-                  </div>
-                </div>
-              }
-
-              <!-- Completed Progress Bar -->
-              @if (job.status === 'completed') {
-                <div class="job-progress">
-                  <mat-progress-bar
-                    mode="determinate"
-                    [value]="100"
-                    color="primary">
-                  </mat-progress-bar>
-                  <div class="progress-info">
-                    <span class="progress-text">{{ job.currentlyProcessing }}</span>
-                  </div>
-                </div>
-              }
-
-              <!-- Error Message -->
-              @if (job.status === 'failed' && job.error) {
-                <div class="job-error">
-                  <mat-icon color="warn">error</mat-icon>
-                  <span>{{ job.error }}</span>
-                </div>
-              }
-
-              <!-- Input Items -->
-              <div class="job-inputs">
-                <div class="inputs-label">Items:</div>
-                <div class="inputs-list">
-                  @for (input of job.inputs; track input.path) {
-                    <mat-chip>
-                      <mat-icon>{{ input.icon }}</mat-icon>
-                      {{ input.displayName }}
-                    </mat-chip>
+              <!-- Expanded Content -->
+              @if (isJobExpanded(job.id)) {
+                <div class="job-details-expanded">
+                  <!-- Progress Bar for Processing Jobs -->
+                  @if (job.status === 'processing') {
+                    <div class="job-progress">
+                      <mat-progress-bar
+                        mode="determinate"
+                        [value]="job.progress">
+                      </mat-progress-bar>
+                      <div class="progress-info">
+                        <span class="progress-text">{{ job.currentlyProcessing }}</span>
+                      </div>
+                    </div>
                   }
+
+                  <!-- Completed Progress Bar -->
+                  @if (job.status === 'completed') {
+                    <div class="job-progress">
+                      <mat-progress-bar
+                        mode="determinate"
+                        [value]="100"
+                        color="primary">
+                      </mat-progress-bar>
+                      <div class="progress-info">
+                        <span class="progress-text">Complete!</span>
+                      </div>
+                    </div>
+                  }
+
+                  <!-- Error Message -->
+                  @if (job.status === 'failed' && job.error) {
+                    <div class="job-error">
+                      <mat-icon>error</mat-icon>
+                      <span>{{ job.error }}</span>
+                    </div>
+                  }
+
+                  <!-- Input Items -->
+                  <div class="job-inputs">
+                    <div class="inputs-label">Items in this job:</div>
+                    <div class="inputs-chips">
+                      @for (input of job.inputs; track input.path) {
+                        <mat-chip>
+                          <mat-icon>{{ input.icon }}</mat-icon>
+                          {{ input.displayName }}
+                        </mat-chip>
+                      }
+                    </div>
+                  </div>
                 </div>
-              </div>
+              }
             </mat-card-content>
           </mat-card>
         }
+
+        <!-- Start Queue Button as part of the list -->
+        @if (!jobQueue.isProcessing()) {
+          <button
+            mat-raised-button
+            color="primary"
+            class="start-button start-queue-button"
+            [disabled]="jobQueue.getPendingJobs().length === 0"
+            (click)="startQueue()">
+            <mat-icon>play_arrow</mat-icon>
+            Start Queue ({{ jobQueue.getPendingJobs().length }} job(s))
+          </button>
+        }
       </div>
     </div>
-
-    @if (!jobQueue.isProcessing()) {
-      <div class="queue-actions start-queue-section">
-        <button
-          mat-raised-button
-          color="primary"
-          class="start-button"
-          [disabled]="jobQueue.getPendingJobs().length === 0"
-          (click)="startQueue()">
-          <mat-icon>play_arrow</mat-icon>
-          Start Queue ({{ jobQueue.getPendingJobs().length }} job(s))
-        </button>
-      </div>
-    }
   }
 </div>

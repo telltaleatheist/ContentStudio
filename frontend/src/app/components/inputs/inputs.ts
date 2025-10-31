@@ -11,6 +11,7 @@ import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatCardModule } from '@angular/material/card';
 import { MatBadgeModule } from '@angular/material/badge';
 import { MatTooltipModule } from '@angular/material/tooltip';
+import { MatExpansionModule } from '@angular/material/expansion';
 import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
 import { ElectronService } from '../../services/electron';
@@ -33,6 +34,7 @@ import { JobQueueService, QueuedJob } from '../../services/job-queue';
     MatCardModule,
     MatBadgeModule,
     MatTooltipModule,
+    MatExpansionModule,
     FormsModule,
     CommonModule
   ],
@@ -46,6 +48,7 @@ export class Inputs implements OnInit, OnDestroy {
   completionMessage = signal<string>('');
   showCompletionMessage = signal(false);
   queueStarted = signal(false);
+  expandedJobIds = signal<Set<string>>(new Set());
 
   constructor(
     private dialog: MatDialog,
@@ -94,11 +97,41 @@ export class Inputs implements OnInit, OnDestroy {
     return items.length > 0 && items.every(item => item.selected);
   }
 
+  get allItemsSpreaker(): boolean {
+    const items = this.inputsState.inputItems();
+    return items.length > 0 && items.every(item => item.platform === 'spreaker');
+  }
+
+  get allItemsCompilation(): boolean {
+    const items = this.inputsState.inputItems();
+    return items.length > 0 && items.every(item => item.mode === 'compilation');
+  }
+
   toggleSelectAll() {
     const allSelected = this.allItemsSelected;
     this.inputsState.inputItems().forEach((_, index) => {
       this.toggleItemSelection(index, !allSelected);
     });
+  }
+
+  toggleAllSpreaker() {
+    const allSpreaker = this.allItemsSpreaker;
+    const items = this.inputsState.inputItems();
+    const updatedItems = items.map(item => ({
+      ...item,
+      platform: (allSpreaker ? 'youtube' : 'spreaker') as 'youtube' | 'spreaker'
+    }));
+    this.inputsState.inputItems.set(updatedItems);
+  }
+
+  toggleAllCompilation() {
+    const allCompilation = this.allItemsCompilation;
+    const items = this.inputsState.inputItems();
+    const updatedItems = items.map(item => ({
+      ...item,
+      mode: (allCompilation ? 'individual' : 'compilation') as 'individual' | 'compilation'
+    }));
+    this.inputsState.inputItems.set(updatedItems);
   }
 
   toggleItemSelection(index: number, value?: boolean) {
@@ -138,7 +171,7 @@ export class Inputs implements OnInit, OnDestroy {
             path: subject.trim(),
             displayName: subject.trim(),
             icon: 'text_fields',
-            selected: false,
+            selected: true,
             platform: this.inputsState.selectedPlatform() as 'youtube' | 'spreaker',
             mode: this.inputsState.selectedMode() as 'individual' | 'compilation'
           });
@@ -160,7 +193,7 @@ export class Inputs implements OnInit, OnDestroy {
             path: filePath,
             displayName: fileName,
             icon: 'folder',
-            selected: false,
+            selected: true,
             platform: this.inputsState.selectedPlatform() as 'youtube' | 'spreaker',
             mode: this.inputsState.selectedMode() as 'individual' | 'compilation'
           });
@@ -182,7 +215,7 @@ export class Inputs implements OnInit, OnDestroy {
             path: filePath,
             displayName: fileName,
             icon,
-            selected: false,
+            selected: true,
             platform: this.inputsState.selectedPlatform() as 'youtube' | 'spreaker',
             mode: this.inputsState.selectedMode() as 'individual' | 'compilation'
           });
@@ -392,6 +425,21 @@ export class Inputs implements OnInit, OnDestroy {
 
   dismissCompletionMessage() {
     this.showCompletionMessage.set(false);
+  }
+
+  toggleJobExpansion(jobId: string) {
+    const expanded = this.expandedJobIds();
+    const newExpanded = new Set(expanded);
+    if (newExpanded.has(jobId)) {
+      newExpanded.delete(jobId);
+    } else {
+      newExpanded.add(jobId);
+    }
+    this.expandedJobIds.set(newExpanded);
+  }
+
+  isJobExpanded(jobId: string): boolean {
+    return this.expandedJobIds().has(jobId);
   }
 
   clearCompletedJobs() {

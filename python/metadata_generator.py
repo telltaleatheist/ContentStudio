@@ -99,8 +99,15 @@ def main():
             metadata_result = ai_manager.generate_metadata(combined_content, args.platform)
 
             if metadata_result.success:
+                # Generate a descriptive source name for compilations
+                compilation_name = f"Compilation of {len(content_items)} items"
+
                 # Save output
-                output_path = output_handler.save_metadata(metadata_result.metadata, args.platform)
+                output_path = output_handler.save_metadata(
+                    metadata_result.metadata,
+                    args.platform,
+                    source_name=compilation_name
+                )
                 result = {
                     "success": True,
                     "metadata": [metadata_result.metadata],
