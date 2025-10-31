@@ -87,10 +87,36 @@
 
   .mat-mdc-select {
     color: var(--text-primary) !important;
+
+    .mat-mdc-select-value {
+      color: var(--text-primary) !important;
+    }
+
+    .mat-mdc-select-arrow {
+      color: var(--text-primary) !important;
+    }
   }
 
   .mat-mdc-option {
     color: var(--text-primary) !important;
+    background-color: var(--bg-card) !important;
+
+    &:hover {
+      background-color: var(--bg-secondary) !important;
+    }
+
+    &.mdc-list-item--selected {
+      background-color: var(--bg-tertiary) !important;
+    }
+  }
+
+  // Dropdown panel
+  .mat-mdc-select-panel {
+    background-color: var(--bg-card) !important;
+  }
+
+  .mat-mdc-autocomplete-panel {
+    background-color: var(--bg-card) !important;
   }
 
   .mat-mdc-dialog-container {
@@ -141,7 +167,15 @@
   .mat-expansion-panel-header-title,
   .mat-expansion-panel-header-description,
   .mat-mdc-option,
-  .mdc-list-item__primary-text {
+  .mat-mdc-option .mdc-list-item__primary-text,
+  .mdc-list-item__primary-text,
+  .mat-pseudo-checkbox {
+    color: var(--text-primary) !important;
+  }
+
+  // Additional option text styling
+  .mat-mdc-option .mat-option-text,
+  .mat-mdc-option span {
     color: var(--text-primary) !important;
   }
 
@@ -241,15 +275,23 @@
 /* Override Material Theme Colors */
 .mat-mdc-raised-button.mat-primary,
 .mat-mdc-fab.mat-primary,
-.mat-mdc-mini-fab.mat-primary {
+.mat-mdc-mini-fab.mat-primary,
+.mat-mdc-unelevated-button.mat-primary {
   --mdc-protected-button-container-color: var(--primary-orange) !important;
   --mdc-protected-button-label-text-color: white !important;
+  --mdc-filled-button-container-color: var(--primary-orange) !important;
+  --mdc-filled-button-label-text-color: white !important;
+  background-color: var(--primary-orange) !important;
+  color: white !important;
 }
 
 .mat-mdc-raised-button.mat-primary:hover,
 .mat-mdc-fab.mat-primary:hover,
-.mat-mdc-mini-fab.mat-primary:hover {
+.mat-mdc-mini-fab.mat-primary:hover,
+.mat-mdc-unelevated-button.mat-primary:hover {
   --mdc-protected-button-container-color: var(--dark-orange) !important;
+  --mdc-filled-button-container-color: var(--dark-orange) !important;
+  background-color: var(--dark-orange) !important;
 }
 
 .mat-mdc-raised-button.mat-accent {
@@ -258,11 +300,19 @@
 }
 
 .mat-toolbar.mat-primary {
-  --mdc-elevated-card-container-color: var(--bg-primary) !important;
-  background: var(--bg-primary) !important;
-  color: var(--text-primary) !important;
+  --mdc-elevated-card-container-color: var(--primary-orange) !important;
+  background: var(--primary-orange) !important;
+  color: white !important;
   box-shadow: var(--shadow-sm) !important;
-  border-bottom: 1px solid var(--border-color) !important;
+  border-bottom: 1px solid var(--dark-orange) !important;
+
+  .mat-icon {
+    color: white !important;
+  }
+
+  button {
+    color: white !important;
+  }
 }
 
 .mat-icon.mat-primary {
@@ -280,13 +330,40 @@ body {
 .mat-drawer-container {
   height: 100% !important;
   position: relative !important;
+  width: 100% !important;
 }
 
 .mat-drawer-content {
   display: flex !important;
   flex-direction: column !important;
   height: 100% !important;
+  width: 100% !important;
   overflow-y: auto !important;
+
+  // Make sure content fills the drawer
+  > * {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+}
+
+// Ensure router-outlet displays as flex
+router-outlet {
+  display: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  height: 0 !important;
+  min-height: 0 !important;
+}
+
+router-outlet + * {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 100%;
+  margin: 0 !important;
+  padding: 0 !important;
 }
 
 // Force router outlet to fill height
