@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LaunchPad - Metadata Generator</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body data-theme="light">
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-content">
+                <a href="#" class="logo">LaunchPad</a>
+                <div class="nav-subtitle">AI-Powered Metadata Generator</div>
+                <div class="flex gap-2">
+                    <button class="btn-icon" onclick="openSettings()" title="Settings">
+                        ⚙️
+                    </button>
+                    <button class="theme-toggle" onclick="toggleTheme()" title="Toggle Theme">🌙</button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="container main-container">
+        <!-- Left Panel - Inputs -->
+        <div class="panel-left">
+            <div class="panel">
+                <div class="panel-header">
+                    <h4 class="panel-title">📥 Inputs</h4>
+                    <span class="badge badge-info" id="inputCount">0 items</span>
+                </div>
+                <div class="panel-content">
+                    <!-- Input Type Selection -->
+                    <div class="input-section">
+                        <label class="label">Add Content</label>
+                        <div class="button-group">
+                            <button class="btn btn-secondary" onclick="addTextSubject()">
+                                📝 Text Subjects
+                            </button>
+                            <button class="btn btn-secondary" onclick="browseFiles()">
+                                📁 Browse Files
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Input List -->
+                    <div class="input-list-container">
+                        <div id="inputList" class="input-list">
+                            <div class="empty-state">
+                                <div class="empty-icon">📭</div>
+                                <p>No inputs added yet</p>
+                                <p class="empty-hint">Add text subjects, video files, or transcript files to generate metadata</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Processing Options -->
+                    <div class="options-section">
+                        <div class="option-group">
+                            <label class="label">Platform</label>
+                            <select id="platformSelect" class="select">
+                                <option value="youtube">YouTube</option>
+                                <option value="spreaker">Spreaker</option>
+                            </select>
+                        </div>
+
+                        <div class="option-group">
+                            <label class="label">Mode</label>
+                            <select id="modeSelect" class="select">
+                                <option value="individual">Individual</option>
+                                <option value="compilation">Compilation</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Generate Button -->
+                    <button id="generateBtn" class="btn btn-primary btn-large" onclick="generateMetadata()" disabled>
+                        🚀 Generate Metadata
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Panel - Output -->
+        <div class="panel-right">
+            <div class="panel">
+                <div class="panel-header">
+                    <h4 class="panel-title">📤 Output</h4>
+                    <div id="statusBadge"></div>
+                </div>
+                <div class="panel-content">
+                    <!-- Progress Section -->
+                    <div id="progressSection" class="progress-section" style="display: none;">
+                        <div class="progress-message" id="progressMessage">Initializing...</div>
+                        <div class="progress">
+                            <div class="progress-fill" id="progressBar" style="width: 0%"></div>
+                        </div>
+                    </div>
+
+                    <!-- Output Display -->
+                    <div id="outputDisplay" class="output-display">
+                        <div class="empty-state">
+                            <div class="empty-icon">📊</div>
+                            <p>No metadata generated yet</p>
+                            <p class="empty-hint">Add inputs and click "Generate Metadata" to see results</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modal-overlay" style="display: none;">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 class="modal-title">⚙️ Settings</h3>
+                <button class="modal-close" onclick="closeSettings()">×</button>
+            </div>
+            <div class="modal-body">
+                <!-- AI Provider -->
+                <div class="setting-group">
+                    <label class="label">AI Provider</label>
+                    <select id="aiProviderSelect" class="select" onchange="updateProviderSettings()">
+                        <option value="ollama">Ollama (Local)</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="claude">Claude (Anthropic)</option>
+                    </select>
+                </div>
+
+                <!-- Ollama Settings -->
+                <div id="ollamaSettings" class="provider-settings">
+                    <div class="setting-group">
+                        <label class="label">Ollama Model</label>
+                        <input type="text" id="ollamaModel" class="input" placeholder="cogito:70b">
+                        <small class="hint">Default: cogito:70b. Other options: llama3.1:8b, qwen2.5:7b</small>
+                    </div>
+                    <div class="setting-group">
+                        <label class="label">Ollama Host</label>
+                        <input type="text" id="ollamaHost" class="input" placeholder="http://localhost:11434">
+                    </div>
+                </div>
+
+                <!-- OpenAI Settings -->
+                <div id="openaiSettings" class="provider-settings" style="display: none;">
+                    <div class="setting-group">
+                        <label class="label">OpenAI API Key</label>
+                        <input type="password" id="openaiApiKey" class="input" placeholder="sk-...">
+                        <small class="hint">Your OpenAI API key</small>
+                    </div>
+                </div>
+
+                <!-- Claude Settings -->
+                <div id="claudeSettings" class="provider-settings" style="display: none;">
+                    <div class="setting-group">
+                        <label class="label">Claude API Key</label>
+                        <input type="password" id="claudeApiKey" class="input" placeholder="sk-ant-...">
+                        <small class="hint">Your Anthropic API key</small>
+                    </div>
+                </div>
+
+                <!-- Output Directory -->
+                <div class="setting-group">
+                    <label class="label">Output Directory</label>
+                    <div class="input-with-button">
+                        <input type="text" id="outputDirectory" class="input" readonly>
+                        <button class="btn btn-secondary btn-sm" onclick="selectOutputDirectory()">Browse</button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeSettings()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Text Subject Modal -->
+    <div id="textSubjectModal" class="modal-overlay" style="display: none;">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 class="modal-title">📝 Add Text Subjects</h3>
+                <button class="modal-close" onclick="closeTextSubjectModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="setting-group">
+                    <label class="label">Subjects or Topics</label>
+                    <textarea id="textSubjectInput" class="textarea" rows="8"
+                              placeholder="Enter one subject per line, e.g.:&#10;elon musk twitter controversy&#10;climate change policy&#10;artificial intelligence ethics"></textarea>
+                    <small class="hint">Enter one subject per line. Each will be added as a separate input.</small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeTextSubjectModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="addTextSubjectConfirm()">Add Subjects</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,104 @@
+{
+  "name": "launchpad",
+  "version": "1.0.0",
+  "description": "AI-powered metadata generation for YouTube and Spreaker",
+  "asar": true,
+  "main": "./dist/electron/main.js",
+  "scripts": {
+    "clean": "rm -rf dist *.dmg *.dmg.blockmap",
+    "clean:all": "npm run clean && rm -rf node_modules python/venv",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "build:preload": "tsc -p tsconfig.preload.json",
+    "build:all": "npm run build:electron && npm run build:preload",
+    "electron:dev": "npm run build:all && cross-env NODE_ENV=development electron .",
+    "electron": "npm run build:all && electron .",
+    "package": "npm run clean && npm run build:all && electron-builder build",
+    "package:mac": "npm run clean && npm run build:all && electron-builder --mac",
+    "setup:python": "cd python && python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt"
+  },
+  "keywords": [
+    "metadata",
+    "youtube",
+    "spreaker",
+    "ai",
+    "ollama",
+    "electron"
+  ],
+  "author": "Owen Morgan",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.18.13",
+    "cross-env": "^7.0.3",
+    "electron": "^36.0.1",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.8.3"
+  },
+  "dependencies": {
+    "electron-log": "^5.3.3",
+    "electron-store": "^8.2.0"
+  },
+  "build": {
+    "appId": "com.owenmorgan.launchpad",
+    "productName": "LaunchPad",
+    "asar": true,
+    "compression": "maximum",
+    "directories": {
+      "output": "dist-build",
+      "buildResources": "assets"
+    },
+    "extraResources": [
+      {
+        "from": "python",
+        "to": "python",
+        "filter": [
+          "**/*",
+          "!**/__pycache__",
+          "!**/.*"
+        ]
+      }
+    ],
+    "files": [
+      "dist/**/*",
+      "frontend/**/*",
+      "!**/*.map",
+      "node_modules/**/*",
+      "!**/node_modules/**/test/**",
+      "!**/node_modules/**/*.md"
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": [
+        "dmg"
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "format": "ULFO",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility"
+    }
+  }
+}

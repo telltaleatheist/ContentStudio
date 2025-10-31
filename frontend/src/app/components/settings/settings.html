@@ -1,0 +1,143 @@
+<div class="settings-container">
+  <!-- Header -->
+  <div class="header">
+    <h2>Settings</h2>
+  </div>
+
+  <!-- AI Provider Section -->
+  <mat-card class="settings-card">
+    <mat-card-header>
+      <mat-card-title>AI Provider</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Provider</mat-label>
+        <mat-select [(value)]="aiProvider">
+          <mat-option value="ollama">
+            <div class="provider-option">
+              <mat-icon>computer</mat-icon>
+              <span>Ollama (Local)</span>
+            </div>
+          </mat-option>
+          <mat-option value="openai">
+            <div class="provider-option">
+              <mat-icon>cloud</mat-icon>
+              <span>OpenAI</span>
+            </div>
+          </mat-option>
+          <mat-option value="claude">
+            <div class="provider-option">
+              <mat-icon>cloud</mat-icon>
+              <span>Claude (Anthropic)</span>
+            </div>
+          </mat-option>
+        </mat-select>
+      </mat-form-field>
+
+      <!-- Ollama Settings -->
+      @if (aiProvider() === 'ollama') {
+        <div class="provider-settings">
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Ollama Model</mat-label>
+            <mat-select [(value)]="ollamaModel">
+              <mat-option value="cogito:70b">cogito:70b (Best Quality)</mat-option>
+              <mat-option value="qwen2.5:7b">qwen2.5:7b (Faster)</mat-option>
+              <mat-option value="llama3.1:8b">llama3.1:8b (Alternative)</mat-option>
+            </mat-select>
+            <mat-hint>Local AI model running on your machine</mat-hint>
+          </mat-form-field>
+
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Ollama Host</mat-label>
+            <input matInput [(ngModel)]="ollamaHost" placeholder="http://localhost:11434">
+            <mat-hint>Ollama server address</mat-hint>
+          </mat-form-field>
+
+          <mat-card class="info-card">
+            <mat-card-content>
+              <div class="info-content">
+                <mat-icon class="info-icon">info</mat-icon>
+                <div>
+                  <p><strong>Ollama (Recommended)</strong></p>
+                  <p class="small">Runs AI models locally on your machine. No API costs, full privacy.</p>
+                  <p class="small">Install: <a href="https://ollama.ai" target="_blank">ollama.ai</a></p>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+      }
+
+      <!-- OpenAI Settings -->
+      @if (aiProvider() === 'openai') {
+        <div class="provider-settings">
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>OpenAI API Key</mat-label>
+            <input matInput type="password" [(ngModel)]="openaiApiKey" placeholder="sk-...">
+            <mat-hint>Get your API key from platform.openai.com</mat-hint>
+          </mat-form-field>
+
+          <mat-card class="info-card">
+            <mat-card-content>
+              <div class="info-content">
+                <mat-icon class="info-icon">cloud</mat-icon>
+                <div>
+                  <p><strong>OpenAI</strong></p>
+                  <p class="small">Cloud-based AI with GPT-4 Turbo. Requires API key and costs per usage.</p>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+      }
+
+      <!-- Claude Settings -->
+      @if (aiProvider() === 'claude') {
+        <div class="provider-settings">
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Claude API Key</mat-label>
+            <input matInput type="password" [(ngModel)]="claudeApiKey" placeholder="sk-ant-...">
+            <mat-hint>Get your API key from console.anthropic.com</mat-hint>
+          </mat-form-field>
+
+          <mat-card class="info-card">
+            <mat-card-content>
+              <div class="info-content">
+                <mat-icon class="info-icon">cloud</mat-icon>
+                <div>
+                  <p><strong>Claude (Anthropic)</strong></p>
+                  <p class="small">Cloud-based AI with Claude 3 models. Requires API key and costs per usage.</p>
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        </div>
+      }
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Output Directory Section -->
+  <mat-card class="settings-card">
+    <mat-card-header>
+      <mat-card-title>Output Settings</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Output Directory</mat-label>
+        <input matInput [(ngModel)]="outputDirectory" readonly>
+        <button mat-icon-button matSuffix (click)="selectOutputDirectory()">
+          <mat-icon>folder_open</mat-icon>
+        </button>
+        <mat-hint>Where generated metadata files will be saved</mat-hint>
+      </mat-form-field>
+    </mat-card-content>
+  </mat-card>
+
+  <!-- Save Button -->
+  <div class="save-section">
+    <button mat-raised-button color="primary" class="save-button" (click)="saveSettings()">
+      <mat-icon>save</mat-icon>
+      Save Settings
+    </button>
+  </div>
+</div>

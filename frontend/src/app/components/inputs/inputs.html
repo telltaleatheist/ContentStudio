@@ -1,0 +1,84 @@
+<div class="inputs-container">
+  <!-- Header -->
+  <div class="header">
+    <h2>Inputs</h2>
+    <mat-chip-set>
+      <mat-chip>{{ inputItems().length }} items</mat-chip>
+    </mat-chip-set>
+  </div>
+
+  <!-- Add Content Buttons -->
+  <div class="add-content-section">
+    <h3>Add Content</h3>
+    <div class="button-group">
+      <button mat-raised-button color="primary" (click)="openTextSubjectDialog()">
+        <mat-icon>text_fields</mat-icon>
+        Text Subjects
+      </button>
+      <button mat-raised-button color="primary" (click)="browseFiles()">
+        <mat-icon>folder_open</mat-icon>
+        Browse Files
+      </button>
+    </div>
+  </div>
+
+  <!-- Input List -->
+  <div class="input-list-section">
+    <h3>Added Inputs</h3>
+
+    @if (inputItems().length === 0) {
+      <div class="empty-state">
+        <mat-icon class="empty-icon">inbox</mat-icon>
+        <p>No inputs added yet</p>
+        <p class="hint">Add text subjects or files to generate metadata</p>
+      </div>
+    } @else {
+      <mat-list class="input-list">
+        @for (item of inputItems(); track item.path) {
+          <mat-list-item class="input-item">
+            <mat-icon matListItemIcon>{{ item.icon }}</mat-icon>
+            <div matListItemTitle class="item-title">{{ item.displayName }}</div>
+            <div matListItemLine class="item-subtitle">{{ item.type }}</div>
+            <button mat-icon-button matListItemMeta (click)="removeInput($index)">
+              <mat-icon>close</mat-icon>
+            </button>
+          </mat-list-item>
+        }
+      </mat-list>
+    }
+  </div>
+
+  <!-- Processing Options -->
+  <div class="options-section">
+    <h3>Processing Options</h3>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>Platform</mat-label>
+      <mat-select [(value)]="selectedPlatform">
+        <mat-option value="youtube">YouTube</mat-option>
+        <mat-option value="spreaker">Spreaker</mat-option>
+      </mat-select>
+    </mat-form-field>
+
+    <mat-form-field appearance="outline" class="full-width">
+      <mat-label>Mode</mat-label>
+      <mat-select [(value)]="selectedMode">
+        <mat-option value="individual">Individual</mat-option>
+        <mat-option value="compilation">Compilation</mat-option>
+      </mat-select>
+    </mat-form-field>
+  </div>
+
+  <!-- Generate Button -->
+  <div class="generate-section">
+    <button
+      mat-raised-button
+      color="primary"
+      class="generate-button"
+      [disabled]="inputItems().length === 0"
+      (click)="generateMetadata()">
+      <mat-icon>rocket_launch</mat-icon>
+      Generate Metadata
+    </button>
+  </div>
+</div>

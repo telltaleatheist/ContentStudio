@@ -1,0 +1,37 @@
+<div class="app-container">
+  <!-- Top Toolbar -->
+  <mat-toolbar color="primary" class="app-toolbar">
+    <span class="app-title">LaunchPad</span>
+    <span class="app-subtitle">AI-Powered Metadata Generator</span>
+    <span class="spacer"></span>
+    <button mat-icon-button (click)="toggleTheme()">
+      <mat-icon>{{ isDarkMode() ? 'light_mode' : 'dark_mode' }}</mat-icon>
+    </button>
+  </mat-toolbar>
+
+  <!-- Sidebar + Content Layout -->
+  <mat-sidenav-container class="sidenav-container">
+    <!-- Left Sidebar Navigation -->
+    <mat-sidenav mode="side" opened class="app-sidenav">
+      <div class="sidenav-content">
+        <mat-nav-list class="nav-list">
+          <a mat-list-item routerLink="/inputs" routerLinkActive="active-link">
+            <mat-icon matListItemIcon>input</mat-icon>
+            <span matListItemTitle>Inputs</span>
+          </a>
+          <a mat-list-item routerLink="/settings" routerLinkActive="active-link">
+            <mat-icon matListItemIcon>settings</mat-icon>
+            <span matListItemTitle>Settings</span>
+          </a>
+        </mat-nav-list>
+      </div>
+    </mat-sidenav>
+
+    <!-- Main Content Area -->
+    <mat-sidenav-content>
+      <main class="main-content">
+        <router-outlet></router-outlet>
+      </main>
+    </mat-sidenav-content>
+  </mat-sidenav-container>
+</div>
