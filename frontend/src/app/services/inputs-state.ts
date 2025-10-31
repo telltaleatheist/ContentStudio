@@ -5,9 +5,9 @@ export interface InputItem {
   path: string;
   displayName: string;
   icon: string;
-  includeInJob: boolean;
-  isCompilation: boolean;
-  forSpreaker: boolean;
+  selected: boolean;
+  platform: 'youtube' | 'spreaker';
+  mode: 'individual' | 'compilation';
 }
 
 export interface GenerationState {

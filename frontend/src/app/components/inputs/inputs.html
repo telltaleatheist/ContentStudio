@@ -1,11 +1,35 @@
 <div class="inputs-container">
   <!-- Header -->
   <div class="header">
-    <h2>Inputs</h2>
+    <h2>Inputs & Queue</h2>
     <mat-chip-set>
       <mat-chip>{{ inputsState.inputItems().length }} items</mat-chip>
+      @if (hasSelectedItems) {
+        <mat-chip highlighted>{{ selectedItems.length }} selected</mat-chip>
+      }
+      @if (jobQueue.jobs().length > 0) {
+        <mat-chip [highlighted]="jobQueue.isProcessing()">
+          {{ jobQueue.jobs().length }} job(s) in queue
+        </mat-chip>
+      }
     </mat-chip-set>
   </div>
+
+  <!-- Completion Message -->
+  @if (showCompletionMessage()) {
+    <mat-card class="completion-message">
+      <mat-card-content>
+        <div class="message-content">
+          <mat-icon>check_circle</mat-icon>
+          <span>{{ completionMessage() }}</span>
+          <button mat-icon-button (click)="dismissCompletionMessage()">
+            <mat-icon>close</mat-icon>
+          </button>
+        </div>
+        <mat-progress-bar mode="determinate" [value]="100"></mat-progress-bar>
+      </mat-card-content>
+    </mat-card>
+  }
 
   <!-- Add Content Buttons -->
   <div class="add-content-section">
@@ -22,85 +46,190 @@
     </div>
   </div>
 
-  <!-- Input List -->
-  <div class="input-list-section">
-    <h3>Added Inputs</h3>
-
-    @if (inputsState.inputItems().length === 0) {
-      <div class="empty-state">
-        <mat-icon class="empty-icon">inbox</mat-icon>
-        <p>No inputs added yet</p>
-        <p class="hint">Add text subjects or files to generate metadata</p>
-      </div>
-    } @else {
-      <mat-list class="input-list">
-        @for (item of inputsState.inputItems(); track item.path) {
-          <mat-list-item class="input-item">
-            <mat-icon matListItemIcon>{{ item.icon }}</mat-icon>
-            <div matListItemTitle class="item-title">{{ item.displayName }}</div>
-            <div matListItemLine class="item-subtitle">{{ item.type }}</div>
-            <button mat-icon-button matListItemMeta (click)="removeInput($index)">
-              <mat-icon>close</mat-icon>
-            </button>
-          </mat-list-item>
-        }
-      </mat-list>
-    }
-  </div>
-
-  <!-- Processing Options -->
-  <div class="options-section">
-    <h3>Processing Options</h3>
-
-    <mat-form-field appearance="outline" class="full-width">
-      <mat-label>Platform</mat-label>
-      <mat-select [(value)]="inputsState.selectedPlatform" (selectionChange)="onPlatformChange()">
-        <mat-option value="youtube">YouTube</mat-option>
-        <mat-option value="spreaker">Spreaker</mat-option>
-      </mat-select>
-    </mat-form-field>
-
-    <mat-form-field appearance="outline" class="full-width">
-      <mat-label>Mode</mat-label>
-      <mat-select [(value)]="inputsState.selectedMode" (selectionChange)="onModeChange()">
-        <mat-option value="individual">Individual</mat-option>
-        <mat-option value="compilation">Compilation</mat-option>
-      </mat-select>
-    </mat-form-field>
-  </div>
-
-  <!-- Generate Button -->
-  <div class="generate-section">
-    <button
-      mat-raised-button
-      color="primary"
-      class="generate-button"
-      [disabled]="inputsState.inputItems().length === 0 || isGenerating()"
-      (click)="generateMetadata()">
-      @if (isGenerating()) {
-        <ng-container><mat-icon>hourglass_empty</mat-icon></ng-container>
-        Generating...
-      } @else {
-        <ng-container><mat-icon>rocket_launch</mat-icon></ng-container>
-        Generate Metadata
+  <!-- Input List Container with unified spacing -->
+  <div class="inputs-container-unified">
+    <div class="section-header">
+      <h3>Added Inputs</h3>
+      @if (inputsState.inputItems().length > 0) {
+        <button mat-button (click)="toggleSelectAll()">
+          <mat-icon>{{ allItemsSelected ? 'deselect' : 'select_all' }}</mat-icon>
+          {{ allItemsSelected ? 'Deselect All' : 'Select All' }}
+        </button>
       }
-    </button>
+    </div>
 
-    <!-- Always reserve space for progress to prevent layout shift -->
-    <div class="generating-status" [class.visible]="isGenerating()">
-      <p>Generating metadata with AI...</p>
-      <p class="hint">This may take a minute depending on content length and model.</p>
-
-      <div class="progress-section">
-        <mat-progress-bar
-          mode="determinate"
-          [value]="generationProgress()">
-        </mat-progress-bar>
-        <div class="progress-info">
-          <span class="progress-text">{{ currentlyProcessing() }}</span>
-          <span class="progress-time">{{ elapsedTime() }}</span>
+    <div class="unified-list">
+      @if (inputsState.inputItems().length === 0) {
+        <div class="empty-state">
+          <mat-icon class="empty-icon">inbox</mat-icon>
+          <p>No inputs added yet</p>
+          <p class="hint">Add text subjects or files to generate metadata</p>
         </div>
-      </div>
+      } @else {
+        @for (item of inputsState.inputItems(); track item.path; let i = $index) {
+          <mat-card class="input-card" [class.selected]="item.selected">
+            <mat-card-content>
+              <div class="input-row">
+                <!-- Checkbox -->
+                <mat-checkbox
+                  [checked]="item.selected"
+                  (change)="toggleItemSelection(i)"
+                  color="primary">
+                </mat-checkbox>
+
+                <!-- Icon & Name -->
+                <div class="input-info">
+                  <mat-icon>{{ item.icon }}</mat-icon>
+                  <div class="input-details">
+                    <div class="item-title">{{ item.displayName }}</div>
+                    <div class="item-subtitle">{{ item.type }}</div>
+                  </div>
+                </div>
+
+                <!-- Spreaker Checkbox -->
+                <mat-checkbox
+                  [checked]="item.platform === 'spreaker'"
+                  (change)="updateItemPlatform(i, $event.checked ? 'spreaker' : 'youtube')"
+                  color="primary"
+                  matTooltip="For Spreaker (unchecked = YouTube)">
+                  Spreaker
+                </mat-checkbox>
+
+                <!-- Compilation Checkbox -->
+                <mat-checkbox
+                  [checked]="item.mode === 'compilation'"
+                  (change)="updateItemMode(i, $event.checked ? 'compilation' : 'individual')"
+                  color="primary"
+                  matTooltip="Compilation mode (unchecked = Individual)">
+                  Compilation
+                </mat-checkbox>
+
+                <!-- Remove Button -->
+                <button mat-icon-button (click)="removeInput(i)" matTooltip="Remove">
+                  <mat-icon>close</mat-icon>
+                </button>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        }
+      }
+
+      <!-- Add to Queue Button as part of the list -->
+      <button
+        mat-raised-button
+        color="accent"
+        class="submit-button add-to-queue-button"
+        [disabled]="!hasSelectedItems || inputsState.inputItems().length === 0"
+        (click)="addToQueue()">
+        <mat-icon>playlist_add</mat-icon>
+        Add {{ selectedItems.length > 0 ? selectedItems.length + ' item(s)' : '' }} to Queue
+      </button>
     </div>
   </div>
+
+  <!-- Job Queue -->
+  @if (jobQueue.jobs().length > 0) {
+    <div class="queue-section">
+      <div class="section-header">
+        <h3>Job Queue</h3>
+        <button mat-button (click)="clearCompletedJobs()">
+          <mat-icon>clear_all</mat-icon>
+          Clear Completed
+        </button>
+      </div>
+
+      <div class="job-list">
+        @for (job of jobQueue.jobs(); track job.id) {
+          <mat-card class="job-card" [class]="'status-' + job.status">
+            <mat-card-content>
+              <div class="job-header">
+                <div class="job-info">
+                  <mat-icon [color]="getJobStatusColor(job.status)">
+                    {{ getJobStatusIcon(job.status) }}
+                  </mat-icon>
+                  <div class="job-details">
+                    <div class="job-name">{{ job.name }}</div>
+                    <div class="job-meta">
+                      <span class="job-status">{{ job.status }}</span>
+                      @if (job.completedAt) {
+                        <span class="job-time">{{ job.processingTime?.toFixed(1) }}s</span>
+                      }
+                    </div>
+                  </div>
+                </div>
+
+                @if (job.status !== 'processing') {
+                  <button mat-icon-button (click)="removeJob(job.id)" matTooltip="Remove">
+                    <mat-icon>close</mat-icon>
+                  </button>
+                }
+              </div>
+
+              <!-- Progress Bar for Processing Jobs -->
+              @if (job.status === 'processing') {
+                <div class="job-progress">
+                  <mat-progress-bar
+                    mode="determinate"
+                    [value]="job.progress">
+                  </mat-progress-bar>
+                  <div class="progress-info">
+                    <span class="progress-text">{{ job.currentlyProcessing }}</span>
+                  </div>
+                </div>
+              }
+
+              <!-- Completed Progress Bar -->
+              @if (job.status === 'completed') {
+                <div class="job-progress">
+                  <mat-progress-bar
+                    mode="determinate"
+                    [value]="100"
+                    color="primary">
+                  </mat-progress-bar>
+                  <div class="progress-info">
+                    <span class="progress-text">{{ job.currentlyProcessing }}</span>
+                  </div>
+                </div>
+              }
+
+              <!-- Error Message -->
+              @if (job.status === 'failed' && job.error) {
+                <div class="job-error">
+                  <mat-icon color="warn">error</mat-icon>
+                  <span>{{ job.error }}</span>
+                </div>
+              }
+
+              <!-- Input Items -->
+              <div class="job-inputs">
+                <div class="inputs-label">Items:</div>
+                <div class="inputs-list">
+                  @for (input of job.inputs; track input.path) {
+                    <mat-chip>
+                      <mat-icon>{{ input.icon }}</mat-icon>
+                      {{ input.displayName }}
+                    </mat-chip>
+                  }
+                </div>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        }
+      </div>
+    </div>
+
+    @if (!jobQueue.isProcessing()) {
+      <div class="queue-actions start-queue-section">
+        <button
+          mat-raised-button
+          color="primary"
+          class="start-button"
+          [disabled]="jobQueue.getPendingJobs().length === 0"
+          (click)="startQueue()">
+          <mat-icon>play_arrow</mat-icon>
+          Start Queue ({{ jobQueue.getPendingJobs().length }} job(s))
+        </button>
+      </div>
+    }
+  }
 </div>

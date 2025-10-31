@@ -1,4 +1,4 @@
-import { Component, signal, OnInit, effect } from '@angular/core';
+import { Component, signal, OnInit, effect, OnDestroy } from '@angular/core';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatListModule } from '@angular/material/list';
@@ -8,19 +8,15 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatCheckboxModule } from '@angular/material/checkbox';
+import { MatCardModule } from '@angular/material/card';
+import { MatBadgeModule } from '@angular/material/badge';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { FormsModule } from '@angular/forms';
+import { CommonModule } from '@angular/common';
 import { ElectronService } from '../../services/electron';
 import { TextSubjectDialog } from '../text-subject-dialog/text-subject-dialog';
 import { InputsStateService, InputItem } from '../../services/inputs-state';
-
-interface QueuedJob {
-  id: string;
-  inputs: InputItem[];
-  platform: string;
-  mode: string;
-  status: 'pending' | 'processing' | 'completed' | 'failed';
-  createdAt: Date;
-}
+import { JobQueueService, QueuedJob } from '../../services/job-queue';
 
 @Component({
   selector: 'app-inputs',
@@ -34,37 +30,35 @@ interface QueuedJob {
     MatDialogModule,
     MatProgressBarModule,
     MatCheckboxModule,
-    FormsModule
+    MatCardModule,
+    MatBadgeModule,
+    MatTooltipModule,
+    FormsModule,
+    CommonModule
   ],
   templateUrl: './inputs.html',
   styleUrl: './inputs.scss',
 })
-export class Inputs implements OnInit {
-  // Local computed values from generation state
-  isGenerating = signal(false);
-  generationStartTime = signal<number>(0);
-  elapsedTime = signal<string>('0s');
-  generationProgress = signal<number>(0);
-  currentlyProcessing = signal<string>('');
-
-  jobQueue = signal<QueuedJob[]>([]);
-
+export class Inputs implements OnInit, OnDestroy {
   private elapsedInterval: any;
+  private processingInterval: any;
+
+  completionMessage = signal<string>('');
+  showCompletionMessage = signal(false);
+  queueStarted = signal(false);
 
   constructor(
     private dialog: MatDialog,
     private electron: ElectronService,
-    public inputsState: InputsStateService
-  ) {
-    // Sync generation state from service
-    effect(() => {
-      const state = this.inputsState.generationState();
-      this.isGenerating.set(state.isGenerating);
-      this.generationStartTime.set(state.generationStartTime);
-      this.elapsedTime.set(state.elapsedTime);
-      this.generationProgress.set(state.generationProgress);
-      this.currentlyProcessing.set(state.currentlyProcessing);
-    });
+    public inputsState: InputsStateService,
+    public jobQueue: JobQueueService
+  ) {}
+
+  ngOnDestroy() {
+    this.stopElapsedTimer();
+    if (this.processingInterval) {
+      clearInterval(this.processingInterval);
+    }
   }
 
   async ngOnInit() {
@@ -83,6 +77,50 @@ export class Inputs implements OnInit {
         console.error('Error loading settings:', error);
       }
     }
+
+    // Queue processor will be started manually by user
+  }
+
+  get selectedItems(): InputItem[] {
+    return this.inputsState.inputItems().filter(item => item.selected);
+  }
+
+  get hasSelectedItems(): boolean {
+    return this.selectedItems.length > 0;
+  }
+
+  get allItemsSelected(): boolean {
+    const items = this.inputsState.inputItems();
+    return items.length > 0 && items.every(item => item.selected);
+  }
+
+  toggleSelectAll() {
+    const allSelected = this.allItemsSelected;
+    this.inputsState.inputItems().forEach((_, index) => {
+      this.toggleItemSelection(index, !allSelected);
+    });
+  }
+
+  toggleItemSelection(index: number, value?: boolean) {
+    const items = this.inputsState.inputItems();
+    const newSelected = value !== undefined ? value : !items[index].selected;
+    const updatedItems = [...items];
+    updatedItems[index] = { ...updatedItems[index], selected: newSelected };
+    this.inputsState.inputItems.set(updatedItems);
+  }
+
+  updateItemPlatform(index: number, platform: 'youtube' | 'spreaker') {
+    const items = this.inputsState.inputItems();
+    const updatedItems = [...items];
+    updatedItems[index] = { ...updatedItems[index], platform };
+    this.inputsState.inputItems.set(updatedItems);
+  }
+
+  updateItemMode(index: number, mode: 'individual' | 'compilation') {
+    const items = this.inputsState.inputItems();
+    const updatedItems = [...items];
+    updatedItems[index] = { ...updatedItems[index], mode };
+    this.inputsState.inputItems.set(updatedItems);
   }
 
   openTextSubjectDialog() {
@@ -100,9 +138,9 @@ export class Inputs implements OnInit {
             path: subject.trim(),
             displayName: subject.trim(),
             icon: 'text_fields',
-            includeInJob: true,
-            isCompilation: false,
-            forSpreaker: false
+            selected: false,
+            platform: this.inputsState.selectedPlatform() as 'youtube' | 'spreaker',
+            mode: this.inputsState.selectedMode() as 'individual' | 'compilation'
           });
         });
       }
@@ -122,9 +160,9 @@ export class Inputs implements OnInit {
             path: filePath,
             displayName: fileName,
             icon: 'folder',
-            includeInJob: true,
-            isCompilation: false,
-            forSpreaker: false
+            selected: false,
+            platform: this.inputsState.selectedPlatform() as 'youtube' | 'spreaker',
+            mode: this.inputsState.selectedMode() as 'individual' | 'compilation'
           });
         } else {
           const ext = fileName.split('.').pop()?.toLowerCase() || '';
@@ -144,9 +182,9 @@ export class Inputs implements OnInit {
             path: filePath,
             displayName: fileName,
             icon,
-            includeInJob: true,
-            isCompilation: false,
-            forSpreaker: false
+            selected: false,
+            platform: this.inputsState.selectedPlatform() as 'youtube' | 'spreaker',
+            mode: this.inputsState.selectedMode() as 'individual' | 'compilation'
           });
         }
       }
@@ -175,25 +213,38 @@ export class Inputs implements OnInit {
     }
   }
 
-  private startElapsedTimer() {
-    const startTime = Date.now();
-    this.inputsState.updateGenerationState({
-      generationStartTime: startTime,
-      elapsedTime: '0s'
+  addToQueue() {
+    if (this.selectedItems.length === 0) return;
+
+    // Group items by platform and mode
+    const groups: { [key: string]: InputItem[] } = {};
+
+    this.selectedItems.forEach(item => {
+      const key = `${item.platform}-${item.mode}`;
+      if (!groups[key]) {
+        groups[key] = [];
+      }
+      groups[key].push(item);
     });
 
-    this.elapsedInterval = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      let elapsedStr: string;
-      if (elapsed < 60) {
-        elapsedStr = `${elapsed}s`;
-      } else {
-        const minutes = Math.floor(elapsed / 60);
-        const seconds = elapsed % 60;
-        elapsedStr = `${minutes}m ${seconds}s`;
-      }
-      this.inputsState.updateGenerationState({ elapsedTime: elapsedStr });
-    }, 1000);
+    // Create a job for each group
+    Object.entries(groups).forEach(([key, items]) => {
+      const [platform, mode] = key.split('-');
+      const jobName = `${items.length} item(s) - ${platform} (${mode})`;
+      this.jobQueue.addJob(jobName, items);
+    });
+
+    // Deselect all items after adding to queue
+    this.inputsState.inputItems().forEach((_, index) => {
+      this.toggleItemSelection(index, false);
+    });
+  }
+
+  startQueue() {
+    if (this.queueStarted()) return;
+    this.queueStarted.set(true);
+    this.jobQueue.isProcessing.set(true);
+    this.startQueueProcessor();
   }
 
   private stopElapsedTimer() {
@@ -203,82 +254,171 @@ export class Inputs implements OnInit {
     }
   }
 
-  async generateMetadata() {
-    if (this.inputsState.inputItems().length === 0) return;
-    if (this.isGenerating()) return; // Prevent double-clicks
+  private startQueueProcessor() {
+    // Check for pending jobs every second
+    this.processingInterval = setInterval(() => {
+      this.processNextJob();
+    }, 1000);
+  }
 
-    const inputs = this.inputsState.inputItems().map(item => item.path);
-    const totalItems = inputs.length;
+  private async processNextJob() {
+    // Don't start a new job if one is already processing
+    if (this.jobQueue.hasProcessingJob()) {
+      return;
+    }
 
-    this.inputsState.updateGenerationState({
-      isGenerating: true,
-      generationProgress: 0,
+    const nextJob = this.jobQueue.getNextPendingJob();
+    if (!nextJob) {
+      // No more jobs - stop processing
+      if (this.queueStarted()) {
+        this.queueStarted.set(false);
+        this.jobQueue.isProcessing.set(false);
+        if (this.processingInterval) {
+          clearInterval(this.processingInterval);
+          this.processingInterval = null;
+        }
+      }
+      return;
+    }
+
+    // Mark job as processing
+    this.jobQueue.updateJob(nextJob.id, {
+      status: 'processing',
+      progress: 0,
       currentlyProcessing: 'Starting...'
     });
-    this.startElapsedTimer();
 
-    // Simulate progress tracking
-    // Since backend doesn't stream progress yet, we'll estimate based on typical processing time
-    const estimatedTimePerItem = 30; // seconds
-    const totalEstimatedTime = totalItems * estimatedTimePerItem;
-    let progressInterval: any;
+    const startTime = Date.now();
+    let elapsedInterval: any;
 
     try {
-      // Start progress simulation
-      let simulatedProgress = 0;
-      progressInterval = setInterval(() => {
-        if (simulatedProgress < 90) {
-          // Gradually increase progress but cap at 90% until actual completion
-          simulatedProgress += (100 / totalEstimatedTime) * 2; // Update every 2 seconds
-          if (simulatedProgress > 90) simulatedProgress = 90;
+      // Start elapsed time tracker for this job
+      elapsedInterval = setInterval(() => {
+        const job = this.jobQueue.getJob(nextJob.id);
+        if (!job) return;
 
-          // Update currently processing text
-          const currentItemIndex = Math.floor((simulatedProgress / 100) * totalItems);
-          if (currentItemIndex < totalItems) {
-            const currentItem = this.inputsState.inputItems()[currentItemIndex];
-            this.inputsState.updateGenerationState({
-              generationProgress: simulatedProgress,
-              currentlyProcessing: `Processing: ${currentItem.displayName}`
-            });
-          } else {
-            this.inputsState.updateGenerationState({ generationProgress: simulatedProgress });
-          }
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        let currentlyProcessing: string;
+        if (elapsed < 60) {
+          currentlyProcessing = `Processing... (${elapsed}s)`;
+        } else {
+          const minutes = Math.floor(elapsed / 60);
+          const seconds = elapsed % 60;
+          currentlyProcessing = `Processing... (${minutes}m ${seconds}s)`;
+        }
+        this.jobQueue.updateJob(nextJob.id, { currentlyProcessing });
+      }, 1000);
+
+      // Simulate progress
+      const totalItems = nextJob.inputs.length;
+      const estimatedTimePerItem = 30;
+      const totalEstimatedTime = totalItems * estimatedTimePerItem;
+      let simulatedProgress = 0;
+
+      const progressInterval = setInterval(() => {
+        if (simulatedProgress < 90) {
+          simulatedProgress += (100 / totalEstimatedTime) * 2;
+          if (simulatedProgress > 90) simulatedProgress = 90;
+          this.jobQueue.updateJob(nextJob.id, { progress: simulatedProgress });
         }
       }, 2000);
 
+      // Extract inputs based on platform and mode from the first item
+      // (all items in the job have the same platform and mode)
+      const firstItem = nextJob.inputs[0];
+      const inputs = nextJob.inputs.map(item => item.path);
+
       const result = await this.electron.generateMetadata({
         inputs,
-        platform: this.inputsState.selectedPlatform(),
-        mode: this.inputsState.selectedMode()
+        platform: firstItem.platform,
+        mode: firstItem.mode
       });
 
-      // Complete progress
       clearInterval(progressInterval);
-      this.inputsState.updateGenerationState({
-        generationProgress: 100,
-        currentlyProcessing: 'Complete!'
-      });
+      clearInterval(elapsedInterval);
+
+      const processingTime = ((Date.now() - startTime) / 1000);
 
       if (result.success) {
-        console.log('Metadata generated successfully:', result);
-        const processingTime = result.processing_time ?
-          `\n\nProcessing time: ${result.processing_time.toFixed(1)}s` : '';
-        alert('Metadata generated successfully!' + processingTime + '\n\nOutput files:\n' + result.output_files?.join('\n'));
+        this.jobQueue.updateJob(nextJob.id, {
+          status: 'completed',
+          progress: 100,
+          currentlyProcessing: 'Complete!',
+          completedAt: new Date(),
+          outputFiles: result.output_files,
+          processingTime
+        });
+
+        // Show completion message
+        this.showCompletionMessageFor(`Job "${nextJob.name}" completed in ${processingTime.toFixed(1)}s`);
       } else {
-        console.error('Generation failed:', result.error);
-        alert('Generation failed: ' + result.error);
+        this.jobQueue.updateJob(nextJob.id, {
+          status: 'failed',
+          progress: 0,
+          currentlyProcessing: 'Failed',
+          completedAt: new Date(),
+          error: result.error,
+          processingTime
+        });
+
+        // Show error message
+        this.showCompletionMessageFor(`Job "${nextJob.name}" failed: ${result.error}`);
       }
     } catch (error) {
-      console.error('Error generating metadata:', error);
-      alert('Error generating metadata: ' + error);
-      if (progressInterval) clearInterval(progressInterval);
-    } finally {
-      this.stopElapsedTimer();
-      this.inputsState.updateGenerationState({
-        isGenerating: false,
-        generationProgress: 0,
-        currentlyProcessing: ''
+      console.error('Error processing job:', error);
+      if (elapsedInterval) clearInterval(elapsedInterval);
+
+      this.jobQueue.updateJob(nextJob.id, {
+        status: 'failed',
+        progress: 0,
+        currentlyProcessing: 'Error',
+        completedAt: new Date(),
+        error: String(error)
       });
+
+      this.showCompletionMessageFor(`Job "${nextJob.name}" failed: ${error}`);
+    }
+  }
+
+  private showCompletionMessageFor(message: string) {
+    this.completionMessage.set(message);
+    this.showCompletionMessage.set(true);
+
+    // Auto-hide after 5 seconds
+    setTimeout(() => {
+      this.showCompletionMessage.set(false);
+    }, 5000);
+  }
+
+  dismissCompletionMessage() {
+    this.showCompletionMessage.set(false);
+  }
+
+  clearCompletedJobs() {
+    this.jobQueue.clearCompletedJobs();
+  }
+
+  removeJob(jobId: string) {
+    this.jobQueue.removeJob(jobId);
+  }
+
+  getJobStatusIcon(status: string): string {
+    switch (status) {
+      case 'pending': return 'schedule';
+      case 'processing': return 'hourglass_empty';
+      case 'completed': return 'check_circle';
+      case 'failed': return 'error';
+      default: return 'help';
+    }
+  }
+
+  getJobStatusColor(status: string): string {
+    switch (status) {
+      case 'pending': return 'accent';
+      case 'processing': return 'primary';
+      case 'completed': return 'primary';
+      case 'failed': return 'warn';
+      default: return '';
     }
   }
 }
