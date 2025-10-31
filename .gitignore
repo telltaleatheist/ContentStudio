@@ -29,6 +29,9 @@ logs/
 .env
 .env.local
 
+# User settings (electron-store saves to OS-specific directories, not in repo)
+# But we should not commit any hardcoded keys in source
+
 # Python
 *.pyc
 *.pyo

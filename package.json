@@ -1,5 +1,5 @@
 {
-  "name": "launchpad",
+  "name": "contentstudio",
   "version": "1.0.0",
   "description": "AI-powered metadata generation for YouTube and Spreaker",
   "asar": true,
@@ -9,9 +9,10 @@
     "clean:all": "npm run clean && rm -rf node_modules python/venv",
     "build:electron": "tsc -p tsconfig.electron.json",
     "build:preload": "tsc -p tsconfig.preload.json",
-    "build:all": "npm run build:electron && npm run build:preload",
+    "build:frontend": "cd frontend && npm run build",
+    "build:all": "npm run build:electron && npm run build:preload && npm run build:frontend",
     "start:angular": "cd frontend && npm start",
-    "start:electron": "npm run build:all && wait-on http://localhost:4200 && cross-env NODE_ENV=development ELECTRON_RUN_AS_NODE= electron .",
+    "start:electron": "npm run build:electron && npm run build:preload && wait-on http://localhost:4200 && cross-env NODE_ENV=development ELECTRON_RUN_AS_NODE= electron .",
     "electron:dev": "concurrently --kill-others \"npm run start:angular\" \"npm run start:electron\"",
     "electron": "npm run build:all && cross-env ELECTRON_RUN_AS_NODE= electron .",
     "package": "npm run clean && npm run build:all && electron-builder build",
@@ -42,8 +43,8 @@
     "electron-store": "^8.2.0"
   },
   "build": {
-    "appId": "com.owenmorgan.launchpad",
-    "productName": "LaunchPad",
+    "appId": "com.owenmorgan.contentstudio",
+    "productName": "ContentStudio",
     "asar": true,
     "compression": "maximum",
     "directories": {
@@ -63,7 +64,7 @@
     ],
     "files": [
       "dist/**/*",
-      "frontend/**/*",
+      "frontend/dist/**/*",
       "!**/*.map",
       "node_modules/**/*",
       "!**/node_modules/**/test/**",
@@ -71,8 +72,15 @@
     ],
     "mac": {
       "category": "public.app-category.utilities",
+      "icon": "assets/icon.png",
       "target": [
-        "dmg"
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
       "hardenedRuntime": true,
       "gatekeeperAssess": false
@@ -93,11 +101,13 @@
       ]
     },
     "win": {
+      "icon": "assets/icon.ico",
       "target": [
         "nsis"
       ]
     },
     "linux": {
+      "icon": "assets/icon.png",
       "target": [
         "AppImage",
         "deb"

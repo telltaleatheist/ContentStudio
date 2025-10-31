@@ -24,13 +24,19 @@ let pythonService: PythonService | null = null;
 // being called before app is ready. Skipping for now.
 
 function createMainWindow() {
+  // Icon path - works in both development and production
+  const iconPath = process.env.NODE_ENV === 'development'
+    ? path.join(__dirname, '..', '..', 'assets', 'icon.png')
+    : path.join(process.resourcesPath, 'assets', 'icon.png');
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 1000,
     minHeight: 700,
     backgroundColor: '#ffffff',
-    title: 'LaunchPad',
+    title: 'ContentStudio',
+    icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'preload.js'),
       contextIsolation: true,
@@ -68,7 +74,7 @@ function createMainWindow() {
 
 app.whenReady().then(async () => {
   try {
-    log.info('LaunchPad starting...');
+    log.info('ContentStudio starting...');
 
     // Initialize electron-store after app is ready
     store = new Store<any>({
@@ -76,11 +82,11 @@ app.whenReady().then(async () => {
         aiProvider: 'ollama',
         ollamaModel: 'cogito:70b',
         ollamaHost: 'http://localhost:11434',
-        openaiApiKey: 'sk-dummy-key-replace-me',
-        claudeApiKey: 'sk-ant-dummy-key-replace-me',
+        openaiApiKey: '',
+        claudeApiKey: '',
         defaultPlatform: 'youtube',
         defaultMode: 'individual',
-        outputDirectory: path.join(app.getPath('documents'), 'LaunchPad Output')
+        outputDirectory: path.join(app.getPath('documents'), 'ContentStudio Output')
       }
     });
 

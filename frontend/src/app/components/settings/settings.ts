@@ -144,13 +144,12 @@ export class Settings implements OnInit {
     try {
       const result = await this.electron.updateSettings(settings);
       if (result.success) {
-        alert('Settings saved successfully!');
+        console.log('Settings saved successfully');
       } else {
-        alert('Failed to save settings');
+        console.error('Failed to save settings');
       }
     } catch (error) {
       console.error('Error saving settings:', error);
-      alert('Error saving settings');
     }
   }
 

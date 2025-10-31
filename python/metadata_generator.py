@@ -100,7 +100,22 @@ def main():
 
             if metadata_result.success:
                 # Generate a descriptive source name for compilations
-                compilation_name = f"Compilation of {len(content_items)} items"
+                # Use the first item's name/content as the base
+                first_item = content_items[0]
+                if first_item.content_type == "subject":
+                    # For text subjects, use first 50 chars
+                    base_name = first_item.content[:50].strip()
+                    # Remove any line breaks
+                    base_name = base_name.replace('\n', ' ').replace('\r', ' ')
+                else:
+                    # For files, use the filename
+                    base_name = Path(first_item.source).stem if first_item.source else "content"
+
+                # Add count if multiple items
+                if len(content_items) > 1:
+                    compilation_name = f"{base_name} + {len(content_items) - 1} more"
+                else:
+                    compilation_name = base_name
 
                 # Save output
                 output_path = output_handler.save_metadata(

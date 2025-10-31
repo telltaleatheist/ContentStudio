@@ -263,7 +263,20 @@ export class Inputs implements OnInit, OnDestroy {
     // Create a job for each group
     Object.entries(groups).forEach(([key, items]) => {
       const [platform, mode] = key.split('-');
-      const jobName = `${items.length} item(s) - ${platform} (${mode})`;
+
+      // Create a descriptive job name using the first item
+      let jobName: string;
+      if (items.length === 1) {
+        // Single item: just use the item name
+        jobName = `${items[0].displayName} - ${platform} (${mode})`;
+      } else {
+        // Multiple items: use first item + count
+        const firstName = items[0].displayName;
+        // Truncate if too long
+        const truncatedName = firstName.length > 30 ? firstName.substring(0, 30) + '...' : firstName;
+        jobName = `${truncatedName} + ${items.length - 1} more - ${platform} (${mode})`;
+      }
+
       this.jobQueue.addJob(jobName, items);
     });
 

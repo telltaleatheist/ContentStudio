@@ -173,7 +173,6 @@ export class MetadataReports implements OnInit {
       }
     } catch (error) {
       console.error('Error reading report:', error);
-      alert('Failed to read report: ' + error);
     } finally {
       this.isLoading.set(false);
     }
@@ -193,18 +192,11 @@ export class MetadataReports implements OnInit {
       await this.electron.showInFolder(report.path);
     } catch (error) {
       console.error('Error showing in folder:', error);
-      alert('Failed to show in folder');
     }
   }
 
   async deleteReport(report: MetadataReport, event: Event) {
     event.stopPropagation();
-
-    const confirmed = confirm(
-      `Are you sure you want to delete "${report.displayTitle || report.name}"?\n\nThis will permanently delete the metadata files. This action cannot be undone.`
-    );
-
-    if (!confirmed) return;
 
     try {
       await this.electron.deleteDirectory(report.path);
@@ -219,7 +211,6 @@ export class MetadataReports implements OnInit {
       }
     } catch (error) {
       console.error('Error deleting report:', error);
-      alert('Failed to delete report');
     }
   }
 
@@ -273,11 +264,9 @@ export class MetadataReports implements OnInit {
 
   copyToClipboard(text: string) {
     navigator.clipboard.writeText(text).then(() => {
-      // Optional: Show a toast notification
       console.log('Copied to clipboard');
     }).catch(err => {
       console.error('Failed to copy:', err);
-      alert('Failed to copy to clipboard');
     });
   }
 
