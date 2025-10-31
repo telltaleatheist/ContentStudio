@@ -110,6 +110,76 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
     }
   });
 
+  // Read directory (list subdirectories and files)
+  ipcMain.handle('read-directory', async (_event, dirPath) => {
+    try {
+      const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+
+      const directories = [];
+      const files = [];
+
+      for (const entry of entries) {
+        const fullPath = `${dirPath}/${entry.name}`;
+        const stats = await fs.promises.stat(fullPath);
+
+        if (entry.isDirectory()) {
+          directories.push({
+            name: entry.name,
+            path: fullPath,
+            mtime: stats.mtime,
+            size: stats.size
+          });
+        } else if (entry.isFile()) {
+          files.push({
+            name: entry.name,
+            path: fullPath,
+            mtime: stats.mtime,
+            size: stats.size
+          });
+        }
+      }
+
+      return { success: true, directories, files };
+    } catch (error) {
+      log.error('Error reading directory:', error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  // Read file content
+  ipcMain.handle('read-file', async (_event, filePath) => {
+    try {
+      const content = await fs.promises.readFile(filePath, 'utf-8');
+      return content;
+    } catch (error) {
+      log.error('Error reading file:', error);
+      throw error;
+    }
+  });
+
+  // Delete directory
+  ipcMain.handle('delete-directory', async (_event, dirPath) => {
+    try {
+      await fs.promises.rm(dirPath, { recursive: true, force: true });
+      return { success: true };
+    } catch (error) {
+      log.error('Error deleting directory:', error);
+      throw error;
+    }
+  });
+
+  // Show in folder
+  ipcMain.handle('show-in-folder', async (_event, filePath) => {
+    try {
+      const { shell } = require('electron');
+      shell.showItemInFolder(filePath);
+      return { success: true };
+    } catch (error) {
+      log.error('Error showing in folder:', error);
+      throw error;
+    }
+  });
+
   // Generate metadata
   ipcMain.handle('generate-metadata', async (_event, params) => {
     try {

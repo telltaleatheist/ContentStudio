@@ -1,0 +1,175 @@
+<!-- Metadata Reports Viewer -->
+<div class="reports-container">
+  <div class="page-content">
+
+    <!-- File Browser (Left Panel) -->
+    <div class="panel file-browser-panel">
+      <div class="panel-header">
+        <div>
+          <h4 class="panel-title">📝 Metadata Reports</h4>
+          <p class="panel-subtitle">{{ reports().length }} report{{ reports().length !== 1 ? 's' : '' }} found</p>
+        </div>
+      </div>
+
+      <div class="panel-content">
+        @if (isLoading() && reports().length === 0) {
+          <div class="loading-container">
+            <mat-spinner diameter="40"></mat-spinner>
+            <p>Loading reports...</p>
+          </div>
+        }
+
+        @if (!isLoading() && reports().length === 0) {
+          <div class="empty-state">
+            <mat-icon>description</mat-icon>
+            <p>No metadata reports found</p>
+            <small>Generate metadata to create reports</small>
+          </div>
+        }
+
+        @if (reports().length > 0) {
+          <mat-list class="reports-list">
+            @for (report of reports(); track report.path) {
+              <mat-list-item
+                (click)="selectReport(report)"
+                [class.selected]="selectedReport()?.path === report.path"
+                class="report-item">
+                <mat-icon matListItemIcon [style.color]="getPlatformColor(report.platform)">
+                  {{ getPlatformIcon(report.platform) }}
+                </mat-icon>
+                <div matListItemTitle class="report-title">{{ report.name }}</div>
+                <div matListItemLine class="report-meta">
+                  <span class="report-date">{{ formatDate(report.date) }}</span>
+                  <mat-chip class="platform-chip" [style.background-color]="getPlatformColor(report.platform)">
+                    {{ report.platform }}
+                  </mat-chip>
+                </div>
+                <button mat-icon-button matListItemMeta (click)="deleteReport(report, $event)" color="warn">
+                  <mat-icon>close</mat-icon>
+                </button>
+              </mat-list-item>
+            }
+          </mat-list>
+        }
+      </div>
+    </div>
+
+    <!-- Report Viewer (Right Panel) -->
+    <div class="panel report-viewer-panel">
+      @if (selectedReport()) {
+        <div class="panel-header">
+          <h4 class="panel-title">{{ selectedReport()!.name }}</h4>
+          <div class="panel-actions">
+            <button mat-raised-button color="primary" (click)="showInFolder(selectedReport()!)">
+              <mat-icon>folder</mat-icon>
+              Show in Folder
+            </button>
+          </div>
+        </div>
+      }
+
+      <div class="panel-content viewer-content">
+        @if (!selectedReport()) {
+          <div class="empty-viewer">
+            <mat-icon>touch_app</mat-icon>
+            <p>Select a report to view</p>
+            <small>Click on a report from the list on the left</small>
+          </div>
+        }
+
+        @if (isLoading() && selectedReport()) {
+          <div class="loading-container">
+            <mat-spinner diameter="40"></mat-spinner>
+            <p>Loading report...</p>
+          </div>
+        }
+
+        @if (!isLoading() && selectedReport() && metadata()) {
+          <div class="metadata-content">
+            <!-- Titles Section -->
+            <div class="metadata-section">
+              <div class="section-header">
+                <mat-icon>title</mat-icon>
+                <h3>Titles</h3>
+                <span class="count-badge">{{ metadata()!.titles?.length || 0 }}</span>
+              </div>
+              <div class="titles-grid">
+                @for (title of metadata()!.titles; track $index) {
+                  <div class="title-card">
+                    <span class="title-number">{{ $index + 1 }}</span>
+                    <p class="title-text">{{ title }}</p>
+                    <span class="title-length">{{ title.length }} chars</span>
+                  </div>
+                }
+              </div>
+            </div>
+
+            <!-- Thumbnail Text Section -->
+            <div class="metadata-section">
+              <div class="section-header">
+                <mat-icon>image</mat-icon>
+                <h3>Thumbnail Text</h3>
+                <span class="count-badge">{{ metadata()!.thumbnail_text?.length || 0 }}</span>
+              </div>
+              <div class="thumbnail-grid">
+                @for (text of metadata()!.thumbnail_text; track $index) {
+                  <div class="thumbnail-card">
+                    <span class="thumbnail-number">{{ $index + 1 }}</span>
+                    <p class="thumbnail-text">{{ text }}</p>
+                  </div>
+                }
+              </div>
+            </div>
+
+            <!-- Description Section -->
+            <div class="metadata-section">
+              <div class="section-header">
+                <mat-icon>description</mat-icon>
+                <h3>Description</h3>
+                <span class="char-count">{{ metadata()!.description?.length || 0 }} characters</span>
+              </div>
+              <div class="description-card">
+                <p class="description-text">{{ metadata()!.description }}</p>
+              </div>
+            </div>
+
+            <!-- Hashtags Section -->
+            <div class="metadata-section">
+              <div class="section-header">
+                <mat-icon>tag</mat-icon>
+                <h3>Hashtags</h3>
+              </div>
+              <div class="hashtags-container">
+                @for (hashtag of metadata()!.hashtags?.split(' '); track $index) {
+                  <mat-chip class="hashtag-chip">{{ hashtag }}</mat-chip>
+                }
+              </div>
+            </div>
+
+            <!-- Tags Section -->
+            <div class="metadata-section">
+              <div class="section-header">
+                <mat-icon>local_offer</mat-icon>
+                <h3>Tags</h3>
+              </div>
+              <div class="tags-container">
+                @for (tag of metadata()!.tags?.split(','); track $index) {
+                  <mat-chip class="tag-chip">{{ tag.trim() }}</mat-chip>
+                }
+              </div>
+            </div>
+          </div>
+        }
+
+        @if (!isLoading() && selectedReport() && !metadata()) {
+          <div class="empty-report">
+            <mat-icon>info</mat-icon>
+            <p>Failed to load metadata</p>
+            <small>The metadata file may be missing or malformed</small>
+          </div>
+        }
+      </div>
+    </div>
+
+  </div>
+</div>

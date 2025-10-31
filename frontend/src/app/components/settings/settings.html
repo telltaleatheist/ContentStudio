@@ -4,114 +4,67 @@
     <h2>Settings</h2>
   </div>
 
-  <!-- AI Provider Section -->
+  <!-- AI Model Section -->
   <mat-card class="settings-card">
     <mat-card-header>
-      <mat-card-title>AI Provider</mat-card-title>
+      <mat-card-title>AI Model</mat-card-title>
     </mat-card-header>
     <mat-card-content>
       <mat-form-field appearance="outline" class="full-width">
-        <mat-label>Provider</mat-label>
-        <mat-select [(value)]="aiProvider">
-          <mat-option value="ollama">
-            <div class="provider-option">
-              <mat-icon>computer</mat-icon>
-              <span>Ollama (Local)</span>
-            </div>
-          </mat-option>
-          <mat-option value="openai">
-            <div class="provider-option">
-              <mat-icon>cloud</mat-icon>
-              <span>OpenAI</span>
-            </div>
-          </mat-option>
-          <mat-option value="claude">
-            <div class="provider-option">
-              <mat-icon>cloud</mat-icon>
-              <span>Claude (Anthropic)</span>
-            </div>
-          </mat-option>
+        <mat-label>Model</mat-label>
+        <mat-select [(value)]="selectedModel">
+          @for (option of modelOptions(); track option.value) {
+            <mat-option [value]="option.value">
+              <div class="model-option">
+                <mat-icon [class.cloud-icon]="option.provider === 'cloud'" [class.local-icon]="option.provider === 'local'">
+                  {{ option.icon }}
+                </mat-icon>
+                <span>{{ option.label }}</span>
+              </div>
+            </mat-option>
+          }
         </mat-select>
+        <mat-hint>Select your AI model provider and version</mat-hint>
       </mat-form-field>
 
-      <!-- Ollama Settings -->
-      @if (aiProvider() === 'ollama') {
-        <div class="provider-settings">
-          <mat-form-field appearance="outline" class="full-width">
-            <mat-label>Ollama Model</mat-label>
-            <mat-select [(value)]="ollamaModel">
-              <mat-option value="cogito:70b">cogito:70b (Best Quality)</mat-option>
-              <mat-option value="qwen2.5:7b">qwen2.5:7b (Faster)</mat-option>
-              <mat-option value="llama3.1:8b">llama3.1:8b (Alternative)</mat-option>
-            </mat-select>
-            <mat-hint>Local AI model running on your machine</mat-hint>
-          </mat-form-field>
-
-          <mat-form-field appearance="outline" class="full-width">
-            <mat-label>Ollama Host</mat-label>
-            <input matInput [(ngModel)]="ollamaHost" placeholder="http://localhost:11434">
-            <mat-hint>Ollama server address</mat-hint>
-          </mat-form-field>
-
-          <mat-card class="info-card">
-            <mat-card-content>
-              <div class="info-content">
-                <mat-icon class="info-icon">info</mat-icon>
-                <div>
-                  <p><strong>Ollama (Recommended)</strong></p>
-                  <p class="small">Runs AI models locally on your machine. No API costs, full privacy.</p>
-                  <p class="small">Install: <a href="https://ollama.ai" target="_blank">ollama.ai</a></p>
-                </div>
-              </div>
-            </mat-card-content>
-          </mat-card>
-        </div>
+      <!-- OpenAI API Key -->
+      @if (needsOpenAIKey()) {
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>OpenAI API Key</mat-label>
+          <input matInput type="password" [(ngModel)]="openaiApiKey" placeholder="sk-...">
+          <mat-hint>Get your API key from platform.openai.com</mat-hint>
+        </mat-form-field>
       }
 
-      <!-- OpenAI Settings -->
-      @if (aiProvider() === 'openai') {
-        <div class="provider-settings">
-          <mat-form-field appearance="outline" class="full-width">
-            <mat-label>OpenAI API Key</mat-label>
-            <input matInput type="password" [(ngModel)]="openaiApiKey" placeholder="sk-...">
-            <mat-hint>Get your API key from platform.openai.com</mat-hint>
-          </mat-form-field>
-
-          <mat-card class="info-card">
-            <mat-card-content>
-              <div class="info-content">
-                <mat-icon class="info-icon">cloud</mat-icon>
-                <div>
-                  <p><strong>OpenAI</strong></p>
-                  <p class="small">Cloud-based AI with GPT-4 Turbo. Requires API key and costs per usage.</p>
-                </div>
-              </div>
-            </mat-card-content>
-          </mat-card>
-        </div>
+      <!-- Claude API Key -->
+      @if (needsClaudeKey()) {
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Claude API Key</mat-label>
+          <input matInput type="password" [(ngModel)]="claudeApiKey" placeholder="sk-ant-...">
+          <mat-hint>Get your API key from console.anthropic.com</mat-hint>
+        </mat-form-field>
       }
 
-      <!-- Claude Settings -->
-      @if (aiProvider() === 'claude') {
-        <div class="provider-settings">
-          <mat-form-field appearance="outline" class="full-width">
-            <mat-label>Claude API Key</mat-label>
-            <input matInput type="password" [(ngModel)]="claudeApiKey" placeholder="sk-ant-...">
-            <mat-hint>Get your API key from console.anthropic.com</mat-hint>
-          </mat-form-field>
+      <!-- Ollama Host -->
+      @if (isOllamaModel()) {
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Ollama Host</mat-label>
+          <input matInput [(ngModel)]="ollamaHost" placeholder="http://localhost:11434">
+          <mat-hint>Ollama server address</mat-hint>
+        </mat-form-field>
 
-          <mat-card class="info-card">
-            <mat-card-content>
-              <div class="info-content">
-                <mat-icon class="info-icon">cloud</mat-icon>
-                <div>
-                  <p><strong>Claude (Anthropic)</strong></p>
-                  <p class="small">Cloud-based AI with Claude 3 models. Requires API key and costs per usage.</p>
-                </div>
+        <mat-card class="info-card">
+          <mat-card-content>
+            <div class="info-content">
+              <mat-icon class="info-icon">info</mat-icon>
+              <div>
+                <p><strong>Ollama (Recommended)</strong></p>
+                <p class="small">Runs AI models locally on your machine. No API costs, full privacy.</p>
+                <p class="small">Install: <a href="https://ollama.ai" target="_blank">ollama.ai</a></p>
               </div>
-            </mat-card-content>
-          </mat-card>
-        </div>
+            </div>
+          </mat-card-content>
+        </mat-card>
       }
     </mat-card-content>
   </mat-card>

@@ -16,6 +16,10 @@ const api = {
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
   selectOutputDirectory: () => ipcRenderer.invoke('select-output-directory'),
   isDirectory: (filePath: string) => ipcRenderer.invoke('is-directory', filePath),
+  readDirectory: (dirPath: string) => ipcRenderer.invoke('read-directory', dirPath),
+  readFile: (filePath: string) => ipcRenderer.invoke('read-file', filePath),
+  deleteDirectory: (dirPath: string) => ipcRenderer.invoke('delete-directory', dirPath),
+  showInFolder: (filePath: string) => ipcRenderer.invoke('show-in-folder', filePath),
 
   // Metadata generation
   generateMetadata: (params: any) => ipcRenderer.invoke('generate-metadata', params),

@@ -13,6 +13,10 @@ declare global {
       selectDirectory: () => Promise<{ success: boolean; directory: string | null }>;
       selectOutputDirectory: () => Promise<{ success: boolean; directory: string | null }>;
       isDirectory: (filePath: string) => Promise<boolean>;
+      readDirectory: (dirPath: string) => Promise<{ success: boolean; directories?: any[]; files?: any[] }>;
+      readFile: (filePath: string) => Promise<string>;
+      deleteDirectory: (dirPath: string) => Promise<void>;
+      showInFolder: (filePath: string) => Promise<void>;
 
       // Metadata generation
       generateMetadata: (params: any) => Promise<any>;
@@ -79,6 +83,26 @@ export class ElectronService {
   async isDirectory(filePath: string): Promise<boolean> {
     if (!this.ipcRenderer) return false;
     return await this.ipcRenderer.isDirectory(filePath);
+  }
+
+  async readDirectory(dirPath: string): Promise<{ success: boolean; directories?: any[]; files?: any[] }> {
+    if (!this.ipcRenderer) return { success: false };
+    return await this.ipcRenderer.readDirectory(dirPath);
+  }
+
+  async readFile(filePath: string): Promise<string> {
+    if (!this.ipcRenderer) return '';
+    return await this.ipcRenderer.readFile(filePath);
+  }
+
+  async deleteDirectory(dirPath: string): Promise<void> {
+    if (!this.ipcRenderer) return;
+    return await this.ipcRenderer.deleteDirectory(dirPath);
+  }
+
+  async showInFolder(filePath: string): Promise<void> {
+    if (!this.ipcRenderer) return;
+    return await this.ipcRenderer.showInFolder(filePath);
   }
 
   // Metadata generation
