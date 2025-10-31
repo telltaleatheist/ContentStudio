@@ -37,12 +37,12 @@
                 <mat-icon matListItemIcon [style.color]="getPlatformColor(report.platform)">
                   {{ getPlatformIcon(report.platform) }}
                 </mat-icon>
+                <mat-icon matListItemIcon class="mode-icon" [title]="getModeTitle(report.name)">
+                  {{ getModeIcon(report.name) }}
+                </mat-icon>
                 <div matListItemTitle class="report-title">{{ report.name }}</div>
                 <div matListItemLine class="report-meta">
                   <span class="report-date">{{ formatDate(report.date) }}</span>
-                  <mat-chip class="platform-chip" [style.background-color]="getPlatformColor(report.platform)">
-                    {{ report.platform }}
-                  </mat-chip>
                 </div>
                 <button mat-icon-button matListItemMeta (click)="deleteReport(report, $event)" color="warn">
                   <mat-icon>close</mat-icon>

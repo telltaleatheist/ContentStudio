@@ -54,7 +54,7 @@
 
     <mat-form-field appearance="outline" class="full-width">
       <mat-label>Platform</mat-label>
-      <mat-select [(value)]="selectedPlatform">
+      <mat-select [(value)]="selectedPlatform" (selectionChange)="onPlatformChange()">
         <mat-option value="youtube">YouTube</mat-option>
         <mat-option value="spreaker">Spreaker</mat-option>
       </mat-select>
@@ -62,7 +62,7 @@
 
     <mat-form-field appearance="outline" class="full-width">
       <mat-label>Mode</mat-label>
-      <mat-select [(value)]="selectedMode">
+      <mat-select [(value)]="selectedMode" (selectionChange)="onModeChange()">
         <mat-option value="individual">Individual</mat-option>
         <mat-option value="compilation">Compilation</mat-option>
       </mat-select>
@@ -90,6 +90,17 @@
       <div class="generating-status">
         <p>Generating metadata with AI...</p>
         <p class="hint">This may take a minute depending on content length and model.</p>
+
+        <div class="progress-section">
+          <mat-progress-bar
+            mode="determinate"
+            [value]="generationProgress()">
+          </mat-progress-bar>
+          <div class="progress-info">
+            <span class="progress-text">{{ currentlyProcessing() }}</span>
+            <span class="progress-time">{{ elapsedTime() }}</span>
+          </div>
+        </div>
       </div>
     }
   </div>

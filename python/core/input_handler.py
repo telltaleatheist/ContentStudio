@@ -362,7 +362,7 @@ class InputHandler:
             return [ContentItem(
                 content=input_item.strip(),
                 content_type="subject",
-                source="user_input"
+                source=input_item.strip()  # Use the subject text itself as the source
             )]
 
         elif input_type == "video":

@@ -151,7 +151,7 @@ export class MetadataReports implements OnInit {
 
   getPlatformIcon(platform: string): string {
     const icons: {[key: string]: string} = {
-      'youtube': 'video_library',
+      'youtube': 'videocam',
       'spreaker': 'podcasts',
       'unknown': 'description'
     };
@@ -165,6 +165,23 @@ export class MetadataReports implements OnInit {
       'unknown': '#757575'
     };
     return colors[platform] || '#757575';
+  }
+
+  getModeIcon(reportName: string): string {
+    // Check if it's a compilation or batch
+    const nameLower = reportName.toLowerCase();
+    if (nameLower.includes('compilation') || nameLower.includes('batch')) {
+      return 'collections';
+    }
+    return 'article';
+  }
+
+  getModeTitle(reportName: string): string {
+    const nameLower = reportName.toLowerCase();
+    if (nameLower.includes('compilation') || nameLower.includes('batch')) {
+      return 'Compilation';
+    }
+    return 'Individual';
   }
 
   formatFileSize(bytes: number): string {

@@ -195,6 +195,34 @@
           font-weight: 400;
         }
       }
+
+      .progress-section {
+        margin-top: 1.5rem;
+
+        mat-progress-bar {
+          height: 8px;
+          border-radius: 4px;
+          overflow: hidden;
+        }
+
+        .progress-info {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-top: 0.75rem;
+          font-size: 0.85rem;
+
+          .progress-text {
+            color: var(--text-primary);
+            font-weight: 500;
+          }
+
+          .progress-time {
+            color: var(--text-secondary);
+            font-family: monospace;
+          }
+        }
+      }
     }
   }
 }
