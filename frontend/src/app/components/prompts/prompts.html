@@ -1,0 +1,153 @@
+<div class="prompts-container">
+  <!-- Save Notification -->
+  @if (showSaveNotification()) {
+    <div class="save-notification">
+      <mat-icon>check_circle</mat-icon>
+      <span>Prompts saved successfully</span>
+      <button mat-icon-button (click)="dismissSaveNotification()">
+        <mat-icon>close</mat-icon>
+      </button>
+    </div>
+  }
+
+  <!-- Header -->
+  <div class="header">
+    <h2>Edit Prompts</h2>
+    <p class="subtitle">Customize the AI prompts for generating metadata</p>
+  </div>
+
+  <!-- Tabs for YouTube and Podcast -->
+  <mat-tab-group class="prompts-tabs">
+    <!-- YouTube Tab -->
+    <mat-tab label="YouTube">
+      <div class="tab-content">
+        <mat-card class="prompt-card">
+          <mat-card-header>
+            <mat-card-title>Base Instructions</mat-card-title>
+            <mat-card-subtitle>Core instructions for how the AI should behave and understand YouTube</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Base Instructions</mat-label>
+              <textarea
+                matInput
+                [ngModel]="youtubeSystemPrompt()"
+                (ngModelChange)="youtubeSystemPrompt.set($event)"
+                rows="10"
+                placeholder="Enter base instructions..."></textarea>
+            </mat-form-field>
+          </mat-card-content>
+        </mat-card>
+
+        <mat-card class="prompt-card">
+          <mat-card-header>
+            <mat-card-title>Consolidated Prompt</mat-card-title>
+            <mat-card-subtitle>Main prompt for generating all metadata (titles, descriptions, tags, etc.)</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Consolidated Prompt</mat-label>
+              <textarea
+                matInput
+                [ngModel]="youtubeConsolidatedPrompt()"
+                (ngModelChange)="youtubeConsolidatedPrompt.set($event)"
+                rows="20"
+                placeholder="Enter consolidated prompt..."></textarea>
+            </mat-form-field>
+          </mat-card-content>
+        </mat-card>
+
+        <mat-card class="prompt-card">
+          <mat-card-header>
+            <mat-card-title>Keyword Multiplier</mat-card-title>
+            <mat-card-subtitle>Additional instructions for keyword optimization and discovery</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Keyword Multiplier</mat-label>
+              <textarea
+                matInput
+                [ngModel]="youtubeKeywordsPrompt()"
+                (ngModelChange)="youtubeKeywordsPrompt.set($event)"
+                rows="8"
+                placeholder="Enter keyword multiplier instructions..."></textarea>
+            </mat-form-field>
+          </mat-card-content>
+        </mat-card>
+
+        <div class="actions">
+          <button mat-raised-button color="primary" (click)="saveYoutubePrompts()">
+            <mat-icon>save</mat-icon>
+            Save YouTube Prompts
+          </button>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- Podcast Tab -->
+    <mat-tab label="Podcast">
+      <div class="tab-content">
+        <mat-card class="prompt-card">
+          <mat-card-header>
+            <mat-card-title>Base Instructions</mat-card-title>
+            <mat-card-subtitle>Core instructions for how the AI should behave and understand Podcasts</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Base Instructions</mat-label>
+              <textarea
+                matInput
+                [ngModel]="podcastSystemPrompt()"
+                (ngModelChange)="podcastSystemPrompt.set($event)"
+                rows="10"
+                placeholder="Enter base instructions..."></textarea>
+            </mat-form-field>
+          </mat-card-content>
+        </mat-card>
+
+        <mat-card class="prompt-card">
+          <mat-card-header>
+            <mat-card-title>Consolidated Prompt</mat-card-title>
+            <mat-card-subtitle>Main prompt for generating all metadata (titles, descriptions, tags, etc.)</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Consolidated Prompt</mat-label>
+              <textarea
+                matInput
+                [ngModel]="podcastConsolidatedPrompt()"
+                (ngModelChange)="podcastConsolidatedPrompt.set($event)"
+                rows="20"
+                placeholder="Enter consolidated prompt..."></textarea>
+            </mat-form-field>
+          </mat-card-content>
+        </mat-card>
+
+        <mat-card class="prompt-card">
+          <mat-card-header>
+            <mat-card-title>Keyword Multiplier</mat-card-title>
+            <mat-card-subtitle>Additional instructions for keyword optimization and discovery</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Keyword Multiplier</mat-label>
+              <textarea
+                matInput
+                [ngModel]="podcastKeywordsPrompt()"
+                (ngModelChange)="podcastKeywordsPrompt.set($event)"
+                rows="8"
+                placeholder="Enter keyword multiplier instructions..."></textarea>
+            </mat-form-field>
+          </mat-card-content>
+        </mat-card>
+
+        <div class="actions">
+          <button mat-raised-button color="primary" (click)="savePodcastPrompts()">
+            <mat-icon>save</mat-icon>
+            Save Podcast Prompts
+          </button>
+        </div>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+</div>

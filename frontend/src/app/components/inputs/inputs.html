@@ -64,7 +64,7 @@
           [checked]="allItemsSpreaker"
           (change)="toggleAllSpreaker()"
           color="primary">
-          All Spreaker
+          All Podcast
         </mat-checkbox>
         <mat-checkbox
           [checked]="allItemsCompilation"
@@ -103,13 +103,13 @@
                   </div>
                 </div>
 
-                <!-- Spreaker Checkbox -->
+                <!-- Podcast Checkbox -->
                 <mat-checkbox
                   [checked]="item.platform === 'spreaker'"
                   (change)="updateItemPlatform(i, $event.checked ? 'spreaker' : 'youtube')"
                   color="primary"
-                  matTooltip="For Spreaker (unchecked = YouTube)">
-                  Spreaker
+                  matTooltip="For Podcast (unchecked = YouTube)">
+                  Podcast
                 </mat-checkbox>
 
                 <!-- Compilation Checkbox -->

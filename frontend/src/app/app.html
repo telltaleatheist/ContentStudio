@@ -1,7 +1,7 @@
 <div class="app-container">
   <!-- Top Toolbar -->
   <mat-toolbar color="primary" class="app-toolbar">
-    <span class="app-title">LaunchPad</span>
+    <span class="app-title">ContentStudio</span>
     <span class="app-subtitle">AI-Powered Metadata Generator</span>
     <span class="spacer"></span>
     <button mat-icon-button (click)="toggleTheme()">
@@ -22,6 +22,10 @@
           <a mat-list-item routerLink="/metadata-reports" routerLinkActive="active-link">
             <mat-icon matListItemIcon>description</mat-icon>
             <span matListItemTitle>Metadata Reports</span>
+          </a>
+          <a mat-list-item routerLink="/prompts" routerLinkActive="active-link">
+            <mat-icon matListItemIcon>edit_note</mat-icon>
+            <span matListItemTitle>Prompts</span>
           </a>
           <a mat-list-item routerLink="/settings" routerLinkActive="active-link">
             <mat-icon matListItemIcon>settings</mat-icon>

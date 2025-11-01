@@ -3,6 +3,8 @@ import Store from 'electron-store';
 import * as log from 'electron-log';
 import { PythonService } from '../services/python-service';
 import * as fs from 'fs';
+import * as path from 'path';
+import * as yaml from 'js-yaml';
 
 /**
  * IPC Handlers
@@ -263,6 +265,90 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
         break;
       default:
         log.debug(...args);
+    }
+  });
+
+  // Get prompts from YAML files
+  ipcMain.handle('get-prompts', async () => {
+    try {
+      const promptsDir = path.join(app.getAppPath(), 'python', 'prompts');
+
+      const youtubePromptsPath = path.join(promptsDir, 'prompts.yml');
+      const spreakerPromptsPath = path.join(promptsDir, 'spreaker_prompts.yml');
+
+      const result: any = { youtube: {}, podcast: {} };
+
+      // Load YouTube prompts
+      if (fs.existsSync(youtubePromptsPath)) {
+        const content = fs.readFileSync(youtubePromptsPath, 'utf8');
+        const parsed: any = yaml.load(content);
+        result.youtube = {
+          system: parsed.base_instructions || '',
+          consolidated: parsed.consolidated_prompt || '',
+          keywords: parsed.keyword_multiplier_addition || ''
+        };
+      }
+
+      // Load Podcast (Spreaker) prompts
+      if (fs.existsSync(spreakerPromptsPath)) {
+        const content = fs.readFileSync(spreakerPromptsPath, 'utf8');
+        const parsed: any = yaml.load(content);
+        result.podcast = {
+          system: parsed.base_instructions || '',
+          consolidated: parsed.consolidated_prompt || '',
+          keywords: parsed.keyword_multiplier_addition || ''
+        };
+      }
+
+      return result;
+    } catch (error) {
+      log.error('Error loading prompts:', error);
+      return { youtube: {}, podcast: {} };
+    }
+  });
+
+  // Save prompts to YAML files
+  ipcMain.handle('save-prompts', async (_event, prompts) => {
+    try {
+      const promptsDir = path.join(app.getAppPath(), 'python', 'prompts');
+
+      // Determine file path based on platform
+      let filePath: string;
+      if (prompts.platform === 'youtube') {
+        filePath = path.join(promptsDir, 'prompts.yml');
+      } else if (prompts.platform === 'podcast') {
+        filePath = path.join(promptsDir, 'spreaker_prompts.yml');
+      } else {
+        return { success: false, error: 'Invalid platform' };
+      }
+
+      // Read existing file to preserve other fields
+      let existingData: any = {};
+      if (fs.existsSync(filePath)) {
+        const content = fs.readFileSync(filePath, 'utf8');
+        existingData = yaml.load(content) || {};
+      }
+
+      // Update the prompts
+      existingData.base_instructions = prompts.system || '';
+      existingData.consolidated_prompt = prompts.consolidated || '';
+      existingData.keyword_multiplier_addition = prompts.keywords || '';
+
+      // Write back to file preserving formatting
+      const yamlStr = yaml.dump(existingData, {
+        lineWidth: -1,
+        noRefs: true,
+        styles: {
+          '!!null': 'canonical'
+        }
+      });
+      fs.writeFileSync(filePath, yamlStr, 'utf8');
+
+      log.info(`Saved ${prompts.platform} prompts to ${filePath}`);
+      return { success: true };
+    } catch (error) {
+      log.error('Error saving prompts:', error);
+      return { success: false, error: String(error) };
     }
   });
 

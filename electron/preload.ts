@@ -11,6 +11,10 @@ const api = {
   getSettings: () => ipcRenderer.invoke('get-settings'),
   updateSettings: (settings: any) => ipcRenderer.invoke('update-settings', settings),
 
+  // Prompts
+  getPrompts: () => ipcRenderer.invoke('get-prompts'),
+  savePrompts: (prompts: any) => ipcRenderer.invoke('save-prompts', prompts),
+
   // File operations
   selectFiles: () => ipcRenderer.invoke('select-files'),
   selectDirectory: () => ipcRenderer.invoke('select-directory'),

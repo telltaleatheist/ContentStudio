@@ -42,6 +42,10 @@ export class Settings implements OnInit {
   ollamaHost = signal('http://localhost:11434');
   availableOllamaModels = signal<string[]>([]);
 
+  // Save notification
+  showSaveNotification = signal(false);
+  saveNotificationTimeout: any;
+
   // Output settings
   outputDirectory = signal('~/Documents/LaunchPad Output');
 
@@ -145,12 +149,35 @@ export class Settings implements OnInit {
       const result = await this.electron.updateSettings(settings);
       if (result.success) {
         console.log('Settings saved successfully');
+        this.showSaveSuccess();
       } else {
         console.error('Failed to save settings');
       }
     } catch (error) {
       console.error('Error saving settings:', error);
     }
+  }
+
+  private showSaveSuccess() {
+    // Clear any existing timeout
+    if (this.saveNotificationTimeout) {
+      clearTimeout(this.saveNotificationTimeout);
+    }
+
+    // Show notification
+    this.showSaveNotification.set(true);
+
+    // Hide after 3 seconds
+    this.saveNotificationTimeout = setTimeout(() => {
+      this.showSaveNotification.set(false);
+    }, 3000);
+  }
+
+  dismissSaveNotification() {
+    if (this.saveNotificationTimeout) {
+      clearTimeout(this.saveNotificationTimeout);
+    }
+    this.showSaveNotification.set(false);
   }
 
   getModelIcon(option: ModelOption): string {

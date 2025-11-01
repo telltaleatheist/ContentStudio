@@ -18,6 +18,58 @@
   box-sizing: border-box;
   -webkit-overflow-scrolling: touch;
   margin: 0;
+  position: relative;
+
+  .save-notification {
+    position: fixed;
+    top: 5rem;
+    right: 1rem;
+    background-color: #4caf50;
+    color: white;
+    padding: 1rem 1.5rem;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    z-index: 9999;
+    animation: slideIn 0.3s ease-out;
+
+    mat-icon:first-child {
+      font-size: 24px;
+      width: 24px;
+      height: 24px;
+    }
+
+    span {
+      font-weight: 500;
+      font-size: 0.95rem;
+    }
+
+    button {
+      color: white;
+      margin-left: 0.5rem;
+      width: 32px;
+      height: 32px;
+
+      mat-icon {
+        font-size: 20px;
+        width: 20px;
+        height: 20px;
+      }
+    }
+  }
+
+  @keyframes slideIn {
+    from {
+      transform: translateX(400px);
+      opacity: 0;
+    }
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
+  }
 
   .header {
     display: flex;

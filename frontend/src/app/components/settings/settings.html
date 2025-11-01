@@ -1,4 +1,15 @@
 <div class="settings-container">
+  <!-- Save Notification -->
+  @if (showSaveNotification()) {
+    <div class="save-notification">
+      <mat-icon>check_circle</mat-icon>
+      <span>Settings saved successfully</span>
+      <button mat-icon-button (click)="dismissSaveNotification()">
+        <mat-icon>close</mat-icon>
+      </button>
+    </div>
+  }
+
   <!-- Header -->
   <div class="header">
     <h2>Settings</h2>

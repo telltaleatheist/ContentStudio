@@ -8,6 +8,10 @@ declare global {
       getSettings: () => Promise<any>;
       updateSettings: (settings: any) => Promise<any>;
 
+      // Prompts
+      getPrompts: () => Promise<any>;
+      savePrompts: (prompts: any) => Promise<any>;
+
       // File operations
       selectFiles: () => Promise<{ success: boolean; files: string[] }>;
       selectDirectory: () => Promise<{ success: boolean; directory: string | null }>;
@@ -62,6 +66,17 @@ export class ElectronService {
   async updateSettings(settings: any): Promise<any> {
     if (!this.ipcRenderer) return { success: false };
     return await this.ipcRenderer.updateSettings(settings);
+  }
+
+  // Prompts
+  async getPrompts(): Promise<any> {
+    if (!this.ipcRenderer) return { youtube: {}, podcast: {} };
+    return await this.ipcRenderer.getPrompts();
+  }
+
+  async savePrompts(prompts: any): Promise<any> {
+    if (!this.ipcRenderer) return { success: false };
+    return await this.ipcRenderer.savePrompts(prompts);
   }
 
   // File operations

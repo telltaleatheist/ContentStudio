@@ -942,7 +942,9 @@ class AIManager:
             print(f"Cleanup completed with warnings: {e}", file=sys.stderr)
 
     def _cleanup_ollama(self):
-        """Cleanup Ollama-specific resources"""
+        """Cleanup Ollama-specific resources - keep model loaded for reuse"""
+        # Keep the model loaded for 5 minutes (300s) to avoid unloading/reloading
+        # between jobs in a queue. The model will auto-unload after 5 minutes of inactivity.
         if self.current_model:
             try:
                 for attempt in range(3):
@@ -952,7 +954,7 @@ class AIManager:
                             json={
                                 "model": self.current_model,
                                 "prompt": "",
-                                "keep_alive": 0
+                                "keep_alive": "5m"  # Keep model loaded for 5 minutes
                             },
                             timeout=30
                         )
@@ -963,7 +965,7 @@ class AIManager:
                             time.sleep(1)
                         continue
             except:
-                pass  # Ignore all unload errors
+                pass  # Ignore all errors
 
     def get_status(self) -> Dict[str, any]:
         """Get current AI manager status"""
