@@ -143,7 +143,6 @@ class AIManager:
         self.youtube_prompts = None
         self.spreaker_prompts = None
         self.summarization_prompts = None
-        self.description_links = None
         self._load_prompts()
 
     def initialize(self) -> bool:
@@ -265,23 +264,12 @@ class AIManager:
             else:
                 print(f"Warning: Summarization prompts file not found at {summarization_prompts_path}", file=sys.stderr)
 
-            # Load description links
-            description_links_path = self.prompts_dir / "description_links.yml"
-            if description_links_path.exists():
-                with open(description_links_path, 'r', encoding='utf-8') as f:
-                    data = yaml.safe_load(f)
-                    self.description_links = data.get('description_links', '')
-                print(f"Loaded description links from {description_links_path}", file=sys.stderr)
-            else:
-                print(f"Warning: Description links file not found at {description_links_path}", file=sys.stderr)
-
         except Exception as e:
             print(f"Error loading prompts: {e}", file=sys.stderr)
             # Set defaults if loading fails
             self.youtube_prompts = None
             self.spreaker_prompts = None
             self.summarization_prompts = None
-            self.description_links = None
 
     def summarize_transcript(self, transcript: str, source_name: str) -> str:
         """Summarize transcript using fast model with chunking and temp files"""
@@ -537,72 +525,100 @@ class AIManager:
         return primary_keywords[:2], secondary_keywords[:3]
 
     def _build_youtube_prompt_from_yaml(self, content: str) -> str:
-        """Build YouTube prompt from YAML file - EXACTLY like ContentStudio"""
+        """Build YouTube prompt from YAML file with new simplified structure"""
 
         if not self.youtube_prompts:
             raise ValueError("YouTube prompts not loaded. Cannot generate metadata without prompts.")
 
-        # Get the consolidated_prompt template from YAML
-        consolidated_template = self.youtube_prompts.get('consolidated_prompt', '')
-        base_instructions = self.youtube_prompts.get('base_instructions', '')
+        # Get the new streamlined fields from YAML
+        editorial_guidelines = self.youtube_prompts.get('editorial_guidelines', '')
+        generation_instructions = self.youtube_prompts.get('generation_instructions', '')
 
-        if not consolidated_template:
-            raise ValueError("consolidated_prompt not found in YouTube prompts YAML file")
+        if not editorial_guidelines or not generation_instructions:
+            raise ValueError("editorial_guidelines or generation_instructions not found in YouTube prompts YAML file")
 
-        # Format the prompt exactly like ContentStudio does
-        prompt = consolidated_template.format(
-            base_instructions=base_instructions,
-            content=content,
-            mode='individual'  # Always individual for single content items
-        )
+        # Hard-coded output format (technical requirements, not user-editable)
+        output_format = """
+OUTPUT FORMAT - JSON ONLY:
+Use only ASCII characters (A-Z, a-z, 0-9, basic punctuation). No emojis or special symbols.
 
-        # Extract keywords for multiplier system (optional enhancement)
-        primary_keywords, secondary_keywords = self._extract_keywords_from_content(content)
+{
+  "thumbnail_text": [10 content-specific options, ALL CAPS, max 3 words],
+  "titles": [10 titles, EXACTLY 45-70 characters each],
+  "description": "Complete description, no timestamps, no ellipsis, no hashtags",
+  "tags": "15 comma-separated tags implementing pyramid structure",
+  "hashtags": "10 hashtags with # symbols"
+}
 
-        # Add keyword multiplier instructions if keywords found
-        if primary_keywords or secondary_keywords:
-            keyword_addition = self.youtube_prompts.get('keyword_multiplier_addition', '')
-            if keyword_addition:
-                keyword_instructions = keyword_addition.format(
-                    primary_keywords=', '.join(primary_keywords) if primary_keywords else 'auto-detect',
-                    secondary_keywords=', '.join(secondary_keywords) if secondary_keywords else 'auto-detect'
-                )
-                prompt = prompt + "\n\n" + keyword_instructions
+CRITICAL INSTRUCTIONS:
+- Analyze what the person/situation actually represents
+- Apply appropriate framing based on content analysis
+- Generate content-specific metadata that matches the actual subject matter
+
+DO NOT INCLUDE:
+- Timestamps (0:00, 2:15, etc.)
+- "Timestamps:" sections
+- Time markers of any kind
+- Ellipsis (...) in titles or descriptions
+- Hashtags in the description field (hashtags go in separate field)
+
+Respond with ONLY the JSON object.
+"""
+
+        # Build the complete prompt
+        prompt = f"{editorial_guidelines}\n\nCONTENT: {content}\n\n{generation_instructions}\n\n{output_format}"
 
         return prompt
 
     def _build_spreaker_prompt_from_yaml(self, content: str) -> str:
-        """Build Spreaker prompt from YAML file - EXACTLY like ContentStudio"""
+        """Build Spreaker/Podcast prompt from YAML file with new simplified structure"""
 
         if not self.spreaker_prompts:
             raise ValueError("Spreaker prompts not loaded. Cannot generate metadata without prompts.")
 
-        # Get the consolidated_prompt template from YAML
-        consolidated_template = self.spreaker_prompts.get('consolidated_prompt', '')
-        base_instructions = self.spreaker_prompts.get('base_instructions', '')
+        # Get the new streamlined fields from YAML
+        editorial_guidelines = self.spreaker_prompts.get('editorial_guidelines', '')
+        generation_instructions = self.spreaker_prompts.get('generation_instructions', '')
 
-        if not consolidated_template:
-            raise ValueError("consolidated_prompt not found in Spreaker prompts YAML file")
+        if not editorial_guidelines or not generation_instructions:
+            raise ValueError("editorial_guidelines or generation_instructions not found in Spreaker prompts YAML file")
 
-        # Format the prompt exactly like ContentStudio does
-        prompt = consolidated_template.format(
-            base_instructions=base_instructions,
-            content=content,
-            mode='individual'  # Always individual for single content items
-        )
+        # Hard-coded output format (technical requirements, not user-editable)
+        output_format = """
+OUTPUT FORMAT - JSON ONLY:
+Use only ASCII characters (A-Z, a-z, 0-9, basic punctuation). No emojis or special symbols.
 
-        # Extract keywords for multiplier system (optional enhancement)
-        primary_keywords, secondary_keywords = self._extract_keywords_from_content(content)
+{
+  "thumbnail_text": [10 content-specific options, ALL CAPS, max 3 words],
+  "titles": [10 titles, 20-60 characters optimized for 40-55, NO episode numbers at start],
+  "description": "Complete unique description with first 100-150 chars optimized for search preview, no timestamps, no ellipsis, no hashtags",
+  "tags": "20 comma-separated SINGLE WORD tags (13 episode-specific + 7 show-consistent, lowercase)",
+  "hashtags": "10 hashtags with # symbols (can use compound words like #ProgressivePolitics)"
+}
 
-        # Add keyword multiplier instructions if keywords found
-        if primary_keywords or secondary_keywords:
-            keyword_addition = self.spreaker_prompts.get('keyword_multiplier_addition', '')
-            if keyword_addition:
-                keyword_instructions = keyword_addition.format(
-                    primary_keywords=', '.join(primary_keywords) if primary_keywords else 'auto-detect',
-                    secondary_keywords=', '.join(secondary_keywords) if secondary_keywords else 'auto-detect'
-                )
-                prompt = prompt + "\n\n" + keyword_instructions
+CRITICAL SPREAKER REQUIREMENTS:
+- NEVER start titles with episode numbers (Ep., #, etc.) - Apple Podcasts penalizes this
+- Tags must be SINGLE WORDS ONLY (no phrases, spaces, or hyphens, lowercase)
+- Exactly 20 tags: 13 episode-specific + 7 show-consistent tags
+- Titles optimized for voice search with conversational question formats
+- First 100-150 characters of description are CRUCIAL for search previews and discovery
+- Each episode description must be unique, not templated
+- Front-load primary keywords in titles (first 10-15 characters) for mobile visibility
+
+DO NOT INCLUDE:
+- Episode numbers at the start of titles (Ep. 1, #23, Episode 5, etc.)
+- Multi-word phrases in tags (use single words only)
+- Timestamps (0:00, 2:15, etc.)
+- "Timestamps:" sections
+- Time markers of any kind
+- Ellipsis (...) in titles or descriptions
+- Hashtags in the description field (hashtags go in separate field)
+
+Respond with ONLY the JSON object.
+"""
+
+        # Build the complete prompt
+        prompt = f"{editorial_guidelines}\n\nCONTENT: {content}\n\n{generation_instructions}\n\n{output_format}"
 
         return prompt
 
@@ -897,19 +913,23 @@ class AIManager:
         return fixes
 
     def _add_description_links(self, metadata: Dict) -> Dict:
-        """Add description links to metadata (EXACTLY like ContentStudio)"""
+        """Add description links to metadata from platform-specific YAML"""
         if 'description' not in metadata:
             return metadata
 
         description_parts = [metadata['description']]
 
-        # Add hashtags if present (they should already be in separate field)
-        # Note: Hashtags are already in metadata, we just keep them separate
+        # Get description links from the appropriate platform YAML
+        description_links = None
+        if self.platform == 'youtube' and self.youtube_prompts:
+            description_links = self.youtube_prompts.get('description_links', '')
+        elif self.platform == 'spreaker' and self.spreaker_prompts:
+            description_links = self.spreaker_prompts.get('description_links', '')
 
-        # Add description links if loaded
-        if self.description_links:
-            description_parts.append('\n\n' + self.description_links)
-            print(f"   Added description links to metadata", file=sys.stderr)
+        # Add description links if found
+        if description_links:
+            description_parts.append('\n\n' + description_links)
+            print(f"   Added {self.platform} description links to metadata", file=sys.stderr)
 
         metadata['description'] = ''.join(description_parts)
         return metadata

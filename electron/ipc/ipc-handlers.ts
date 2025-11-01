@@ -283,9 +283,9 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
         const content = fs.readFileSync(youtubePromptsPath, 'utf8');
         const parsed: any = yaml.load(content);
         result.youtube = {
-          system: parsed.base_instructions || '',
-          consolidated: parsed.consolidated_prompt || '',
-          keywords: parsed.keyword_multiplier_addition || ''
+          editorial_guidelines: parsed.editorial_guidelines || '',
+          generation_instructions: parsed.generation_instructions || '',
+          description_links: parsed.description_links || ''
         };
       }
 
@@ -294,9 +294,9 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
         const content = fs.readFileSync(spreakerPromptsPath, 'utf8');
         const parsed: any = yaml.load(content);
         result.podcast = {
-          system: parsed.base_instructions || '',
-          consolidated: parsed.consolidated_prompt || '',
-          keywords: parsed.keyword_multiplier_addition || ''
+          editorial_guidelines: parsed.editorial_guidelines || '',
+          generation_instructions: parsed.generation_instructions || '',
+          description_links: parsed.description_links || ''
         };
       }
 
@@ -330,9 +330,9 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
       }
 
       // Update the prompts
-      existingData.base_instructions = prompts.system || '';
-      existingData.consolidated_prompt = prompts.consolidated || '';
-      existingData.keyword_multiplier_addition = prompts.keywords || '';
+      existingData.editorial_guidelines = prompts.editorial_guidelines || '';
+      existingData.generation_instructions = prompts.generation_instructions || '';
+      existingData.description_links = prompts.description_links || '';
 
       // Write back to file preserving formatting
       const yamlStr = yaml.dump(existingData, {

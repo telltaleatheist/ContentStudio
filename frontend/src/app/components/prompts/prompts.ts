@@ -25,14 +25,14 @@ import { ElectronService } from '../../services/electron';
 })
 export class Prompts implements OnInit {
   // YouTube prompts
-  youtubeSystemPrompt = signal('');
-  youtubeConsolidatedPrompt = signal('');
-  youtubeKeywordsPrompt = signal('');
+  youtubeEditorialGuidelines = signal('');
+  youtubeGenerationInstructions = signal('');
+  youtubeDescriptionLinks = signal('');
 
   // Podcast prompts
-  podcastSystemPrompt = signal('');
-  podcastConsolidatedPrompt = signal('');
-  podcastKeywordsPrompt = signal('');
+  podcastEditorialGuidelines = signal('');
+  podcastGenerationInstructions = signal('');
+  podcastDescriptionLinks = signal('');
 
   // Save notification
   showSaveNotification = signal(false);
@@ -49,15 +49,15 @@ export class Prompts implements OnInit {
       const prompts = await this.electron.getPrompts();
 
       if (prompts.youtube) {
-        this.youtubeSystemPrompt.set(prompts.youtube.system || '');
-        this.youtubeConsolidatedPrompt.set(prompts.youtube.consolidated || '');
-        this.youtubeKeywordsPrompt.set(prompts.youtube.keywords || '');
+        this.youtubeEditorialGuidelines.set(prompts.youtube.editorial_guidelines || '');
+        this.youtubeGenerationInstructions.set(prompts.youtube.generation_instructions || '');
+        this.youtubeDescriptionLinks.set(prompts.youtube.description_links || '');
       }
 
       if (prompts.podcast) {
-        this.podcastSystemPrompt.set(prompts.podcast.system || '');
-        this.podcastConsolidatedPrompt.set(prompts.podcast.consolidated || '');
-        this.podcastKeywordsPrompt.set(prompts.podcast.keywords || '');
+        this.podcastEditorialGuidelines.set(prompts.podcast.editorial_guidelines || '');
+        this.podcastGenerationInstructions.set(prompts.podcast.generation_instructions || '');
+        this.podcastDescriptionLinks.set(prompts.podcast.description_links || '');
       }
     } catch (error) {
       console.error('Error loading prompts:', error);
@@ -67,9 +67,9 @@ export class Prompts implements OnInit {
   async saveYoutubePrompts() {
     const prompts = {
       platform: 'youtube',
-      system: this.youtubeSystemPrompt(),
-      consolidated: this.youtubeConsolidatedPrompt(),
-      keywords: this.youtubeKeywordsPrompt()
+      editorial_guidelines: this.youtubeEditorialGuidelines(),
+      generation_instructions: this.youtubeGenerationInstructions(),
+      description_links: this.youtubeDescriptionLinks()
     };
 
     try {
@@ -88,9 +88,9 @@ export class Prompts implements OnInit {
   async savePodcastPrompts() {
     const prompts = {
       platform: 'podcast',
-      system: this.podcastSystemPrompt(),
-      consolidated: this.podcastConsolidatedPrompt(),
-      keywords: this.podcastKeywordsPrompt()
+      editorial_guidelines: this.podcastEditorialGuidelines(),
+      generation_instructions: this.podcastGenerationInstructions(),
+      description_links: this.podcastDescriptionLinks()
     };
 
     try {

@@ -13,7 +13,7 @@
   <!-- Header -->
   <div class="header">
     <h2>Edit Prompts</h2>
-    <p class="subtitle">Customize the AI prompts for generating metadata</p>
+    <p class="subtitle">Customize the AI prompts for generating metadata. Technical output requirements are hard-coded and cannot be modified.</p>
   </div>
 
   <!-- Tabs for YouTube and Podcast -->
@@ -23,54 +23,54 @@
       <div class="tab-content">
         <mat-card class="prompt-card">
           <mat-card-header>
-            <mat-card-title>Base Instructions</mat-card-title>
-            <mat-card-subtitle>Core instructions for how the AI should behave and understand YouTube</mat-card-subtitle>
+            <mat-card-title>Editorial Guidelines</mat-card-title>
+            <mat-card-subtitle>Your editorial voice, approach, and how the YouTube algorithm works</mat-card-subtitle>
           </mat-card-header>
           <mat-card-content>
             <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Base Instructions</mat-label>
+              <mat-label>Editorial Guidelines</mat-label>
               <textarea
                 matInput
-                [ngModel]="youtubeSystemPrompt()"
-                (ngModelChange)="youtubeSystemPrompt.set($event)"
+                [ngModel]="youtubeEditorialGuidelines()"
+                (ngModelChange)="youtubeEditorialGuidelines.set($event)"
+                rows="12"
+                placeholder="Enter editorial guidelines..."></textarea>
+            </mat-form-field>
+          </mat-card-content>
+        </mat-card>
+
+        <mat-card class="prompt-card">
+          <mat-card-header>
+            <mat-card-title>Generation Instructions</mat-card-title>
+            <mat-card-subtitle>Instructions for creating titles, descriptions, tags, and hashtags</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Generation Instructions</mat-label>
+              <textarea
+                matInput
+                [ngModel]="youtubeGenerationInstructions()"
+                (ngModelChange)="youtubeGenerationInstructions.set($event)"
+                rows="25"
+                placeholder="Enter generation instructions..."></textarea>
+            </mat-form-field>
+          </mat-card-content>
+        </mat-card>
+
+        <mat-card class="prompt-card">
+          <mat-card-header>
+            <mat-card-title>Description Links</mat-card-title>
+            <mat-card-subtitle>Links appended to video descriptions after AI generation (not sent to AI)</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Description Links</mat-label>
+              <textarea
+                matInput
+                [ngModel]="youtubeDescriptionLinks()"
+                (ngModelChange)="youtubeDescriptionLinks.set($event)"
                 rows="10"
-                placeholder="Enter base instructions..."></textarea>
-            </mat-form-field>
-          </mat-card-content>
-        </mat-card>
-
-        <mat-card class="prompt-card">
-          <mat-card-header>
-            <mat-card-title>Consolidated Prompt</mat-card-title>
-            <mat-card-subtitle>Main prompt for generating all metadata (titles, descriptions, tags, etc.)</mat-card-subtitle>
-          </mat-card-header>
-          <mat-card-content>
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Consolidated Prompt</mat-label>
-              <textarea
-                matInput
-                [ngModel]="youtubeConsolidatedPrompt()"
-                (ngModelChange)="youtubeConsolidatedPrompt.set($event)"
-                rows="20"
-                placeholder="Enter consolidated prompt..."></textarea>
-            </mat-form-field>
-          </mat-card-content>
-        </mat-card>
-
-        <mat-card class="prompt-card">
-          <mat-card-header>
-            <mat-card-title>Keyword Multiplier</mat-card-title>
-            <mat-card-subtitle>Additional instructions for keyword optimization and discovery</mat-card-subtitle>
-          </mat-card-header>
-          <mat-card-content>
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Keyword Multiplier</mat-label>
-              <textarea
-                matInput
-                [ngModel]="youtubeKeywordsPrompt()"
-                (ngModelChange)="youtubeKeywordsPrompt.set($event)"
-                rows="8"
-                placeholder="Enter keyword multiplier instructions..."></textarea>
+                placeholder="Enter description links..."></textarea>
             </mat-form-field>
           </mat-card-content>
         </mat-card>
@@ -89,54 +89,54 @@
       <div class="tab-content">
         <mat-card class="prompt-card">
           <mat-card-header>
-            <mat-card-title>Base Instructions</mat-card-title>
-            <mat-card-subtitle>Core instructions for how the AI should behave and understand Podcasts</mat-card-subtitle>
+            <mat-card-title>Editorial Guidelines</mat-card-title>
+            <mat-card-subtitle>Your editorial voice, approach, and how podcast platforms work</mat-card-subtitle>
           </mat-card-header>
           <mat-card-content>
             <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Base Instructions</mat-label>
+              <mat-label>Editorial Guidelines</mat-label>
               <textarea
                 matInput
-                [ngModel]="podcastSystemPrompt()"
-                (ngModelChange)="podcastSystemPrompt.set($event)"
+                [ngModel]="podcastEditorialGuidelines()"
+                (ngModelChange)="podcastEditorialGuidelines.set($event)"
+                rows="12"
+                placeholder="Enter editorial guidelines..."></textarea>
+            </mat-form-field>
+          </mat-card-content>
+        </mat-card>
+
+        <mat-card class="prompt-card">
+          <mat-card-header>
+            <mat-card-title>Generation Instructions</mat-card-title>
+            <mat-card-subtitle>Instructions for creating titles, descriptions, tags, and hashtags</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Generation Instructions</mat-label>
+              <textarea
+                matInput
+                [ngModel]="podcastGenerationInstructions()"
+                (ngModelChange)="podcastGenerationInstructions.set($event)"
+                rows="25"
+                placeholder="Enter generation instructions..."></textarea>
+            </mat-form-field>
+          </mat-card-content>
+        </mat-card>
+
+        <mat-card class="prompt-card">
+          <mat-card-header>
+            <mat-card-title>Description Links</mat-card-title>
+            <mat-card-subtitle>Links appended to episode descriptions after AI generation (not sent to AI)</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Description Links</mat-label>
+              <textarea
+                matInput
+                [ngModel]="podcastDescriptionLinks()"
+                (ngModelChange)="podcastDescriptionLinks.set($event)"
                 rows="10"
-                placeholder="Enter base instructions..."></textarea>
-            </mat-form-field>
-          </mat-card-content>
-        </mat-card>
-
-        <mat-card class="prompt-card">
-          <mat-card-header>
-            <mat-card-title>Consolidated Prompt</mat-card-title>
-            <mat-card-subtitle>Main prompt for generating all metadata (titles, descriptions, tags, etc.)</mat-card-subtitle>
-          </mat-card-header>
-          <mat-card-content>
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Consolidated Prompt</mat-label>
-              <textarea
-                matInput
-                [ngModel]="podcastConsolidatedPrompt()"
-                (ngModelChange)="podcastConsolidatedPrompt.set($event)"
-                rows="20"
-                placeholder="Enter consolidated prompt..."></textarea>
-            </mat-form-field>
-          </mat-card-content>
-        </mat-card>
-
-        <mat-card class="prompt-card">
-          <mat-card-header>
-            <mat-card-title>Keyword Multiplier</mat-card-title>
-            <mat-card-subtitle>Additional instructions for keyword optimization and discovery</mat-card-subtitle>
-          </mat-card-header>
-          <mat-card-content>
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Keyword Multiplier</mat-label>
-              <textarea
-                matInput
-                [ngModel]="podcastKeywordsPrompt()"
-                (ngModelChange)="podcastKeywordsPrompt.set($event)"
-                rows="8"
-                placeholder="Enter keyword multiplier instructions..."></textarea>
+                placeholder="Enter description links..."></textarea>
             </mat-form-field>
           </mat-card-content>
         </mat-card>

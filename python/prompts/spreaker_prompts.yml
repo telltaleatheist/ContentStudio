@@ -1,6 +1,6 @@
-# Spreaker Metadata Generation - Universal Editorial Voice
+# Podcast (Spreaker) Metadata Generation Prompts
 
-base_instructions: |
+editorial_guidelines: |
   You know Spreaker inside and out - how people find podcasts, what makes them click, and what works in 2025.
 
   EDITORIAL VOICE: Progressive, grounded in evidence, with a focus on holding people accountable.
@@ -20,52 +20,45 @@ base_instructions: |
   - Consistency and fresh episodes are what the algorithm rewards
   - Optimize for everywhere - Apple Podcasts, Spotify, all of it
 
-consolidated_prompt: |
-  {base_instructions}
-  
-  CONTENT: {content}
-  MODE: {mode}
-  
+generation_instructions: |
   IMPORTANT: If a source filename is provided in brackets like [Source filename: ...], use it as context to better understand the content. The filename often contains valuable information about the video's topic, creator, or context that may not be clear from the transcript alone.
-  
+
   CONTENT ANALYSIS & FRAMING:
   Analyze the content and determine appropriate framing based on what's happening:
-  
+
   ACCOUNTABILITY FRAMING (person doing something questionable):
   - Use: EXPOSED, CAUGHT, FAILS, CONSEQUENCES, ACCOUNTABILITY, TRUTH
   - Focus on impact and real-world effects
   - Highlight evidence-based analysis
-  
+
   DEBUNKING FRAMING (false claims or misinformation):
   - Use: DEBUNKED, FACTS, REALITY, CORRECTED, TRUTH, EVIDENCE
   - Emphasize factual accuracy and research
   - Educational approach with progressive perspective
-  
+
   BREAKING NEWS FRAMING (new developments):
   - Use: BREAKING, REVEALED, UPDATE, DEVELOPING, NEWS, URGENT
   - Create appropriate urgency for podcast format
   - Focus on why this matters for listeners
-  
+
   ANALYSIS FRAMING (providing context/explanation):
   - Use: EXPLAINED, ANALYZED, TRUTH, REALITY, CONTEXT, DEEP-DIVE
   - Emphasize educational value and insight
   - Progressive commentary with evidence-based approach
-  
-  KEYWORD STRATEGY FOR SPREAKER:
+
+  KEYWORD STRATEGY:
   1. Identify 1-2 PRIMARY keywords (person names, main topics, events)
   2. Identify 2-3 SECONDARY keywords (related concepts, consequences, context)
-  3. PRIMARY keywords must appear in: title, description opening, 6-8 tags
-  4. SECONDARY keywords must appear in: title/description, 4-6 tags each
-  
-  GENERATION REQUIREMENTS:
-  
+  3. PRIMARY keywords must appear in: title, description opening, 6-8 single-word tags
+  4. SECONDARY keywords must appear in: title/description, 4-6 single-word tags each
+  5. Convert multi-word keywords to single words for tags (e.g., "political analysis" becomes "political", "analysis")
+
   THUMBNAIL TEXT (10 options, max 3 words, ALL CAPS):
   - Create engagement appropriate for podcast format
   - Universal high-engagement options: EXPOSED, CAUGHT, TRUTH, BUSTED, REALITY, BROKEN, REVEALED, ACCOUNTABILITY, CONSEQUENCES, FACTS
   - Match the framing (accountability vs debunking vs breaking news)
-  
-  TITLES (10 options, 20-60 characters, optimized for 40-55):
 
+  TITLES (10 options, 20-60 characters, optimized for 40-55):
   CRITICAL TITLE RULES:
   - NEVER start with episode numbers (Ep. 1, #23, etc.) - Apple Podcasts penalizes this
   - Front-load primary keyword in first 10-15 characters for mobile visibility
@@ -89,9 +82,8 @@ consolidated_prompt: |
   - Generic phrases without specifics
   - Keyword stuffing that sounds unnatural
   - Incomplete thoughts due to character limits
-  
-  DESCRIPTION (complete, CRITICAL: optimize first 100-150 characters):
 
+  DESCRIPTION (complete, CRITICAL: optimize first 100-150 characters):
   FIRST 100-150 CHARACTERS ARE CRUCIAL:
   - These characters appear in search results and platform previews
   - Must include primary keyword naturally in first sentence
@@ -118,9 +110,8 @@ consolidated_prompt: |
   - NO hashtags in description (hashtags go in separate field)
   - NO placeholder text or generic templates
   - NO episode numbers in description body
-  
-  TAGS (exactly 20 tags, SINGLE WORDS ONLY):
 
+  TAGS (exactly 20 tags, SINGLE WORDS ONLY):
   OPTIMAL TAG STRATEGY (2/3 episode-specific + 1/3 consistent):
   - Tags 1-13: Episode-specific tags (13 tags, ~65%)
     * Primary keywords related to this specific episode
@@ -154,98 +145,26 @@ consolidated_prompt: |
   TAG EXAMPLES:
   - Good: politics, trump, accountability, progressive, truth, exposed, climate, healthcare
   - Bad: political-analysis, trump exposed, progressive politics, fact check
-  
+
   HASHTAGS (10 hashtags with # symbols):
   - First 3 appear prominently - make them impactful
   - Mix broad and specific hashtags
   - Include trending relevant hashtags when appropriate
   - Can use compound words: #ProgressivePolitics, #TrumpExposed, #AccountabilityMatters
-  
-  OUTPUT FORMAT - JSON ONLY:
-  Use only ASCII characters (A-Z, a-z, 0-9, basic punctuation). No emojis or special symbols.
 
-  {{
-    "thumbnail_text": [10 content-specific options, ALL CAPS, max 3 words],
-    "titles": [10 titles, 20-60 characters optimized for 40-55, NO episode numbers at start, voice search optimized],
-    "description": "Complete unique description with first 100-150 chars optimized for search preview, no timestamps, no ellipsis, no hashtags, includes specific episode value",
-    "tags": "20 comma-separated SINGLE WORD tags (13 episode-specific + 7 show-consistent, lowercase)",
-    "hashtags": "10 hashtags with # symbols (can use compound words like #ProgressivePolitics)"
-  }}
-  
-  CRITICAL SPREAKER REQUIREMENTS:
-  - NEVER start titles with episode numbers (Ep., #, etc.) - Apple Podcasts penalizes this
-  - Tags must be SINGLE WORDS ONLY (no phrases, spaces, or hyphens, lowercase)
-  - Exactly 20 tags: 13 episode-specific + 7 show-consistent tags
-  - Titles optimized for voice search with conversational question formats
-  - First 100-150 characters of description are CRUCIAL for search previews and discovery
-  - Each episode description must be unique, not templated
-  - Front-load primary keywords in titles (first 10-15 characters) for mobile visibility
-  - Focus on consistency with progressive editorial voice across all metadata
-  
-  DO NOT INCLUDE:
-  - Episode numbers at the start of titles (Ep. 1, #23, Episode 5, etc.)
-  - Multi-word phrases in tags (use single words only)
-  - Timestamps (0:00, 2:15, etc.)
-  - "Timestamps:" sections
-  - Time markers of any kind
-  - Ellipsis (...) in titles or descriptions
-  - Hashtags in the description field (hashtags go in separate field)
-  - Generic placeholder text or templated descriptions
-  - Keyword stuffing that sounds unnatural
-  
-  Respond with ONLY the JSON object.
+description_links: |
+  🔥 Support the Show:
 
-keyword_multiplier_addition: |
-  
-  KEYWORD ENFORCEMENT FOR SPREAKER: {primary_keywords} | {secondary_keywords}
-  
-  REQUIREMENTS:
-  - PRIMARY keywords: 6-8 single-word appearances in tags (30-40% frequency)
-  - SECONDARY keywords: 4-6 single-word appearances in tags (20-30% frequency)  
-  - PRIMARY keywords must appear in title + description opening + multiple single-word tags
-  - SECONDARY keywords must appear in title OR description + multiple single-word tags
-  - Convert multi-word keywords to single words: "political analysis" becomes "political", "analysis"
-  
-  This creates optimal Spreaker discoverability with single-word tag strategy.
+  Become a Patreon Member: https://owenmorgan.com/patreon
 
-channel_presets:
-  main:
-    description: "Your go-to podcast for everyday commentary and takes on what's happening"
+  Read my books:
+  📖 Was Hitler an Atheist? https://owenmorgan.com/whaa
+  📖 Understanding Jehovah's Witnesses: https://owenmorgan.com/ujw
 
-  breaking:
-    description: "For when news breaks and you need quick, sharp responses"
+  🎥 Watch on YouTube:
 
-  analysis:
-    description: "When you really want to dig into something and understand what's going on"
-
-validation_rules:
-  thumbnail_text:
-    count: 10
-    max_words: 3
-    style: "ALL_CAPS"
-    
-  titles:
-    count: 10
-    min_length: 20
-    max_length: 60
-    conversational_questions: true
-    voice_search_optimized: true
-    
-  description:
-    min_length: 100
-    optimize_first_chars: 150
-    no_timestamps: true
-    no_ellipsis: true
-    no_hashtags: true
-    
-  tags:
-    count: 20
-    single_words_only: true
-    no_phrases: true
-    no_spaces: true
-    no_hyphens: true
-    
-  hashtags:
-    count: 10
-    format: "#hashtag"
-    compound_words_allowed: true
+  Telltale: https://www.youtube.com/@owenmorgantelltale
+  Telltale Fireside Chat: https://www.youtube.com/@telltalefiresidechat
+  Telltale Unfiltered: https://www.youtube.com/@telltaleunfiltered
+  Pixel Dreams: https://www.youtube.com/@owenpixeldreams
+  Twitch: https://owenmorgan.com/twitch
