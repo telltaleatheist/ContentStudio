@@ -4,9 +4,24 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
-import { MatTabsModule } from '@angular/material/tabs';
+import { MatSelectModule } from '@angular/material/select';
 import { FormsModule } from '@angular/forms';
 import { ElectronService } from '../../services/electron';
+
+interface PromptSet {
+  id: string;
+  name: string;
+  platform: string;
+  editorial_guidelines?: string;
+  generation_instructions?: string;
+  description_links?: string;
+}
+
+interface PromptSetListItem {
+  id: string;
+  name: string;
+  platform: string;
+}
 
 @Component({
   selector: 'app-prompts',
@@ -17,22 +32,33 @@ import { ElectronService } from '../../services/electron';
     MatCardModule,
     MatFormFieldModule,
     MatInputModule,
-    MatTabsModule,
+    MatSelectModule,
     FormsModule
   ],
   templateUrl: './prompts.html',
   styleUrl: './prompts.scss',
 })
 export class Prompts implements OnInit {
-  // YouTube prompts
-  youtubeEditorialGuidelines = signal('');
-  youtubeGenerationInstructions = signal('');
-  youtubeDescriptionLinks = signal('');
+  // Prompt sets list
+  promptSets = signal<PromptSetListItem[]>([]);
+  selectedPromptSetId = signal<string | null>(null);
+  currentPromptSet = signal<PromptSet | null>(null);
 
-  // Podcast prompts
-  podcastEditorialGuidelines = signal('');
-  podcastGenerationInstructions = signal('');
-  podcastDescriptionLinks = signal('');
+  // Edit mode signals
+  editName = signal('');
+  editPlatform = signal('youtube');
+  editEditorialGuidelines = signal('');
+  editGenerationInstructions = signal('');
+  editDescriptionLinks = signal('');
+
+  // Dialog states
+  showCreateDialog = signal(false);
+  showDeleteDialog = signal(false);
+  promptSetToDelete = signal<string | null>(null);
+
+  // Create dialog fields
+  newPromptSetName = signal('');
+  newPromptSetPlatform = signal('youtube');
 
   // Save notification
   showSaveNotification = signal(false);
@@ -41,68 +67,120 @@ export class Prompts implements OnInit {
   constructor(private electron: ElectronService) {}
 
   async ngOnInit() {
-    await this.loadPrompts();
-  }
-
-  async loadPrompts() {
-    try {
-      const prompts = await this.electron.getPrompts();
-
-      if (prompts.youtube) {
-        this.youtubeEditorialGuidelines.set(prompts.youtube.editorial_guidelines || '');
-        this.youtubeGenerationInstructions.set(prompts.youtube.generation_instructions || '');
-        this.youtubeDescriptionLinks.set(prompts.youtube.description_links || '');
-      }
-
-      if (prompts.podcast) {
-        this.podcastEditorialGuidelines.set(prompts.podcast.editorial_guidelines || '');
-        this.podcastGenerationInstructions.set(prompts.podcast.generation_instructions || '');
-        this.podcastDescriptionLinks.set(prompts.podcast.description_links || '');
-      }
-    } catch (error) {
-      console.error('Error loading prompts:', error);
+    await this.loadPromptSets();
+    if (this.promptSets().length > 0) {
+      this.selectPromptSet(this.promptSets()[0].id);
     }
   }
 
-  async saveYoutubePrompts() {
-    const prompts = {
-      platform: 'youtube',
-      editorial_guidelines: this.youtubeEditorialGuidelines(),
-      generation_instructions: this.youtubeGenerationInstructions(),
-      description_links: this.youtubeDescriptionLinks()
-    };
-
+  async loadPromptSets() {
     try {
-      const result = await this.electron.savePrompts(prompts);
+      const result = await this.electron.listPromptSets();
       if (result.success) {
-        console.log('YouTube prompts saved successfully');
-        this.showSaveSuccess();
-      } else {
-        console.error('Failed to save YouTube prompts');
+        this.promptSets.set(result.promptSets);
       }
     } catch (error) {
-      console.error('Error saving YouTube prompts:', error);
+      console.error('Error loading prompt sets:', error);
     }
   }
 
-  async savePodcastPrompts() {
-    const prompts = {
-      platform: 'podcast',
-      editorial_guidelines: this.podcastEditorialGuidelines(),
-      generation_instructions: this.podcastGenerationInstructions(),
-      description_links: this.podcastDescriptionLinks()
-    };
+  async selectPromptSet(id: string) {
+    this.selectedPromptSetId.set(id);
+    const result = await this.electron.getPromptSet(id);
+    if (result.success) {
+      this.currentPromptSet.set(result.promptSet);
+      this.editName.set(result.promptSet.name);
+      this.editPlatform.set(result.promptSet.platform);
+      this.editEditorialGuidelines.set(result.promptSet.editorial_guidelines || '');
+      this.editGenerationInstructions.set(result.promptSet.generation_instructions || '');
+      this.editDescriptionLinks.set(result.promptSet.description_links || '');
+    }
+  }
+
+  async saveCurrentPromptSet() {
+    if (!this.selectedPromptSetId()) return;
 
     try {
-      const result = await this.electron.savePrompts(prompts);
+      const result = await this.electron.updatePromptSet(
+        this.selectedPromptSetId()!,
+        {
+          name: this.editName(),
+          platform: this.editPlatform(),
+          editorial_guidelines: this.editEditorialGuidelines(),
+          generation_instructions: this.editGenerationInstructions(),
+          description_links: this.editDescriptionLinks()
+        }
+      );
+
       if (result.success) {
-        console.log('Podcast prompts saved successfully');
         this.showSaveSuccess();
-      } else {
-        console.error('Failed to save Podcast prompts');
+        await this.loadPromptSets();
       }
     } catch (error) {
-      console.error('Error saving Podcast prompts:', error);
+      console.error('Error saving prompt set:', error);
+    }
+  }
+
+  openCreateDialog() {
+    this.newPromptSetName.set('');
+    this.newPromptSetPlatform.set('youtube');
+    this.showCreateDialog.set(true);
+  }
+
+  closeCreateDialog() {
+    this.showCreateDialog.set(false);
+  }
+
+  async createNewPromptSet() {
+    if (!this.newPromptSetName().trim()) {
+      return;
+    }
+
+    try {
+      const result = await this.electron.createPromptSet({
+        name: this.newPromptSetName(),
+        platform: this.newPromptSetPlatform(),
+        editorial_guidelines: '',
+        generation_instructions: '',
+        description_links: ''
+      });
+
+      if (result.success) {
+        await this.loadPromptSets();
+        this.selectPromptSet(result.id);
+        this.closeCreateDialog();
+      }
+    } catch (error) {
+      console.error('Error creating prompt set:', error);
+    }
+  }
+
+  confirmDelete(id: string) {
+    this.promptSetToDelete.set(id);
+    this.showDeleteDialog.set(true);
+  }
+
+  async deletePromptSet() {
+    const id = this.promptSetToDelete();
+    if (!id) return;
+
+    try {
+      const result = await this.electron.deletePromptSet(id);
+      if (result.success) {
+        await this.loadPromptSets();
+        this.showDeleteDialog.set(false);
+        this.promptSetToDelete.set(null);
+
+        // Select first available prompt set
+        if (this.promptSets().length > 0) {
+          this.selectPromptSet(this.promptSets()[0].id);
+        } else {
+          this.selectedPromptSetId.set(null);
+          this.currentPromptSet.set(null);
+        }
+      }
+    } catch (error) {
+      console.error('Error deleting prompt set:', error);
     }
   }
 

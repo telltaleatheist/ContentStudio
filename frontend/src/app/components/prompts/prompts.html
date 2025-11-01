@@ -1,153 +1,179 @@
-<div class="prompts-container">
+<div class="prompts-page">
+  <!-- Header -->
+  <div class="header">
+    <div class="header-content">
+      <h2>Manage Prompt Sets</h2>
+      <p class="subtitle">Create and manage multiple prompt sets for different channels or shows. Select which one to use in Settings.</p>
+    </div>
+    <button mat-raised-button color="primary" (click)="openCreateDialog()">
+      <mat-icon>add</mat-icon>
+      New Prompt Set
+    </button>
+  </div>
+
+  <div class="content-wrapper">
+    <!-- Sidebar -->
+    <div class="sidebar">
+      @if (promptSets().length === 0) {
+        <div class="empty-state">
+          <mat-icon>folder_open</mat-icon>
+          <p>No prompt sets found</p>
+          <button mat-raised-button color="primary" (click)="openCreateDialog()">
+            <mat-icon>add</mat-icon>
+            Create First Set
+          </button>
+        </div>
+      } @else {
+        @for (promptSet of promptSets(); track promptSet.id) {
+          <div class="prompt-set-item"
+               [class.active]="selectedPromptSetId() === promptSet.id"
+               (click)="selectPromptSet(promptSet.id)">
+            <div class="item-content">
+              <mat-icon>{{ promptSet.platform === 'youtube' ? 'video_library' : 'podcasts' }}</mat-icon>
+              <span>{{ promptSet.name }}</span>
+            </div>
+            <button mat-icon-button (click)="confirmDelete(promptSet.id); $event.stopPropagation()" class="delete-btn">
+              <mat-icon>delete</mat-icon>
+            </button>
+          </div>
+        }
+      }
+    </div>
+
+    <!-- Edit Panel -->
+    <div class="edit-panel">
+      @if (currentPromptSet()) {
+        <mat-card class="edit-card">
+          <mat-card-header>
+            <mat-card-title>{{ currentPromptSet()!.name }}</mat-card-title>
+            <mat-card-subtitle>{{ currentPromptSet()!.platform === 'youtube' ? 'YouTube' : 'Podcast' }} Prompt Set</mat-card-subtitle>
+          </mat-card-header>
+          <mat-card-content>
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Name</mat-label>
+              <input matInput [ngModel]="editName()" (ngModelChange)="editName.set($event)">
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Platform</mat-label>
+              <mat-select [ngModel]="editPlatform()" (ngModelChange)="editPlatform.set($event)">
+                <mat-option value="youtube">
+                  <mat-icon>video_library</mat-icon>
+                  YouTube
+                </mat-option>
+                <mat-option value="podcast">
+                  <mat-icon>podcasts</mat-icon>
+                  Podcast
+                </mat-option>
+              </mat-select>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="full-width editorial-section">
+              <mat-label>Editorial Guidelines</mat-label>
+              <textarea matInput [ngModel]="editEditorialGuidelines()"
+                        (ngModelChange)="editEditorialGuidelines.set($event)"
+                        rows="12"
+                        placeholder="Your editorial voice, approach, and how the platform's algorithm works..."></textarea>
+              <mat-hint>Defines your editorial voice and platform-specific knowledge</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="full-width generation-section">
+              <mat-label>Generation Instructions</mat-label>
+              <textarea matInput [ngModel]="editGenerationInstructions()"
+                        (ngModelChange)="editGenerationInstructions.set($event)"
+                        rows="25"
+                        placeholder="Instructions for creating titles, descriptions, tags, and hashtags..."></textarea>
+              <mat-hint>How the AI should generate metadata (titles, descriptions, tags, etc.)</mat-hint>
+            </mat-form-field>
+
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Description Links</mat-label>
+              <textarea matInput [ngModel]="editDescriptionLinks()"
+                        (ngModelChange)="editDescriptionLinks.set($event)"
+                        rows="10"
+                        placeholder="Links to be appended to descriptions (not sent to AI)..."></textarea>
+              <mat-hint>Links appended after AI generation (e.g., social media, affiliate links)</mat-hint>
+            </mat-form-field>
+          </mat-card-content>
+          <mat-card-actions>
+            <button mat-raised-button color="primary" (click)="saveCurrentPromptSet()">
+              <mat-icon>save</mat-icon>
+              Save Prompt Set
+            </button>
+          </mat-card-actions>
+        </mat-card>
+      } @else {
+        <div class="empty-edit-panel">
+          <mat-icon>description</mat-icon>
+          <h3>No Prompt Set Selected</h3>
+          <p>Select a prompt set from the sidebar or create a new one to get started.</p>
+        </div>
+      }
+    </div>
+  </div>
+
+  <!-- Create Dialog -->
+  @if (showCreateDialog()) {
+    <div class="dialog-overlay" (click)="closeCreateDialog()">
+      <mat-card class="dialog-card" (click)="$event.stopPropagation()">
+        <mat-card-header>
+          <mat-card-title>Create New Prompt Set</mat-card-title>
+        </mat-card-header>
+        <mat-card-content>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Name</mat-label>
+            <input matInput [ngModel]="newPromptSetName()" (ngModelChange)="newPromptSetName.set($event)" placeholder="e.g., YouTube - My Channel">
+          </mat-form-field>
+          <mat-form-field appearance="outline" class="full-width">
+            <mat-label>Platform</mat-label>
+            <mat-select [ngModel]="newPromptSetPlatform()" (ngModelChange)="newPromptSetPlatform.set($event)">
+              <mat-option value="youtube">
+                <mat-icon>video_library</mat-icon>
+                YouTube
+              </mat-option>
+              <mat-option value="podcast">
+                <mat-icon>podcasts</mat-icon>
+                Podcast
+              </mat-option>
+            </mat-select>
+          </mat-form-field>
+        </mat-card-content>
+        <mat-card-actions>
+          <button mat-button (click)="closeCreateDialog()">Cancel</button>
+          <button mat-raised-button color="primary" (click)="createNewPromptSet()" [disabled]="!newPromptSetName().trim()">
+            Create
+          </button>
+        </mat-card-actions>
+      </mat-card>
+    </div>
+  }
+
+  <!-- Delete Confirmation Dialog -->
+  @if (showDeleteDialog()) {
+    <div class="dialog-overlay" (click)="showDeleteDialog.set(false)">
+      <mat-card class="dialog-card" (click)="$event.stopPropagation()">
+        <mat-card-header>
+          <mat-card-title>Delete Prompt Set?</mat-card-title>
+        </mat-card-header>
+        <mat-card-content>
+          <p>Are you sure you want to delete this prompt set? This action cannot be undone.</p>
+        </mat-card-content>
+        <mat-card-actions>
+          <button mat-button (click)="showDeleteDialog.set(false)">Cancel</button>
+          <button mat-raised-button color="warn" (click)="deletePromptSet()">Delete</button>
+        </mat-card-actions>
+      </mat-card>
+    </div>
+  }
+
   <!-- Save Notification -->
   @if (showSaveNotification()) {
     <div class="save-notification">
       <mat-icon>check_circle</mat-icon>
-      <span>Prompts saved successfully</span>
+      <span>Prompt set saved successfully</span>
       <button mat-icon-button (click)="dismissSaveNotification()">
         <mat-icon>close</mat-icon>
       </button>
     </div>
   }
-
-  <!-- Header -->
-  <div class="header">
-    <h2>Edit Prompts</h2>
-    <p class="subtitle">Customize the AI prompts for generating metadata. Technical output requirements are hard-coded and cannot be modified.</p>
-  </div>
-
-  <!-- Tabs for YouTube and Podcast -->
-  <mat-tab-group class="prompts-tabs">
-    <!-- YouTube Tab -->
-    <mat-tab label="YouTube">
-      <div class="tab-content">
-        <mat-card class="prompt-card">
-          <mat-card-header>
-            <mat-card-title>Editorial Guidelines</mat-card-title>
-            <mat-card-subtitle>Your editorial voice, approach, and how the YouTube algorithm works</mat-card-subtitle>
-          </mat-card-header>
-          <mat-card-content>
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Editorial Guidelines</mat-label>
-              <textarea
-                matInput
-                [ngModel]="youtubeEditorialGuidelines()"
-                (ngModelChange)="youtubeEditorialGuidelines.set($event)"
-                rows="12"
-                placeholder="Enter editorial guidelines..."></textarea>
-            </mat-form-field>
-          </mat-card-content>
-        </mat-card>
-
-        <mat-card class="prompt-card">
-          <mat-card-header>
-            <mat-card-title>Generation Instructions</mat-card-title>
-            <mat-card-subtitle>Instructions for creating titles, descriptions, tags, and hashtags</mat-card-subtitle>
-          </mat-card-header>
-          <mat-card-content>
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Generation Instructions</mat-label>
-              <textarea
-                matInput
-                [ngModel]="youtubeGenerationInstructions()"
-                (ngModelChange)="youtubeGenerationInstructions.set($event)"
-                rows="25"
-                placeholder="Enter generation instructions..."></textarea>
-            </mat-form-field>
-          </mat-card-content>
-        </mat-card>
-
-        <mat-card class="prompt-card">
-          <mat-card-header>
-            <mat-card-title>Description Links</mat-card-title>
-            <mat-card-subtitle>Links appended to video descriptions after AI generation (not sent to AI)</mat-card-subtitle>
-          </mat-card-header>
-          <mat-card-content>
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Description Links</mat-label>
-              <textarea
-                matInput
-                [ngModel]="youtubeDescriptionLinks()"
-                (ngModelChange)="youtubeDescriptionLinks.set($event)"
-                rows="10"
-                placeholder="Enter description links..."></textarea>
-            </mat-form-field>
-          </mat-card-content>
-        </mat-card>
-
-        <div class="actions">
-          <button mat-raised-button color="primary" (click)="saveYoutubePrompts()">
-            <mat-icon>save</mat-icon>
-            Save YouTube Prompts
-          </button>
-        </div>
-      </div>
-    </mat-tab>
-
-    <!-- Podcast Tab -->
-    <mat-tab label="Podcast">
-      <div class="tab-content">
-        <mat-card class="prompt-card">
-          <mat-card-header>
-            <mat-card-title>Editorial Guidelines</mat-card-title>
-            <mat-card-subtitle>Your editorial voice, approach, and how podcast platforms work</mat-card-subtitle>
-          </mat-card-header>
-          <mat-card-content>
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Editorial Guidelines</mat-label>
-              <textarea
-                matInput
-                [ngModel]="podcastEditorialGuidelines()"
-                (ngModelChange)="podcastEditorialGuidelines.set($event)"
-                rows="12"
-                placeholder="Enter editorial guidelines..."></textarea>
-            </mat-form-field>
-          </mat-card-content>
-        </mat-card>
-
-        <mat-card class="prompt-card">
-          <mat-card-header>
-            <mat-card-title>Generation Instructions</mat-card-title>
-            <mat-card-subtitle>Instructions for creating titles, descriptions, tags, and hashtags</mat-card-subtitle>
-          </mat-card-header>
-          <mat-card-content>
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Generation Instructions</mat-label>
-              <textarea
-                matInput
-                [ngModel]="podcastGenerationInstructions()"
-                (ngModelChange)="podcastGenerationInstructions.set($event)"
-                rows="25"
-                placeholder="Enter generation instructions..."></textarea>
-            </mat-form-field>
-          </mat-card-content>
-        </mat-card>
-
-        <mat-card class="prompt-card">
-          <mat-card-header>
-            <mat-card-title>Description Links</mat-card-title>
-            <mat-card-subtitle>Links appended to episode descriptions after AI generation (not sent to AI)</mat-card-subtitle>
-          </mat-card-header>
-          <mat-card-content>
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Description Links</mat-label>
-              <textarea
-                matInput
-                [ngModel]="podcastDescriptionLinks()"
-                (ngModelChange)="podcastDescriptionLinks.set($event)"
-                rows="10"
-                placeholder="Enter description links..."></textarea>
-            </mat-form-field>
-          </mat-card-content>
-        </mat-card>
-
-        <div class="actions">
-          <button mat-raised-button color="primary" (click)="savePodcastPrompts()">
-            <mat-icon>save</mat-icon>
-            Save Podcast Prompts
-          </button>
-        </div>
-      </div>
-    </mat-tab>
-  </mat-tab-group>
 </div>

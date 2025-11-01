@@ -49,6 +49,10 @@ export class Settings implements OnInit {
   // Output settings
   outputDirectory = signal('~/Documents/LaunchPad Output');
 
+  // Prompt set selection
+  selectedPromptSet = signal('youtube-telltale');
+  availablePromptSets = signal<Array<{id: string, name: string, platform: string}>>([]);
+
   // Model options for dropdown
   modelOptions = computed<ModelOption[]>(() => {
     const options: ModelOption[] = [
@@ -111,11 +115,26 @@ export class Settings implements OnInit {
       if (settings.openaiApiKey) this.openaiApiKey.set(settings.openaiApiKey);
       if (settings.claudeApiKey) this.claudeApiKey.set(settings.claudeApiKey);
       if (settings.outputDirectory) this.outputDirectory.set(settings.outputDirectory);
+      if (settings.promptSet) this.selectedPromptSet.set(settings.promptSet);
+
+      // Load available prompt sets
+      await this.loadPromptSets();
 
       // Try to fetch available Ollama models
       await this.fetchOllamaModels();
     } catch (error) {
       console.error('Error loading settings:', error);
+    }
+  }
+
+  async loadPromptSets() {
+    try {
+      const result = await this.electron.listPromptSets();
+      if (result.success && result.promptSets) {
+        this.availablePromptSets.set(result.promptSets);
+      }
+    } catch (error) {
+      console.error('Error loading prompt sets:', error);
     }
   }
 
@@ -142,7 +161,8 @@ export class Settings implements OnInit {
       ollamaHost: this.ollamaHost(),
       openaiApiKey: this.openaiApiKey(),
       claudeApiKey: this.claudeApiKey(),
-      outputDirectory: this.outputDirectory()
+      outputDirectory: this.outputDirectory(),
+      promptSet: this.selectedPromptSet()
     };
 
     try {

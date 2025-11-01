@@ -6,14 +6,328 @@
   height: 100%;
 }
 
-.prompts-container {
+.prompts-page {
   display: flex;
   flex-direction: column;
-  flex: 1;
-  width: 100%;
   height: 100%;
-  overflow: hidden;
-  position: relative;
+  width: 100%;
+
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1.5rem 2rem;
+    border-bottom: 2px solid var(--border-color);
+    background: var(--bg-secondary);
+
+    .header-content {
+      h2 {
+        margin: 0;
+        color: var(--primary-orange);
+        font-size: 1.75rem;
+      }
+
+      .subtitle {
+        margin: 0.5rem 0 0 0;
+        color: var(--text-secondary);
+        font-size: 0.95rem;
+      }
+    }
+
+    button {
+      mat-icon {
+        margin-right: 0.5rem;
+      }
+    }
+  }
+
+  .content-wrapper {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .sidebar {
+    width: 280px;
+    border-right: 2px solid var(--border-color);
+    overflow-y: auto;
+    padding: 1rem;
+    background: var(--bg-secondary);
+
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem 1rem;
+      text-align: center;
+      color: var(--text-secondary);
+
+      mat-icon {
+        font-size: 64px;
+        width: 64px;
+        height: 64px;
+        color: var(--text-muted);
+        margin-bottom: 1rem;
+      }
+
+      p {
+        margin: 0 0 1.5rem 0;
+      }
+
+      button {
+        mat-icon {
+          margin-right: 0.5rem;
+        }
+      }
+    }
+
+    .prompt-set-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.75rem;
+      margin-bottom: 0.5rem;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+
+      &:hover {
+        background: rgba(255, 107, 53, 0.1);
+        border-color: var(--primary-orange);
+
+        .delete-btn {
+          opacity: 1;
+        }
+      }
+
+      &.active {
+        background: rgba(255, 107, 53, 0.15);
+        border-left: 3px solid var(--primary-orange);
+        border-color: var(--primary-orange);
+      }
+
+      .item-content {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        flex: 1;
+        min-width: 0;
+
+        mat-icon {
+          color: var(--primary-orange);
+          flex-shrink: 0;
+        }
+
+        span {
+          color: var(--text-primary);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+      }
+
+      .delete-btn {
+        opacity: 0;
+        transition: opacity 0.2s;
+        flex-shrink: 0;
+
+        mat-icon {
+          color: var(--text-muted);
+        }
+
+        &:hover mat-icon {
+          color: #f44336;
+        }
+      }
+
+      &.active .delete-btn {
+        opacity: 0.5;
+      }
+    }
+  }
+
+  .edit-panel {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1.5rem 2rem;
+
+    .edit-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+
+      mat-card-header {
+        mat-card-title {
+          color: var(--primary-orange);
+          font-size: 1.5rem;
+        }
+
+        mat-card-subtitle {
+          color: var(--text-secondary);
+          font-size: 0.9rem;
+        }
+      }
+
+      mat-card-content {
+        padding-top: 1.5rem;
+
+        .full-width {
+          width: 100%;
+          margin-bottom: 1rem;
+
+          textarea {
+            font-family: 'Roboto Mono', monospace;
+            font-size: 0.9rem;
+            line-height: 1.5;
+          }
+
+          mat-hint {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+          }
+
+          // Add extra spacing after editorial section
+          &.editorial-section {
+            margin-bottom: 2.5rem;
+          }
+
+          // Optional: also add extra space before generation section for clarity
+          &.generation-section {
+            margin-top: 0.5rem;
+          }
+        }
+
+        // Make platform select icons inline
+        ::ng-deep mat-option mat-icon {
+          margin-right: 0.5rem;
+          vertical-align: middle;
+          font-size: 20px;
+          width: 20px;
+          height: 20px;
+        }
+      }
+
+      mat-card-actions {
+        padding: 1rem 1.5rem;
+
+        button {
+          mat-icon {
+            margin-right: 0.5rem;
+          }
+        }
+      }
+    }
+
+    .empty-edit-panel {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--text-secondary);
+      text-align: center;
+      padding: 2rem;
+
+      mat-icon {
+        font-size: 96px;
+        width: 96px;
+        height: 96px;
+        color: var(--text-muted);
+        margin-bottom: 1.5rem;
+      }
+
+      h3 {
+        color: var(--text-primary);
+        margin: 0 0 0.75rem 0;
+        font-size: 1.25rem;
+      }
+
+      p {
+        margin: 0;
+        max-width: 400px;
+      }
+    }
+  }
+
+  .dialog-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    animation: fadeIn 0.2s ease-out;
+
+    .dialog-card {
+      width: 500px;
+      max-width: 90vw;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      animation: slideUp 0.3s ease-out;
+
+      mat-card-header {
+        mat-card-title {
+          color: var(--text-primary);
+        }
+      }
+
+      mat-card-content {
+        padding-top: 1rem;
+
+        .full-width {
+          width: 100%;
+          margin-bottom: 1rem;
+        }
+
+        p {
+          color: var(--text-secondary);
+          margin: 0;
+        }
+
+        // Make platform select icons inline in dialog
+        ::ng-deep mat-option mat-icon {
+          margin-right: 0.5rem;
+          vertical-align: middle;
+          font-size: 20px;
+          width: 20px;
+          height: 20px;
+        }
+      }
+
+      mat-card-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.75rem;
+        padding: 1rem 1.5rem;
+      }
+    }
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes slideUp {
+    from {
+      transform: translateY(50px);
+      opacity: 0;
+    }
+    to {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  }
 
   .save-notification {
     position: fixed;
@@ -63,158 +377,6 @@
     to {
       transform: translateX(0);
       opacity: 1;
-    }
-  }
-
-  .header {
-    padding: 1.5rem 2rem;
-    border-bottom: 2px solid var(--border-color);
-    background: var(--bg-secondary);
-
-    h2 {
-      margin: 0;
-      color: var(--primary-orange);
-      font-size: 1.75rem;
-    }
-
-    .subtitle {
-      margin: 0.5rem 0 0 0;
-      color: var(--text-secondary);
-      font-size: 0.95rem;
-    }
-  }
-
-  .prompts-tabs {
-    flex: 1;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-
-    ::ng-deep {
-      .mat-mdc-tab-group {
-        height: 100%;
-        display: flex;
-        flex-direction: column;
-      }
-
-      .mat-mdc-tab-body-wrapper {
-        flex: 1;
-        overflow: hidden;
-      }
-
-      .mat-mdc-tab-body-content {
-        height: 100%;
-        overflow-y: auto;
-      }
-
-      // Override Material tab colors to match orange theme
-      .mat-mdc-tab-labels {
-        background-color: var(--bg-secondary);
-        border-bottom: 2px solid var(--border-color);
-      }
-
-      .mat-mdc-tab {
-        color: var(--text-secondary) !important;
-        transition: all 0.2s ease;
-
-        &:hover:not(.mdc-tab--active) {
-          background-color: rgba(255, 107, 53, 0.08);
-
-          .mdc-tab__text-label {
-            color: var(--primary-orange) !important;
-          }
-        }
-
-        &.mdc-tab--active {
-          background-color: rgba(255, 107, 53, 0.15) !important;
-
-          .mdc-tab__text-label {
-            color: var(--primary-orange) !important;
-            font-weight: 600;
-          }
-        }
-      }
-
-      .mdc-tab__text-label {
-        color: inherit;
-      }
-
-      // Active tab indicator (underline)
-      .mat-mdc-tab-indicator {
-        .mdc-tab-indicator__content--underline {
-          border-color: var(--primary-orange) !important;
-          border-width: 3px !important;
-        }
-      }
-
-      // Remove default ripple colors
-      .mat-mdc-tab .mat-ripple-element {
-        background-color: var(--primary-orange) !important;
-        opacity: 0.12;
-      }
-
-      .mat-mdc-tab-header {
-        border-bottom: none;
-      }
-
-      // Ensure no blue anywhere
-      .mat-mdc-tab .mdc-tab-indicator__content {
-        border-color: var(--primary-orange) !important;
-      }
-
-      .mdc-tab-indicator--active .mdc-tab-indicator__content {
-        border-color: var(--primary-orange) !important;
-      }
-    }
-
-    .tab-content {
-      padding: 1.5rem 2rem;
-      display: flex;
-      flex-direction: column;
-      gap: 1.5rem;
-
-      .prompt-card {
-        background: var(--bg-card);
-        border: 1px solid var(--border-color);
-
-        mat-card-header {
-          mat-card-title {
-            color: var(--text-primary);
-            font-size: 1.1rem;
-          }
-
-          mat-card-subtitle {
-            color: var(--text-secondary);
-            font-size: 0.85rem;
-          }
-        }
-
-        mat-card-content {
-          padding-top: 1rem;
-
-          .full-width {
-            width: 100%;
-
-            textarea {
-              font-family: 'Roboto Mono', monospace;
-              font-size: 0.9rem;
-              line-height: 1.5;
-            }
-          }
-        }
-      }
-
-      .actions {
-        display: flex;
-        justify-content: flex-end;
-        padding: 1rem 0;
-
-        button {
-          mat-icon {
-            margin-right: 0.5rem;
-          }
-        }
-      }
     }
   }
 }

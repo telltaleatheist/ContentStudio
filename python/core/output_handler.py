@@ -25,7 +25,7 @@ class OutputHandler:
     def save_metadata(
         self,
         metadata: Dict,
-        platform: str,
+        prompt_set: str,
         source_name: Optional[str] = None
     ) -> str:
         """
@@ -33,7 +33,7 @@ class OutputHandler:
 
         Args:
             metadata: Dictionary containing metadata (titles, description, tags, etc.)
-            platform: Target platform (e.g., 'youtube', 'tiktok', 'instagram')
+            prompt_set: Prompt set ID used for generation (e.g., 'youtube-telltale', 'podcast-telltale')
             source_name: Optional source name for better file naming
 
         Returns:
@@ -61,15 +61,16 @@ class OutputHandler:
         else:
             clean_name = "metadata"
 
-        # Create folder name with timestamp and platform
-        safe_folder_name = self._sanitize_filename(f"{timestamp}_{platform}_{source_name or 'metadata'}")
+        # Create folder name with timestamp and prompt set
+        safe_folder_name = self._sanitize_filename(f"{timestamp}_{prompt_set}_{source_name or 'metadata'}")
 
         # Create output folder
         output_folder = self.output_dir / safe_folder_name
         output_folder.mkdir(parents=True, exist_ok=True)
 
-        # Add title to metadata for display purposes
+        # Add title and prompt set to metadata for display purposes
         metadata['_title'] = clean_name
+        metadata['_prompt_set'] = prompt_set
 
         try:
             # Save JSON format (for metadata reports viewer only)
@@ -78,7 +79,7 @@ class OutputHandler:
 
             # Save readable text format with clean name
             txt_path = output_folder / f"{clean_name}.txt"
-            self._save_readable(metadata, txt_path, platform)
+            self._save_readable(metadata, txt_path, prompt_set)
 
             print(f"Metadata saved to: {output_folder}", file=sys.stderr)
             return str(output_folder)
@@ -96,14 +97,14 @@ class OutputHandler:
         except Exception as e:
             raise IOError(f"Failed to save JSON: {e}")
 
-    def _save_readable(self, metadata: Dict, output_path: Path, platform: str) -> None:
+    def _save_readable(self, metadata: Dict, output_path: Path, prompt_set: str) -> None:
         """Save metadata as human-readable text file"""
         try:
             lines = []
 
             # Add header
             lines.append("=" * 80)
-            lines.append(f"METADATA FOR {platform.upper()}")
+            lines.append(f"METADATA - {prompt_set}")
             lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             lines.append("=" * 80)
             lines.append("")

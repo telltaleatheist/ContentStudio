@@ -11,6 +11,36 @@
 .app-toolbar {
   flex-shrink: 0;
   z-index: 1001;
+  position: relative;
+  background: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
+  border-bottom: 2px solid var(--primary-orange) !important;
+  box-shadow: var(--shadow-sm) !important;
+
+  .menu-button {
+    margin-right: 8px;
+    color: var(--primary-orange) !important;
+
+    .mat-icon {
+      color: var(--primary-orange) !important;
+    }
+
+    &:hover {
+      background-color: rgba(255, 107, 53, 0.1) !important;
+    }
+  }
+
+  button[mat-icon-button] {
+    color: var(--text-primary) !important;
+
+    .mat-icon {
+      color: var(--text-primary) !important;
+    }
+
+    &:hover {
+      background-color: var(--bg-tertiary) !important;
+    }
+  }
 }
 
 .spacer {
@@ -19,14 +49,15 @@
 
 .app-title {
   font-size: 1.2rem;
-  font-weight: 500;
+  font-weight: 600;
+  color: var(--primary-orange) !important;
 }
 
 .app-subtitle {
   font-size: 0.9rem;
-  opacity: 0.8;
   font-weight: 400;
   margin-left: 1rem;
+  color: var(--text-secondary) !important;
 }
 
 // Sidebar Container - must fill remaining space after toolbar
@@ -52,6 +83,38 @@
 
   .nav-list {
     flex: 1;
+  }
+
+  .theme-toggle-container {
+    padding: 16px;
+    border-top: 1px solid var(--border-color);
+
+    .theme-toggle-button {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      height: 48px;
+      padding: 0 16px;
+      color: var(--text-primary) !important;
+      border-radius: var(--border-radius);
+      transition: background-color 0.2s ease;
+
+      &:hover {
+        background-color: var(--bg-tertiary) !important;
+      }
+
+      .mat-icon {
+        margin-right: 16px;
+        color: var(--primary-orange) !important;
+      }
+
+      .theme-label {
+        font-size: 0.95rem;
+        font-weight: 500;
+        color: var(--text-primary) !important;
+      }
+    }
   }
 
   ::ng-deep .mat-mdc-list-base {

@@ -49,6 +49,10 @@ def main():
     # Output options
     parser.add_argument('--output', help='Output directory')
 
+    # Prompt set
+    parser.add_argument('--prompt-set', default='youtube-telltale',
+                       help='Prompt set to use for metadata generation')
+
     args = parser.parse_args()
 
     try:
@@ -59,7 +63,8 @@ def main():
             ai_api_key=args.ai_api_key,
             ai_host=args.ai_host,
             platform=args.platform,
-            output_dir=args.output
+            output_dir=args.output,
+            prompt_set=args.prompt_set
         )
 
         # Initialize components
@@ -120,7 +125,7 @@ def main():
                 # Save output
                 output_path = output_handler.save_metadata(
                     metadata_result.metadata,
-                    args.platform,
+                    args.prompt_set,
                     source_name=compilation_name
                 )
                 result = {
@@ -153,7 +158,7 @@ def main():
                     all_metadata.append(metadata_result.metadata)
                     output_path = output_handler.save_metadata(
                         metadata_result.metadata,
-                        args.platform,
+                        args.prompt_set,
                         source_name=item.source
                     )
                     output_files.append(output_path)

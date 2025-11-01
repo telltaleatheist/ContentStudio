@@ -6,8 +6,7 @@ export interface InputItem {
   displayName: string;
   icon: string;
   selected: boolean;
-  platform: 'youtube' | 'spreaker';
-  mode: 'individual' | 'compilation';
+  promptSet: string; // ID of the prompt set to use (e.g., "youtube-telltale")
 }
 
 export interface GenerationState {
@@ -24,8 +23,10 @@ export interface GenerationState {
 export class InputsStateService {
   // Persistent state across component instances
   inputItems = signal<InputItem[]>([]);
-  selectedPlatform = signal('youtube');
-  selectedMode = signal('individual');
+
+  // Master controls
+  compilationMode = signal(false); // If true, all items use the same prompt set
+  masterPromptSet = signal('youtube-telltale'); // Default prompt set
 
   // Generation state
   generationState = signal<GenerationState>({
@@ -55,14 +56,6 @@ export class InputsStateService {
 
   updateGenerationState(state: Partial<GenerationState>) {
     this.generationState.update(current => ({ ...current, ...state }));
-  }
-
-  setPlatform(platform: string) {
-    this.selectedPlatform.set(platform);
-  }
-
-  setMode(mode: string) {
-    this.selectedMode.set(mode);
   }
 
   hasLoadedSettings(): boolean {

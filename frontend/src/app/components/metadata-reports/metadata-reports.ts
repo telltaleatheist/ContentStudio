@@ -12,7 +12,7 @@ interface MetadataReport {
   path: string;
   date: Date;
   size: number;
-  platform: string;
+  promptSet?: string; // The prompt set used for generation
   displayTitle?: string; // The actual title from the metadata
 }
 
@@ -23,6 +23,7 @@ interface ParsedMetadata {
   tags: string;
   hashtags: string;
   _title?: string; // The display title from the source
+  _prompt_set?: string; // The prompt set used for generation
 }
 
 @Component({
@@ -98,11 +99,10 @@ export class MetadataReports implements OnInit {
         const reports: MetadataReport[] = [];
 
         for (const dir of result.directories) {
-          const platform = dir.name.includes('youtube') ? 'youtube' :
-                          dir.name.includes('spreaker') ? 'spreaker' : 'unknown';
-
-          // Try to read the title from the JSON file
+          // Try to read the title and prompt set from the JSON file
           let displayTitle = dir.name;
+          let promptSet: string | undefined;
+
           try {
             // Try to find and read any JSON file in the directory
             const dirContents = await this.electron.readDirectory(dir.path);
@@ -116,12 +116,15 @@ export class MetadataReports implements OnInit {
                   if (parsed._title) {
                     displayTitle = parsed._title;
                   }
+                  if (parsed._prompt_set) {
+                    promptSet = parsed._prompt_set;
+                  }
                 }
               }
             }
           } catch (e) {
             // Fallback to folder name if reading fails
-            console.warn('Could not read title for', dir.name);
+            console.warn('Could not read metadata for', dir.name);
           }
 
           reports.push({
@@ -129,7 +132,7 @@ export class MetadataReports implements OnInit {
             path: dir.path,
             date: new Date(dir.mtime),
             size: dir.size || 0,
-            platform,
+            promptSet,
             displayTitle
           });
         }
@@ -212,47 +215,6 @@ export class MetadataReports implements OnInit {
     } catch (error) {
       console.error('Error deleting report:', error);
     }
-  }
-
-  getPlatformIcon(platform: string): string {
-    const icons: {[key: string]: string} = {
-      'youtube': 'videocam',
-      'spreaker': 'podcasts',
-      'unknown': 'description'
-    };
-    return icons[platform] || 'description';
-  }
-
-  getPlatformColor(platform: string): string {
-    const colors: {[key: string]: string} = {
-      'youtube': '#FF0000',
-      'spreaker': '#F5620F',
-      'unknown': '#757575'
-    };
-    return colors[platform] || '#757575';
-  }
-
-  getModeIcon(reportName: string): string {
-    // Check if it's a compilation or batch
-    const nameLower = reportName.toLowerCase();
-    if (nameLower.includes('compilation') || nameLower.includes('batch')) {
-      return 'collections';
-    }
-    return 'article';
-  }
-
-  getModeTitle(reportName: string): string {
-    const nameLower = reportName.toLowerCase();
-    if (nameLower.includes('compilation') || nameLower.includes('batch')) {
-      return 'Compilation';
-    }
-    return 'Individual';
-  }
-
-  formatFileSize(bytes: number): string {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   }
 
   formatDate(date: Date): string {

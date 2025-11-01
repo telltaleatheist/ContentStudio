@@ -138,12 +138,15 @@ class AIManager:
         # Platform-specific settings
         self.platform = config.platform.lower()
 
-        # Load prompts from YAML files (exactly like ContentStudio)
+        # Load prompts from YAML files - now using dynamic prompt sets
         self.prompts_dir = Path(__file__).parent.parent / "prompts"
-        self.youtube_prompts = None
-        self.spreaker_prompts = None
+        self.prompt_sets_dir = self.prompts_dir / "prompt_sets"
+        self.current_prompt_set = None
         self.summarization_prompts = None
         self._load_prompts()
+
+        # Load the selected prompt set from config
+        self._load_selected_prompt_set(config)
 
     def initialize(self) -> bool:
         """Initialize AI manager and test connectivity"""
@@ -235,26 +238,8 @@ class AIManager:
             return False
 
     def _load_prompts(self):
-        """Load prompts from YAML files exactly like ContentStudio"""
+        """Load summarization prompts (metadata prompts are now in prompt_sets)"""
         try:
-            # Load YouTube prompts
-            youtube_prompts_path = self.prompts_dir / "prompts.yml"
-            if youtube_prompts_path.exists():
-                with open(youtube_prompts_path, 'r', encoding='utf-8') as f:
-                    self.youtube_prompts = yaml.safe_load(f)
-                print(f"Loaded YouTube prompts from {youtube_prompts_path}", file=sys.stderr)
-            else:
-                print(f"Warning: YouTube prompts file not found at {youtube_prompts_path}", file=sys.stderr)
-
-            # Load Spreaker prompts
-            spreaker_prompts_path = self.prompts_dir / "spreaker_prompts.yml"
-            if spreaker_prompts_path.exists():
-                with open(spreaker_prompts_path, 'r', encoding='utf-8') as f:
-                    self.spreaker_prompts = yaml.safe_load(f)
-                print(f"Loaded Spreaker prompts from {spreaker_prompts_path}", file=sys.stderr)
-            else:
-                print(f"Warning: Spreaker prompts file not found at {spreaker_prompts_path}", file=sys.stderr)
-
             # Load summarization prompts
             summarization_prompts_path = self.prompts_dir / "summarization_prompts.yml"
             if summarization_prompts_path.exists():
@@ -266,10 +251,44 @@ class AIManager:
 
         except Exception as e:
             print(f"Error loading prompts: {e}", file=sys.stderr)
-            # Set defaults if loading fails
-            self.youtube_prompts = None
-            self.spreaker_prompts = None
             self.summarization_prompts = None
+
+    def _load_selected_prompt_set(self, config):
+        """Load the selected prompt set from settings"""
+        try:
+            # Get the selected prompt set name from config
+            # Default to "youtube-telltale" if not specified
+            prompt_set_name = getattr(config, 'prompt_set', 'youtube-telltale')
+
+            prompt_set_path = self.prompt_sets_dir / f"{prompt_set_name}.yml"
+
+            if prompt_set_path.exists():
+                with open(prompt_set_path, 'r', encoding='utf-8') as f:
+                    self.current_prompt_set = yaml.safe_load(f)
+
+                # Update platform based on prompt set
+                self.platform = self.current_prompt_set.get('platform', 'youtube').lower()
+
+                print(f"Loaded prompt set '{self.current_prompt_set.get('name', prompt_set_name)}'", file=sys.stderr)
+                print(f"   Platform: {self.platform}", file=sys.stderr)
+            else:
+                print(f"Warning: Prompt set not found at {prompt_set_path}", file=sys.stderr)
+                print(f"   Attempting to load default: youtube-telltale", file=sys.stderr)
+
+                # Try default
+                default_path = self.prompt_sets_dir / "youtube-telltale.yml"
+                if default_path.exists():
+                    with open(default_path, 'r', encoding='utf-8') as f:
+                        self.current_prompt_set = yaml.safe_load(f)
+                    self.platform = self.current_prompt_set.get('platform', 'youtube').lower()
+                    print(f"Loaded default prompt set", file=sys.stderr)
+                else:
+                    print(f"Error: No prompt sets found!", file=sys.stderr)
+                    self.current_prompt_set = None
+
+        except Exception as e:
+            print(f"Error loading prompt set: {e}", file=sys.stderr)
+            self.current_prompt_set = None
 
     def summarize_transcript(self, transcript: str, source_name: str) -> str:
         """Summarize transcript using fast model with chunking and temp files"""
@@ -476,15 +495,8 @@ class AIManager:
             )
 
     def _build_consolidated_prompt(self, content: str, platform: str) -> str:
-        """Build consolidated prompt based on platform - EXACTLY like ContentStudio"""
-
-        if platform.lower() == 'youtube':
-            return self._build_youtube_prompt_from_yaml(content)
-        elif platform.lower() == 'spreaker':
-            return self._build_spreaker_prompt_from_yaml(content)
-        else:
-            # Default to YouTube
-            return self._build_youtube_prompt_from_yaml(content)
+        """Build consolidated prompt from current prompt set"""
+        return self._build_prompt_from_set(content)
 
     def _extract_keywords_from_content(self, content: str) -> Tuple[List[str], List[str]]:
         """Extract primary and secondary keywords from content - EXACTLY like ContentStudio"""
@@ -524,21 +536,23 @@ class AIManager:
 
         return primary_keywords[:2], secondary_keywords[:3]
 
-    def _build_youtube_prompt_from_yaml(self, content: str) -> str:
-        """Build YouTube prompt from YAML file with new simplified structure"""
+    def _build_prompt_from_set(self, content: str) -> str:
+        """Build prompt from current prompt set"""
 
-        if not self.youtube_prompts:
-            raise ValueError("YouTube prompts not loaded. Cannot generate metadata without prompts.")
+        if not self.current_prompt_set:
+            raise ValueError("No prompt set loaded. Cannot generate metadata without prompts.")
 
-        # Get the new streamlined fields from YAML
-        editorial_guidelines = self.youtube_prompts.get('editorial_guidelines', '')
-        generation_instructions = self.youtube_prompts.get('generation_instructions', '')
+        # Get the fields from the current prompt set
+        editorial_guidelines = self.current_prompt_set.get('editorial_guidelines', '')
+        generation_instructions = self.current_prompt_set.get('generation_instructions', '')
+        platform = self.current_prompt_set.get('platform', 'youtube').lower()
 
         if not editorial_guidelines or not generation_instructions:
-            raise ValueError("editorial_guidelines or generation_instructions not found in YouTube prompts YAML file")
+            raise ValueError("editorial_guidelines or generation_instructions not found in prompt set")
 
-        # Hard-coded output format (technical requirements, not user-editable)
-        output_format = """
+        # Hard-coded output format based on platform (technical requirements, not user-editable)
+        if platform == 'youtube':
+            output_format = """
 OUTPUT FORMAT - JSON ONLY:
 Use only ASCII characters (A-Z, a-z, 0-9, basic punctuation). No emojis or special symbols.
 
@@ -564,27 +578,8 @@ DO NOT INCLUDE:
 
 Respond with ONLY the JSON object.
 """
-
-        # Build the complete prompt
-        prompt = f"{editorial_guidelines}\n\nCONTENT: {content}\n\n{generation_instructions}\n\n{output_format}"
-
-        return prompt
-
-    def _build_spreaker_prompt_from_yaml(self, content: str) -> str:
-        """Build Spreaker/Podcast prompt from YAML file with new simplified structure"""
-
-        if not self.spreaker_prompts:
-            raise ValueError("Spreaker prompts not loaded. Cannot generate metadata without prompts.")
-
-        # Get the new streamlined fields from YAML
-        editorial_guidelines = self.spreaker_prompts.get('editorial_guidelines', '')
-        generation_instructions = self.spreaker_prompts.get('generation_instructions', '')
-
-        if not editorial_guidelines or not generation_instructions:
-            raise ValueError("editorial_guidelines or generation_instructions not found in Spreaker prompts YAML file")
-
-        # Hard-coded output format (technical requirements, not user-editable)
-        output_format = """
+        else:  # podcast
+            output_format = """
 OUTPUT FORMAT - JSON ONLY:
 Use only ASCII characters (A-Z, a-z, 0-9, basic punctuation). No emojis or special symbols.
 
@@ -596,7 +591,7 @@ Use only ASCII characters (A-Z, a-z, 0-9, basic punctuation). No emojis or speci
   "hashtags": "10 hashtags with # symbols (can use compound words like #ProgressivePolitics)"
 }
 
-CRITICAL SPREAKER REQUIREMENTS:
+CRITICAL PODCAST REQUIREMENTS:
 - NEVER start titles with episode numbers (Ep., #, etc.) - Apple Podcasts penalizes this
 - Tags must be SINGLE WORDS ONLY (no phrases, spaces, or hyphens, lowercase)
 - Exactly 20 tags: 13 episode-specific + 7 show-consistent tags
@@ -913,23 +908,19 @@ Respond with ONLY the JSON object.
         return fixes
 
     def _add_description_links(self, metadata: Dict) -> Dict:
-        """Add description links to metadata from platform-specific YAML"""
+        """Add description links to metadata from current prompt set"""
         if 'description' not in metadata:
             return metadata
 
         description_parts = [metadata['description']]
 
-        # Get description links from the appropriate platform YAML
-        description_links = None
-        if self.platform == 'youtube' and self.youtube_prompts:
-            description_links = self.youtube_prompts.get('description_links', '')
-        elif self.platform == 'spreaker' and self.spreaker_prompts:
-            description_links = self.spreaker_prompts.get('description_links', '')
-
-        # Add description links if found
-        if description_links:
-            description_parts.append('\n\n' + description_links)
-            print(f"   Added {self.platform} description links to metadata", file=sys.stderr)
+        # Get description links from the current prompt set
+        if self.current_prompt_set:
+            description_links = self.current_prompt_set.get('description_links', '')
+            if description_links:
+                description_parts.append('\n\n' + description_links)
+                prompt_name = self.current_prompt_set.get('name', 'current prompt set')
+                print(f"   Added description links from '{prompt_name}'", file=sys.stderr)
 
         metadata['description'] = ''.join(description_parts)
         return metadata

@@ -146,6 +146,23 @@
       }
     }
 
+    .prompt-set-option {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+
+      mat-icon {
+        font-size: 1.25rem;
+        width: 1.25rem;
+        height: 1.25rem;
+        color: var(--primary-orange);
+      }
+
+      span {
+        flex: 1;
+      }
+    }
+
     .provider-settings {
       display: flex;
       flex-direction: column;

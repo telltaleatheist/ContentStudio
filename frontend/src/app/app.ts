@@ -24,6 +24,7 @@ import { MatButtonModule } from '@angular/material/button';
 export class App {
   protected readonly title = signal('LaunchPad');
   protected readonly isDarkMode = signal(true);
+  protected readonly sidenavOpened = signal(true);
 
   constructor() {
     // Set dark theme as default on init
@@ -33,5 +34,9 @@ export class App {
   toggleTheme() {
     this.isDarkMode.update(dark => !dark);
     document.body.setAttribute('data-theme', this.isDarkMode() ? 'dark' : 'light');
+  }
+
+  toggleSidenav() {
+    this.sidenavOpened.update(opened => !opened);
   }
 }

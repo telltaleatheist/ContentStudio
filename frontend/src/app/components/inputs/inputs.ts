@@ -19,6 +19,12 @@ import { TextSubjectDialog } from '../text-subject-dialog/text-subject-dialog';
 import { InputsStateService, InputItem } from '../../services/inputs-state';
 import { JobQueueService, QueuedJob } from '../../services/job-queue';
 
+interface PromptSetOption {
+  id: string;
+  name: string;
+  platform: string;
+}
+
 @Component({
   selector: 'app-inputs',
   imports: [
@@ -50,6 +56,9 @@ export class Inputs implements OnInit, OnDestroy {
   queueStarted = signal(false);
   expandedJobIds = signal<Set<string>>(new Set());
 
+  // Available prompt sets
+  availablePromptSets = signal<PromptSetOption[]>([]);
+
   constructor(
     private dialog: MatDialog,
     private electron: ElectronService,
@@ -65,23 +74,32 @@ export class Inputs implements OnInit, OnDestroy {
   }
 
   async ngOnInit() {
+    // Load available prompt sets
+    await this.loadPromptSets();
+
     // Load persisted settings only on first initialization
     if (!this.inputsState.hasLoadedSettings()) {
       try {
         const settings = await this.electron.getSettings();
-        if (settings.platform) {
-          this.inputsState.setPlatform(settings.platform);
-        }
-        if (settings.mode) {
-          this.inputsState.setMode(settings.mode);
+        if (settings.promptSet) {
+          this.inputsState.masterPromptSet.set(settings.promptSet);
         }
         this.inputsState.markSettingsLoaded();
       } catch (error) {
         console.error('Error loading settings:', error);
       }
     }
+  }
 
-    // Queue processor will be started manually by user
+  async loadPromptSets() {
+    try {
+      const result = await this.electron.listPromptSets();
+      if (result.success) {
+        this.availablePromptSets.set(result.promptSets);
+      }
+    } catch (error) {
+      console.error('Error loading prompt sets:', error);
+    }
   }
 
   get selectedItems(): InputItem[] {
@@ -97,41 +115,11 @@ export class Inputs implements OnInit, OnDestroy {
     return items.length > 0 && items.every(item => item.selected);
   }
 
-  get allItemsSpreaker(): boolean {
-    const items = this.inputsState.inputItems();
-    return items.length > 0 && items.every(item => item.platform === 'spreaker');
-  }
-
-  get allItemsCompilation(): boolean {
-    const items = this.inputsState.inputItems();
-    return items.length > 0 && items.every(item => item.mode === 'compilation');
-  }
-
   toggleSelectAll() {
     const allSelected = this.allItemsSelected;
     this.inputsState.inputItems().forEach((_, index) => {
       this.toggleItemSelection(index, !allSelected);
     });
-  }
-
-  toggleAllSpreaker() {
-    const allSpreaker = this.allItemsSpreaker;
-    const items = this.inputsState.inputItems();
-    const updatedItems = items.map(item => ({
-      ...item,
-      platform: (allSpreaker ? 'youtube' : 'spreaker') as 'youtube' | 'spreaker'
-    }));
-    this.inputsState.inputItems.set(updatedItems);
-  }
-
-  toggleAllCompilation() {
-    const allCompilation = this.allItemsCompilation;
-    const items = this.inputsState.inputItems();
-    const updatedItems = items.map(item => ({
-      ...item,
-      mode: (allCompilation ? 'individual' : 'compilation') as 'individual' | 'compilation'
-    }));
-    this.inputsState.inputItems.set(updatedItems);
   }
 
   toggleItemSelection(index: number, value?: boolean) {
@@ -142,17 +130,40 @@ export class Inputs implements OnInit, OnDestroy {
     this.inputsState.inputItems.set(updatedItems);
   }
 
-  updateItemPlatform(index: number, platform: 'youtube' | 'spreaker') {
+  // Master prompt set changed - update all individual items
+  onMasterPromptSetChange(promptSetId: string) {
+    this.inputsState.masterPromptSet.set(promptSetId);
+
+    // ALWAYS update all items to use this prompt set
+    // (whether in compilation mode or not - the dropdowns just get disabled in compilation mode)
     const items = this.inputsState.inputItems();
-    const updatedItems = [...items];
-    updatedItems[index] = { ...updatedItems[index], platform };
+    const updatedItems = items.map(item => ({
+      ...item,
+      promptSet: promptSetId
+    }));
     this.inputsState.inputItems.set(updatedItems);
   }
 
-  updateItemMode(index: number, mode: 'individual' | 'compilation') {
+  // Compilation mode toggled
+  onCompilationModeChange(isCompilation: boolean) {
+    this.inputsState.compilationMode.set(isCompilation);
+
+    // If turning ON compilation mode, set all items to use master prompt set
+    if (isCompilation) {
+      const items = this.inputsState.inputItems();
+      const updatedItems = items.map(item => ({
+        ...item,
+        promptSet: this.inputsState.masterPromptSet()
+      }));
+      this.inputsState.inputItems.set(updatedItems);
+    }
+  }
+
+  // Individual item prompt set changed
+  updateItemPromptSet(index: number, promptSetId: string) {
     const items = this.inputsState.inputItems();
     const updatedItems = [...items];
-    updatedItems[index] = { ...updatedItems[index], mode };
+    updatedItems[index] = { ...updatedItems[index], promptSet: promptSetId };
     this.inputsState.inputItems.set(updatedItems);
   }
 
@@ -172,8 +183,7 @@ export class Inputs implements OnInit, OnDestroy {
             displayName: subject.trim(),
             icon: 'text_fields',
             selected: true,
-            platform: this.inputsState.selectedPlatform() as 'youtube' | 'spreaker',
-            mode: this.inputsState.selectedMode() as 'individual' | 'compilation'
+            promptSet: this.inputsState.masterPromptSet()
           });
         });
       }
@@ -194,8 +204,7 @@ export class Inputs implements OnInit, OnDestroy {
             displayName: fileName,
             icon: 'folder',
             selected: true,
-            platform: this.inputsState.selectedPlatform() as 'youtube' | 'spreaker',
-            mode: this.inputsState.selectedMode() as 'individual' | 'compilation'
+            promptSet: this.inputsState.masterPromptSet()
           });
         } else {
           const ext = fileName.split('.').pop()?.toLowerCase() || '';
@@ -216,8 +225,7 @@ export class Inputs implements OnInit, OnDestroy {
             displayName: fileName,
             icon,
             selected: true,
-            platform: this.inputsState.selectedPlatform() as 'youtube' | 'spreaker',
-            mode: this.inputsState.selectedMode() as 'individual' | 'compilation'
+            promptSet: this.inputsState.masterPromptSet()
           });
         }
       }
@@ -228,57 +236,49 @@ export class Inputs implements OnInit, OnDestroy {
     this.inputsState.removeItem(index);
   }
 
-  async onPlatformChange() {
-    // Persist platform selection
-    try {
-      await this.electron.updateSettings({ platform: this.inputsState.selectedPlatform() });
-    } catch (error) {
-      console.error('Error saving platform:', error);
-    }
-  }
-
-  async onModeChange() {
-    // Persist mode selection
-    try {
-      await this.electron.updateSettings({ mode: this.inputsState.selectedMode() });
-    } catch (error) {
-      console.error('Error saving mode:', error);
-    }
-  }
-
   addToQueue() {
     if (this.selectedItems.length === 0) return;
 
-    // Group items by platform and mode
-    const groups: { [key: string]: InputItem[] } = {};
+    // In compilation mode, create a single job with all selected items
+    if (this.inputsState.compilationMode()) {
+      const items = this.selectedItems;
+      const promptSet = this.inputsState.masterPromptSet();
 
-    this.selectedItems.forEach(item => {
-      const key = `${item.platform}-${item.mode}`;
-      if (!groups[key]) {
-        groups[key] = [];
-      }
-      groups[key].push(item);
-    });
-
-    // Create a job for each group
-    Object.entries(groups).forEach(([key, items]) => {
-      const [platform, mode] = key.split('-');
-
-      // Create a descriptive job name using the first item
       let jobName: string;
       if (items.length === 1) {
-        // Single item: just use the item name
-        jobName = `${items[0].displayName} - ${platform} (${mode})`;
+        jobName = `${items[0].displayName} (compilation)`;
       } else {
-        // Multiple items: use first item + count
         const firstName = items[0].displayName;
-        // Truncate if too long
         const truncatedName = firstName.length > 30 ? firstName.substring(0, 30) + '...' : firstName;
-        jobName = `${truncatedName} + ${items.length - 1} more - ${platform} (${mode})`;
+        jobName = `${truncatedName} + ${items.length - 1} more (compilation)`;
       }
 
-      this.jobQueue.addJob(jobName, items);
-    });
+      this.jobQueue.addJob(jobName, items, promptSet, 'compilation');
+    } else {
+      // Individual mode - group items by prompt set
+      const groups: { [promptSet: string]: InputItem[] } = {};
+
+      this.selectedItems.forEach(item => {
+        if (!groups[item.promptSet]) {
+          groups[item.promptSet] = [];
+        }
+        groups[item.promptSet].push(item);
+      });
+
+      // Create a job for each group
+      Object.entries(groups).forEach(([promptSet, items]) => {
+        let jobName: string;
+        if (items.length === 1) {
+          jobName = `${items[0].displayName}`;
+        } else {
+          const firstName = items[0].displayName;
+          const truncatedName = firstName.length > 30 ? firstName.substring(0, 30) + '...' : firstName;
+          jobName = `${truncatedName} + ${items.length - 1} more`;
+        }
+
+        this.jobQueue.addJob(jobName, items, promptSet, 'individual');
+      });
+    }
 
     // Deselect all items after adding to queue
     this.inputsState.inputItems().forEach((_, index) => {
@@ -369,15 +369,13 @@ export class Inputs implements OnInit, OnDestroy {
         }
       }, 2000);
 
-      // Extract inputs based on platform and mode from the first item
-      // (all items in the job have the same platform and mode)
-      const firstItem = nextJob.inputs[0];
+      // Extract inputs
       const inputs = nextJob.inputs.map(item => item.path);
 
       const result = await this.electron.generateMetadata({
         inputs,
-        platform: firstItem.platform,
-        mode: firstItem.mode
+        promptSet: nextJob.promptSet,
+        mode: nextJob.mode
       });
 
       clearInterval(progressInterval);
@@ -481,5 +479,17 @@ export class Inputs implements OnInit, OnDestroy {
       case 'failed': return 'warn';
       default: return '';
     }
+  }
+
+  // Helper to get prompt set name by ID
+  getPromptSetName(promptSetId: string): string {
+    const promptSet = this.availablePromptSets().find(ps => ps.id === promptSetId);
+    return promptSet ? promptSet.name : promptSetId;
+  }
+
+  // Helper to get prompt set platform icon
+  getPromptSetIcon(promptSetId: string): string {
+    const promptSet = this.availablePromptSets().find(ps => ps.id === promptSetId);
+    return promptSet?.platform === 'youtube' ? 'video_library' : 'podcasts';
   }
 }

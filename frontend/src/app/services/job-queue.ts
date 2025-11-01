@@ -5,6 +5,8 @@ export interface QueuedJob {
   id: string;
   name: string;
   inputs: InputItem[];
+  promptSet: string; // ID of the prompt set to use
+  mode: 'individual' | 'compilation';
   status: 'pending' | 'processing' | 'completed' | 'failed';
   createdAt: Date;
   completedAt?: Date;
@@ -24,12 +26,14 @@ export class JobQueueService {
 
   constructor() {}
 
-  addJob(name: string, inputs: InputItem[]): string {
+  addJob(name: string, inputs: InputItem[], promptSet: string, mode: 'individual' | 'compilation'): string {
     const jobId = `job-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const newJob: QueuedJob = {
       id: jobId,
       name,
       inputs: [...inputs], // Clone the inputs array
+      promptSet,
+      mode,
       status: 'pending',
       createdAt: new Date(),
       progress: 0,

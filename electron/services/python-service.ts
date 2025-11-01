@@ -19,6 +19,7 @@ export interface MetadataParams {
   aiApiKey?: string;
   aiHost?: string;
   outputPath?: string;
+  promptSet?: string;
 }
 
 export interface MetadataResult {
@@ -107,6 +108,9 @@ export class PythonService {
         }
         if (params.outputPath) {
           args.push('--output', params.outputPath);
+        }
+        if (params.promptSet) {
+          args.push('--prompt-set', params.promptSet);
         }
 
         log.info('Spawning Python process with args:', args);

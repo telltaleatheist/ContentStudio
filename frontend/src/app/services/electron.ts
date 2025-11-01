@@ -8,9 +8,12 @@ declare global {
       getSettings: () => Promise<any>;
       updateSettings: (settings: any) => Promise<any>;
 
-      // Prompts
-      getPrompts: () => Promise<any>;
-      savePrompts: (prompts: any) => Promise<any>;
+      // Prompt Sets
+      listPromptSets: () => Promise<any>;
+      getPromptSet: (id: string) => Promise<any>;
+      createPromptSet: (promptSet: any) => Promise<any>;
+      updatePromptSet: (id: string, promptSet: any) => Promise<any>;
+      deletePromptSet: (id: string) => Promise<any>;
 
       // File operations
       selectFiles: () => Promise<{ success: boolean; files: string[] }>;
@@ -68,15 +71,30 @@ export class ElectronService {
     return await this.ipcRenderer.updateSettings(settings);
   }
 
-  // Prompts
-  async getPrompts(): Promise<any> {
-    if (!this.ipcRenderer) return { youtube: {}, podcast: {} };
-    return await this.ipcRenderer.getPrompts();
+  // Prompt Sets
+  async listPromptSets(): Promise<any> {
+    if (!this.ipcRenderer) return { success: false, promptSets: [] };
+    return await this.ipcRenderer.listPromptSets();
   }
 
-  async savePrompts(prompts: any): Promise<any> {
+  async getPromptSet(id: string): Promise<any> {
     if (!this.ipcRenderer) return { success: false };
-    return await this.ipcRenderer.savePrompts(prompts);
+    return await this.ipcRenderer.getPromptSet(id);
+  }
+
+  async createPromptSet(promptSet: any): Promise<any> {
+    if (!this.ipcRenderer) return { success: false };
+    return await this.ipcRenderer.createPromptSet(promptSet);
+  }
+
+  async updatePromptSet(id: string, promptSet: any): Promise<any> {
+    if (!this.ipcRenderer) return { success: false };
+    return await this.ipcRenderer.updatePromptSet(id, promptSet);
+  }
+
+  async deletePromptSet(id: string): Promise<any> {
+    if (!this.ipcRenderer) return { success: false };
+    return await this.ipcRenderer.deletePromptSet(id);
   }
 
   // File operations
@@ -123,7 +141,7 @@ export class ElectronService {
   // Metadata generation
   async generateMetadata(params: {
     inputs: string[];
-    platform: string;
+    promptSet: string;
     mode: string;
   }): Promise<any> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };

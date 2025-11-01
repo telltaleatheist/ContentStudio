@@ -80,6 +80,41 @@
     </mat-card-content>
   </mat-card>
 
+  <!-- Prompt Set Section -->
+  <mat-card class="settings-card">
+    <mat-card-header>
+      <mat-card-title>Prompt Set</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Active Prompt Set</mat-label>
+        <mat-select [(value)]="selectedPromptSet">
+          @for (promptSet of availablePromptSets(); track promptSet.id) {
+            <mat-option [value]="promptSet.id">
+              <div class="prompt-set-option">
+                <mat-icon>{{ promptSet.platform === 'youtube' ? 'video_library' : 'podcasts' }}</mat-icon>
+                <span>{{ promptSet.name }}</span>
+              </div>
+            </mat-option>
+          }
+        </mat-select>
+        <mat-hint>Select which prompt set to use for generating metadata</mat-hint>
+      </mat-form-field>
+
+      <mat-card class="info-card">
+        <mat-card-content>
+          <div class="info-content">
+            <mat-icon class="info-icon">info</mat-icon>
+            <div>
+              <p><strong>About Prompt Sets</strong></p>
+              <p class="small">Each prompt set contains custom instructions for generating metadata. You can create and manage prompt sets in the Prompts page.</p>
+            </div>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    </mat-card-content>
+  </mat-card>
+
   <!-- Output Directory Section -->
   <mat-card class="settings-card">
     <mat-card-header>

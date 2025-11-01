@@ -34,13 +34,13 @@
                 (click)="selectReport(report)"
                 [class.selected]="selectedReport()?.path === report.path"
                 class="report-item">
-                <mat-icon matListItemIcon [style.color]="getPlatformColor(report.platform)">
-                  {{ getPlatformIcon(report.platform) }}
-                </mat-icon>
-                <div matListItemTitle class="report-title">{{ report.displayTitle || report.name }}</div>
-                <div matListItemLine class="report-meta">
+                <span matListItemTitle class="report-title">{{ report.displayTitle || report.name }}</span>
+                <span matListItemLine class="report-meta">
                   <span class="report-date">{{ formatDate(report.date) }}</span>
-                </div>
+                  @if (report.promptSet) {
+                    <span class="prompt-set-badge">{{ report.promptSet }}</span>
+                  }
+                </span>
                 <button mat-icon-button matListItemMeta (click)="deleteReport(report, $event)" color="warn">
                   <mat-icon>close</mat-icon>
                 </button>

@@ -1,18 +1,17 @@
 <div class="app-container">
   <!-- Top Toolbar -->
-  <mat-toolbar color="primary" class="app-toolbar">
+  <mat-toolbar class="app-toolbar">
+    <button mat-icon-button (click)="toggleSidenav()" class="menu-button">
+      <mat-icon>menu</mat-icon>
+    </button>
     <span class="app-title">ContentStudio</span>
     <span class="app-subtitle">AI-Powered Metadata Generator</span>
-    <span class="spacer"></span>
-    <button mat-icon-button (click)="toggleTheme()">
-      <mat-icon>{{ isDarkMode() ? 'light_mode' : 'dark_mode' }}</mat-icon>
-    </button>
   </mat-toolbar>
 
   <!-- Sidebar + Content Layout -->
   <mat-sidenav-container class="sidenav-container">
     <!-- Left Sidebar Navigation -->
-    <mat-sidenav mode="side" opened class="app-sidenav">
+    <mat-sidenav mode="side" [opened]="sidenavOpened()" class="app-sidenav">
       <div class="sidenav-content">
         <mat-nav-list class="nav-list">
           <a mat-list-item routerLink="/inputs" routerLinkActive="active-link">
@@ -32,6 +31,12 @@
             <span matListItemTitle>Settings</span>
           </a>
         </mat-nav-list>
+        <div class="theme-toggle-container">
+          <button mat-icon-button (click)="toggleTheme()" class="theme-toggle-button">
+            <mat-icon>{{ isDarkMode() ? 'light_mode' : 'dark_mode' }}</mat-icon>
+            <span class="theme-label">{{ isDarkMode() ? 'Light Mode' : 'Dark Mode' }}</span>
+          </button>
+        </div>
       </div>
     </mat-sidenav>
 

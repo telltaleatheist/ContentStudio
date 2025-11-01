@@ -11,9 +11,12 @@ const api = {
   getSettings: () => ipcRenderer.invoke('get-settings'),
   updateSettings: (settings: any) => ipcRenderer.invoke('update-settings', settings),
 
-  // Prompts
-  getPrompts: () => ipcRenderer.invoke('get-prompts'),
-  savePrompts: (prompts: any) => ipcRenderer.invoke('save-prompts', prompts),
+  // Prompt Sets
+  listPromptSets: () => ipcRenderer.invoke('list-prompt-sets'),
+  getPromptSet: (id: string) => ipcRenderer.invoke('get-prompt-set', id),
+  createPromptSet: (promptSet: any) => ipcRenderer.invoke('create-prompt-set', promptSet),
+  updatePromptSet: (id: string, promptSet: any) => ipcRenderer.invoke('update-prompt-set', id, promptSet),
+  deletePromptSet: (id: string) => ipcRenderer.invoke('delete-prompt-set', id),
 
   // File operations
   selectFiles: () => ipcRenderer.invoke('select-files'),

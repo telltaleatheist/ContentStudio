@@ -18,6 +18,7 @@ class ConfigManager:
                  ai_api_key: Optional[str] = None,
                  ai_host: str = 'http://localhost:11434',
                  platform: str = 'youtube',
+                 prompt_set: str = 'youtube-telltale',
                  output_dir: Optional[str] = None):
 
         self.ai_provider = ai_provider
@@ -25,6 +26,7 @@ class ConfigManager:
         self.ai_api_key = ai_api_key
         self.ai_host = ai_host
         self.platform = platform
+        self.prompt_set = prompt_set
 
         # Set output directory
         if output_dir:

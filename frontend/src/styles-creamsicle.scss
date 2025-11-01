@@ -372,3 +372,56 @@ router-outlet + * {
   flex: 1 !important;
   min-height: 0 !important;
 }
+
+/* ============================================================================
+   CHECKBOX COLOR OVERRIDE - CREAMSICLE ORANGE
+   ============================================================================ */
+
+// Override Material checkbox colors to use orange theme
+.mat-mdc-checkbox {
+  // Unchecked state
+  .mdc-checkbox__native-control:enabled:not(:checked):not(:indeterminate):not([data-indeterminate=true]) ~ .mdc-checkbox__background {
+    border-color: var(--text-secondary) !important;
+  }
+
+  // Checked state
+  .mdc-checkbox__native-control:enabled:checked ~ .mdc-checkbox__background,
+  .mdc-checkbox__native-control:enabled:indeterminate ~ .mdc-checkbox__background,
+  .mdc-checkbox__native-control[data-indeterminate=true]:enabled ~ .mdc-checkbox__background {
+    background-color: var(--primary-orange) !important;
+    border-color: var(--primary-orange) !important;
+  }
+
+  // Hover state (unchecked)
+  .mdc-checkbox__native-control:enabled:not(:checked):not(:indeterminate):not([data-indeterminate=true]):hover ~ .mdc-checkbox__background {
+    border-color: var(--primary-orange) !important;
+  }
+
+  // Ripple color
+  .mat-mdc-checkbox-ripple .mat-ripple-element {
+    background-color: var(--primary-orange) !important;
+  }
+
+  // Focus/hover overlay
+  &.mat-mdc-checkbox-checked .mdc-checkbox__ripple,
+  &.mat-primary .mdc-checkbox__ripple {
+    background-color: var(--primary-orange) !important;
+    opacity: 0.1;
+  }
+
+  // Label color
+  label {
+    color: var(--text-primary) !important;
+  }
+}
+
+// Primary color override for checkboxes
+.mat-mdc-checkbox.mat-primary {
+  --mdc-checkbox-selected-checkmark-color: white !important;
+  --mdc-checkbox-selected-focus-icon-color: var(--primary-orange) !important;
+  --mdc-checkbox-selected-hover-icon-color: var(--primary-orange) !important;
+  --mdc-checkbox-selected-icon-color: var(--primary-orange) !important;
+  --mdc-checkbox-selected-pressed-icon-color: var(--primary-orange) !important;
+  --mdc-checkbox-unselected-focus-icon-color: var(--text-secondary) !important;
+  --mdc-checkbox-unselected-hover-icon-color: var(--primary-orange) !important;
+}

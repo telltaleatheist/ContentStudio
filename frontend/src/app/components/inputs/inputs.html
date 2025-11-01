@@ -53,25 +53,43 @@
     </div>
 
     @if (inputsState.inputItems().length > 0) {
+      <!-- Master Controls -->
       <div class="master-controls">
-        <mat-checkbox
-          [checked]="allItemsSelected"
-          (change)="toggleSelectAll()"
-          color="primary">
-          Select All
-        </mat-checkbox>
-        <mat-checkbox
-          [checked]="allItemsSpreaker"
-          (change)="toggleAllSpreaker()"
-          color="primary">
-          All Podcast
-        </mat-checkbox>
-        <mat-checkbox
-          [checked]="allItemsCompilation"
-          (change)="toggleAllCompilation()"
-          color="primary">
-          All Compilation
-        </mat-checkbox>
+        <div class="master-controls-row">
+          <!-- Select All Checkbox -->
+          <mat-checkbox
+            [checked]="allItemsSelected"
+            (change)="toggleSelectAll()"
+            color="primary"
+            class="master-checkbox">
+            Select All
+          </mat-checkbox>
+
+          <!-- Master Prompt Dropdown -->
+          <mat-form-field appearance="outline" class="master-prompt-dropdown">
+            <mat-label>Prompt Set</mat-label>
+            <mat-select
+              [ngModel]="inputsState.masterPromptSet()"
+              (ngModelChange)="onMasterPromptSetChange($event)">
+              @for (promptSet of availablePromptSets(); track promptSet.id) {
+                <mat-option [value]="promptSet.id">
+                  <mat-icon>{{ promptSet.platform === 'youtube' ? 'video_library' : 'podcasts' }}</mat-icon>
+                  {{ promptSet.name }}
+                </mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+
+          <!-- Compilation Mode Checkbox -->
+          <mat-checkbox
+            [checked]="inputsState.compilationMode()"
+            (change)="onCompilationModeChange($event.checked)"
+            color="primary"
+            class="compilation-checkbox"
+            matTooltip="When enabled, all items will use the same prompt set and be processed as one compilation">
+            Compilation Mode
+          </mat-checkbox>
+        </div>
       </div>
     }
 
@@ -103,26 +121,24 @@
                   </div>
                 </div>
 
-                <!-- Podcast Checkbox -->
-                <mat-checkbox
-                  [checked]="item.platform === 'spreaker'"
-                  (change)="updateItemPlatform(i, $event.checked ? 'spreaker' : 'youtube')"
-                  color="primary"
-                  matTooltip="For Podcast (unchecked = YouTube)">
-                  Podcast
-                </mat-checkbox>
-
-                <!-- Compilation Checkbox -->
-                <mat-checkbox
-                  [checked]="item.mode === 'compilation'"
-                  (change)="updateItemMode(i, $event.checked ? 'compilation' : 'individual')"
-                  color="primary"
-                  matTooltip="Compilation mode (unchecked = Individual)">
-                  Compilation
-                </mat-checkbox>
+                <!-- Individual Prompt Dropdown (disabled if compilation mode) -->
+                <mat-form-field appearance="outline" class="item-prompt-dropdown">
+                  <mat-label>Prompt</mat-label>
+                  <mat-select
+                    [ngModel]="item.promptSet"
+                    (ngModelChange)="updateItemPromptSet(i, $event)"
+                    [disabled]="inputsState.compilationMode()">
+                    @for (promptSet of availablePromptSets(); track promptSet.id) {
+                      <mat-option [value]="promptSet.id">
+                        <mat-icon>{{ promptSet.platform === 'youtube' ? 'video_library' : 'podcasts' }}</mat-icon>
+                        {{ promptSet.name }}
+                      </mat-option>
+                    }
+                  </mat-select>
+                </mat-form-field>
 
                 <!-- Remove Button -->
-                <button mat-icon-button (click)="removeInput(i)" matTooltip="Remove">
+                <button mat-icon-button (click)="removeInput(i)" matTooltip="Remove" class="remove-btn">
                   <mat-icon>close</mat-icon>
                 </button>
               </div>
@@ -170,7 +186,8 @@
                   <div class="input-details">
                     <div class="item-title">{{ job.name }}</div>
                     <div class="item-subtitle">
-                      {{ job.status }}
+                      <mat-icon class="job-prompt-icon">{{ getPromptSetIcon(job.promptSet) }}</mat-icon>
+                      {{ getPromptSetName(job.promptSet) }} · {{ job.mode }}
                       @if (job.completedAt) {
                         · {{ job.processingTime?.toFixed(1) }}s
                       }

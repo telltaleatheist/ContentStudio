@@ -1,4 +1,5 @@
-# Podcast (Spreaker) Metadata Generation Prompts
+name: "Podcast - Telltale"
+platform: "podcast"
 
 editorial_guidelines: |
   You know Spreaker inside and out - how people find podcasts, what makes them click, and what works in 2025.

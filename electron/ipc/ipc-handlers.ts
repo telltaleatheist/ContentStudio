@@ -204,7 +204,8 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
         aiApiKey: settings.aiProvider === 'openai' ? settings.openaiApiKey :
                   settings.aiProvider === 'claude' ? settings.claudeApiKey : undefined,
         aiHost: settings.aiProvider === 'ollama' ? settings.ollamaHost : undefined,
-        outputPath: params.outputPath || settings.outputDirectory
+        outputPath: params.outputPath || settings.outputDirectory,
+        promptSet: params.promptSet || settings.promptSet || 'youtube-telltale'
       };
 
       // Send progress update
@@ -268,86 +269,152 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
     }
   });
 
-  // Get prompts from YAML files
-  ipcMain.handle('get-prompts', async () => {
+  // List all prompt sets
+  ipcMain.handle('list-prompt-sets', async () => {
     try {
-      const promptsDir = path.join(app.getAppPath(), 'python', 'prompts');
+      const promptSetsDir = path.join(app.getAppPath(), 'python', 'prompts', 'prompt_sets');
 
-      const youtubePromptsPath = path.join(promptsDir, 'prompts.yml');
-      const spreakerPromptsPath = path.join(promptsDir, 'spreaker_prompts.yml');
-
-      const result: any = { youtube: {}, podcast: {} };
-
-      // Load YouTube prompts
-      if (fs.existsSync(youtubePromptsPath)) {
-        const content = fs.readFileSync(youtubePromptsPath, 'utf8');
-        const parsed: any = yaml.load(content);
-        result.youtube = {
-          editorial_guidelines: parsed.editorial_guidelines || '',
-          generation_instructions: parsed.generation_instructions || '',
-          description_links: parsed.description_links || ''
-        };
+      if (!fs.existsSync(promptSetsDir)) {
+        return { success: false, error: 'Prompt sets directory not found' };
       }
 
-      // Load Podcast (Spreaker) prompts
-      if (fs.existsSync(spreakerPromptsPath)) {
-        const content = fs.readFileSync(spreakerPromptsPath, 'utf8');
-        const parsed: any = yaml.load(content);
-        result.podcast = {
-          editorial_guidelines: parsed.editorial_guidelines || '',
-          generation_instructions: parsed.generation_instructions || '',
-          description_links: parsed.description_links || ''
-        };
+      const files = fs.readdirSync(promptSetsDir);
+      const promptSets = [];
+
+      for (const file of files) {
+        if (file.endsWith('.yml') || file.endsWith('.yaml')) {
+          const filePath = path.join(promptSetsDir, file);
+          const content = fs.readFileSync(filePath, 'utf8');
+          const parsed: any = yaml.load(content);
+
+          promptSets.push({
+            id: file.replace(/\.(yml|yaml)$/, ''),
+            name: parsed.name || file,
+            platform: parsed.platform || 'youtube'
+          });
+        }
       }
 
-      return result;
+      return { success: true, promptSets };
     } catch (error) {
-      log.error('Error loading prompts:', error);
-      return { youtube: {}, podcast: {} };
+      log.error('Error listing prompt sets:', error);
+      return { success: false, error: String(error) };
     }
   });
 
-  // Save prompts to YAML files
-  ipcMain.handle('save-prompts', async (_event, prompts) => {
+  // Get a specific prompt set
+  ipcMain.handle('get-prompt-set', async (_event, promptSetId: string) => {
     try {
-      const promptsDir = path.join(app.getAppPath(), 'python', 'prompts');
+      const promptSetsDir = path.join(app.getAppPath(), 'python', 'prompts', 'prompt_sets');
+      const filePath = path.join(promptSetsDir, `${promptSetId}.yml`);
 
-      // Determine file path based on platform
-      let filePath: string;
-      if (prompts.platform === 'youtube') {
-        filePath = path.join(promptsDir, 'prompts.yml');
-      } else if (prompts.platform === 'podcast') {
-        filePath = path.join(promptsDir, 'spreaker_prompts.yml');
-      } else {
-        return { success: false, error: 'Invalid platform' };
+      if (!fs.existsSync(filePath)) {
+        return { success: false, error: 'Prompt set not found' };
       }
 
-      // Read existing file to preserve other fields
-      let existingData: any = {};
-      if (fs.existsSync(filePath)) {
-        const content = fs.readFileSync(filePath, 'utf8');
-        existingData = yaml.load(content) || {};
-      }
+      const content = fs.readFileSync(filePath, 'utf8');
+      const parsed: any = yaml.load(content);
 
-      // Update the prompts
-      existingData.editorial_guidelines = prompts.editorial_guidelines || '';
-      existingData.generation_instructions = prompts.generation_instructions || '';
-      existingData.description_links = prompts.description_links || '';
-
-      // Write back to file preserving formatting
-      const yamlStr = yaml.dump(existingData, {
-        lineWidth: -1,
-        noRefs: true,
-        styles: {
-          '!!null': 'canonical'
+      return {
+        success: true,
+        promptSet: {
+          id: promptSetId,
+          name: parsed.name || promptSetId,
+          platform: parsed.platform || 'youtube',
+          editorial_guidelines: parsed.editorial_guidelines || '',
+          generation_instructions: parsed.generation_instructions || '',
+          description_links: parsed.description_links || ''
         }
-      });
+      };
+    } catch (error) {
+      log.error('Error getting prompt set:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Create a new prompt set
+  ipcMain.handle('create-prompt-set', async (_event, promptSet: any) => {
+    try {
+      const promptSetsDir = path.join(app.getAppPath(), 'python', 'prompts', 'prompt_sets');
+
+      // Create a safe filename from the name
+      const safeId = promptSet.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      const filePath = path.join(promptSetsDir, `${safeId}.yml`);
+
+      // Check if already exists
+      if (fs.existsSync(filePath)) {
+        return { success: false, error: 'A prompt set with this name already exists' };
+      }
+
+      // Create the YAML content
+      const yamlContent = {
+        name: promptSet.name,
+        platform: promptSet.platform || 'youtube',
+        editorial_guidelines: promptSet.editorial_guidelines || '',
+        generation_instructions: promptSet.generation_instructions || '',
+        description_links: promptSet.description_links || ''
+      };
+
+      const yamlStr = yaml.dump(yamlContent, { lineWidth: -1, noRefs: true });
       fs.writeFileSync(filePath, yamlStr, 'utf8');
 
-      log.info(`Saved ${prompts.platform} prompts to ${filePath}`);
+      log.info(`Created new prompt set: ${safeId}`);
+      return { success: true, id: safeId };
+    } catch (error) {
+      log.error('Error creating prompt set:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Update an existing prompt set
+  ipcMain.handle('update-prompt-set', async (_event, promptSetId: string, promptSet: any) => {
+    try {
+      const promptSetsDir = path.join(app.getAppPath(), 'python', 'prompts', 'prompt_sets');
+      const filePath = path.join(promptSetsDir, `${promptSetId}.yml`);
+
+      if (!fs.existsSync(filePath)) {
+        return { success: false, error: 'Prompt set not found' };
+      }
+
+      // Read existing file
+      const content = fs.readFileSync(filePath, 'utf8');
+      const existingData: any = yaml.load(content) || {};
+
+      // Update the fields
+      existingData.name = promptSet.name || existingData.name;
+      existingData.platform = promptSet.platform || existingData.platform;
+      existingData.editorial_guidelines = promptSet.editorial_guidelines || '';
+      existingData.generation_instructions = promptSet.generation_instructions || '';
+      existingData.description_links = promptSet.description_links || '';
+
+      // Write back
+      const yamlStr = yaml.dump(existingData, { lineWidth: -1, noRefs: true });
+      fs.writeFileSync(filePath, yamlStr, 'utf8');
+
+      log.info(`Updated prompt set: ${promptSetId}`);
       return { success: true };
     } catch (error) {
-      log.error('Error saving prompts:', error);
+      log.error('Error updating prompt set:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Delete a prompt set
+  ipcMain.handle('delete-prompt-set', async (_event, promptSetId: string) => {
+    try {
+      const promptSetsDir = path.join(app.getAppPath(), 'python', 'prompts', 'prompt_sets');
+      const filePath = path.join(promptSetsDir, `${promptSetId}.yml`);
+
+      if (!fs.existsSync(filePath)) {
+        return { success: false, error: 'Prompt set not found' };
+      }
+
+      fs.unlinkSync(filePath);
+
+      log.info(`Deleted prompt set: ${promptSetId}`);
+      return { success: true };
+    } catch (error) {
+      log.error('Error deleting prompt set:', error);
       return { success: false, error: String(error) };
     }
   });

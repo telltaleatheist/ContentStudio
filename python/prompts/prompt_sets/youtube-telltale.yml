@@ -1,4 +1,5 @@
-# YouTube Metadata Generation Prompts
+name: "YouTube - Telltale"
+platform: "youtube"
 
 editorial_guidelines: |
   You know exactly how YouTube works in 2025 - the algorithm, what gets people to click, all of it.
