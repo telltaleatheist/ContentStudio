@@ -88,7 +88,7 @@
     <mat-card-content>
       <mat-form-field appearance="outline" class="full-width">
         <mat-label>Active Prompt Set</mat-label>
-        <mat-select [(value)]="selectedPromptSet">
+        <mat-select [(ngModel)]="selectedPromptSet">
           @for (promptSet of availablePromptSets(); track promptSet.id) {
             <mat-option [value]="promptSet.id">
               <div class="prompt-set-option">

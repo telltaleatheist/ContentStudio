@@ -11,6 +11,19 @@ import * as yaml from 'js-yaml';
  * Handles communication between renderer and main process
  */
 
+/**
+ * Get the prompt sets directory path
+ * In production, it's in resources/python/prompts/prompt_sets
+ * In development, it's in the project python/prompts/prompt_sets
+ */
+function getPromptSetsDirectory(): string {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'python', 'prompts', 'prompt_sets');
+  } else {
+    return path.join(app.getAppPath(), 'python', 'prompts', 'prompt_sets');
+  }
+}
+
 export function setupIpcHandlers(store: Store<any>, pythonService: PythonService | null) {
 
   // Get settings
@@ -189,7 +202,7 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
         throw new Error('Python service not initialized');
       }
 
-      log.info('Starting metadata generation with params:', params);
+      log.info('Starting metadata generation with params:', JSON.stringify(params, null, 2));
 
       // Get settings using electron-store API
       const settings = (store as any).store;
@@ -207,6 +220,8 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
         outputPath: params.outputPath || settings.outputDirectory,
         promptSet: params.promptSet || settings.promptSet || 'youtube-telltale'
       };
+
+      log.info('Prepared metadata params:', JSON.stringify(metadataParams, null, 2));
 
       // Send progress update
       const mainWindow = BrowserWindow.getAllWindows()[0];
@@ -272,9 +287,10 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
   // List all prompt sets
   ipcMain.handle('list-prompt-sets', async () => {
     try {
-      const promptSetsDir = path.join(app.getAppPath(), 'python', 'prompts', 'prompt_sets');
+      const promptSetsDir = getPromptSetsDirectory();
 
       if (!fs.existsSync(promptSetsDir)) {
+        log.error(`Prompt sets directory not found: ${promptSetsDir}`);
         return { success: false, error: 'Prompt sets directory not found' };
       }
 
@@ -305,7 +321,7 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
   // Get a specific prompt set
   ipcMain.handle('get-prompt-set', async (_event, promptSetId: string) => {
     try {
-      const promptSetsDir = path.join(app.getAppPath(), 'python', 'prompts', 'prompt_sets');
+      const promptSetsDir = getPromptSetsDirectory();
       const filePath = path.join(promptSetsDir, `${promptSetId}.yml`);
 
       if (!fs.existsSync(filePath)) {
@@ -335,7 +351,7 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
   // Create a new prompt set
   ipcMain.handle('create-prompt-set', async (_event, promptSet: any) => {
     try {
-      const promptSetsDir = path.join(app.getAppPath(), 'python', 'prompts', 'prompt_sets');
+      const promptSetsDir = getPromptSetsDirectory();
 
       // Create a safe filename from the name
       const safeId = promptSet.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
@@ -369,7 +385,7 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
   // Update an existing prompt set
   ipcMain.handle('update-prompt-set', async (_event, promptSetId: string, promptSet: any) => {
     try {
-      const promptSetsDir = path.join(app.getAppPath(), 'python', 'prompts', 'prompt_sets');
+      const promptSetsDir = getPromptSetsDirectory();
       const filePath = path.join(promptSetsDir, `${promptSetId}.yml`);
 
       if (!fs.existsSync(filePath)) {
@@ -402,7 +418,7 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
   // Delete a prompt set
   ipcMain.handle('delete-prompt-set', async (_event, promptSetId: string) => {
     try {
-      const promptSetsDir = path.join(app.getAppPath(), 'python', 'prompts', 'prompt_sets');
+      const promptSetsDir = getPromptSetsDirectory();
       const filePath = path.join(promptSetsDir, `${promptSetId}.yml`);
 
       if (!fs.existsSync(filePath)) {
