@@ -1,54 +1,57 @@
 <div class="prompts-page">
   <!-- Header -->
   <div class="header">
-    <div class="header-content">
-      <h2>Manage Prompt Sets</h2>
-      <p class="subtitle">Create and manage multiple prompt sets for different channels or shows. Select which one to use in Settings.</p>
-    </div>
-    <button mat-raised-button color="primary" (click)="openCreateDialog()">
-      <mat-icon>add</mat-icon>
-      New Prompt Set
-    </button>
+    <h2>Manage Prompt Sets</h2>
+    <p class="subtitle">Create and manage multiple prompt sets for different channels or shows. Select which one to use in Settings.</p>
   </div>
 
   <div class="content-wrapper">
-    <!-- Sidebar -->
-    <div class="sidebar">
-      @if (promptSets().length === 0) {
-        <div class="empty-state">
-          <mat-icon>folder_open</mat-icon>
-          <p>No prompt sets found</p>
-          <button mat-raised-button color="primary" (click)="openCreateDialog()">
-            <mat-icon>add</mat-icon>
-            Create First Set
-          </button>
+    <!-- Sidebar Panel -->
+    <div class="panel sidebar">
+      <div class="panel-header">
+        <div>
+          <h4 class="panel-title">📝 Prompt Sets</h4>
+          <p class="panel-subtitle">{{ promptSets().length }} set{{ promptSets().length !== 1 ? 's' : '' }} found</p>
         </div>
-      } @else {
-        @for (promptSet of promptSets(); track promptSet.id) {
-          <div class="prompt-set-item"
-               [class.active]="selectedPromptSetId() === promptSet.id"
-               (click)="selectPromptSet(promptSet.id)">
-            <div class="item-content">
-              <mat-icon>{{ promptSet.platform === 'youtube' ? 'video_library' : 'podcasts' }}</mat-icon>
-              <span>{{ promptSet.name }}</span>
-            </div>
-            <button mat-icon-button (click)="confirmDelete(promptSet.id); $event.stopPropagation()" class="delete-btn">
-              <mat-icon>delete</mat-icon>
+        <button mat-icon-button color="primary" (click)="openCreateDialog()" title="New Prompt Set">
+          <mat-icon>add</mat-icon>
+        </button>
+      </div>
+      <div class="panel-content">
+        @if (promptSets().length === 0) {
+          <div class="empty-state">
+            <mat-icon>folder_open</mat-icon>
+            <p>No prompt sets found</p>
+            <button mat-raised-button color="primary" (click)="openCreateDialog()">
+              <mat-icon>add</mat-icon>
+              Create First Set
             </button>
           </div>
+        } @else {
+          <div class="prompt-sets-list">
+            @for (promptSet of promptSets(); track promptSet.id) {
+              <div class="prompt-set-item"
+                   [class.active]="selectedPromptSetId() === promptSet.id"
+                   (click)="selectPromptSet(promptSet.id)">
+                <div class="item-content">
+                  <mat-icon>{{ promptSet.platform === 'youtube' ? 'video_library' : 'podcasts' }}</mat-icon>
+                  <span>{{ promptSet.name }}</span>
+                </div>
+                <button mat-icon-button (click)="confirmDelete(promptSet.id); $event.stopPropagation()" class="delete-btn">
+                  <mat-icon>delete</mat-icon>
+                </button>
+              </div>
+            }
+          </div>
         }
-      }
+      </div>
     </div>
 
     <!-- Edit Panel -->
-    <div class="edit-panel">
-      @if (currentPromptSet()) {
-        <mat-card class="edit-card">
-          <mat-card-header>
-            <mat-card-title>{{ currentPromptSet()!.name }}</mat-card-title>
-            <mat-card-subtitle>{{ currentPromptSet()!.platform === 'youtube' ? 'YouTube' : 'Podcast' }} Prompt Set</mat-card-subtitle>
-          </mat-card-header>
-          <mat-card-content>
+    <div class="panel edit-panel">
+      <div class="panel-content">
+        @if (currentPromptSet()) {
+          <div class="edit-card">
             <mat-form-field appearance="outline" class="full-width">
               <mat-label>Name</mat-label>
               <input matInput [ngModel]="editName()" (ngModelChange)="editName.set($event)">
@@ -94,21 +97,22 @@
                         placeholder="Links to be appended to descriptions (not sent to AI)..."></textarea>
               <mat-hint>Links appended after AI generation (e.g., social media, affiliate links)</mat-hint>
             </mat-form-field>
-          </mat-card-content>
-          <mat-card-actions>
-            <button mat-raised-button color="primary" (click)="saveCurrentPromptSet()">
-              <mat-icon>save</mat-icon>
-              Save Prompt Set
-            </button>
-          </mat-card-actions>
-        </mat-card>
-      } @else {
-        <div class="empty-edit-panel">
-          <mat-icon>description</mat-icon>
-          <h3>No Prompt Set Selected</h3>
-          <p>Select a prompt set from the sidebar or create a new one to get started.</p>
-        </div>
-      }
+
+            <div class="card-actions">
+              <button mat-raised-button color="primary" (click)="saveCurrentPromptSet()">
+                <mat-icon>save</mat-icon>
+                Save Prompt Set
+              </button>
+            </div>
+          </div>
+        } @else {
+          <div class="empty-edit-panel">
+            <mat-icon>description</mat-icon>
+            <h3>No Prompt Set Selected</h3>
+            <p>Select a prompt set from the sidebar or create a new one to get started.</p>
+          </div>
+        }
+      </div>
     </div>
   </div>
 
