@@ -28,25 +28,27 @@
         }
 
         @if (reports().length > 0) {
-          <mat-list class="reports-list">
+          <div class="reports-list">
             @for (report of reports(); track report.path) {
-              <mat-list-item
+              <div
                 (click)="selectReport(report)"
                 [class.selected]="selectedReport()?.path === report.path"
                 class="report-item">
-                <span matListItemTitle class="report-title">{{ report.displayTitle || report.name }}</span>
-                <span matListItemLine class="report-meta">
-                  <span class="report-date">{{ formatDate(report.date) }}</span>
-                  @if (report.promptSet) {
-                    <span class="prompt-set-badge">{{ report.promptSet }}</span>
-                  }
-                </span>
-                <button mat-icon-button matListItemMeta (click)="deleteReport(report, $event)" color="warn">
+                <div class="report-content">
+                  <div class="report-title">{{ report.displayTitle || report.name }}</div>
+                  <div class="report-meta">
+                    <span class="report-date">{{ formatDate(report.date) }}</span>
+                    @if (report.promptSet) {
+                      <span class="prompt-set-badge">{{ report.promptSet }}</span>
+                    }
+                  </div>
+                </div>
+                <button mat-icon-button (click)="deleteReport(report, $event)" color="warn" class="delete-button">
                   <mat-icon>close</mat-icon>
                 </button>
-              </mat-list-item>
+              </div>
             }
-          </mat-list>
+          </div>
         }
       </div>
     </div>
