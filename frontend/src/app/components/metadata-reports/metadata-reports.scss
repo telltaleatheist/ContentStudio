@@ -160,16 +160,58 @@
 
     .delete-button {
       color: var(--text-secondary);
-      width: 32px;
-      height: 32px;
+      width: 32px !important;
+      height: 32px !important;
+      min-width: 32px !important;
+      min-height: 32px !important;
+      max-width: 32px !important;
+      max-height: 32px !important;
+      padding: 0 !important;
+      margin: 0 !important;
       flex-shrink: 0;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      position: relative !important;
+
+      // Override Material button internals to center the ripple
+      ::ng-deep {
+        .mat-mdc-button-persistent-ripple {
+          border-radius: 50% !important;
+          background: rgba(255, 255, 255, 0.1) !important;
+        }
+
+        .mat-mdc-button-touch-target {
+          position: absolute !important;
+          top: 50% !important;
+          left: 50% !important;
+          transform: translate(-50%, -50%) !important;
+          width: 100% !important;
+          height: 100% !important;
+        }
+
+        .mdc-icon-button__ripple {
+          border-radius: 50% !important;
+        }
+      }
 
       mat-icon {
-        font-size: 1.125rem;
+        font-size: 1.125rem !important;
+        width: 1.125rem !important;
+        height: 1.125rem !important;
+        line-height: 1.125rem !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        position: relative !important;
+        z-index: 1 !important;
       }
 
       &:hover {
-        color: var(--error-color);
+        color: var(--error-color) !important;
+        background: rgba(255, 82, 82, 0.2) !important;
       }
     }
   }
@@ -317,18 +359,35 @@
       height: 32px !important;
       min-width: 32px !important;
       min-height: 32px !important;
+      max-width: 32px !important;
+      max-height: 32px !important;
       padding: 0 !important;
       margin: 0 !important;
       display: flex !important;
       align-items: center !important;
       justify-content: center !important;
+      position: relative !important;
+      overflow: visible !important;
 
-      // Override Material button internals
-      .mat-mdc-button-persistent-ripple,
-      .mat-mdc-button-touch-target {
-        display: flex !important;
-        align-items: center !important;
-        justify-content: center !important;
+      // Override Material button internals to center the ripple
+      ::ng-deep {
+        .mat-mdc-button-persistent-ripple {
+          border-radius: 50% !important;
+          opacity: 0.15 !important;
+        }
+
+        .mat-mdc-button-touch-target {
+          position: absolute !important;
+          top: 50% !important;
+          left: 50% !important;
+          transform: translate(-50%, -50%) !important;
+          width: 100% !important;
+          height: 100% !important;
+        }
+
+        .mdc-icon-button__ripple {
+          border-radius: 50% !important;
+        }
       }
 
       mat-icon {
@@ -341,11 +400,14 @@
         justify-content: center !important;
         margin: 0 !important;
         padding: 0 !important;
+        position: relative !important;
+        z-index: 1 !important;
       }
 
       &:hover {
-        color: var(--primary-orange);
+        color: var(--primary-orange) !important;
         transform: scale(1.1);
+        background: rgba(255, 107, 53, 0.2) !important;
       }
     }
   }
