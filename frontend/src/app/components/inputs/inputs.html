@@ -89,6 +89,16 @@
             matTooltip="When enabled, all items will use the same prompt set and be processed as one compilation">
             Compilation Mode
           </mat-checkbox>
+
+          <!-- Clear Inputs Button -->
+          <button
+            mat-button
+            (click)="clearAllInputs()"
+            class="clear-inputs-button"
+            matTooltip="Clear all inputs">
+            <mat-icon>clear_all</mat-icon>
+            Clear Inputs
+          </button>
         </div>
       </div>
     }

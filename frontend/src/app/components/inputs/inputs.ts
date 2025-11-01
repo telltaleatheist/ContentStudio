@@ -236,6 +236,11 @@ export class Inputs implements OnInit, OnDestroy {
     this.inputsState.removeItem(index);
   }
 
+  clearAllInputs() {
+    // Clear all input items
+    this.inputsState.inputItems.set([]);
+  }
+
   addToQueue() {
     if (this.selectedItems.length === 0) return;
 

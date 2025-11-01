@@ -166,6 +166,21 @@
           font-weight: 500;
           flex-shrink: 0;
         }
+
+        .clear-inputs-button {
+          margin-left: auto;
+          flex-shrink: 0;
+          color: var(--text-secondary);
+
+          &:hover {
+            color: var(--error-color);
+            background: rgba(244, 67, 54, 0.1);
+          }
+
+          mat-icon {
+            margin-right: 0.5rem;
+          }
+        }
       }
     }
 

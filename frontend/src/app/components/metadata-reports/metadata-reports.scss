@@ -27,7 +27,7 @@
   display: grid;
   grid-template-columns: 350px 1fr;
   gap: 1rem;
-  padding: 1rem;
+  padding: 1.5rem 2rem;
   overflow: hidden;
   min-height: 0;
 }
@@ -449,10 +449,25 @@
     height: auto !important;
     transition: all 0.2s !important;
 
+    // Pierce Material's encapsulation to set text color
+    ::ng-deep {
+      .mdc-evolution-chip__text-label,
+      .mat-mdc-chip-action-label {
+        color: var(--text-primary) !important;
+      }
+    }
+
     &:hover {
       background: var(--bg-primary) !important;
       border-color: var(--primary-orange) !important;
       color: var(--primary-orange) !important;
+
+      ::ng-deep {
+        .mdc-evolution-chip__text-label,
+        .mat-mdc-chip-action-label {
+          color: var(--primary-orange) !important;
+        }
+      }
     }
   }
 }

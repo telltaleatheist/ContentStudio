@@ -73,6 +73,14 @@
   justify-content: space-between;
   align-items: center;
   gap: 0.5rem;
+
+  button[mat-icon-button] {
+    color: var(--primary-orange);
+
+    &:hover {
+      background: rgba(255, 107, 53, 0.1);
+    }
+  }
 }
 
 .panel-title {
