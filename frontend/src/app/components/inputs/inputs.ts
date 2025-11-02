@@ -524,7 +524,9 @@ export class Inputs implements OnInit, OnDestroy {
       const result = await this.electron.generateMetadata({
         inputs,
         promptSet: nextJob.promptSet,
-        mode: nextJob.mode
+        mode: nextJob.mode,
+        jobId: nextJob.id,
+        jobName: nextJob.name
       });
 
       unsubscribe();

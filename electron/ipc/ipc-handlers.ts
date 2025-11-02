@@ -252,7 +252,9 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
                   settings.aiProvider === 'claude' ? settings.claudeApiKey : undefined,
         aiHost: settings.aiProvider === 'ollama' ? settings.ollamaHost : undefined,
         outputPath: params.outputPath || settings.outputDirectory,
-        promptSet: params.promptSet || settings.promptSet || 'youtube-telltale'
+        promptSet: params.promptSet || settings.promptSet || 'youtube-telltale',
+        jobId: params.jobId,
+        jobName: params.jobName
       };
 
       log.info('Prepared metadata params:', JSON.stringify(metadataParams, null, 2));

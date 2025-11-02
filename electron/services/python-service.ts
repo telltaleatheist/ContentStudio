@@ -20,6 +20,8 @@ export interface MetadataParams {
   aiHost?: string;
   outputPath?: string;
   promptSet?: string;
+  jobId?: string;
+  jobName?: string;
 }
 
 export interface MetadataResult {
@@ -111,6 +113,12 @@ export class PythonService {
         }
         if (params.promptSet) {
           args.push('--prompt-set', params.promptSet);
+        }
+        if (params.jobId) {
+          args.push('--job-id', params.jobId);
+        }
+        if (params.jobName) {
+          args.push('--job-name', params.jobName);
         }
 
         log.info('Spawning Python process with args:', args);

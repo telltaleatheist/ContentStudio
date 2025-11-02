@@ -149,6 +149,8 @@ export class ElectronService {
     inputs: string[];
     promptSet: string;
     mode: string;
+    jobId?: string;
+    jobName?: string;
   }): Promise<any> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.generateMetadata(params);

@@ -9,6 +9,9 @@
           <h4 class="panel-title">📝 Metadata Reports</h4>
           <p class="panel-subtitle">{{ reports().length }} report{{ reports().length !== 1 ? 's' : '' }} found</p>
         </div>
+        <button mat-icon-button (click)="loadReports()" [disabled]="isLoading()" title="Refresh reports">
+          <mat-icon>refresh</mat-icon>
+        </button>
       </div>
 
       <div class="panel-content">

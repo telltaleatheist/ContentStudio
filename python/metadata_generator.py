@@ -53,6 +53,10 @@ def main():
     parser.add_argument('--prompt-set', default='youtube-telltale',
                        help='Prompt set to use for metadata generation')
 
+    # Job tracking
+    parser.add_argument('--job-id', help='Job ID for tracking and file organization')
+    parser.add_argument('--job-name', help='Job name for folder naming')
+
     args = parser.parse_args()
 
     try:
@@ -122,16 +126,27 @@ def main():
                 else:
                     compilation_name = base_name
 
-                # Save output
-                output_path = output_handler.save_metadata(
-                    metadata_result.metadata,
-                    args.prompt_set,
-                    source_name=compilation_name
+                # Determine job name (use provided or generated)
+                job_name = args.job_name or compilation_name
+
+                # Add title to metadata
+                metadata_result.metadata['_title'] = compilation_name
+                metadata_result.metadata['_prompt_set'] = args.prompt_set
+
+                # Save output using new job-based method
+                save_result = output_handler.save_job_metadata(
+                    job_name=job_name,
+                    metadata_items=[metadata_result.metadata],
+                    prompt_set=args.prompt_set,
+                    job_id=args.job_id
                 )
                 result = {
                     "success": True,
                     "metadata": [metadata_result.metadata],
-                    "output_files": [output_path],
+                    "output_files": [save_result['txt_folder']],
+                    "txt_files": save_result['txt_files'],
+                    "json_file": save_result['json_file'],
+                    "job_id": save_result['job_id'],
                     "processing_time": time.time() - start_time
                 }
             else:
@@ -140,7 +155,6 @@ def main():
         else:
             # Generate individual metadata for each content item
             all_metadata = []
-            output_files = []
 
             for item in content_items:
                 # Get source filename if available (EXACTLY like ContentStudio)
@@ -155,23 +169,49 @@ def main():
                 )
 
                 if metadata_result.success:
+                    # Get clean name for this item
+                    if item.source:
+                        if '/' in item.source or '\\' in item.source:
+                            clean_name = Path(item.source).stem
+                        else:
+                            clean_name = item.source
+                    else:
+                        clean_name = "metadata"
+
+                    # Add title to metadata
+                    metadata_result.metadata['_title'] = clean_name
+                    metadata_result.metadata['_prompt_set'] = args.prompt_set
                     all_metadata.append(metadata_result.metadata)
-                    output_path = output_handler.save_metadata(
-                        metadata_result.metadata,
-                        args.prompt_set,
-                        source_name=item.source
-                    )
-                    output_files.append(output_path)
                 else:
                     print(f"Warning: Failed to generate metadata for {item.source}", file=sys.stderr)
 
             if not all_metadata:
                 raise Exception("Failed to generate any metadata")
 
+            # Determine job name (use provided or generated from first item)
+            if args.job_name:
+                job_name = args.job_name
+            elif len(all_metadata) == 1:
+                job_name = all_metadata[0]['_title']
+            else:
+                first_name = all_metadata[0]['_title']
+                job_name = f"{first_name} + {len(all_metadata) - 1} more"
+
+            # Save all metadata as a single job
+            save_result = output_handler.save_job_metadata(
+                job_name=job_name,
+                metadata_items=all_metadata,
+                prompt_set=args.prompt_set,
+                job_id=args.job_id
+            )
+
             result = {
                 "success": True,
                 "metadata": all_metadata,
-                "output_files": output_files,
+                "output_files": [save_result['txt_folder']],
+                "txt_files": save_result['txt_files'],
+                "json_file": save_result['json_file'],
+                "job_id": save_result['job_id'],
                 "processing_time": time.time() - start_time
             }
 

@@ -18,9 +18,91 @@ class OutputHandler:
 
     def __init__(self, config: ConfigManager):
         self.config = config
-        # Add 'metadata' subdirectory to the output path
-        self.output_dir = config.output_dir / 'metadata'
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        # User-facing directory for txt files (the configured output directory)
+        self.user_output_dir = config.output_dir
+        self.user_output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Hidden directory for JSON metadata files
+        self.metadata_dir = config.output_dir / '.contentstudio' / 'metadata'
+        self.metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    def save_job_metadata(
+        self,
+        job_name: str,
+        metadata_items: list[Dict],
+        prompt_set: str,
+        job_id: Optional[str] = None
+    ) -> Dict:
+        """
+        Save metadata for a batch job with new structure:
+        - JSON files in .contentstudio/metadata/
+        - TXT files in user output directory, grouped by job
+
+        Args:
+            job_name: Name of the job (e.g., "My Video + 5 more")
+            metadata_items: List of metadata dictionaries
+            prompt_set: Prompt set ID used for generation
+            job_id: Optional job ID for linking
+
+        Returns:
+            Dict with paths to json_file, txt_folder, and txt_files list
+
+        Raises:
+            IOError: If file writing fails
+            ValueError: If metadata is empty or invalid
+        """
+        if not metadata_items:
+            raise ValueError("Metadata items cannot be empty")
+
+        # Generate job ID if not provided
+        if not job_id:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            job_id = f"job-{timestamp}"
+
+        # Clean job name for folder
+        clean_folder_name = self._clean_name_with_spaces(job_name)
+
+        # Create TXT output folder in user directory
+        txt_folder = self.user_output_dir / clean_folder_name
+        txt_folder.mkdir(parents=True, exist_ok=True)
+
+        # Save JSON metadata file
+        json_path = self.metadata_dir / f"{job_id}.json"
+        job_metadata = {
+            'job_id': job_id,
+            'job_name': job_name,
+            'prompt_set': prompt_set,
+            'created_at': datetime.now().isoformat(),
+            'txt_folder': str(txt_folder),
+            'items': metadata_items
+        }
+
+        try:
+            self._save_json(job_metadata, json_path)
+            print(f"Job metadata saved to: {json_path}", file=sys.stderr)
+
+            # Save TXT files
+            txt_files = []
+            for item in metadata_items:
+                # Get clean name for this item
+                clean_name = item.get('_title', 'metadata')
+                txt_path = txt_folder / f"{clean_name}.txt"
+
+                self._save_readable(item, txt_path, prompt_set)
+                txt_files.append(str(txt_path))
+
+            print(f"TXT files saved to: {txt_folder}", file=sys.stderr)
+
+            return {
+                'json_file': str(json_path),
+                'txt_folder': str(txt_folder),
+                'txt_files': txt_files,
+                'job_id': job_id
+            }
+
+        except Exception as e:
+            print(f"Error saving job metadata: {e}", file=sys.stderr)
+            raise IOError(f"Failed to save job metadata: {e}")
 
     def save_metadata(
         self,
@@ -29,7 +111,8 @@ class OutputHandler:
         source_name: Optional[str] = None
     ) -> str:
         """
-        Save metadata to files in both JSON and readable text formats
+        Save metadata to files (legacy method for backward compatibility)
+        Now uses the new structure with separated JSON and TXT files
 
         Args:
             metadata: Dictionary containing metadata (titles, description, tags, etc.)
@@ -37,7 +120,7 @@ class OutputHandler:
             source_name: Optional source name for better file naming
 
         Returns:
-            str: Path to the output directory containing saved files
+            str: Path to the TXT output folder
 
         Raises:
             IOError: If file writing fails
@@ -45,9 +128,6 @@ class OutputHandler:
         """
         if not metadata:
             raise ValueError("Metadata cannot be empty")
-
-        # Generate timestamp for unique file naming
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         # Get clean name for files (use actual subject/filename with spaces)
         if source_name:
@@ -61,32 +141,18 @@ class OutputHandler:
         else:
             clean_name = "metadata"
 
-        # Create folder name with timestamp and prompt set
-        safe_folder_name = self._sanitize_filename(f"{timestamp}_{prompt_set}_{source_name or 'metadata'}")
-
-        # Create output folder
-        output_folder = self.output_dir / safe_folder_name
-        output_folder.mkdir(parents=True, exist_ok=True)
-
         # Add title and prompt set to metadata for display purposes
         metadata['_title'] = clean_name
         metadata['_prompt_set'] = prompt_set
 
-        try:
-            # Save JSON format (for metadata reports viewer only)
-            json_path = output_folder / "metadata.json"
-            self._save_json(metadata, json_path)
+        # Use job metadata method with single item
+        result = self.save_job_metadata(
+            job_name=clean_name,
+            metadata_items=[metadata],
+            prompt_set=prompt_set
+        )
 
-            # Save readable text format with clean name
-            txt_path = output_folder / f"{clean_name}.txt"
-            self._save_readable(metadata, txt_path, prompt_set)
-
-            print(f"Metadata saved to: {output_folder}", file=sys.stderr)
-            return str(output_folder)
-
-        except Exception as e:
-            print(f"Error saving metadata: {e}", file=sys.stderr)
-            raise IOError(f"Failed to save metadata: {e}")
+        return result['txt_folder']
 
     def _save_json(self, metadata: Dict, output_path: Path) -> None:
         """Save metadata as JSON file"""
