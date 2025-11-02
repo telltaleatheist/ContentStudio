@@ -49,9 +49,10 @@ class ConfigManager:
             # Use a faster Ollama model for summarization
             return 'llama3.1:8b'
         elif self.ai_provider == 'openai':
-            return 'gpt-3.5-turbo'
+            # Use gpt-4o-mini for faster/cheaper summarization, or gpt-3.5-turbo as fallback
+            return 'gpt-4o-mini'
         elif self.ai_provider == 'claude':
-            return 'claude-3-haiku-20240307'
+            return 'claude-3-5-haiku-20241022'
         return self.ai_model
 
     @property
@@ -60,9 +61,26 @@ class ConfigManager:
         if self.ai_provider == 'ollama':
             return self.ai_model
         elif self.ai_provider == 'openai':
-            return 'gpt-4-turbo-preview'
+            # Use the specified model or default to gpt-4o
+            return self.ai_model if self.ai_model else 'gpt-4o'
         elif self.ai_provider == 'claude':
-            return 'claude-3-opus-20240229'
+            # Map user-friendly model names to API model identifiers
+            # Parse the model name from self.ai_model if it was set
+            if self.ai_model:
+                # Handle Claude 3.5 models
+                if 'claude-3-5-sonnet' in self.ai_model:
+                    return 'claude-3-5-sonnet-20241022'
+                elif 'claude-3-5-haiku' in self.ai_model:
+                    return 'claude-3-5-haiku-20241022'
+                # Handle legacy Claude 3 models
+                elif 'claude-3-opus' in self.ai_model:
+                    return 'claude-3-opus-20240229'
+                elif 'claude-3-sonnet' in self.ai_model:
+                    return 'claude-3-sonnet-20240229'
+                elif 'claude-3-haiku' in self.ai_model:
+                    return 'claude-3-haiku-20240307'
+            # Default to Claude 3.5 Sonnet for best balance of quality and cost
+            return 'claude-3-5-sonnet-20241022'
         return self.ai_model
 
     def get_ai_config(self) -> Dict[str, Any]:

@@ -147,6 +147,17 @@
                   </mat-select>
                 </mat-form-field>
 
+                <!-- Notes Button -->
+                <button
+                  mat-raised-button
+                  (click)="openNotesDialog(i)"
+                  [matTooltip]="item.notes ? 'Edit custom AI instructions' : 'Add custom AI instructions'"
+                  [color]="item.notes ? 'accent' : ''"
+                  class="notes-btn">
+                  <mat-icon>{{ item.notes ? 'edit_note' : 'note_add' }}</mat-icon>
+                  {{ item.notes ? 'Notes' : 'Add Notes' }}
+                </button>
+
                 <!-- Remove Button -->
                 <button mat-icon-button (click)="removeInput(i)" matTooltip="Remove" class="remove-btn">
                   <mat-icon>close</mat-icon>

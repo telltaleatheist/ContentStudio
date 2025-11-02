@@ -308,6 +308,50 @@
           }
         }
 
+        .notes-btn {
+          flex-shrink: 0;
+          margin-left: 0.5rem;
+          font-size: 0.95rem;
+          padding: 0 20px;
+          min-height: 56px; // Match mat-form-field height
+          height: 56px;
+
+          mat-icon {
+            margin-right: 8px;
+            font-size: 20px;
+            width: 20px;
+            height: 20px;
+          }
+
+          // No notes - creamsicle orange outline
+          &:not([color="accent"]) {
+            background-color: rgba(255, 107, 53, 0.08);
+            border: 2px solid var(--primary-orange);
+            color: var(--primary-orange);
+            font-weight: 500;
+
+            &:hover {
+              background-color: rgba(255, 107, 53, 0.15);
+              border-color: var(--dark-orange);
+            }
+          }
+
+          // Has notes - filled creamsicle orange
+          &[color="accent"] {
+            background-color: var(--primary-orange) !important;
+            color: white !important;
+            font-weight: 500;
+
+            &:hover {
+              background-color: var(--dark-orange) !important;
+            }
+
+            mat-icon {
+              color: white !important;
+            }
+          }
+        }
+
         .remove-btn {
           color: var(--text-muted);
           flex-shrink: 0;

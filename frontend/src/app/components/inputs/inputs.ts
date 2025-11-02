@@ -16,6 +16,7 @@ import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
 import { ElectronService } from '../../services/electron';
 import { TextSubjectDialog } from '../text-subject-dialog/text-subject-dialog';
+import { NotesDialog } from '../notes-dialog/notes-dialog';
 import { InputsStateService, InputItem } from '../../services/inputs-state';
 import { JobQueueService, QueuedJob } from '../../services/job-queue';
 
@@ -250,6 +251,27 @@ export class Inputs implements OnInit, OnDestroy {
 
   removeInput(index: number) {
     this.inputsState.removeItem(index);
+  }
+
+  openNotesDialog(index: number) {
+    const item = this.inputsState.inputItems()[index];
+    const dialogRef = this.dialog.open(NotesDialog, {
+      width: '600px',
+      data: {
+        itemName: item.displayName,
+        notes: item.notes || ''
+      }
+    });
+
+    dialogRef.afterClosed().subscribe(result => {
+      if (result !== undefined) {
+        // Update the item's notes
+        const items = this.inputsState.inputItems();
+        const updatedItems = [...items];
+        updatedItems[index] = { ...updatedItems[index], notes: result || undefined };
+        this.inputsState.inputItems.set(updatedItems);
+      }
+    });
   }
 
   clearAllInputs() {
@@ -518,8 +540,11 @@ export class Inputs implements OnInit, OnDestroy {
         }
       });
 
-      // Extract inputs
-      const inputs = nextJob.inputs.map(item => item.path);
+      // Extract inputs with notes
+      const inputs = nextJob.inputs.map(item => ({
+        path: item.path,
+        notes: item.notes
+      }));
 
       const result = await this.electron.generateMetadata({
         inputs,

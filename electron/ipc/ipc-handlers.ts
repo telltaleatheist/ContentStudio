@@ -247,7 +247,7 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
         platform: params.platform || settings.defaultPlatform,
         mode: params.mode || settings.defaultMode,
         aiProvider: settings.aiProvider,
-        aiModel: settings.aiProvider === 'ollama' ? settings.ollamaModel : undefined,
+        aiModel: settings.ollamaModel, // This field is used for all providers (OpenAI, Claude, Ollama)
         aiApiKey: settings.aiProvider === 'openai' ? settings.openaiApiKey :
                   settings.aiProvider === 'claude' ? settings.claudeApiKey : undefined,
         aiHost: settings.aiProvider === 'ollama' ? settings.ollamaHost : undefined,

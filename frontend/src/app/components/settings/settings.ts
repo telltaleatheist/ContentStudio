@@ -60,9 +60,11 @@ export class Settings implements OnInit {
       { value: 'openai:gpt-4o', label: 'ChatGPT 4o', provider: 'cloud', icon: 'cloud', needsApiKey: true },
       { value: 'openai:gpt-4-turbo', label: 'ChatGPT 4 Turbo', provider: 'cloud', icon: 'cloud', needsApiKey: true },
       { value: 'openai:gpt-3.5-turbo', label: 'ChatGPT 3.5 Turbo', provider: 'cloud', icon: 'cloud', needsApiKey: true },
-      { value: 'claude:claude-3-opus', label: 'Claude 3 Opus', provider: 'cloud', icon: 'cloud', needsApiKey: true },
-      { value: 'claude:claude-3-sonnet', label: 'Claude 3 Sonnet', provider: 'cloud', icon: 'cloud', needsApiKey: true },
-      { value: 'claude:claude-3-haiku', label: 'Claude 3 Haiku', provider: 'cloud', icon: 'cloud', needsApiKey: true },
+      { value: 'claude:claude-3-5-sonnet', label: 'Claude 3.5 Sonnet (Recommended)', provider: 'cloud', icon: 'cloud', needsApiKey: true },
+      { value: 'claude:claude-3-5-haiku', label: 'Claude 3.5 Haiku', provider: 'cloud', icon: 'cloud', needsApiKey: true },
+      { value: 'claude:claude-3-opus', label: 'Claude 3 Opus (Legacy)', provider: 'cloud', icon: 'cloud', needsApiKey: true },
+      { value: 'claude:claude-3-sonnet', label: 'Claude 3 Sonnet (Legacy)', provider: 'cloud', icon: 'cloud', needsApiKey: true },
+      { value: 'claude:claude-3-haiku', label: 'Claude 3 Haiku (Legacy)', provider: 'cloud', icon: 'cloud', needsApiKey: true },
     ];
 
     // Add local Ollama models at bottom
@@ -103,12 +105,15 @@ export class Settings implements OnInit {
       const settings = await this.electron.getSettings();
 
       // Reconstruct selected model from provider and model
+      // Note: ollamaModel is used for all providers (reused for OpenAI, Claude, and Ollama)
       if (settings.aiProvider && settings.aiProvider === 'ollama') {
         this.selectedModel.set(`ollama:${settings.ollamaModel || 'cogito:70b'}`);
       } else if (settings.aiProvider === 'openai') {
-        this.selectedModel.set('openai:gpt-4o');
+        const openaiModel = settings.ollamaModel || 'gpt-4o';
+        this.selectedModel.set(`openai:${openaiModel}`);
       } else if (settings.aiProvider === 'claude') {
-        this.selectedModel.set('claude:claude-3-opus');
+        const claudeModel = settings.ollamaModel || 'claude-3-5-sonnet';
+        this.selectedModel.set(`claude:${claudeModel}`);
       }
 
       if (settings.ollamaHost) this.ollamaHost.set(settings.ollamaHost);

@@ -146,7 +146,7 @@ export class ElectronService {
 
   // Metadata generation
   async generateMetadata(params: {
-    inputs: string[];
+    inputs: string[] | Array<{ path: string; notes?: string }>;
     promptSet: string;
     mode: string;
     jobId?: string;

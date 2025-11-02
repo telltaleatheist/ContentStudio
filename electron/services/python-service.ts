@@ -10,8 +10,13 @@ import Store from 'electron-store';
  * Manages Python subprocess for metadata generation
  */
 
+export interface MetadataInput {
+  path: string;
+  notes?: string;
+}
+
 export interface MetadataParams {
-  inputs: string[];
+  inputs: string[] | MetadataInput[];
   platform: string;
   mode: string;
   aiProvider: string;
@@ -89,14 +94,34 @@ export class PythonService {
       const startTime = Date.now();
 
       try {
+        // Extract paths and notes from inputs
+        const inputPaths: string[] = [];
+        const inputNotes: { [path: string]: string } = {};
+
+        params.inputs.forEach((input) => {
+          if (typeof input === 'string') {
+            inputPaths.push(input);
+          } else {
+            inputPaths.push(input.path);
+            if (input.notes) {
+              inputNotes[input.path] = input.notes;
+            }
+          }
+        });
+
         // Prepare arguments
         const args = [
           this.scriptPath!,
-          '--inputs', ...params.inputs,
+          '--inputs', ...inputPaths,
           '--platform', params.platform,
           '--mode', params.mode,
           '--ai-provider', params.aiProvider
         ];
+
+        // Add notes as JSON if any exist
+        if (Object.keys(inputNotes).length > 0) {
+          args.push('--input-notes', JSON.stringify(inputNotes));
+        }
 
         // Add optional parameters
         if (params.aiModel) {

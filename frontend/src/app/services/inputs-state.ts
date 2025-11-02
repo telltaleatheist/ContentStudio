@@ -7,6 +7,7 @@ export interface InputItem {
   icon: string;
   selected: boolean;
   promptSet: string; // ID of the prompt set to use (e.g., "youtube-telltale")
+  notes?: string; // Optional notes/instructions for the AI (e.g., "focus on tax fraud")
 }
 
 export interface GenerationState {

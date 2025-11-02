@@ -57,9 +57,20 @@ def main():
     parser.add_argument('--job-id', help='Job ID for tracking and file organization')
     parser.add_argument('--job-name', help='Job name for folder naming')
 
+    # Input notes (JSON mapping of path -> notes)
+    parser.add_argument('--input-notes', help='JSON dictionary mapping input paths to custom notes/instructions')
+
     args = parser.parse_args()
 
     try:
+        # Parse input notes if provided
+        input_notes = {}
+        if args.input_notes:
+            try:
+                input_notes = json.loads(args.input_notes)
+            except json.JSONDecodeError as e:
+                print(f"Warning: Failed to parse input notes JSON: {e}", file=sys.stderr)
+
         # Initialize configuration
         config_manager = ConfigManager(
             ai_provider=args.ai_provider,
@@ -162,8 +173,15 @@ def main():
                 if item.source and item.content_type in ["video", "transcript_file"]:
                     source_filename = Path(item.source).name
 
+                # Append custom notes if provided for this input
+                content_with_notes = item.content
+                if item.source and item.source in input_notes:
+                    notes = input_notes[item.source]
+                    content_with_notes = f"{item.content}\n\n--- CUSTOM INSTRUCTIONS ---\n{notes}"
+                    print(f"Adding custom notes for {item.source}: {notes[:100]}...", file=sys.stderr)
+
                 metadata_result = ai_manager.generate_metadata(
-                    item.content,
+                    content_with_notes,
                     args.platform,
                     source_filename=source_filename
                 )

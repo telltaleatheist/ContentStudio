@@ -79,8 +79,8 @@ app.whenReady().then(async () => {
     // Initialize electron-store after app is ready
     store = new Store<any>({
       defaults: {
-        aiProvider: 'ollama',
-        ollamaModel: 'cogito:70b',
+        aiProvider: 'openai',
+        ollamaModel: 'gpt-4o', // Used for all providers (OpenAI, Claude, and Ollama)
         ollamaHost: 'http://localhost:11434',
         openaiApiKey: '',
         claudeApiKey: '',
