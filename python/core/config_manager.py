@@ -52,7 +52,7 @@ class ConfigManager:
             # Use gpt-4o-mini for faster/cheaper summarization, or gpt-3.5-turbo as fallback
             return 'gpt-4o-mini'
         elif self.ai_provider == 'claude':
-            return 'claude-3-5-haiku-20241022'
+            return 'claude-3-5-haiku-latest'
         return self.ai_model
 
     @property
@@ -67,11 +67,14 @@ class ConfigManager:
             # Map user-friendly model names to API model identifiers
             # Parse the model name from self.ai_model if it was set
             if self.ai_model:
-                # Handle Claude 3.5 models
-                if 'claude-3-5-sonnet' in self.ai_model:
-                    return 'claude-3-5-sonnet-20241022'
+                # Handle Claude 4.5 models (newest)
+                if 'claude-sonnet-4' in self.ai_model or 'claude-4' in self.ai_model:
+                    return 'claude-sonnet-4-5-20250929'
+                # Handle Claude 3.5 models - use latest aliases
+                elif 'claude-3-5-sonnet' in self.ai_model:
+                    return 'claude-3-5-sonnet-latest'
                 elif 'claude-3-5-haiku' in self.ai_model:
-                    return 'claude-3-5-haiku-20241022'
+                    return 'claude-3-5-haiku-latest'
                 # Handle legacy Claude 3 models
                 elif 'claude-3-opus' in self.ai_model:
                     return 'claude-3-opus-20240229'
@@ -79,8 +82,8 @@ class ConfigManager:
                     return 'claude-3-sonnet-20240229'
                 elif 'claude-3-haiku' in self.ai_model:
                     return 'claude-3-haiku-20240307'
-            # Default to Claude 3.5 Sonnet for best balance of quality and cost
-            return 'claude-3-5-sonnet-20241022'
+            # Default to Claude 3.5 Sonnet latest for best balance of quality and cost
+            return 'claude-3-5-sonnet-latest'
         return self.ai_model
 
     def get_ai_config(self) -> Dict[str, Any]:

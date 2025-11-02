@@ -7,6 +7,7 @@ import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 import { FormsModule } from '@angular/forms';
 import { ElectronService } from '../../services/electron';
+import { NotificationService } from '../../services/notification';
 
 interface PromptSet {
   id: string;
@@ -64,7 +65,10 @@ export class Prompts implements OnInit {
   showSaveNotification = signal(false);
   saveNotificationTimeout: any;
 
-  constructor(private electron: ElectronService) {}
+  constructor(
+    private electron: ElectronService,
+    private notificationService: NotificationService
+  ) {}
 
   async ngOnInit() {
     await this.loadPromptSets();
@@ -80,7 +84,7 @@ export class Prompts implements OnInit {
         this.promptSets.set(result.promptSets);
       }
     } catch (error) {
-      console.error('Error loading prompt sets:', error);
+      this.notificationService.error('Load Error', 'Failed to load prompt sets: ' + (error as Error).message);
     }
   }
 
@@ -113,11 +117,12 @@ export class Prompts implements OnInit {
       );
 
       if (result.success) {
+        this.notificationService.success('Prompt Set Saved', 'Your prompt set has been saved successfully');
         this.showSaveSuccess();
         await this.loadPromptSets();
       }
     } catch (error) {
-      console.error('Error saving prompt set:', error);
+      this.notificationService.error('Save Error', 'Failed to save prompt set: ' + (error as Error).message);
     }
   }
 
@@ -146,12 +151,13 @@ export class Prompts implements OnInit {
       });
 
       if (result.success) {
+        this.notificationService.success('Prompt Set Created', 'New prompt set has been created successfully');
         await this.loadPromptSets();
         this.selectPromptSet(result.id);
         this.closeCreateDialog();
       }
     } catch (error) {
-      console.error('Error creating prompt set:', error);
+      this.notificationService.error('Create Error', 'Failed to create prompt set: ' + (error as Error).message);
     }
   }
 
@@ -180,7 +186,7 @@ export class Prompts implements OnInit {
         }
       }
     } catch (error) {
-      console.error('Error deleting prompt set:', error);
+      this.notificationService.error('Delete Error', 'Failed to delete prompt set: ' + (error as Error).message);
     }
   }
 

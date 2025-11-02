@@ -6,6 +6,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
 import { ElectronService } from '../../services/electron';
+import { NotificationService } from '../../services/notification';
 
 interface MetadataReport {
   name: string;
@@ -50,7 +51,10 @@ export class MetadataReports implements OnInit, OnDestroy {
 
   private visibilityChangeHandler: (() => void) | null = null;
 
-  constructor(private electron: ElectronService) {}
+  constructor(
+    private electron: ElectronService,
+    private notificationService: NotificationService
+  ) {}
 
   async ngOnInit() {
     await this.loadReports();
@@ -134,7 +138,7 @@ export class MetadataReports implements OnInit, OnDestroy {
         this.reports.set(reports);
       }
     } catch (error) {
-      console.error('Error loading reports:', error);
+      this.notificationService.error('Load Error', 'Failed to load metadata reports: ' + (error as Error).message);
     } finally {
       this.isLoading.set(false);
     }
@@ -238,7 +242,7 @@ export class MetadataReports implements OnInit, OnDestroy {
         }
       }
     } catch (error) {
-      console.error('Error reading report:', error);
+      this.notificationService.error('Read Error', 'Failed to read report: ' + (error as Error).message);
     } finally {
       this.isLoading.set(false);
     }
@@ -259,7 +263,7 @@ export class MetadataReports implements OnInit, OnDestroy {
       const pathToShow = report.txtFolder || report.path;
       await this.electron.showInFolder(pathToShow);
     } catch (error) {
-      console.error('Error showing in folder:', error);
+      this.notificationService.error('Show Error', 'Failed to show in folder: ' + (error as Error).message);
     }
   }
 
@@ -288,7 +292,7 @@ export class MetadataReports implements OnInit, OnDestroy {
         this.metadata.set(null);
       }
     } catch (error) {
-      console.error('Error deleting report:', error);
+      this.notificationService.error('Delete Error', 'Failed to delete report: ' + (error as Error).message);
     }
   }
 
@@ -301,9 +305,9 @@ export class MetadataReports implements OnInit, OnDestroy {
 
   copyToClipboard(text: string) {
     navigator.clipboard.writeText(text).then(() => {
-      console.log('Copied to clipboard');
+      this.notificationService.success('Copied', 'Text copied to clipboard', false);
     }).catch(err => {
-      console.error('Failed to copy:', err);
+      this.notificationService.error('Copy Failed', 'Failed to copy to clipboard: ' + err.message);
     });
   }
 

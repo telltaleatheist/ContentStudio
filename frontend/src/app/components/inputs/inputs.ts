@@ -19,6 +19,7 @@ import { TextSubjectDialog } from '../text-subject-dialog/text-subject-dialog';
 import { NotesDialog } from '../notes-dialog/notes-dialog';
 import { InputsStateService, InputItem } from '../../services/inputs-state';
 import { JobQueueService, QueuedJob } from '../../services/job-queue';
+import { NotificationService } from '../../services/notification';
 
 interface PromptSetOption {
   id: string;
@@ -66,7 +67,8 @@ export class Inputs implements OnInit, OnDestroy {
     private dialog: MatDialog,
     private electron: ElectronService,
     public inputsState: InputsStateService,
-    public jobQueue: JobQueueService
+    public jobQueue: JobQueueService,
+    private notificationService: NotificationService
   ) {
     // Auto-expand single job in queue
     effect(() => {
@@ -103,7 +105,7 @@ export class Inputs implements OnInit, OnDestroy {
         }
         this.inputsState.markSettingsLoaded();
       } catch (error) {
-        console.error('Error loading settings:', error);
+        this.notificationService.error('Settings Error', 'Failed to load settings: ' + (error as Error).message);
       }
     }
   }
@@ -115,7 +117,7 @@ export class Inputs implements OnInit, OnDestroy {
         this.availablePromptSets.set(result.promptSets);
       }
     } catch (error) {
-      console.error('Error loading prompt sets:', error);
+      this.notificationService.error('Prompt Sets Error', 'Failed to load prompt sets: ' + (error as Error).message);
     }
   }
 
@@ -354,25 +356,24 @@ export class Inputs implements OnInit, OnDestroy {
       const outputDir = settings.outputDirectory;
 
       if (!outputDir) {
-        alert('No output directory configured. Please set one in Settings before processing.');
+        this.notificationService.error('Configuration Error', 'No output directory configured. Please set one in Settings before processing.');
         return;
       }
 
       // Check if directory exists
       const dirCheck = await this.electron.checkDirectory(outputDir);
       if (!dirCheck.exists) {
-        alert(`Output directory does not exist: ${outputDir}\n\nPlease create the directory or choose a different one in Settings.`);
+        this.notificationService.error('Directory Error', `Output directory does not exist: ${outputDir}\n\nPlease create the directory or choose a different one in Settings.`);
         return;
       }
 
       // Check if directory is writable
       if (!dirCheck.writable) {
-        alert(`Output directory is not writable: ${outputDir}\n\nPlease check permissions or choose a different directory in Settings.`);
+        this.notificationService.error('Permission Error', `Output directory is not writable: ${outputDir}\n\nPlease check permissions or choose a different directory in Settings.`);
         return;
       }
     } catch (error) {
-      console.error('Error validating output directory:', error);
-      alert('Failed to validate output directory. Please check your settings.');
+      this.notificationService.error('Directory Error', 'Failed to validate output directory. Please check your settings.');
       return;
     }
 
@@ -579,6 +580,7 @@ export class Inputs implements OnInit, OnDestroy {
 
         // Show completion message
         this.showCompletionMessageFor(`Job "${nextJob.name}" completed in ${processingTime.toFixed(1)}s`);
+        this.notificationService.success('Job Completed', `"${nextJob.name}" completed successfully in ${processingTime.toFixed(1)}s`);
       } else {
         // Mark current item as failed if there is one
         const job = this.jobQueue.getJob(nextJob.id);
@@ -595,11 +597,11 @@ export class Inputs implements OnInit, OnDestroy {
           processingTime
         });
 
-        // Show error message
-        this.showCompletionMessageFor(`Job "${nextJob.name}" failed: ${result.error}`);
+        // Show error notification only (not on-screen banner)
+        this.notificationService.error('Job Failed', `"${nextJob.name}" failed: ${result.error}`);
       }
     } catch (error) {
-      console.error('Error processing job:', error);
+      this.notificationService.error('Job Processing Error', `Error processing job: ${(error as Error).message}`);
       if (elapsedInterval) clearInterval(elapsedInterval);
 
       this.jobQueue.updateJob(nextJob.id, {
@@ -609,8 +611,6 @@ export class Inputs implements OnInit, OnDestroy {
         completedAt: new Date(),
         error: String(error)
       });
-
-      this.showCompletionMessageFor(`Job "${nextJob.name}" failed: ${error}`);
     }
   }
 

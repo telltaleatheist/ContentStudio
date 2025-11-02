@@ -5,6 +5,9 @@ import { MatSidenavModule } from '@angular/material/sidenav';
 import { MatListModule } from '@angular/material/list';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
+import { NotificationBellComponent } from './components/notification-bell/notification-bell';
+import { NotificationModalComponent } from './components/notification-modal/notification-modal';
+import { NotificationToastComponent } from './components/notification-toast/notification-toast';
 
 @Component({
   selector: 'app-root',
@@ -16,7 +19,10 @@ import { MatButtonModule } from '@angular/material/button';
     MatSidenavModule,
     MatListModule,
     MatIconModule,
-    MatButtonModule
+    MatButtonModule,
+    NotificationBellComponent,
+    NotificationModalComponent,
+    NotificationToastComponent
   ],
   templateUrl: './app.html',
   styleUrl: './app.scss'

@@ -7,6 +7,7 @@ import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 import { FormsModule } from '@angular/forms';
 import { ElectronService } from '../../services/electron';
+import { NotificationService } from '../../services/notification';
 
 interface ModelOption {
   value: string;
@@ -97,7 +98,10 @@ export class Settings implements OnInit {
   needsClaudeKey = computed(() => this.selectedModel().startsWith('claude:'));
   isOllamaModel = computed(() => this.selectedModel().startsWith('ollama:'));
 
-  constructor(private electron: ElectronService) {}
+  constructor(
+    private electron: ElectronService,
+    private notificationService: NotificationService
+  ) {}
 
   async ngOnInit() {
     // Load current settings from Electron
@@ -128,7 +132,7 @@ export class Settings implements OnInit {
       // Try to fetch available Ollama models
       await this.fetchOllamaModels();
     } catch (error) {
-      console.error('Error loading settings:', error);
+      this.notificationService.error('Settings Error', 'Failed to load settings: ' + (error as Error).message);
     }
   }
 
@@ -139,7 +143,7 @@ export class Settings implements OnInit {
         this.availablePromptSets.set(result.promptSets);
       }
     } catch (error) {
-      console.error('Error loading prompt sets:', error);
+      this.notificationService.error('Prompt Sets Error', 'Failed to load prompt sets: ' + (error as Error).message);
     }
   }
 
@@ -173,13 +177,13 @@ export class Settings implements OnInit {
     try {
       const result = await this.electron.updateSettings(settings);
       if (result.success) {
-        console.log('Settings saved successfully');
+        this.notificationService.success('Settings Saved', 'Your settings have been saved successfully');
         this.showSaveSuccess();
       } else {
-        console.error('Failed to save settings');
+        this.notificationService.error('Save Failed', 'Failed to save settings');
       }
     } catch (error) {
-      console.error('Error saving settings:', error);
+      this.notificationService.error('Save Error', 'Error saving settings: ' + (error as Error).message);
     }
   }
 
