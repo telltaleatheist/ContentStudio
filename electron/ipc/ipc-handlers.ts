@@ -195,6 +195,40 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
     }
   });
 
+  // Check directory exists and is writable
+  ipcMain.handle('check-directory', async (_event, dirPath) => {
+    try {
+      const fs = require('fs').promises;
+      const path = require('path');
+
+      // Check if directory exists
+      try {
+        const stats = await fs.stat(dirPath);
+        if (!stats.isDirectory()) {
+          return { exists: false, writable: false };
+        }
+      } catch (error: any) {
+        if (error.code === 'ENOENT') {
+          return { exists: false, writable: false };
+        }
+        throw error;
+      }
+
+      // Check if directory is writable by trying to create a temp file
+      try {
+        const testFile = path.join(dirPath, `.write-test-${Date.now()}`);
+        await fs.writeFile(testFile, 'test');
+        await fs.unlink(testFile);
+        return { exists: true, writable: true };
+      } catch (error) {
+        return { exists: true, writable: false };
+      }
+    } catch (error) {
+      log.error('Error checking directory:', error);
+      return { exists: false, writable: false };
+    }
+  });
+
   // Generate metadata
   ipcMain.handle('generate-metadata', async (_event, params) => {
     try {

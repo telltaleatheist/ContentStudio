@@ -1,4 +1,4 @@
-<div class="inputs-container">
+<div class="inputs-container" #scrollContainer>
   <!-- Header -->
   <div class="header">
     <h2>Inputs & Queue</h2>
@@ -173,8 +173,20 @@
   <!-- Job Queue -->
   @if (jobQueue.jobs().length > 0) {
     <div class="queue-container-unified">
+      <!-- Global Queue Progress Bar -->
+      <div class="global-queue-progress">
+        <div class="progress-header">
+          <h3>Job Queue</h3>
+          <span class="progress-label">{{ getCompletedJobsCount() }}/{{ jobQueue.jobs().length }} jobs complete</span>
+        </div>
+        <mat-progress-bar
+          mode="determinate"
+          [value]="getGlobalQueueProgress()"
+          class="global-progress">
+        </mat-progress-bar>
+      </div>
+
       <div class="section-header">
-        <h3>Job Queue</h3>
         <button mat-button (click)="clearCompletedJobs()">
           <mat-icon>clear_all</mat-icon>
           Clear Completed
@@ -205,6 +217,19 @@
                   </div>
                 </div>
 
+                <!-- Job-level Progress Badge -->
+                <div class="job-progress-badge">
+                  <span class="progress-fraction">{{ getCompletedItemsCount(job) }}/{{ job.inputs.length }}</span>
+                </div>
+
+                <!-- Job-level Progress Bar (mini) -->
+                <div class="job-progress-mini">
+                  <mat-progress-bar
+                    mode="determinate"
+                    [value]="getJobProgress(job)">
+                  </mat-progress-bar>
+                </div>
+
                 <!-- Expand/Collapse Icon -->
                 <mat-icon class="expand-icon">
                   {{ isJobExpanded(job.id) ? 'expand_less' : 'expand_more' }}
@@ -221,33 +246,6 @@
               <!-- Expanded Content -->
               @if (isJobExpanded(job.id)) {
                 <div class="job-details-expanded">
-                  <!-- Progress Bar for Processing Jobs -->
-                  @if (job.status === 'processing') {
-                    <div class="job-progress">
-                      <mat-progress-bar
-                        mode="determinate"
-                        [value]="job.progress">
-                      </mat-progress-bar>
-                      <div class="progress-info">
-                        <span class="progress-text">{{ job.currentlyProcessing }}</span>
-                      </div>
-                    </div>
-                  }
-
-                  <!-- Completed Progress Bar -->
-                  @if (job.status === 'completed') {
-                    <div class="job-progress">
-                      <mat-progress-bar
-                        mode="determinate"
-                        [value]="100"
-                        color="primary">
-                      </mat-progress-bar>
-                      <div class="progress-info">
-                        <span class="progress-text">Complete!</span>
-                      </div>
-                    </div>
-                  }
-
                   <!-- Error Message -->
                   @if (job.status === 'failed' && job.error) {
                     <div class="job-error">
@@ -256,15 +254,38 @@
                     </div>
                   }
 
-                  <!-- Input Items -->
-                  <div class="job-inputs">
-                    <div class="inputs-label">Items in this job:</div>
-                    <div class="inputs-chips">
-                      @for (input of job.inputs; track input.path) {
-                        <mat-chip>
-                          <mat-icon>{{ input.icon }}</mat-icon>
-                          {{ input.displayName }}
-                        </mat-chip>
+                  <!-- Input Items as List Items -->
+                  <div class="job-inputs-list">
+                    <div class="inputs-label">Processing Items:</div>
+                    <div class="items-list">
+                      @for (input of job.inputs; track input.path; let i = $index) {
+                        <div class="item-row-wrapper" [class.completed]="isItemCompleted(job, i)" [class.processing]="isItemProcessing(job, i)">
+                          <div class="item-row">
+                            <mat-icon class="item-icon">{{ input.icon }}</mat-icon>
+                            <div class="item-details">
+                              <div class="item-name">{{ input.displayName }}</div>
+                              <div class="item-status">
+                                @if (isItemCompleted(job, i)) {
+                                  <span class="status-text completed">Completed</span>
+                                } @else if (isItemProcessing(job, i)) {
+                                  <span class="status-text processing">Processing...</span>
+                                } @else {
+                                  <span class="status-text pending">Pending</span>
+                                }
+                              </div>
+                            </div>
+                            @if (isItemCompleted(job, i)) {
+                              <mat-icon class="completion-check">check_circle</mat-icon>
+                            }
+                          </div>
+                          <div class="item-progress-container">
+                            <mat-progress-bar
+                              mode="determinate"
+                              [value]="getItemProgress(job, i)"
+                              class="item-progress">
+                            </mat-progress-bar>
+                          </div>
+                        </div>
                       }
                     </div>
                   </div>

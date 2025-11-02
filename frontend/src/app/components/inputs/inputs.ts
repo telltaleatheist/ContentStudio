@@ -1,4 +1,4 @@
-import { Component, signal, OnInit, effect, OnDestroy } from '@angular/core';
+import { Component, signal, OnInit, effect, OnDestroy, ViewChild, ElementRef } from '@angular/core';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatListModule } from '@angular/material/list';
@@ -48,6 +48,8 @@ interface PromptSetOption {
   styleUrl: './inputs.scss',
 })
 export class Inputs implements OnInit, OnDestroy {
+  @ViewChild('scrollContainer') scrollContainer?: ElementRef;
+
   private elapsedInterval: any;
   private processingInterval: any;
 
@@ -64,7 +66,21 @@ export class Inputs implements OnInit, OnDestroy {
     private electron: ElectronService,
     public inputsState: InputsStateService,
     public jobQueue: JobQueueService
-  ) {}
+  ) {
+    // Auto-expand single job in queue
+    effect(() => {
+      const jobs = this.jobQueue.jobs();
+      if (jobs.length === 1) {
+        // Auto-expand if there's only one job
+        const expanded = this.expandedJobIds();
+        if (!expanded.has(jobs[0].id)) {
+          const newExpanded = new Set(expanded);
+          newExpanded.add(jobs[0].id);
+          this.expandedJobIds.set(newExpanded);
+        }
+      }
+    });
+  }
 
   ngOnDestroy() {
     this.stopElapsedTimer();
@@ -289,10 +305,55 @@ export class Inputs implements OnInit, OnDestroy {
     this.inputsState.inputItems().forEach((_, index) => {
       this.toggleItemSelection(index, false);
     });
+
+    // Scroll to bottom to show the job queue
+    this.scrollToBottom();
   }
 
-  startQueue() {
+  private scrollToBottom() {
+    // Use setTimeout to wait for DOM to update
+    setTimeout(() => {
+      if (this.scrollContainer) {
+        const element = this.scrollContainer.nativeElement;
+        element.scrollTo({
+          top: element.scrollHeight,
+          behavior: 'smooth'
+        });
+      }
+    }, 100);
+  }
+
+  async startQueue() {
     if (this.queueStarted()) return;
+
+    // Validate output directory before starting
+    try {
+      const settings = await this.electron.getSettings();
+      const outputDir = settings.outputDirectory;
+
+      if (!outputDir) {
+        alert('No output directory configured. Please set one in Settings before processing.');
+        return;
+      }
+
+      // Check if directory exists
+      const dirCheck = await this.electron.checkDirectory(outputDir);
+      if (!dirCheck.exists) {
+        alert(`Output directory does not exist: ${outputDir}\n\nPlease create the directory or choose a different one in Settings.`);
+        return;
+      }
+
+      // Check if directory is writable
+      if (!dirCheck.writable) {
+        alert(`Output directory is not writable: ${outputDir}\n\nPlease check permissions or choose a different directory in Settings.`);
+        return;
+      }
+    } catch (error) {
+      console.error('Error validating output directory:', error);
+      alert('Failed to validate output directory. Please check your settings.');
+      return;
+    }
+
     this.queueStarted.set(true);
     this.jobQueue.isProcessing.set(true);
     this.startQueueProcessor();
@@ -360,19 +421,69 @@ export class Inputs implements OnInit, OnDestroy {
         this.jobQueue.updateJob(nextJob.id, { currentlyProcessing });
       }, 1000);
 
-      // Simulate progress
+      // Track progress from Python backend
       const totalItems = nextJob.inputs.length;
-      const estimatedTimePerItem = 30;
-      const totalEstimatedTime = totalItems * estimatedTimePerItem;
-      let simulatedProgress = 0;
+      let currentItemIndex = 0;
 
-      const progressInterval = setInterval(() => {
-        if (simulatedProgress < 90) {
-          simulatedProgress += (100 / totalEstimatedTime) * 2;
-          if (simulatedProgress > 90) simulatedProgress = 90;
-          this.jobQueue.updateJob(nextJob.id, { progress: simulatedProgress });
+      // Listen for progress updates from Python
+      const unsubscribe = this.electron.onProgress((progress: any) => {
+        const job = this.jobQueue.getJob(nextJob.id);
+        if (!job) return;
+
+        // Update current item progress based on transcription phase
+        if (progress.phase === 'transcription' && progress.progress !== undefined) {
+          // Update current item progress bar (0-50% for transcription)
+          if (currentItemIndex < totalItems) {
+            const transcriptionProgress = Math.floor(progress.progress / 2); // Map 0-100 to 0-50
+            this.jobQueue.updateItemProgress(nextJob.id, currentItemIndex, transcriptionProgress, 'processing');
+          }
+
+          // Update job-level message with "Transcribing..."
+          const message = progress.message || `Transcribing: ${progress.filename || ''}`;
+          this.jobQueue.updateJob(nextJob.id, { currentlyProcessing: message });
+
+          // Calculate overall progress (transcription is first 50%)
+          const completedItems = currentItemIndex;
+          const currentProgress = (progress.progress || 0) / 2; // 0-50%
+          const overallProgress = ((completedItems + (currentProgress / 100)) / totalItems) * 100;
+          this.jobQueue.updateJob(nextJob.id, { progress: Math.min(overallProgress, 95) });
         }
-      }, 2000);
+
+        // Handle preparing phase (when starting a new video)
+        if (progress.phase === 'preparing' && progress.filename) {
+          if (currentItemIndex < totalItems) {
+            this.jobQueue.updateItemProgress(nextJob.id, currentItemIndex, 0, 'processing');
+          }
+          this.jobQueue.updateJob(nextJob.id, { currentlyProcessing: `Processing: ${progress.filename}` });
+        }
+
+        // Handle metadata generation phase (AI summarization and generation)
+        if (progress.phase === 'generating' && progress.progress !== undefined) {
+          if (currentItemIndex < totalItems) {
+            // Map AI progress from 0-100 to 50-100 (second half of progress bar)
+            const aiProgress = 50 + Math.floor(progress.progress / 2);
+            this.jobQueue.updateItemProgress(nextJob.id, currentItemIndex, aiProgress, 'processing');
+          }
+
+          // Update message to show what's happening in AI phase
+          const message = progress.message || 'Generating metadata...';
+          this.jobQueue.updateJob(nextJob.id, { currentlyProcessing: message });
+
+          // If generation complete (100%), mark item as completed and move to next
+          if (progress.progress === 100) {
+            if (currentItemIndex < totalItems) {
+              this.jobQueue.updateItemProgress(nextJob.id, currentItemIndex, 100, 'completed');
+              currentItemIndex++;
+            }
+          }
+
+          // Calculate overall progress (generation is second 50%)
+          const completedItems = currentItemIndex;
+          const currentProgress = 50 + ((progress.progress || 0) / 2); // 50-100%
+          const overallProgress = ((completedItems + (currentProgress / 100)) / totalItems) * 100;
+          this.jobQueue.updateJob(nextJob.id, { progress: Math.min(overallProgress, 99) });
+        }
+      });
 
       // Extract inputs
       const inputs = nextJob.inputs.map(item => item.path);
@@ -383,12 +494,20 @@ export class Inputs implements OnInit, OnDestroy {
         mode: nextJob.mode
       });
 
-      clearInterval(progressInterval);
+      unsubscribe();
       clearInterval(elapsedInterval);
 
       const processingTime = ((Date.now() - startTime) / 1000);
 
       if (result.success) {
+        // Mark all items as completed
+        const job = this.jobQueue.getJob(nextJob.id);
+        if (job) {
+          for (let i = 0; i < job.inputs.length; i++) {
+            this.jobQueue.updateItemProgress(nextJob.id, i, 100, 'completed');
+          }
+        }
+
         this.jobQueue.updateJob(nextJob.id, {
           status: 'completed',
           progress: 100,
@@ -401,6 +520,12 @@ export class Inputs implements OnInit, OnDestroy {
         // Show completion message
         this.showCompletionMessageFor(`Job "${nextJob.name}" completed in ${processingTime.toFixed(1)}s`);
       } else {
+        // Mark current item as failed if there is one
+        const job = this.jobQueue.getJob(nextJob.id);
+        if (job && currentItemIndex < job.inputs.length) {
+          this.jobQueue.updateItemProgress(nextJob.id, currentItemIndex, 100, 'failed');
+        }
+
         this.jobQueue.updateJob(nextJob.id, {
           status: 'failed',
           progress: 0,
@@ -496,5 +621,63 @@ export class Inputs implements OnInit, OnDestroy {
   getPromptSetIcon(promptSetId: string): string {
     const promptSet = this.availablePromptSets().find(ps => ps.id === promptSetId);
     return promptSet?.platform === 'youtube' ? 'video_library' : 'podcasts';
+  }
+
+  // Global queue progress helpers
+  getGlobalQueueProgress(): number {
+    const jobs = this.jobQueue.jobs();
+    if (jobs.length === 0) return 0;
+
+    const totalProgress = jobs.reduce((sum, job) => {
+      if (job.status === 'completed') return sum + 100;
+      if (job.status === 'failed') return sum + 100;
+      return sum + job.progress;
+    }, 0);
+
+    return totalProgress / jobs.length;
+  }
+
+  getCompletedJobsCount(): number {
+    return this.jobQueue.jobs().filter(job =>
+      job.status === 'completed' || job.status === 'failed'
+    ).length;
+  }
+
+  // Job-level progress helpers
+  getJobProgress(job: QueuedJob): number {
+    if (job.status === 'completed') return 100;
+    if (job.status === 'failed') return 100;
+
+    const completedItems = job.itemProgress.filter(item =>
+      item.status === 'completed' || item.status === 'failed'
+    ).length;
+
+    return (completedItems / job.inputs.length) * 100;
+  }
+
+  getCompletedItemsCount(job: QueuedJob): number {
+    return job.itemProgress.filter(item =>
+      item.status === 'completed' || item.status === 'failed'
+    ).length;
+  }
+
+  // Item-level progress helpers
+  isItemCompleted(job: QueuedJob, itemIndex: number): boolean {
+    return job.itemProgress[itemIndex]?.status === 'completed';
+  }
+
+  isItemProcessing(job: QueuedJob, itemIndex: number): boolean {
+    return job.itemProgress[itemIndex]?.status === 'processing';
+  }
+
+  getItemProgress(job: QueuedJob, itemIndex: number): number {
+    const item = job.itemProgress[itemIndex];
+    if (!item) return 0;
+
+    if (item.status === 'completed') return 100;
+    if (item.status === 'failed') return 100;
+    if (item.status === 'processing') return item.progress;
+
+    return 0;
   }
 }

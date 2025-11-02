@@ -27,6 +27,7 @@ const api = {
   readFile: (filePath: string) => ipcRenderer.invoke('read-file', filePath),
   deleteDirectory: (dirPath: string) => ipcRenderer.invoke('delete-directory', dirPath),
   showInFolder: (filePath: string) => ipcRenderer.invoke('show-in-folder', filePath),
+  checkDirectory: (dirPath: string) => ipcRenderer.invoke('check-directory', dirPath),
 
   // Metadata generation
   generateMetadata: (params: any) => ipcRenderer.invoke('generate-metadata', params),

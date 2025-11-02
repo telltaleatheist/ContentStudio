@@ -572,12 +572,55 @@
 
   // Job Queue with unified styling
   .queue-container-unified {
-    margin-top: 2rem;
+    margin-top: 0.75rem;
     margin-bottom: 2rem;
+
+    // Global queue progress
+    .global-queue-progress {
+      margin-bottom: 1rem;
+      padding: 1rem 1.25rem;
+      background-color: rgba(255, 107, 53, 0.08);
+      border-radius: 8px;
+      border: 1px solid rgba(255, 107, 53, 0.2);
+
+      .progress-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.75rem;
+
+        h3 {
+          margin: 0;
+          font-size: 1.1rem;
+          color: var(--text-primary);
+        }
+
+        .progress-label {
+          font-size: 0.9rem;
+          color: var(--text-secondary);
+          font-weight: 500;
+        }
+      }
+
+      .global-progress {
+        height: 8px;
+        border-radius: 4px;
+
+        ::ng-deep {
+          .mdc-linear-progress__bar-inner {
+            border-color: var(--primary-orange) !important;
+          }
+
+          .mdc-linear-progress__buffer-bar {
+            background-color: rgba(255, 107, 53, 0.2) !important;
+          }
+        }
+      }
+    }
 
     .section-header {
       display: flex;
-      justify-content: space-between;
+      justify-content: flex-end;
       align-items: center;
       margin-bottom: 1rem;
 
@@ -625,6 +668,9 @@
         }
 
         .input-info {
+          flex: 1;
+          min-width: 0;
+
           .input-details {
             .item-title {
               color: var(--text-primary);
@@ -646,8 +692,37 @@
           }
         }
 
+        .job-progress-badge {
+          flex-shrink: 0;
+          padding: 0.25rem 0.75rem;
+          background-color: rgba(255, 107, 53, 0.15);
+          border-radius: 12px;
+          font-size: 0.85rem;
+          font-weight: 600;
+          color: var(--text-primary);
+        }
+
+        .job-progress-mini {
+          flex-shrink: 0;
+          width: 80px;
+
+          mat-progress-bar {
+            height: 4px;
+            border-radius: 2px;
+
+            ::ng-deep {
+              .mdc-linear-progress__bar-inner {
+                border-color: var(--primary-orange) !important;
+              }
+
+              .mdc-linear-progress__buffer-bar {
+                background-color: rgba(255, 107, 53, 0.2) !important;
+              }
+            }
+          }
+        }
+
         .expand-icon {
-          margin-left: auto;
           flex-shrink: 0;
           color: var(--text-muted);
         }
@@ -720,38 +795,127 @@
           }
         }
 
-        .job-inputs {
+        .job-inputs-list {
           .inputs-label {
             color: var(--text-secondary);
             font-size: 0.85rem;
-            margin-bottom: 0.5rem;
-            font-weight: 500;
+            margin-bottom: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
           }
 
-          .inputs-chips {
+          .items-list {
             display: flex;
-            flex-wrap: wrap;
+            flex-direction: column;
             gap: 0.5rem;
 
-            mat-chip,
-            .mat-mdc-chip {
-              font-size: 0.85rem !important;
-              background-color: rgba(255, 107, 53, 0.2) !important;
+            .item-row-wrapper {
+              position: relative;
+              background-color: rgba(255, 255, 255, 0.03);
+              border-radius: 6px;
+              border: 1px solid rgba(255, 255, 255, 0.08);
+              transition: all 0.2s ease;
+              overflow: hidden;
 
-              // Use ::ng-deep to pierce Material's encapsulation for text color
-              ::ng-deep {
-                .mdc-evolution-chip__text-label,
-                .mat-mdc-chip-action-label {
-                  color: var(--text-primary) !important;
+              &.processing {
+                background-color: rgba(255, 107, 53, 0.1);
+                border-color: rgba(255, 107, 53, 0.3);
+              }
+
+              &.completed {
+                background-color: rgba(76, 175, 80, 0.08);
+                border-color: rgba(76, 175, 80, 0.3);
+              }
+
+              .item-row {
+                display: flex;
+                align-items: center;
+                gap: 0.75rem;
+                padding: 0.75rem;
+                padding-bottom: 0.5rem;
+
+                .item-icon {
+                  flex-shrink: 0;
+                  font-size: 20px;
+                  width: 20px;
+                  height: 20px;
+                  color: var(--primary-orange);
+                }
+
+                .item-details {
+                  flex: 1;
+                  min-width: 0;
+
+                  .item-name {
+                    font-size: 0.9rem;
+                    font-weight: 500;
+                    color: var(--text-primary);
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                  }
+
+                  .item-status {
+                    font-size: 0.8rem;
+                    margin-top: 0.15rem;
+
+                    .status-text {
+                      &.completed {
+                        color: #4caf50;
+                      }
+
+                      &.processing {
+                        color: #ff6b35;
+                      }
+
+                      &.pending {
+                        color: var(--text-muted);
+                      }
+                    }
+                  }
+                }
+
+                .completion-check {
+                  flex-shrink: 0;
+                  font-size: 20px;
+                  width: 20px;
+                  height: 20px;
+                  color: #4caf50;
                 }
               }
 
-              mat-icon {
-                font-size: 16px !important;
-                width: 16px !important;
-                height: 16px !important;
-                margin-right: 0.25rem !important;
-                color: #ff6b35 !important;
+              .item-progress-container {
+                width: 100%;
+                height: 3px;
+                position: relative;
+
+                .item-progress {
+                  height: 3px;
+                  border-radius: 0;
+
+                  ::ng-deep {
+                    .mdc-linear-progress__bar-inner {
+                      border-color: var(--primary-orange) !important;
+                    }
+
+                    .mdc-linear-progress__buffer-bar {
+                      background-color: rgba(255, 107, 53, 0.15) !important;
+                    }
+                  }
+                }
+              }
+
+              &.completed .item-progress-container .item-progress {
+                ::ng-deep {
+                  .mdc-linear-progress__bar-inner {
+                    border-color: #4caf50 !important;
+                  }
+
+                  .mdc-linear-progress__buffer-bar {
+                    background-color: rgba(76, 175, 80, 0.15) !important;
+                  }
+                }
               }
             }
           }
@@ -1256,23 +1420,18 @@
             }
           }
 
-          .job-inputs {
+          .job-inputs-list {
             .inputs-label {
               color: rgba(255, 255, 255, 0.7);
             }
 
-            // Force all chips inside to have white text - use ::ng-deep to pierce encapsulation
-            .inputs-chips {
-              mat-chip,
-              .mat-mdc-chip {
-                ::ng-deep {
-                  .mdc-evolution-chip__text-label,
-                  .mat-mdc-chip-action-label {
-                    color: white !important;
-                  }
-
-                  .mdc-evolution-chip__action {
-                    color: white !important;
+            .items-list {
+              .item-row-wrapper {
+                .item-row {
+                  .item-details {
+                    .item-name {
+                      color: white;
+                    }
                   }
                 }
               }

@@ -24,6 +24,7 @@ declare global {
       readFile: (filePath: string) => Promise<string>;
       deleteDirectory: (dirPath: string) => Promise<void>;
       showInFolder: (filePath: string) => Promise<void>;
+      checkDirectory: (dirPath: string) => Promise<{ exists: boolean; writable: boolean }>;
 
       // Metadata generation
       generateMetadata: (params: any) => Promise<any>;
@@ -136,6 +137,11 @@ export class ElectronService {
   async showInFolder(filePath: string): Promise<void> {
     if (!this.ipcRenderer) return;
     return await this.ipcRenderer.showInFolder(filePath);
+  }
+
+  async checkDirectory(dirPath: string): Promise<{ exists: boolean; writable: boolean }> {
+    if (!this.ipcRenderer) return { exists: false, writable: false };
+    return await this.ipcRenderer.checkDirectory(dirPath);
   }
 
   // Metadata generation

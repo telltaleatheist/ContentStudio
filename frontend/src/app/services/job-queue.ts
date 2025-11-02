@@ -1,6 +1,11 @@
 import { Injectable, signal } from '@angular/core';
 import { InputItem } from './inputs-state';
 
+export interface ItemProgress {
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  progress: number;
+}
+
 export interface QueuedJob {
   id: string;
   name: string;
@@ -15,6 +20,8 @@ export interface QueuedJob {
   error?: string;
   outputFiles?: string[];
   processingTime?: number;
+  itemProgress: ItemProgress[]; // Track progress for each individual item
+  currentItemIndex: number; // Index of the currently processing item
 }
 
 @Injectable({
@@ -37,7 +44,9 @@ export class JobQueueService {
       status: 'pending',
       createdAt: new Date(),
       progress: 0,
-      currentlyProcessing: ''
+      currentlyProcessing: '',
+      itemProgress: inputs.map(() => ({ status: 'pending', progress: 0 })),
+      currentItemIndex: -1
     };
 
     this.jobs.update(jobs => [...jobs, newJob]);
@@ -52,6 +61,11 @@ export class JobQueueService {
     this.jobs.update(jobs => jobs.filter(job =>
       job.status !== 'completed' && job.status !== 'failed'
     ));
+
+    // If there are no jobs left or no processing jobs, reset the processing flag
+    if (this.jobs().length === 0 || !this.hasProcessingJob()) {
+      this.isProcessing.set(false);
+    }
   }
 
   updateJob(jobId: string, updates: Partial<QueuedJob>) {
@@ -74,5 +88,22 @@ export class JobQueueService {
 
   hasProcessingJob(): boolean {
     return this.jobs().some(job => job.status === 'processing');
+  }
+
+  updateItemProgress(jobId: string, itemIndex: number, progress: number, status: 'pending' | 'processing' | 'completed' | 'failed') {
+    this.jobs.update(jobs =>
+      jobs.map(job => {
+        if (job.id === jobId && job.itemProgress[itemIndex]) {
+          const newItemProgress = [...job.itemProgress];
+          newItemProgress[itemIndex] = { status, progress };
+          return {
+            ...job,
+            itemProgress: newItemProgress,
+            currentItemIndex: status === 'processing' ? itemIndex : job.currentItemIndex
+          };
+        }
+        return job;
+      })
+    );
   }
 }

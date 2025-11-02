@@ -59,14 +59,15 @@ export class MetadataReports implements OnInit {
 
       // Get settings to determine output directory
       const settings = await this.electron.getSettings();
-      const baseDir = settings.outputDirectory || `${this.getUserHome()}/Documents/LaunchPad Output`;
+      const baseDir = settings.outputDirectory || `${this.getUserHome()}/Documents/ContentStudio Output`;
 
       // Try multiple possible locations for metadata directory
       const possiblePaths = [
         `${baseDir}/metadata`,
-        `/Volumes/Callisto/LaunchPad/metadata`, // Legacy path
-        `/Volumes/Callisto/Projects/LaunchPad/output/metadata`,
-        `${this.getUserHome()}/Documents/LaunchPad Output/metadata`
+        `${this.getUserHome()}/Documents/ContentStudio Output/metadata`,
+        `${this.getUserHome()}/Documents/LaunchPad Output/metadata`, // Legacy path
+        `/Volumes/Callisto/LaunchPad/metadata`,
+        `/Volumes/Callisto/Projects/LaunchPad/output/metadata`
       ];
 
       let metadataDir = '';

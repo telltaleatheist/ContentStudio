@@ -116,8 +116,23 @@ export class PythonService {
         log.info('Spawning Python process with args:', args);
 
         // Spawn Python process
+        // Add common binary paths to PATH for ffmpeg and other tools
+        const envPath = process.env.PATH || '';
+        const additionalPaths = [
+          '/usr/local/bin',
+          '/opt/homebrew/bin',
+          '/opt/local/bin'
+        ];
+        const pathsToAdd = additionalPaths.filter(p => !envPath.includes(p));
+        const enhancedPath = pathsToAdd.length > 0
+          ? `${pathsToAdd.join(':')}:${envPath}`
+          : envPath;
+
         const pythonProcess: ChildProcess = spawn(this.pythonPath!, args, {
-          env: { ...process.env },
+          env: {
+            ...process.env,
+            PATH: enhancedPath
+          },
           stdio: ['pipe', 'pipe', 'pipe']
         });
 
@@ -131,11 +146,14 @@ export class PythonService {
           log.debug('Python stdout:', output);
         });
 
-        // Collect stderr
+        // Collect stderr and parse progress
         pythonProcess.stderr?.on('data', (data) => {
           const output = data.toString();
           stderrData += output;
           log.debug('Python stderr:', output);
+
+          // Parse progress information from stderr
+          this.parseProgressFromOutput(output);
         });
 
         // Handle process completion
@@ -192,6 +210,163 @@ export class PythonService {
         });
       }
     });
+  }
+
+  private parseProgressFromOutput(output: string): void {
+    const { BrowserWindow } = require('electron');
+    const mainWindow = BrowserWindow.getAllWindows()[0];
+    if (!mainWindow) return;
+    // Parse "Transcribing video: filename.mov"
+    const transcribingMatch = output.match(/Transcribing video: (.+)/);
+    if (transcribingMatch) {
+      mainWindow.webContents.send('generation-progress', {
+        phase: 'transcription',
+        message: `Transcribing: ${transcribingMatch[1]}`,
+        filename: transcribingMatch[1]
+      });
+      return;
+    }
+
+    // Parse Whisper progress bar: "  42%|████▏     | 120000/286924 [01:30<02:20, 1200frames/s]"
+    const progressMatch = output.match(/\s*(\d+)%\|[█▏▎▍▌▋▊▉\s]+\|\s*(\d+)\/(\d+)\s*\[(.+?)<(.+?),\s*(.+?)frames\/s\]/);
+    if (progressMatch) {
+      const percent = parseInt(progressMatch[1]);
+      const current = parseInt(progressMatch[2]);
+      const total = parseInt(progressMatch[3]);
+      const elapsed = progressMatch[4];
+      const remaining = progressMatch[5];
+
+      mainWindow.webContents.send('generation-progress', {
+        phase: 'transcription',
+        progress: percent,
+        current,
+        total,
+        elapsed,
+        remaining,
+        message: `Transcribing: ${percent}% (${remaining} remaining)`
+      });
+      return;
+    }
+
+    // Parse "Transcription complete (X characters)"
+    const completeMatch = output.match(/Transcription complete \((\d+) characters\)/);
+    if (completeMatch) {
+      mainWindow.webContents.send('generation-progress', {
+        phase: 'transcription',
+        progress: 100,
+        message: `Transcription complete (${completeMatch[1]} characters)`,
+        characters: parseInt(completeMatch[1])
+      });
+      return;
+    }
+
+    // Parse "Processing input: filepath"
+    const processingMatch = output.match(/Processing input: (.+)/);
+    if (processingMatch) {
+      mainWindow.webContents.send('generation-progress', {
+        phase: 'preparing',
+        message: `Processing: ${path.basename(processingMatch[1])}`,
+        filename: path.basename(processingMatch[1])
+      });
+      return;
+    }
+
+    // Parse "Processed X item(s)"
+    const processedMatch = output.match(/Processed (\d+) item\(s\)/);
+    if (processedMatch) {
+      mainWindow.webContents.send('generation-progress', {
+        phase: 'generating',
+        progress: 0,
+        message: `Generating metadata...`,
+        itemsProcessed: parseInt(processedMatch[1])
+      });
+      return;
+    }
+
+    // Parse "Summarizing long transcript"
+    const summarizingMatch = output.match(/Summarizing long transcript/);
+    if (summarizingMatch) {
+      mainWindow.webContents.send('generation-progress', {
+        phase: 'generating',
+        progress: 0,
+        message: 'Summarizing transcript...'
+      });
+      return;
+    }
+
+    // Parse "Processing X chunks..."
+    const chunksMatch = output.match(/Processing (\d+) chunks/);
+    if (chunksMatch) {
+      mainWindow.webContents.send('generation-progress', {
+        phase: 'generating',
+        progress: 5,
+        totalChunks: parseInt(chunksMatch[1]),
+        message: `Summarizing in ${chunksMatch[1]} chunks...`
+      });
+      return;
+    }
+
+    // Parse "Chunk X/Y"
+    const chunkProgressMatch = output.match(/Chunk (\d+)\/(\d+)/);
+    if (chunkProgressMatch) {
+      const current = parseInt(chunkProgressMatch[1]);
+      const total = parseInt(chunkProgressMatch[2]);
+      const progress = Math.floor((current / total) * 50); // 0-50% for chunking
+
+      mainWindow.webContents.send('generation-progress', {
+        phase: 'generating',
+        progress,
+        currentChunk: current,
+        totalChunks: total,
+        message: `Summarizing chunk ${current}/${total}...`
+      });
+      return;
+    }
+
+    // Parse "Transcript chunked and summarized"
+    const chunkCompleteMatch = output.match(/Transcript chunked and summarized/);
+    if (chunkCompleteMatch) {
+      mainWindow.webContents.send('generation-progress', {
+        phase: 'generating',
+        progress: 50,
+        message: 'Chunks summarized, generating metadata...'
+      });
+      return;
+    }
+
+    // Parse "Making consolidated request..."
+    const consolidatedMatch = output.match(/Making consolidated request/);
+    if (consolidatedMatch) {
+      mainWindow.webContents.send('generation-progress', {
+        phase: 'generating',
+        progress: 60,
+        message: 'Generating metadata with AI...'
+      });
+      return;
+    }
+
+    // Parse "Response received"
+    const responseMatch = output.match(/Response received \((\d+) chars\)/);
+    if (responseMatch) {
+      mainWindow.webContents.send('generation-progress', {
+        phase: 'generating',
+        progress: 90,
+        message: 'Processing AI response...',
+        responseSize: parseInt(responseMatch[1])
+      });
+      return;
+    }
+
+    // Parse "JSON saved"
+    const jsonSavedMatch = output.match(/JSON saved:/);
+    if (jsonSavedMatch) {
+      mainWindow.webContents.send('generation-progress', {
+        phase: 'generating',
+        progress: 100,
+        message: 'Metadata saved!'
+      });
+      return;
+    }
   }
 
   private getPythonDirectory(): string {

@@ -105,10 +105,9 @@ class InputDetector:
             if path.stat().st_size == 0:
                 return False, f"File is empty: {input_item}"
 
-            # Check file size
-            size_mb = path.stat().st_size / (1024 * 1024)
-            if size_mb > max_file_size_mb:
-                return False, f"File too large: {size_mb:.1f}MB (max: {max_file_size_mb}MB)"
+            # Note: No file size check for videos since they'll be transcribed to text first
+            # The transcription will handle large files appropriately
+            # For transcript files, we only check that they're not empty
 
             return True, ""
 
@@ -286,14 +285,20 @@ class VideoTranscriber:
                 return None
 
             try:
-                # Transcribe
-                result = self.model.transcribe(
-                    audio_path,
-                    language=None,  # Auto-detect
-                    task="transcribe",
-                    fp16=self.device != "cpu",
-                    verbose=False
-                )
+                # Transcribe - redirect stdout to stderr to avoid contaminating JSON output
+                old_stdout = sys.stdout
+                sys.stdout = sys.stderr
+
+                try:
+                    result = self.model.transcribe(
+                        audio_path,
+                        language=None,  # Auto-detect
+                        task="transcribe",
+                        fp16=self.device != "cpu",
+                        verbose=False
+                    )
+                finally:
+                    sys.stdout = old_stdout
 
                 transcript = result.get("text", "").strip()
                 if transcript:
