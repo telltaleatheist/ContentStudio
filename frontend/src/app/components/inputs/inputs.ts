@@ -425,13 +425,54 @@ export class Inputs implements OnInit, OnDestroy {
       const totalItems = nextJob.inputs.length;
       let currentItemIndex = 0;
 
+      // Helper to find item index by filename
+      const findItemIndexByFilename = (filename: string): number => {
+        const job = this.jobQueue.getJob(nextJob.id);
+        if (!job) return -1;
+
+        // Extract just the filename from the full path in progress.filename
+        const baseFilename = filename.split('/').pop() || filename;
+
+        // Find matching item by comparing filenames
+        for (let i = 0; i < job.inputs.length; i++) {
+          const itemFilename = job.inputs[i].path.split('/').pop() || '';
+          if (itemFilename === baseFilename) {
+            return i;
+          }
+        }
+        return -1;
+      };
+
       // Listen for progress updates from Python
       const unsubscribe = this.electron.onProgress((progress: any) => {
         const job = this.jobQueue.getJob(nextJob.id);
         if (!job) return;
 
+        // Handle preparing phase (when starting a new video) - this sets the current item
+        if (progress.phase === 'preparing' && progress.filename) {
+          const itemIndex = findItemIndexByFilename(progress.filename);
+          if (itemIndex !== -1) {
+            // Mark previous item as completed if we moved to a new item
+            if (currentItemIndex < totalItems && currentItemIndex !== itemIndex && currentItemIndex > 0) {
+              this.jobQueue.updateItemProgress(nextJob.id, currentItemIndex - 1, 100, 'completed');
+            }
+
+            currentItemIndex = itemIndex;
+            this.jobQueue.updateItemProgress(nextJob.id, currentItemIndex, 0, 'processing');
+          }
+          this.jobQueue.updateJob(nextJob.id, { currentlyProcessing: `Processing: ${progress.filename}` });
+        }
+
         // Update current item progress based on transcription phase
         if (progress.phase === 'transcription' && progress.progress !== undefined) {
+          // Find which item is being transcribed if filename is provided
+          if (progress.filename) {
+            const itemIndex = findItemIndexByFilename(progress.filename);
+            if (itemIndex !== -1 && itemIndex !== currentItemIndex) {
+              currentItemIndex = itemIndex;
+            }
+          }
+
           // Update current item progress bar (0-50% for transcription)
           if (currentItemIndex < totalItems) {
             const transcriptionProgress = Math.floor(progress.progress / 2); // Map 0-100 to 0-50
@@ -443,18 +484,10 @@ export class Inputs implements OnInit, OnDestroy {
           this.jobQueue.updateJob(nextJob.id, { currentlyProcessing: message });
 
           // Calculate overall progress (transcription is first 50%)
-          const completedItems = currentItemIndex;
+          const completedItems = job.itemProgress.filter(p => p.status === 'completed').length;
           const currentProgress = (progress.progress || 0) / 2; // 0-50%
           const overallProgress = ((completedItems + (currentProgress / 100)) / totalItems) * 100;
           this.jobQueue.updateJob(nextJob.id, { progress: Math.min(overallProgress, 95) });
-        }
-
-        // Handle preparing phase (when starting a new video)
-        if (progress.phase === 'preparing' && progress.filename) {
-          if (currentItemIndex < totalItems) {
-            this.jobQueue.updateItemProgress(nextJob.id, currentItemIndex, 0, 'processing');
-          }
-          this.jobQueue.updateJob(nextJob.id, { currentlyProcessing: `Processing: ${progress.filename}` });
         }
 
         // Handle metadata generation phase (AI summarization and generation)
