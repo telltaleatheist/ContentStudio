@@ -147,4 +147,13 @@ export class NotificationService {
     this.saveNotifications();
     this.notificationsSubject.next(this.notifications);
   }
+
+  deleteNotification(notificationId: string): void {
+    const index = this.notifications.findIndex(n => n.id === notificationId);
+    if (index !== -1) {
+      this.notifications.splice(index, 1);
+      this.saveNotifications();
+      this.notificationsSubject.next(this.notifications);
+    }
+  }
 }

@@ -30,6 +30,9 @@
           </div>
           <p class="notification-message">{{ notification.message }}</p>
         </div>
+        <button class="delete-btn" (click)="deleteNotification($event, notification.id)" title="Delete notification">
+          ×
+        </button>
       </div>
     </div>
 

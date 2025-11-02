@@ -88,4 +88,9 @@ export class NotificationBellComponent implements OnInit, OnDestroy {
       this.closePanel();
     }
   }
+
+  deleteNotification(event: MouseEvent, notificationId: string): void {
+    event.stopPropagation(); // Prevent triggering viewNotification
+    this.notificationService.deleteNotification(notificationId);
+  }
 }
