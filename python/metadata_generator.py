@@ -98,7 +98,14 @@ def main():
         content_items = input_handler.process_inputs(args.inputs)
 
         if not content_items:
-            raise Exception("No valid content items could be processed")
+            # Check if inputs were videos
+            from core.input_handler import InputDetector
+            input_types = [InputDetector.detect_input_type(inp) for inp in args.inputs]
+
+            if 'video' in input_types:
+                raise Exception("No content could be processed. Video transcription requires the 'whisper' and 'torch' Python packages. The app will attempt to install these automatically on next launch. If installation fails, please ensure you have Python 3.10 or higher installed.")
+            else:
+                raise Exception("No valid content items could be processed")
 
         # Prepare content (summarize if needed)
         content_items = input_handler.prepare_content(content_items, ai_manager)

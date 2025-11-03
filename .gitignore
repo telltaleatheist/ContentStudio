@@ -37,5 +37,5 @@ logs/
 *.pyo
 __pycache__/
 ._*
-claude api key
-chatgpt api key
+claude api key.txt
+chatgpt api key.txt

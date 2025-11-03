@@ -1,4 +1,4 @@
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, ChildProcess, execSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as log from 'electron-log';
@@ -65,6 +65,9 @@ export class PythonService {
         log.warn('Virtual environment not found. Run: npm run setup:python');
       }
 
+      // Ensure required packages are installed
+      await this.ensureRequiredPackages();
+
       // Set script path
       this.scriptPath = path.join(pythonDir, 'metadata_generator.py');
 
@@ -79,6 +82,159 @@ export class PythonService {
     } catch (error) {
       log.error('Failed to initialize Python service:', error);
       return false;
+    }
+  }
+
+  private async ensureRequiredPackages(): Promise<void> {
+    if (!this.pythonPath) return;
+
+    // Get Python version
+    let pythonVersion = '3.9';
+    try {
+      const versionOutput = execSync(`${this.pythonPath} --version`, {
+        encoding: 'utf-8',
+        timeout: 5000
+      });
+      const match = versionOutput.match(/Python (\d+\.\d+)/);
+      if (match) {
+        pythonVersion = match[1];
+        log.info(`Detected Python version: ${pythonVersion}`);
+      }
+    } catch (error) {
+      log.error('Failed to detect Python version:', error);
+    }
+
+    // First, ensure NumPy 1.x is installed (required for torch/whisper compatibility)
+    log.info('Checking NumPy version...');
+    try {
+      execSync(`${this.pythonPath} -c "import numpy"`, {
+        stdio: 'ignore',
+        timeout: 5000
+      });
+
+      // Check if NumPy 2.x is installed (incompatible with torch)
+      try {
+        const numpyVersion = execSync(`${this.pythonPath} -c "import numpy; print(numpy.__version__)"`, {
+          encoding: 'utf-8',
+          timeout: 5000
+        }).trim();
+
+        if (numpyVersion.startsWith('2.')) {
+          log.warn(`NumPy ${numpyVersion} is incompatible with torch. Downgrading to NumPy 1.x...`);
+          execSync(`${this.pythonPath} -m pip install "numpy<2"`, {
+            stdio: 'pipe',
+            timeout: 60000
+          });
+          log.info('Successfully downgraded NumPy to 1.x');
+        } else {
+          log.info(`NumPy ${numpyVersion} is already installed`);
+        }
+      } catch (error) {
+        log.warn('Could not check NumPy version, installing numpy<2...');
+        execSync(`${this.pythonPath} -m pip install "numpy<2"`, {
+          stdio: 'pipe',
+          timeout: 60000
+        });
+      }
+    } catch (error) {
+      log.warn('NumPy not found, installing numpy<2...');
+      try {
+        execSync(`${this.pythonPath} -m pip install "numpy<2"`, {
+          stdio: 'pipe',
+          timeout: 60000
+        });
+        log.info('Successfully installed NumPy 1.x');
+      } catch (installError) {
+        log.error('Failed to install NumPy:', installError);
+      }
+    }
+
+    const requiredPackages = [
+      'requests',
+      'openai',
+      'anthropic',
+      'PyYAML',
+      'pathspec',
+      'python-dateutil'
+    ];
+
+    log.info('Checking for required Python packages...');
+
+    for (const pkg of requiredPackages) {
+      try {
+        // Check if package is installed
+        execSync(`${this.pythonPath} -c "import ${pkg.replace('-', '_')}"`, {
+          stdio: 'ignore',
+          timeout: 5000
+        });
+        log.info(`Package ${pkg} is already installed`);
+      } catch (error) {
+        // Package not found, install it
+        log.warn(`Package ${pkg} not found, installing...`);
+        try {
+          execSync(`${this.pythonPath} -m pip install ${pkg}`, {
+            stdio: 'pipe',
+            timeout: 60000
+          });
+          log.info(`Successfully installed ${pkg}`);
+        } catch (installError) {
+          log.error(`Failed to install ${pkg}:`, installError);
+          // Continue anyway, the error will be caught when the script runs
+        }
+      }
+    }
+
+    // Try to install whisper and torch for video transcription
+    log.info('Checking for video transcription packages...');
+
+    // Check if whisper is installed
+    try {
+      execSync(`${this.pythonPath} -c "import whisper"`, {
+        stdio: 'ignore',
+        timeout: 5000
+      });
+      log.info('Whisper is already installed');
+    } catch (error) {
+      log.warn('Whisper not found, attempting to install...');
+
+      // For Python 3.9, we need to install compatible versions
+      const majorMinor = parseFloat(pythonVersion);
+
+      try {
+        if (majorMinor < 3.10) {
+          // For Python 3.9, install older compatible versions
+          log.info('Installing PyTorch for Python 3.9...');
+          execSync(`${this.pythonPath} -m pip install torch==2.0.1 torchaudio==2.0.2 "numpy<2"`, {
+            stdio: 'pipe',
+            timeout: 300000 // 5 minutes for torch installation
+          });
+        } else if (majorMinor < 3.13) {
+          // For Python 3.10-3.12, install latest stable
+          log.info('Installing PyTorch...');
+          execSync(`${this.pythonPath} -m pip install torch torchaudio "numpy<2"`, {
+            stdio: 'pipe',
+            timeout: 300000
+          });
+        } else {
+          // For Python 3.13+, install latest with proper numpy constraint
+          log.info('Installing PyTorch for Python 3.13+...');
+          execSync(`${this.pythonPath} -m pip install "numpy<2" torch torchaudio`, {
+            stdio: 'pipe',
+            timeout: 300000
+          });
+        }
+
+        log.info('Installing OpenAI Whisper...');
+        execSync(`${this.pythonPath} -m pip install openai-whisper`, {
+          stdio: 'pipe',
+          timeout: 120000
+        });
+
+        log.info('Successfully installed video transcription packages');
+      } catch (installError) {
+        log.error('Failed to install whisper/torch:', installError);
+        log.warn('Video transcription will not be available. Audio files will still work.');
+      }
     }
   }
 

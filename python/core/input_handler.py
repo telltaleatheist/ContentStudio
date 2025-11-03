@@ -385,6 +385,8 @@ class InputHandler:
         """Process a single video file"""
         transcript = self.transcriber.transcribe_video(video_path)
         if not transcript:
+            # Return empty list but don't raise error - caller will handle
+            print(f"Warning: Could not transcribe video {video_path}", file=sys.stderr)
             return []
 
         return [ContentItem(
