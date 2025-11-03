@@ -1,4 +1,4 @@
-<div class="settings-container">
+<div class="settings-wrapper">
   <!-- Save Notification -->
   @if (showSaveNotification()) {
     <div class="save-notification">
@@ -10,13 +10,15 @@
     </div>
   }
 
-  <!-- Header -->
-  <div class="header">
-    <h2>Settings</h2>
-  </div>
+  <!-- Scrollable Content -->
+  <div class="settings-container">
+    <!-- Header -->
+    <div class="header">
+      <h2>Settings</h2>
+    </div>
 
-  <!-- AI Model Section -->
-  <mat-card class="settings-card">
+    <!-- AI Model Section -->
+    <mat-card class="settings-card">
     <mat-card-header>
       <mat-card-title>AI Model</mat-card-title>
     </mat-card-header>
@@ -131,8 +133,9 @@
       </mat-form-field>
     </mat-card-content>
   </mat-card>
+  </div>
 
-  <!-- Save Button -->
+  <!-- Save Button (outside scrollable area) -->
   <div class="save-section">
     <button mat-raised-button color="primary" class="save-button" (click)="saveSettings()">
       <mat-icon>save</mat-icon>

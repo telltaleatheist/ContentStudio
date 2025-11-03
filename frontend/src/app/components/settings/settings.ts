@@ -61,11 +61,9 @@ export class Settings implements OnInit {
       { value: 'openai:gpt-4o', label: 'ChatGPT 4o', provider: 'cloud', icon: 'cloud', needsApiKey: true },
       { value: 'openai:gpt-4-turbo', label: 'ChatGPT 4 Turbo', provider: 'cloud', icon: 'cloud', needsApiKey: true },
       { value: 'openai:gpt-3.5-turbo', label: 'ChatGPT 3.5 Turbo', provider: 'cloud', icon: 'cloud', needsApiKey: true },
+      { value: 'claude:claude-sonnet-4', label: 'Claude Sonnet 4.5 (Newest)', provider: 'cloud', icon: 'cloud', needsApiKey: true },
       { value: 'claude:claude-3-5-sonnet', label: 'Claude 3.5 Sonnet (Recommended)', provider: 'cloud', icon: 'cloud', needsApiKey: true },
       { value: 'claude:claude-3-5-haiku', label: 'Claude 3.5 Haiku', provider: 'cloud', icon: 'cloud', needsApiKey: true },
-      { value: 'claude:claude-3-opus', label: 'Claude 3 Opus (Legacy)', provider: 'cloud', icon: 'cloud', needsApiKey: true },
-      { value: 'claude:claude-3-sonnet', label: 'Claude 3 Sonnet (Legacy)', provider: 'cloud', icon: 'cloud', needsApiKey: true },
-      { value: 'claude:claude-3-haiku', label: 'Claude 3 Haiku (Legacy)', provider: 'cloud', icon: 'cloud', needsApiKey: true },
     ];
 
     // Add local Ollama models at bottom
@@ -166,7 +164,7 @@ export class Settings implements OnInit {
 
     const settings = {
       aiProvider: provider,
-      ollamaModel: provider === 'ollama' ? model : '',
+      ollamaModel: model,  // Used for all providers (field name is legacy)
       ollamaHost: this.ollamaHost(),
       openaiApiKey: this.openaiApiKey(),
       claudeApiKey: this.claudeApiKey(),

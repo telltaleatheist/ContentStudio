@@ -16,6 +16,9 @@ interface MetadataReport {
   promptSet?: string; // The prompt set used for generation
   displayTitle?: string; // The actual title from the metadata
   txtFolder?: string; // Path to the folder containing txt files
+  jobId?: string; // The job ID this item belongs to
+  itemIndex?: number; // Index of this item within the job (for multiple items)
+  txtFilePath?: string; // Path to the specific TXT file for this item
 }
 
 interface ParsedMetadata {
@@ -117,16 +120,47 @@ export class MetadataReports implements OnInit, OnDestroy {
 
               // Get the txt folder path
               const txtFolder = jobData.txt_folder || '';
+              const jobDate = new Date(jobData.created_at || file.mtime);
+              const jobId = jobData.job_id || file.name.replace('.json', '');
 
-              reports.push({
-                name: jobData.job_id || file.name.replace('.json', ''),
-                path: jsonPath,  // Path to JSON file
-                date: new Date(jobData.created_at || file.mtime),
-                size: file.size || 0,
-                promptSet: jobData.prompt_set,
-                displayTitle: jobData.job_name,
-                txtFolder: txtFolder  // Store txt folder path
-              });
+              // Create a report for EACH item in the job
+              if (jobData.items && Array.isArray(jobData.items)) {
+                jobData.items.forEach((item: any, index: number) => {
+                  // Get the display title from the item
+                  const itemTitle = item._title || `Item ${index + 1}`;
+
+                  // Get the corresponding txt file path if available
+                  let txtFilePath = '';
+                  if (jobData.txt_files && jobData.txt_files[index]) {
+                    txtFilePath = jobData.txt_files[index];
+                  }
+
+                  reports.push({
+                    name: `${jobId}-item-${index}`,
+                    path: jsonPath,  // Path to JSON file
+                    date: jobDate,
+                    size: file.size || 0,
+                    promptSet: jobData.prompt_set,
+                    displayTitle: itemTitle,
+                    txtFolder: txtFolder,  // Store txt folder path
+                    jobId: jobId,
+                    itemIndex: index,
+                    txtFilePath: txtFilePath
+                  });
+                });
+              } else {
+                // Fallback for jobs without items array (shouldn't happen with new structure)
+                reports.push({
+                  name: jobId,
+                  path: jsonPath,
+                  date: jobDate,
+                  size: file.size || 0,
+                  promptSet: jobData.prompt_set,
+                  displayTitle: jobData.job_name,
+                  txtFolder: txtFolder,
+                  jobId: jobId
+                });
+              }
             }
           } catch (e) {
             console.warn('Could not read metadata file', file.name, e);
@@ -232,9 +266,11 @@ export class MetadataReports implements OnInit, OnDestroy {
       if (content) {
         const jobData = JSON.parse(content);
 
-        // For new structure, get the first item's metadata
-        // (or we could show all items - for now just show first one)
-        if (jobData.items && jobData.items.length > 0) {
+        // If we have an itemIndex, load that specific item
+        if (report.itemIndex !== undefined && jobData.items && jobData.items.length > report.itemIndex) {
+          this.metadata.set(jobData.items[report.itemIndex]);
+        } else if (jobData.items && jobData.items.length > 0) {
+          // Fallback to first item if no index specified
           this.metadata.set(jobData.items[0]);
         } else {
           // Legacy structure compatibility
@@ -259,8 +295,8 @@ export class MetadataReports implements OnInit, OnDestroy {
 
   async showInFolder(report: MetadataReport) {
     try {
-      // Show the txt folder if available, otherwise the JSON file location
-      const pathToShow = report.txtFolder || report.path;
+      // Show the specific txt file if available, otherwise the txt folder, otherwise the JSON file location
+      const pathToShow = report.txtFilePath || report.txtFolder || report.path;
       await this.electron.showInFolder(pathToShow);
     } catch (error) {
       this.notificationService.error('Show Error', 'Failed to show in folder: ' + (error as Error).message);

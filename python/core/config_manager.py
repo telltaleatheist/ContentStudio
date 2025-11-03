@@ -70,18 +70,21 @@ class ConfigManager:
                 # Handle Claude 4.5 models (newest)
                 if 'claude-sonnet-4' in self.ai_model or 'claude-4' in self.ai_model:
                     return 'claude-sonnet-4-5-20250929'
-                # Handle Claude 3.5 models - use latest aliases
+                # Handle Claude 3.5 models - use latest versions
                 elif 'claude-3-5-sonnet' in self.ai_model:
                     return 'claude-3-5-sonnet-latest'
                 elif 'claude-3-5-haiku' in self.ai_model:
                     return 'claude-3-5-haiku-latest'
-                # Handle legacy Claude 3 models
+                # Handle legacy Claude 3 models - map to available equivalents
                 elif 'claude-3-opus' in self.ai_model:
-                    return 'claude-3-opus-20240229'
+                    # Opus is deprecated, use 3.5 Sonnet as replacement
+                    return 'claude-3-5-sonnet-latest'
                 elif 'claude-3-sonnet' in self.ai_model:
-                    return 'claude-3-sonnet-20240229'
+                    # Old Sonnet is deprecated, use 3.5 Sonnet
+                    return 'claude-3-5-sonnet-latest'
                 elif 'claude-3-haiku' in self.ai_model:
-                    return 'claude-3-haiku-20240307'
+                    # Old Haiku is deprecated, use 3.5 Haiku
+                    return 'claude-3-5-haiku-latest'
             # Default to Claude 3.5 Sonnet latest for best balance of quality and cost
             return 'claude-3-5-sonnet-latest'
         return self.ai_model

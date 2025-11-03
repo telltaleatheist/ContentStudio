@@ -257,14 +257,6 @@
               <!-- Expanded Content -->
               @if (isJobExpanded(job.id)) {
                 <div class="job-details-expanded">
-                  <!-- Error Message -->
-                  @if (job.status === 'failed' && job.error) {
-                    <div class="job-error">
-                      <mat-icon>error</mat-icon>
-                      <span>{{ job.error }}</span>
-                    </div>
-                  }
-
                   <!-- Input Items as List Items -->
                   <div class="job-inputs-list">
                     <div class="inputs-label">Processing Items:</div>

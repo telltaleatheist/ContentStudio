@@ -815,30 +815,6 @@
           }
         }
 
-        .job-error {
-          display: flex;
-          align-items: flex-start;
-          gap: 0.5rem;
-          margin-bottom: 1rem;
-          padding: 0.75rem;
-          background-color: rgba(244, 67, 54, 0.15);
-          border-radius: 8px;
-          border: 1px solid rgba(244, 67, 54, 0.3);
-
-          mat-icon {
-            font-size: 20px;
-            width: 20px;
-            height: 20px;
-            color: #f44336;
-          }
-
-          span {
-            color: var(--text-primary);
-            font-size: 0.9rem;
-            flex: 1;
-          }
-        }
-
         .job-inputs-list {
           .inputs-label {
             color: var(--text-secondary);
@@ -1131,30 +1107,6 @@
           }
         }
 
-        .job-error {
-          display: flex;
-          align-items: flex-start;
-          gap: 0.5rem;
-          margin-bottom: 1rem;
-          padding: 0.75rem;
-          background-color: rgba(244, 67, 54, 0.15);
-          border-radius: 8px;
-          border: 1px solid rgba(244, 67, 54, 0.3);
-
-          mat-icon {
-            font-size: 20px;
-            width: 20px;
-            height: 20px;
-            color: #ff6b6b;
-          }
-
-          span {
-            color: white;
-            font-size: 0.9rem;
-            flex: 1;
-          }
-        }
-
         .job-inputs {
           .inputs-label {
             color: rgba(255, 255, 255, 0.7);
@@ -1347,19 +1299,6 @@
           color: #666;
         }
 
-        .job-error {
-          background-color: rgba(244, 67, 54, 0.1);
-          border: 1px solid rgba(244, 67, 54, 0.3);
-
-          mat-icon {
-            color: #f44336;
-          }
-
-          span {
-            color: #333;
-          }
-        }
-
         .job-inputs {
           .inputs-label {
             color: #666;
@@ -1452,16 +1391,6 @@
         .job-details-expanded {
           .job-progress .progress-info .progress-text {
             color: rgba(255, 255, 255, 0.7);
-          }
-
-          .job-error {
-            mat-icon {
-              color: #ff6b6b;
-            }
-
-            span {
-              color: white;
-            }
           }
 
           .job-inputs-list {
