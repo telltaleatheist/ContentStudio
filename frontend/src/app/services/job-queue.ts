@@ -1,8 +1,10 @@
 import { Injectable, signal } from '@angular/core';
 import { InputItem } from './inputs-state';
 
+export type ItemStatus = 'pending' | 'transcribing' | 'transcribed' | 'generating' | 'completed' | 'failed';
+
 export interface ItemProgress {
-  status: 'pending' | 'processing' | 'completed' | 'failed';
+  status: ItemStatus;
   progress: number;
 }
 
@@ -90,16 +92,18 @@ export class JobQueueService {
     return this.jobs().some(job => job.status === 'processing');
   }
 
-  updateItemProgress(jobId: string, itemIndex: number, progress: number, status: 'pending' | 'processing' | 'completed' | 'failed') {
+  updateItemProgress(jobId: string, itemIndex: number, progress: number, status: ItemStatus) {
     this.jobs.update(jobs =>
       jobs.map(job => {
         if (job.id === jobId && job.itemProgress[itemIndex]) {
           const newItemProgress = [...job.itemProgress];
           newItemProgress[itemIndex] = { status, progress };
+          // Update currentItemIndex for any active processing status
+          const isActiveStatus = status === 'transcribing' || status === 'generating';
           return {
             ...job,
             itemProgress: newItemProgress,
-            currentItemIndex: status === 'processing' ? itemIndex : job.currentItemIndex
+            currentItemIndex: isActiveStatus ? itemIndex : job.currentItemIndex
           };
         }
         return job;

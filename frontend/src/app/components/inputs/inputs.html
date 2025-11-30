@@ -158,6 +158,18 @@
                   {{ item.notes ? 'Notes' : 'Add Notes' }}
                 </button>
 
+                <!-- Chapter Generation Checkbox (only for YouTube videos in individual mode) -->
+                @if (canGenerateChapters(item)) {
+                  <mat-checkbox
+                    [checked]="item.generateChapters !== false"
+                    (change)="toggleChapterGeneration(i, $event.checked)"
+                    color="primary"
+                    matTooltip="Generate YouTube chapter markers from video transcript"
+                    class="chapter-checkbox">
+                    Chapters
+                  </mat-checkbox>
+                }
+
                 <!-- Remove Button -->
                 <button mat-icon-button (click)="removeInput(i)" matTooltip="Remove" class="remove-btn">
                   <mat-icon>close</mat-icon>
@@ -262,23 +274,19 @@
                     <div class="inputs-label">Processing Items:</div>
                     <div class="items-list">
                       @for (input of job.inputs; track input.path; let i = $index) {
-                        <div class="item-row-wrapper" [class.completed]="isItemCompleted(job, i)" [class.processing]="isItemProcessing(job, i)">
+                        <div class="item-row-wrapper" [class]="getItemStatusClass(job, i)">
                           <div class="item-row">
                             <mat-icon class="item-icon">{{ input.icon }}</mat-icon>
                             <div class="item-details">
                               <div class="item-name">{{ input.displayName }}</div>
                               <div class="item-status">
-                                @if (isItemCompleted(job, i)) {
-                                  <span class="status-text completed">Completed</span>
-                                } @else if (isItemProcessing(job, i)) {
-                                  <span class="status-text processing">Processing...</span>
-                                } @else {
-                                  <span class="status-text pending">Pending</span>
-                                }
+                                <span class="status-text" [class]="getItemStatusClass(job, i)">{{ getItemStatusText(job, i) }}</span>
                               </div>
                             </div>
                             @if (isItemCompleted(job, i)) {
                               <mat-icon class="completion-check">check_circle</mat-icon>
+                            } @else if (isItemTranscribed(job, i)) {
+                              <mat-icon class="transcribed-check">check</mat-icon>
                             }
                           </div>
                           <div class="item-progress-container">

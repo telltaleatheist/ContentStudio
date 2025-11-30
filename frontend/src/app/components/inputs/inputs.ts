@@ -244,7 +244,8 @@ export class Inputs implements OnInit, OnDestroy {
             displayName: fileName,
             icon,
             selected: true,
-            promptSet: this.inputsState.masterPromptSet()
+            promptSet: this.inputsState.masterPromptSet(),
+            generateChapters: type === 'video' ? true : undefined
           });
         }
       }
@@ -253,6 +254,13 @@ export class Inputs implements OnInit, OnDestroy {
 
   removeInput(index: number) {
     this.inputsState.removeItem(index);
+  }
+
+  toggleChapterGeneration(index: number, value: boolean) {
+    const items = this.inputsState.inputItems();
+    const updatedItems = [...items];
+    updatedItems[index] = { ...updatedItems[index], generateChapters: value };
+    this.inputsState.inputItems.set(updatedItems);
   }
 
   openNotesDialog(index: number) {
@@ -466,22 +474,27 @@ export class Inputs implements OnInit, OnDestroy {
         return -1;
       };
 
+      // Track which item is currently being transcribed vs generated
+      let transcribingItemIndex = -1;
+      let generatingItemIndex = -1;
+
       // Listen for progress updates from Python
       const unsubscribe = this.electron.onProgress((progress: any) => {
         const job = this.jobQueue.getJob(nextJob.id);
         if (!job) return;
 
-        // Handle preparing phase (when starting a new video) - this sets the current item
+        // Handle preparing phase (when starting a new video for transcription)
         if (progress.phase === 'preparing' && progress.filename) {
           const itemIndex = findItemIndexByFilename(progress.filename);
           if (itemIndex !== -1) {
-            // Mark previous item as completed if we moved to a new item
-            if (currentItemIndex < totalItems && currentItemIndex !== itemIndex && currentItemIndex > 0) {
-              this.jobQueue.updateItemProgress(nextJob.id, currentItemIndex - 1, 100, 'completed');
+            // Mark previous transcribing item as 'transcribed' (not completed!)
+            if (transcribingItemIndex >= 0 && transcribingItemIndex !== itemIndex) {
+              this.jobQueue.updateItemProgress(nextJob.id, transcribingItemIndex, 50, 'transcribed');
             }
 
+            transcribingItemIndex = itemIndex;
             currentItemIndex = itemIndex;
-            this.jobQueue.updateItemProgress(nextJob.id, currentItemIndex, 0, 'processing');
+            this.jobQueue.updateItemProgress(nextJob.id, itemIndex, 0, 'transcribing');
           }
           this.jobQueue.updateJob(nextJob.id, { currentlyProcessing: `Processing: ${progress.filename}` });
         }
@@ -491,52 +504,74 @@ export class Inputs implements OnInit, OnDestroy {
           // Find which item is being transcribed if filename is provided
           if (progress.filename) {
             const itemIndex = findItemIndexByFilename(progress.filename);
-            if (itemIndex !== -1 && itemIndex !== currentItemIndex) {
+            if (itemIndex !== -1 && itemIndex !== transcribingItemIndex) {
+              // Mark previous as transcribed before switching
+              if (transcribingItemIndex >= 0) {
+                this.jobQueue.updateItemProgress(nextJob.id, transcribingItemIndex, 50, 'transcribed');
+              }
+              transcribingItemIndex = itemIndex;
               currentItemIndex = itemIndex;
             }
           }
 
           // Update current item progress bar (0-50% for transcription)
-          if (currentItemIndex < totalItems) {
+          if (transcribingItemIndex >= 0 && transcribingItemIndex < totalItems) {
             const transcriptionProgress = Math.floor(progress.progress / 2); // Map 0-100 to 0-50
-            this.jobQueue.updateItemProgress(nextJob.id, currentItemIndex, transcriptionProgress, 'processing');
+            this.jobQueue.updateItemProgress(nextJob.id, transcribingItemIndex, transcriptionProgress, 'transcribing');
+          }
+
+          // Mark as transcribed when transcription hits 100%
+          if (progress.progress === 100 && transcribingItemIndex >= 0) {
+            this.jobQueue.updateItemProgress(nextJob.id, transcribingItemIndex, 50, 'transcribed');
           }
 
           // Update job-level message with "Transcribing..."
           const message = progress.message || `Transcribing: ${progress.filename || ''}`;
           this.jobQueue.updateJob(nextJob.id, { currentlyProcessing: message });
 
-          // Calculate overall progress (transcription is first 50%)
-          const completedItems = job.itemProgress.filter(p => p.status === 'completed').length;
+          // Calculate overall progress (transcription is first 50% of total job)
+          const transcribedItems = job.itemProgress.filter(p =>
+            p.status === 'transcribed' || p.status === 'generating' || p.status === 'completed'
+          ).length;
           const currentProgress = (progress.progress || 0) / 2; // 0-50%
-          const overallProgress = ((completedItems + (currentProgress / 100)) / totalItems) * 100;
-          this.jobQueue.updateJob(nextJob.id, { progress: Math.min(overallProgress, 95) });
+          const overallProgress = ((transcribedItems + (currentProgress / 100)) / totalItems) * 50;
+          this.jobQueue.updateJob(nextJob.id, { progress: Math.min(overallProgress, 49) });
         }
 
         // Handle metadata generation phase (AI summarization and generation)
         if (progress.phase === 'generating' && progress.progress !== undefined) {
-          if (currentItemIndex < totalItems) {
-            // Map AI progress from 0-100 to 50-100 (second half of progress bar)
+          // Find the next transcribed item that needs generation
+          const job = this.jobQueue.getJob(nextJob.id);
+          if (job) {
+            // Find first 'transcribed' item to mark as generating
+            const nextToGenerate = job.itemProgress.findIndex(p => p.status === 'transcribed');
+            if (nextToGenerate !== -1 && generatingItemIndex !== nextToGenerate) {
+              generatingItemIndex = nextToGenerate;
+              currentItemIndex = nextToGenerate;
+            }
+          }
+
+          if (generatingItemIndex >= 0 && generatingItemIndex < totalItems) {
+            // Map AI progress from 0-100 to 50-100 (second half of item's progress bar)
             const aiProgress = 50 + Math.floor(progress.progress / 2);
-            this.jobQueue.updateItemProgress(nextJob.id, currentItemIndex, aiProgress, 'processing');
+            this.jobQueue.updateItemProgress(nextJob.id, generatingItemIndex, aiProgress, 'generating');
           }
 
           // Update message to show what's happening in AI phase
           const message = progress.message || 'Generating metadata...';
           this.jobQueue.updateJob(nextJob.id, { currentlyProcessing: message });
 
-          // If generation complete (100%), mark item as completed and move to next
-          if (progress.progress === 100) {
-            if (currentItemIndex < totalItems) {
-              this.jobQueue.updateItemProgress(nextJob.id, currentItemIndex, 100, 'completed');
-              currentItemIndex++;
-            }
+          // If generation complete (100%), mark item as completed
+          if (progress.progress === 100 && generatingItemIndex >= 0) {
+            this.jobQueue.updateItemProgress(nextJob.id, generatingItemIndex, 100, 'completed');
+            generatingItemIndex = -1; // Reset so we find the next one
           }
 
-          // Calculate overall progress (generation is second 50%)
-          const completedItems = currentItemIndex;
-          const currentProgress = 50 + ((progress.progress || 0) / 2); // 50-100%
-          const overallProgress = ((completedItems + (currentProgress / 100)) / totalItems) * 100;
+          // Calculate overall progress (50-100% for generation phase)
+          const completedItems = job.itemProgress.filter(p => p.status === 'completed').length;
+          const generatingItems = job.itemProgress.filter(p => p.status === 'generating').length;
+          const currentGenProgress = generatingItems > 0 ? (progress.progress || 0) / 100 : 0;
+          const overallProgress = 50 + ((completedItems + currentGenProgress) / totalItems) * 50;
           this.jobQueue.updateJob(nextJob.id, { progress: Math.min(overallProgress, 99) });
         }
       });
@@ -547,12 +582,30 @@ export class Inputs implements OnInit, OnDestroy {
         notes: item.notes
       }));
 
+      // Extract chapter flags for video files (only for YouTube individual jobs)
+      const chapterFlags: { [path: string]: boolean } = {};
+      const isYouTube = this.isYouTubePromptSet(nextJob.promptSet);
+      const isIndividual = nextJob.mode === 'individual';
+
+      // Only generate chapters for YouTube videos in individual mode
+      if (isYouTube && isIndividual) {
+        nextJob.inputs.forEach(item => {
+          console.log('Processing item:', item.type, item.path, 'generateChapters:', item.generateChapters);
+          if (item.type === 'video' && item.generateChapters !== false) {
+            chapterFlags[item.path] = true;
+          }
+        });
+      }
+
+      console.log('Chapter flags being sent:', chapterFlags, '(YouTube:', isYouTube, ', Individual:', isIndividual, ')');
+
       const result = await this.electron.generateMetadata({
         inputs,
         promptSet: nextJob.promptSet,
         mode: nextJob.mode,
         jobId: nextJob.id,
-        jobName: nextJob.name
+        jobName: nextJob.name,
+        chapterFlags
       });
 
       unsubscribe();
@@ -683,6 +736,23 @@ export class Inputs implements OnInit, OnDestroy {
     return promptSet?.platform === 'youtube' ? 'video_library' : 'podcasts';
   }
 
+  // Helper to check if a prompt set is YouTube platform
+  isYouTubePromptSet(promptSetId: string): boolean {
+    const promptSet = this.availablePromptSets().find(ps => ps.id === promptSetId);
+    return promptSet?.platform === 'youtube';
+  }
+
+  // Helper to check if chapters should be available for an item
+  canGenerateChapters(item: InputItem): boolean {
+    // Chapters only available for:
+    // 1. Video files (not text subjects or transcripts)
+    // 2. YouTube platform prompt sets (not podcasts)
+    // 3. Individual mode (not compilation)
+    return item.type === 'video' &&
+           this.isYouTubePromptSet(item.promptSet) &&
+           !this.inputsState.compilationMode();
+  }
+
   // Global queue progress helpers
   getGlobalQueueProgress(): number {
     const jobs = this.jobQueue.jobs();
@@ -727,7 +797,28 @@ export class Inputs implements OnInit, OnDestroy {
   }
 
   isItemProcessing(job: QueuedJob, itemIndex: number): boolean {
-    return job.itemProgress[itemIndex]?.status === 'processing';
+    const status = job.itemProgress[itemIndex]?.status;
+    return status === 'transcribing' || status === 'generating';
+  }
+
+  isItemTranscribed(job: QueuedJob, itemIndex: number): boolean {
+    return job.itemProgress[itemIndex]?.status === 'transcribed';
+  }
+
+  getItemStatusText(job: QueuedJob, itemIndex: number): string {
+    const status = job.itemProgress[itemIndex]?.status;
+    switch (status) {
+      case 'transcribing': return 'Transcribing...';
+      case 'transcribed': return 'Transcribed';
+      case 'generating': return 'Generating...';
+      case 'completed': return 'Completed';
+      case 'failed': return 'Failed';
+      default: return 'Pending';
+    }
+  }
+
+  getItemStatusClass(job: QueuedJob, itemIndex: number): string {
+    return job.itemProgress[itemIndex]?.status || 'pending';
   }
 
   getItemProgress(job: QueuedJob, itemIndex: number): number {
@@ -736,7 +827,8 @@ export class Inputs implements OnInit, OnDestroy {
 
     if (item.status === 'completed') return 100;
     if (item.status === 'failed') return 100;
-    if (item.status === 'processing') return item.progress;
+    if (item.status === 'transcribed') return 50; // Transcription done, generation pending
+    if (item.status === 'transcribing' || item.status === 'generating') return item.progress;
 
     return 0;
   }

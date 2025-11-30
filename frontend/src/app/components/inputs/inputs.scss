@@ -838,9 +838,19 @@
               transition: all 0.2s ease;
               overflow: hidden;
 
-              &.processing {
+              &.transcribing {
                 background-color: rgba(255, 107, 53, 0.1);
                 border-color: rgba(255, 107, 53, 0.3);
+              }
+
+              &.transcribed {
+                background-color: rgba(33, 150, 243, 0.08);
+                border-color: rgba(33, 150, 243, 0.3);
+              }
+
+              &.generating {
+                background-color: rgba(156, 39, 176, 0.1);
+                border-color: rgba(156, 39, 176, 0.3);
               }
 
               &.completed {
@@ -885,8 +895,16 @@
                         color: #4caf50;
                       }
 
-                      &.processing {
+                      &.transcribing {
                         color: #ff6b35;
+                      }
+
+                      &.transcribed {
+                        color: #2196f3;
+                      }
+
+                      &.generating {
+                        color: #9c27b0;
                       }
 
                       &.pending {
@@ -902,6 +920,14 @@
                   width: 20px;
                   height: 20px;
                   color: #4caf50;
+                }
+
+                .transcribed-check {
+                  flex-shrink: 0;
+                  font-size: 20px;
+                  width: 20px;
+                  height: 20px;
+                  color: #2196f3;
                 }
               }
 
@@ -922,6 +948,30 @@
                     .mdc-linear-progress__buffer-bar {
                       background-color: rgba(255, 107, 53, 0.15) !important;
                     }
+                  }
+                }
+              }
+
+              &.transcribed .item-progress-container .item-progress {
+                ::ng-deep {
+                  .mdc-linear-progress__bar-inner {
+                    border-color: #2196f3 !important;
+                  }
+
+                  .mdc-linear-progress__buffer-bar {
+                    background-color: rgba(33, 150, 243, 0.15) !important;
+                  }
+                }
+              }
+
+              &.generating .item-progress-container .item-progress {
+                ::ng-deep {
+                  .mdc-linear-progress__bar-inner {
+                    border-color: #9c27b0 !important;
+                  }
+
+                  .mdc-linear-progress__buffer-bar {
+                    background-color: rgba(156, 39, 176, 0.15) !important;
                   }
                 }
               }
