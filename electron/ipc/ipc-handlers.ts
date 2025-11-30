@@ -2,6 +2,7 @@ import { ipcMain, dialog, app, BrowserWindow } from 'electron';
 import Store from 'electron-store';
 import * as log from 'electron-log';
 import { PythonService } from '../services/python-service';
+import { getDatabaseService } from '../services/database-service';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
@@ -254,7 +255,8 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
         outputPath: params.outputPath || settings.outputDirectory,
         promptSet: params.promptSet || settings.promptSet || 'youtube-telltale',
         jobId: params.jobId,
-        jobName: params.jobName
+        jobName: params.jobName,
+        chapterFlags: params.chapterFlags || {}
       };
 
       log.info('Prepared metadata params:', JSON.stringify(metadataParams, null, 2));
@@ -467,6 +469,279 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
       return { success: true };
     } catch (error) {
       log.error('Error deleting prompt set:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Get job history
+  ipcMain.handle('get-job-history', async () => {
+    try {
+      const settings = (store as any).store;
+      const outputDirectory = settings.outputDirectory;
+
+      if (!outputDirectory) {
+        return [];
+      }
+
+      const metadataDir = path.join(outputDirectory, '.contentstudio', 'metadata');
+
+      if (!fs.existsSync(metadataDir)) {
+        return [];
+      }
+
+      const files = fs.readdirSync(metadataDir);
+      const jobs = [];
+
+      for (const file of files) {
+        if (file.startsWith('job-') && file.endsWith('.json')) {
+          try {
+            const filePath = path.join(metadataDir, file);
+            const content = fs.readFileSync(filePath, 'utf8');
+            const job = JSON.parse(content);
+            job.metadataPath = filePath;
+            jobs.push(job);
+          } catch (error) {
+            log.warn(`Error reading job metadata file ${file}:`, error);
+          }
+        }
+      }
+
+      // Sort by creation date (newest first)
+      jobs.sort((a, b) => {
+        const dateA = new Date(a.createdAt).getTime();
+        const dateB = new Date(b.createdAt).getTime();
+        return dateB - dateA;
+      });
+
+      return jobs;
+    } catch (error) {
+      log.error('Error getting job history:', error);
+      return [];
+    }
+  });
+
+  // Delete job history entry
+  ipcMain.handle('delete-job-history', async (_event, jobId: string) => {
+    try {
+      const settings = (store as any).store;
+      const outputDirectory = settings.outputDirectory;
+
+      if (!outputDirectory) {
+        return { success: false, error: 'No output directory configured' };
+      }
+
+      const metadataDir = path.join(outputDirectory, '.contentstudio', 'metadata');
+
+      if (!fs.existsSync(metadataDir)) {
+        return { success: false, error: 'Metadata directory not found' };
+      }
+
+      const files = fs.readdirSync(metadataDir);
+
+      for (const file of files) {
+        if (file.startsWith('job-') && file.endsWith('.json')) {
+          const filePath = path.join(metadataDir, file);
+
+          try {
+            const content = fs.readFileSync(filePath, 'utf8');
+            const job = JSON.parse(content);
+
+            // Check both job.id and job.job_id for compatibility
+            if (job.id === jobId || job.job_id === jobId) {
+              // Delete the txt folder if it exists
+              if (job.txt_folder && fs.existsSync(job.txt_folder)) {
+                try {
+                  fs.rmSync(job.txt_folder, { recursive: true, force: true });
+                  log.info(`Deleted txt folder: ${job.txt_folder}`);
+                } catch (error) {
+                  log.warn(`Could not delete txt folder: ${job.txt_folder}`, error);
+                }
+              }
+
+              // Delete the JSON metadata file
+              fs.unlinkSync(filePath);
+              log.info(`Deleted job history entry: ${jobId}`);
+              return { success: true };
+            }
+          } catch (parseError) {
+            log.warn(`Could not parse job file ${file}:`, parseError);
+            continue;
+          }
+        }
+      }
+
+      return { success: false, error: 'Job not found' };
+    } catch (error) {
+      log.error('Error deleting job history:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Open folder in file explorer
+  ipcMain.handle('open-folder', async (_event, folderPath: string) => {
+    try {
+      const { shell } = require('electron');
+      await shell.openPath(folderPath);
+      return { success: true };
+    } catch (error) {
+      log.error('Error opening folder:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Write text file
+  ipcMain.handle('write-text-file', async (_event, filePath: string, content: string) => {
+    try {
+      await fs.promises.writeFile(filePath, content, 'utf-8');
+      log.info(`Wrote text file: ${filePath}`);
+      return { success: true };
+    } catch (error) {
+      log.error('Error writing text file:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Database operations
+  const db = getDatabaseService();
+
+  // Get database stats
+  ipcMain.handle('db:get-stats', async () => {
+    try {
+      const stats = db.getDatabaseStats();
+      return { success: true, stats };
+    } catch (error) {
+      log.error('Error getting database stats:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Get all videos
+  ipcMain.handle('db:get-all-videos', async () => {
+    try {
+      const videos = db.getAllVideos();
+      return { success: true, videos };
+    } catch (error) {
+      log.error('Error getting all videos:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Get video by path
+  ipcMain.handle('db:get-video-by-path', async (_event, filePath: string) => {
+    try {
+      const video = db.getVideoByPath(filePath);
+      return { success: true, video };
+    } catch (error) {
+      log.error('Error getting video by path:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Get chapters for video
+  ipcMain.handle('db:get-chapters', async (_event, videoId: number) => {
+    try {
+      const chapters = db.getChapters(videoId);
+      return { success: true, chapters };
+    } catch (error) {
+      log.error('Error getting chapters:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Export transcript to TXT
+  ipcMain.handle('db:export-transcript', async (_event, videoId: number) => {
+    try {
+      const content = db.exportTranscriptToTxt(videoId);
+      if (!content) {
+        return { success: false, error: 'No transcript found' };
+      }
+      return { success: true, content };
+    } catch (error) {
+      log.error('Error exporting transcript:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Search videos
+  ipcMain.handle('db:search-videos', async (_event, query: string) => {
+    try {
+      const videos = db.searchVideos(query);
+      return { success: true, videos };
+    } catch (error) {
+      log.error('Error searching videos:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Search chapters
+  ipcMain.handle('db:search-chapters', async (_event, query: string) => {
+    try {
+      const chapters = db.searchChapters(query);
+      return { success: true, chapters };
+    } catch (error) {
+      log.error('Error searching chapters:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Delete video
+  ipcMain.handle('db:delete-video', async (_event, videoId: number) => {
+    try {
+      db.deleteVideo(videoId);
+      return { success: true };
+    } catch (error) {
+      log.error('Error deleting video:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Clear all data
+  ipcMain.handle('db:clear-all', async () => {
+    try {
+      db.clearAllData();
+      return { success: true };
+    } catch (error) {
+      log.error('Error clearing database:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Save logs
+  ipcMain.handle('save-logs', async (_event, frontendLogs: string) => {
+    try {
+      const logsDir = path.join(app.getPath('userData'), 'logs');
+
+      // Create logs directory if it doesn't exist
+      if (!fs.existsSync(logsDir)) {
+        fs.mkdirSync(logsDir, { recursive: true });
+      }
+
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+      // Save frontend logs
+      const frontendPath = path.join(logsDir, `frontend-${timestamp}.log`);
+      fs.writeFileSync(frontendPath, frontendLogs, 'utf-8');
+
+      // Get backend logs from electron-log
+      const backendPath = path.join(logsDir, `backend-${timestamp}.log`);
+      const backendLogPath = log.transports.file.getFile().path;
+
+      // Copy electron-log file to the logs directory
+      if (fs.existsSync(backendLogPath)) {
+        fs.copyFileSync(backendLogPath, backendPath);
+      } else {
+        fs.writeFileSync(backendPath, '(No backend logs available)', 'utf-8');
+      }
+
+      log.info(`Logs exported - Frontend: ${frontendPath}, Backend: ${backendPath}`);
+
+      return {
+        success: true,
+        frontendPath,
+        backendPath
+      };
+    } catch (error) {
+      log.error('Error saving logs:', error);
       return { success: false, error: String(error) };
     }
   });

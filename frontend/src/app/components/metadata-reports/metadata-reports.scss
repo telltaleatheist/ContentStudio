@@ -27,7 +27,7 @@
   display: grid;
   grid-template-columns: 350px 1fr;
   gap: 1rem;
-  padding: 1.5rem 2rem;
+  padding: 1.5rem;
   overflow: hidden;
   min-height: 0;
 }
@@ -87,6 +87,27 @@
   .panel-content {
     padding: 0;
   }
+
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .selected-count {
+    color: var(--primary-orange);
+    font-weight: 600;
+  }
+}
+
+.select-all-container {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+
+  mat-checkbox {
+    font-size: 0.875rem;
+  }
 }
 
 // Reports List - Simple Custom Layout
@@ -113,6 +134,14 @@
     &.selected {
       background: rgba(255, 107, 53, 0.1);
       border-left: 3px solid var(--primary-orange);
+    }
+
+    &.checked {
+      background: rgba(255, 107, 53, 0.05);
+    }
+
+    .report-checkbox {
+      flex-shrink: 0;
     }
 
     .report-content {

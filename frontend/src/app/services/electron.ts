@@ -41,6 +41,17 @@ declare global {
       // App info
       getAppVersion: () => Promise<string>;
       getAppPath: () => Promise<string>;
+
+      // Job history
+      getJobHistory: () => Promise<any[]>;
+      deleteJobHistory: (jobId: string) => Promise<{ success: boolean; error?: string }>;
+      openFolder: (folderPath: string) => Promise<{ success: boolean; error?: string }>;
+
+      // File writing
+      writeTextFile: (filePath: string, content: string) => Promise<{ success: boolean; error?: string }>;
+
+      // Logging
+      saveLogs: (frontendLogs: string) => Promise<{ success: boolean; frontendPath?: string; backendPath?: string; error?: string }>;
     };
   }
 }
@@ -151,6 +162,7 @@ export class ElectronService {
     mode: string;
     jobId?: string;
     jobName?: string;
+    chapterFlags?: { [path: string]: boolean };
   }): Promise<any> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.generateMetadata(params);
@@ -189,5 +201,31 @@ export class ElectronService {
   async getAppPath(): Promise<string> {
     if (!this.ipcRenderer) return '';
     return await this.ipcRenderer.getAppPath();
+  }
+
+  // Job history
+  async getJobHistory(): Promise<any[]> {
+    if (!this.ipcRenderer) return [];
+    return await this.ipcRenderer.getJobHistory();
+  }
+
+  async deleteJobHistory(jobId: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.deleteJobHistory(jobId);
+  }
+
+  async openFolder(folderPath: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.openFolder(folderPath);
+  }
+
+  async writeTextFile(filePath: string, content: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.writeTextFile(filePath, content);
+  }
+
+  async saveLogs(frontendLogs: string): Promise<{ success: boolean; frontendPath?: string; backendPath?: string; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.saveLogs(frontendLogs);
   }
 }

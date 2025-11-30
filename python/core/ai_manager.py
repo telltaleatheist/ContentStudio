@@ -978,6 +978,457 @@ Respond with ONLY the JSON object.
             except:
                 pass  # Ignore all errors
 
+    def generate_chapters(self, content_item, content_text: str) -> Optional[List[Dict[str, str]]]:
+        """
+        Generate chapter markers for a video using hierarchical segmentation
+
+        For scalability, this uses a two-pass approach:
+        1. Group chunks into ~2-minute segments
+        2. Summarize each segment to a single topic sentence
+        3. Send condensed topics to AI for chapter identification
+
+        Args:
+            content_item: ContentItem with srt_segments
+            content_text: Plain text content for context
+
+        Returns:
+            List of chapter dicts with 'timestamp' and 'title', or None if failed
+        """
+        from .chapter_generator import TranscriptChunker, ChapterMapper
+
+        try:
+            # Step 1: Create chunks from SRT segments (30-second chunks)
+            chunker = TranscriptChunker(target_duration=30)
+            chunks = chunker.chunk_from_srt_segments(content_item.srt_segments)
+
+            if not chunks:
+                print("No chunks generated from SRT segments", file=sys.stderr)
+                return None
+
+            print(f"Created {len(chunks)} chunks from transcript", file=sys.stderr)
+
+            # Step 2: Group chunks into hierarchical segments
+            # Use adaptive sizing: smaller segments for shorter videos to meet YouTube's 3-chapter minimum
+            total_duration = chunks[-1].start_seconds if chunks else 0
+
+            if total_duration < 180:  # < 3 minutes - skip chapter generation
+                print(f"Video too short ({total_duration:.0f}s) for chapter generation (need 3+ minutes)", file=sys.stderr)
+                return None
+            elif total_duration < 600:  # 3-10 minutes - use 2 chunks per segment (~1 min each)
+                chunks_per_segment = 2
+            else:  # 10+ minutes - use 4 chunks per segment (~2 min each)
+                chunks_per_segment = 4
+
+            segments = chunker.create_segments(chunks, chunks_per_segment=chunks_per_segment)
+            print(f"Grouped into {len(segments)} segments ({chunks_per_segment} chunks each) for hierarchical processing", file=sys.stderr)
+
+            # Step 3: Summarize each segment to its main topic
+            print("Summarizing segments to topics...", file=sys.stderr)
+            segments = self._summarize_segments(segments, chunks)
+
+            if not segments:
+                print("Failed to summarize segments", file=sys.stderr)
+                return None
+
+            # Step 4: Format condensed segments for AI
+            segment_text = chunker.format_segments_for_ai(segments)
+            print(f"Condensed to {len(segment_text)} characters for chapter generation", file=sys.stderr)
+
+            # Step 5: Build chapter generation prompt with condensed topics
+            chapter_prompt = self._build_chapter_prompt_for_segments(segment_text)
+
+            # Step 6: Request chapters from AI
+            print(f"Requesting chapter markers from AI (model: {self.metadata_model}, timeout: 300s)...", file=sys.stderr)
+            response = self._make_request(chapter_prompt, model=self.metadata_model, timeout=300)
+
+            if not response:
+                print("Empty response from AI for chapter generation", file=sys.stderr)
+                return None
+
+            # Step 7: Parse AI response
+            ai_chapters = self._parse_chapter_response(response)
+
+            if not ai_chapters:
+                print("Failed to parse chapter response", file=sys.stderr)
+                return None
+
+            print(f"AI returned {len(ai_chapters)} chapter suggestions", file=sys.stderr)
+
+            # Step 8: Map segment IDs to timestamps
+            mapper = ChapterMapper(segments)
+            final_chapters = mapper.map_chapters(ai_chapters)
+
+            if not final_chapters:
+                print("Chapter validation failed (need at least 3 chapters, 10+ seconds each)", file=sys.stderr)
+                return None
+
+            print(f"Validated {len(final_chapters)} initial chapters", file=sys.stderr)
+
+            # Step 9: Refine chapter titles by analyzing full content of each chapter section
+            print("Refining chapter titles based on full section content...", file=sys.stderr)
+            final_chapters = self._refine_chapter_titles(final_chapters, chunks)
+
+            print(f"Final refined chapters: {len(final_chapters)}", file=sys.stderr)
+            return final_chapters
+
+        except Exception as e:
+            print(f"Error generating chapters: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            return None
+
+    def _build_chapter_prompt(self, chunked_text: str) -> str:
+        """
+        Build prompt for chapter generation
+
+        Args:
+            chunked_text: Formatted chunks with IDs and timestamps
+
+        Returns:
+            Prompt string
+        """
+        prompt = f"""You are analyzing a video transcript to create YouTube chapter markers.
+
+The transcript has been divided into chunks with IDs and timestamps:
+
+{chunked_text}
+
+Your task is to identify natural topic breaks and create chapter markers. Follow these rules:
+
+1. Identify 3-10 major topic shifts in the content
+2. Chapter titles should be brief (2-5 words) and descriptive
+3. Focus on WHAT is being discussed, not how (avoid words like "introduction", "conclusion" unless truly applicable)
+4. Return chapter markers as a JSON array
+
+Format your response EXACTLY like this:
+{{
+  "chapters": [
+    {{"chunk_id": 1, "title": "Topic Description"}},
+    {{"chunk_id": 5, "title": "Next Topic"}},
+    {{"chunk_id": 12, "title": "Another Topic"}}
+  ]
+}}
+
+Requirements:
+- First chapter MUST use chunk_id 1 (start of video)
+- Select chunk IDs where major topics BEGIN
+- Minimum 3 chapters, maximum 10
+- Keep titles concise and specific
+
+Return ONLY the JSON object, no other text."""
+
+        return prompt
+
+    def _summarize_segments(self, segments, chunks) -> Optional[List]:
+        """
+        Summarize each segment to a single topic sentence
+
+        Args:
+            segments: List of TranscriptSegment objects (with empty topics)
+            chunks: List of TranscriptChunk objects for looking up text
+
+        Returns:
+            List of segments with topics filled in, or None if failed
+        """
+        from .chapter_generator import TranscriptSegment
+
+        # Create chunk lookup
+        chunk_map = {c.id: c for c in chunks}
+
+        # Process segments in batches for efficiency
+        batch_size = 5
+        for i in range(0, len(segments), batch_size):
+            batch = segments[i:i + batch_size]
+
+            # Build batch summarization prompt
+            segment_texts = []
+            for seg in batch:
+                # Get text from all chunks in this segment
+                chunk_texts = []
+                for chunk_id in seg.chunk_ids:
+                    chunk = chunk_map.get(chunk_id)
+                    if chunk:
+                        chunk_texts.append(chunk.text)
+
+                combined_text = ' '.join(chunk_texts)
+                segment_texts.append(f"Segment {seg.id}: {combined_text}")
+
+            # Create summarization prompt
+            prompt = f"""Summarize each of these video segments into a single, brief topic sentence (5-10 words max).
+Focus on WHAT is being discussed, not how it's presented.
+
+{chr(10).join(segment_texts)}
+
+Return ONLY a JSON object in this exact format:
+{{
+  "topics": [
+    "Brief topic for segment {batch[0].id}",
+    "Brief topic for segment {batch[1].id if len(batch) > 1 else batch[0].id}"
+  ]
+}}
+
+Keep each topic to 5-10 words maximum."""
+
+            # Request summaries using faster summary model
+            try:
+                response = self._make_request(prompt, model=self.summary_model, timeout=60)
+
+                if not response:
+                    print(f"Failed to summarize segment batch {i//batch_size + 1} - empty response", file=sys.stderr)
+                    continue
+
+                print(f"Segment summarization response ({len(response)} chars): {response[:200]}...", file=sys.stderr)
+
+                # Parse JSON response
+                import json
+                import re
+
+                # Extract JSON from response (handle cases where AI adds extra text)
+                json_str = response.strip()
+
+                # Try to find JSON object in the response
+                json_match = re.search(r'\{.*\}', json_str, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(0)
+
+                try:
+                    data = json.loads(json_str)
+                    topics = data.get('topics', [])
+                except json.JSONDecodeError as je:
+                    print(f"Failed to parse JSON from segment summary: {je}", file=sys.stderr)
+                    print(f"Response was: {response[:500]}", file=sys.stderr)
+                    # Try to extract topics from non-JSON response as fallback
+                    # Look for lines that might be topics
+                    lines = response.strip().split('\n')
+                    topics = [line.strip().strip('"').strip("'") for line in lines if line.strip() and len(line.strip()) < 100][:len(batch)]
+
+                if not topics:
+                    print(f"No topics extracted from batch {i//batch_size + 1}", file=sys.stderr)
+                    continue
+
+                # Fill in topics
+                for j, topic in enumerate(topics):
+                    if i + j < len(segments):
+                        segments[i + j].topic = topic
+                        print(f"Segment {segments[i + j].id} topic: {topic}", file=sys.stderr)
+
+            except Exception as e:
+                print(f"Error summarizing segment batch: {e}", file=sys.stderr)
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+                # Continue with empty topics for this batch
+
+        # Check if we got at least some topics
+        topics_filled = sum(1 for seg in segments if seg.topic)
+        print(f"Summarized {topics_filled}/{len(segments)} segments to topics", file=sys.stderr)
+
+        if topics_filled == 0:
+            return None
+
+        return segments
+
+    def _build_chapter_prompt_for_segments(self, segment_text: str) -> str:
+        """
+        Build prompt for chapter generation from condensed segments
+
+        Args:
+            segment_text: Formatted segments with IDs, timestamps, and topics
+
+        Returns:
+            Prompt string
+        """
+        prompt = f"""You are analyzing a video to create YouTube chapter markers.
+
+The video has been divided into segments, each summarized to its main topic:
+
+{segment_text}
+
+Your task is to identify natural chapter breaks based on major topic shifts. Follow these rules:
+
+1. Identify 3-10 major topic shifts where chapters should begin
+2. Chapter titles should be descriptive and engaging (4-8 words)
+3. Make titles SPECIFIC - avoid generic terms like "Introduction" or "Conclusion"
+4. Focus on the ACTUAL CONTENT being discussed, not meta-descriptions
+5. Use active, compelling language that tells viewers what they'll learn
+6. Return chapter markers as a JSON array
+
+Examples of GOOD vs BAD titles:
+- GOOD: "Trump's SNAP Funding Cuts Explained"
+- BAD: "Food Stamp Cuts"
+- GOOD: "How Shutdown Affected 40 Million Americans"
+- BAD: "Government Shutdown"
+- GOOD: "Understanding SNAP Program Mechanics"
+- BAD: "Program Mechanics"
+
+Format your response EXACTLY like this:
+{{
+  "chapters": [
+    {{"chunk_id": 1, "title": "Opening Topic Described Specifically"}},
+    {{"chunk_id": 5, "title": "Next Major Topic With Context"}},
+    {{"chunk_id": 12, "title": "Another Specific Topic Explained"}}
+  ]
+}}
+
+Requirements:
+- First chapter MUST use chunk_id 1 (start of video)
+- Select segment IDs where major topics BEGIN
+- Minimum 3 chapters, maximum 10
+- Titles should be 4-8 words for clarity and engagement
+- Use "chunk_id" in your response (even though these are segment IDs, use the same field name)
+
+Return ONLY the JSON object, no other text."""
+
+        return prompt
+
+    def _refine_chapter_titles(self, chapters, chunks) -> List[Dict]:
+        """
+        Refine chapter titles by analyzing the full content of each chapter section
+
+        Instead of basing titles on just the starting segment, this analyzes
+        ALL content from each chapter to the next to generate more accurate titles.
+
+        Args:
+            chapters: List of chapter dicts with timestamps and titles
+            chunks: List of TranscriptChunk objects
+
+        Returns:
+            List of chapters with refined titles
+        """
+        from .chapter_generator import ChapterMapper
+
+        # Create a mapping of timestamps to seconds for easy lookup
+        def time_to_seconds(time_str):
+            parts = time_str.split(':')
+            if len(parts) == 3:
+                h, m, s = map(int, parts)
+                return h * 3600 + m * 60 + s
+            elif len(parts) == 2:
+                m, s = map(int, parts)
+                return m * 60 + s
+            else:
+                return int(parts[0])
+
+        refined_chapters = []
+
+        for i, chapter in enumerate(chapters):
+            # Get the time range for this chapter
+            start_seconds = time_to_seconds(chapter['timestamp'])
+
+            # End is either the next chapter or the end of the video
+            if i < len(chapters) - 1:
+                end_seconds = time_to_seconds(chapters[i + 1]['timestamp'])
+            else:
+                end_seconds = chunks[-1].start_seconds + 30 if chunks else start_seconds + 60
+
+            # Extract all chunks in this chapter's time range
+            chapter_chunks = [
+                c for c in chunks
+                if start_seconds <= c.start_seconds < end_seconds
+            ]
+
+            if not chapter_chunks:
+                # Keep original title if no chunks found
+                refined_chapters.append(chapter)
+                continue
+
+            # Combine all text from this chapter section (plain text, no timestamps)
+            chapter_text = ' '.join([c.text for c in chapter_chunks])
+
+            # Use a reasonable limit - models can handle ~3000 words well
+            # That's roughly 15,000 characters for efficient processing
+            max_chars = 15000
+            if len(chapter_text) > max_chars:
+                # Take first part but try to end at sentence boundary
+                truncated = chapter_text[:max_chars]
+                last_period = truncated.rfind('.')
+                if last_period > max_chars * 0.8:  # If we can find a period in last 20%
+                    chapter_text = truncated[:last_period + 1]
+                else:
+                    chapter_text = truncated + "..."
+
+            # Calculate approximate duration of this section
+            duration_seconds = end_seconds - start_seconds
+            duration_display = f"{int(duration_seconds // 60)}:{int(duration_seconds % 60):02d}"
+
+            # Ask AI for a better title based on full content
+            prompt = f"""Based on this {duration_display} video section, create a descriptive YouTube chapter title (4-8 words).
+
+This is the FULL TRANSCRIPT of this chapter section (no timestamps):
+
+{chapter_text}
+
+Your task:
+- Read the entire section above
+- Identify the PRIMARY topic discussed throughout
+- Create a specific, engaging title (4-8 words)
+- Don't focus on brief mentions - focus on what's ACTUALLY discussed most
+- Use active, compelling language
+
+Return ONLY the title text, no quotes or extra formatting."""
+
+            try:
+                refined_title = self._make_request(prompt, model=self.summary_model, timeout=30)
+
+                if refined_title:
+                    # Clean up the response
+                    refined_title = refined_title.strip().strip('"').strip("'")
+
+                    # Ensure reasonable length
+                    if 10 <= len(refined_title) <= 60:
+                        print(f"Refined: '{chapter['title']}' → '{refined_title}'", file=sys.stderr)
+                        chapter['title'] = refined_title
+                    else:
+                        print(f"Skipping refinement (bad length): {refined_title}", file=sys.stderr)
+                else:
+                    print(f"No refinement for chapter {i+1}", file=sys.stderr)
+
+            except Exception as e:
+                print(f"Error refining chapter {i+1}: {e}", file=sys.stderr)
+                # Keep original title on error
+
+            refined_chapters.append(chapter)
+
+        return refined_chapters
+
+    def _parse_chapter_response(self, response: str) -> Optional[List[Dict]]:
+        """
+        Parse AI response for chapter data
+
+        Args:
+            response: AI response text
+
+        Returns:
+            List of dicts with chunk_id and title, or None if failed
+        """
+        try:
+            # Try to find JSON in response
+            json_match = re.search(r'\{.*"chapters".*\}', response, re.DOTALL)
+            if json_match:
+                response = json_match.group(0)
+
+            # Parse JSON
+            data = json.loads(response)
+
+            if 'chapters' not in data:
+                return None
+
+            chapters = data['chapters']
+
+            # Validate structure
+            valid_chapters = []
+            for chapter in chapters:
+                if 'chunk_id' in chapter and 'title' in chapter:
+                    valid_chapters.append({
+                        'chunk_id': int(chapter['chunk_id']),
+                        'title': str(chapter['title']).strip()
+                    })
+
+            return valid_chapters if valid_chapters else None
+
+        except Exception as e:
+            print(f"Error parsing chapter response: {e}", file=sys.stderr)
+            return None
+
     def get_status(self) -> Dict[str, any]:
         """Get current AI manager status"""
         return {

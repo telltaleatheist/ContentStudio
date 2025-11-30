@@ -27,6 +27,7 @@ export interface MetadataParams {
   promptSet?: string;
   jobId?: string;
   jobName?: string;
+  chapterFlags?: { [path: string]: boolean };
 }
 
 export interface MetadataResult {
@@ -51,12 +52,16 @@ export class PythonService {
       // Find Python executable and script
       const pythonDir = this.getPythonDirectory();
 
-      // Check if Python environment exists
+      // Check for bundled Python first (in production builds)
+      const bundledPython = this.getBundledPythonPath();
       const venvPython = path.join(pythonDir, 'venv', 'bin', 'python');
       const systemPython = 'python3';
 
-      // Try venv Python first, fall back to system Python
-      if (fs.existsSync(venvPython)) {
+      // Priority: bundled Python > venv Python > system Python
+      if (bundledPython && fs.existsSync(bundledPython)) {
+        this.pythonPath = bundledPython;
+        log.info('Using bundled Python:', this.pythonPath);
+      } else if (fs.existsSync(venvPython)) {
         this.pythonPath = venvPython;
         log.info('Using venv Python:', this.pythonPath);
       } else {
@@ -279,6 +284,11 @@ export class PythonService {
           args.push('--input-notes', JSON.stringify(inputNotes));
         }
 
+        // Add chapter flags as JSON if any exist
+        if (params.chapterFlags && Object.keys(params.chapterFlags).length > 0) {
+          args.push('--chapter-flags', JSON.stringify(params.chapterFlags));
+        }
+
         // Add optional parameters
         if (params.aiModel) {
           args.push('--ai-model', params.aiModel);
@@ -312,6 +322,15 @@ export class PythonService {
           '/opt/homebrew/bin',
           '/opt/local/bin'
         ];
+
+        // Add bundled FFmpeg directory to PATH if available
+        const bundledFFmpegPath = this.getBundledFFmpegPath();
+        if (bundledFFmpegPath) {
+          const bundledBinDir = path.dirname(bundledFFmpegPath);
+          additionalPaths.unshift(bundledBinDir); // Prioritize bundled binaries
+          log.info('Adding bundled FFmpeg to PATH:', bundledBinDir);
+        }
+
         const pathsToAdd = additionalPaths.filter(p => !envPath.includes(p));
         const enhancedPath = pathsToAdd.length > 0
           ? `${pathsToAdd.join(':')}:${envPath}`
@@ -566,6 +585,92 @@ export class PythonService {
       // In development, Python files are in project root
       return path.join(app.getAppPath(), 'python');
     }
+  }
+
+  private getBundledPythonPath(): string | null {
+    if (!app.isPackaged) {
+      return null; // Only use bundled Python in packaged builds
+    }
+
+    const platform = process.platform;
+    const arch = process.arch; // 'arm64', 'x64', etc.
+    let pythonExec = 'python3';
+    let platformDir = '';
+
+    if (platform === 'darwin') {
+      platformDir = `mac-${arch}`;
+      pythonExec = 'python3';
+    } else if (platform === 'win32') {
+      platformDir = `win-${arch}`;
+      pythonExec = 'python.exe';
+    } else if (platform === 'linux') {
+      platformDir = `linux-${arch}`;
+      pythonExec = 'python3';
+    }
+
+    // Try platform-specific directory first (e.g., mac-arm64)
+    let bundledPythonPath = path.join(
+      process.resourcesPath,
+      'python',
+      platformDir,
+      'bin',
+      pythonExec
+    );
+
+    if (fs.existsSync(bundledPythonPath)) {
+      return bundledPythonPath;
+    }
+
+    // Fallback to platform-only directory for backwards compatibility (e.g., mac)
+    const platformOnlyDir = platform === 'darwin' ? 'mac'
+      : platform === 'win32' ? 'win'
+      : 'linux';
+
+    bundledPythonPath = path.join(
+      process.resourcesPath,
+      'python',
+      platformOnlyDir,
+      'bin',
+      pythonExec
+    );
+
+    if (fs.existsSync(bundledPythonPath)) {
+      return bundledPythonPath;
+    }
+
+    return null;
+  }
+
+  private getBundledFFmpegPath(): string | null {
+    if (!app.isPackaged) {
+      return null; // Only use bundled FFmpeg in packaged builds
+    }
+
+    const platform = process.platform;
+    let ffmpegExec = 'ffmpeg';
+    let platformDir = '';
+
+    if (platform === 'darwin') {
+      platformDir = 'mac';
+    } else if (platform === 'win32') {
+      platformDir = 'win';
+      ffmpegExec = 'ffmpeg.exe';
+    } else if (platform === 'linux') {
+      platformDir = 'linux';
+    }
+
+    const bundledFFmpegPath = path.join(
+      process.resourcesPath,
+      'bin',
+      platformDir,
+      ffmpegExec
+    );
+
+    if (fs.existsSync(bundledFFmpegPath)) {
+      return bundledFFmpegPath;
+    }
+
+    return null;
   }
 
   cleanup(): void {

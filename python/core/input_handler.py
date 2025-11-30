@@ -20,12 +20,22 @@ torch = None
 
 
 @dataclass
+class SRTSegment:
+    """Represents an SRT subtitle segment with timestamps"""
+    sequence: int
+    start_time: str  # Format: hh:mm:ss,ms
+    end_time: str
+    text: str
+
+
+@dataclass
 class ContentItem:
     """Represents a normalized piece of content"""
     content: str  # The actual content (subject or transcript)
     content_type: str  # "subject", "video", "transcript_file"
     source: Optional[str] = None  # Original source path/description
     processing_notes: Optional[str] = None  # Processing information
+    srt_segments: Optional[List[SRTSegment]] = None  # SRT segments for videos
 
     def get_preview(self, max_length: int = 100) -> str:
         """Get a preview of the content"""
@@ -266,8 +276,13 @@ class VideoTranscriber:
             print(f"Audio extraction failed: {e}", file=sys.stderr)
             return None
 
-    def transcribe_video(self, video_path: str) -> Optional[str]:
-        """Transcribe video to text"""
+    def transcribe_video(self, video_path: str) -> Optional[tuple[str, List[SRTSegment]]]:
+        """
+        Transcribe video to text and generate SRT segments
+
+        Returns:
+            tuple of (transcript_text, srt_segments) or None if failed
+        """
         # Load whisper libraries first
         if not self._load_whisper_libraries():
             print("Cannot transcribe video: whisper/torch not available", file=sys.stderr)
@@ -301,11 +316,17 @@ class VideoTranscriber:
                     sys.stdout = old_stdout
 
                 transcript = result.get("text", "").strip()
-                if transcript:
+                segments = result.get("segments", [])
+
+                if transcript and segments:
                     # Basic cleaning
                     transcript = ' '.join(transcript.split())  # Normalize whitespace
-                    print(f"Transcription complete ({len(transcript)} characters)", file=sys.stderr)
-                    return transcript
+
+                    # Generate SRT segments
+                    srt_segments = self._generate_srt_segments(segments)
+
+                    print(f"Transcription complete ({len(transcript)} characters, {len(srt_segments)} segments)", file=sys.stderr)
+                    return (transcript, srt_segments)
                 else:
                     print("Empty transcript", file=sys.stderr)
                     return None
@@ -313,6 +334,56 @@ class VideoTranscriber:
             except Exception as e:
                 print(f"Transcription failed: {e}", file=sys.stderr)
                 return None
+
+    def _generate_srt_segments(self, whisper_segments: List[Dict]) -> List[SRTSegment]:
+        """
+        Convert Whisper segments to SRT format
+
+        Args:
+            whisper_segments: List of segments from Whisper
+
+        Returns:
+            List of SRTSegment objects
+        """
+        srt_segments = []
+
+        for i, segment in enumerate(whisper_segments, 1):
+            start = segment.get('start', 0)
+            end = segment.get('end', 0)
+            text = segment.get('text', '').strip()
+
+            if not text:
+                continue
+
+            # Convert seconds to SRT time format (hh:mm:ss,ms)
+            start_time = self._seconds_to_srt_time(start)
+            end_time = self._seconds_to_srt_time(end)
+
+            srt_segments.append(SRTSegment(
+                sequence=i,
+                start_time=start_time,
+                end_time=end_time,
+                text=text
+            ))
+
+        return srt_segments
+
+    def _seconds_to_srt_time(self, seconds: float) -> str:
+        """
+        Convert seconds to SRT time format (hh:mm:ss,ms)
+
+        Args:
+            seconds: Time in seconds
+
+        Returns:
+            Formatted time string
+        """
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        milliseconds = int((seconds % 1) * 1000)
+
+        return f"{hours:02d}:{minutes:02d}:{secs:02d},{milliseconds:03d}"
 
 
 class InputHandler:
@@ -383,17 +454,20 @@ class InputHandler:
 
     def _process_video(self, video_path: str) -> List[ContentItem]:
         """Process a single video file"""
-        transcript = self.transcriber.transcribe_video(video_path)
-        if not transcript:
+        result = self.transcriber.transcribe_video(video_path)
+        if not result:
             # Return empty list but don't raise error - caller will handle
             print(f"Warning: Could not transcribe video {video_path}", file=sys.stderr)
             return []
+
+        transcript, srt_segments = result
 
         return [ContentItem(
             content=transcript,
             content_type="video",
             source=video_path,
-            processing_notes=f"Transcribed ({len(transcript)} chars)"
+            processing_notes=f"Transcribed ({len(transcript)} chars, {len(srt_segments)} segments)",
+            srt_segments=srt_segments
         )]
 
     def _process_directory(self, dir_path: str) -> List[ContentItem]:
@@ -497,7 +571,8 @@ class InputHandler:
                             content=summary,
                             content_type=item.content_type,
                             source=item.source,
-                            processing_notes=f"Summarized from {len(item.content)} to {len(summary)} chars"
+                            processing_notes=f"Summarized from {len(item.content)} to {len(summary)} chars",
+                            srt_segments=item.srt_segments  # Preserve SRT segments for chapter generation
                         )
                         processed_items.append(summarized_item)
                         print(f"Summarized to {len(summary)} characters", file=sys.stderr)

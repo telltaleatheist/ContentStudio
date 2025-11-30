@@ -7,6 +7,9 @@
   "scripts": {
     "clean": "rm -rf dist *.dmg *.dmg.blockmap",
     "clean:all": "npm run clean && rm -rf node_modules python/venv",
+    "clean:binaries": "rm -rf resources/bin resources/python",
+    "rebuild": "npx @electron/rebuild",
+    "postinstall": "npm run rebuild",
     "build:electron": "tsc -p tsconfig.electron.json",
     "build:preload": "tsc -p tsconfig.preload.json",
     "build:frontend": "cd frontend && npm run build",
@@ -15,9 +18,30 @@
     "start:electron": "npm run build:electron && npm run build:preload && wait-on http://localhost:4200 && cross-env NODE_ENV=development ELECTRON_RUN_AS_NODE= electron .",
     "electron:dev": "concurrently --kill-others \"npm run start:angular\" \"npm run start:electron\"",
     "electron": "npm run build:all && cross-env ELECTRON_RUN_AS_NODE= electron .",
+    "setup:python": "cd python && python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt",
+    "download:ffmpeg:mac": "bash scripts/download-ffmpeg.sh mac",
+    "download:ffmpeg:win": "bash scripts/download-ffmpeg.sh win",
+    "download:ffmpeg:linux": "bash scripts/download-ffmpeg.sh linux",
+    "download:python:mac-arm64": "bash scripts/download-python.sh mac arm64",
+    "download:python:mac-x64": "bash scripts/download-python.sh mac x64",
+    "download:python:win-x64": "bash scripts/download-python.sh win x64",
+    "download:python:linux-x64": "bash scripts/download-python.sh linux x64",
+    "download:all:mac": "bash scripts/download-all.sh mac",
+    "download:all:mac-arm64": "bash scripts/download-all.sh mac-arm64",
+    "download:all:mac-x64": "bash scripts/download-all.sh mac-x64",
+    "download:all:win": "bash scripts/download-all.sh win",
+    "download:all:linux": "bash scripts/download-all.sh linux",
     "package": "npm run clean && npm run build:all && electron-builder build",
-    "package:mac": "npm run clean && npm run build:all && electron-builder --mac",
-    "setup:python": "cd python && python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt"
+    "package:mac": "npm run build:all && electron-builder --mac",
+    "package:mac-arm64": "npm run build:all && electron-builder --mac --arm64",
+    "package:mac-x64": "npm run build:all && electron-builder --mac --x64",
+    "package:win": "npm run build:all && electron-builder --win --x64",
+    "package:linux": "npm run build:all && electron-builder --linux --x64",
+    "clean:package:mac": "npm run clean && npm run download:all:mac && npm run package:mac",
+    "clean:package:mac-arm64": "npm run clean && npm run download:all:mac-arm64 && npm run package:mac-arm64",
+    "clean:package:mac-x64": "npm run clean && npm run download:all:mac-x64 && npm run package:mac-x64",
+    "clean:package:win": "npm run clean && npm run download:all:win && npm run package:win",
+    "clean:package:linux": "npm run clean && npm run download:all:linux && npm run package:linux"
   },
   "keywords": [
     "metadata",
@@ -30,6 +54,8 @@
   "author": "Owen Morgan",
   "license": "MIT",
   "devDependencies": {
+    "@electron/rebuild": "^4.0.1",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.18.13",
     "concurrently": "^9.2.1",
@@ -40,6 +66,7 @@
     "wait-on": "^9.0.1"
   },
   "dependencies": {
+    "better-sqlite3": "^12.4.1",
     "electron-log": "^5.3.3",
     "electron-store": "^8.2.0",
     "js-yaml": "^4.1.0"
@@ -60,7 +87,22 @@
         "filter": [
           "**/*",
           "!**/__pycache__",
-          "!**/.*"
+          "!**/.*",
+          "!**/venv"
+        ]
+      },
+      {
+        "from": "resources/bin",
+        "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/python",
+        "to": "python",
+        "filter": [
+          "**/*"
         ]
       }
     ],

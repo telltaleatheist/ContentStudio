@@ -5,6 +5,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
+import { MatCheckboxModule } from '@angular/material/checkbox';
 import { ElectronService } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
 
@@ -19,6 +20,7 @@ interface MetadataReport {
   jobId?: string; // The job ID this item belongs to
   itemIndex?: number; // Index of this item within the job (for multiple items)
   txtFilePath?: string; // Path to the specific TXT file for this item
+  selected?: boolean; // Selection state for batch operations
 }
 
 interface ParsedMetadata {
@@ -27,6 +29,7 @@ interface ParsedMetadata {
   description: string;
   tags: string;
   hashtags: string;
+  chapters?: Array<{ timestamp: string; title: string; sequence: number }>; // YouTube chapter markers
   _title?: string; // The display title from the source
   _prompt_set?: string; // The prompt set used for generation
 }
@@ -40,7 +43,8 @@ interface ParsedMetadata {
     MatIconModule,
     MatButtonModule,
     MatProgressSpinnerModule,
-    MatChipsModule
+    MatChipsModule,
+    MatCheckboxModule
   ],
   templateUrl: './metadata-reports.html',
   styleUrl: './metadata-reports.scss'
@@ -347,12 +351,37 @@ export class MetadataReports implements OnInit, OnDestroy {
     });
   }
 
+  copyChaptersToClipboard() {
+    const meta = this.metadata();
+    if (!meta || !meta.chapters) return;
+
+    const chaptersText = meta.chapters
+      .map((chapter: any) => `${chapter.timestamp} - ${chapter.title}`)
+      .join('\n');
+
+    navigator.clipboard.writeText(chaptersText).then(() => {
+      this.notificationService.success('Copied', 'All chapters copied to clipboard', false);
+    }).catch(err => {
+      this.notificationService.error('Copy Failed', 'Failed to copy chapters: ' + err.message);
+    });
+  }
+
   getDescriptionWithHashtags(): string {
     const meta = this.metadata();
     if (!meta) return '';
 
-    // Build description with hashtags above description links
-    let result = meta.description || '';
+    let result = '';
+
+    // Add chapters at the VERY TOP if present (YouTube requirement)
+    if (meta.chapters && meta.chapters.length > 0) {
+      const chaptersText = meta.chapters
+        .map((chapter: any) => `${chapter.timestamp} ${chapter.title}`)
+        .join('\n');
+      result = chaptersText + '\n\n';
+    }
+
+    // Add the main description
+    result += meta.description || '';
 
     // If description already contains hashtags (they're embedded), return as-is
     if (meta.hashtags && result.includes(meta.hashtags)) {
@@ -386,5 +415,165 @@ export class MetadataReports implements OnInit, OnDestroy {
   private getUserHome(): string {
     // This will be replaced by actual electron call in production
     return '/Users/telltale';
+  }
+
+  toggleSelection(report: MetadataReport, event: Event) {
+    event.stopPropagation();
+    report.selected = !report.selected;
+    this.reports.set([...this.reports()]);
+  }
+
+  toggleSelectAll() {
+    const allSelected = this.reports().every(r => r.selected);
+    this.reports().forEach(r => r.selected = !allSelected);
+    this.reports.set([...this.reports()]);
+  }
+
+  getSelectedReports(): MetadataReport[] {
+    return this.reports().filter(r => r.selected);
+  }
+
+  hasSelectedReports(): boolean {
+    return this.reports().some(r => r.selected);
+  }
+
+  allReportsSelected(): boolean {
+    return this.reports().length > 0 && this.reports().every(r => r.selected);
+  }
+
+  async exportSelectedAsTxt() {
+    const selected = this.getSelectedReports();
+
+    if (selected.length === 0) {
+      this.notificationService.warning('No Selection', 'Please select at least one report to export');
+      return;
+    }
+
+    try {
+      // Ask user to select export directory
+      const result = await this.electron.selectOutputDirectory();
+
+      if (!result.success || !result.directory) {
+        return; // User cancelled
+      }
+
+      const exportDir = result.directory;
+      let successCount = 0;
+      let errorCount = 0;
+
+      for (const report of selected) {
+        try {
+          // Read the metadata
+          const content = await this.electron.readFile(report.path);
+          if (!content) continue;
+
+          const jobData = JSON.parse(content);
+          let metadata: ParsedMetadata;
+
+          // Get the specific item's metadata
+          if (report.itemIndex !== undefined && jobData.items && jobData.items.length > report.itemIndex) {
+            metadata = jobData.items[report.itemIndex];
+          } else if (jobData.items && jobData.items.length > 0) {
+            metadata = jobData.items[0];
+          } else {
+            metadata = jobData;
+          }
+
+          // Format the metadata as text
+          const txtContent = this.formatMetadataAsTxt(metadata, report);
+
+          // Create safe filename
+          const safeName = (report.displayTitle || report.name)
+            .replace(/[^a-zA-Z0-9-_]/g, '_')
+            .substring(0, 100);
+          const fileName = `${safeName}_metadata.txt`;
+
+          // Export the file
+          await this.electron.writeTextFile(`${exportDir}/${fileName}`, txtContent);
+          successCount++;
+        } catch (error) {
+          console.error('Error exporting report:', report.name, error);
+          errorCount++;
+        }
+      }
+
+      if (successCount > 0) {
+        this.notificationService.success(
+          'Export Complete',
+          `Exported ${successCount} file(s) to ${exportDir}`
+        );
+      }
+
+      if (errorCount > 0) {
+        this.notificationService.warning(
+          'Export Partial',
+          `${errorCount} file(s) failed to export`
+        );
+      }
+
+      // Deselect all after export
+      this.reports().forEach(r => r.selected = false);
+      this.reports.set([...this.reports()]);
+
+    } catch (error) {
+      this.notificationService.error('Export Failed', 'Failed to export files: ' + (error as Error).message);
+    }
+  }
+
+  private formatMetadataAsTxt(metadata: ParsedMetadata, report: MetadataReport): string {
+    let output = '';
+
+    // Header
+    output += '='.repeat(80) + '\n';
+    output += `METADATA EXPORT\n`;
+    output += `Title: ${metadata._title || report.displayTitle || report.name}\n`;
+    output += `Prompt Set: ${metadata._prompt_set || report.promptSet || 'N/A'}\n`;
+    output += `Generated: ${report.date.toLocaleString()}\n`;
+    output += '='.repeat(80) + '\n\n';
+
+    // Titles
+    if (metadata.titles && metadata.titles.length > 0) {
+      output += '--- TITLES ---\n\n';
+      metadata.titles.forEach((title, i) => {
+        output += `${i + 1}. ${title}\n`;
+      });
+      output += '\n';
+    }
+
+    // Thumbnail Text
+    if (metadata.thumbnail_text && metadata.thumbnail_text.length > 0) {
+      output += '--- THUMBNAIL TEXT ---\n\n';
+      metadata.thumbnail_text.forEach((text, i) => {
+        output += `${i + 1}. ${text}\n`;
+      });
+      output += '\n';
+    }
+
+    // Description
+    if (metadata.description) {
+      output += '--- DESCRIPTION ---\n\n';
+      output += metadata.description + '\n\n';
+
+      if (metadata.hashtags && !metadata.description.includes(metadata.hashtags)) {
+        output += metadata.hashtags + '\n\n';
+      }
+    }
+
+    // Tags
+    if (metadata.tags) {
+      output += '--- TAGS ---\n\n';
+      output += metadata.tags + '\n\n';
+    }
+
+    // Hashtags (if not already included)
+    if (metadata.hashtags && !metadata.description?.includes(metadata.hashtags)) {
+      output += '--- HASHTAGS ---\n\n';
+      output += metadata.hashtags + '\n\n';
+    }
+
+    output += '='.repeat(80) + '\n';
+    output += 'End of metadata export\n';
+
+    return output;
   }
 }

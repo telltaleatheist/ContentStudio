@@ -49,7 +49,18 @@ const api = {
 
   // App info
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
-  getAppPath: () => ipcRenderer.invoke('get-app-path')
+  getAppPath: () => ipcRenderer.invoke('get-app-path'),
+
+  // Job history
+  getJobHistory: () => ipcRenderer.invoke('get-job-history'),
+  deleteJobHistory: (jobId: string) => ipcRenderer.invoke('delete-job-history', jobId),
+  openFolder: (folderPath: string) => ipcRenderer.invoke('open-folder', folderPath),
+
+  // File writing
+  writeTextFile: (filePath: string, content: string) => ipcRenderer.invoke('write-text-file', filePath, content),
+
+  // Log export
+  saveLogs: (frontendLogs: string) => ipcRenderer.invoke('save-logs', frontendLogs)
 };
 
 // Expose the API to the renderer process

@@ -7,11 +7,24 @@
       <div class="panel-header">
         <div>
           <h4 class="panel-title">📝 Metadata Reports</h4>
-          <p class="panel-subtitle">{{ reports().length }} report{{ reports().length !== 1 ? 's' : '' }} found</p>
+          <p class="panel-subtitle">
+            {{ reports().length }} report{{ reports().length !== 1 ? 's' : '' }} found
+            @if (hasSelectedReports()) {
+              <span class="selected-count"> • {{ getSelectedReports().length }} selected</span>
+            }
+          </p>
         </div>
-        <button mat-icon-button (click)="loadReports()" [disabled]="isLoading()" title="Refresh reports">
-          <mat-icon>refresh</mat-icon>
-        </button>
+        <div class="header-actions">
+          @if (hasSelectedReports()) {
+            <button mat-raised-button color="primary" (click)="exportSelectedAsTxt()" title="Export selected as TXT">
+              <mat-icon>download</mat-icon>
+              Export
+            </button>
+          }
+          <button mat-icon-button (click)="loadReports()" [disabled]="isLoading()" title="Refresh reports">
+            <mat-icon>refresh</mat-icon>
+          </button>
+        </div>
       </div>
 
       <div class="panel-content">
@@ -31,12 +44,28 @@
         }
 
         @if (reports().length > 0) {
+          <div class="select-all-container">
+            <mat-checkbox
+              [checked]="allReportsSelected()"
+              [indeterminate]="hasSelectedReports() && !allReportsSelected()"
+              (change)="toggleSelectAll()">
+              Select All
+            </mat-checkbox>
+          </div>
+
           <div class="reports-list">
             @for (report of reports(); track report.path) {
               <div
                 (click)="selectReport(report)"
                 [class.selected]="selectedReport()?.path === report.path"
+                [class.checked]="report.selected"
                 class="report-item">
+                <mat-checkbox
+                  [checked]="report.selected || false"
+                  (click)="toggleSelection(report, $event)"
+                  (change)="$event.stopPropagation()"
+                  class="report-checkbox">
+                </mat-checkbox>
                 <div class="report-content">
                   <div class="report-title">{{ report.displayTitle || report.name }}</div>
                   <div class="report-meta">
@@ -125,6 +154,31 @@
                 }
               </div>
             </div>
+
+            <!-- Chapters Section (if present) -->
+            @if (metadata()!.chapters && metadata()!.chapters.length > 0) {
+              <div class="metadata-section">
+                <div class="section-header">
+                  <mat-icon>list</mat-icon>
+                  <h3>Chapters</h3>
+                  <span class="count-badge">{{ metadata()!.chapters.length }}</span>
+                  <button mat-icon-button class="copy-button" (click)="copyChaptersToClipboard()" title="Copy all chapters">
+                    <mat-icon>content_copy</mat-icon>
+                  </button>
+                </div>
+                <div class="list-container">
+                  @for (chapter of metadata()!.chapters; track $index) {
+                    <div class="list-item chapter-item">
+                      <span class="chapter-timestamp">{{ chapter.timestamp }}</span>
+                      <span class="chapter-title">{{ chapter.title }}</span>
+                      <button mat-icon-button class="copy-button" (click)="copyToClipboard(chapter.timestamp + ' - ' + chapter.title)" title="Copy chapter">
+                        <mat-icon>content_copy</mat-icon>
+                      </button>
+                    </div>
+                  }
+                </div>
+              </div>
+            }
 
             <!-- Description Section -->
             <div class="metadata-section">

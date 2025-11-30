@@ -8,6 +8,7 @@ export interface InputItem {
   selected: boolean;
   promptSet: string; // ID of the prompt set to use (e.g., "youtube-telltale")
   notes?: string; // Optional notes/instructions for the AI (e.g., "focus on tax fraud")
+  generateChapters?: boolean; // For video files: generate YouTube chapter markers (default: true)
 }
 
 export interface GenerationState {

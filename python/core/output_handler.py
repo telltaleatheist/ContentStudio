@@ -31,7 +31,8 @@ class OutputHandler:
         job_name: str,
         metadata_items: list[Dict],
         prompt_set: str,
-        job_id: Optional[str] = None
+        job_id: Optional[str] = None,
+        source_items: Optional[list] = None
     ) -> Dict:
         """
         Save metadata for a batch job with new structure:
@@ -43,6 +44,7 @@ class OutputHandler:
             metadata_items: List of metadata dictionaries
             prompt_set: Prompt set ID used for generation
             job_id: Optional job ID for linking
+            source_items: Optional list of source content items for re-adding to queue
 
         Returns:
             Dict with paths to json_file, txt_folder, and txt_files list
@@ -74,8 +76,22 @@ class OutputHandler:
             'prompt_set': prompt_set,
             'created_at': datetime.now().isoformat(),
             'txt_folder': str(txt_folder),
-            'items': metadata_items
+            'items': metadata_items,
+            'status': 'completed'
         }
+
+        # Add source items if provided (for re-adding to queue later)
+        if source_items:
+            serializable_sources = []
+            for item in source_items:
+                # Convert ContentItem to serializable dict
+                source_dict = {
+                    'source': str(item.source) if hasattr(item, 'source') else str(item),
+                    'type': item.type if hasattr(item, 'type') else 'unknown',
+                    'path': item.path if hasattr(item, 'path') else None
+                }
+                serializable_sources.append(source_dict)
+            job_metadata['source_items'] = serializable_sources
 
         try:
             self._save_json(job_metadata, json_path)
@@ -197,6 +213,23 @@ class OutputHandler:
                         lines.append(f"{i}. {text}")
                 else:
                     lines.append(thumbnail_texts)
+                lines.append("")
+
+            # Add chapters section (if present)
+            if 'chapters' in metadata and metadata['chapters']:
+                lines.append("CHAPTERS")
+                lines.append("-" * 80)
+                chapters = metadata['chapters']
+                if isinstance(chapters, list):
+                    for chapter in chapters:
+                        if isinstance(chapter, dict):
+                            timestamp = chapter.get('timestamp', '')
+                            title = chapter.get('title', '')
+                            lines.append(f"{timestamp} - {title}")
+                        else:
+                            lines.append(str(chapter))
+                else:
+                    lines.append(str(chapters))
                 lines.append("")
 
             # Add description section

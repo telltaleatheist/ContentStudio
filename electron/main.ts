@@ -67,6 +67,17 @@ function createMainWindow() {
   //   mainWindow.webContents.openDevTools();
   // }
 
+  // Handle reload in production - always reload index.html to handle Angular routing
+  if (process.env.NODE_ENV !== 'development') {
+    mainWindow.webContents.on('before-input-event', (event, input) => {
+      if (input.type === 'keyDown' && (input.key === 'r' || input.key === 'R') && (input.meta || input.control)) {
+        event.preventDefault();
+        const frontendPath = path.join(__dirname, '..', '..', 'frontend', 'dist', 'frontend', 'browser', 'index.html');
+        mainWindow?.loadFile(frontendPath);
+      }
+    });
+  }
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });

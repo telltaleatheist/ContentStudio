@@ -7,6 +7,9 @@
     <span class="app-title">ContentStudio</span>
     <span class="app-subtitle">AI-Powered Metadata Generator</span>
     <span class="toolbar-spacer"></span>
+    <button mat-icon-button (click)="exportLogs()" matTooltip="Export Console Logs">
+      <mat-icon>bug_report</mat-icon>
+    </button>
     <notification-bell></notification-bell>
   </mat-toolbar>
 
@@ -27,6 +30,10 @@
           <a mat-list-item routerLink="/prompts" routerLinkActive="active-link">
             <mat-icon matListItemIcon>edit_note</mat-icon>
             <span matListItemTitle>Prompts</span>
+          </a>
+          <a mat-list-item routerLink="/history" routerLinkActive="active-link">
+            <mat-icon matListItemIcon>history</mat-icon>
+            <span matListItemTitle>History</span>
           </a>
           <a mat-list-item routerLink="/settings" routerLinkActive="active-link">
             <mat-icon matListItemIcon>settings</mat-icon>

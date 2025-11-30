@@ -60,6 +60,9 @@ def main():
     # Input notes (JSON mapping of path -> notes)
     parser.add_argument('--input-notes', help='JSON dictionary mapping input paths to custom notes/instructions')
 
+    # Chapter generation
+    parser.add_argument('--chapter-flags', help='JSON dictionary mapping input paths to boolean (true = generate chapters)')
+
     args = parser.parse_args()
 
     try:
@@ -70,6 +73,17 @@ def main():
                 input_notes = json.loads(args.input_notes)
             except json.JSONDecodeError as e:
                 print(f"Warning: Failed to parse input notes JSON: {e}", file=sys.stderr)
+
+        # Parse chapter flags if provided
+        chapter_flags = {}
+        if args.chapter_flags:
+            try:
+                chapter_flags = json.loads(args.chapter_flags)
+                print(f"DEBUG: Received chapter flags: {chapter_flags}", file=sys.stderr)
+            except json.JSONDecodeError as e:
+                print(f"Warning: Failed to parse chapter flags JSON: {e}", file=sys.stderr)
+        else:
+            print("DEBUG: No chapter flags provided", file=sys.stderr)
 
         # Initialize configuration
         config_manager = ConfigManager(
@@ -156,7 +170,8 @@ def main():
                     job_name=job_name,
                     metadata_items=[metadata_result.metadata],
                     prompt_set=args.prompt_set,
-                    job_id=args.job_id
+                    job_id=args.job_id,
+                    source_items=content_items
                 )
                 result = {
                     "success": True,
@@ -180,12 +195,30 @@ def main():
                 if item.source and item.content_type in ["video", "transcript_file"]:
                     source_filename = Path(item.source).name
 
+                # Check if chapter generation is requested for this item
+                generate_chapters = False
+                if item.source and item.source in chapter_flags:
+                    generate_chapters = chapter_flags[item.source]
+
+                print(f"DEBUG: Item source: {item.source}", file=sys.stderr)
+                print(f"DEBUG: Item type: {item.content_type}", file=sys.stderr)
+                print(f"DEBUG: Has SRT segments: {bool(item.srt_segments)}", file=sys.stderr)
+                print(f"DEBUG: Generate chapters flag: {generate_chapters}", file=sys.stderr)
+
                 # Append custom notes if provided for this input
                 content_with_notes = item.content
                 if item.source and item.source in input_notes:
                     notes = input_notes[item.source]
                     content_with_notes = f"{item.content}\n\n--- CUSTOM INSTRUCTIONS ---\n{notes}"
                     print(f"Adding custom notes for {item.source}: {notes[:100]}...", file=sys.stderr)
+
+                # Generate chapters if requested and item has SRT segments
+                chapters = None
+                if generate_chapters and item.srt_segments and item.content_type == "video":
+                    print(f"Generating chapters for {item.source}...", file=sys.stderr)
+                    chapters = ai_manager.generate_chapters(item, content_with_notes)
+                else:
+                    print(f"DEBUG: Skipping chapter generation - generate_chapters={generate_chapters}, has_srt={bool(item.srt_segments)}, type={item.content_type}", file=sys.stderr)
 
                 metadata_result = ai_manager.generate_metadata(
                     content_with_notes,
@@ -206,6 +239,12 @@ def main():
                     # Add title to metadata
                     metadata_result.metadata['_title'] = clean_name
                     metadata_result.metadata['_prompt_set'] = args.prompt_set
+
+                    # Add chapters if generated
+                    if chapters:
+                        metadata_result.metadata['chapters'] = chapters
+                        print(f"Added {len(chapters)} chapters to metadata", file=sys.stderr)
+
                     all_metadata.append(metadata_result.metadata)
                 else:
                     print(f"Warning: Failed to generate metadata for {item.source}", file=sys.stderr)
@@ -227,7 +266,8 @@ def main():
                 job_name=job_name,
                 metadata_items=all_metadata,
                 prompt_set=args.prompt_set,
-                job_id=args.job_id
+                job_id=args.job_id,
+                source_items=content_items
             )
 
             result = {
