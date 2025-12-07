@@ -2,23 +2,40 @@ import { app, BrowserWindow, ipcMain } from 'electron';
 import * as path from 'path';
 import * as log from 'electron-log';
 import Store from 'electron-store';
-import { PythonService } from './services/python-service';
 import { setupIpcHandlers } from './ipc/ipc-handlers';
 
 /**
- * LaunchPad - Main Electron Process
+ * ContentStudio - Main Electron Process
  * AI-powered metadata generation for YouTube and Spreaker
+ * Pure TypeScript implementation - no Python dependencies!
  */
 
-// Configure logging
+// Configure logging with rotation
 log.transports.console.level = 'info';
 log.transports.file.level = 'debug';
+
+// Log rotation settings
+log.transports.file.maxSize = 5 * 1024 * 1024; // 5 MB max file size
+log.transports.file.format = '[{y}-{m}-{d} {h}:{i}:{s}.{ms}] [{level}] {text}';
+
+// Keep only the most recent log file (delete old backups on start)
+log.transports.file.archiveLog = (oldLogFile) => {
+  // Delete old log files on startup to save space
+  const fs = require('fs');
+  try {
+    if (fs.existsSync(oldLogFile)) {
+      fs.unlinkSync(oldLogFile);
+      log.info(`Deleted old log file: ${oldLogFile}`);
+    }
+  } catch (error) {
+    log.warn(`Failed to delete old log: ${error}`);
+  }
+};
 
 // Initialize electron-store for settings (outputDirectory will be set after app is ready)
 let store: Store<any>;
 
 let mainWindow: BrowserWindow | null = null;
-let pythonService: PythonService | null = null;
 
 // Note: Single instance lock would go here but causes issues with app.requestSingleInstanceLock
 // being called before app is ready. Skipping for now.
@@ -101,17 +118,8 @@ app.whenReady().then(async () => {
       }
     });
 
-    // Initialize Python service
-    pythonService = new PythonService(store);
-    const pythonReady = await pythonService.initialize();
-
-    if (!pythonReady) {
-      log.error('Failed to initialize Python service');
-      // Continue anyway - show error in UI
-    }
-
     // Set up IPC handlers
-    setupIpcHandlers(store, pythonService);
+    setupIpcHandlers(store);
 
     // Create main window
     createMainWindow();
@@ -139,9 +147,6 @@ app.on('window-all-closed', () => {
 // Cleanup before quitting
 app.on('before-quit', () => {
   log.info('Application is quitting...');
-  if (pythonService) {
-    pythonService.cleanup();
-  }
 });
 
 // Handle uncaught exceptions
@@ -153,4 +158,4 @@ process.on('unhandledRejection', (reason, promise) => {
   log.error('Unhandled rejection at:', promise, 'reason:', reason);
 });
 
-export { mainWindow, store, pythonService };
+export { mainWindow, store };

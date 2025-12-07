@@ -1,5 +1,6 @@
 import { Component, OnInit, OnDestroy } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { trigger, transition, style, animate } from '@angular/animations';
 import { Subscription } from 'rxjs';
 import { NotificationService, Notification } from '../../services/notification';
 
@@ -8,7 +9,18 @@ import { NotificationService, Notification } from '../../services/notification';
   standalone: true,
   imports: [CommonModule],
   templateUrl: './notification-toast.html',
-  styleUrls: ['./notification-toast.scss']
+  styleUrls: ['./notification-toast.scss'],
+  animations: [
+    trigger('slideIn', [
+      transition(':enter', [
+        style({ transform: 'translateX(100%)', opacity: 0 }),
+        animate('300ms ease-out', style({ transform: 'translateX(0)', opacity: 1 }))
+      ]),
+      transition(':leave', [
+        animate('200ms ease-in', style({ transform: 'translateX(100%)', opacity: 0 }))
+      ])
+    ])
+  ]
 })
 export class NotificationToastComponent implements OnInit, OnDestroy {
   notifications: Notification[] = [];

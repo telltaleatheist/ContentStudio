@@ -5,6 +5,7 @@ import { MatCardModule } from '@angular/material/card';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
+import { MatCheckboxModule } from '@angular/material/checkbox';
 import { FormsModule } from '@angular/forms';
 import { ElectronService } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
@@ -12,16 +13,14 @@ import { NotificationService } from '../../services/notification';
 interface PromptSet {
   id: string;
   name: string;
-  platform: string;
-  editorial_guidelines?: string;
-  generation_instructions?: string;
+  editorial_prompt?: string;
+  instructions_prompt?: string;
   description_links?: string;
 }
 
 interface PromptSetListItem {
   id: string;
   name: string;
-  platform: string;
 }
 
 @Component({
@@ -34,6 +33,7 @@ interface PromptSetListItem {
     MatFormFieldModule,
     MatInputModule,
     MatSelectModule,
+    MatCheckboxModule,
     FormsModule
   ],
   templateUrl: './prompts.html',
@@ -47,9 +47,8 @@ export class Prompts implements OnInit {
 
   // Edit mode signals
   editName = signal('');
-  editPlatform = signal('youtube');
-  editEditorialGuidelines = signal('');
-  editGenerationInstructions = signal('');
+  editEditorialPrompt = signal('');
+  editInstructionsPrompt = signal('');
   editDescriptionLinks = signal('');
 
   // Dialog states
@@ -59,11 +58,15 @@ export class Prompts implements OnInit {
 
   // Create dialog fields
   newPromptSetName = signal('');
-  newPromptSetPlatform = signal('youtube');
 
-  // Save notification
-  showSaveNotification = signal(false);
-  saveNotificationTimeout: any;
+  // Instructions Builder
+  showBuilderDialog = signal(false);
+  builderTitles = signal({ enabled: false, count: 10, minLength: 45, maxLength: 70 });
+  builderDescription = signal({ enabled: false, minWords: 200, maxWords: 300 });
+  builderTags = signal({ enabled: false, count: 15 });
+  builderHashtags = signal({ enabled: false, count: 3 });
+  builderThumbnailText = signal({ enabled: false, count: 5, maxWords: 3 });
+  builderChapters = signal({ enabled: false, minCount: 3, maxCount: 10 });
 
   constructor(
     private electron: ElectronService,
@@ -84,7 +87,7 @@ export class Prompts implements OnInit {
         this.promptSets.set(result.promptSets);
       }
     } catch (error) {
-      this.notificationService.error('Load Error', 'Failed to load prompt sets: ' + (error as Error).message);
+      this.notificationService.error('Load Error', 'Failed to load prompt sets: ' + (error as Error).message, false);
     }
   }
 
@@ -94,9 +97,8 @@ export class Prompts implements OnInit {
     if (result.success) {
       this.currentPromptSet.set(result.promptSet);
       this.editName.set(result.promptSet.name);
-      this.editPlatform.set(result.promptSet.platform);
-      this.editEditorialGuidelines.set(result.promptSet.editorial_guidelines || '');
-      this.editGenerationInstructions.set(result.promptSet.generation_instructions || '');
+      this.editEditorialPrompt.set(result.promptSet.editorial_prompt || '');
+      this.editInstructionsPrompt.set(result.promptSet.instructions_prompt || '');
       this.editDescriptionLinks.set(result.promptSet.description_links || '');
     }
   }
@@ -104,31 +106,36 @@ export class Prompts implements OnInit {
   async saveCurrentPromptSet() {
     if (!this.selectedPromptSetId()) return;
 
+    // Validate {subject} is present in editorial_prompt
+    if (!this.editEditorialPrompt().includes('{subject}')) {
+      this.notificationService.error('Validation Error', 'Editorial prompt must contain {subject} placeholder', false);
+      return;
+    }
+
     try {
       const result = await this.electron.updatePromptSet(
         this.selectedPromptSetId()!,
         {
           name: this.editName(),
-          platform: this.editPlatform(),
-          editorial_guidelines: this.editEditorialGuidelines(),
-          generation_instructions: this.editGenerationInstructions(),
+          editorial_prompt: this.editEditorialPrompt(),
+          instructions_prompt: this.editInstructionsPrompt(),
           description_links: this.editDescriptionLinks()
         }
       );
 
       if (result.success) {
-        this.notificationService.success('Prompt Set Saved', 'Your prompt set has been saved successfully');
-        this.showSaveSuccess();
         await this.loadPromptSets();
+        this.notificationService.success('Saved', 'Prompt set saved successfully', false);
+      } else {
+        this.notificationService.error('Save Error', result.error || 'Unknown error', false);
       }
     } catch (error) {
-      this.notificationService.error('Save Error', 'Failed to save prompt set: ' + (error as Error).message);
+      this.notificationService.error('Save Error', 'Failed to save prompt set: ' + (error as Error).message, false);
     }
   }
 
   openCreateDialog() {
     this.newPromptSetName.set('');
-    this.newPromptSetPlatform.set('youtube');
     this.showCreateDialog.set(true);
   }
 
@@ -144,20 +151,18 @@ export class Prompts implements OnInit {
     try {
       const result = await this.electron.createPromptSet({
         name: this.newPromptSetName(),
-        platform: this.newPromptSetPlatform(),
-        editorial_guidelines: '',
-        generation_instructions: '',
+        editorial_prompt: '',
+        instructions_prompt: '',
         description_links: ''
       });
 
       if (result.success) {
-        this.notificationService.success('Prompt Set Created', 'New prompt set has been created successfully');
         await this.loadPromptSets();
         this.selectPromptSet(result.id);
         this.closeCreateDialog();
       }
     } catch (error) {
-      this.notificationService.error('Create Error', 'Failed to create prompt set: ' + (error as Error).message);
+      this.notificationService.error('Create Error', 'Failed to create prompt set: ' + (error as Error).message, false);
     }
   }
 
@@ -186,26 +191,66 @@ export class Prompts implements OnInit {
         }
       }
     } catch (error) {
-      this.notificationService.error('Delete Error', 'Failed to delete prompt set: ' + (error as Error).message);
+      this.notificationService.error('Delete Error', 'Failed to delete prompt set: ' + (error as Error).message, false);
     }
   }
 
-  private showSaveSuccess() {
-    if (this.saveNotificationTimeout) {
-      clearTimeout(this.saveNotificationTimeout);
-    }
-
-    this.showSaveNotification.set(true);
-
-    this.saveNotificationTimeout = setTimeout(() => {
-      this.showSaveNotification.set(false);
-    }, 3000);
+  // Instructions Builder methods
+  openBuilderDialog() {
+    this.showBuilderDialog.set(true);
   }
 
-  dismissSaveNotification() {
-    if (this.saveNotificationTimeout) {
-      clearTimeout(this.saveNotificationTimeout);
+  closeBuilderDialog() {
+    this.showBuilderDialog.set(false);
+  }
+
+  generateBuilderPreview(): string {
+    const lines: string[] = [];
+
+    if (this.builderTitles().enabled) {
+      const t = this.builderTitles();
+      lines.push(`TITLES: Generate ${t.count} options, ${t.minLength}-${t.maxLength} characters each`);
     }
-    this.showSaveNotification.set(false);
+
+    if (this.builderDescription().enabled) {
+      const d = this.builderDescription();
+      lines.push(`DESCRIPTION: ${d.minWords}-${d.maxWords} words`);
+    }
+
+    if (this.builderTags().enabled) {
+      const t = this.builderTags();
+      lines.push(`TAGS: ${t.count} comma-separated tags`);
+    }
+
+    if (this.builderHashtags().enabled) {
+      const h = this.builderHashtags();
+      lines.push(`HASHTAGS: ${h.count} hashtags`);
+    }
+
+    if (this.builderThumbnailText().enabled) {
+      const t = this.builderThumbnailText();
+      lines.push(`THUMBNAIL_TEXT: ${t.count} options, max ${t.maxWords} words each, ALL CAPS`);
+    }
+
+    if (this.builderChapters().enabled) {
+      const c = this.builderChapters();
+      lines.push(`CHAPTERS: ${c.minCount}-${c.maxCount} chapter markers with timestamps`);
+    }
+
+    return lines.join('\n');
+  }
+
+  insertBuilderInstructions() {
+    const generated = this.generateBuilderPreview();
+    if (generated) {
+      // Append to existing instructions or replace if empty
+      const current = this.editInstructionsPrompt();
+      if (current.trim()) {
+        this.editInstructionsPrompt.set(current + '\n\n' + generated);
+      } else {
+        this.editInstructionsPrompt.set(generated);
+      }
+    }
+    this.closeBuilderDialog();
   }
 }

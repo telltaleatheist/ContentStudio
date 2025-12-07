@@ -8,6 +8,7 @@ import { MatSelectModule } from '@angular/material/select';
 import { FormsModule } from '@angular/forms';
 import { ElectronService } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
+import { AiSetupWizard } from '../ai-setup-wizard/ai-setup-wizard';
 
 interface ModelOption {
   value: string;
@@ -26,26 +27,28 @@ interface ModelOption {
     MatFormFieldModule,
     MatInputModule,
     MatSelectModule,
-    FormsModule
+    FormsModule,
+    AiSetupWizard
   ],
   templateUrl: './settings.html',
   styleUrl: './settings.scss',
 })
 export class Settings implements OnInit {
-  // Consolidated model selection (provider:model format)
-  selectedModel = signal('ollama:cogito:70b');
+  // Separate model selection for summarization and metadata generation
+  summarizationModel = signal('ollama:phi-3.5:3.8b');
+  metadataModel = signal('ollama:cogito:70b');
 
-  // API Keys
-  openaiApiKey = signal('');
-  claudeApiKey = signal('');
-
-  // Ollama settings
-  ollamaHost = signal('http://localhost:11434');
+  // Provider availability
   availableOllamaModels = signal<string[]>([]);
+  hasOpenAIKey = signal(false);
+  hasClaudeKey = signal(false);
 
   // Save notification
   showSaveNotification = signal(false);
   saveNotificationTimeout: any;
+
+  // AI Setup Wizard
+  showWizard = signal(false);
 
   // Output settings
   outputDirectory = signal('~/Documents/LaunchPad Output');
@@ -54,19 +57,29 @@ export class Settings implements OnInit {
   selectedPromptSet = signal('youtube-telltale');
   availablePromptSets = signal<Array<{id: string, name: string, platform: string}>>([]);
 
-  // Model options for dropdown
+  // Model options for dropdown - filtered by configured providers
   modelOptions = computed<ModelOption[]>(() => {
-    const options: ModelOption[] = [
-      // Cloud models at top
-      { value: 'openai:gpt-4o', label: 'ChatGPT 4o', provider: 'cloud', icon: 'cloud', needsApiKey: true },
-      { value: 'openai:gpt-4-turbo', label: 'ChatGPT 4 Turbo', provider: 'cloud', icon: 'cloud', needsApiKey: true },
-      { value: 'openai:gpt-3.5-turbo', label: 'ChatGPT 3.5 Turbo', provider: 'cloud', icon: 'cloud', needsApiKey: true },
-      { value: 'claude:claude-sonnet-4', label: 'Claude Sonnet 4.5 (Newest)', provider: 'cloud', icon: 'cloud', needsApiKey: true },
-      { value: 'claude:claude-3-5-sonnet', label: 'Claude 3.5 Sonnet (Recommended)', provider: 'cloud', icon: 'cloud', needsApiKey: true },
-      { value: 'claude:claude-3-5-haiku', label: 'Claude 3.5 Haiku', provider: 'cloud', icon: 'cloud', needsApiKey: true },
-    ];
+    const options: ModelOption[] = [];
 
-    // Add local Ollama models at bottom
+    // Add OpenAI models if API key is configured
+    if (this.hasOpenAIKey()) {
+      options.push(
+        { value: 'openai:gpt-4o', label: 'ChatGPT 4o', provider: 'cloud', icon: 'cloud', needsApiKey: true },
+        { value: 'openai:gpt-4-turbo', label: 'ChatGPT 4 Turbo', provider: 'cloud', icon: 'cloud', needsApiKey: true },
+        { value: 'openai:gpt-3.5-turbo', label: 'ChatGPT 3.5 Turbo', provider: 'cloud', icon: 'cloud', needsApiKey: true }
+      );
+    }
+
+    // Add Claude models if API key is configured
+    if (this.hasClaudeKey()) {
+      options.push(
+        { value: 'claude:claude-sonnet-4', label: 'Claude Sonnet 4.5 (Newest)', provider: 'cloud', icon: 'cloud', needsApiKey: true },
+        { value: 'claude:claude-3-5-sonnet', label: 'Claude 3.5 Sonnet (Recommended)', provider: 'cloud', icon: 'cloud', needsApiKey: true },
+        { value: 'claude:claude-3-5-haiku', label: 'Claude 3.5 Haiku', provider: 'cloud', icon: 'cloud', needsApiKey: true }
+      );
+    }
+
+    // Add local Ollama models if Ollama is available
     const ollamaModels = this.availableOllamaModels();
     if (ollamaModels.length > 0) {
       ollamaModels.forEach(model => {
@@ -77,24 +90,10 @@ export class Settings implements OnInit {
           icon: 'computer'
         });
       });
-    } else {
-      // Default Ollama models if none detected
-      options.push(
-        { value: 'ollama:cogito:70b', label: 'cogito:70b', provider: 'local', icon: 'computer' },
-        { value: 'ollama:llama3.1:70b', label: 'llama3.1:70b', provider: 'local', icon: 'computer' },
-        { value: 'ollama:llama3.1:8b', label: 'llama3.1:8b', provider: 'local', icon: 'computer' },
-        { value: 'ollama:qwen2.5:7b', label: 'qwen2.5:7b', provider: 'local', icon: 'computer' },
-        { value: 'ollama:mistral:7b', label: 'mistral:7b', provider: 'local', icon: 'computer' }
-      );
     }
 
     return options;
   });
-
-  // Computed properties for showing API key fields
-  needsOpenAIKey = computed(() => this.selectedModel().startsWith('openai:'));
-  needsClaudeKey = computed(() => this.selectedModel().startsWith('claude:'));
-  isOllamaModel = computed(() => this.selectedModel().startsWith('ollama:'));
 
   constructor(
     private electron: ElectronService,
@@ -106,31 +105,32 @@ export class Settings implements OnInit {
     try {
       const settings = await this.electron.getSettings();
 
-      // Reconstruct selected model from provider and model
-      // Note: ollamaModel is used for all providers (reused for OpenAI, Claude, and Ollama)
-      if (settings.aiProvider && settings.aiProvider === 'ollama') {
-        this.selectedModel.set(`ollama:${settings.ollamaModel || 'cogito:70b'}`);
-      } else if (settings.aiProvider === 'openai') {
-        const openaiModel = settings.ollamaModel || 'gpt-4o';
-        this.selectedModel.set(`openai:${openaiModel}`);
-      } else if (settings.aiProvider === 'claude') {
-        const claudeModel = settings.ollamaModel || 'claude-3-5-sonnet';
-        this.selectedModel.set(`claude:${claudeModel}`);
+      // Load summarization model
+      if (settings.summarizationProvider && settings.summarizationModel) {
+        this.summarizationModel.set(`${settings.summarizationProvider}:${settings.summarizationModel}`);
+      } else {
+        // Default to small fast model for summarization
+        this.summarizationModel.set('ollama:phi-3.5:3.8b');
       }
 
-      if (settings.ollamaHost) this.ollamaHost.set(settings.ollamaHost);
-      if (settings.openaiApiKey) this.openaiApiKey.set(settings.openaiApiKey);
-      if (settings.claudeApiKey) this.claudeApiKey.set(settings.claudeApiKey);
+      // Load metadata generation model (backward compatibility with old settings)
+      if (settings.metadataProvider && settings.metadataModel) {
+        this.metadataModel.set(`${settings.metadataProvider}:${settings.metadataModel}`);
+      } else if (settings.aiProvider && settings.ollamaModel) {
+        // Use old settings format if new format not available
+        this.metadataModel.set(`${settings.aiProvider}:${settings.ollamaModel}`);
+      }
+
       if (settings.outputDirectory) this.outputDirectory.set(settings.outputDirectory);
       if (settings.promptSet) this.selectedPromptSet.set(settings.promptSet);
 
       // Load available prompt sets
       await this.loadPromptSets();
 
-      // Try to fetch available Ollama models
-      await this.fetchOllamaModels();
+      // Check which AI providers are configured
+      await this.checkProviderAvailability();
     } catch (error) {
-      this.notificationService.error('Settings Error', 'Failed to load settings: ' + (error as Error).message);
+      this.notificationService.error('Settings Error', 'Failed to load settings: ' + (error as Error).message, false);
     }
   }
 
@@ -145,9 +145,21 @@ export class Settings implements OnInit {
     }
   }
 
-  async fetchOllamaModels() {
-    // TODO: Implement IPC call to fetch Ollama models
-    // For now, we'll use the default list
+  async checkProviderAvailability() {
+    try {
+      // Check Ollama
+      const ollamaResult = await this.electron.checkOllama();
+      if (ollamaResult.available && ollamaResult.models.length > 0) {
+        this.availableOllamaModels.set(ollamaResult.models);
+      }
+
+      // Check API keys
+      const apiKeys = await this.electron.getApiKeys();
+      this.hasOpenAIKey.set(!!apiKeys.openaiApiKey);
+      this.hasClaudeKey.set(!!apiKeys.claudeApiKey);
+    } catch (error) {
+      console.log('Error checking provider availability:', error);
+    }
   }
 
   async selectOutputDirectory() {
@@ -158,16 +170,24 @@ export class Settings implements OnInit {
   }
 
   async saveSettings() {
-    // Parse provider and model from selectedModel (format: "provider:model")
-    const [provider, ...modelParts] = this.selectedModel().split(':');
-    const model = modelParts.join(':'); // Rejoin in case model name has colons
+    // Parse summarization model
+    const [summProvider, ...summModelParts] = this.summarizationModel().split(':');
+    const summModel = summModelParts.join(':');
+
+    // Parse metadata generation model
+    const [metaProvider, ...metaModelParts] = this.metadataModel().split(':');
+    const metaModel = metaModelParts.join(':');
 
     const settings = {
-      aiProvider: provider,
-      ollamaModel: model,  // Used for all providers (field name is legacy)
-      ollamaHost: this.ollamaHost(),
-      openaiApiKey: this.openaiApiKey(),
-      claudeApiKey: this.claudeApiKey(),
+      // New format
+      summarizationProvider: summProvider,
+      summarizationModel: summModel,
+      metadataProvider: metaProvider,
+      metadataModel: metaModel,
+      // Backward compatibility
+      aiProvider: metaProvider,
+      ollamaModel: metaModel,
+      // Other settings
       outputDirectory: this.outputDirectory(),
       promptSet: this.selectedPromptSet()
     };
@@ -175,13 +195,13 @@ export class Settings implements OnInit {
     try {
       const result = await this.electron.updateSettings(settings);
       if (result.success) {
-        this.notificationService.success('Settings Saved', 'Your settings have been saved successfully');
+        this.notificationService.success('Settings Saved', 'Your settings have been saved successfully', false);
         this.showSaveSuccess();
       } else {
-        this.notificationService.error('Save Failed', 'Failed to save settings');
+        this.notificationService.error('Save Failed', 'Failed to save settings', false);
       }
     } catch (error) {
-      this.notificationService.error('Save Error', 'Error saving settings: ' + (error as Error).message);
+      this.notificationService.error('Save Error', 'Error saving settings: ' + (error as Error).message, false);
     }
   }
 
@@ -213,5 +233,39 @@ export class Settings implements OnInit {
 
   getModelLabel(option: ModelOption): string {
     return option.label;
+  }
+
+  // AI Setup Wizard methods
+  openWizard() {
+    this.showWizard.set(true);
+  }
+
+  closeWizard() {
+    this.showWizard.set(false);
+  }
+
+  async wizardCompleted() {
+    this.showWizard.set(false);
+    // Reload settings to pick up new AI configuration
+    try {
+      const settings = await this.electron.getSettings();
+
+      // Load summarization model
+      if (settings.summarizationProvider && settings.summarizationModel) {
+        this.summarizationModel.set(`${settings.summarizationProvider}:${settings.summarizationModel}`);
+      }
+
+      // Load metadata generation model
+      if (settings.metadataProvider && settings.metadataModel) {
+        this.metadataModel.set(`${settings.metadataProvider}:${settings.metadataModel}`);
+      }
+
+      // Refresh provider availability
+      await this.checkProviderAvailability();
+
+      this.notificationService.success('AI Setup Complete', 'Your AI configuration has been saved', false);
+    } catch (error) {
+      this.notificationService.error('Settings Error', 'Failed to reload settings: ' + (error as Error).message, false);
+    }
   }
 }

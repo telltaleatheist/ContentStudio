@@ -1,20 +1,21 @@
 <div class="toast-container">
-  <div
-    *ngFor="let notification of notifications"
-    class="toast"
-    [class]="'toast-' + notification.type"
-    (click)="clickToast(notification)"
-    [@slideIn]
-  >
-    <div class="toast-icon">
-      <span>{{ getIcon(notification.type) }}</span>
+  @for (notification of notifications; track notification.id) {
+    <div
+      class="toast"
+      [class]="'toast-' + notification.type"
+      (click)="clickToast(notification)"
+      [@slideIn]
+    >
+      <div class="toast-icon">
+        <span>{{ getIcon(notification.type) }}</span>
+      </div>
+      <div class="toast-content">
+        <div class="toast-title">{{ notification.title }}</div>
+        <div class="toast-message">{{ notification.message }}</div>
+      </div>
+      <button class="toast-close" (click)="removeToast(notification.id); $event.stopPropagation()">
+        ×
+      </button>
     </div>
-    <div class="toast-content">
-      <div class="toast-title">{{ notification.title }}</div>
-      <div class="toast-message">{{ notification.message }}</div>
-    </div>
-    <button class="toast-close" (click)="removeToast(notification.id); $event.stopPropagation()">
-      ×
-    </button>
-  </div>
+  }
 </div>

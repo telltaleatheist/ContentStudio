@@ -8,7 +8,6 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { NotificationBellComponent } from './components/notification-bell/notification-bell';
 import { NotificationModalComponent } from './components/notification-modal/notification-modal';
-import { NotificationToastComponent } from './components/notification-toast/notification-toast';
 import { ElectronService } from './services/electron';
 
 // Console log buffer
@@ -54,8 +53,7 @@ const originalConsole = {
     MatButtonModule,
     MatTooltipModule,
     NotificationBellComponent,
-    NotificationModalComponent,
-    NotificationToastComponent
+    NotificationModalComponent
   ],
   templateUrl: './app.html',
   styleUrl: './app.scss'

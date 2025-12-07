@@ -20,65 +20,62 @@
     <!-- AI Model Section -->
     <mat-card class="settings-card">
     <mat-card-header>
-      <mat-card-title>AI Model</mat-card-title>
+      <div class="card-header-content">
+        <div>
+          <mat-card-title>AI Models</mat-card-title>
+          <mat-card-subtitle>Configure separate models for summarization and metadata generation</mat-card-subtitle>
+        </div>
+        <button mat-stroked-button (click)="openWizard()" class="wizard-button">
+          <mat-icon>auto_awesome</mat-icon>
+          Setup Wizard
+        </button>
+      </div>
     </mat-card-header>
     <mat-card-content>
-      <mat-form-field appearance="outline" class="full-width">
-        <mat-label>Model</mat-label>
-        <mat-select [(value)]="selectedModel">
-          @for (option of modelOptions(); track option.value) {
-            <mat-option [value]="option.value">
-              <div class="model-option">
-                <mat-icon [class.cloud-icon]="option.provider === 'cloud'" [class.local-icon]="option.provider === 'local'">
-                  {{ option.icon }}
-                </mat-icon>
-                <span>{{ option.label }}</span>
-              </div>
-            </mat-option>
-          }
-        </mat-select>
-        <mat-hint>Select your AI model provider and version</mat-hint>
-      </mat-form-field>
-
-      <!-- OpenAI API Key -->
-      @if (needsOpenAIKey()) {
+      <!-- Summarization Model -->
+      <div class="model-section">
+        <h4 class="section-title">Summarization Model</h4>
+        <p class="section-description">Fast model for condensing long transcripts (recommended: small local model)</p>
         <mat-form-field appearance="outline" class="full-width">
-          <mat-label>OpenAI API Key</mat-label>
-          <input matInput type="password" [(ngModel)]="openaiApiKey" placeholder="sk-...">
-          <mat-hint>Get your API key from platform.openai.com</mat-hint>
+          <mat-label>Summarization Model</mat-label>
+          <mat-select [(value)]="summarizationModel">
+            @for (option of modelOptions(); track option.value) {
+              <mat-option [value]="option.value">
+                <div class="model-option">
+                  <mat-icon [class.cloud-icon]="option.provider === 'cloud'" [class.local-icon]="option.provider === 'local'">
+                    {{ option.icon }}
+                  </mat-icon>
+                  <span>{{ option.label }}</span>
+                </div>
+              </mat-option>
+            }
+          </mat-select>
+          <mat-hint>Used to condense transcripts before final metadata generation</mat-hint>
         </mat-form-field>
-      }
+      </div>
 
-      <!-- Claude API Key -->
-      @if (needsClaudeKey()) {
+      <!-- Metadata Generation Model -->
+      <div class="model-section">
+        <h4 class="section-title">Metadata Generation Model</h4>
+        <p class="section-description">High-quality model for creating titles, descriptions, tags (recommended: large model or API)</p>
         <mat-form-field appearance="outline" class="full-width">
-          <mat-label>Claude API Key</mat-label>
-          <input matInput type="password" [(ngModel)]="claudeApiKey" placeholder="sk-ant-...">
-          <mat-hint>Get your API key from console.anthropic.com</mat-hint>
+          <mat-label>Metadata Generation Model</mat-label>
+          <mat-select [(value)]="metadataModel">
+            @for (option of modelOptions(); track option.value) {
+              <mat-option [value]="option.value">
+                <div class="model-option">
+                  <mat-icon [class.cloud-icon]="option.provider === 'cloud'" [class.local-icon]="option.provider === 'local'">
+                    {{ option.icon }}
+                  </mat-icon>
+                  <span>{{ option.label }}</span>
+                </div>
+              </mat-option>
+            }
+          </mat-select>
+          <mat-hint>Used for final metadata creation from summaries</mat-hint>
         </mat-form-field>
-      }
+      </div>
 
-      <!-- Ollama Host -->
-      @if (isOllamaModel()) {
-        <mat-form-field appearance="outline" class="full-width">
-          <mat-label>Ollama Host</mat-label>
-          <input matInput [(ngModel)]="ollamaHost" placeholder="http://localhost:11434">
-          <mat-hint>Ollama server address</mat-hint>
-        </mat-form-field>
-
-        <mat-card class="info-card">
-          <mat-card-content>
-            <div class="info-content">
-              <mat-icon class="info-icon">info</mat-icon>
-              <div>
-                <p><strong>Ollama (Recommended)</strong></p>
-                <p class="small">Runs AI models locally on your machine. No API costs, full privacy.</p>
-                <p class="small">Install: <a href="https://ollama.ai" target="_blank">ollama.ai</a></p>
-              </div>
-            </div>
-          </mat-card-content>
-        </mat-card>
-      }
     </mat-card-content>
   </mat-card>
 
@@ -142,4 +139,12 @@
       Save Settings
     </button>
   </div>
+
+  <!-- AI Setup Wizard -->
+  @if (showWizard()) {
+    <app-ai-setup-wizard
+      (closed)="closeWizard()"
+      (completed)="wizardCompleted()">
+    </app-ai-setup-wizard>
+  }
 </div>

@@ -103,6 +103,32 @@
       margin-bottom: 1rem;
     }
 
+    .card-header-content {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      width: 100%;
+
+      .wizard-button {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        white-space: nowrap;
+        border-color: var(--primary-orange);
+        color: var(--primary-orange);
+        transition: all 0.2s;
+
+        &:hover {
+          background-color: rgba(255, 107, 53, 0.08);
+          border-color: var(--primary-orange);
+        }
+
+        mat-icon {
+          margin-right: 0;
+        }
+      }
+    }
+
     mat-card-title {
       color: var(--text-primary);
       font-size: 1.2rem;
@@ -128,6 +154,27 @@
         font-size: 1.2rem;
         width: 1.2rem;
         height: 1.2rem;
+      }
+    }
+
+    .model-section {
+      padding: 1rem;
+      background: var(--bg-secondary);
+      border-radius: var(--border-radius);
+      margin-bottom: 1.5rem;
+
+      .section-title {
+        margin: 0 0 0.5rem 0;
+        color: var(--primary-orange);
+        font-size: 1rem;
+        font-weight: 600;
+      }
+
+      .section-description {
+        margin: 0 0 1rem 0;
+        color: var(--text-secondary);
+        font-size: 0.875rem;
+        line-height: 1.5;
       }
     }
 

@@ -104,6 +104,15 @@
       border-radius: var(--border-radius);
       transition: background-color 0.2s ease;
 
+      // Override Material's circular state layer to match rectangular button
+      ::ng-deep {
+        .mat-mdc-button-persistent-ripple,
+        .mdc-button__ripple,
+        .mat-mdc-focus-indicator {
+          border-radius: var(--border-radius);
+        }
+      }
+
       &:hover {
         background-color: var(--bg-tertiary) !important;
       }

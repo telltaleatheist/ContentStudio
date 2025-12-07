@@ -1,4 +1,8 @@
-<div class="inputs-container" #scrollContainer>
+<div class="inputs-container" #scrollContainer
+     (dragover)="onDragOver($event)"
+     (dragleave)="onDragLeave($event)"
+     (drop)="onDrop($event)"
+     [class.dragging-over]="isDraggingOver()">
   <!-- Header -->
   <div class="header">
     <h2>Inputs & Queue</h2>
@@ -103,7 +107,7 @@
       </div>
     }
 
-    <div class="unified-list">
+    <div class="unified-list" cdkDropList (cdkDropListDropped)="onInputDrop($event)">
       @if (inputsState.inputItems().length === 0) {
         <div class="empty-state">
           <mat-icon class="empty-icon">inbox</mat-icon>
@@ -112,9 +116,12 @@
         </div>
       } @else {
         @for (item of inputsState.inputItems(); track item.path; let i = $index) {
-          <mat-card class="input-card" [class.selected]="item.selected">
+          <mat-card class="input-card" [class.selected]="item.selected" cdkDrag>
             <mat-card-content>
               <div class="input-row">
+                <!-- Drag Handle -->
+                <mat-icon cdkDragHandle class="drag-handle">drag_indicator</mat-icon>
+
                 <!-- Checkbox -->
                 <mat-checkbox
                   [checked]="item.selected"
@@ -258,7 +265,14 @@
                   {{ isJobExpanded(job.id) ? 'expand_less' : 'expand_more' }}
                 </mat-icon>
 
-                <!-- Remove Button -->
+                <!-- Cancel Button (for processing jobs) -->
+                @if (job.status === 'processing') {
+                  <button mat-icon-button (click)="cancelJob(job.id); $event.stopPropagation()" matTooltip="Cancel Job" color="warn">
+                    <mat-icon>cancel</mat-icon>
+                  </button>
+                }
+
+                <!-- Remove Button (for non-processing jobs) -->
                 @if (job.status !== 'processing') {
                   <button mat-icon-button (click)="removeJob(job.id); $event.stopPropagation()" matTooltip="Remove">
                     <mat-icon>close</mat-icon>
@@ -288,6 +302,10 @@
                             } @else if (isItemTranscribed(job, i)) {
                               <mat-icon class="transcribed-check">check</mat-icon>
                             }
+                            <!-- Remove individual item button -->
+                            <button mat-icon-button (click)="removeItemFromJob(job.id, i); $event.stopPropagation()" matTooltip="Remove this item" class="remove-item-btn">
+                              <mat-icon>close</mat-icon>
+                            </button>
                           </div>
                           <div class="item-progress-container">
                             <mat-progress-bar

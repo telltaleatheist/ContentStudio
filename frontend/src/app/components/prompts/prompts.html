@@ -1,52 +1,42 @@
 <div class="prompts-page">
   <!-- Header -->
   <div class="header">
-    <h2>Manage Prompt Sets</h2>
-    <p class="subtitle">Create and manage multiple prompt sets for different channels or shows. Select which one to use in Settings.</p>
-  </div>
-
-  <div class="content-wrapper">
-    <!-- Sidebar Panel -->
-    <div class="panel sidebar">
-      <div class="panel-header">
-        <div>
-          <h4 class="panel-title">📝 Prompt Sets</h4>
-          <p class="panel-subtitle">{{ promptSets().length }} set{{ promptSets().length !== 1 ? 's' : '' }} found</p>
-        </div>
-        <button mat-icon-button (click)="openCreateDialog()" title="New Prompt Set">
-          <mat-icon>add</mat-icon>
-        </button>
+    <div class="header-content">
+      <div class="header-text">
+        <h2>Manage Prompt Sets</h2>
+        <p class="subtitle">Create and manage multiple prompt sets for different channels or shows. Select which one to use in Settings.</p>
       </div>
-      <div class="panel-content">
+      <div class="header-actions">
         @if (promptSets().length === 0) {
-          <div class="empty-state">
-            <mat-icon>folder_open</mat-icon>
-            <p>No prompt sets found</p>
-            <button mat-raised-button color="primary" (click)="openCreateDialog()">
-              <mat-icon>add</mat-icon>
-              Create First Set
-            </button>
-          </div>
+          <button mat-raised-button color="primary" (click)="openCreateDialog()">
+            <mat-icon>add</mat-icon>
+            Create First Set
+          </button>
         } @else {
-          <div class="prompt-sets-list">
-            @for (promptSet of promptSets(); track promptSet.id) {
-              <div class="prompt-set-item"
-                   [class.active]="selectedPromptSetId() === promptSet.id"
-                   (click)="selectPromptSet(promptSet.id)">
-                <div class="item-content">
-                  <mat-icon>{{ promptSet.platform === 'youtube' ? 'video_library' : 'podcasts' }}</mat-icon>
-                  <span>{{ promptSet.name }}</span>
-                </div>
-                <button mat-icon-button (click)="confirmDelete(promptSet.id); $event.stopPropagation()" class="delete-btn">
-                  <mat-icon>delete</mat-icon>
-                </button>
-              </div>
-            }
-          </div>
+          <mat-form-field appearance="outline" class="prompt-selector">
+            <mat-label>Current Prompt Set</mat-label>
+            <mat-select [value]="selectedPromptSetId()" (selectionChange)="selectPromptSet($event.value)">
+              @for (promptSet of promptSets(); track promptSet.id) {
+                <mat-option [value]="promptSet.id">{{ promptSet.name }}</mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+          <button mat-raised-button color="primary" (click)="openCreateDialog()">
+            <mat-icon>add</mat-icon>
+            New
+          </button>
+          @if (selectedPromptSetId()) {
+            <button mat-raised-button color="warn" (click)="confirmDelete(selectedPromptSetId()!)">
+              <mat-icon>delete</mat-icon>
+              Delete
+            </button>
+          }
         }
       </div>
     </div>
+  </div>
 
+  <div class="content-wrapper">
     <!-- Edit Panel -->
     <div class="panel edit-panel">
       <div class="panel-content">
@@ -57,37 +47,31 @@
               <input matInput [ngModel]="editName()" (ngModelChange)="editName.set($event)">
             </mat-form-field>
 
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Platform</mat-label>
-              <mat-select [ngModel]="editPlatform()" (ngModelChange)="editPlatform.set($event)">
-                <mat-option value="youtube">
-                  <mat-icon>video_library</mat-icon>
-                  YouTube
-                </mat-option>
-                <mat-option value="podcast">
-                  <mat-icon>podcasts</mat-icon>
-                  Podcast
-                </mat-option>
-              </mat-select>
-            </mat-form-field>
-
             <mat-form-field appearance="outline" class="full-width editorial-section">
-              <mat-label>Editorial Guidelines</mat-label>
-              <textarea matInput [ngModel]="editEditorialGuidelines()"
-                        (ngModelChange)="editEditorialGuidelines.set($event)"
+              <mat-label>Editorial Prompt</mat-label>
+              <textarea matInput [ngModel]="editEditorialPrompt()"
+                        (ngModelChange)="editEditorialPrompt.set($event)"
                         rows="12"
-                        placeholder="Your editorial voice, approach, and how the platform's algorithm works..."></textarea>
-              <mat-hint>Defines your editorial voice and platform-specific knowledge</mat-hint>
+                        placeholder="Your editorial voice, tone, and approach. Use {{ '{' }}subject{{ '}' }} where the content should be inserted..."></textarea>
+              <mat-hint>Defines your editorial voice and tone. Must contain {{ '{' }}subject{{ '}' }} placeholder.</mat-hint>
             </mat-form-field>
 
-            <mat-form-field appearance="outline" class="full-width generation-section">
-              <mat-label>Generation Instructions</mat-label>
-              <textarea matInput [ngModel]="editGenerationInstructions()"
-                        (ngModelChange)="editGenerationInstructions.set($event)"
-                        rows="25"
-                        placeholder="Instructions for creating titles, descriptions, tags, and hashtags..."></textarea>
-              <mat-hint>How the AI should generate metadata (titles, descriptions, tags, etc.)</mat-hint>
-            </mat-form-field>
+            <div class="instructions-section">
+              <div class="instructions-header">
+                <span class="section-label">Instructions Prompt</span>
+                <button mat-raised-button color="primary" (click)="openBuilderDialog()" type="button" class="builder-btn">
+                  <mat-icon>build</mat-icon>
+                  Open Builder
+                </button>
+              </div>
+              <mat-form-field appearance="outline" class="full-width">
+                <textarea matInput [ngModel]="editInstructionsPrompt()"
+                          (ngModelChange)="editInstructionsPrompt.set($event)"
+                          rows="8"
+                          placeholder="Instructions for what to generate (titles, descriptions, tags, etc.)..."></textarea>
+                <mat-hint>What the AI should generate and how (e.g., TITLES: 10 options, 45-70 chars)</mat-hint>
+              </mat-form-field>
+            </div>
 
             <mat-form-field appearance="outline" class="full-width">
               <mat-label>Description Links</mat-label>
@@ -128,19 +112,6 @@
             <mat-label>Name</mat-label>
             <input matInput [ngModel]="newPromptSetName()" (ngModelChange)="newPromptSetName.set($event)" placeholder="e.g., YouTube - My Channel">
           </mat-form-field>
-          <mat-form-field appearance="outline" class="full-width">
-            <mat-label>Platform</mat-label>
-            <mat-select [ngModel]="newPromptSetPlatform()" (ngModelChange)="newPromptSetPlatform.set($event)">
-              <mat-option value="youtube">
-                <mat-icon>video_library</mat-icon>
-                YouTube
-              </mat-option>
-              <mat-option value="podcast">
-                <mat-icon>podcasts</mat-icon>
-                Podcast
-              </mat-option>
-            </mat-select>
-          </mat-form-field>
         </mat-card-content>
         <mat-card-actions>
           <button mat-button (click)="closeCreateDialog()">Cancel</button>
@@ -170,14 +141,128 @@
     </div>
   }
 
-  <!-- Save Notification -->
-  @if (showSaveNotification()) {
-    <div class="save-notification">
-      <mat-icon>check_circle</mat-icon>
-      <span>Prompt set saved successfully</span>
-      <button mat-icon-button (click)="dismissSaveNotification()">
-        <mat-icon>close</mat-icon>
-      </button>
+  <!-- Instructions Builder Dialog -->
+  @if (showBuilderDialog()) {
+    <div class="dialog-overlay" (click)="closeBuilderDialog()">
+      <mat-card class="dialog-card builder-dialog" (click)="$event.stopPropagation()">
+        <mat-card-header>
+          <mat-card-title>Instructions Builder</mat-card-title>
+          <mat-card-subtitle>Select what you want to generate and configure each option</mat-card-subtitle>
+        </mat-card-header>
+        <mat-card-content>
+          <div class="builder-grid">
+            <!-- Titles -->
+            <div class="builder-item">
+              <mat-checkbox [(ngModel)]="builderTitles().enabled">Titles</mat-checkbox>
+              @if (builderTitles().enabled) {
+                <div class="builder-options">
+                  <mat-form-field appearance="outline">
+                    <mat-label>Count</mat-label>
+                    <input matInput type="number" [(ngModel)]="builderTitles().count">
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Min Length</mat-label>
+                    <input matInput type="number" [(ngModel)]="builderTitles().minLength">
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Max Length</mat-label>
+                    <input matInput type="number" [(ngModel)]="builderTitles().maxLength">
+                  </mat-form-field>
+                </div>
+              }
+            </div>
+
+            <!-- Description -->
+            <div class="builder-item">
+              <mat-checkbox [(ngModel)]="builderDescription().enabled">Description</mat-checkbox>
+              @if (builderDescription().enabled) {
+                <div class="builder-options">
+                  <mat-form-field appearance="outline">
+                    <mat-label>Min Words</mat-label>
+                    <input matInput type="number" [(ngModel)]="builderDescription().minWords">
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Max Words</mat-label>
+                    <input matInput type="number" [(ngModel)]="builderDescription().maxWords">
+                  </mat-form-field>
+                </div>
+              }
+            </div>
+
+            <!-- Tags -->
+            <div class="builder-item">
+              <mat-checkbox [(ngModel)]="builderTags().enabled">Tags</mat-checkbox>
+              @if (builderTags().enabled) {
+                <div class="builder-options">
+                  <mat-form-field appearance="outline">
+                    <mat-label>Count</mat-label>
+                    <input matInput type="number" [(ngModel)]="builderTags().count">
+                  </mat-form-field>
+                </div>
+              }
+            </div>
+
+            <!-- Hashtags -->
+            <div class="builder-item">
+              <mat-checkbox [(ngModel)]="builderHashtags().enabled">Hashtags</mat-checkbox>
+              @if (builderHashtags().enabled) {
+                <div class="builder-options">
+                  <mat-form-field appearance="outline">
+                    <mat-label>Count</mat-label>
+                    <input matInput type="number" [(ngModel)]="builderHashtags().count">
+                  </mat-form-field>
+                </div>
+              }
+            </div>
+
+            <!-- Thumbnail Text -->
+            <div class="builder-item">
+              <mat-checkbox [(ngModel)]="builderThumbnailText().enabled">Thumbnail Text</mat-checkbox>
+              @if (builderThumbnailText().enabled) {
+                <div class="builder-options">
+                  <mat-form-field appearance="outline">
+                    <mat-label>Count</mat-label>
+                    <input matInput type="number" [(ngModel)]="builderThumbnailText().count">
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Max Words</mat-label>
+                    <input matInput type="number" [(ngModel)]="builderThumbnailText().maxWords">
+                  </mat-form-field>
+                </div>
+              }
+            </div>
+
+            <!-- Chapters -->
+            <div class="builder-item">
+              <mat-checkbox [(ngModel)]="builderChapters().enabled">Chapters</mat-checkbox>
+              @if (builderChapters().enabled) {
+                <div class="builder-options">
+                  <mat-form-field appearance="outline">
+                    <mat-label>Min Count</mat-label>
+                    <input matInput type="number" [(ngModel)]="builderChapters().minCount">
+                  </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Max Count</mat-label>
+                    <input matInput type="number" [(ngModel)]="builderChapters().maxCount">
+                  </mat-form-field>
+                </div>
+              }
+            </div>
+          </div>
+
+          <!-- Preview -->
+          <div class="builder-preview">
+            <h4>Preview</h4>
+            <pre>{{ generateBuilderPreview() || 'No options selected' }}</pre>
+          </div>
+        </mat-card-content>
+        <mat-card-actions>
+          <button mat-button (click)="closeBuilderDialog()">Cancel</button>
+          <button mat-raised-button color="primary" (click)="insertBuilderInstructions()">
+            Insert into Instructions
+          </button>
+        </mat-card-actions>
+      </mat-card>
     </div>
   }
 </div>

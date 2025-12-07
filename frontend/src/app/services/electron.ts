@@ -28,6 +28,7 @@ declare global {
 
       // Metadata generation
       generateMetadata: (params: any) => Promise<any>;
+      cancelJob: (jobId: string) => Promise<{ success: boolean; error?: string }>;
 
       // Progress updates
       onProgress: (callback: (progress: any) => void) => () => void;
@@ -52,6 +53,14 @@ declare global {
 
       // Logging
       saveLogs: (frontendLogs: string) => Promise<{ success: boolean; frontendPath?: string; backendPath?: string; error?: string }>;
+
+      // AI Setup
+      checkOllama: () => Promise<{ available: boolean; models: string[] }>;
+      getApiKeys: () => Promise<{ claudeApiKey?: string; openaiApiKey?: string }>;
+      saveApiKey: (provider: string, apiKey: string) => Promise<{ success: boolean; error?: string }>;
+
+      // External URLs
+      openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
     };
   }
 }
@@ -168,6 +177,11 @@ export class ElectronService {
     return await this.ipcRenderer.generateMetadata(params);
   }
 
+  async cancelJob(jobId: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.cancelJob(jobId);
+  }
+
   // Progress updates
   onProgress(callback: (progress: any) => void): () => void {
     if (!this.ipcRenderer) return () => {};
@@ -227,5 +241,30 @@ export class ElectronService {
   async saveLogs(frontendLogs: string): Promise<{ success: boolean; frontendPath?: string; backendPath?: string; error?: string }> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.saveLogs(frontendLogs);
+  }
+
+  // AI Setup
+  async checkOllama(): Promise<{ available: boolean; models: string[] }> {
+    if (!this.ipcRenderer) return { available: false, models: [] };
+    return await this.ipcRenderer.checkOllama();
+  }
+
+  async getApiKeys(): Promise<{ claudeApiKey?: string; openaiApiKey?: string }> {
+    if (!this.ipcRenderer) return {};
+    return await this.ipcRenderer.getApiKeys();
+  }
+
+  async saveApiKey(provider: 'claude' | 'openai', apiKey: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.saveApiKey(provider, apiKey);
+  }
+
+  async openExternal(url: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.ipcRenderer) {
+      // Fallback to window.open for non-Electron environments
+      window.open(url, '_blank');
+      return { success: true };
+    }
+    return await this.ipcRenderer.openExternal(url);
   }
 }

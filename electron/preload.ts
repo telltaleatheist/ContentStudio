@@ -12,6 +12,7 @@ const api = {
   updateSettings: (settings: any) => ipcRenderer.invoke('update-settings', settings),
 
   // Prompt Sets
+  getPromptSetsPath: () => ipcRenderer.invoke('get-prompt-sets-path'),
   listPromptSets: () => ipcRenderer.invoke('list-prompt-sets'),
   getPromptSet: (id: string) => ipcRenderer.invoke('get-prompt-set', id),
   createPromptSet: (promptSet: any) => ipcRenderer.invoke('create-prompt-set', promptSet),
@@ -31,6 +32,7 @@ const api = {
 
   // Metadata generation
   generateMetadata: (params: any) => ipcRenderer.invoke('generate-metadata', params),
+  cancelJob: (jobId: string) => ipcRenderer.invoke('cancel-job', jobId),
 
   // Progress updates
   onProgress: (callback: (progress: any) => void) => {
@@ -60,7 +62,15 @@ const api = {
   writeTextFile: (filePath: string, content: string) => ipcRenderer.invoke('write-text-file', filePath, content),
 
   // Log export
-  saveLogs: (frontendLogs: string) => ipcRenderer.invoke('save-logs', frontendLogs)
+  saveLogs: (frontendLogs: string) => ipcRenderer.invoke('save-logs', frontendLogs),
+
+  // AI Setup
+  checkOllama: () => ipcRenderer.invoke('check-ollama'),
+  getApiKeys: () => ipcRenderer.invoke('get-api-keys'),
+  saveApiKey: (provider: string, apiKey: string) => ipcRenderer.invoke('save-api-key', provider, apiKey),
+
+  // External URLs
+  openExternal: (url: string) => ipcRenderer.invoke('open-external', url)
 };
 
 // Expose the API to the renderer process

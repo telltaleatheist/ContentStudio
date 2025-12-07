@@ -56,6 +56,15 @@ export class InputsStateService {
     this.inputItems.set([]);
   }
 
+  reorderItems(previousIndex: number, currentIndex: number) {
+    this.inputItems.update(items => {
+      const result = [...items];
+      const [removed] = result.splice(previousIndex, 1);
+      result.splice(currentIndex, 0, removed);
+      return result;
+    });
+  }
+
   updateGenerationState(state: Partial<GenerationState>) {
     this.generationState.update(current => ({ ...current, ...state }));
   }

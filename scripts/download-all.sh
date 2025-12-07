@@ -64,21 +64,14 @@ echo -e "${BLUE}Target Platform: $PLATFORM_BASE${NC}"
 echo -e "${BLUE}Architectures: ${ARCHITECTURES[*]}${NC}"
 echo ""
 
-# Download FFmpeg
-echo -e "${GREEN}[1/2] Downloading FFmpeg...${NC}"
+# FFmpeg is now handled by npm packages (@ffmpeg-installer/ffmpeg)
+# No manual download needed
+
+# Download whisper.cpp
+echo -e "${GREEN}[1/1] Downloading whisper.cpp...${NC}"
 echo "----------------------------------------"
-bash scripts/download-ffmpeg.sh "$PLATFORM_BASE"
+node scripts/download-whisper-cpp.js
 echo ""
-
-# Download Python for each architecture
-echo -e "${GREEN}[2/2] Downloading Python...${NC}"
-echo "----------------------------------------"
-
-for arch in "${ARCHITECTURES[@]}"; do
-    echo -e "${BLUE}Downloading Python for ${PLATFORM_BASE}-${arch}...${NC}"
-    bash scripts/download-python.sh "$PLATFORM_BASE" "$arch"
-    echo ""
-done
 
 echo ""
 echo -e "${GREEN}=======================================${NC}"
@@ -86,10 +79,9 @@ echo -e "${GREEN}All binaries downloaded successfully!${NC}"
 echo -e "${GREEN}=======================================${NC}"
 echo ""
 echo -e "${BLUE}Downloaded:${NC}"
-echo "  - FFmpeg for $PLATFORM_BASE"
-for arch in "${ARCHITECTURES[@]}"; do
-    echo "  - Python 3.11 for ${PLATFORM_BASE}-${arch}"
-done
+echo "  - whisper.cpp (all architectures)"
+echo ""
+echo -e "${BLUE}Note:${NC} FFmpeg is handled by npm packages (@ffmpeg-installer)"
 echo ""
 echo -e "${YELLOW}Next steps:${NC}"
 echo "  Run: npm run package:$PLATFORM"

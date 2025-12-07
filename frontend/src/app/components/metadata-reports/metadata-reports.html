@@ -118,42 +118,46 @@
         @if (!isLoading() && selectedReport() && metadata()) {
           <div class="metadata-content">
             <!-- Titles Section -->
-            <div class="metadata-section">
-              <div class="section-header">
-                <mat-icon>title</mat-icon>
-                <h3>Titles</h3>
-                <span class="count-badge">{{ metadata()!.titles?.length || 0 }}</span>
+            @if (metadata()!.titles && metadata()!.titles.length > 0) {
+              <div class="metadata-section">
+                <div class="section-header">
+                  <mat-icon>title</mat-icon>
+                  <h3>Titles</h3>
+                  <span class="count-badge">{{ metadata()!.titles.length }}</span>
+                </div>
+                <div class="list-container">
+                  @for (title of metadata()!.titles; track $index) {
+                    <div class="list-item">
+                      <span class="list-item-text">{{ getTitleText(title) }}</span>
+                      <button mat-icon-button class="copy-button" (click)="copyToClipboard(getTitleText(title))" title="Copy to clipboard">
+                        <mat-icon>content_copy</mat-icon>
+                      </button>
+                    </div>
+                  }
+                </div>
               </div>
-              <div class="list-container">
-                @for (title of metadata()!.titles; track $index) {
-                  <div class="list-item">
-                    <span class="list-item-text">{{ title }}</span>
-                    <button mat-icon-button class="copy-button" (click)="copyToClipboard(title)" title="Copy to clipboard">
-                      <mat-icon>content_copy</mat-icon>
-                    </button>
-                  </div>
-                }
-              </div>
-            </div>
+            }
 
             <!-- Thumbnail Text Section -->
-            <div class="metadata-section">
-              <div class="section-header">
-                <mat-icon>image</mat-icon>
-                <h3>Thumbnail Text</h3>
-                <span class="count-badge">{{ metadata()!.thumbnail_text?.length || 0 }}</span>
+            @if (metadata()!.thumbnail_text && metadata()!.thumbnail_text.length > 0) {
+              <div class="metadata-section">
+                <div class="section-header">
+                  <mat-icon>image</mat-icon>
+                  <h3>Thumbnail Text</h3>
+                  <span class="count-badge">{{ metadata()!.thumbnail_text.length }}</span>
+                </div>
+                <div class="list-container">
+                  @for (text of metadata()!.thumbnail_text; track $index) {
+                    <div class="list-item">
+                      <span class="list-item-text">{{ getThumbnailText(text) }}</span>
+                      <button mat-icon-button class="copy-button" (click)="copyToClipboard(getThumbnailText(text))" title="Copy to clipboard">
+                        <mat-icon>content_copy</mat-icon>
+                      </button>
+                    </div>
+                  }
+                </div>
               </div>
-              <div class="list-container">
-                @for (text of metadata()!.thumbnail_text; track $index) {
-                  <div class="list-item">
-                    <span class="list-item-text">{{ text }}</span>
-                    <button mat-icon-button class="copy-button" (click)="copyToClipboard(text)" title="Copy to clipboard">
-                      <mat-icon>content_copy</mat-icon>
-                    </button>
-                  </div>
-                }
-              </div>
-            </div>
+            }
 
             <!-- Chapters Section (if present) -->
             @if (metadata()!.chapters && metadata()!.chapters.length > 0) {
@@ -169,9 +173,30 @@
                 <div class="list-container">
                   @for (chapter of metadata()!.chapters; track $index) {
                     <div class="list-item chapter-item">
-                      <span class="chapter-timestamp">{{ chapter.timestamp }}</span>
-                      <span class="chapter-title">{{ chapter.title }}</span>
-                      <button mat-icon-button class="copy-button" (click)="copyToClipboard(chapter.timestamp + ' - ' + chapter.title)" title="Copy chapter">
+                      <span class="chapter-timestamp">{{ getChapterTimestamp(chapter) }}</span>
+                      <span class="chapter-title">{{ getChapterTitle(chapter) }}</span>
+                      <button mat-icon-button class="copy-button" (click)="copyToClipboard(getChapterTimestamp(chapter) + ' - ' + getChapterTitle(chapter))" title="Copy chapter">
+                        <mat-icon>content_copy</mat-icon>
+                      </button>
+                    </div>
+                  }
+                </div>
+              </div>
+            }
+
+            <!-- Pinned Comment Section (if present) -->
+            @if (metadata()!.pinned_comment && metadata()!.pinned_comment.length > 0) {
+              <div class="metadata-section">
+                <div class="section-header">
+                  <mat-icon>push_pin</mat-icon>
+                  <h3>Pinned Comment</h3>
+                  <span class="count-badge">{{ metadata()!.pinned_comment.length }}</span>
+                </div>
+                <div class="list-container">
+                  @for (comment of metadata()!.pinned_comment; track $index) {
+                    <div class="list-item">
+                      <span class="list-item-text">{{ comment }}</span>
+                      <button mat-icon-button class="copy-button" (click)="copyToClipboard(comment)" title="Copy to clipboard">
                         <mat-icon>content_copy</mat-icon>
                       </button>
                     </div>
@@ -200,13 +225,13 @@
               <div class="section-header">
                 <mat-icon>local_offer</mat-icon>
                 <h3>Tags</h3>
-                <button mat-icon-button class="copy-button" (click)="copyToClipboard(metadata()!.tags)" title="Copy to clipboard">
+                <button mat-icon-button class="copy-button" (click)="copyToClipboard(getTagsString())" title="Copy to clipboard">
                   <mat-icon>content_copy</mat-icon>
                 </button>
               </div>
               <div class="tags-container">
-                @for (tag of metadata()!.tags?.split(','); track $index) {
-                  <mat-chip class="tag-chip">{{ tag.trim() }}</mat-chip>
+                @for (tag of getTagsArray(); track $index) {
+                  <mat-chip class="tag-chip">{{ tag }}</mat-chip>
                 }
               </div>
             </div>

@@ -27,8 +27,9 @@ interface ParsedMetadata {
   titles: string[];
   thumbnail_text: string[];
   description: string;
-  tags: string;
+  tags: string | string[]; // Can be comma-separated string OR array
   hashtags: string;
+  pinned_comment?: string[]; // Pinned comment suggestions
   chapters?: Array<{ timestamp: string; title: string; sequence: number }>; // YouTube chapter markers
   _title?: string; // The display title from the source
   _prompt_set?: string; // The prompt set used for generation
@@ -267,22 +268,38 @@ export class MetadataReports implements OnInit, OnDestroy {
       // Read the JSON file (report.path is now the path to the JSON file)
       let content = await this.electron.readFile(report.path);
 
-      if (content) {
-        const jobData = JSON.parse(content);
-
-        // If we have an itemIndex, load that specific item
-        if (report.itemIndex !== undefined && jobData.items && jobData.items.length > report.itemIndex) {
-          this.metadata.set(jobData.items[report.itemIndex]);
-        } else if (jobData.items && jobData.items.length > 0) {
-          // Fallback to first item if no index specified
-          this.metadata.set(jobData.items[0]);
-        } else {
-          // Legacy structure compatibility
-          this.metadata.set(jobData);
-        }
+      if (!content) {
+        throw new Error('Empty file content');
       }
+
+      const jobData = JSON.parse(content);
+      console.log('[MetadataReports] Loaded job data:', jobData);
+      console.log('[MetadataReports] Report itemIndex:', report.itemIndex);
+
+      // Strict checking - no fallbacks
+      if (report.itemIndex === undefined) {
+        throw new Error('Report missing itemIndex - cannot determine which item to load');
+      }
+
+      if (!jobData.items || !Array.isArray(jobData.items)) {
+        throw new Error('Job data missing items array - invalid structure');
+      }
+
+      if (jobData.items.length <= report.itemIndex) {
+        throw new Error(`Item index ${report.itemIndex} out of bounds (only ${jobData.items.length} items in job)`);
+      }
+
+      const selectedItem = jobData.items[report.itemIndex];
+      console.log('[MetadataReports] Selected item from array:', selectedItem);
+      console.log('[MetadataReports] Titles array:', selectedItem.titles);
+      console.log('[MetadataReports] Thumbnail text array:', selectedItem.thumbnail_text);
+
+      this.metadata.set(selectedItem);
+      console.log('[MetadataReports] Final metadata signal value:', this.metadata());
     } catch (error) {
+      console.error('[MetadataReports] Error loading report:', error);
       this.notificationService.error('Read Error', 'Failed to read report: ' + (error as Error).message);
+      this.metadata.set(null);
     } finally {
       this.isLoading.set(false);
     }
@@ -311,26 +328,59 @@ export class MetadataReports implements OnInit, OnDestroy {
     event.stopPropagation();
 
     try {
-      // Delete the TXT folder if it exists (do this first)
-      if (report.txtFolder) {
+      // Delete the individual TXT file if it exists
+      if (report.txtFilePath) {
         try {
-          await this.electron.deleteDirectory(report.txtFolder);
+          await this.electron.deleteDirectory(report.txtFilePath);
+          console.log('[MetadataReports] Deleted TXT file:', report.txtFilePath);
         } catch (e) {
-          console.warn('Could not delete txt folder:', report.txtFolder, e);
+          console.warn('Could not delete txt file:', report.txtFilePath, e);
         }
       }
 
-      // Delete the JSON file
-      await this.electron.deleteDirectory(report.path);
+      // Check how many items from this job exist
+      const jobReports = this.reports().filter(r => r.jobId === report.jobId);
 
-      // Remove from list
-      this.reports.update(reports => reports.filter(r => r.path !== report.path));
+      if (jobReports.length === 1) {
+        // This is the last item - delete the entire JSON file
+        await this.electron.deleteDirectory(report.path);
+        console.log('[MetadataReports] Deleted JSON file (last item):', report.path);
+      } else {
+        // Multiple items exist - remove this item from the JSON
+        try {
+          const content = await this.electron.readFile(report.path);
+          if (content) {
+            const jobData = JSON.parse(content);
+
+            // Remove the item at this index
+            if (jobData.items && report.itemIndex !== undefined) {
+              jobData.items.splice(report.itemIndex, 1);
+
+              // Update txt_files array if it exists
+              if (jobData.txt_files && jobData.txt_files[report.itemIndex]) {
+                jobData.txt_files.splice(report.itemIndex, 1);
+              }
+
+              // Save the updated JSON
+              await this.electron.writeTextFile(report.path, JSON.stringify(jobData, null, 2));
+              console.log('[MetadataReports] Updated JSON file (removed item):', report.path);
+            }
+          }
+        } catch (e) {
+          console.warn('Could not update JSON file:', e);
+        }
+      }
+
+      // Remove from UI list (use unique name, not shared path)
+      this.reports.update(reports => reports.filter(r => r.name !== report.name));
 
       // Clear selection if deleted report was selected
-      if (this.selectedReport()?.path === report.path) {
+      if (this.selectedReport()?.name === report.name) {
         this.selectedReport.set(null);
         this.metadata.set(null);
       }
+
+      this.notificationService.success('Deleted', 'Report deleted successfully');
     } catch (error) {
       this.notificationService.error('Delete Error', 'Failed to delete report: ' + (error as Error).message);
     }
@@ -356,7 +406,7 @@ export class MetadataReports implements OnInit, OnDestroy {
     if (!meta || !meta.chapters) return;
 
     const chaptersText = meta.chapters
-      .map((chapter: any) => `${chapter.timestamp} - ${chapter.title}`)
+      .map((chapter: any) => `${this.getChapterTimestamp(chapter)} - ${this.getChapterTitle(chapter)}`)
       .join('\n');
 
     navigator.clipboard.writeText(chaptersText).then(() => {
@@ -375,13 +425,13 @@ export class MetadataReports implements OnInit, OnDestroy {
     // Add chapters at the VERY TOP if present (YouTube requirement)
     if (meta.chapters && meta.chapters.length > 0) {
       const chaptersText = meta.chapters
-        .map((chapter: any) => `${chapter.timestamp} ${chapter.title}`)
+        .map((chapter: any) => `${this.getChapterTimestamp(chapter)} - ${this.getChapterTitle(chapter)}`)
         .join('\n');
       result = chaptersText + '\n\n';
     }
 
-    // Add the main description
-    result += meta.description || '';
+    // Add the main description (handle both string and object formats)
+    result += this.getDescriptionText(meta.description);
 
     // If description already contains hashtags (they're embedded), return as-is
     if (meta.hashtags && result.includes(meta.hashtags)) {
@@ -403,13 +453,105 @@ export class MetadataReports implements OnInit, OnDestroy {
 
     if (insertPosition !== -1 && meta.hashtags) {
       // Insert hashtags before description links
-      result = result.substring(0, insertPosition) + '\n\n' + meta.hashtags + '\n\n' + result.substring(insertPosition);
+      // Trim trailing whitespace before the links to avoid extra newlines
+      const beforeLinks = result.substring(0, insertPosition).trimEnd();
+      const linksSection = result.substring(insertPosition);
+      result = beforeLinks + '\n\n' + meta.hashtags + '\n\n' + linksSection;
     } else if (meta.hashtags) {
       // Just append hashtags at the end
-      result = result + '\n\n' + meta.hashtags;
+      result = result.trimEnd() + '\n\n' + meta.hashtags;
     }
 
     return result;
+  }
+
+  getTagsArray(): string[] {
+    const meta = this.metadata();
+    if (!meta || !meta.tags) return [];
+
+    // Handle both string (comma-separated) and array formats
+    if (Array.isArray(meta.tags)) {
+      return meta.tags;
+    }
+
+    // If it's a string, split by comma
+    if (typeof meta.tags === 'string') {
+      return meta.tags.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0);
+    }
+
+    return [];
+  }
+
+  getTagsString(): string {
+    const tags = this.getTagsArray();
+    return tags.join(', ');
+  }
+
+  getTitleText(title: any): string {
+    // Handle both string format and object format {text: "...", style: "..."}
+    if (typeof title === 'string') {
+      return title;
+    }
+    if (title && typeof title === 'object' && title.text) {
+      return title.text;
+    }
+    return String(title);
+  }
+
+  getDescriptionText(description: any): string {
+    // Handle both string format and object format
+    if (typeof description === 'string') {
+      return description;
+    }
+    if (description && typeof description === 'object') {
+      // Try common object formats
+      if (description.text) return description.text;
+      if (description.content) return description.content;
+      if (description.description) return description.description;
+    }
+    return String(description || '');
+  }
+
+  getThumbnailText(thumbnail: any): string {
+    // Handle both string format and object format
+    if (typeof thumbnail === 'string') {
+      return thumbnail;
+    }
+    if (thumbnail && typeof thumbnail === 'object' && thumbnail.text) {
+      return thumbnail.text;
+    }
+    return String(thumbnail);
+  }
+
+  getChapterTimestamp(chapter: any): string {
+    // Handle various formats AI models might return
+    if (typeof chapter === 'string') {
+      // String format like "0:00 - Introduction"
+      const match = chapter.match(/^(\d+:\d+)/);
+      return match ? match[1] : '0:00';
+    }
+    if (chapter && typeof chapter === 'object') {
+      // Try common property names
+      if (chapter.timestamp) return String(chapter.timestamp);
+      if (chapter.time) return String(chapter.time);
+    }
+    return '0:00';
+  }
+
+  getChapterTitle(chapter: any): string {
+    // Handle various formats AI models might return
+    if (typeof chapter === 'string') {
+      // String format like "0:00 - Introduction"
+      const match = chapter.match(/^\d+:\d+\s*-\s*(.+)$/);
+      return match ? match[1] : chapter;
+    }
+    if (chapter && typeof chapter === 'object') {
+      // Try common property names
+      if (chapter.title) return String(chapter.title);
+      if (chapter.text) return String(chapter.text);
+      if (chapter.name) return String(chapter.name);
+    }
+    return String(chapter || 'Untitled');
   }
 
   private getUserHome(): string {
@@ -465,19 +607,34 @@ export class MetadataReports implements OnInit, OnDestroy {
         try {
           // Read the metadata
           const content = await this.electron.readFile(report.path);
-          if (!content) continue;
+          if (!content) {
+            console.error('Empty content for report:', report.name);
+            errorCount++;
+            continue;
+          }
 
           const jobData = JSON.parse(content);
-          let metadata: ParsedMetadata;
 
-          // Get the specific item's metadata
-          if (report.itemIndex !== undefined && jobData.items && jobData.items.length > report.itemIndex) {
-            metadata = jobData.items[report.itemIndex];
-          } else if (jobData.items && jobData.items.length > 0) {
-            metadata = jobData.items[0];
-          } else {
-            metadata = jobData;
+          // Strict checking - no fallbacks
+          if (report.itemIndex === undefined) {
+            console.error('Report missing itemIndex:', report.name);
+            errorCount++;
+            continue;
           }
+
+          if (!jobData.items || !Array.isArray(jobData.items)) {
+            console.error('Job data missing items array:', report.name);
+            errorCount++;
+            continue;
+          }
+
+          if (jobData.items.length <= report.itemIndex) {
+            console.error('Item index out of bounds:', report.name);
+            errorCount++;
+            continue;
+          }
+
+          const metadata: ParsedMetadata = jobData.items[report.itemIndex];
 
           // Format the metadata as text
           const txtContent = this.formatMetadataAsTxt(metadata, report);
@@ -549,24 +706,39 @@ export class MetadataReports implements OnInit, OnDestroy {
       output += '\n';
     }
 
+    // Pinned Comment
+    if (metadata.pinned_comment && metadata.pinned_comment.length > 0) {
+      output += '--- PINNED COMMENT ---\n\n';
+      metadata.pinned_comment.forEach((comment, i) => {
+        output += `${i + 1}. ${comment}\n`;
+      });
+      output += '\n';
+    }
+
     // Description
     if (metadata.description) {
       output += '--- DESCRIPTION ---\n\n';
-      output += metadata.description + '\n\n';
+      const descText = this.getDescriptionText(metadata.description);
+      output += descText + '\n\n';
 
-      if (metadata.hashtags && !metadata.description.includes(metadata.hashtags)) {
+      if (metadata.hashtags && !descText.includes(metadata.hashtags)) {
         output += metadata.hashtags + '\n\n';
       }
     }
 
-    // Tags
+    // Tags - handle both string and array formats
     if (metadata.tags) {
       output += '--- TAGS ---\n\n';
-      output += metadata.tags + '\n\n';
+      if (Array.isArray(metadata.tags)) {
+        output += metadata.tags.join(', ') + '\n\n';
+      } else {
+        output += metadata.tags + '\n\n';
+      }
     }
 
     // Hashtags (if not already included)
-    if (metadata.hashtags && !metadata.description?.includes(metadata.hashtags)) {
+    const descText = metadata.description ? this.getDescriptionText(metadata.description) : '';
+    if (metadata.hashtags && !descText.includes(metadata.hashtags)) {
       output += '--- HASHTAGS ---\n\n';
       output += metadata.hashtags + '\n\n';
     }

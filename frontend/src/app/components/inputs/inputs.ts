@@ -14,6 +14,7 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatExpansionModule } from '@angular/material/expansion';
 import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
+import { CdkDragDrop, DragDropModule, moveItemInArray } from '@angular/cdk/drag-drop';
 import { ElectronService } from '../../services/electron';
 import { TextSubjectDialog } from '../text-subject-dialog/text-subject-dialog';
 import { NotesDialog } from '../notes-dialog/notes-dialog';
@@ -25,6 +26,7 @@ interface PromptSetOption {
   id: string;
   name: string;
   platform: string;
+  instructions_prompt: string;
 }
 
 @Component({
@@ -44,7 +46,8 @@ interface PromptSetOption {
     MatTooltipModule,
     MatExpansionModule,
     FormsModule,
-    CommonModule
+    CommonModule,
+    DragDropModule,
   ],
   templateUrl: './inputs.html',
   styleUrl: './inputs.scss',
@@ -252,8 +255,81 @@ export class Inputs implements OnInit, OnDestroy {
     }
   }
 
+  // Drag and drop support
+  isDraggingOver = signal(false);
+
+  onDragOver(event: DragEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    this.isDraggingOver.set(true);
+  }
+
+  onDragLeave(event: DragEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    this.isDraggingOver.set(false);
+  }
+
+  async onDrop(event: DragEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    this.isDraggingOver.set(false);
+
+    if (!event.dataTransfer?.files) return;
+
+    const files = Array.from(event.dataTransfer.files);
+
+    for (const file of files) {
+      // @ts-ignore - file.path is available in Electron
+      const filePath = file.path;
+      if (!filePath) continue;
+
+      const isDir = await this.electron.isDirectory(filePath);
+      const fileName = file.name;
+
+      if (isDir) {
+        this.inputsState.addItem({
+          type: 'directory',
+          path: filePath,
+          displayName: fileName,
+          icon: 'folder',
+          selected: true,
+          promptSet: this.inputsState.masterPromptSet()
+        });
+      } else {
+        const ext = fileName.split('.').pop()?.toLowerCase() || '';
+        let icon = 'description';
+        let type = 'file';
+
+        if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v'].includes(ext)) {
+          icon = 'movie';
+          type = 'video';
+        } else if (ext === 'txt') {
+          icon = 'text_fields';
+          type = 'transcript';
+        }
+
+        this.inputsState.addItem({
+          type,
+          path: filePath,
+          displayName: fileName,
+          icon,
+          selected: true,
+          promptSet: this.inputsState.masterPromptSet(),
+          generateChapters: type === 'video' ? true : undefined
+        });
+      }
+    }
+  }
+
   removeInput(index: number) {
     this.inputsState.removeItem(index);
+  }
+
+  onInputDrop(event: CdkDragDrop<InputItem[]>) {
+    if (event.previousIndex !== event.currentIndex) {
+      this.inputsState.reorderItems(event.previousIndex, event.currentIndex);
+    }
   }
 
   toggleChapterGeneration(index: number, value: boolean) {
@@ -474,8 +550,7 @@ export class Inputs implements OnInit, OnDestroy {
         return -1;
       };
 
-      // Track which item is currently being transcribed vs generated
-      let transcribingItemIndex = -1;
+      // Track which item is currently being generated (only one at a time for AI)
       let generatingItemIndex = -1;
 
       // Listen for progress updates from Python
@@ -485,14 +560,13 @@ export class Inputs implements OnInit, OnDestroy {
 
         // Handle preparing phase (when starting a new video for transcription)
         if (progress.phase === 'preparing' && progress.filename) {
-          const itemIndex = findItemIndexByFilename(progress.filename);
-          if (itemIndex !== -1) {
-            // Mark previous transcribing item as 'transcribed' (not completed!)
-            if (transcribingItemIndex >= 0 && transcribingItemIndex !== itemIndex) {
-              this.jobQueue.updateItemProgress(nextJob.id, transcribingItemIndex, 50, 'transcribed');
-            }
+          // Use itemIndex from backend if available, otherwise find by filename
+          let itemIndex = progress.itemIndex;
+          if (itemIndex === undefined) {
+            itemIndex = findItemIndexByFilename(progress.filename);
+          }
 
-            transcribingItemIndex = itemIndex;
+          if (itemIndex !== undefined && itemIndex >= 0) {
             currentItemIndex = itemIndex;
             this.jobQueue.updateItemProgress(nextJob.id, itemIndex, 0, 'transcribing');
           }
@@ -500,79 +574,109 @@ export class Inputs implements OnInit, OnDestroy {
         }
 
         // Update current item progress based on transcription phase
-        if (progress.phase === 'transcription' && progress.progress !== undefined) {
-          // Find which item is being transcribed if filename is provided
-          if (progress.filename) {
-            const itemIndex = findItemIndexByFilename(progress.filename);
-            if (itemIndex !== -1 && itemIndex !== transcribingItemIndex) {
-              // Mark previous as transcribed before switching
-              if (transcribingItemIndex >= 0) {
-                this.jobQueue.updateItemProgress(nextJob.id, transcribingItemIndex, 50, 'transcribed');
-              }
-              transcribingItemIndex = itemIndex;
-              currentItemIndex = itemIndex;
+        if (progress.phase === 'transcription' && progress.percent !== undefined) {
+          // Use itemIndex from backend (supports concurrent transcriptions)
+          let itemIndex = progress.itemIndex;
+
+          // Fallback: find by filename if itemIndex not provided
+          if (itemIndex === undefined && progress.filename) {
+            itemIndex = findItemIndexByFilename(progress.filename);
+          }
+
+          // Update the specific item's progress (supports multiple concurrent transcriptions)
+          if (itemIndex !== undefined && itemIndex >= 0 && itemIndex < totalItems) {
+            const transcriptionProgress = Math.floor(progress.percent / 2); // Map 0-100 to 0-50
+
+            // Mark as transcribed when transcription hits 100%
+            if (progress.percent === 100) {
+              this.jobQueue.updateItemProgress(nextJob.id, itemIndex, 50, 'transcribed');
+            } else {
+              this.jobQueue.updateItemProgress(nextJob.id, itemIndex, transcriptionProgress, 'transcribing');
             }
-          }
 
-          // Update current item progress bar (0-50% for transcription)
-          if (transcribingItemIndex >= 0 && transcribingItemIndex < totalItems) {
-            const transcriptionProgress = Math.floor(progress.progress / 2); // Map 0-100 to 0-50
-            this.jobQueue.updateItemProgress(nextJob.id, transcribingItemIndex, transcriptionProgress, 'transcribing');
+            // Update job-level message with "Transcribing..."
+            const message = progress.message || `Transcribing: ${progress.filename || ''}`;
+            this.jobQueue.updateJob(nextJob.id, { currentlyProcessing: message });
           }
-
-          // Mark as transcribed when transcription hits 100%
-          if (progress.progress === 100 && transcribingItemIndex >= 0) {
-            this.jobQueue.updateItemProgress(nextJob.id, transcribingItemIndex, 50, 'transcribed');
-          }
-
-          // Update job-level message with "Transcribing..."
-          const message = progress.message || `Transcribing: ${progress.filename || ''}`;
-          this.jobQueue.updateJob(nextJob.id, { currentlyProcessing: message });
 
           // Calculate overall progress (transcription is first 50% of total job)
           const transcribedItems = job.itemProgress.filter(p =>
             p.status === 'transcribed' || p.status === 'generating' || p.status === 'completed'
           ).length;
-          const currentProgress = (progress.progress || 0) / 2; // 0-50%
-          const overallProgress = ((transcribedItems + (currentProgress / 100)) / totalItems) * 50;
+
+          // Count items currently transcribing and sum their progress
+          const transcribingItems = job.itemProgress.filter(p => p.status === 'transcribing');
+          const transcribingProgress = transcribingItems.reduce((sum, item) => sum + (item.progress || 0), 0);
+
+          // Overall progress = (completed items + sum of in-progress items) / total items * 50%
+          const overallProgress = ((transcribedItems + (transcribingProgress / 50)) / totalItems) * 50;
           this.jobQueue.updateJob(nextJob.id, { progress: Math.min(overallProgress, 49) });
         }
 
         // Handle metadata generation phase (AI summarization and generation)
-        if (progress.phase === 'generating' && progress.progress !== undefined) {
-          // Find the next transcribed item that needs generation
+        if (progress.phase === 'generating' && progress.percent !== undefined) {
           const job = this.jobQueue.getJob(nextJob.id);
-          if (job) {
-            // Find first 'transcribed' item to mark as generating
-            const nextToGenerate = job.itemProgress.findIndex(p => p.status === 'transcribed');
-            if (nextToGenerate !== -1 && generatingItemIndex !== nextToGenerate) {
-              generatingItemIndex = nextToGenerate;
-              currentItemIndex = nextToGenerate;
-            }
-          }
 
-          if (generatingItemIndex >= 0 && generatingItemIndex < totalItems) {
-            // Map AI progress from 0-100 to 50-100 (second half of item's progress bar)
-            const aiProgress = 50 + Math.floor(progress.progress / 2);
-            this.jobQueue.updateItemProgress(nextJob.id, generatingItemIndex, aiProgress, 'generating');
+          // Use itemIndex from backend if provided, otherwise find first transcribed item
+          if (progress.itemIndex !== undefined) {
+            const itemIndex = progress.itemIndex;
+
+            // Update the specific item's progress
+            if (itemIndex >= 0 && itemIndex < totalItems) {
+              // If this is a new item starting (0%), mark the previous item as completed
+              if (progress.percent === 0 && itemIndex > 0 && job) {
+                const prevIndex = itemIndex - 1;
+                const prevStatus = job.itemProgress[prevIndex]?.status;
+                if (prevStatus === 'generating') {
+                  this.jobQueue.updateItemProgress(nextJob.id, prevIndex, 100, 'completed');
+                }
+              }
+
+              // Map AI progress from 0-100 to 50-100 (second half of item's progress bar)
+              const aiProgress = 50 + Math.floor(progress.percent / 2);
+              this.jobQueue.updateItemProgress(nextJob.id, itemIndex, aiProgress, 'generating');
+
+              generatingItemIndex = itemIndex;
+              currentItemIndex = itemIndex;
+            }
+
+            // If generation complete (100%), mark item as completed
+            if (progress.percent === 100 && itemIndex >= 0) {
+              this.jobQueue.updateItemProgress(nextJob.id, itemIndex, 100, 'completed');
+            }
+          } else {
+            // Fallback to old behavior if itemIndex not provided
+            if (job) {
+              const nextToGenerate = job.itemProgress.findIndex(p => p.status === 'transcribed');
+              if (nextToGenerate !== -1 && generatingItemIndex !== nextToGenerate) {
+                generatingItemIndex = nextToGenerate;
+                currentItemIndex = nextToGenerate;
+              }
+            }
+
+            if (generatingItemIndex >= 0 && generatingItemIndex < totalItems) {
+              const aiProgress = 50 + Math.floor(progress.percent / 2);
+              this.jobQueue.updateItemProgress(nextJob.id, generatingItemIndex, aiProgress, 'generating');
+            }
+
+            if (progress.percent === 100 && generatingItemIndex >= 0) {
+              this.jobQueue.updateItemProgress(nextJob.id, generatingItemIndex, 100, 'completed');
+              generatingItemIndex = -1;
+            }
           }
 
           // Update message to show what's happening in AI phase
           const message = progress.message || 'Generating metadata...';
           this.jobQueue.updateJob(nextJob.id, { currentlyProcessing: message });
 
-          // If generation complete (100%), mark item as completed
-          if (progress.progress === 100 && generatingItemIndex >= 0) {
-            this.jobQueue.updateItemProgress(nextJob.id, generatingItemIndex, 100, 'completed');
-            generatingItemIndex = -1; // Reset so we find the next one
-          }
-
           // Calculate overall progress (50-100% for generation phase)
-          const completedItems = job.itemProgress.filter(p => p.status === 'completed').length;
-          const generatingItems = job.itemProgress.filter(p => p.status === 'generating').length;
-          const currentGenProgress = generatingItems > 0 ? (progress.progress || 0) / 100 : 0;
-          const overallProgress = 50 + ((completedItems + currentGenProgress) / totalItems) * 50;
-          this.jobQueue.updateJob(nextJob.id, { progress: Math.min(overallProgress, 99) });
+          if (job) {
+            const completedItems = job.itemProgress.filter(p => p.status === 'completed').length;
+            const generatingItems = job.itemProgress.filter(p => p.status === 'generating').length;
+            const currentGenProgress = generatingItems > 0 ? (progress.percent || 0) / 100 : 0;
+            const overallProgress = 50 + ((completedItems + currentGenProgress) / totalItems) * 50;
+            this.jobQueue.updateJob(nextJob.id, { progress: Math.min(overallProgress, 99) });
+          }
         }
       });
 
@@ -664,6 +768,9 @@ export class Inputs implements OnInit, OnDestroy {
         completedAt: new Date(),
         error: String(error)
       });
+    } finally {
+      // After job completes (success or failure), process next job in queue
+      this.processNextJob();
     }
   }
 
@@ -700,8 +807,47 @@ export class Inputs implements OnInit, OnDestroy {
     this.jobQueue.clearCompletedJobs();
   }
 
+  async cancelJob(jobId: string) {
+    // Call backend to cancel the job
+    const result = await this.electron.cancelJob(jobId);
+
+    if (result.success) {
+      // Update job status to cancelled
+      this.jobQueue.updateJob(jobId, {
+        status: 'failed',
+        currentlyProcessing: 'Cancelled by user',
+        error: 'Job cancelled by user'
+      });
+
+      this.notificationService.info('Job Cancelled', 'The job has been cancelled.');
+    } else {
+      this.notificationService.error('Cancel Failed', result.error || 'Failed to cancel job');
+    }
+  }
+
   removeJob(jobId: string) {
     this.jobQueue.removeJob(jobId);
+  }
+
+  removeItemFromJob(jobId: string, itemIndex: number) {
+    const job = this.jobQueue.getJob(jobId);
+    if (!job) {
+      console.warn('[Inputs] Cannot remove item: job not found:', jobId);
+      return;
+    }
+
+    // Remove the item from the job's inputs array
+    job.inputs.splice(itemIndex, 1);
+
+    // If no items left, remove the entire job
+    if (job.inputs.length === 0) {
+      console.log('[Inputs] Last item removed, removing entire job');
+      this.removeJob(jobId);
+    } else {
+      console.log(`[Inputs] Removed item ${itemIndex} from job ${jobId}. ${job.inputs.length} items remaining.`);
+      // Update the job with the modified inputs array
+      this.jobQueue.updateJob(jobId, { inputs: job.inputs });
+    }
   }
 
   getJobStatusIcon(status: string): string {
@@ -744,13 +890,8 @@ export class Inputs implements OnInit, OnDestroy {
 
   // Helper to check if chapters should be available for an item
   canGenerateChapters(item: InputItem): boolean {
-    // Chapters only available for:
-    // 1. Video files (not text subjects or transcripts)
-    // 2. YouTube platform prompt sets (not podcasts)
-    // 3. Individual mode (not compilation)
-    return item.type === 'video' &&
-           this.isYouTubePromptSet(item.promptSet) &&
-           !this.inputsState.compilationMode();
+    // Chapters available for any video or transcript file
+    return item.type === 'video' || item.type === 'transcript';
   }
 
   // Global queue progress helpers
@@ -806,9 +947,13 @@ export class Inputs implements OnInit, OnDestroy {
   }
 
   getItemStatusText(job: QueuedJob, itemIndex: number): string {
-    const status = job.itemProgress[itemIndex]?.status;
+    const item = job.itemProgress[itemIndex];
+    const status = item?.status;
     switch (status) {
-      case 'transcribing': return 'Transcribing...';
+      case 'transcribing':
+        // Progress is stored as 0-50 (half of total), multiply by 2 to get transcription %
+        const transcribePercent = Math.min(100, (item?.progress || 0) * 2);
+        return `Transcribing ${transcribePercent}%`;
       case 'transcribed': return 'Transcribed';
       case 'generating': return 'Generating...';
       case 'completed': return 'Completed';

@@ -1,8 +1,6 @@
 import { ipcMain, dialog, app, BrowserWindow } from 'electron';
 import Store from 'electron-store';
 import * as log from 'electron-log';
-import { PythonService } from '../services/python-service';
-import { getDatabaseService } from '../services/database-service';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
@@ -13,19 +11,91 @@ import * as yaml from 'js-yaml';
  */
 
 /**
- * Get the prompt sets directory path
- * In production, it's in resources/python/prompts/prompt_sets
- * In development, it's in the project python/prompts/prompt_sets
+ * Get the prompt sets directory path (user-writable location)
+ * All prompts are stored in userData/prompt_sets for both dev and production
  */
 function getPromptSetsDirectory(): string {
-  if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'python', 'prompts', 'prompt_sets');
-  } else {
-    return path.join(app.getAppPath(), 'python', 'prompts', 'prompt_sets');
+  const userDataPath = app.getPath('userData');
+  return path.join(userDataPath, 'prompt_sets');
+}
+
+/**
+ * Ensure prompt sets directory exists
+ */
+function ensurePromptSetsDirectory(): void {
+  const promptSetsDir = getPromptSetsDirectory();
+
+  if (!fs.existsSync(promptSetsDir)) {
+    fs.mkdirSync(promptSetsDir, { recursive: true });
+    log.info(`Created prompt sets directory: ${promptSetsDir}`);
   }
 }
 
-export function setupIpcHandlers(store: Store<any>, pythonService: PythonService | null) {
+// Track running jobs and their cancellation callbacks
+const runningJobs = new Map<string, { cancel: () => void }>();
+
+// AI Job Queue - ensures only ONE AI job runs at a time
+// Transcription can happen in parallel (up to 5), but AI operations (summarize/generate) must be sequential
+interface QueuedJob {
+  jobId: string;
+  execute: () => Promise<any>;
+  resolve: (value: any) => void;
+  reject: (error: any) => void;
+}
+
+const aiJobQueue: QueuedJob[] = [];
+let isAiJobRunning = false;
+
+async function processAiJobQueue() {
+  if (isAiJobRunning || aiJobQueue.length === 0) {
+    return;
+  }
+
+  isAiJobRunning = true;
+  const job = aiJobQueue.shift();
+
+  if (job) {
+    log.info(`[JobQueue] Starting AI job: ${job.jobId} (${aiJobQueue.length} jobs remaining in queue)`);
+    try {
+      const result = await job.execute();
+      job.resolve(result);
+    } catch (error) {
+      log.error(`[JobQueue] AI job ${job.jobId} failed:`, error);
+      job.reject(error);
+    } finally {
+      isAiJobRunning = false;
+      log.info(`[JobQueue] AI job ${job.jobId} completed`);
+      // Process next job in queue
+      processAiJobQueue();
+    }
+  }
+}
+
+function enqueueAiJob(jobId: string, execute: () => Promise<any>): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const queuePosition = aiJobQueue.length + (isAiJobRunning ? 1 : 0);
+    log.info(`[JobQueue] Enqueueing AI job: ${jobId} (position ${queuePosition} in queue)`);
+
+    aiJobQueue.push({ jobId, execute, resolve, reject });
+
+    // Send queue position to frontend
+    const mainWindow = BrowserWindow.getAllWindows()[0];
+    if (mainWindow && queuePosition > 0) {
+      mainWindow.webContents.send('generation-progress', {
+        phase: 'queued',
+        message: `Queued (position ${queuePosition})`,
+        jobId
+      });
+    }
+
+    processAiJobQueue();
+  });
+}
+
+export function setupIpcHandlers(store: Store<any>) {
+
+  // Ensure prompt sets directory exists
+  ensurePromptSetsDirectory();
 
   // Get settings
   ipcMain.handle('get-settings', async () => {
@@ -230,33 +300,70 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
     }
   });
 
+  // Cancel job
+  ipcMain.handle('cancel-job', async (_event, jobId: string) => {
+    try {
+      log.info(`[IPC] Cancelling job: ${jobId}`);
+
+      const job = runningJobs.get(jobId);
+      if (job) {
+        job.cancel();
+        runningJobs.delete(jobId);
+        return { success: true };
+      } else {
+        return { success: false, error: 'Job not found or already completed' };
+      }
+    } catch (error) {
+      log.error('Error cancelling job:', error);
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
   // Generate metadata
   ipcMain.handle('generate-metadata', async (_event, params) => {
     try {
-      if (!pythonService) {
-        throw new Error('Python service not initialized');
-      }
-
       log.info('Starting metadata generation with params:', JSON.stringify(params, null, 2));
 
       // Get settings using electron-store API
       const settings = (store as any).store;
 
+      // Determine AI provider from settings
+      // Try new separate provider fields first, fall back to legacy aiProvider field
+      const summProvider = settings.summarizationProvider || settings.aiProvider;
+      const metaProvider = settings.metadataProvider || settings.aiProvider;
+
+      // Load API keys from api-keys.json
+      const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
+      let apiKeys: any = {};
+      if (fs.existsSync(apiKeysPath)) {
+        apiKeys = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
+      }
+
+      // Get API key based on metadata provider (metadata generation usually more important)
+      let apiKey = undefined;
+      if (metaProvider === 'openai' || summProvider === 'openai') {
+        apiKey = apiKeys.openaiApiKey;
+      } else if (metaProvider === 'claude' || summProvider === 'claude') {
+        apiKey = apiKeys.claudeApiKey;
+      }
+
       // Prepare metadata generation parameters
       const metadataParams = {
         inputs: params.inputs,
-        platform: params.platform || settings.defaultPlatform,
         mode: params.mode || settings.defaultMode,
-        aiProvider: settings.aiProvider,
-        aiModel: settings.ollamaModel, // This field is used for all providers (OpenAI, Claude, Ollama)
-        aiApiKey: settings.aiProvider === 'openai' ? settings.openaiApiKey :
-                  settings.aiProvider === 'claude' ? settings.claudeApiKey : undefined,
-        aiHost: settings.aiProvider === 'ollama' ? settings.ollamaHost : undefined,
+        aiProvider: metaProvider, // Use metadata provider as primary
+        aiModel: settings.ollamaModel, // Legacy single model (backward compatibility)
+        summarizationModel: settings.summarizationModel,
+        metadataModel: settings.metadataModel,
+        aiApiKey: apiKey,
+        aiHost: settings.ollamaHost || 'http://localhost:11434',
         outputPath: params.outputPath || settings.outputDirectory,
         promptSet: params.promptSet || settings.promptSet || 'youtube-telltale',
+        promptSetsDir: getPromptSetsDirectory(),
         jobId: params.jobId,
         jobName: params.jobName,
-        chapterFlags: params.chapterFlags || {}
+        chapterFlags: params.chapterFlags || {},
+        inputNotes: params.inputNotes || {}
       };
 
       log.info('Prepared metadata params:', JSON.stringify(metadataParams, null, 2));
@@ -270,22 +377,64 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
         });
       }
 
-      // Generate metadata
-      const result = await pythonService.generateMetadata(metadataParams);
+      // Enqueue the AI job to ensure only one runs at a time
+      const result = await enqueueAiJob(params.jobId || 'metadata-job', async () => {
+        // Generate metadata using TypeScript service (no Python needed!)
+        const { MetadataGeneratorService } = require('../services/metadata/metadata-generator.service');
 
-      if (mainWindow) {
-        if (result.success) {
-          mainWindow.webContents.send('generation-progress', {
-            phase: 'complete',
-            message: 'Metadata generation complete!'
-          });
-        } else {
-          mainWindow.webContents.send('generation-progress', {
-            phase: 'error',
-            message: result.error || 'Unknown error'
-          });
+        // Create cancellation callback
+        let cancelled = false;
+        const cancelCallback = () => {
+          cancelled = true;
+          log.info(`[IPC] Job ${params.jobId} cancelled`);
+        };
+
+        // Store the cancellation callback
+        if (params.jobId) {
+          runningJobs.set(params.jobId, { cancel: cancelCallback });
         }
-      }
+
+        // Add progress callback to forward events to frontend
+        const paramsWithCallback = {
+          ...metadataParams,
+          progressCallback: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => {
+            log.info(`[IPC] Progress event: phase=${phase}, message=${message}, percent=${percent}, filename=${filename}, itemIndex=${itemIndex}`);
+            if (mainWindow) {
+              mainWindow.webContents.send('generation-progress', {
+                phase,
+                message,
+                percent,
+                ...(filename && { filename }), // Include filename if provided
+                ...(itemIndex !== undefined && { itemIndex }) // Include itemIndex if provided
+              });
+            }
+          },
+          cancelCallback: () => cancelled
+        };
+
+        const jobResult = await MetadataGeneratorService.generate(paramsWithCallback);
+
+        // Remove from running jobs
+        if (params.jobId) {
+          runningJobs.delete(params.jobId);
+        }
+
+        if (mainWindow) {
+          if (jobResult.success) {
+            mainWindow.webContents.send('generation-progress', {
+              phase: 'complete',
+              message: 'Metadata generation complete!'
+            });
+          } else {
+            mainWindow.webContents.send('generation-progress', {
+              phase: 'error',
+              message: jobResult.error || 'Unknown error'
+            });
+          }
+        }
+
+        return jobResult;
+      });
 
       return result;
 
@@ -322,14 +471,21 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
     }
   });
 
+  // Get prompt sets directory path
+  ipcMain.handle('get-prompt-sets-path', async () => {
+    const promptSetsDir = getPromptSetsDirectory();
+    return { success: true, path: promptSetsDir };
+  });
+
   // List all prompt sets
   ipcMain.handle('list-prompt-sets', async () => {
     try {
       const promptSetsDir = getPromptSetsDirectory();
 
+      // Ensure directory exists (creates if missing)
       if (!fs.existsSync(promptSetsDir)) {
-        log.error(`Prompt sets directory not found: ${promptSetsDir}`);
-        return { success: false, error: 'Prompt sets directory not found' };
+        fs.mkdirSync(promptSetsDir, { recursive: true });
+        log.info(`Created prompt sets directory: ${promptSetsDir}`);
       }
 
       const files = fs.readdirSync(promptSetsDir);
@@ -344,7 +500,8 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
           promptSets.push({
             id: file.replace(/\.(yml|yaml)$/, ''),
             name: parsed.name || file,
-            platform: parsed.platform || 'youtube'
+            platform: parsed.platform || 'youtube', // Default to youtube for backward compat
+            instructions_prompt: parsed.instructions_prompt || parsed.generation_instructions || ''
           });
         }
       }
@@ -374,9 +531,8 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
         promptSet: {
           id: promptSetId,
           name: parsed.name || promptSetId,
-          platform: parsed.platform || 'youtube',
-          editorial_guidelines: parsed.editorial_guidelines || '',
-          generation_instructions: parsed.generation_instructions || '',
+          editorial_prompt: parsed.editorial_prompt || parsed.editorial_guidelines || '',
+          instructions_prompt: parsed.instructions_prompt || parsed.generation_instructions || '',
           description_links: parsed.description_links || ''
         }
       };
@@ -400,12 +556,17 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
         return { success: false, error: 'A prompt set with this name already exists' };
       }
 
+      // Auto-append {subject} to editorial_prompt if not present
+      let editorialPrompt = promptSet.editorial_prompt || '';
+      if (!editorialPrompt.includes('{subject}')) {
+        editorialPrompt = editorialPrompt + '\n\n{subject}';
+      }
+
       // Create the YAML content
       const yamlContent = {
         name: promptSet.name,
-        platform: promptSet.platform || 'youtube',
-        editorial_guidelines: promptSet.editorial_guidelines || '',
-        generation_instructions: promptSet.generation_instructions || '',
+        editorial_prompt: editorialPrompt,
+        instructions_prompt: promptSet.instructions_prompt || '',
         description_links: promptSet.description_links || ''
       };
 
@@ -430,16 +591,26 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
         return { success: false, error: 'Prompt set not found' };
       }
 
+      // Validate that {subject} is present in editorial_prompt
+      const editorialPrompt = promptSet.editorial_prompt || '';
+      if (!editorialPrompt.includes('{subject}')) {
+        return { success: false, error: 'Editorial prompt must contain {subject} placeholder' };
+      }
+
       // Read existing file
       const content = fs.readFileSync(filePath, 'utf8');
       const existingData: any = yaml.load(content) || {};
 
       // Update the fields
       existingData.name = promptSet.name || existingData.name;
-      existingData.platform = promptSet.platform || existingData.platform;
-      existingData.editorial_guidelines = promptSet.editorial_guidelines || '';
-      existingData.generation_instructions = promptSet.generation_instructions || '';
+      existingData.editorial_prompt = editorialPrompt;
+      existingData.instructions_prompt = promptSet.instructions_prompt || '';
       existingData.description_links = promptSet.description_links || '';
+
+      // Remove old fields if they exist
+      delete existingData.platform;
+      delete existingData.editorial_guidelines;
+      delete existingData.generation_instructions;
 
       // Write back
       const yamlStr = yaml.dump(existingData, { lineWidth: -1, noRefs: true });
@@ -601,110 +772,6 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
     }
   });
 
-  // Database operations
-  const db = getDatabaseService();
-
-  // Get database stats
-  ipcMain.handle('db:get-stats', async () => {
-    try {
-      const stats = db.getDatabaseStats();
-      return { success: true, stats };
-    } catch (error) {
-      log.error('Error getting database stats:', error);
-      return { success: false, error: String(error) };
-    }
-  });
-
-  // Get all videos
-  ipcMain.handle('db:get-all-videos', async () => {
-    try {
-      const videos = db.getAllVideos();
-      return { success: true, videos };
-    } catch (error) {
-      log.error('Error getting all videos:', error);
-      return { success: false, error: String(error) };
-    }
-  });
-
-  // Get video by path
-  ipcMain.handle('db:get-video-by-path', async (_event, filePath: string) => {
-    try {
-      const video = db.getVideoByPath(filePath);
-      return { success: true, video };
-    } catch (error) {
-      log.error('Error getting video by path:', error);
-      return { success: false, error: String(error) };
-    }
-  });
-
-  // Get chapters for video
-  ipcMain.handle('db:get-chapters', async (_event, videoId: number) => {
-    try {
-      const chapters = db.getChapters(videoId);
-      return { success: true, chapters };
-    } catch (error) {
-      log.error('Error getting chapters:', error);
-      return { success: false, error: String(error) };
-    }
-  });
-
-  // Export transcript to TXT
-  ipcMain.handle('db:export-transcript', async (_event, videoId: number) => {
-    try {
-      const content = db.exportTranscriptToTxt(videoId);
-      if (!content) {
-        return { success: false, error: 'No transcript found' };
-      }
-      return { success: true, content };
-    } catch (error) {
-      log.error('Error exporting transcript:', error);
-      return { success: false, error: String(error) };
-    }
-  });
-
-  // Search videos
-  ipcMain.handle('db:search-videos', async (_event, query: string) => {
-    try {
-      const videos = db.searchVideos(query);
-      return { success: true, videos };
-    } catch (error) {
-      log.error('Error searching videos:', error);
-      return { success: false, error: String(error) };
-    }
-  });
-
-  // Search chapters
-  ipcMain.handle('db:search-chapters', async (_event, query: string) => {
-    try {
-      const chapters = db.searchChapters(query);
-      return { success: true, chapters };
-    } catch (error) {
-      log.error('Error searching chapters:', error);
-      return { success: false, error: String(error) };
-    }
-  });
-
-  // Delete video
-  ipcMain.handle('db:delete-video', async (_event, videoId: number) => {
-    try {
-      db.deleteVideo(videoId);
-      return { success: true };
-    } catch (error) {
-      log.error('Error deleting video:', error);
-      return { success: false, error: String(error) };
-    }
-  });
-
-  // Clear all data
-  ipcMain.handle('db:clear-all', async () => {
-    try {
-      db.clearAllData();
-      return { success: true };
-    } catch (error) {
-      log.error('Error clearing database:', error);
-      return { success: false, error: String(error) };
-    }
-  });
 
   // Save logs
   ipcMain.handle('save-logs', async (_event, frontendLogs: string) => {
@@ -742,6 +809,87 @@ export function setupIpcHandlers(store: Store<any>, pythonService: PythonService
       };
     } catch (error) {
       log.error('Error saving logs:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // AI Setup - Check Ollama availability and get models
+  ipcMain.handle('check-ollama', async () => {
+    try {
+      const response = await fetch('http://localhost:11434/api/tags');
+      if (!response.ok) {
+        return { available: false, models: [] };
+      }
+      const data = await response.json() as any;
+      const models = data.models ? data.models.map((m: any) => m.name) : [];
+      return { available: true, models };
+    } catch (error) {
+      log.info('Ollama not available:', error);
+      return { available: false, models: [] };
+    }
+  });
+
+  // AI Setup - Get API keys
+  ipcMain.handle('get-api-keys', async () => {
+    try {
+      const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
+
+      if (!fs.existsSync(apiKeysPath)) {
+        return { claudeApiKey: undefined, openaiApiKey: undefined };
+      }
+
+      const data = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
+
+      // Return masked keys for security (frontend just needs to know if they exist)
+      return {
+        claudeApiKey: data.claudeApiKey ? '***' : undefined,
+        openaiApiKey: data.openaiApiKey ? '***' : undefined
+      };
+    } catch (error) {
+      log.error('Error getting API keys:', error);
+      return { claudeApiKey: undefined, openaiApiKey: undefined };
+    }
+  });
+
+  // AI Setup - Save API key
+  ipcMain.handle('save-api-key', async (event, provider: string, apiKey: string) => {
+    try {
+      const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
+
+      let existingKeys: any = {};
+      if (fs.existsSync(apiKeysPath)) {
+        existingKeys = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
+      }
+
+      // Update the appropriate key
+      if (provider === 'claude') {
+        existingKeys.claudeApiKey = apiKey;
+      } else if (provider === 'openai') {
+        existingKeys.openaiApiKey = apiKey;
+      } else {
+        return { success: false, error: 'Invalid provider' };
+      }
+
+      // Save to file
+      fs.writeFileSync(apiKeysPath, JSON.stringify(existingKeys, null, 2), 'utf-8');
+
+      log.info(`API key saved for ${provider}`);
+      return { success: true };
+    } catch (error) {
+      log.error('Error saving API key:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Open external URL
+  ipcMain.handle('open-external', async (_event, url: string) => {
+    try {
+      const { shell } = require('electron');
+      await shell.openExternal(url);
+      log.info(`Opened external URL: ${url}`);
+      return { success: true };
+    } catch (error) {
+      log.error('Error opening external URL:', error);
       return { success: false, error: String(error) };
     }
   });
