@@ -20,14 +20,57 @@ function getPromptSetsDirectory(): string {
 }
 
 /**
- * Ensure prompt sets directory exists
+ * Get the path to bundled sample prompts
+ */
+function getSamplePromptsDirectory(): string {
+  // In production, assets are in the app.asar at electron/assets
+  // In development, they're at electron/assets relative to app path
+  const appPath = app.getAppPath();
+  return path.join(appPath, 'electron', 'assets');
+}
+
+/**
+ * Ensure prompt sets directory exists and copy sample prompts if empty
  */
 function ensurePromptSetsDirectory(): void {
   const promptSetsDir = getPromptSetsDirectory();
+  const isNewDirectory = !fs.existsSync(promptSetsDir);
 
-  if (!fs.existsSync(promptSetsDir)) {
+  if (isNewDirectory) {
     fs.mkdirSync(promptSetsDir, { recursive: true });
     log.info(`Created prompt sets directory: ${promptSetsDir}`);
+  }
+
+  // Check if directory is empty (no YAML files)
+  const existingPrompts = fs.existsSync(promptSetsDir)
+    ? fs.readdirSync(promptSetsDir).filter(f => f.endsWith('.yml') || f.endsWith('.yaml'))
+    : [];
+
+  // Copy sample prompts if directory is empty
+  if (existingPrompts.length === 0) {
+    const samplePromptsDir = getSamplePromptsDirectory();
+
+    if (fs.existsSync(samplePromptsDir)) {
+      const sampleFiles = fs.readdirSync(samplePromptsDir).filter(f => f.endsWith('.yml') || f.endsWith('.yaml'));
+
+      for (const file of sampleFiles) {
+        const srcPath = path.join(samplePromptsDir, file);
+        const destPath = path.join(promptSetsDir, file);
+
+        try {
+          fs.copyFileSync(srcPath, destPath);
+          log.info(`Copied sample prompt: ${file}`);
+        } catch (error) {
+          log.warn(`Failed to copy sample prompt ${file}:`, error);
+        }
+      }
+
+      if (sampleFiles.length > 0) {
+        log.info(`Installed ${sampleFiles.length} sample prompt(s) to help you get started`);
+      }
+    } else {
+      log.info(`Sample prompts directory not found at: ${samplePromptsDir}`);
+    }
   }
 }
 

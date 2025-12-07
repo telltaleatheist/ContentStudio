@@ -122,6 +122,7 @@
     "files": [
       "dist/**/*",
       "frontend/dist/**/*",
+      "electron/assets/**/*",
       "!**/*.map",
       "node_modules/**/*",
       "!**/node_modules/**/test/**",
