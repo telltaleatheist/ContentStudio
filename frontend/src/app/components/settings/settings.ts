@@ -54,7 +54,7 @@ export class Settings implements OnInit {
   outputDirectory = signal('~/Documents/LaunchPad Output');
 
   // Prompt set selection
-  selectedPromptSet = signal('youtube-telltale');
+  selectedPromptSet = signal('sample-youtube');
   availablePromptSets = signal<Array<{id: string, name: string, platform: string}>>([]);
 
   // Model options for dropdown - filtered by configured providers

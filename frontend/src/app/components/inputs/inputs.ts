@@ -217,7 +217,8 @@ export class Inputs implements OnInit, OnDestroy {
     if (result.success && result.files.length > 0) {
       for (const filePath of result.files) {
         const isDir = await this.electron.isDirectory(filePath);
-        const fileName = filePath.split('/').pop() || filePath;
+        // Handle both Windows (\) and Unix (/) path separators
+        const fileName = filePath.split(/[/\\]/).pop() || filePath;
 
         if (isDir) {
           this.inputsState.addItem({
@@ -432,35 +433,49 @@ export class Inputs implements OnInit, OnDestroy {
   }
 
   async startQueue() {
-    if (this.queueStarted()) return;
+    console.log('[StartQueue] Button clicked, queueStarted:', this.queueStarted());
+    if (this.queueStarted()) {
+      console.log('[StartQueue] Already started, returning');
+      return;
+    }
 
     // Validate output directory before starting
     try {
+      console.log('[StartQueue] Getting settings...');
       const settings = await this.electron.getSettings();
       const outputDir = settings.outputDirectory;
+      console.log('[StartQueue] Output directory:', outputDir);
 
       if (!outputDir) {
+        console.log('[StartQueue] No output directory configured');
         this.notificationService.error('Configuration Error', 'No output directory configured. Please set one in Settings before processing.');
         return;
       }
 
       // Check if directory exists
+      console.log('[StartQueue] Checking directory...');
       const dirCheck = await this.electron.checkDirectory(outputDir);
+      console.log('[StartQueue] Directory check result:', dirCheck);
+
       if (!dirCheck.exists) {
+        console.log('[StartQueue] Directory does not exist');
         this.notificationService.error('Directory Error', `Output directory does not exist: ${outputDir}\n\nPlease create the directory or choose a different one in Settings.`);
         return;
       }
 
       // Check if directory is writable
       if (!dirCheck.writable) {
+        console.log('[StartQueue] Directory not writable');
         this.notificationService.error('Permission Error', `Output directory is not writable: ${outputDir}\n\nPlease check permissions or choose a different directory in Settings.`);
         return;
       }
     } catch (error) {
+      console.error('[StartQueue] Error validating directory:', error);
       this.notificationService.error('Directory Error', 'Failed to validate output directory. Please check your settings.');
       return;
     }
 
+    console.log('[StartQueue] Starting queue processor...');
     this.queueStarted.set(true);
     this.jobQueue.isProcessing.set(true);
     this.startQueueProcessor();

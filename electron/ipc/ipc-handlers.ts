@@ -168,15 +168,8 @@ export function setupIpcHandlers(store: Store<any>) {
   ipcMain.handle('select-files', async () => {
     try {
       const result = await dialog.showOpenDialog({
-        title: 'Select Files or Directories',
-        properties: ['openFile', 'openDirectory', 'multiSelections'],
-        filters: [
-          { name: 'All Supported Files', extensions: ['mp4', 'avi', 'mov', 'mkv', 'webm', 'm4v', 'txt', 'yml', 'yaml'] },
-          { name: 'Video Files', extensions: ['mp4', 'avi', 'mov', 'mkv', 'webm', 'm4v'] },
-          { name: 'Text Files', extensions: ['txt'] },
-          { name: 'YAML Files', extensions: ['yml', 'yaml'] },
-          { name: 'All Files', extensions: ['*'] }
-        ]
+        title: 'Select Files',
+        properties: ['openFile', 'multiSelections']
       });
 
       if (result.canceled) {
@@ -309,13 +302,13 @@ export function setupIpcHandlers(store: Store<any>) {
     }
   });
 
-  // Check directory exists and is writable
+  // Check directory exists and is writable (auto-creates if missing)
   ipcMain.handle('check-directory', async (_event, dirPath) => {
     try {
       const fs = require('fs').promises;
       const path = require('path');
 
-      // Check if directory exists
+      // Check if directory exists, create if not
       try {
         const stats = await fs.stat(dirPath);
         if (!stats.isDirectory()) {
@@ -323,9 +316,17 @@ export function setupIpcHandlers(store: Store<any>) {
         }
       } catch (error: any) {
         if (error.code === 'ENOENT') {
-          return { exists: false, writable: false };
+          // Directory doesn't exist, try to create it
+          try {
+            await fs.mkdir(dirPath, { recursive: true });
+            log.info(`Created output directory: ${dirPath}`);
+          } catch (mkdirError) {
+            log.error('Failed to create directory:', mkdirError);
+            return { exists: false, writable: false };
+          }
+        } else {
+          throw error;
         }
-        throw error;
       }
 
       // Check if directory is writable by trying to create a temp file
@@ -401,7 +402,7 @@ export function setupIpcHandlers(store: Store<any>) {
         aiApiKey: apiKey,
         aiHost: settings.ollamaHost || 'http://localhost:11434',
         outputPath: params.outputPath || settings.outputDirectory,
-        promptSet: params.promptSet || settings.promptSet || 'youtube-telltale',
+        promptSet: params.promptSet || settings.promptSet || 'sample-youtube',
         promptSetsDir: getPromptSetsDirectory(),
         jobId: params.jobId,
         jobName: params.jobName,

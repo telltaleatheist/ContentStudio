@@ -136,12 +136,12 @@ export class WhisperService extends EventEmitter {
     }
 
     // Use bundled binaries in utilities/bin
-    // Priority order ensures same behavior in dev and production
+    // Priority: packaged resources first, then development paths
     const possiblePaths = [
-      // 1. Development: project root utilities/bin
-      path.join(process.cwd(), 'utilities', 'bin', binaryName),
-      // 2. Production: packaged resources
+      // 1. Production: packaged resources (check first!)
       path.join(process.resourcesPath || '', 'utilities', 'bin', binaryName),
+      // 2. Development: project root utilities/bin
+      path.join(process.cwd(), 'utilities', 'bin', binaryName),
     ];
 
     log.info('[WhisperService] Checking paths:', possiblePaths);
@@ -166,12 +166,12 @@ export class WhisperService extends EventEmitter {
    */
   private getModelsDir(): string {
     // Use bundled models in utilities/models
-    // Priority order ensures same behavior in dev and production
+    // Priority: packaged resources first, then development paths
     const possiblePaths = [
-      // 1. Development: project root utilities/models
-      path.join(process.cwd(), 'utilities', 'models'),
-      // 2. Production: packaged resources
+      // 1. Production: packaged resources (check first!)
       path.join(process.resourcesPath || '', 'utilities', 'models'),
+      // 2. Development: project root utilities/models
+      path.join(process.cwd(), 'utilities', 'models'),
     ];
 
     log.info('[WhisperService] Checking model paths:', possiblePaths);

@@ -6,7 +6,7 @@ export interface InputItem {
   displayName: string;
   icon: string;
   selected: boolean;
-  promptSet: string; // ID of the prompt set to use (e.g., "youtube-telltale")
+  promptSet: string; // ID of the prompt set to use (e.g., "sample-youtube")
   notes?: string; // Optional notes/instructions for the AI (e.g., "focus on tax fraud")
   generateChapters?: boolean; // For video files: generate YouTube chapter markers (default: true)
 }
@@ -28,7 +28,7 @@ export class InputsStateService {
 
   // Master controls
   compilationMode = signal(false); // If true, all items use the same prompt set
-  masterPromptSet = signal('youtube-telltale'); // Default prompt set
+  masterPromptSet = signal('sample-youtube'); // Default prompt set
 
   // Generation state
   generationState = signal<GenerationState>({

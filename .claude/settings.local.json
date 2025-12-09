@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git fetch:*)",
+      "Bash(git push:*)",
+      "Bash(npm install)",
+      "Bash(npm run package:win-x64:*)",
+      "Bash(npm install:*)",
+      "Bash(npm run build:electron:*)",
+      "Bash(npm ls:*)",
+      "Bash(ls -la \"C:\\Users\\tellt\\Projects\\ClipChimp\\resources\\bin\"\" 2>/dev/null || ls -la \"C:UserstelltProjectsClipChimputilitiesbin\"\")",
+      "Bash(curl:*)",
+      "Bash(time curl:*)",
+      "Bash(nvidia-smi:*)",
+      "Bash(taskkill:*)",
+      "Bash(\"C:/Users/tellt/Projects/ContentStudio/dist-build/win-unpacked/ContentStudio.exe\")",
+      "Bash(timeout 5:*)",
+      "Bash(npm run clean:package:win-x64:*)"
+    ]
+  }
+}

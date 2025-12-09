@@ -269,7 +269,7 @@ export class AIManagerService {
       }
 
       // Load prompt set
-      const promptSetName = this.config.promptSet || 'youtube-telltale';
+      const promptSetName = this.config.promptSet || 'sample-youtube';
       const promptSetPath = path.join(this.promptSetsDir, `${promptSetName}.yml`);
 
       if (fs.existsSync(promptSetPath)) {
@@ -561,7 +561,7 @@ export class AIManagerService {
   private async makeRequest(
     prompt: string,
     model: string,
-    timeout: number = 120
+    timeout: number = 600
   ): Promise<string | null> {
     const requestId = Math.random().toString(36).substring(7);
     const timestamp = new Date().toISOString();

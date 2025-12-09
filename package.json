@@ -15,9 +15,9 @@
     "build:frontend": "cd frontend && npm run build",
     "build:all": "npm run build:electron && npm run build:preload && npm run build:frontend",
     "start:angular": "cd frontend && npm start",
-    "start:electron": "npm run build:electron && npm run build:preload && wait-on http://localhost:4200 && cross-env NODE_ENV=development ELECTRON_RUN_AS_NODE= electron .",
+    "start:electron": "npm run build:electron && npm run build:preload && wait-on http://localhost:4200 && cross-env NODE_ENV=development electron .",
     "electron:dev": "concurrently --kill-others \"npm run start:angular\" \"npm run start:electron\"",
-    "electron": "npm run build:all && cross-env ELECTRON_RUN_AS_NODE= electron .",
+    "electron": "npm run build:all && electron .",
     "download:all:mac": "bash scripts/download-all.sh mac",
     "download:all:mac-arm64": "bash scripts/download-all.sh mac-arm64",
     "download:all:mac-x64": "bash scripts/download-all.sh mac-x64",
@@ -28,11 +28,13 @@
     "package:mac-arm64": "npm run build:all && electron-builder --mac --arm64",
     "package:mac-x64": "npm run build:all && electron-builder --mac --x64",
     "package:win": "npm run build:all && electron-builder --win --x64",
+    "package:win-x64": "npm run build:all && electron-builder --win --x64",
     "package:linux": "npm run build:all && electron-builder --linux --x64",
     "clean:package:mac": "npm run clean && npm run download:all:mac && npm run package:mac",
     "clean:package:mac-arm64": "npm run clean && npm run download:all:mac-arm64 && npm run package:mac-arm64",
     "clean:package:mac-x64": "npm run clean && npm run download:all:mac-x64 && npm run package:mac-x64",
     "clean:package:win": "npm run clean && npm run download:all:win && npm run package:win",
+    "clean:package:win-x64": "npm run clean && npm run download:all:win && npm run package:win-x64",
     "clean:package:linux": "npm run clean && npm run download:all:linux && npm run package:linux"
   },
   "keywords": [
@@ -159,7 +161,6 @@
       ]
     },
     "win": {
-      "icon": "assets/icon.ico",
       "target": [
         "nsis"
       ]

@@ -154,7 +154,7 @@ export class MetadataGeneratorService {
       // Initialize the job (creates job metadata file with empty items)
       const jobInfo = outputHandler.initializeJob(
         jobName,
-        params.promptSet || 'youtube-telltale',
+        params.promptSet || 'sample-youtube',
         params.jobId
       );
 
@@ -456,8 +456,8 @@ export class MetadataGeneratorService {
    */
   private static getCleanTitle(item: ContentItem): string {
     if (item.source) {
-      // Extract filename without extension
-      const basename = item.source.split('/').pop() || item.source.split('\\').pop() || item.source;
+      // Extract filename without extension - handle both Windows and Unix paths
+      const basename = item.source.split(/[/\\]/).pop() || item.source;
       return basename.replace(/\.[^/.]+$/, ''); // Remove extension
     }
 
@@ -498,7 +498,7 @@ export class MetadataGeneratorService {
   }
 
   /**
-   * Get FFmpeg path from @ffmpeg-installer npm package
+   * Get FFmpeg path - checks utilities/bin first, then npm package
    * ALWAYS uses bundled binary - NO fallback to system
    */
   private static getFfmpegPath(): string {
@@ -512,44 +512,32 @@ export class MetadataGeneratorService {
 
     log.info(`[MetadataGenerator] Looking for FFmpeg (platform: ${platform}, arch: ${arch}, folder: ${platformFolder})`);
 
-    // Check if running in packaged app
-    const isPackaged = (process as any).resourcesPath &&
-      !(process as any).resourcesPath.includes('node_modules/electron');
+    // Priority: packaged resources first, then development paths
+    const possiblePaths = [
+      // 1. Production: packaged resources utilities/bin (check first!)
+      pathModule.join((process as any).resourcesPath || '', 'utilities', 'bin', binaryName),
+      // 2. Development: project root utilities/bin
+      pathModule.join(process.cwd(), 'utilities', 'bin', binaryName),
+      // 3. Fallback: npm package in development
+      pathModule.join(process.cwd(), 'node_modules', '@ffmpeg-installer', platformFolder, binaryName),
+    ];
 
-    let ffmpegPath: string;
+    log.info('[MetadataGenerator] Checking FFmpeg paths:', possiblePaths);
 
-    if (isPackaged) {
-      // In packaged app: resources/node_modules/@ffmpeg-installer/<platform>/ffmpeg
-      ffmpegPath = pathModule.join(
-        (process as any).resourcesPath,
-        'node_modules',
-        '@ffmpeg-installer',
-        platformFolder,
-        binaryName
-      );
-    } else {
-      // In development: node_modules/@ffmpeg-installer/<platform>/ffmpeg
-      ffmpegPath = pathModule.join(
-        process.cwd(),
-        'node_modules',
-        '@ffmpeg-installer',
-        platformFolder,
-        binaryName
-      );
+    for (const ffmpegPath of possiblePaths) {
+      const exists = fs.existsSync(ffmpegPath);
+      log.info(`[MetadataGenerator] Checking ${ffmpegPath}: ${exists ? 'EXISTS' : 'NOT FOUND'}`);
+      if (exists) {
+        log.info(`[MetadataGenerator] Using FFmpeg at: ${ffmpegPath}`);
+        // Verify architecture matches
+        this.verifyBinaryArchitecture(ffmpegPath, 'FFmpeg');
+        return ffmpegPath;
+      }
     }
 
-    log.info(`[MetadataGenerator] FFmpeg path: ${ffmpegPath}`);
-
-    if (!fs.existsSync(ffmpegPath)) {
-      const errorMsg = `FFmpeg binary not found at: ${ffmpegPath}. Make sure @ffmpeg-installer/${platformFolder} is installed.`;
-      log.error(`[MetadataGenerator] ${errorMsg}`);
-      throw new Error(errorMsg);
-    }
-
-    // Verify architecture matches
-    this.verifyBinaryArchitecture(ffmpegPath, 'FFmpeg');
-
-    return ffmpegPath;
+    const errorMsg = `FFmpeg binary '${binaryName}' not found in any of: ${possiblePaths.join(', ')}`;
+    log.error(`[MetadataGenerator] ${errorMsg}`);
+    throw new Error(errorMsg);
   }
 
   /**
