@@ -498,46 +498,69 @@ export class MetadataGeneratorService {
   }
 
   /**
-   * Get FFmpeg path - checks utilities/bin first, then npm package
-   * ALWAYS uses bundled binary - NO fallback to system
+   * Check if running in packaged Electron app
+   */
+  private static isPackaged(): boolean {
+    const resourcesPath = (process as any).resourcesPath || '';
+    return resourcesPath &&
+      !resourcesPath.includes('node_modules/electron') &&
+      !resourcesPath.includes('node_modules\\electron');
+  }
+
+  /**
+   * Get platform folder name for binaries
+   */
+  private static getPlatformBinFolder(): string {
+    const platform = process.platform;
+    const arch = process.arch;
+
+    if (platform === 'win32') {
+      return 'win32';
+    } else if (platform === 'darwin') {
+      return arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
+    }
+    return 'linux-x64';
+  }
+
+  /**
+   * Get FFmpeg binary name for current platform
+   */
+  private static getFfmpegBinaryName(): string {
+    const platform = process.platform;
+    if (platform === 'win32') {
+      return 'ffmpeg.exe';
+    }
+    return 'ffmpeg';
+  }
+
+  /**
+   * Get FFmpeg path from utilities/bin
    */
   private static getFfmpegPath(): string {
     const pathModule = require('path');
     const fs = require('fs');
 
-    const platform = process.platform;
-    const arch = process.arch;
-    const platformFolder = this.getPlatformFolder();
-    const binaryName = platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+    const binaryName = this.getFfmpegBinaryName();
+    let ffmpegPath: string;
 
-    log.info(`[MetadataGenerator] Looking for FFmpeg (platform: ${platform}, arch: ${arch}, folder: ${platformFolder})`);
-
-    // Priority: packaged resources first, then development paths
-    const possiblePaths = [
-      // 1. Production: packaged resources utilities/bin (check first!)
-      pathModule.join((process as any).resourcesPath || '', 'utilities', 'bin', binaryName),
-      // 2. Development: project root utilities/bin
-      pathModule.join(process.cwd(), 'utilities', 'bin', binaryName),
-      // 3. Fallback: npm package in development
-      pathModule.join(process.cwd(), 'node_modules', '@ffmpeg-installer', platformFolder, binaryName),
-    ];
-
-    log.info('[MetadataGenerator] Checking FFmpeg paths:', possiblePaths);
-
-    for (const ffmpegPath of possiblePaths) {
-      const exists = fs.existsSync(ffmpegPath);
-      log.info(`[MetadataGenerator] Checking ${ffmpegPath}: ${exists ? 'EXISTS' : 'NOT FOUND'}`);
-      if (exists) {
-        log.info(`[MetadataGenerator] Using FFmpeg at: ${ffmpegPath}`);
-        // Verify architecture matches
-        this.verifyBinaryArchitecture(ffmpegPath, 'FFmpeg');
-        return ffmpegPath;
-      }
+    if (this.isPackaged()) {
+      // Packaged: binaries are at resources/utilities/bin/
+      ffmpegPath = pathModule.join((process as any).resourcesPath, 'utilities', 'bin', binaryName);
+    } else {
+      // Development: binaries are at utilities/bin/{platform}/
+      ffmpegPath = pathModule.join(process.cwd(), 'utilities', 'bin', this.getPlatformBinFolder(), binaryName);
     }
 
-    const errorMsg = `FFmpeg binary '${binaryName}' not found in any of: ${possiblePaths.join(', ')}`;
-    log.error(`[MetadataGenerator] ${errorMsg}`);
-    throw new Error(errorMsg);
+    log.info(`[MetadataGenerator] FFmpeg path: ${ffmpegPath}`);
+
+    if (!fs.existsSync(ffmpegPath)) {
+      throw new Error(`FFmpeg binary not found at: ${ffmpegPath}`);
+    }
+
+    // Verify architecture matches (macOS only)
+    this.verifyBinaryArchitecture(ffmpegPath, 'FFmpeg');
+
+    return ffmpegPath;
   }
 
   /**

@@ -121,73 +121,73 @@ export class WhisperService extends EventEmitter {
   }
 
   /**
+   * Check if running in packaged Electron app
+   */
+  private isPackaged(): boolean {
+    const resourcesPath = (process as any).resourcesPath || '';
+    return resourcesPath &&
+      !resourcesPath.includes('node_modules/electron') &&
+      !resourcesPath.includes('node_modules\\electron');
+  }
+
+  /**
+   * Get platform folder name for binaries
+   */
+  private getPlatformFolder(): string {
+    const platform = process.platform;
+    const arch = process.arch;
+
+    if (platform === 'win32') {
+      return 'win32';
+    } else if (platform === 'darwin') {
+      return arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
+    }
+    return 'linux-x64';
+  }
+
+  /**
    * Get the path to the whisper.cpp executable
-   * Uses bundled binaries in utilities/bin for both development and production
    */
   private getWhisperPath(): string {
     const binaryName = this.getBinaryName();
+    let whisperPath: string;
 
-    log.info('[WhisperService] Looking for binary:', binaryName);
-
-    // Check environment variable first (for custom builds)
-    if (process.env.WHISPER_CPP_PATH && fs.existsSync(process.env.WHISPER_CPP_PATH)) {
-      log.info('[WhisperService] Using WHISPER_CPP_PATH:', process.env.WHISPER_CPP_PATH);
-      return process.env.WHISPER_CPP_PATH;
+    if (this.isPackaged()) {
+      // Packaged: binaries are at resources/utilities/bin/
+      whisperPath = path.join((process as any).resourcesPath, 'utilities', 'bin', binaryName);
+    } else {
+      // Development: binaries are at utilities/bin/{platform}/
+      whisperPath = path.join(process.cwd(), 'utilities', 'bin', this.getPlatformFolder(), binaryName);
     }
 
-    // Use bundled binaries in utilities/bin
-    // Priority: packaged resources first, then development paths
-    const possiblePaths = [
-      // 1. Production: packaged resources (check first!)
-      path.join(process.resourcesPath || '', 'utilities', 'bin', binaryName),
-      // 2. Development: project root utilities/bin
-      path.join(process.cwd(), 'utilities', 'bin', binaryName),
-    ];
+    log.info('[WhisperService] Whisper binary path:', whisperPath);
 
-    log.info('[WhisperService] Checking paths:', possiblePaths);
-
-    for (const p of possiblePaths) {
-      const exists = fs.existsSync(p);
-      log.info(`[WhisperService] Checking ${p}: ${exists ? 'EXISTS' : 'NOT FOUND'}`);
-      if (exists) {
-        log.info(`[WhisperService] Using binary at: ${p}`);
-        return p;
-      }
+    if (!fs.existsSync(whisperPath)) {
+      throw new Error(`Whisper binary not found at: ${whisperPath}`);
     }
 
-    const errorMsg = `whisper-cli binary '${binaryName}' not found in any of: ${possiblePaths.join(', ')}`;
-    log.error('[WhisperService] ' + errorMsg);
-    throw new Error(errorMsg);
+    return whisperPath;
   }
 
   /**
    * Get the models directory path
-   * Uses bundled models in utilities/models for both development and production
    */
   private getModelsDir(): string {
-    // Use bundled models in utilities/models
-    // Priority: packaged resources first, then development paths
-    const possiblePaths = [
-      // 1. Production: packaged resources (check first!)
-      path.join(process.resourcesPath || '', 'utilities', 'models'),
-      // 2. Development: project root utilities/models
-      path.join(process.cwd(), 'utilities', 'models'),
-    ];
+    let modelsDir: string;
 
-    log.info('[WhisperService] Checking model paths:', possiblePaths);
-
-    for (const p of possiblePaths) {
-      const exists = fs.existsSync(p);
-      log.info(`[WhisperService] Checking models ${p}: ${exists ? 'EXISTS' : 'NOT FOUND'}`);
-      if (exists) {
-        log.info(`[WhisperService] Using models at: ${p}`);
-        return p;
-      }
+    if (this.isPackaged()) {
+      modelsDir = path.join((process as any).resourcesPath, 'utilities', 'models');
+    } else {
+      modelsDir = path.join(process.cwd(), 'utilities', 'models');
     }
 
-    const errorMsg = `Whisper models directory not found in any of: ${possiblePaths.join(', ')}`;
-    log.error('[WhisperService] ' + errorMsg);
-    throw new Error(errorMsg);
+    log.info('[WhisperService] Models directory:', modelsDir);
+
+    if (!fs.existsSync(modelsDir)) {
+      throw new Error(`Models directory not found at: ${modelsDir}`);
+    }
+
+    return modelsDir;
   }
 
   /**

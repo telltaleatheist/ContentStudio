@@ -60,8 +60,6 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.1",
-    "@ffmpeg-installer/ffmpeg": "^1.1.0",
-    "@ffprobe-installer/ffprobe": "^2.1.2",
     "axios": "^1.13.2",
     "electron-log": "^5.3.3",
     "electron-store": "^8.2.0",
@@ -79,46 +77,9 @@
     },
     "extraResources": [
       {
-        "from": "utilities/bin",
-        "to": "utilities/bin",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
         "from": "utilities/models",
         "to": "utilities/models",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "node_modules/@ffmpeg-installer/darwin-arm64",
-        "to": "node_modules/@ffmpeg-installer/darwin-arm64",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "node_modules/@ffmpeg-installer/darwin-x64",
-        "to": "node_modules/@ffmpeg-installer/darwin-x64",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "node_modules/@ffprobe-installer/darwin-arm64",
-        "to": "node_modules/@ffprobe-installer/darwin-arm64",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "node_modules/@ffprobe-installer/darwin-x64",
-        "to": "node_modules/@ffprobe-installer/darwin-x64",
-        "filter": [
-          "**/*"
-        ]
+        "filter": ["**/*"]
       }
     ],
     "files": [
@@ -136,14 +97,18 @@
       "target": [
         {
           "target": "dmg",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
+          "arch": ["x64", "arm64"]
         }
       ],
       "hardenedRuntime": true,
-      "gatekeeperAssess": false
+      "gatekeeperAssess": false,
+      "extraResources": [
+        {
+          "from": "utilities/bin/darwin-${arch}",
+          "to": "utilities/bin",
+          "filter": ["**/*"]
+        }
+      ]
     },
     "dmg": {
       "format": "ULFO",
@@ -161,8 +126,13 @@
       ]
     },
     "win": {
-      "target": [
-        "nsis"
+      "target": ["nsis"],
+      "extraResources": [
+        {
+          "from": "utilities/bin/win32",
+          "to": "utilities/bin",
+          "filter": ["**/*"]
+        }
       ]
     },
     "linux": {
@@ -173,9 +143,5 @@
       ],
       "category": "Utility"
     }
-  },
-  "optionalDependencies": {
-    "@ffmpeg-installer/darwin-x64": "^4.1.0",
-    "@ffprobe-installer/darwin-x64": "^5.1.0"
   }
 }

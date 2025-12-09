@@ -15,7 +15,8 @@
       "Bash(taskkill:*)",
       "Bash(\"C:/Users/tellt/Projects/ContentStudio/dist-build/win-unpacked/ContentStudio.exe\")",
       "Bash(timeout 5:*)",
-      "Bash(npm run clean:package:win-x64:*)"
+      "Bash(npm run clean:package:win-x64:*)",
+      "Bash(ls:*)"
     ]
   }
 }
