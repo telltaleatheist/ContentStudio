@@ -60,11 +60,8 @@ export class MetadataGeneratorService {
     try {
       // Initialize services
       log.info('[MetadataGenerator] Initializing services...');
-      const ffmpegPath = this.getFfmpegPath();
-      log.info('[MetadataGenerator] FFmpeg path:', ffmpegPath);
-
       log.info('[MetadataGenerator] Creating WhisperService...');
-      const whisperService = new WhisperService(ffmpegPath);
+      const whisperService = new WhisperService();
       log.info('[MetadataGenerator] WhisperService created successfully');
 
       // Pass progress callback to inputHandler so it can send 'preparing' events
@@ -482,119 +479,9 @@ export class MetadataGeneratorService {
   }
 
   /**
-   * Get platform folder for npm installer packages
-   */
-  private static getPlatformFolder(): string {
-    const platform = process.platform;
-    const arch = process.arch;
-
-    if (platform === 'win32') {
-      return 'win32-x64';
-    } else if (platform === 'darwin') {
-      return arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
-    } else {
-      return 'linux-x64';
-    }
-  }
-
-  /**
-   * Check if running in packaged Electron app
-   */
-  private static isPackaged(): boolean {
-    const resourcesPath = (process as any).resourcesPath || '';
-    return resourcesPath &&
-      !resourcesPath.includes('node_modules/electron') &&
-      !resourcesPath.includes('node_modules\\electron');
-  }
-
-  /**
-   * Get platform folder name for binaries
-   */
-  private static getPlatformBinFolder(): string {
-    const platform = process.platform;
-    const arch = process.arch;
-
-    if (platform === 'win32') {
-      return 'win32';
-    } else if (platform === 'darwin') {
-      return arch === 'arm64' ? 'darwin-arm64' : 'darwin-x64';
-    }
-    return 'linux-x64';
-  }
-
-  /**
-   * Get FFmpeg binary name for current platform
-   */
-  private static getFfmpegBinaryName(): string {
-    const platform = process.platform;
-    if (platform === 'win32') {
-      return 'ffmpeg.exe';
-    }
-    return 'ffmpeg';
-  }
-
-  /**
-   * Get FFmpeg path from utilities/bin
-   */
-  private static getFfmpegPath(): string {
-    const pathModule = require('path');
-    const fs = require('fs');
-
-    const binaryName = this.getFfmpegBinaryName();
-    let ffmpegPath: string;
-
-    if (this.isPackaged()) {
-      // Packaged: binaries are at resources/utilities/bin/
-      ffmpegPath = pathModule.join((process as any).resourcesPath, 'utilities', 'bin', binaryName);
-    } else {
-      // Development: binaries are at utilities/bin/{platform}/
-      ffmpegPath = pathModule.join(process.cwd(), 'utilities', 'bin', this.getPlatformBinFolder(), binaryName);
-    }
-
-    log.info(`[MetadataGenerator] FFmpeg path: ${ffmpegPath}`);
-
-    if (!fs.existsSync(ffmpegPath)) {
-      throw new Error(`FFmpeg binary not found at: ${ffmpegPath}`);
-    }
-
-    // Verify architecture matches (macOS only)
-    this.verifyBinaryArchitecture(ffmpegPath, 'FFmpeg');
-
-    return ffmpegPath;
-  }
-
-  /**
-   * Verify binary architecture matches current system
-   */
-  private static verifyBinaryArchitecture(binaryPath: string, name: string): void {
-    if (process.platform !== 'darwin') return; // Only check on macOS
-
-    try {
-      const { execSync } = require('child_process');
-      const result = execSync(`file "${binaryPath}"`, { encoding: 'utf8' });
-      const expectedArch = process.arch === 'arm64' ? 'arm64' : 'x86_64';
-      const hasCorrectArch = result.includes(expectedArch) || result.includes('universal');
-
-      if (hasCorrectArch) {
-        log.info(`[MetadataGenerator] ${name} architecture OK: ${expectedArch}`);
-      } else {
-        const errorMsg = `${name} has wrong architecture! Expected: ${expectedArch}, Binary info: ${result.trim()}`;
-        log.error(`[MetadataGenerator] ${errorMsg}`);
-        throw new Error(errorMsg);
-      }
-    } catch (err: any) {
-      if (err.message && err.message.includes('wrong architecture')) {
-        throw err; // Re-throw architecture errors
-      }
-      log.warn(`[MetadataGenerator] Could not verify ${name} architecture: ${err}`);
-    }
-  }
-
-  /**
    * Get default output path
    */
   private static getDefaultOutputPath(): string {
-    const path = require('path');
     const os = require('os');
     return path.join(os.homedir(), 'Documents', 'ContentStudio Output');
   }

@@ -16,7 +16,12 @@
       "Bash(\"C:/Users/tellt/Projects/ContentStudio/dist-build/win-unpacked/ContentStudio.exe\")",
       "Bash(timeout 5:*)",
       "Bash(npm run clean:package:win-x64:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(chmod:*)",
+      "Bash(ssh-keyscan:*)",
+      "Bash(~/.ssh/known_hosts)",
+      "Bash(ssh zeus:*)",
+      "Bash(dig:*)"
     ]
   }
 }
