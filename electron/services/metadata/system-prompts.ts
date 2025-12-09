@@ -19,7 +19,13 @@ Use ASCII characters only. No markdown, no explanation - just the JSON object.`,
 This is a COMPILATION of {sourceCount} separate items ({contentTypes}).
 
 CRITICAL REQUIREMENTS:
-1. For the TITLE: Focus on the most compelling/clickable subject from all items
+1. For the TITLE: Pick the SINGLE most compelling item and base the title on that ONE subject.
+   - DO NOT merge or blend subjects from different items into one title
+   - Each item covers a SEPARATE topic - treat them as unrelated
+   - Either use ONE item's subject OR use a generic compilation title (e.g., "3 Stories That...")
+   - WRONG: "MAGA Influencer George Washington Is Weird" (merging two unrelated subjects)
+   - CORRECT: "Glenn Beck's AI George Washington Is Unhinged" (one subject)
+   - CORRECT: "3 Wild Political Stories You Need to See" (generic umbrella)
 
 2. For the DESCRIPTION: Generate ONLY a bulleted list - nothing else!
    - NO intro paragraph before the list
