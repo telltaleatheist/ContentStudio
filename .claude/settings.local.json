@@ -21,7 +21,9 @@
       "Bash(ssh-keyscan:*)",
       "Bash(~/.ssh/known_hosts)",
       "Bash(ssh zeus:*)",
-      "Bash(dig:*)"
+      "Bash(dig:*)",
+      "Bash(ssh:*)",
+      "Bash(git rm:*)"
     ]
   }
 }
