@@ -42,3 +42,4 @@ chatgpt api key.txt
 *.bin
 .build-cache/*
 utilities/bin/*
+.claude/*
