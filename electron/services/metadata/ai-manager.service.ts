@@ -11,6 +11,7 @@ import * as yaml from 'js-yaml';
 import axios, { AxiosInstance } from 'axios';
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
+import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 
 export interface AIConfig {
@@ -56,6 +57,74 @@ export class AIManagerService {
   private metadataModel: string = '';
   private promptsDir: string;
   private promptSetsDir: string;
+
+  /**
+   * Get available models for a provider
+   */
+  static async getAvailableModels(
+    provider: 'ollama' | 'openai' | 'claude',
+    apiKey?: string,
+    host?: string
+  ): Promise<Array<{ id: string; name: string }>> {
+    try {
+      if (provider === 'claude') {
+        if (!apiKey) {
+          throw new Error('API key required for Claude');
+        }
+
+        const anthropic = new Anthropic({ apiKey });
+        const response = await anthropic.models.list();
+
+        // Get top 3 models (sorted by creation date, newest first)
+        const sortedModels = response.data
+          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+          .slice(0, 3);
+
+        return sortedModels.map(model => ({
+          id: model.id,
+          name: model.display_name || model.id
+        }));
+      } else if (provider === 'openai') {
+        if (!apiKey) {
+          throw new Error('API key required for OpenAI');
+        }
+
+        const openai = new OpenAI({ apiKey });
+        const response = await openai.models.list();
+
+        // Filter for chat models and get top 3
+        const chatModels = response.data
+          .filter(model => model.id.startsWith('gpt-'))
+          .sort((a, b) => b.created - a.created)
+          .slice(0, 3);
+
+        return chatModels.map(model => ({
+          id: model.id,
+          name: model.id
+        }));
+      } else if (provider === 'ollama') {
+        const ollamaHost = host || 'http://localhost:11434';
+        const client = axios.create({ baseURL: ollamaHost });
+
+        const response = await client.get('/api/tags');
+
+        // Get top 3 models
+        const models = response.data.models || [];
+        const topModels = models.slice(0, 3);
+
+        return topModels.map((model: any) => ({
+          id: model.name,
+          name: model.name
+        }));
+      }
+
+      return [];
+    } catch (error) {
+      log.error(`[AIManager] Failed to get available models for ${provider}:`, error);
+      console.error(`[AIManager] Failed to get available models for ${provider}:`, error);
+      return [];
+    }
+  }
 
   constructor(config: AIConfig) {
     this.config = config;
@@ -403,7 +472,6 @@ export class AIManagerService {
   async generateMetadata(
     content: string,
     sourceName?: string,
-    generateChapters = false,
     compilationInfo?: { sourceCount: number; contentTypes: string[] }
   ): Promise<MetadataResult> {
     if (!this.currentPromptSet) {
@@ -413,10 +481,9 @@ export class AIManagerService {
     console.log(`[AIManager] === METADATA GENERATION STARTING for ${sourceName || 'unknown'} ===`);
     console.log(`[AIManager]     Content length: ${content.length} chars`);
     console.log(`[AIManager]     Using model: ${this.metadataModel}`);
-    console.log(`[AIManager]     Generate chapters: ${generateChapters}`);
     console.log(`[AIManager]     Compilation: ${compilationInfo ? `yes (${compilationInfo.sourceCount} items)` : 'no'}`);
 
-    const prompt = this.createMetadataPrompt(content, sourceName, generateChapters, compilationInfo);
+    const prompt = this.createMetadataPrompt(content, sourceName, compilationInfo);
     const response = await this.makeRequest(prompt, this.metadataModel, 300);
 
     if (!response) {
@@ -441,7 +508,6 @@ export class AIManagerService {
   private createMetadataPrompt(
     content: string,
     sourceName?: string,
-    generateChapters = false,
     compilationInfo?: { sourceCount: number; contentTypes: string[] }
   ): string {
     if (!this.currentPromptSet) {
@@ -469,12 +535,7 @@ export class AIManagerService {
     const editorialPrompt = this.currentPromptSet.editorial_prompt.replace('{subject}', subject);
 
     // Instructions prompt defines what to generate
-    let instructionsPrompt = this.currentPromptSet.instructions_prompt;
-
-    // Inject chapters instructions if requested
-    if (generateChapters) {
-      instructionsPrompt += SYSTEM_PROMPTS.CHAPTERS_INSTRUCTIONS;
-    }
+    const instructionsPrompt = this.currentPromptSet.instructions_prompt;
 
     return `${systemPrompt}\n\n${editorialPrompt}\n\n${instructionsPrompt}`;
   }
@@ -575,11 +636,14 @@ export class AIManagerService {
 
       // Detect provider from model name for multi-provider support
       if (model.startsWith('gpt-') || model.startsWith('openai:')) {
+        console.log(`[AIManager]   Provider: OpenAI (model starts with gpt- or openai:)`);
         result = await this.makeOpenAIRequest(prompt, model);
       } else if (model.startsWith('claude-')) {
+        console.log(`[AIManager]   Provider: Claude (model starts with claude-)`);
         result = await this.makeClaudeRequest(prompt, model);
       } else {
         // Assume Ollama for all other models (local models)
+        console.log(`[AIManager]   Provider: Ollama (fallback for model: ${model})`);
         result = await this.makeOllamaRequest(prompt, model, timeout);
       }
 
@@ -634,8 +698,11 @@ export class AIManagerService {
    */
   private async makeOpenAIRequest(prompt: string, model: string): Promise<string | null> {
     if (!this.openaiClient) {
+      console.error('[AIManager] OpenAI client not initialized');
       throw new Error('OpenAI client not initialized');
     }
+
+    console.log(`[AIManager] Making OpenAI request to model: ${model}`);
 
     try {
       const response = await this.openaiClient.chat.completions.create({
@@ -645,9 +712,17 @@ export class AIManagerService {
         temperature: 0.7,
       });
 
-      return response.choices[0]?.message?.content || null;
-    } catch (error) {
-      console.error('[AIManager] OpenAI request failed:', error);
+      const content = response.choices[0]?.message?.content;
+      console.log(`[AIManager] OpenAI response received, content length: ${content?.length || 0}`);
+
+      if (!content) {
+        console.error('[AIManager] OpenAI returned empty content. Response:', JSON.stringify(response, null, 2));
+      }
+
+      return content || null;
+    } catch (error: any) {
+      console.error('[AIManager] OpenAI request failed:', error?.message || error);
+      console.error('[AIManager] OpenAI error details:', error?.response?.data || error);
       return null;
     }
   }
@@ -657,11 +732,11 @@ export class AIManagerService {
    */
   private mapClaudeModelName(friendlyName: string): string {
     const modelMap: { [key: string]: string } = {
-      'claude-sonnet-4': 'claude-sonnet-4-20250514',
-      'claude-3-5-sonnet': 'claude-3-5-sonnet-20241022',
+      'claude-sonnet-4': 'claude-sonnet-4-5-20250929', // Latest Sonnet 4.5
+      'claude-3-5-sonnet': 'claude-sonnet-4-5-20250929',
       'claude-3-5-haiku': 'claude-3-5-haiku-20241022',
       'claude-3-haiku': 'claude-3-haiku-20240307',
-      'claude-3-opus': 'claude-3-opus-20240229',
+      'claude-3-opus': 'claude-opus-4-5-20251101', // Latest Opus 4.5
     };
 
     return modelMap[friendlyName] || friendlyName;
@@ -693,6 +768,7 @@ export class AIManagerService {
       const textBlock = response.content.find((block) => block.type === 'text');
       return textBlock?.type === 'text' ? textBlock.text : null;
     } catch (error) {
+      log.error('[AIManager] Claude request failed:', error);
       console.error('[AIManager] Claude request failed:', error);
       return null;
     }

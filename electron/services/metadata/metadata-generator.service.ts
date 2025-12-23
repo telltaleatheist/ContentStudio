@@ -7,7 +7,7 @@
 import { AIManagerService, AIConfig, MetadataResult } from './ai-manager.service';
 import { WhisperService } from './whisper.service';
 import { InputHandlerService, ContentItem } from './input-handler.service';
-import { TranscriptChunker, ChapterMapper } from './chapter-generator.service';
+import { ChapterMapper, AIChapter, buildTimestampedTranscript } from './chapter-generator.service';
 import { OutputHandlerService, SaveJobResult } from './output-handler.service';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import * as log from 'electron-log';
@@ -185,7 +185,6 @@ export class MetadataGeneratorService {
         const metadata = await aiManager.generateMetadata(
           summary,
           jobName,
-          false,
           {
             sourceCount: contentItems.length,
             contentTypes: uniqueContentTypes
@@ -240,7 +239,7 @@ export class MetadataGeneratorService {
           // Check if chapters should be generated
           const shouldGenerateChapters = params.chapterFlags?.[item.source || ''] || false;
 
-          const metadata = await aiManager.generateMetadata(summary, item.source || `item_${i + 1}`, shouldGenerateChapters);
+          const metadata = await aiManager.generateMetadata(summary, item.source || `item_${i + 1}`);
 
           // Add title and source info
           (metadata as any)._title = this.getCleanTitle(item);
@@ -274,6 +273,7 @@ export class MetadataGeneratorService {
           params.progressCallback?.('generating', `Completed ${i + 1}/${contentItems.length}`, 100, undefined, i);
           metadataItems.push(metadata);
         } catch (error) {
+          log.error(`[MetadataGenerator] Failed to generate metadata for item ${i + 1}:`, error);
           console.error(`[MetadataGenerator] Failed to generate metadata for item ${i + 1}:`, error);
           // Continue with other items
         }
@@ -345,7 +345,7 @@ export class MetadataGeneratorService {
   }
 
   /**
-   * Generate chapters for a content item
+   * Generate chapters for a content item using phrase-based timestamp mapping
    */
   private static async generateChapters(
     item: ContentItem,
@@ -355,92 +355,67 @@ export class MetadataGeneratorService {
       return [];
     }
 
-    // Create chunks from SRT segments
-    const chunker = new TranscriptChunker(30); // 30 second chunks
-    const chunks = chunker.chunkFromSrtSegments(item.srtSegments);
+    // Build timestamped transcript for AI
+    const transcript = buildTimestampedTranscript(item.srtSegments);
 
-    if (chunks.length === 0) {
+    if (!transcript || transcript.length === 0) {
       return [];
     }
 
-    // For short videos, use chunks directly
-    // For long videos, group into segments
-    const useSegments = chunks.length > 20;
+    // Limit transcript length to avoid token limits (keep ~30k chars)
+    const limitedTranscript = transcript.substring(0, 30000);
 
-    if (useSegments) {
-      // Create hierarchical segments
-      const segments = chunker.createSegments(chunks, 4); // Group 4 chunks = ~2 minutes
+    // Ask AI to identify chapter points using phrase-based approach
+    const prompt = formatPrompt(SYSTEM_PROMPTS.CHAPTER_DETECTION_PROMPT, {
+      transcript: limitedTranscript,
+    });
 
-      // Summarize each segment
-      for (const segment of segments) {
-        const segmentChunks = chunks.filter(c => segment.chunkIds.includes(c.id));
-        const segmentText = segmentChunks.map(c => c.text).join(' ');
+    const response = await (aiManager as any).makeRequest(prompt, (aiManager as any).metadataModel);
 
-        // Ask AI to summarize this segment
-        const summary = await aiManager.summarizeTranscript(segmentText, 'segment');
-        segment.topic = summary.slice(0, 100); // Limit length
-      }
-
-      // Format for AI
-      const formattedText = chunker.formatSegmentsForAI(segments);
-
-      // Ask AI to identify chapter points
-      const prompt = formatPrompt(SYSTEM_PROMPTS.CHAPTER_SEGMENTS_PROMPT, {
-        formattedText,
-      });
-
-      const response = await (aiManager as any).makeRequest(prompt, (aiManager as any).metadataModel);
-
-      if (!response) {
-        return [];
-      }
-
-      // Parse response
-      const aiChapters = this.parseChaptersFromAI(response);
-      if (aiChapters.length === 0) {
-        return [];
-      }
-
-      // Map to timestamps
-      const mapper = new ChapterMapper(segments);
-      return mapper.mapChapters(aiChapters);
-    } else {
-      // Use chunks directly
-      const formattedText = chunker.formatForAI(chunks);
-
-      // Ask AI to identify chapter points
-      const prompt = formatPrompt(SYSTEM_PROMPTS.CHAPTER_CHUNKS_PROMPT, {
-        formattedText,
-      });
-
-      const response = await (aiManager as any).makeRequest(prompt, (aiManager as any).metadataModel);
-
-      if (!response) {
-        return [];
-      }
-
-      // Parse response
-      const aiChapters = this.parseChaptersFromAI(response);
-      if (aiChapters.length === 0) {
-        return [];
-      }
-
-      // Map to timestamps
-      const mapper = new ChapterMapper(chunks);
-      return mapper.mapChapters(aiChapters);
+    if (!response) {
+      return [];
     }
+
+    // Parse response
+    const aiChapters = this.parseChaptersFromAI(response);
+    if (aiChapters.length === 0) {
+      return [];
+    }
+
+    // Map phrases to timestamps
+    const mapper = new ChapterMapper(item.srtSegments);
+    return mapper.mapChapters(aiChapters);
   }
 
   /**
-   * Parse chapters from AI response
+   * Parse chapters from AI response (expects {chapters: [...]} format)
    */
-  private static parseChaptersFromAI(response: string): any[] {
+  private static parseChaptersFromAI(response: string): AIChapter[] {
     try {
-      // Try to extract JSON array from response
-      const jsonMatch = response.match(/\[[\s\S]*\]/);
-      if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]);
+      // Clean up response - remove markdown code blocks if present
+      let cleanResponse = response.trim();
+      if (cleanResponse.startsWith('```')) {
+        const lines = cleanResponse.split('\n');
+        cleanResponse = lines
+          .filter((l) => !l.startsWith('```'))
+          .join('\n');
       }
+
+      // Try to extract JSON object from response
+      const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (parsed.chapters && Array.isArray(parsed.chapters)) {
+          return parsed.chapters;
+        }
+      }
+
+      // Fallback: try to extract JSON array directly
+      const arrayMatch = cleanResponse.match(/\[[\s\S]*\]/);
+      if (arrayMatch) {
+        return JSON.parse(arrayMatch[0]);
+      }
+
       return [];
     } catch (error) {
       console.error('[MetadataGenerator] Failed to parse AI chapters:', error);

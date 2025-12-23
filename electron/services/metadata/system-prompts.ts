@@ -55,37 +55,36 @@ Watch these people embarrass themselves...  <-- NO outro text
 `,
 
   /**
-   * Chapter generation instructions - appended to instructions_prompt when chapters requested
+   * Chapter detection prompt - uses phrase-based timestamp mapping
+   * Placeholder: {transcript}
    */
-  CHAPTERS_INSTRUCTIONS: `
-CHAPTERS:
-- Generate 3-10 chapters based on major topic shifts and content segments
-- Each chapter must be at least 10 seconds long (minimum gap between timestamps)
-- Use clear, descriptive, keyword-rich titles that reflect the segment content
-- Format as JSON array: [{"timestamp": "0:00", "title": "Introduction"}, {"timestamp": "5:23", "title": "Main Topic"}]
-- First chapter MUST start at 0:00 (YouTube requirement)
-- Avoid creating too many short chapters - focus on logical content divisions
-- Space chapters evenly throughout the video based on natural topic transitions`,
+  CHAPTER_DETECTION_PROMPT: `Identify chapter boundaries based on topic/subject changes in this transcript.
 
-  /**
-   * Chapter generation from segments (for long videos with 20+ chunks)
-   * Placeholder: {formattedText}
-   */
-  CHAPTER_SEGMENTS_PROMPT: `Based on these video segments, identify 3-8 chapter markers. Return JSON array:
-[{"segment_id": 1, "title": "Chapter Title"}, ...]
+Rules:
+- First chapter MUST start at the very beginning of the transcript
+- Create a new chapter ONLY when the subject/topic significantly changes
+- Very short videos (under 2 minutes) may have just 1-2 chapters
+- Longer videos should have 3-8 chapters depending on content
+- Minimum chapter length: ~30 seconds of content
 
-Segments:
-{formattedText}`,
+Title requirements:
+- Titles should be 50-80 characters - concise but descriptive
+- Explain specifically what happens in this section
+- Include key details: names, topics, actions
+- Avoid generic labels like "Introduction", "Overview", "Conclusion"
+- Write as complete thoughts, not fragments
 
-  /**
-   * Chapter generation from chunks (for shorter videos)
-   * Placeholder: {formattedText}
-   */
-  CHAPTER_CHUNKS_PROMPT: `Based on these video timestamps, identify 3-8 chapter markers. Return JSON array:
-[{"chunk_id": 1, "title": "Chapter Title"}, ...]
+Return JSON:
+{"chapters": [{"start_phrase": "exact quote from transcript", "title": "Concise description"}]}
 
-Chunks:
-{formattedText}`,
+Important:
+- start_phrase MUST be verbatim text copied from the transcript (3-8 words)
+- The first chapter's start_phrase should be from the very beginning
+- Each subsequent chapter's start_phrase marks where a new topic begins
+- Chapters are sequential - each one ends where the next begins
+
+Transcript:
+{transcript}`,
 };
 
 /**

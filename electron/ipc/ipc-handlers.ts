@@ -4,6 +4,7 @@ import * as log from 'electron-log';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
+import { AIManagerService } from '../services/metadata/ai-manager.service';
 
 /**
  * IPC Handlers
@@ -870,6 +871,19 @@ export function setupIpcHandlers(store: Store<any>) {
     } catch (error) {
       log.info('Ollama not available:', error);
       return { available: false, models: [] };
+    }
+  });
+
+  // AI Setup - Get available models for a provider
+  ipcMain.handle('get-available-models', async (_event, provider: 'ollama' | 'openai' | 'claude', apiKey?: string, host?: string) => {
+    try {
+      log.info(`Getting available models for ${provider}`);
+      const models = await AIManagerService.getAvailableModels(provider, apiKey, host);
+      log.info(`Found ${models.length} models for ${provider}`);
+      return { success: true, models };
+    } catch (error) {
+      log.error(`Error getting models for ${provider}:`, error);
+      return { success: false, models: [], error: String(error) };
     }
   });
 

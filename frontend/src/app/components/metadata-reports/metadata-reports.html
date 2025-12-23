@@ -138,6 +138,37 @@
               </div>
             }
 
+            <!-- Description Section -->
+            <div class="metadata-section">
+              <div class="section-header">
+                <mat-icon>description</mat-icon>
+                <h3>Description</h3>
+                <span class="char-count">{{ getDescriptionWithHashtags().length }} characters</span>
+                <button mat-icon-button class="copy-button" (click)="copyToClipboard(getDescriptionWithHashtags())" title="Copy to clipboard">
+                  <mat-icon>content_copy</mat-icon>
+                </button>
+              </div>
+              <div class="description-card">
+                <textarea class="description-textarea" readonly [value]="getDescriptionWithHashtags()"></textarea>
+              </div>
+            </div>
+
+            <!-- Tags Section -->
+            <div class="metadata-section">
+              <div class="section-header">
+                <mat-icon>local_offer</mat-icon>
+                <h3>Tags</h3>
+                <button mat-icon-button class="copy-button" (click)="copyToClipboard(getTagsString())" title="Copy to clipboard">
+                  <mat-icon>content_copy</mat-icon>
+                </button>
+              </div>
+              <div class="tags-container">
+                @for (tag of getTagsArray(); track $index) {
+                  <mat-chip class="tag-chip">{{ tag }}</mat-chip>
+                }
+              </div>
+            </div>
+
             <!-- Thumbnail Text Section -->
             @if (metadata()!.thumbnail_text && metadata()!.thumbnail_text.length > 0) {
               <div class="metadata-section">
@@ -204,37 +235,6 @@
                 </div>
               </div>
             }
-
-            <!-- Description Section -->
-            <div class="metadata-section">
-              <div class="section-header">
-                <mat-icon>description</mat-icon>
-                <h3>Description</h3>
-                <span class="char-count">{{ getDescriptionWithHashtags().length }} characters</span>
-                <button mat-icon-button class="copy-button" (click)="copyToClipboard(getDescriptionWithHashtags())" title="Copy to clipboard">
-                  <mat-icon>content_copy</mat-icon>
-                </button>
-              </div>
-              <div class="description-card">
-                <textarea class="description-textarea" readonly [value]="getDescriptionWithHashtags()"></textarea>
-              </div>
-            </div>
-
-            <!-- Tags Section -->
-            <div class="metadata-section">
-              <div class="section-header">
-                <mat-icon>local_offer</mat-icon>
-                <h3>Tags</h3>
-                <button mat-icon-button class="copy-button" (click)="copyToClipboard(getTagsString())" title="Copy to clipboard">
-                  <mat-icon>content_copy</mat-icon>
-                </button>
-              </div>
-              <div class="tags-container">
-                @for (tag of getTagsArray(); track $index) {
-                  <mat-chip class="tag-chip">{{ tag }}</mat-chip>
-                }
-              </div>
-            </div>
           </div>
         }
 

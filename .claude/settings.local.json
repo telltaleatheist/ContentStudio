@@ -23,7 +23,27 @@
       "Bash(ssh zeus:*)",
       "Bash(dig:*)",
       "Bash(ssh:*)",
-      "Bash(git rm:*)"
+      "Bash(git rm:*)",
+      "Bash(find:*)",
+      "Bash(./scripts/copy-ffmpeg.sh:*)",
+      "Bash(npm run package:mac-arm64:*)",
+      "Bash(open:*)",
+      "Bash(npm run electron:dev:*)",
+      "Bash(npm run package:mac:*)",
+      "Bash(python3:*)",
+      "Bash(npx tsc:*)",
+      "Bash(ssh-keygen:*)",
+      "Bash(cat:*)",
+      "Bash(openssl rand:*)",
+      "Bash(ping:*)",
+      "Bash(openssl s_client:*)",
+      "Bash(openssl x509:*)",
+      "Bash(sudo tee:*)",
+      "Bash(while read url)",
+      "Bash(do echo -n '$url: ')",
+      "Bash(done)",
+      "Bash(m4b-tool:*)",
+      "Bash(sudo sed:*)"
     ]
   }
 }
