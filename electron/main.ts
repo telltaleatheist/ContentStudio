@@ -69,7 +69,7 @@ function createMainWindow() {
     mainWindow.loadURL('http://localhost:4200');
   } else {
     // In production, load from built Angular files
-    const frontendPath = path.join(__dirname, '..', '..', 'frontend', 'dist', 'frontend', 'browser', 'index.html');
+    const frontendPath = path.join(__dirname, '..', '..', 'frontend', 'dist', 'frontend', 'index.html');
     mainWindow.loadFile(frontendPath);
   }
 
@@ -89,7 +89,7 @@ function createMainWindow() {
     mainWindow.webContents.on('before-input-event', (event, input) => {
       if (input.type === 'keyDown' && (input.key === 'r' || input.key === 'R') && (input.meta || input.control)) {
         event.preventDefault();
-        const frontendPath = path.join(__dirname, '..', '..', 'frontend', 'dist', 'frontend', 'browser', 'index.html');
+        const frontendPath = path.join(__dirname, '..', '..', 'frontend', 'dist', 'frontend', 'index.html');
         mainWindow?.loadFile(frontendPath);
       }
     });

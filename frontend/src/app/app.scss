@@ -138,15 +138,23 @@
     height: 56px;
     padding: 0 16px;
     color: var(--text-primary) !important;
-    transition: background-color 0.2s ease;
+    transition: all 0.2s ease;
+    border-radius: 8px;
+    margin: 4px 8px;
+    width: calc(100% - 16px);
 
     &:hover {
-      background-color: var(--bg-card) !important;
+      background-color: rgba(255, 107, 53, 0.1) !important;
+
+      .mat-icon {
+        color: var(--primary-orange) !important;
+      }
     }
 
     &.active-link {
-      background-color: var(--primary-orange) !important;
+      background: var(--gradient-primary) !important;
       color: white !important;
+      box-shadow: 0 4px 12px rgba(255, 107, 53, 0.3);
 
       .mat-icon {
         color: white !important;
@@ -155,12 +163,18 @@
       span {
         color: white !important;
       }
+
+      &:hover {
+        box-shadow: 0 6px 16px rgba(255, 107, 53, 0.4), var(--shadow-glow);
+        transform: translateX(2px);
+      }
     }
 
     .mat-icon {
       margin-right: 16px;
       color: var(--text-secondary) !important;
       opacity: 1 !important;
+      transition: color 0.2s ease;
     }
 
     span {

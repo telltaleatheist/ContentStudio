@@ -68,6 +68,8 @@ const api = {
   checkOllama: () => ipcRenderer.invoke('check-ollama'),
   getApiKeys: () => ipcRenderer.invoke('get-api-keys'),
   saveApiKey: (provider: string, apiKey: string) => ipcRenderer.invoke('save-api-key', provider, apiKey),
+  getAvailableModels: (provider: 'ollama' | 'openai' | 'claude', apiKey?: string, host?: string) =>
+    ipcRenderer.invoke('get-available-models', provider, apiKey, host),
 
   // External URLs
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url)

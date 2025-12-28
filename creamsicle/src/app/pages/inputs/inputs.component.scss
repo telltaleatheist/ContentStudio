@@ -1,0 +1,524 @@
+@use '../../../styles/variables' as *;
+@use '../../../styles/mixins' as *;
+
+:host {
+  display: block;
+  height: 100%;
+  overflow-y: auto;
+  background: var(--bg-primary);
+}
+
+// ============================================================================
+// LAYOUT
+// ============================================================================
+.inputs-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  padding: $spacing-lg;
+  gap: $spacing-md;
+  box-sizing: border-box;
+}
+
+// ============================================================================
+// PAGE HEADER
+// ============================================================================
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+  padding-bottom: $spacing-md;
+  border-bottom: 1px solid var(--primary-orange);
+
+  h1 {
+    font-size: $font-size-2xl;
+    font-weight: $font-weight-semibold;
+    color: var(--text-primary);
+    margin: 0;
+  }
+}
+
+.item-count {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  padding: 6px 14px;
+  border-radius: $radius-md;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-medium;
+}
+
+// ============================================================================
+// SECTION LABELS
+// ============================================================================
+.section-label {
+  font-size: $font-size-base;
+  font-weight: $font-weight-semibold;
+  color: var(--text-primary);
+  margin: 0 0 $spacing-md 0;
+}
+
+// ============================================================================
+// ICON BUTTONS (for job list actions)
+// ============================================================================
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: $spacing-xs;
+  min-width: 28px;
+  min-height: 28px;
+  border-radius: $radius-md;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: $font-size-sm;
+  transition: all $transition-fast;
+
+  &:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+  }
+
+  &.remove {
+    opacity: 0;
+    transition: opacity $transition-fast, background $transition-fast, color $transition-fast;
+
+    &:hover {
+      color: $error;
+      background: rgba(239, 68, 68, 0.1);
+    }
+  }
+}
+
+// ============================================================================
+// ADD CONTENT SECTION
+// ============================================================================
+.add-content-section {
+  flex-shrink: 0;
+}
+
+.button-row {
+  display: flex;
+  gap: $spacing-md;
+
+  app-button {
+    flex: 1;
+  }
+}
+
+// ============================================================================
+// INPUTS SECTION
+// ============================================================================
+.inputs-section {
+  display: flex;
+  flex-direction: column;
+}
+
+// ============================================================================
+// CASCADE WRAPPER (DROP ZONE)
+// ============================================================================
+.cascade-wrapper {
+  display: flex;
+  flex-direction: column;
+  height: 480px;
+  overflow: hidden;
+  border-radius: $radius-lg;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  transition: all $transition-fast;
+
+  &.dragging-over {
+    border-color: var(--primary-orange);
+    border-width: 2px;
+    background: rgba(255, 107, 53, 0.08);
+    box-shadow: inset 0 0 20px rgba(255, 107, 53, 0.1);
+  }
+
+  app-cascade {
+    flex: 1;
+    min-height: 0;
+  }
+}
+
+// ============================================================================
+// MASTER CONTROLS
+// ============================================================================
+.master-controls {
+  display: flex;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  gap: $spacing-md;
+  align-items: center;
+  padding: $spacing-md;
+  background: var(--bg-secondary);
+  border-radius: $radius-lg;
+  margin-bottom: $spacing-md;
+}
+
+.checkbox-control {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: $font-size-sm;
+
+  input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--primary-orange);
+  }
+
+  &.compact {
+    gap: 4px;
+    span {
+      font-size: $font-size-base;
+    }
+  }
+}
+
+.control-group {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+
+  label {
+    color: var(--text-tertiary);
+    font-size: $font-size-xs;
+  }
+}
+
+.form-select {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: $radius-md;
+  padding: 6px 12px;
+  color: var(--text-primary);
+  font-size: $font-size-sm;
+  min-width: 140px;
+  cursor: pointer;
+
+  &.compact {
+    min-width: 120px;
+    padding: 4px 8px;
+    font-size: $font-size-xs;
+  }
+
+  &:focus {
+    outline: none;
+    border-color: var(--primary-orange);
+  }
+}
+
+// ============================================================================
+// FOOTER ACTIONS
+// ============================================================================
+.footer-actions {
+  flex-shrink: 0;
+}
+
+// ============================================================================
+// QUEUE SECTION
+// ============================================================================
+.queue-section {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: $radius-xl;
+  padding: $spacing-md;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+  margin-bottom: $spacing-md;
+
+  .section-label {
+    margin: 0;
+  }
+}
+
+.queue-stats {
+  display: flex;
+  align-items: center;
+  gap: $spacing-md;
+  color: var(--text-tertiary);
+  font-size: $font-size-sm;
+}
+
+.section-footer {
+  flex-shrink: 0;
+  margin-top: $spacing-md;
+}
+
+// ============================================================================
+// QUEUE PROGRESS
+// ============================================================================
+.queue-progress {
+  flex-shrink: 0;
+  height: 4px;
+  background: var(--bg-tertiary);
+  border-radius: $radius-full;
+  margin-bottom: $spacing-md;
+  overflow: hidden;
+}
+
+.queue-progress-bar {
+  height: 100%;
+  background: var(--gradient-primary);
+  border-radius: $radius-full;
+  transition: width 0.3s ease;
+}
+
+// ============================================================================
+// JOB LIST
+// ============================================================================
+.job-list {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-sm;
+}
+
+.job-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: $radius-lg;
+  overflow: hidden;
+  transition: all $transition-fast;
+  flex-shrink: 0;
+
+  &:hover {
+    border-color: rgba(255, 107, 53, 0.3);
+
+    .icon-btn.remove {
+      opacity: 1;
+    }
+  }
+
+  .icon-btn.remove {
+    opacity: 0;
+    transition: opacity $transition-fast;
+  }
+
+  &.processing {
+    border-color: var(--primary-orange);
+    background: linear-gradient(135deg, rgba(255, 107, 53, 0.05) 0%, transparent 100%);
+  }
+
+  &.completed {
+    opacity: 0.6;
+
+    &:hover {
+      opacity: 1;
+    }
+  }
+
+  &.failed {
+    border-color: rgba(239, 68, 68, 0.4);
+    background: rgba(239, 68, 68, 0.03);
+  }
+}
+
+.job-header {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  padding: $spacing-sm $spacing-md;
+  cursor: pointer;
+  min-height: 48px;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.02);
+  }
+}
+
+.job-status-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.job-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.job-name {
+  display: block;
+  color: var(--text-primary);
+  font-size: $font-size-sm;
+  font-weight: $font-weight-medium;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.job-meta {
+  color: var(--text-tertiary);
+  font-size: $font-size-xs;
+}
+
+.job-progress-ring {
+  width: 32px;
+  height: 32px;
+  position: relative;
+  flex-shrink: 0;
+
+  svg {
+    width: 100%;
+    height: 100%;
+    transform: rotate(-90deg);
+  }
+
+  .ring-bg {
+    fill: none;
+    stroke: var(--bg-tertiary);
+    stroke-width: 3;
+  }
+
+  .ring-fill {
+    fill: none;
+    stroke: var(--primary-orange);
+    stroke-width: 3;
+    stroke-linecap: round;
+    transition: stroke-dasharray 0.3s ease;
+  }
+
+  .ring-text {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    font-weight: $font-weight-bold;
+    color: var(--text-secondary);
+  }
+}
+
+.expand-icon {
+  color: var(--text-tertiary);
+  font-size: $font-size-xs;
+  flex-shrink: 0;
+}
+
+// ============================================================================
+// JOB DETAILS
+// ============================================================================
+.job-details {
+  padding: 0 $spacing-md $spacing-md;
+  border-top: 1px solid var(--border-color);
+  animation: slideDown 0.2s ease;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.processing-status {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  padding: $spacing-md 0;
+  color: var(--primary-orange);
+  font-size: $font-size-sm;
+}
+
+.processing-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--primary-orange);
+  border-radius: 50%;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.job-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: $spacing-sm;
+}
+
+.job-item {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+  padding: $spacing-sm $spacing-md;
+  background: var(--bg-card);
+  border-radius: $radius-md;
+  font-size: $font-size-sm;
+
+  &:hover {
+    .icon-btn.remove {
+      opacity: 1;
+    }
+  }
+
+  .icon-btn.remove {
+    opacity: 0;
+    margin-left: auto;
+  }
+
+  &.completed {
+    .item-status { color: $success; }
+    .item-check { color: $success; }
+  }
+
+  &.processing {
+    background: rgba(255, 107, 53, 0.08);
+    .item-status { color: var(--primary-orange); }
+  }
+
+  &.failed {
+    .item-status { color: $error; }
+  }
+}
+
+.item-icon {
+  font-size: $font-size-base;
+  flex-shrink: 0;
+}
+
+.item-name {
+  flex: 1;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.item-status {
+  color: var(--text-tertiary);
+  font-size: $font-size-xs;
+  flex-shrink: 0;
+}
+
+.item-check {
+  color: $success;
+  font-weight: $font-weight-bold;
+}
+
+.job-error {
+  margin-top: $spacing-md;
+  padding: $spacing-md;
+  background: rgba(239, 68, 68, 0.08);
+  border-radius: $radius-md;
+  color: $error;
+  font-size: $font-size-sm;
+}

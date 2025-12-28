@@ -1,4 +1,4 @@
-import { Injectable, signal } from '@angular/core';
+import { Injectable, signal, effect } from '@angular/core';
 import { InputItem } from './inputs-state';
 
 export type ItemStatus = 'pending' | 'transcribing' | 'transcribed' | 'generating' | 'completed' | 'failed';
@@ -26,6 +26,8 @@ export interface QueuedJob {
   currentItemIndex: number; // Index of the currently processing item
 }
 
+const STORAGE_KEY = 'contentstudio-jobs';
+
 @Injectable({
   providedIn: 'root'
 })
@@ -33,7 +35,37 @@ export class JobQueueService {
   jobs = signal<QueuedJob[]>([]);
   isProcessing = signal(false);
 
-  constructor() {}
+  constructor() {
+    // Load persisted jobs from localStorage
+    this.loadFromStorage();
+
+    // Auto-save when jobs change
+    effect(() => {
+      const jobs = this.jobs();
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(jobs));
+    });
+  }
+
+  private loadFromStorage() {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        const jobs = JSON.parse(stored) as QueuedJob[];
+        // Convert date strings back to Date objects and reset processing jobs to pending
+        const restoredJobs = jobs.map(job => ({
+          ...job,
+          createdAt: new Date(job.createdAt),
+          completedAt: job.completedAt ? new Date(job.completedAt) : undefined,
+          // Reset processing jobs to pending (they were interrupted)
+          status: job.status === 'processing' ? 'pending' as const : job.status,
+          currentlyProcessing: job.status === 'processing' ? '' : job.currentlyProcessing
+        }));
+        this.jobs.set(restoredJobs);
+      }
+    } catch (error) {
+      console.error('Failed to load jobs from storage:', error);
+    }
+  }
 
   addJob(name: string, inputs: InputItem[], promptSet: string, mode: 'individual' | 'compilation'): string {
     const jobId = `job-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;

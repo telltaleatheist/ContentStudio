@@ -1,4 +1,4 @@
-import { Injectable, signal } from '@angular/core';
+import { Injectable, signal, effect } from '@angular/core';
 
 export interface InputItem {
   type: string;
@@ -18,6 +18,8 @@ export interface GenerationState {
   generationProgress: number;
   currentlyProcessing: string;
 }
+
+const STORAGE_KEY = 'contentstudio-inputs';
 
 @Injectable({
   providedIn: 'root'
@@ -42,7 +44,34 @@ export class InputsStateService {
   // Track if initial settings have been loaded
   private settingsLoaded = false;
 
-  constructor() {}
+  constructor() {
+    // Load persisted state from localStorage
+    this.loadFromStorage();
+
+    // Auto-save when state changes
+    effect(() => {
+      const state = {
+        inputItems: this.inputItems(),
+        compilationMode: this.compilationMode(),
+        masterPromptSet: this.masterPromptSet()
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    });
+  }
+
+  private loadFromStorage() {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        const state = JSON.parse(stored);
+        if (state.inputItems) this.inputItems.set(state.inputItems);
+        if (state.compilationMode !== undefined) this.compilationMode.set(state.compilationMode);
+        if (state.masterPromptSet) this.masterPromptSet.set(state.masterPromptSet);
+      }
+    } catch (error) {
+      console.error('Failed to load inputs state from storage:', error);
+    }
+  }
 
   addItem(item: InputItem) {
     this.inputItems.update(items => [...items, item]);

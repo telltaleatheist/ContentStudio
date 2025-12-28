@@ -57,6 +57,10 @@ export class MetadataReports implements OnInit, OnDestroy {
   isLoading = signal(false);
   reportsDirectory = signal('');
 
+  // Track copied state for visual feedback
+  copiedItem = signal<string | null>(null);
+  private copiedTimeout: any = null;
+
   private visibilityChangeHandler: (() => void) | null = null;
 
   constructor(
@@ -393,12 +397,36 @@ export class MetadataReports implements OnInit, OnDestroy {
     });
   }
 
-  copyToClipboard(text: string) {
+  copyToClipboard(text: string, itemKey?: string) {
     navigator.clipboard.writeText(text).then(() => {
+      // Set copied state for visual feedback
+      if (itemKey) {
+        this.setCopiedItem(itemKey);
+      }
       this.notificationService.success('Copied', 'Text copied to clipboard', false);
     }).catch(err => {
       this.notificationService.error('Copy Failed', 'Failed to copy to clipboard: ' + err.message);
     });
+  }
+
+  // Set copied item and auto-clear after delay
+  private setCopiedItem(key: string) {
+    // Clear any existing timeout
+    if (this.copiedTimeout) {
+      clearTimeout(this.copiedTimeout);
+    }
+
+    this.copiedItem.set(key);
+
+    // Clear after 1.5 seconds
+    this.copiedTimeout = setTimeout(() => {
+      this.copiedItem.set(null);
+    }, 1500);
+  }
+
+  // Check if a specific item was just copied
+  isCopied(key: string): boolean {
+    return this.copiedItem() === key;
   }
 
   copyChaptersToClipboard() {
@@ -410,6 +438,7 @@ export class MetadataReports implements OnInit, OnDestroy {
       .join('\n');
 
     navigator.clipboard.writeText(chaptersText).then(() => {
+      this.setCopiedItem('chapters-all');
       this.notificationService.success('Copied', 'All chapters copied to clipboard', false);
     }).catch(err => {
       this.notificationService.error('Copy Failed', 'Failed to copy chapters: ' + err.message);

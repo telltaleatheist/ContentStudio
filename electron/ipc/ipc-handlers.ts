@@ -392,14 +392,22 @@ export function setupIpcHandlers(store: Store<any>) {
         apiKey = apiKeys.claudeApiKey;
       }
 
+      // Reconstruct full model with provider prefix (e.g., "claude:claude-sonnet-4-5")
+      // Settings stores aiProvider and aiModel separately, but AIManagerService needs prefixed format
+      const aiModel = settings.aiModel || settings.metadataModel || settings.ollamaModel;
+      const aiProvider = settings.aiProvider || settings.metadataProvider || 'ollama';
+      const fullModel = aiModel ? `${aiProvider}:${aiModel}` : undefined;
+
+      log.info(`[IPC] Using AI model: ${fullModel} (provider: ${aiProvider}, model: ${aiModel})`);
+
       // Prepare metadata generation parameters
       const metadataParams = {
         inputs: params.inputs,
         mode: params.mode || settings.defaultMode,
         aiProvider: metaProvider, // Use metadata provider as primary
-        aiModel: settings.ollamaModel, // Legacy single model (backward compatibility)
-        summarizationModel: settings.summarizationModel,
-        metadataModel: settings.metadataModel,
+        aiModel: fullModel, // Full prefixed model (e.g., "claude:claude-sonnet-4-5")
+        summarizationModel: fullModel, // Use same model for both
+        metadataModel: fullModel,
         aiApiKey: apiKey,
         aiHost: settings.ollamaHost || 'http://localhost:11434',
         outputPath: params.outputPath || settings.outputDirectory,
@@ -875,10 +883,26 @@ export function setupIpcHandlers(store: Store<any>) {
   });
 
   // AI Setup - Get available models for a provider
+  // Reads API keys from stored file if not provided
   ipcMain.handle('get-available-models', async (_event, provider: 'ollama' | 'openai' | 'claude', apiKey?: string, host?: string) => {
     try {
       log.info(`Getting available models for ${provider}`);
-      const models = await AIManagerService.getAvailableModels(provider, apiKey, host);
+
+      // If no API key provided, read from stored keys file
+      let key = apiKey;
+      if (!key && (provider === 'openai' || provider === 'claude')) {
+        const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
+        if (fs.existsSync(apiKeysPath)) {
+          const data = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
+          if (provider === 'openai') {
+            key = data.openaiApiKey;
+          } else if (provider === 'claude') {
+            key = data.claudeApiKey;
+          }
+        }
+      }
+
+      const models = await AIManagerService.getAvailableModels(provider, key, host);
       log.info(`Found ${models.length} models for ${provider}`);
       return { success: true, models };
     } catch (error) {

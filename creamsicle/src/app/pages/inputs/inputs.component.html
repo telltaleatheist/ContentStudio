@@ -1,0 +1,197 @@
+<div class="inputs-container">
+
+  <!-- Header -->
+  <div class="page-header">
+    <h1>Inputs & Queue</h1>
+    <span class="item-count">{{ inputsState.inputItems().length }} items</span>
+  </div>
+
+  <!-- Text Subject Modal -->
+  <app-text-subject-modal #textSubjectModal (submitted)="onTextSubjectsSubmitted($event)" />
+
+  <!-- Add Content Section -->
+  <section class="add-content-section">
+    <h2 class="section-label">Add Content</h2>
+    <div class="button-row">
+      <app-button variant="primary" size="lg" icon="Tt" [fullWidth]="true" (click)="openTextSubjectModal()">
+        Text Subjects
+      </app-button>
+      <app-button variant="primary" size="lg" icon="📁" [fullWidth]="true" (click)="browseFiles()">
+        Browse Files
+      </app-button>
+    </div>
+  </section>
+
+  <!-- Added Inputs Section -->
+  <section class="inputs-section">
+    <h2 class="section-label">Added Inputs</h2>
+
+    <!-- Master Controls (show when items exist) -->
+    @if (inputsState.inputItems().length > 0) {
+      <div class="master-controls">
+        <div class="control-group">
+          <label>Prompt:</label>
+          <select class="form-select"
+                  [ngModel]="inputsState.masterPromptSet()"
+                  (ngModelChange)="onMasterPromptSetChange($event)">
+            @for (ps of availablePromptSets(); track ps.id) {
+              <option [value]="ps.id">{{ ps.name }}</option>
+            }
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label>AI:</label>
+          <select class="form-select"
+                  [ngModel]="masterAIModel()"
+                  (ngModelChange)="onMasterAIModelChange($event)">
+            <option value="">Default</option>
+            @for (model of availableAIModels(); track model.value) {
+              <option [value]="model.value">{{ model.icon }} {{ model.label }}</option>
+            }
+          </select>
+        </div>
+
+        <label class="checkbox-control">
+          <input type="checkbox"
+                 [checked]="inputsState.compilationMode()"
+                 (change)="onCompilationModeChange($event)">
+          <span>Compilation Mode</span>
+        </label>
+
+        <app-button variant="ghost" size="sm" (click)="clearAllInputs()">Clear All</app-button>
+      </div>
+    }
+
+    <!-- Cascade Input List (Drop Zone) -->
+    <div class="cascade-wrapper"
+         [class.dragging-over]="isDraggingOver()"
+         (dragover)="onDragOver($event)"
+         (dragleave)="onDragLeave($event)"
+         (drop)="onDrop($event)">
+      <app-cascade
+        [groups]="inputCascadeGroups()"
+        [showStatusIndicator]="false"
+        [customContextMenuActions]="inputContextMenuActions()"
+        emptyIcon="{{ isDraggingOver() ? '📥' : '📁' }}"
+        emptyTitle="{{ isDraggingOver() ? 'Drop files here' : 'No inputs added yet' }}"
+        emptyMessage="Add text subjects or files to generate metadata"
+        (selectionChanged)="onInputSelectionChanged($event)"
+        (itemAction)="onInputAction($event)"
+      />
+    </div>
+  </section>
+
+  <!-- Add to Queue Button (always visible) -->
+  <div class="footer-actions">
+    <app-button variant="secondary" size="lg" icon="➕" [fullWidth]="true" [disabled]="!hasSelectedItems" (click)="addToQueue()">
+      Add to Queue
+    </app-button>
+  </div>
+
+  <!-- Job Queue -->
+  @if (jobQueue.jobs().length > 0) {
+    <section class="queue-section">
+      <div class="section-header">
+        <h2 class="section-label">Job Queue</h2>
+        <div class="queue-stats">
+          <span>{{ getCompletedJobsCount() }}/{{ jobQueue.jobs().length }} complete</span>
+          <app-button variant="ghost" size="sm" (click)="clearCompletedJobs()">Clear Done</app-button>
+        </div>
+      </div>
+
+      <!-- Global Progress -->
+      <div class="queue-progress">
+        <div class="queue-progress-bar" [style.width.%]="getGlobalQueueProgress()"></div>
+      </div>
+
+      <!-- Jobs List -->
+      <div class="job-list">
+        @for (job of jobQueue.jobs(); track job.id) {
+          <div class="job-card"
+               [class.processing]="job.status === 'processing'"
+               [class.completed]="job.status === 'completed'"
+               [class.failed]="job.status === 'failed'"
+               [class.expanded]="isJobExpanded(job.id)">
+
+            <div class="job-header" (click)="toggleJobExpansion(job.id)">
+              <span class="job-status-icon">{{ getJobStatusIcon(job.status) }}</span>
+
+              <div class="job-info">
+                <span class="job-name">{{ job.name }}</span>
+                <span class="job-meta">
+                  {{ getPromptSetName(job.promptSet) }} · {{ job.mode }}
+                  @if (job.processingTime) {
+                    · {{ job.processingTime.toFixed(1) }}s
+                  }
+                </span>
+              </div>
+
+              <div class="job-progress-ring">
+                <svg viewBox="0 0 36 36">
+                  <path class="ring-bg"
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                  <path class="ring-fill"
+                    [style.strokeDasharray]="getJobProgress(job) + ', 100'"
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                </svg>
+                <span class="ring-text">{{ getJobProgress(job) | number:'1.0-0' }}%</span>
+              </div>
+
+              <span class="expand-icon">{{ isJobExpanded(job.id) ? '▲' : '▼' }}</span>
+
+              @if (job.status === 'processing') {
+                <button class="icon-btn" (click)="cancelJob(job.id); $event.stopPropagation()" title="Cancel">⏹</button>
+              } @else {
+                <button class="icon-btn remove" (click)="removeJob(job.id); $event.stopPropagation()" title="Remove">✕</button>
+              }
+            </div>
+
+            @if (isJobExpanded(job.id)) {
+              <div class="job-details">
+                @if (job.currentlyProcessing && job.status === 'processing') {
+                  <div class="processing-status">
+                    <span class="processing-dot"></span>
+                    {{ job.currentlyProcessing }}
+                  </div>
+                }
+
+                <!-- Job Items -->
+                <div class="job-items">
+                  @for (input of job.inputs; track input.path; let idx = $index) {
+                    <div class="job-item" [class]="getItemStatusClass(job, idx)">
+                      <span class="item-icon">{{ input.icon }}</span>
+                      <span class="item-name">{{ input.displayName }}</span>
+                      <span class="item-status">{{ getItemStatusText(job, idx) }}</span>
+                      @if (isItemCompleted(job, idx)) {
+                        <span class="item-check">✓</span>
+                      }
+                      <button class="icon-btn remove"
+                              (click)="removeItemFromJob(job.id, idx); $event.stopPropagation()"
+                              title="Remove">✕</button>
+                    </div>
+                  }
+                </div>
+
+                @if (job.error) {
+                  <div class="job-error">
+                    ⚠️ {{ job.error }}
+                  </div>
+                }
+              </div>
+            }
+          </div>
+        }
+      </div>
+
+      <!-- Start Queue Button -->
+      @if (!jobQueue.isProcessing() && jobQueue.getPendingJobs().length > 0) {
+        <div class="section-footer">
+          <app-button variant="primary" size="lg" icon="▶" [fullWidth]="true" (click)="startQueue()">
+            Start Queue ({{ jobQueue.getPendingJobs().length }} jobs)
+          </app-button>
+        </div>
+      }
+    </section>
+  }
+</div>

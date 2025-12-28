@@ -375,12 +375,13 @@
   }
 
   &.primary {
-    background: var(--primary-orange);
+    background: var(--gradient-primary);
     border-color: var(--primary-orange);
     color: white;
 
     &:hover {
-      background: #ff7f50;
+      background: var(--gradient-primary);
+      box-shadow: var(--shadow-glow);
     }
   }
 }
@@ -435,14 +436,14 @@
   }
 
   &.primary {
-    background: var(--primary-orange);
+    background: var(--gradient-primary);
     border-color: var(--primary-orange);
     color: white;
 
     &:hover:not(:disabled) {
-      background: #ff7f50;
+      background: var(--gradient-primary);
       transform: translateY(-2px);
-      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+      box-shadow: var(--shadow-lg), var(--shadow-glow);
     }
   }
 

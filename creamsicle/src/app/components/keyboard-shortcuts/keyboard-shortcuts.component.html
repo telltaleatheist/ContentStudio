@@ -1,0 +1,37 @@
+@if (isVisible()) {
+  <div class="shortcuts-overlay" (click)="hide()" (keydown)="handleKeyDown($event)">
+    <div class="shortcuts-panel" (click)="$event.stopPropagation()">
+      <div class="panel-header">
+        <span class="header-title">Shortcuts</span>
+        <kbd class="close-hint">esc</kbd>
+      </div>
+
+      <div class="shortcuts-grid">
+        <div class="shortcut">
+          <span class="key">G H</span>
+          <span class="desc">Home</span>
+        </div>
+        <div class="shortcut">
+          <span class="key">G D</span>
+          <span class="desc">Dashboard</span>
+        </div>
+        <div class="shortcut">
+          <span class="key">G C</span>
+          <span class="desc">Components</span>
+        </div>
+        <div class="shortcut">
+          <span class="key">G F</span>
+          <span class="desc">Files</span>
+        </div>
+        <div class="shortcut">
+          <span class="key">{{ platform === 'mac' ? '⌘' : 'Ctrl' }} K</span>
+          <span class="desc">Theme</span>
+        </div>
+        <div class="shortcut">
+          <span class="key">?</span>
+          <span class="desc">Shortcuts</span>
+        </div>
+      </div>
+    </div>
+  </div>
+}

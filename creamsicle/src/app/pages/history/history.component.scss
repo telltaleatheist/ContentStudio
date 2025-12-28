@@ -1,0 +1,397 @@
+@use '../../../styles/variables' as *;
+@use '../../../styles/mixins' as *;
+
+:host {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  height: 100%;
+}
+
+.page-container {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: $spacing-lg;
+  overflow: hidden;
+  height: 100%;
+  background: var(--bg-primary);
+  padding: $spacing-lg;
+  padding-bottom: $spacing-md;
+}
+
+// ============================================================================
+// LEFT PANEL - Jobs List
+// ============================================================================
+.list-panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: $radius-xl;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: $spacing-md $spacing-lg;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: $spacing-sm;
+}
+
+.panel-title {
+  font-size: $font-size-lg;
+  font-weight: $font-weight-semibold;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.item-count {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  padding: 2px 8px;
+  border-radius: $radius-full;
+  font-size: $font-size-xs;
+  font-weight: $font-weight-medium;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: $spacing-xs;
+}
+
+.action-btn {
+  padding: $spacing-xs $spacing-md;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: $radius-md;
+  color: var(--text-secondary);
+  font-size: $font-size-sm;
+  font-weight: $font-weight-medium;
+  cursor: pointer;
+  transition: all $transition-fast;
+
+  &:hover:not(:disabled) {
+    background: var(--bg-primary);
+    border-color: var(--primary-orange);
+    color: var(--primary-orange);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  &.primary {
+    background: var(--primary-orange);
+    border-color: var(--primary-orange);
+    color: white;
+
+    &:hover:not(:disabled) {
+      background: $dark-orange;
+      border-color: $dark-orange;
+    }
+  }
+
+  &.icon-only {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: $font-size-lg;
+  }
+}
+
+.panel-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+}
+
+// Cascade component override
+app-cascade {
+  flex: 1;
+  overflow: hidden;
+}
+
+.jobs-list {
+  padding: $spacing-md;
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-sm;
+}
+
+.job-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $spacing-md;
+  padding: $spacing-md $spacing-lg;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: $radius-lg;
+  cursor: pointer;
+  transition: all $transition-fast;
+
+  &:hover {
+    border-color: var(--primary-orange);
+  }
+
+  &.selected {
+    background: rgba(255, 107, 53, 0.1);
+    border-color: var(--primary-orange);
+  }
+}
+
+.job-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.job-name {
+  font-size: $font-size-base;
+  font-weight: $font-weight-medium;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-bottom: 4px;
+}
+
+.job-meta {
+  display: flex;
+  align-items: center;
+  gap: $spacing-xs;
+  font-size: $font-size-xs;
+  color: var(--text-tertiary);
+}
+
+.meta-sep {
+  color: var(--text-tertiary);
+}
+
+// ============================================================================
+// RIGHT PANEL - Job Details
+// ============================================================================
+.detail-panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: $radius-xl;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.detail-panel .panel-content {
+  padding: $spacing-xl;
+  padding-bottom: $spacing-3xl;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.detail-section {
+  width: 100%;
+  max-width: 600px;
+}
+
+.detail-title {
+  font-size: $font-size-xl;
+  font-weight: $font-weight-bold;
+  color: var(--text-primary);
+  margin: 0 0 $spacing-lg 0;
+}
+
+.status-row {
+  margin-bottom: $spacing-xl;
+}
+
+// Status Badge
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: $radius-full;
+  font-size: $font-size-xs;
+  font-weight: $font-weight-medium;
+  text-transform: capitalize;
+
+  &.large {
+    padding: $spacing-sm $spacing-md;
+    font-size: $font-size-sm;
+  }
+
+  .status-icon {
+    font-size: 12px;
+  }
+
+  &.status-completed {
+    background: rgba(34, 197, 94, 0.12);
+    color: #22c55e;
+  }
+
+  &.status-failed {
+    background: rgba(239, 68, 68, 0.12);
+    color: $error;
+  }
+
+  &.status-processing {
+    background: rgba(255, 107, 53, 0.12);
+    color: var(--primary-orange);
+  }
+
+  &.status-pending {
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+  }
+}
+
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: $spacing-lg;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: $radius-lg;
+  padding: $spacing-lg;
+}
+
+.info-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.info-label {
+  font-size: $font-size-xs;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: $font-weight-medium;
+}
+
+.info-value {
+  font-size: $font-size-base;
+  color: var(--text-primary);
+  font-weight: $font-weight-medium;
+
+  &.capitalize {
+    text-transform: capitalize;
+  }
+}
+
+.output-section {
+  margin-top: $spacing-xl;
+
+  h4 {
+    margin: 0 0 $spacing-md 0;
+    font-size: $font-size-sm;
+    font-weight: $font-weight-semibold;
+    color: var(--text-primary);
+  }
+}
+
+.output-list {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-xs;
+}
+
+.output-file {
+  padding: $spacing-sm $spacing-md;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: $radius-md;
+  font-size: $font-size-sm;
+  color: var(--text-secondary);
+  font-family: 'SF Mono', Monaco, monospace;
+}
+
+.danger-zone {
+  width: 100%;
+  max-width: 600px;
+  padding-top: $spacing-xl;
+  margin-top: $spacing-xl;
+  border-top: 1px solid var(--border-color);
+}
+
+.delete-btn {
+  padding: $spacing-sm $spacing-md;
+  background: transparent;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: $radius-md;
+  color: $error;
+  font-size: $font-size-sm;
+  font-weight: $font-weight-medium;
+  cursor: pointer;
+  transition: all $transition-fast;
+
+  &:hover {
+    background: rgba(239, 68, 68, 0.1);
+    border-color: $error;
+  }
+}
+
+// ============================================================================
+// EMPTY STATES
+// ============================================================================
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: $spacing-3xl;
+  text-align: center;
+  height: 100%;
+  color: var(--text-secondary);
+
+  .empty-icon {
+    font-size: 4rem;
+    margin-bottom: $spacing-lg;
+    opacity: 0.5;
+  }
+
+  p {
+    margin: 0 0 $spacing-xs 0;
+    font-size: $font-size-lg;
+    font-weight: $font-weight-medium;
+    color: var(--text-primary);
+  }
+
+  .empty-hint {
+    font-size: $font-size-sm;
+    color: var(--text-tertiary);
+  }
+}
+
+.loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border-color);
+  border-top-color: var(--primary-orange);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-bottom: $spacing-md;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

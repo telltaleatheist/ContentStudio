@@ -1,0 +1,33 @@
+<div class="dock-container">
+  <nav class="dock" (mouseleave)="setHovered(null)">
+    @for (link of navLinks; track link.path; let i = $index) {
+      <a
+        [routerLink]="link.path"
+        class="dock-item"
+        [class.active]="isActive(link.path)"
+        [style.transform]="'scale(' + getScale(i) + ') translateY(' + getTranslateY(i) + 'px)'"
+        (mouseenter)="setHovered(i)"
+        [attr.aria-label]="link.label"
+      >
+        <span class="dock-icon">{{ link.icon }}</span>
+        <span class="dock-tooltip">{{ link.label }}</span>
+        @if (isActive(link.path)) {
+          <span class="dock-indicator"></span>
+        }
+      </a>
+    }
+
+    <div class="dock-divider"></div>
+
+    <button
+      class="dock-item"
+      (click)="toggleTheme()"
+      (mouseenter)="setHovered(navLinks.length)"
+      [style.transform]="'scale(' + getScale(navLinks.length) + ') translateY(' + getTranslateY(navLinks.length) + 'px)'"
+      [attr.aria-label]="themeService.isDarkMode() ? 'Switch to light mode' : 'Switch to dark mode'"
+    >
+      <span class="dock-icon">{{ themeService.isDarkMode() ? '☀️' : '🌙' }}</span>
+      <span class="dock-tooltip">{{ themeService.isDarkMode() ? 'Light Mode' : 'Dark Mode' }}</span>
+    </button>
+  </nav>
+</div>

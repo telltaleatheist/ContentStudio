@@ -385,28 +385,9 @@ export class Inputs implements OnInit, OnDestroy {
 
       this.jobQueue.addJob(jobName, items, promptSet, 'compilation');
     } else {
-      // Individual mode - group items by prompt set
-      const groups: { [promptSet: string]: InputItem[] } = {};
-
+      // Individual mode - each item becomes its own job (like creamsicle)
       this.selectedItems.forEach(item => {
-        if (!groups[item.promptSet]) {
-          groups[item.promptSet] = [];
-        }
-        groups[item.promptSet].push(item);
-      });
-
-      // Create a job for each group
-      Object.entries(groups).forEach(([promptSet, items]) => {
-        let jobName: string;
-        if (items.length === 1) {
-          jobName = `${items[0].displayName}`;
-        } else {
-          const firstName = items[0].displayName;
-          const truncatedName = firstName.length > 30 ? firstName.substring(0, 30) + '...' : firstName;
-          jobName = `${truncatedName} + ${items.length - 1} more`;
-        }
-
-        this.jobQueue.addJob(jobName, items, promptSet, 'individual');
+        this.jobQueue.addJob(item.displayName, [item], item.promptSet, 'individual');
       });
     }
 
@@ -909,6 +890,34 @@ export class Inputs implements OnInit, OnDestroy {
     return item.type === 'video' || item.type === 'transcript';
   }
 
+  // Master chapters checkbox helpers
+  hasVideoItems(): boolean {
+    return this.inputsState.inputItems().some(item => this.canGenerateChapters(item));
+  }
+
+  allChaptersEnabled(): boolean {
+    const videoItems = this.inputsState.inputItems().filter(item => this.canGenerateChapters(item));
+    if (videoItems.length === 0) return false;
+    return videoItems.every(item => item.generateChapters !== false);
+  }
+
+  someChaptersEnabled(): boolean {
+    const videoItems = this.inputsState.inputItems().filter(item => this.canGenerateChapters(item));
+    if (videoItems.length === 0) return false;
+    return videoItems.some(item => item.generateChapters !== false);
+  }
+
+  toggleAllChapters(enabled: boolean) {
+    const items = this.inputsState.inputItems();
+    const updatedItems = items.map(item => {
+      if (this.canGenerateChapters(item)) {
+        return { ...item, generateChapters: enabled };
+      }
+      return item;
+    });
+    this.inputsState.inputItems.set(updatedItems);
+  }
+
   // Global queue progress helpers
   getGlobalQueueProgress(): number {
     const jobs = this.jobQueue.jobs();
@@ -933,12 +942,14 @@ export class Inputs implements OnInit, OnDestroy {
   getJobProgress(job: QueuedJob): number {
     if (job.status === 'completed') return 100;
     if (job.status === 'failed') return 100;
+    if (job.inputs.length === 0) return 0;
 
-    const completedItems = job.itemProgress.filter(item =>
-      item.status === 'completed' || item.status === 'failed'
-    ).length;
+    // Sum up actual progress of all items (0-100 each)
+    const totalProgress = job.itemProgress.reduce((sum, item, index) => {
+      return sum + this.getItemProgress(job, index);
+    }, 0);
 
-    return (completedItems / job.inputs.length) * 100;
+    return totalProgress / job.inputs.length;
   }
 
   getCompletedItemsCount(job: QueuedJob): number {

@@ -1,0 +1,124 @@
+<div class="cascade" (click)="clearSelection()" (mousedown)="onDragSelectStart($event)">
+  <!-- Empty State -->
+  @if (virtualItems().length === 0) {
+    <div class="cascade-content empty">
+      <div class="empty-state">
+        <div class="empty-icon">{{ emptyIcon }}</div>
+        <h3>{{ emptyTitle }}</h3>
+        <p>{{ emptyMessage }}</p>
+      </div>
+    </div>
+  } @else {
+    <!-- Virtual Scroll List -->
+    <cdk-virtual-scroll-viewport
+      itemSize="60"
+      class="cascade-content"
+      minBufferPx="400"
+      maxBufferPx="800"
+      style="height: 100%; flex: 1;"
+    >
+      <ng-container *cdkVirtualFor="let item of virtualItems(); let i = index; trackBy: trackItem">
+        <!-- Group Header -->
+        @if (item.type === 'header' && item.group.label) {
+          <div
+            class="group-header"
+            (click)="toggleGroup(item.group, $event)"
+          >
+            <button class="group-toggle" (click)="toggleGroup(item.group, $event)">
+              <span class="toggle-icon" [class.expanded]="item.group.expanded">&#9654;</span>
+            </button>
+            <span class="group-label">{{ item.group.label.toUpperCase() }}</span>
+            <span class="group-count">({{ item.group.items.length }})</span>
+          </div>
+        }
+
+        <!-- List Item -->
+        @if (item.type === 'item') {
+          <div
+            class="cascade-item"
+            [attr.data-item-id]="item.itemId"
+            [class.selected]="isSelected(item.itemId)"
+            [class.highlighted]="isHighlighted(item.itemId)"
+            [class.selection-edge-top]="isSelectionEdgeTop(i)"
+            [class.selection-edge-bottom]="isSelectionEdgeBottom(i)"
+            [class.touch-selecting]="isTouchSelecting()"
+            (click)="handleItemClick(item.itemId, item.item, $event)"
+            (dblclick)="handleItemDoubleClick(item.item, $event)"
+            (contextmenu)="onContextMenu(item.itemId, item.item, $event); preventContextMenu($event)"
+            (touchstart)="onTouchStart(item.itemId, item.item, $event)"
+            (touchmove)="onTouchMove($event)"
+            (touchend)="onTouchEnd(item.itemId, item.item, $event)"
+          >
+            <!-- Status Indicator -->
+            @if (showStatusIndicator) {
+              <div class="status-indicator" [ngClass]="getStatusClass(item.item)"></div>
+            }
+
+            <!-- Icon -->
+            @if (showIcon && item.item.icon) {
+              <div class="item-icon">{{ item.item.icon }}</div>
+            }
+
+            <!-- Content -->
+            <div class="item-content">
+              <div class="item-title">
+                <span class="title-text">{{ item.item.name }}</span>
+              </div>
+
+              @if (item.item.subtitle) {
+                <div class="item-meta">
+                  <span class="meta-text">{{ item.item.subtitle }}</span>
+                </div>
+              }
+            </div>
+
+            <!-- Metadata -->
+            <div class="item-actions">
+              @if (item.item.metadata) {
+                <span class="item-metadata">{{ item.item.metadata }}</span>
+              }
+            </div>
+
+            <!-- Progress Bar -->
+            @if (getProgress(item.item); as progress) {
+              <div class="item-progress-bar"
+                   role="progressbar"
+                   [attr.aria-valuenow]="progress.value"
+                   aria-valuemin="0"
+                   aria-valuemax="100">
+                @if (!progress.indeterminate) {
+                  <div class="progress-fill"
+                       [style.width.%]="progress.value"
+                       [style.background-color]="progress.color || null"></div>
+                } @else {
+                  <div class="progress-fill indeterminate"
+                       [style.background-color]="progress.color || null"></div>
+                }
+              </div>
+            }
+          </div>
+        }
+      </ng-container>
+    </cdk-virtual-scroll-viewport>
+  }
+
+  <!-- Context Menu -->
+  <app-context-menu
+    [visible]="contextMenuVisible()"
+    [position]="contextMenuPosition()"
+    [actions]="contextMenuActions()"
+    (actionSelected)="onContextMenuAction($event)"
+    (closed)="closeContextMenu()"
+  />
+
+  <!-- Drag Selection Rectangle -->
+  @if (isDragSelecting() && selectionRect(); as rect) {
+    <div
+      class="selection-rectangle"
+      [style.left.px]="rect.left"
+      [style.top.px]="rect.top"
+      [style.width.px]="rect.width"
+      [style.height.px]="rect.height"
+    ></div>
+  }
+</div>

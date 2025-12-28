@@ -44,3 +44,4 @@ chatgpt api key.txt
 utilities/bin/*
 .claude/*
 .claude/settings.local.json
+creamsicle/.angular/*

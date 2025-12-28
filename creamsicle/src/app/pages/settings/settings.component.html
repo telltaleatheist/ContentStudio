@@ -1,0 +1,152 @@
+<div class="page-container">
+  <!-- Save Notification -->
+  @if (showSaveNotification()) {
+    <div class="save-notification">
+      <span class="notification-icon">✅</span>
+      <span>Settings saved successfully</span>
+      <button class="notification-close" (click)="dismissSaveNotification()">✕</button>
+    </div>
+  }
+
+  <!-- Left Panel: Categories -->
+  <div class="nav-panel">
+    <div class="panel-header">
+      <h2 class="panel-title">Settings</h2>
+    </div>
+    <div class="nav-list">
+      <button class="nav-item"
+              [class.active]="activeSection() === 'models'"
+              (click)="activeSection.set('models')">
+        <span class="nav-icon">🤖</span>
+        <span class="nav-label">AI Models</span>
+      </button>
+      <button class="nav-item"
+              [class.active]="activeSection() === 'prompts'"
+              (click)="activeSection.set('prompts')">
+        <span class="nav-icon">✨</span>
+        <span class="nav-label">Prompt Set</span>
+      </button>
+      <button class="nav-item"
+              [class.active]="activeSection() === 'output'"
+              (click)="activeSection.set('output')">
+        <span class="nav-icon">📂</span>
+        <span class="nav-label">Output</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Right Panel: Settings Content -->
+  <div class="content-panel">
+    <div class="panel-header">
+      <h2 class="panel-title">
+        @switch (activeSection()) {
+          @case ('models') { AI Models }
+          @case ('prompts') { Prompt Set }
+          @case ('output') { Output Settings }
+        }
+      </h2>
+      <button class="save-btn" (click)="saveSettings()">
+        Save Changes
+      </button>
+    </div>
+
+    <div class="panel-content">
+      @switch (activeSection()) {
+        @case ('models') {
+          <div class="settings-section">
+            <div class="section-intro">
+              <p>Select the default AI model for generating metadata. You can override this per-job on the Inputs page.</p>
+            </div>
+
+            <div class="setting-card">
+              <div class="setting-header">
+                <h3>Default AI Model</h3>
+                <p class="setting-description">Used for transcription analysis and metadata generation</p>
+              </div>
+              <div class="setting-body">
+                <select class="form-select"
+                        [ngModel]="aiModel()"
+                        (ngModelChange)="aiModel.set($event)">
+                  @for (option of modelOptions(); track option.value) {
+                    <option [value]="option.value">
+                      {{ option.icon }} {{ option.label }}
+                    </option>
+                  }
+                </select>
+                <span class="form-hint">Can be overridden per-job on the Inputs page</span>
+              </div>
+            </div>
+
+            @if (modelOptions().length === 0) {
+              <div class="info-box">
+                <span class="info-icon">ℹ️</span>
+                <div>
+                  <p><strong>No AI Models Available</strong></p>
+                  <p class="small">Configure Ollama locally or add API keys for cloud providers.</p>
+                </div>
+              </div>
+            }
+          </div>
+        }
+
+        @case ('prompts') {
+          <div class="settings-section">
+            <div class="section-intro">
+              <p>Select which prompt set to use for generating metadata. Create and manage prompt sets in the Prompts page.</p>
+            </div>
+
+            <div class="setting-card">
+              <div class="setting-header">
+                <h3>Active Prompt Set</h3>
+                <p class="setting-description">The prompt template used when generating metadata</p>
+              </div>
+              <div class="setting-body">
+                <select class="form-select"
+                        [ngModel]="selectedPromptSet()"
+                        (ngModelChange)="selectedPromptSet.set($event)">
+                  @for (promptSet of availablePromptSets(); track promptSet.id) {
+                    <option [value]="promptSet.id">{{ promptSet.name }}</option>
+                  }
+                </select>
+              </div>
+            </div>
+
+            <div class="info-box">
+              <span class="info-icon">💡</span>
+              <div>
+                <p><strong>About Prompt Sets</strong></p>
+                <p class="small">Each prompt set contains custom instructions for generating metadata. You can create and manage prompt sets in the Prompts page.</p>
+              </div>
+            </div>
+          </div>
+        }
+
+        @case ('output') {
+          <div class="settings-section">
+            <div class="section-intro">
+              <p>Configure where generated files are saved.</p>
+            </div>
+
+            <div class="setting-card">
+              <div class="setting-header">
+                <h3>Output Directory</h3>
+                <p class="setting-description">Where generated metadata files will be saved</p>
+              </div>
+              <div class="setting-body">
+                <div class="directory-input">
+                  <input type="text"
+                         class="form-input"
+                         [ngModel]="outputDirectory()"
+                         readonly>
+                  <button class="browse-btn" (click)="selectOutputDirectory()">
+                    Browse
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        }
+      }
+    </div>
+  </div>
+</div>

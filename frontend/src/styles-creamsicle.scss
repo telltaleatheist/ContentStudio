@@ -6,6 +6,8 @@
   --primary-orange: #ff6b35;
   --light-orange: #ff8c5a;
   --dark-orange: #e55529;
+  --accent-orange: #ffa366;
+  --peachy-orange: #ffb380;
 
   --bg-primary: #ffffff;
   --bg-secondary: #f8f9fa;
@@ -27,6 +29,12 @@
   --shadow-md: 0 4px 6px -1px var(--shadow-color);
   --shadow-lg: 0 10px 15px -3px var(--shadow-color);
   --shadow-xl: 0 20px 25px -5px var(--shadow-color);
+  --shadow-glow: 0 0 20px rgba(255, 107, 53, 0.3);
+
+  // Gradients
+  --gradient-primary: linear-gradient(135deg, #ff6b35 0%, #ffa366 100%);
+  --gradient-secondary: linear-gradient(135deg, #ffa366 0%, #ffb380 100%);
+  --gradient-flame: linear-gradient(135deg, #e55529 0%, #ff6b35 50%, #ffa366 100%);
 
   // Status colors
   --success-bg: #dcfce7;
@@ -51,6 +59,7 @@
   --text-muted: #9ca3af;
   --border-color: #374151;
   --shadow-color: rgba(0, 0, 0, 0.5);
+  --shadow-glow: 0 0 25px rgba(255, 107, 53, 0.4);
 
   // Brighter icons in sidebar
   .app-sidenav .mat-icon {
@@ -440,39 +449,76 @@
   opacity: 0;
 }
 
-/* Override Material Theme Colors */
+/* Override Material Theme Colors - GRADIENT BUTTONS */
 .mat-mdc-raised-button.mat-primary,
 .mat-mdc-fab.mat-primary,
 .mat-mdc-mini-fab.mat-primary,
 .mat-mdc-unelevated-button.mat-primary {
-  --mdc-protected-button-container-color: var(--primary-orange) !important;
+  --mdc-protected-button-container-color: transparent !important;
   --mdc-protected-button-label-text-color: white !important;
-  --mdc-filled-button-container-color: var(--primary-orange) !important;
+  --mdc-filled-button-container-color: transparent !important;
   --mdc-filled-button-label-text-color: white !important;
-  background-color: var(--primary-orange) !important;
+  background: var(--gradient-primary) !important;
   color: white !important;
+  box-shadow: var(--shadow-md) !important;
+  transition: all 0.15s ease !important;
+  position: relative;
+  overflow: hidden;
+
+  .mat-icon {
+    color: white !important;
+  }
+
+  // Ripple effect on click
+  &::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.3);
+    transform: translate(-50%, -50%);
+    transition: width 0.4s, height 0.4s;
+  }
+
+  &:active::before {
+    width: 300px;
+    height: 300px;
+  }
 }
 
 .mat-mdc-raised-button.mat-primary:hover,
 .mat-mdc-fab.mat-primary:hover,
 .mat-mdc-mini-fab.mat-primary:hover,
 .mat-mdc-unelevated-button.mat-primary:hover {
-  --mdc-protected-button-container-color: var(--dark-orange) !important;
-  --mdc-filled-button-container-color: var(--dark-orange) !important;
-  background-color: var(--dark-orange) !important;
+  --mdc-protected-button-container-color: transparent !important;
+  --mdc-filled-button-container-color: transparent !important;
+  background: var(--gradient-primary) !important;
+  box-shadow: var(--shadow-lg), var(--shadow-glow) !important;
+  transform: translateY(-2px) !important;
+}
+
+.mat-mdc-raised-button.mat-primary:active,
+.mat-mdc-fab.mat-primary:active,
+.mat-mdc-mini-fab.mat-primary:active,
+.mat-mdc-unelevated-button.mat-primary:active {
+  transform: translateY(0) !important;
 }
 
 .mat-mdc-raised-button.mat-accent {
-  --mdc-protected-button-container-color: var(--primary-orange) !important;
+  --mdc-protected-button-container-color: transparent !important;
   --mdc-protected-button-label-text-color: white !important;
+  background: var(--gradient-secondary) !important;
 }
 
 .mat-toolbar.mat-primary {
-  --mdc-elevated-card-container-color: var(--primary-orange) !important;
-  background: var(--primary-orange) !important;
+  --mdc-elevated-card-container-color: transparent !important;
+  background: var(--gradient-primary) !important;
   color: white !important;
-  box-shadow: var(--shadow-sm) !important;
-  border-bottom: 1px solid var(--dark-orange) !important;
+  box-shadow: var(--shadow-md), 0 4px 12px rgba(255, 107, 53, 0.15) !important;
+  border-bottom: none !important;
 
   .mat-icon {
     color: white !important;
@@ -592,4 +638,124 @@ router-outlet + * {
   --mdc-checkbox-selected-pressed-icon-color: var(--primary-orange) !important;
   --mdc-checkbox-unselected-focus-icon-color: var(--text-secondary) !important;
   --mdc-checkbox-unselected-hover-icon-color: var(--primary-orange) !important;
+}
+
+/* ============================================================================
+   CUSTOM SCROLLBAR - CREAMSICLE STYLE
+   ============================================================================ */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--primary-orange);
+  border-radius: 8px;
+  transition: background 0.2s ease;
+
+  &:hover {
+    background: var(--dark-orange);
+  }
+}
+
+/* ============================================================================
+   CARDS WITH GRADIENT HOVER
+   ============================================================================ */
+
+.mat-mdc-card {
+  border-radius: var(--border-radius-large) !important;
+  transition: all 0.3s ease !important;
+
+  &:hover {
+    box-shadow: var(--shadow-lg), 0 0 0 1px rgba(255, 107, 53, 0.1) !important;
+  }
+}
+
+/* ============================================================================
+   GRADIENT TEXT UTILITY
+   ============================================================================ */
+
+.gradient-text {
+  background: var(--gradient-primary);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ============================================================================
+   INPUT FIELDS FOCUS STATE
+   ============================================================================ */
+
+.mat-mdc-form-field.mat-focused {
+  .mdc-notched-outline__leading,
+  .mdc-notched-outline__notch,
+  .mdc-notched-outline__trailing {
+    border-color: var(--primary-orange) !important;
+    border-width: 2px !important;
+  }
+
+  .mat-mdc-floating-label {
+    color: var(--primary-orange) !important;
+  }
+}
+
+/* ============================================================================
+   PROGRESS BAR - GRADIENT
+   ============================================================================ */
+
+.mat-mdc-progress-bar {
+  --mdc-linear-progress-active-indicator-color: var(--primary-orange) !important;
+
+  .mdc-linear-progress__bar-inner {
+    background: var(--gradient-primary) !important;
+    border-color: transparent !important;
+  }
+}
+
+.mat-mdc-progress-spinner {
+  --mdc-circular-progress-active-indicator-color: var(--primary-orange) !important;
+}
+
+/* ============================================================================
+   SLIDER - CREAMSICLE
+   ============================================================================ */
+
+.mat-mdc-slider {
+  --mdc-slider-handle-color: var(--primary-orange) !important;
+  --mdc-slider-focus-handle-color: var(--primary-orange) !important;
+  --mdc-slider-hover-handle-color: var(--dark-orange) !important;
+  --mdc-slider-active-track-color: var(--primary-orange) !important;
+  --mdc-slider-inactive-track-color: var(--bg-tertiary) !important;
+  --mdc-slider-with-tick-marks-active-container-color: var(--primary-orange) !important;
+}
+
+/* ============================================================================
+   TABS - GRADIENT INDICATOR
+   ============================================================================ */
+
+.mat-mdc-tab-group {
+  .mat-mdc-tab-header {
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .mat-mdc-tab:not(.mat-mdc-tab-disabled) {
+    &.mdc-tab--active {
+      .mdc-tab__text-label {
+        color: var(--primary-orange) !important;
+      }
+    }
+
+    .mdc-tab-indicator__content--underline {
+      background: var(--gradient-primary) !important;
+      border-color: transparent !important;
+      height: 3px;
+      border-radius: 3px 3px 0 0;
+    }
+  }
 }

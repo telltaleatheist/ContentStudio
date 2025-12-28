@@ -43,7 +43,23 @@
       "Bash(do echo -n '$url: ')",
       "Bash(done)",
       "Bash(m4b-tool:*)",
-      "Bash(sudo sed:*)"
+      "Bash(sudo sed:*)",
+      "Bash(mkdir:*)",
+      "Bash(rm:*)",
+      "Bash(/Volumes/Callisto/Projects/ContentStudio/creamsicle/src/app/components/filename-modal )",
+      "Bash(/Volumes/Callisto/Projects/ContentStudio/creamsicle/src/app/components/video-editor )",
+      "Bash(/Volumes/Callisto/Projects/ContentStudio/creamsicle/src/app/components/video-library )",
+      "Bash(/Volumes/Callisto/Projects/ContentStudio/creamsicle/src/app/components/video-config-dialog )",
+      "Bash(/Volumes/Callisto/Projects/ContentStudio/creamsicle/src/app/components/video-info-page )",
+      "Bash(/Volumes/Callisto/Projects/ContentStudio/creamsicle/src/app/components/video-preview-modal )",
+      "Bash(/Volumes/Callisto/Projects/ContentStudio/creamsicle/src/app/components/video-processing-queue )",
+      "Bash(/Volumes/Callisto/Projects/ContentStudio/creamsicle/src/app/components/library-manager-modal)",
+      "Bash(/Volumes/Callisto/Projects/ContentStudio/creamsicle/src/app/pages/metadata-reports )",
+      "Bash(/Volumes/Callisto/Projects/ContentStudio/creamsicle/src/app/pages/prompts )",
+      "Bash(/Volumes/Callisto/Projects/ContentStudio/creamsicle/src/app/pages/history )",
+      "Bash(/Volumes/Callisto/Projects/ContentStudio/creamsicle/src/app/pages/settings)",
+      "Bash(npm run build:*)",
+      "Bash(npm run build:frontend:*)"
     ]
   }
 }

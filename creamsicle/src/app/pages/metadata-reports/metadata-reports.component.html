@@ -1,0 +1,229 @@
+<div class="page-container">
+  <!-- Left Panel: Reports List -->
+  <div class="list-panel">
+    <div class="panel-header">
+      <div class="header-left">
+        <h2 class="panel-title">Reports</h2>
+        <span class="report-count">{{ reports().length }}</span>
+      </div>
+      <div class="header-actions">
+        @if (hasSelectedReports()) {
+          <button class="action-btn primary" (click)="exportSelectedAsTxt()">
+            Export {{ getSelectedReports().length }}
+          </button>
+        }
+        <button class="action-btn icon-only" (click)="loadReports()" [disabled]="isLoading()" title="Refresh">
+          {{ isLoading() ? '...' : '↻' }}
+        </button>
+      </div>
+    </div>
+
+    <div class="panel-content">
+      @if (cascadeGroups().length > 0) {
+        <app-cascade
+          [groups]="cascadeGroups()"
+          [showStatusIndicator]="false"
+          [customContextMenuActions]="contextMenuActions"
+          emptyIcon="📝"
+          emptyTitle="No reports yet"
+          emptyMessage="Generate metadata to see reports here"
+          (selectionChanged)="onCascadeSelectionChanged($event)"
+          (itemDoubleClick)="onReportDoubleClick($event)"
+          (itemAction)="onCascadeAction($event)"
+        />
+      } @else if (isLoading()) {
+        <div class="empty-state">
+          <div class="loading-spinner"></div>
+          <p>Loading reports...</p>
+        </div>
+      } @else {
+        <div class="empty-state">
+          <span class="empty-icon">📝</span>
+          <p>No reports yet</p>
+          <span class="empty-hint">Generate metadata to see reports here</span>
+        </div>
+      }
+    </div>
+  </div>
+
+  <!-- Right Panel: Metadata Viewer -->
+  <div class="viewer-panel">
+    @if (selectedReport() && metadata()) {
+      <div class="viewer-header">
+        <div class="viewer-title-row">
+          <span class="viewer-icon">📄</span>
+          <div class="viewer-title-info">
+            <h2 class="viewer-title">{{ metadata()?._title || selectedReport()!.displayTitle || selectedReport()!.name }}</h2>
+            <div class="viewer-meta">
+              <span class="meta-item">{{ formatDate(selectedReport()!.date) }}</span>
+              @if (selectedReport()!.promptSet) {
+                <span class="meta-badge">{{ selectedReport()!.promptSet }}</span>
+              }
+            </div>
+          </div>
+        </div>
+        <button class="action-btn" (click)="showInFolder(selectedReport()!)">
+          Show in Folder
+        </button>
+      </div>
+
+      <div class="viewer-content">
+        <!-- Titles -->
+        @if (metadata()!.titles && metadata()!.titles.length > 0) {
+          <section class="content-section">
+            <div class="section-header">
+              <div class="section-title-row">
+                <span class="section-icon">🏷️</span>
+                <h3>Titles</h3>
+                <span class="section-count">{{ metadata()!.titles.length }}</span>
+              </div>
+            </div>
+            <div class="titles-list">
+              @for (title of metadata()!.titles; track $index) {
+                <div class="title-item"
+                     [class.copied]="copiedItemKey() === 'title-' + $index"
+                     (click)="copyToClipboard(getTitleText(title), 'title-' + $index)">
+                  <span class="title-number">{{ $index + 1 }}</span>
+                  <span class="title-text">{{ getTitleText(title) }}</span>
+                  <span class="copy-hint">{{ copiedItemKey() === 'title-' + $index ? '✓' : '📋' }}</span>
+                </div>
+              }
+            </div>
+          </section>
+        }
+
+        <!-- Description -->
+        <section class="content-section">
+          <div class="section-header">
+            <div class="section-title-row">
+              <span class="section-icon">📄</span>
+              <h3>Description</h3>
+              <span class="char-count">{{ getDescriptionWithHashtags().length }} chars</span>
+            </div>
+            <button class="copy-btn"
+                    [class.copied]="copiedItemKey() === 'description'"
+                    (click)="copyToClipboard(getDescriptionWithHashtags(), 'description')"
+                    title="Copy">
+              {{ copiedItemKey() === 'description' ? '✓ Copied' : '📋 Copy' }}
+            </button>
+          </div>
+          <div class="description-box">
+            <textarea readonly [value]="getDescriptionWithHashtags()"></textarea>
+          </div>
+        </section>
+
+        <!-- Tags -->
+        @if (getTagsArray().length > 0) {
+          <section class="content-section">
+            <div class="section-header">
+              <div class="section-title-row">
+                <span class="section-icon">🏷️</span>
+                <h3>Tags</h3>
+                <span class="section-count">{{ getTagsArray().length }}</span>
+              </div>
+              <button class="copy-btn"
+                      [class.copied]="copiedItemKey() === 'tags-all'"
+                      (click)="copyToClipboard(getTagsString(), 'tags-all')"
+                      title="Copy">
+                {{ copiedItemKey() === 'tags-all' ? '✓ Copied' : '📋 Copy' }}
+              </button>
+            </div>
+            <div class="tags-grid">
+              @for (tag of getTagsArray(); track $index) {
+                <span class="tag"
+                      [class.copied]="copiedItemKey() === 'tag-' + $index"
+                      (click)="copyToClipboard(tag, 'tag-' + $index)">{{ tag }}</span>
+              }
+            </div>
+          </section>
+        }
+
+        <!-- Thumbnail Text -->
+        @if (metadata()!.thumbnail_text && metadata()!.thumbnail_text.length > 0) {
+          <section class="content-section">
+            <div class="section-header">
+              <div class="section-title-row">
+                <span class="section-icon">🖼️</span>
+                <h3>Thumbnail Text</h3>
+                <span class="section-count">{{ metadata()!.thumbnail_text.length }}</span>
+              </div>
+            </div>
+            <div class="thumbnail-list">
+              @for (text of metadata()!.thumbnail_text; track $index) {
+                <div class="thumbnail-item"
+                     [class.copied]="copiedItemKey() === 'thumb-' + $index"
+                     (click)="copyToClipboard(getThumbnailText(text), 'thumb-' + $index)">
+                  <span class="thumbnail-text">{{ getThumbnailText(text) }}</span>
+                  <span class="copy-hint">{{ copiedItemKey() === 'thumb-' + $index ? '✓' : '📋' }}</span>
+                </div>
+              }
+            </div>
+          </section>
+        }
+
+        <!-- Chapters -->
+        @if (metadata()?.chapters && metadata()!.chapters!.length > 0) {
+          <section class="content-section">
+            <div class="section-header">
+              <div class="section-title-row">
+                <span class="section-icon">📑</span>
+                <h3>Chapters</h3>
+                <span class="section-count">{{ metadata()!.chapters!.length }}</span>
+              </div>
+              <button class="copy-btn"
+                      [class.copied]="copiedItemKey() === 'chapters-all'"
+                      (click)="copyChaptersToClipboard()"
+                      title="Copy all">
+                {{ copiedItemKey() === 'chapters-all' ? '✓ Copied' : '📋 Copy All' }}
+              </button>
+            </div>
+            <div class="chapters-list">
+              @for (chapter of metadata()!.chapters; track $index) {
+                <div class="chapter-item"
+                     [class.copied]="copiedItemKey() === 'chapter-' + $index"
+                     (click)="copyToClipboard(getChapterTimestamp(chapter) + ' ' + getChapterTitle(chapter), 'chapter-' + $index)">
+                  <span class="chapter-time">{{ getChapterTimestamp(chapter) }}</span>
+                  <span class="chapter-title">{{ getChapterTitle(chapter) }}</span>
+                  <span class="copy-hint">{{ copiedItemKey() === 'chapter-' + $index ? '✓' : '📋' }}</span>
+                </div>
+              }
+            </div>
+          </section>
+        }
+
+        <!-- Pinned Comment -->
+        @if (metadata()?.pinned_comment && metadata()!.pinned_comment!.length > 0) {
+          <section class="content-section">
+            <div class="section-header">
+              <div class="section-title-row">
+                <span class="section-icon">📌</span>
+                <h3>Pinned Comment</h3>
+              </div>
+            </div>
+            <div class="comment-list">
+              @for (comment of metadata()!.pinned_comment; track $index) {
+                <div class="comment-item"
+                     [class.copied]="copiedItemKey() === 'comment-' + $index"
+                     (click)="copyToClipboard(comment, 'comment-' + $index)">
+                  <span class="comment-text">{{ comment }}</span>
+                  <span class="copy-hint">{{ copiedItemKey() === 'comment-' + $index ? '✓' : '📋' }}</span>
+                </div>
+              }
+            </div>
+          </section>
+        }
+      </div>
+    } @else if (isLoading() && selectedReport()) {
+      <div class="viewer-empty">
+        <div class="loading-spinner"></div>
+        <p>Loading metadata...</p>
+      </div>
+    } @else {
+      <div class="viewer-empty">
+        <span class="empty-icon">👆</span>
+        <p>Select a report</p>
+        <span class="empty-hint">Click on a report from the list to view its metadata</span>
+      </div>
+    }
+  </div>
+</div>

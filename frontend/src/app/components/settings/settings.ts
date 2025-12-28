@@ -34,8 +34,7 @@ interface ModelOption {
   styleUrl: './settings.scss',
 })
 export class Settings implements OnInit {
-  // Separate model selection for summarization and metadata generation
-  summarizationModel = signal('ollama:phi-3.5:3.8b');
+  // Single model for all AI tasks (summarization + metadata generation)
   metadataModel = signal('ollama:cogito:70b');
 
   // Provider availability
@@ -105,15 +104,7 @@ export class Settings implements OnInit {
     try {
       const settings = await this.electron.getSettings();
 
-      // Load summarization model
-      if (settings.summarizationProvider && settings.summarizationModel) {
-        this.summarizationModel.set(`${settings.summarizationProvider}:${settings.summarizationModel}`);
-      } else {
-        // Default to small fast model for summarization
-        this.summarizationModel.set('ollama:phi-3.5:3.8b');
-      }
-
-      // Load metadata generation model (backward compatibility with old settings)
+      // Load AI model (used for both summarization and metadata generation)
       if (settings.metadataProvider && settings.metadataModel) {
         this.metadataModel.set(`${settings.metadataProvider}:${settings.metadataModel}`);
       } else if (settings.aiProvider && settings.ollamaModel) {
@@ -170,23 +161,19 @@ export class Settings implements OnInit {
   }
 
   async saveSettings() {
-    // Parse summarization model
-    const [summProvider, ...summModelParts] = this.summarizationModel().split(':');
-    const summModel = summModelParts.join(':');
-
-    // Parse metadata generation model
-    const [metaProvider, ...metaModelParts] = this.metadataModel().split(':');
-    const metaModel = metaModelParts.join(':');
+    // Parse the single AI model (used for both summarization and metadata generation)
+    const [provider, ...modelParts] = this.metadataModel().split(':');
+    const model = modelParts.join(':');
 
     const settings = {
-      // New format
-      summarizationProvider: summProvider,
-      summarizationModel: summModel,
-      metadataProvider: metaProvider,
-      metadataModel: metaModel,
+      // Use same model for both summarization and metadata
+      summarizationProvider: provider,
+      summarizationModel: model,
+      metadataProvider: provider,
+      metadataModel: model,
       // Backward compatibility
-      aiProvider: metaProvider,
-      ollamaModel: metaModel,
+      aiProvider: provider,
+      ollamaModel: model,
       // Other settings
       outputDirectory: this.outputDirectory(),
       promptSet: this.selectedPromptSet()
@@ -250,12 +237,7 @@ export class Settings implements OnInit {
     try {
       const settings = await this.electron.getSettings();
 
-      // Load summarization model
-      if (settings.summarizationProvider && settings.summarizationModel) {
-        this.summarizationModel.set(`${settings.summarizationProvider}:${settings.summarizationModel}`);
-      }
-
-      // Load metadata generation model
+      // Load AI model
       if (settings.metadataProvider && settings.metadataModel) {
         this.metadataModel.set(`${settings.metadataProvider}:${settings.metadataModel}`);
       }

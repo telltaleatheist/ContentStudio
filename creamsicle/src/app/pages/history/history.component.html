@@ -1,0 +1,132 @@
+<div class="page-container">
+  <!-- Left Panel: Jobs List -->
+  <div class="list-panel">
+    <div class="panel-header">
+      <div class="header-left">
+        <h2 class="panel-title">History</h2>
+        <span class="item-count">{{ historyJobs().length }}</span>
+      </div>
+      <div class="header-actions">
+        @if (historyJobs().length > 0) {
+          <button class="action-btn" (click)="clearAllHistory()">Clear All</button>
+        }
+        <button class="action-btn icon-only" (click)="loadHistory()" [disabled]="loading()" title="Refresh">
+          {{ loading() ? '...' : '↻' }}
+        </button>
+      </div>
+    </div>
+
+    <div class="panel-content">
+      @if (cascadeGroups().length > 0) {
+        <app-cascade
+          [groups]="cascadeGroups()"
+          [showStatusIndicator]="true"
+          [customContextMenuActions]="contextMenuActions"
+          emptyIcon="📦"
+          emptyTitle="No history yet"
+          emptyMessage="Processed items will appear here"
+          (selectionChanged)="onCascadeSelectionChanged($event)"
+          (itemDoubleClick)="onJobDoubleClick($event)"
+          (itemAction)="onCascadeAction($event)"
+        />
+      } @else if (loading()) {
+        <div class="empty-state">
+          <div class="loading-spinner"></div>
+          <p>Loading history...</p>
+        </div>
+      } @else {
+        <div class="empty-state">
+          <span class="empty-icon">📦</span>
+          <p>No history yet</p>
+          <span class="empty-hint">Processed items will appear here</span>
+        </div>
+      }
+    </div>
+  </div>
+
+  <!-- Right Panel: Job Details -->
+  <div class="detail-panel">
+    @if (selectedJob()) {
+      <div class="panel-header">
+        <h2 class="panel-title">Job Details</h2>
+        <div class="header-actions">
+          <button class="action-btn primary" (click)="reAddToQueue(selectedJob()!)">
+            Re-add to Queue
+          </button>
+          @if (selectedJob()!.txt_folder || (selectedJob()!.outputFiles && selectedJob()!.outputFiles!.length > 0)) {
+            <button class="action-btn" (click)="openOutputFolder(selectedJob()!)">
+              Open Folder
+            </button>
+          }
+        </div>
+      </div>
+
+      <div class="panel-content">
+        <div class="detail-section">
+          <h3 class="detail-title">{{ selectedJob()!.job_name || selectedJob()!.name || 'Unnamed Job' }}</h3>
+
+          <div class="status-row">
+            <div class="status-badge large" [class]="'status-' + selectedJob()!.status">
+              <span class="status-icon">{{ getStatusIcon(selectedJob()!.status) }}</span>
+              <span>{{ selectedJob()!.status }}</span>
+            </div>
+          </div>
+
+          <div class="info-grid">
+            <div class="info-item">
+              <span class="info-label">Created</span>
+              <span class="info-value">{{ formatDate(selectedJob()!.created_at || selectedJob()!.createdAt) }}</span>
+            </div>
+            @if (getItemCount(selectedJob()!) > 0) {
+              <div class="info-item">
+                <span class="info-label">Items</span>
+                <span class="info-value">{{ getItemCount(selectedJob()!) }}</span>
+              </div>
+            }
+            @if (selectedJob()!.prompt_set || selectedJob()!.promptSet) {
+              <div class="info-item">
+                <span class="info-label">Prompt Set</span>
+                <span class="info-value">{{ selectedJob()!.prompt_set || selectedJob()!.promptSet }}</span>
+              </div>
+            }
+            @if (selectedJob()!.processing_time || selectedJob()!.processingTime) {
+              <div class="info-item">
+                <span class="info-label">Processing Time</span>
+                <span class="info-value">{{ formatDuration(selectedJob()!.processing_time || selectedJob()!.processingTime) }}</span>
+              </div>
+            }
+            @if (selectedJob()!.mode) {
+              <div class="info-item">
+                <span class="info-label">Mode</span>
+                <span class="info-value capitalize">{{ selectedJob()!.mode }}</span>
+              </div>
+            }
+          </div>
+
+          @if (selectedJob()!.outputFiles && selectedJob()!.outputFiles!.length > 0) {
+            <div class="output-section">
+              <h4>Output Files</h4>
+              <div class="output-list">
+                @for (file of selectedJob()!.outputFiles; track $index) {
+                  <div class="output-file">{{ file.split('/').pop() }}</div>
+                }
+              </div>
+            </div>
+          }
+        </div>
+
+        <div class="danger-zone">
+          <button class="delete-btn" (click)="deleteHistory(selectedJob()!)" title="Delete this job">
+            🗑️ Delete Job
+          </button>
+        </div>
+      </div>
+    } @else {
+      <div class="empty-state">
+        <span class="empty-icon">👆</span>
+        <p>Select a job</p>
+        <span class="empty-hint">Click on a job from the list to view details</span>
+      </div>
+    }
+  </div>
+</div>

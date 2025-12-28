@@ -94,6 +94,19 @@
             Compilation Mode
           </mat-checkbox>
 
+          <!-- Master Chapters Checkbox (only shown when there are video items) -->
+          @if (hasVideoItems()) {
+            <mat-checkbox
+              [checked]="allChaptersEnabled()"
+              [indeterminate]="someChaptersEnabled() && !allChaptersEnabled()"
+              (change)="toggleAllChapters($event.checked)"
+              color="primary"
+              class="master-chapters-checkbox"
+              matTooltip="Enable/disable chapter generation for all video items">
+              Chapters
+            </mat-checkbox>
+          }
+
           <!-- Clear Inputs Button -->
           <button
             mat-button

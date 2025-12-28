@@ -1,0 +1,113 @@
+@use '../../../styles/variables' as *;
+@use '../../../styles/mixins' as *;
+
+.shortcuts-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.15s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.shortcuts-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: $radius-xl;
+  padding: $spacing-lg;
+  min-width: 280px;
+  box-shadow: 0 25px 50px rgba(0, 0, 0, 0.3);
+  animation: scaleIn 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: $spacing-md;
+  padding-bottom: $spacing-sm;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.header-title {
+  font-size: $font-size-sm;
+  font-weight: $font-weight-semibold;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.close-hint {
+  font-size: $font-size-xs;
+  padding: 2px 6px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: $radius-sm;
+  color: var(--text-tertiary);
+  font-family: inherit;
+}
+
+.shortcuts-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: $spacing-sm;
+}
+
+.shortcut {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: $spacing-md;
+  padding: $spacing-sm $spacing-md;
+  background: var(--bg-secondary);
+  border-radius: $radius-md;
+  transition: background 0.15s ease;
+
+  &:hover {
+    background: var(--bg-tertiary);
+  }
+}
+
+.key {
+  font-size: $font-size-xs;
+  font-weight: $font-weight-semibold;
+  font-family: 'SF Mono', 'Monaco', monospace;
+  color: $primary-orange;
+  white-space: nowrap;
+}
+
+.desc {
+  font-size: $font-size-sm;
+  color: var(--text-secondary);
+}
+
+@media (max-width: $breakpoint-sm) {
+  .shortcuts-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .shortcuts-panel {
+    margin: $spacing-md;
+    min-width: auto;
+    width: calc(100% - $spacing-xl);
+  }
+}

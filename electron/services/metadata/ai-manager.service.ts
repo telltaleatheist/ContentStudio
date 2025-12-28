@@ -214,7 +214,9 @@ export class AIManagerService {
                           this.metadataModel.startsWith('openai:');
 
       const needsClaude = this.summaryModel.startsWith('claude-') ||
-                          this.metadataModel.startsWith('claude-');
+                          this.summaryModel.startsWith('claude:') ||
+                          this.metadataModel.startsWith('claude-') ||
+                          this.metadataModel.startsWith('claude:');
 
       // Initialize all needed providers
       let anySuccess = false;
@@ -634,17 +636,20 @@ export class AIManagerService {
     try {
       let result: string | null = null;
 
-      // Detect provider from model name for multi-provider support
-      if (model.startsWith('gpt-') || model.startsWith('openai:')) {
-        console.log(`[AIManager]   Provider: OpenAI (model starts with gpt- or openai:)`);
-        result = await this.makeOpenAIRequest(prompt, model);
-      } else if (model.startsWith('claude-')) {
-        console.log(`[AIManager]   Provider: Claude (model starts with claude-)`);
-        result = await this.makeClaudeRequest(prompt, model);
+      // Detect provider from model name - EXPLICIT routing, no fallbacks
+      // Model format must be "provider:model" (e.g., "ollama:cogito:14b", "openai:gpt-4o", "claude:claude-3-5-sonnet")
+      if (model.startsWith('openai:')) {
+        console.log(`[AIManager]   Provider: OpenAI`);
+        result = await this.makeOpenAIRequest(prompt, model.replace('openai:', ''));
+      } else if (model.startsWith('claude:')) {
+        console.log(`[AIManager]   Provider: Claude`);
+        result = await this.makeClaudeRequest(prompt, model.replace('claude:', ''));
+      } else if (model.startsWith('ollama:')) {
+        console.log(`[AIManager]   Provider: Ollama`);
+        result = await this.makeOllamaRequest(prompt, model.replace('ollama:', ''), timeout);
       } else {
-        // Assume Ollama for all other models (local models)
-        console.log(`[AIManager]   Provider: Ollama (fallback for model: ${model})`);
-        result = await this.makeOllamaRequest(prompt, model, timeout);
+        // No valid provider prefix - this is a bug, throw error
+        throw new Error(`Invalid model format: "${model}". Model must have provider prefix (openai:, claude:, or ollama:)`);
       }
 
       const endTimestamp = new Date().toISOString();
