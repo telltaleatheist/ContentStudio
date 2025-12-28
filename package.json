@@ -10,7 +10,7 @@
     "clean:binaries": "rm -rf resources/bin",
     "rebuild": "npx @electron/rebuild",
     "postinstall": "npm run rebuild",
-    "copy:ffmpeg": "bash scripts/copy-ffmpeg.sh",
+    "copy:ffmpeg": "node scripts/copy-ffmpeg.js",
     "build:electron": "tsc -p tsconfig.electron.json",
     "build:preload": "tsc -p tsconfig.preload.json",
     "build:frontend": "cd frontend && npm run build",
