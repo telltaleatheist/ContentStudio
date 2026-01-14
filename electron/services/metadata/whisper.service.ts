@@ -165,10 +165,29 @@ export class WhisperService extends EventEmitter {
       // Transcribe with whisper
       this.emitProgress(jobId, 15, 'Starting transcription...');
 
+      // Time-based progress estimation (whisper stderr is buffered by OS, so real progress is delayed)
+      // Estimate ~10x realtime processing for base model on Apple Silicon
+      const estimatedDuration = duration ? duration / 10 : 120;
+      const transcribeStart = Date.now();
+
+      const progressTimer = setInterval(() => {
+        const job = this.activeJobs.get(jobId);
+        if (!job || job.aborted) {
+          clearInterval(progressTimer);
+          return;
+        }
+        const elapsed = (Date.now() - transcribeStart) / 1000;
+        // Scale from 15% to 90% based on estimated time
+        const estimatedPercent = Math.min(90, Math.round(15 + (elapsed / estimatedDuration) * 75));
+        this.emitProgress(jobId, estimatedPercent, 'Transcribing audio...');
+      }, 3000); // Update every 3 seconds
+
       const whisperResult = await this.whisper.transcribe(audioPath, tempDir, {
         model: modelName,
         processId: jobId, // Use jobId so we can correlate progress events
       });
+
+      clearInterval(progressTimer);
 
       if (!whisperResult.success || !whisperResult.srtPath) {
         throw new Error(`Transcription failed: ${whisperResult.error}`);

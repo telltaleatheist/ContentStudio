@@ -1,0 +1,153 @@
+<div class="master-reports-container">
+  <div class="page-content">
+
+    <!-- Reports List (Left Panel) -->
+    <div class="panel reports-list-panel">
+      <div class="panel-header">
+        <div>
+          <h4 class="panel-title">Master Reports</h4>
+          <p class="panel-subtitle">
+            {{ reports().length }} report{{ reports().length !== 1 ? 's' : '' }} found
+          </p>
+        </div>
+        <div class="header-actions">
+          <button mat-icon-button (click)="loadReports()" [disabled]="isLoading()" matTooltip="Refresh reports">
+            <mat-icon>refresh</mat-icon>
+          </button>
+        </div>
+      </div>
+
+      <div class="panel-content">
+        @if (isLoading() && reports().length === 0) {
+          <div class="loading-container">
+            <mat-spinner diameter="40"></mat-spinner>
+            <p>Loading reports...</p>
+          </div>
+        }
+
+        @if (!isLoading() && reports().length === 0) {
+          <div class="empty-state">
+            <mat-icon>analytics</mat-icon>
+            <p>No master reports found</p>
+            <small>Analyze master videos to create reports</small>
+          </div>
+        }
+
+        @if (reports().length > 0) {
+          <div class="reports-list">
+            @for (item of reports(); track item.path) {
+              <mat-card
+                class="report-card"
+                [class.selected]="selectedReport()?.path === item.path"
+                (click)="selectReport(item)">
+                <mat-card-content>
+                  <div class="report-row">
+                    <mat-icon class="report-icon">analytics</mat-icon>
+                    <div class="report-info">
+                      <div class="report-title">{{ item.report.masterVideoName }}</div>
+                      <div class="report-meta">
+                        <span>{{ formatDate(item.report.analyzedAt) }}</span>
+                        <span class="separator">·</span>
+                        <span>{{ item.report.sectionCount }} sections</span>
+                        <span class="separator">·</span>
+                        <span>{{ item.report.totalDuration }}</span>
+                      </div>
+                    </div>
+                    <button mat-icon-button (click)="deleteReport(item, $event)" matTooltip="Delete report" class="delete-btn">
+                      <mat-icon>close</mat-icon>
+                    </button>
+                  </div>
+                </mat-card-content>
+              </mat-card>
+            }
+          </div>
+        }
+      </div>
+    </div>
+
+    <!-- Report Viewer (Right Panel) -->
+    <div class="panel report-viewer-panel">
+      @if (!selectedReport()) {
+        <div class="empty-viewer">
+          <mat-icon>touch_app</mat-icon>
+          <p>Select a report to view</p>
+          <small>Click on a report from the list on the left</small>
+        </div>
+      } @else {
+        <div class="panel-header">
+          <div>
+            <h4 class="panel-title">{{ selectedReport()!.report.masterVideoName }}</h4>
+            <p class="panel-subtitle">
+              {{ selectedReport()!.report.sectionCount }} sections detected
+              @if (hasSelectedSections()) {
+                <span class="selected-count">· {{ selectedSections.length }} selected</span>
+              }
+            </p>
+          </div>
+          <div class="header-actions">
+            @if (hasSelectedSections()) {
+              <button mat-raised-button color="accent" (click)="addSelectedToInputs()">
+                <mat-icon>add</mat-icon>
+                Add to Inputs
+              </button>
+            }
+          </div>
+        </div>
+
+        <div class="panel-content viewer-content">
+          <!-- Select All Control -->
+          <div class="select-all-container">
+            <mat-checkbox
+              [checked]="allSectionsSelected()"
+              [indeterminate]="someSectionsSelected()"
+              (change)="toggleSelectAllSections()">
+              Select All Sections
+            </mat-checkbox>
+          </div>
+
+          <!-- Sections List -->
+          <div class="sections-list">
+            @for (section of selectedReport()!.report.sections; track $index; let i = $index) {
+              <mat-card class="section-card" [class.selected]="section.selected">
+                <mat-card-content>
+                  <div class="section-row">
+                    <mat-checkbox
+                      [checked]="section.selected || false"
+                      (change)="toggleSectionSelection(section)"
+                      (click)="$event.stopPropagation()">
+                    </mat-checkbox>
+                    <div class="section-info" (click)="toggleSectionSelection(section)">
+                      <div class="section-header-row">
+                        <span class="section-number">{{ i + 1 }}</span>
+                        <span class="section-title">{{ section.title }}</span>
+                        <mat-chip class="duration-chip">{{ getSectionDuration(section) }}</mat-chip>
+                      </div>
+                      <div class="section-timestamps">
+                        <mat-icon>schedule</mat-icon>
+                        {{ section.startTimestamp }} - {{ section.endTimestamp }}
+                      </div>
+                      <div class="section-description">{{ section.description }}</div>
+                    </div>
+                  </div>
+                </mat-card-content>
+              </mat-card>
+            }
+          </div>
+
+          <!-- Add Selected Button (bottom) -->
+          @if (hasSelectedSections()) {
+            <button
+              mat-raised-button
+              color="accent"
+              class="add-to-inputs-button"
+              (click)="addSelectedToInputs()">
+              <mat-icon>add</mat-icon>
+              Add {{ selectedSections.length }} Section(s) to Inputs
+            </button>
+          }
+        </div>
+      }
+    </div>
+
+  </div>
+</div>

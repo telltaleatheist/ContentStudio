@@ -48,9 +48,9 @@ function createMainWindow() {
 
   mainWindow = new BrowserWindow({
     width: 1400,
-    height: 900,
+    height: 1000,
     minWidth: 1000,
-    minHeight: 700,
+    minHeight: 800,
     backgroundColor: '#ffffff',
     title: 'ContentStudio',
     icon: iconPath,

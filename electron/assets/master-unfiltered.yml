@@ -1,0 +1,38 @@
+name: Unfiltered
+description: Find distinct story/topic changes in a livestream (Sunday-style)
+prompt: |
+  Identify the distinct STORIES in this livestream transcript.
+
+  **Total video duration: {duration}**
+
+  ## What is a "story"?
+
+  A story is a self-contained segment about ONE primary subject (a person, event, or topic).
+  Everything discussed in response to that subject is part of the same story.
+  A NEW story begins only when the host moves to a completely UNRELATED subject.
+
+  ## Your task
+
+  1. Read through the transcript
+  2. Find where the host switches to a completely different topic
+  3. For each story, copy the EXACT words where it begins
+  4. Return stories in chronological order
+
+  ## Skip intro chatter
+
+  The first few lines are usually technical setup - find where actual content begins.
+
+  ## Output
+
+  For each story (in chronological order):
+  - start_phrase: Copy EXACTLY 6-10 consecutive words from where this story begins
+  - title: The primary subject name
+  - description: 2-4 sentence summary
+
+  CRITICAL: start_phrase must be copied EXACTLY from the transcript - do not paraphrase!
+
+  Return JSON only:
+  {"sections": [{"start_phrase": "...", "title": "...", "description": "..."}]}
+
+  Transcript:
+  {transcript}

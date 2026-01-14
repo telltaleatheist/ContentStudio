@@ -49,11 +49,12 @@ instructions_prompt: |-
   - Include variety: questions, statements, how-tos, listicles
 
   DESCRIPTION:
-  - 150-300 words
-  - First 2 sentences: Compelling hook with primary keyword (visible before "Show More")
-  - Include 3-5 natural keyword variations
-  - Add a brief content summary
-  - End with a call to action
+  - 125-200 words (optimal for SEO without overwhelming readers)
+  - First 125-150 characters are CRITICAL - they appear in search results and previews
+  - Opening sentences: Compelling hook with primary keyword
+  - Include 2-3 natural keyword variations (keep density under 2%)
+  - Brief content summary with key takeaways
+  - End with a clear call to action
 
   TAGS:
   - 10-15 tags

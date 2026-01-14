@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
 import { AIManagerService } from '../services/metadata/ai-manager.service';
+import { MasterAnalyzerService } from '../services/metadata/master-analyzer.service';
 
 /**
  * IPC Handlers
@@ -71,6 +72,61 @@ function ensurePromptSetsDirectory(): void {
       }
     } else {
       log.info(`Sample prompts directory not found at: ${samplePromptsDir}`);
+    }
+  }
+}
+
+/**
+ * Get the master prompt sets directory path (user-writable location)
+ * Master prompts are stored separately from metadata prompts
+ */
+function getMasterPromptSetsDirectory(): string {
+  const userDataPath = app.getPath('userData');
+  return path.join(userDataPath, 'master_prompt_sets');
+}
+
+/**
+ * Ensure master prompt sets directory exists and copy default prompts if empty
+ */
+function ensureMasterPromptSetsDirectory(): void {
+  const masterPromptSetsDir = getMasterPromptSetsDirectory();
+  const isNewDirectory = !fs.existsSync(masterPromptSetsDir);
+
+  if (isNewDirectory) {
+    fs.mkdirSync(masterPromptSetsDir, { recursive: true });
+    log.info(`Created master prompt sets directory: ${masterPromptSetsDir}`);
+  }
+
+  // Check if directory is empty (no YAML files)
+  const existingPrompts = fs.existsSync(masterPromptSetsDir)
+    ? fs.readdirSync(masterPromptSetsDir).filter(f => f.endsWith('.yml') || f.endsWith('.yaml'))
+    : [];
+
+  // Copy default master prompts if directory is empty
+  if (existingPrompts.length === 0) {
+    const samplePromptsDir = getSamplePromptsDirectory();
+
+    if (fs.existsSync(samplePromptsDir)) {
+      // Only copy master-*.yml files
+      const masterFiles = fs.readdirSync(samplePromptsDir).filter(f =>
+        f.startsWith('master-') && (f.endsWith('.yml') || f.endsWith('.yaml'))
+      );
+
+      for (const file of masterFiles) {
+        const srcPath = path.join(samplePromptsDir, file);
+        const destPath = path.join(masterPromptSetsDir, file);
+
+        try {
+          fs.copyFileSync(srcPath, destPath);
+          log.info(`Copied default master prompt: ${file}`);
+        } catch (error) {
+          log.warn(`Failed to copy master prompt ${file}:`, error);
+        }
+      }
+
+      if (masterFiles.length > 0) {
+        log.info(`Installed ${masterFiles.length} default master prompt(s)`);
+      }
     }
   }
 }
@@ -697,6 +753,162 @@ export function setupIpcHandlers(store: Store<any>) {
     }
   });
 
+  // ==================== MASTER PROMPT SETS ====================
+
+  // List all master prompt sets
+  ipcMain.handle('list-master-prompt-sets', async () => {
+    try {
+      ensureMasterPromptSetsDirectory();
+      const masterPromptSetsDir = getMasterPromptSetsDirectory();
+
+      const files = fs.readdirSync(masterPromptSetsDir);
+      const promptSets = [];
+
+      for (const file of files) {
+        if (file.endsWith('.yml') || file.endsWith('.yaml')) {
+          const filePath = path.join(masterPromptSetsDir, file);
+          const content = fs.readFileSync(filePath, 'utf8');
+          const parsed: any = yaml.load(content);
+
+          promptSets.push({
+            id: file.replace(/\.(yml|yaml)$/, ''),
+            name: parsed.name || file,
+            description: parsed.description || ''
+          });
+        }
+      }
+
+      return { success: true, promptSets };
+    } catch (error) {
+      log.error('Error listing master prompt sets:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Get a specific master prompt set
+  ipcMain.handle('get-master-prompt-set', async (_event, promptSetId: string) => {
+    try {
+      ensureMasterPromptSetsDirectory();
+      const masterPromptSetsDir = getMasterPromptSetsDirectory();
+      const filePath = path.join(masterPromptSetsDir, `${promptSetId}.yml`);
+
+      if (!fs.existsSync(filePath)) {
+        return { success: false, error: 'Master prompt set not found' };
+      }
+
+      const content = fs.readFileSync(filePath, 'utf8');
+      const parsed: any = yaml.load(content);
+
+      return {
+        success: true,
+        promptSet: {
+          id: promptSetId,
+          name: parsed.name || promptSetId,
+          description: parsed.description || '',
+          prompt: parsed.prompt || ''
+        }
+      };
+    } catch (error) {
+      log.error('Error getting master prompt set:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Create a new master prompt set
+  ipcMain.handle('create-master-prompt-set', async (_event, promptSet: any) => {
+    try {
+      ensureMasterPromptSetsDirectory();
+      const masterPromptSetsDir = getMasterPromptSetsDirectory();
+
+      // Create a safe filename from the name
+      const safeId = promptSet.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      const filePath = path.join(masterPromptSetsDir, `${safeId}.yml`);
+
+      // Check if already exists
+      if (fs.existsSync(filePath)) {
+        return { success: false, error: 'A master prompt set with this name already exists' };
+      }
+
+      // Validate that {transcript} is present in prompt
+      const prompt = promptSet.prompt || '';
+      if (!prompt.includes('{transcript}')) {
+        return { success: false, error: 'Prompt must contain {transcript} placeholder' };
+      }
+
+      // Create the YAML content
+      const yamlContent = {
+        name: promptSet.name,
+        description: promptSet.description || '',
+        prompt: prompt
+      };
+
+      const yamlStr = yaml.dump(yamlContent, { lineWidth: -1, noRefs: true });
+      fs.writeFileSync(filePath, yamlStr, 'utf8');
+
+      log.info(`Created new master prompt set: ${safeId}`);
+      return { success: true, id: safeId };
+    } catch (error) {
+      log.error('Error creating master prompt set:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Update an existing master prompt set
+  ipcMain.handle('update-master-prompt-set', async (_event, promptSetId: string, promptSet: any) => {
+    try {
+      const masterPromptSetsDir = getMasterPromptSetsDirectory();
+      const filePath = path.join(masterPromptSetsDir, `${promptSetId}.yml`);
+
+      if (!fs.existsSync(filePath)) {
+        return { success: false, error: 'Master prompt set not found' };
+      }
+
+      // Validate that {transcript} is present in prompt
+      const prompt = promptSet.prompt || '';
+      if (!prompt.includes('{transcript}')) {
+        return { success: false, error: 'Prompt must contain {transcript} placeholder' };
+      }
+
+      // Update the YAML content
+      const yamlContent = {
+        name: promptSet.name || promptSetId,
+        description: promptSet.description || '',
+        prompt: prompt
+      };
+
+      const yamlStr = yaml.dump(yamlContent, { lineWidth: -1, noRefs: true });
+      fs.writeFileSync(filePath, yamlStr, 'utf8');
+
+      log.info(`Updated master prompt set: ${promptSetId}`);
+      return { success: true };
+    } catch (error) {
+      log.error('Error updating master prompt set:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Delete a master prompt set
+  ipcMain.handle('delete-master-prompt-set', async (_event, promptSetId: string) => {
+    try {
+      const masterPromptSetsDir = getMasterPromptSetsDirectory();
+      const filePath = path.join(masterPromptSetsDir, `${promptSetId}.yml`);
+
+      if (!fs.existsSync(filePath)) {
+        return { success: false, error: 'Master prompt set not found' };
+      }
+
+      fs.unlinkSync(filePath);
+
+      log.info(`Deleted master prompt set: ${promptSetId}`);
+      return { success: true };
+    } catch (error) {
+      log.error('Error deleting master prompt set:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // ==================== END MASTER PROMPT SETS ====================
+
   // Get job history
   ipcMain.handle('get-job-history', async () => {
     try {
@@ -972,6 +1184,172 @@ export function setupIpcHandlers(store: Store<any>) {
       return { success: true };
     } catch (error) {
       log.error('Error opening external URL:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // ==================== MASTER ANALYSIS ====================
+
+  // Select master video file
+  ipcMain.handle('select-master-video', async () => {
+    try {
+      const result = await dialog.showOpenDialog({
+        title: 'Select Master Video',
+        filters: [
+          { name: 'Video Files', extensions: ['mp4', 'mov', 'mkv', 'avi', 'webm', 'm4v', 'wmv', 'flv'] }
+        ],
+        properties: ['openFile']
+      });
+
+      if (result.canceled || result.filePaths.length === 0) {
+        return { success: false, videoPath: null };
+      }
+
+      return { success: true, videoPath: result.filePaths[0] };
+    } catch (error) {
+      log.error('Error selecting master video:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Analyze master video
+  ipcMain.handle('analyze-master', async (_event, params: { videoPath: string; masterPromptSet?: string; jobId?: string }) => {
+    try {
+      log.info('[IPC] Starting master analysis:', params.videoPath);
+
+      const settings = (store as any).store;
+      const mainWindow = BrowserWindow.getAllWindows()[0];
+
+      // Load API keys
+      const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
+      let apiKeys: any = {};
+      if (fs.existsSync(apiKeysPath)) {
+        apiKeys = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
+      }
+
+      // Get AI configuration
+      const aiProvider = settings.aiProvider || 'ollama';
+      const aiModel = settings.aiModel || settings.metadataModel || settings.ollamaModel;
+      const fullModel = aiModel ? `${aiProvider}:${aiModel}` : undefined;
+
+      let apiKey = undefined;
+      if (aiProvider === 'openai') {
+        apiKey = apiKeys.openaiApiKey;
+      } else if (aiProvider === 'claude') {
+        apiKey = apiKeys.claudeApiKey;
+      }
+
+      // Create cancellation tracking
+      let cancelled = false;
+      const jobId = params.jobId || `master-${Date.now()}`;
+
+      const cancelCallback = () => {
+        cancelled = true;
+        log.info(`[IPC] Master analysis ${jobId} cancelled`);
+      };
+
+      runningJobs.set(jobId, { cancel: cancelCallback });
+
+      // Progress callback
+      const progressCallback = (phase: string, message: string, percent?: number) => {
+        if (mainWindow) {
+          mainWindow.webContents.send('master-analysis-progress', {
+            jobId,
+            phase,
+            message,
+            percent
+          });
+        }
+      };
+
+      // Load master prompt set
+      let masterPrompt: string | undefined;
+      if (params.masterPromptSet) {
+        const masterPromptSetsDir = getMasterPromptSetsDirectory();
+        const promptPath = path.join(masterPromptSetsDir, `${params.masterPromptSet}.yml`);
+        if (fs.existsSync(promptPath)) {
+          const content = fs.readFileSync(promptPath, 'utf8');
+          const parsed: any = yaml.load(content);
+          masterPrompt = parsed.prompt;
+          log.info(`[IPC] Using master prompt set: ${params.masterPromptSet}`);
+        } else {
+          log.warn(`[IPC] Master prompt set not found: ${params.masterPromptSet}, using default`);
+        }
+      }
+
+      // Enqueue the analysis job
+      const result = await enqueueAiJob(jobId, async () => {
+        const analysisResult = await MasterAnalyzerService.analyze({
+          videoPath: params.videoPath,
+          outputDirectory: settings.outputDirectory,
+          masterPrompt,
+          aiProvider,
+          aiModel: fullModel || 'ollama:phi-3.5:3.8b',
+          aiApiKey: apiKey,
+          aiHost: settings.ollamaHost || 'http://localhost:11434',
+          progressCallback,
+          cancelCallback: () => cancelled
+        });
+
+        return analysisResult;
+      });
+
+      // Cleanup
+      runningJobs.delete(jobId);
+
+      return result;
+
+    } catch (error) {
+      log.error('Error in master analysis:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Get master report
+  ipcMain.handle('get-master-report', async (_event, reportPath: string) => {
+    try {
+      const report = MasterAnalyzerService.loadReport(reportPath);
+      if (report) {
+        return { success: true, report };
+      } else {
+        return { success: false, error: 'Report not found' };
+      }
+    } catch (error) {
+      log.error('Error loading master report:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // List master reports
+  ipcMain.handle('list-master-reports', async () => {
+    try {
+      const settings = (store as any).store;
+      const outputDirectory = settings.outputDirectory;
+
+      if (!outputDirectory) {
+        return { success: true, reports: [] };
+      }
+
+      const reports = MasterAnalyzerService.listReports(outputDirectory);
+      return { success: true, reports };
+    } catch (error) {
+      log.error('Error listing master reports:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Delete master report
+  ipcMain.handle('delete-master-report', async (_event, reportPath: string) => {
+    try {
+      if (fs.existsSync(reportPath)) {
+        fs.unlinkSync(reportPath);
+        log.info(`Deleted master report: ${reportPath}`);
+        return { success: true };
+      } else {
+        return { success: false, error: 'Report not found' };
+      }
+    } catch (error) {
+      log.error('Error deleting master report:', error);
       return { success: false, error: String(error) };
     }
   });

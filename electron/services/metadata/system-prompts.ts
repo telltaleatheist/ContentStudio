@@ -85,6 +85,53 @@ Important:
 
 Transcript:
 {transcript}`,
+
+  /**
+   * Master section detection prompt - for analyzing long-form livestreams
+   * Identifies distinct topic segments that could be separate videos
+   * Placeholder: {transcript}
+   */
+  MASTER_SECTION_DETECTION_PROMPT: `Analyze this livestream transcript and identify the MAIN STORIES/SEGMENTS.
+
+Your task is to find where the host completely changes to a NEW, UNRELATED story - not where they explore different angles of the SAME story.
+
+Understanding story boundaries:
+- A "story" is a self-contained narrative about one primary subject (a person, event, or news item)
+- Everything discussed IN RESPONSE to that subject is part of the same story
+- Example: If the host discusses "Streamer X's bad take" then pivots to "here's how Germany handled similar people historically" as commentary/response - that's still ONE story about Streamer X, not two separate stories
+- Example: If the host shows multiple clips from the same person, that's ONE story about that person
+- A NEW story begins when the host introduces a completely different subject that has no narrative connection to what came before
+
+SKIP entirely:
+- Stream intros, setup, greetings, technical stuff
+- Breaks or meta-commentary about the stream itself
+
+For each story, provide:
+1. start_phrase: An exact quote (5-10 words) from where this story FIRST begins
+2. title: The primary subject's name or a short topic label (e.g., "John Smith Interview", "New Product Launch", "Breaking News Story")
+3. description: A 2-4 sentence summary covering the key points, claims, and people discussed in this story.
+
+Return JSON:
+{
+  "sections": [
+    {
+      "start_phrase": "exact quote from transcript",
+      "title": "Primary Subject Name",
+      "description": "Summary of what this story covers..."
+    }
+  ]
+}
+
+Key principles:
+- Think like an editor: each story should work as a standalone video
+- Most livestreams have 4-8 distinct stories (occasionally up to 10, rarely fewer than 4)
+- Stories are typically 10-30 minutes each, though some may be shorter (~6 min) or longer (up to an hour)
+- If content is thematically connected to or a response to the current subject, it's part of the current story
+- Only create a new section when there's a clear narrative break to an unrelated topic
+- When uncertain, keep it as one story - fewer sections is better than over-segmenting
+
+Transcript:
+{transcript}`,
 };
 
 /**

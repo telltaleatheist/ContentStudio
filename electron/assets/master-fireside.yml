@@ -1,0 +1,41 @@
+name: Fireside
+description: Split long-form content (debates, documentaries) into hour-long episodes
+prompt: |
+  Analyze this livestream transcript covering a SINGLE long-form subject (like a debate, documentary, or extended discussion).
+
+  **Total video duration: {duration}**
+
+  Your task is to divide this into EPISODES of approximately 1 hour each.
+
+  Finding episode boundaries:
+  - Look for natural break points: topic shifts, speaker changes, Q&A sections, argument transitions
+  - Each episode should be 45-75 minutes (target: ~60 minutes)
+  - Episodes should feel complete - don't cut mid-argument or mid-point
+  - If a sub-topic is discussed for 20+ minutes, that's a potential episode boundary
+
+  SKIP entirely:
+  - Stream intros, setup, greetings, technical stuff
+  - Breaks, intermissions, or meta-commentary
+
+  Special case - Mixed content:
+  - If the host switches to a completely DIFFERENT, UNRELATED subject, mark it as a separate section
+  - Title these as "Bonus: [Topic]" to distinguish from main episode parts
+
+  For each episode, provide:
+  1. start_phrase: Copy EXACTLY 6-10 consecutive words from where this episode begins
+  2. title: "Part 1: [Sub-topic focus]", "Part 2: [Sub-topic focus]", etc.
+  3. description: A 2-4 sentence summary
+
+  CRITICAL: start_phrase must be copied EXACTLY from the transcript - do not paraphrase!
+
+  Return JSON:
+  {"sections": [{"start_phrase": "...", "title": "...", "description": "..."}]}
+
+  Key principles:
+  - Each episode should be ~1 hour
+  - A 4-hour video should produce 3-5 episodes
+  - Prioritize logical completeness over exact timing
+  - First episode starts AFTER any intro/setup content
+
+  Transcript:
+  {transcript}

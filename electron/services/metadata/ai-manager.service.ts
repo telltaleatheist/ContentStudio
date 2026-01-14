@@ -737,11 +737,15 @@ export class AIManagerService {
    */
   private mapClaudeModelName(friendlyName: string): string {
     const modelMap: { [key: string]: string } = {
-      'claude-sonnet-4': 'claude-sonnet-4-5-20250929', // Latest Sonnet 4.5
-      'claude-3-5-sonnet': 'claude-sonnet-4-5-20250929',
+      // Claude 4 models
+      'claude-sonnet-4': 'claude-sonnet-4-20250514',
+      'claude-opus-4': 'claude-opus-4-20250514',
+      // Claude 3.5 models (still widely used)
+      'claude-3-5-sonnet': 'claude-3-5-sonnet-20241022',
       'claude-3-5-haiku': 'claude-3-5-haiku-20241022',
+      // Older Claude 3 models
       'claude-3-haiku': 'claude-3-haiku-20240307',
-      'claude-3-opus': 'claude-opus-4-5-20251101', // Latest Opus 4.5
+      'claude-3-opus': 'claude-3-opus-20240229',
     };
 
     return modelMap[friendlyName] || friendlyName;
@@ -761,14 +765,20 @@ export class AIManagerService {
 
       const response = await this.anthropicClient.messages.create({
         model: actualModel,
-        max_tokens: 8000,
+        max_tokens: 16000,
+        system: 'You are a helpful assistant. When asked to return JSON, output ONLY valid JSON with no markdown, no commentary, and no extra text. Start your response with { and end with }.',
         messages: [{ role: 'user', content: prompt }],
-        temperature: 0.7,
+        temperature: 0.3,
       });
 
       // Log why Claude stopped
-      console.log('[AIManager] Claude stop_reason:', response.stop_reason);
-      console.log('[AIManager] Claude usage:', response.usage);
+      log.info(`[AIManager] Claude stop_reason: ${response.stop_reason}`);
+      log.info(`[AIManager] Claude usage: input=${response.usage.input_tokens}, output=${response.usage.output_tokens}`);
+
+      // Warn if response was truncated
+      if (response.stop_reason === 'max_tokens') {
+        log.warn('[AIManager] Response was truncated due to max_tokens limit!');
+      }
 
       const textBlock = response.content.find((block) => block.type === 'text');
       return textBlock?.type === 'text' ? textBlock.text : null;

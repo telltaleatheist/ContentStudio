@@ -153,30 +153,41 @@
 
                 <!-- Individual Prompt Dropdown (disabled if compilation mode) -->
                 <mat-form-field appearance="outline" class="item-prompt-dropdown">
-                  <mat-label>Prompt</mat-label>
-                  <mat-select
-                    [ngModel]="item.promptSet"
-                    (ngModelChange)="updateItemPromptSet(i, $event)"
-                    [disabled]="inputsState.compilationMode()">
-                    @for (promptSet of availablePromptSets(); track promptSet.id) {
-                      <mat-option [value]="promptSet.id">
-                        <mat-icon>{{ promptSet.platform === 'youtube' ? 'video_library' : 'podcasts' }}</mat-icon>
-                        {{ promptSet.name }}
-                      </mat-option>
-                    }
-                  </mat-select>
-                </mat-form-field>
+                    <mat-label>Prompt</mat-label>
+                    <mat-select
+                      [ngModel]="item.promptSet"
+                      (ngModelChange)="updateItemPromptSet(i, $event)"
+                      [disabled]="inputsState.compilationMode()">
+                      @for (promptSet of availablePromptSets(); track promptSet.id) {
+                        <mat-option [value]="promptSet.id">
+                          <mat-icon>{{ promptSet.platform === 'youtube' ? 'video_library' : 'podcasts' }}</mat-icon>
+                          {{ promptSet.name }}
+                        </mat-option>
+                      }
+                    </mat-select>
+                  </mat-form-field>
 
-                <!-- Notes Button -->
-                <button
-                  mat-raised-button
-                  (click)="openNotesDialog(i)"
-                  [matTooltip]="item.notes ? 'Edit custom AI instructions' : 'Add custom AI instructions'"
-                  [color]="item.notes ? 'accent' : ''"
-                  class="notes-btn">
-                  <mat-icon>{{ item.notes ? 'edit_note' : 'note_add' }}</mat-icon>
-                  {{ item.notes ? 'Notes' : 'Add Notes' }}
-                </button>
+                  <!-- Edit Button (for text subjects) -->
+                  @if (isTextSubject(item)) {
+                    <button
+                      mat-icon-button
+                      (click)="openEditTextSubjectDialog(i)"
+                      matTooltip="Edit text subject"
+                      class="edit-btn">
+                      <mat-icon>edit</mat-icon>
+                    </button>
+                  }
+
+                  <!-- Notes Button -->
+                  <button
+                    mat-raised-button
+                    (click)="openNotesDialog(i)"
+                    [matTooltip]="item.notes ? 'Edit custom AI instructions' : 'Add custom AI instructions'"
+                    [color]="item.notes ? 'accent' : ''"
+                    class="notes-btn">
+                    <mat-icon>{{ item.notes ? 'edit_note' : 'note_add' }}</mat-icon>
+                    {{ item.notes ? 'Notes' : 'Add Notes' }}
+                  </button>
 
                 <!-- Chapter Generation Checkbox (only for YouTube videos in individual mode) -->
                 @if (canGenerateChapters(item)) {

@@ -8,12 +8,19 @@ declare global {
       getSettings: () => Promise<any>;
       updateSettings: (settings: any) => Promise<any>;
 
-      // Prompt Sets
+      // Prompt Sets (Metadata)
       listPromptSets: () => Promise<any>;
       getPromptSet: (id: string) => Promise<any>;
       createPromptSet: (promptSet: any) => Promise<any>;
       updatePromptSet: (id: string, promptSet: any) => Promise<any>;
       deletePromptSet: (id: string) => Promise<any>;
+
+      // Master Prompt Sets (Analysis)
+      listMasterPromptSets: () => Promise<any>;
+      getMasterPromptSet: (id: string) => Promise<any>;
+      createMasterPromptSet: (promptSet: any) => Promise<any>;
+      updateMasterPromptSet: (id: string, promptSet: any) => Promise<any>;
+      deleteMasterPromptSet: (id: string) => Promise<any>;
 
       // File operations
       selectFiles: () => Promise<{ success: boolean; files: string[] }>;
@@ -61,6 +68,14 @@ declare global {
 
       // External URLs
       openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
+
+      // Master Analysis
+      selectMasterVideo: () => Promise<{ success: boolean; videoPath?: string; error?: string }>;
+      analyzeMaster: (params: { videoPath: string; masterPromptSet?: string; jobId?: string }) => Promise<any>;
+      getMasterReport: (reportPath: string) => Promise<any>;
+      listMasterReports: () => Promise<any>;
+      deleteMasterReport: (reportPath: string) => Promise<{ success: boolean; error?: string }>;
+      onMasterAnalysisProgress: (callback: (progress: any) => void) => () => void;
     };
   }
 }
@@ -116,6 +131,32 @@ export class ElectronService {
   async deletePromptSet(id: string): Promise<any> {
     if (!this.ipcRenderer) return { success: false };
     return await this.ipcRenderer.deletePromptSet(id);
+  }
+
+  // Master Prompt Sets (Analysis)
+  async listMasterPromptSets(): Promise<any> {
+    if (!this.ipcRenderer) return { success: false, promptSets: [] };
+    return await this.ipcRenderer.listMasterPromptSets();
+  }
+
+  async getMasterPromptSet(id: string): Promise<any> {
+    if (!this.ipcRenderer) return { success: false };
+    return await this.ipcRenderer.getMasterPromptSet(id);
+  }
+
+  async createMasterPromptSet(promptSet: any): Promise<any> {
+    if (!this.ipcRenderer) return { success: false };
+    return await this.ipcRenderer.createMasterPromptSet(promptSet);
+  }
+
+  async updateMasterPromptSet(id: string, promptSet: any): Promise<any> {
+    if (!this.ipcRenderer) return { success: false };
+    return await this.ipcRenderer.updateMasterPromptSet(id, promptSet);
+  }
+
+  async deleteMasterPromptSet(id: string): Promise<any> {
+    if (!this.ipcRenderer) return { success: false };
+    return await this.ipcRenderer.deleteMasterPromptSet(id);
   }
 
   // File operations
@@ -266,5 +307,36 @@ export class ElectronService {
       return { success: true };
     }
     return await this.ipcRenderer.openExternal(url);
+  }
+
+  // Master Analysis
+  async selectMasterVideo(): Promise<{ success: boolean; videoPath?: string; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.selectMasterVideo();
+  }
+
+  async analyzeMaster(params: { videoPath: string; masterPromptSet?: string; jobId?: string }): Promise<any> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.analyzeMaster(params);
+  }
+
+  async getMasterReport(reportPath: string): Promise<any> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.getMasterReport(reportPath);
+  }
+
+  async listMasterReports(): Promise<any> {
+    if (!this.ipcRenderer) return { success: false, reports: [] };
+    return await this.ipcRenderer.listMasterReports();
+  }
+
+  async deleteMasterReport(reportPath: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.deleteMasterReport(reportPath);
+  }
+
+  onMasterAnalysisProgress(callback: (progress: any) => void): () => void {
+    if (!this.ipcRenderer) return () => {};
+    return this.ipcRenderer.onMasterAnalysisProgress(callback);
   }
 }

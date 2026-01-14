@@ -21,12 +21,76 @@
   min-height: 0;
   height: 100%;
   padding: 1.5rem 2rem;
+
+  // Tab group styling
+  .prompts-tabs {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+
+    ::ng-deep {
+      // Tab header styling for dark mode
+      .mat-mdc-tab-header {
+        border-bottom: 1px solid var(--border-color);
+        flex-shrink: 0;
+      }
+
+      .mat-mdc-tab {
+        color: var(--text-secondary) !important;
+        opacity: 1 !important;
+
+        &.mdc-tab--active {
+          color: var(--primary-orange) !important;
+        }
+
+        .mdc-tab__text-label {
+          color: inherit !important;
+          font-weight: 500;
+          font-size: 0.95rem;
+        }
+      }
+
+      // Tab indicator
+      .mdc-tab-indicator__content--underline {
+        border-color: var(--primary-orange) !important;
+      }
+
+      // Tab body wrapper - critical for proper height
+      .mat-mdc-tab-body-wrapper {
+        flex: 1;
+        min-height: 0;
+        height: calc(100% - 49px); // Subtract tab header height
+      }
+
+      .mat-mdc-tab-body {
+        height: 100%;
+      }
+
+      .mat-mdc-tab-body-content {
+        height: 100%;
+        overflow: auto;
+      }
+    }
+  }
+
+  // Tab content container
+  .tab-content {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+    padding: 1.5rem 0;
+  }
 }
 
 .header {
   padding-bottom: 1rem;
   border-bottom: 2px solid var(--border-color);
-  margin-bottom: 1.5rem;
+  margin-bottom: 1rem;
+  flex-shrink: 0;
 
   .header-content {
     display: flex;
@@ -130,7 +194,9 @@
 .panel-content {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   min-height: 0;
+  -webkit-overflow-scrolling: touch;
 }
 
 // Sidebar Panel
@@ -265,10 +331,14 @@
 .edit-panel {
   .panel-content {
     padding: 1.5rem;
+    overflow-y: auto;
+    overflow-x: hidden;
   }
 }
 
 .edit-card {
+  padding-bottom: 1rem;
+
   .full-width {
     width: 100%;
     margin-bottom: 1.5rem;

@@ -1,0 +1,177 @@
+<div class="master-analysis-page">
+  <!-- Header -->
+  <div class="header">
+    <h2>Master Analysis</h2>
+    <mat-chip-set>
+      <mat-chip>{{ videoItems().length }} videos</mat-chip>
+      @if (hasSelectedItems) {
+        <mat-chip highlighted>{{ selectedItems.length }} selected</mat-chip>
+      }
+      @if (jobs().length > 0) {
+        <mat-chip [highlighted]="isProcessing()">
+          {{ jobs().length }} job(s) in queue
+        </mat-chip>
+      }
+    </mat-chip-set>
+  </div>
+
+  <!-- Add Videos Section -->
+  <div class="add-content-section">
+    <h3>Add Videos</h3>
+    <div class="button-group">
+      <button mat-raised-button color="primary" (click)="browseVideos()">
+        <mat-icon>video_library</mat-icon>
+        Browse Videos
+      </button>
+    </div>
+  </div>
+
+  <!-- Videos List -->
+  <div class="videos-section">
+    <div class="section-header">
+      <h3>Selected Videos</h3>
+    </div>
+
+    @if (videoItems().length > 0) {
+      <!-- Controls -->
+      <div class="master-controls">
+        <div class="master-controls-row">
+          <mat-checkbox
+            [checked]="allItemsSelected"
+            (change)="toggleSelectAll()"
+            color="primary"
+            class="master-checkbox">
+            Select All
+          </mat-checkbox>
+
+          <mat-form-field appearance="outline" class="prompt-dropdown">
+            <mat-label>Analysis Type</mat-label>
+            <mat-select [ngModel]="selectedPromptSet()" (ngModelChange)="selectedPromptSet.set($event)">
+              @for (promptSet of masterPromptSets(); track promptSet.id) {
+                <mat-option [value]="promptSet.id">{{ promptSet.name }}</mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+
+          <button mat-button (click)="clearAllVideos()" class="clear-button" matTooltip="Clear all videos">
+            <mat-icon>clear_all</mat-icon>
+            Clear
+          </button>
+        </div>
+      </div>
+    }
+
+    <div class="videos-list" cdkDropList (cdkDropListDropped)="onDrop($event)">
+      @if (videoItems().length === 0) {
+        <div class="empty-state">
+          <mat-icon>video_library</mat-icon>
+          <p>No videos added yet</p>
+          <p class="hint">Add master videos to analyze and detect sections</p>
+        </div>
+      } @else {
+        @for (video of videoItems(); track video.path; let i = $index) {
+          <mat-card class="video-card" [class.selected]="video.selected" cdkDrag>
+            <mat-card-content>
+              <div class="video-row">
+                <mat-icon cdkDragHandle class="drag-handle">drag_indicator</mat-icon>
+                <mat-checkbox
+                  [checked]="video.selected"
+                  (change)="toggleItemSelection(i)"
+                  color="primary">
+                </mat-checkbox>
+                <div class="video-info">
+                  <mat-icon>movie</mat-icon>
+                  <div class="video-details">
+                    <div class="video-title">{{ video.displayName }}</div>
+                    <div class="video-path">{{ video.path }}</div>
+                  </div>
+                </div>
+                <button mat-icon-button (click)="removeVideo(i)" matTooltip="Remove" class="remove-btn">
+                  <mat-icon>close</mat-icon>
+                </button>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        }
+
+        <!-- Add to Queue Button -->
+        <button
+          mat-raised-button
+          color="accent"
+          class="add-to-queue-button"
+          [disabled]="!hasSelectedItems"
+          (click)="addToQueue()">
+          <mat-icon>playlist_add</mat-icon>
+          Add {{ selectedItems.length > 0 ? selectedItems.length + ' video(s)' : '' }} to Queue
+        </button>
+      }
+    </div>
+  </div>
+
+  <!-- Job Queue -->
+  @if (jobs().length > 0) {
+    <div class="queue-section">
+      <!-- Progress Header -->
+      <div class="queue-progress">
+        <div class="progress-header">
+          <h3>Analysis Queue</h3>
+          <span class="progress-label">{{ getCompletedJobsCount() }}/{{ jobs().length }} complete</span>
+        </div>
+        <mat-progress-bar mode="determinate" [value]="getOverallProgress()"></mat-progress-bar>
+      </div>
+
+      <div class="section-header">
+        <button mat-button (click)="clearCompletedJobs()">
+          <mat-icon>clear_all</mat-icon>
+          Clear Completed
+        </button>
+        <button mat-button color="accent" (click)="viewReports()">
+          <mat-icon>assessment</mat-icon>
+          View Reports
+        </button>
+      </div>
+
+      <div class="jobs-list">
+        @for (job of jobs(); track job.id) {
+          <mat-card class="job-card" [class.processing]="job.status === 'processing'">
+            <mat-card-content>
+              <div class="job-row">
+                <mat-icon [style.color]="getJobStatusColor(job.status)">
+                  {{ getJobStatusIcon(job.status) }}
+                </mat-icon>
+                <div class="job-info">
+                  <div class="job-title">{{ job.name }}</div>
+                  <div class="job-subtitle">
+                    {{ getPromptSetName(job.promptSet) }} · {{ job.message }}
+                  </div>
+                </div>
+                <div class="job-progress-mini">
+                  <mat-progress-bar mode="determinate" [value]="job.progress"></mat-progress-bar>
+                  <span class="job-progress-percent">{{ job.progress }}%</span>
+                </div>
+                @if (job.status !== 'processing') {
+                  <button mat-icon-button (click)="removeJob(job.id)" matTooltip="Remove">
+                    <mat-icon>close</mat-icon>
+                  </button>
+                }
+              </div>
+            </mat-card-content>
+          </mat-card>
+        }
+
+        <!-- Start Queue Button -->
+        @if (!isProcessing()) {
+          <button
+            mat-raised-button
+            color="primary"
+            class="start-queue-button"
+            [disabled]="getPendingJobsCount() === 0"
+            (click)="startQueue()">
+            <mat-icon>play_arrow</mat-icon>
+            Start Queue ({{ getPendingJobsCount() }} job(s))
+          </button>
+        }
+      </div>
+    </div>
+  }
+</div>

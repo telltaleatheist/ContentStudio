@@ -90,91 +90,287 @@ export function buildTimestampedTranscript(srtSegments: SRTSegment[]): string {
 }
 
 /**
+ * Build plain text transcript without timestamps
+ * Saves tokens - timestamps are recovered via phrase matching
+ */
+export function buildPlainTranscript(srtSegments: SRTSegment[]): string {
+  const lines: string[] = [];
+
+  for (const segment of srtSegments) {
+    const text = segment.text.trim();
+    if (text.length > 0) {
+      lines.push(text);
+    }
+  }
+
+  return lines.join(' ').trim();
+}
+
+/**
+ * Build transcript with sparse timestamps (every N minutes)
+ * Balances token savings with temporal context for AI
+ */
+export function buildSparseTimestampTranscript(
+  srtSegments: SRTSegment[],
+  intervalMinutes: number = 15
+): string {
+  const lines: string[] = [];
+  let lastMarkerMinute = -intervalMinutes; // Ensure first marker at 0
+
+  for (const segment of srtSegments) {
+    const seconds = TimeUtils.srtTimeToSeconds(segment.start);
+    const minute = Math.floor(seconds / 60);
+
+    // Add marker every N minutes
+    if (minute >= lastMarkerMinute + intervalMinutes) {
+      lastMarkerMinute = Math.floor(minute / intervalMinutes) * intervalMinutes;
+      const timeStr = TimeUtils.secondsToYoutubeTime(lastMarkerMinute * 60);
+      lines.push(`\n[${timeStr}]`);
+    }
+
+    const text = segment.text.trim();
+    if (text.length > 0) {
+      lines.push(text);
+    }
+  }
+
+  return lines.join(' ').trim();
+}
+
+/**
+ * Build full transcript with timestamp for every segment
+ * Format: [0:00] text [0:05] text [0:10] text...
+ */
+export function buildFullTimestampTranscript(srtSegments: SRTSegment[]): string {
+  const lines: string[] = [];
+
+  for (const segment of srtSegments) {
+    const seconds = TimeUtils.srtTimeToSeconds(segment.start);
+    const timeStr = TimeUtils.secondsToYoutubeTime(seconds);
+    const text = segment.text.trim();
+
+    if (text.length > 0) {
+      lines.push(`[${timeStr}] ${text}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Normalize text for comparison: lowercase, remove punctuation, normalize whitespace
+ */
+function normalizeForComparison(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\w\s]/g, '')  // Remove punctuation
+    .replace(/\s+/g, ' ')      // Normalize whitespace
+    .trim();
+}
+
+/**
+ * Calculate Levenshtein distance between two strings
+ */
+function levenshteinDistance(str1: string, str2: string): number {
+  const m = str1.length;
+  const n = str2.length;
+
+  // Create DP matrix
+  const dp: number[][] = Array(m + 1).fill(null).map(() => Array(n + 1).fill(0));
+
+  // Initialize base cases
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+
+  // Fill the matrix
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (str1[i - 1] === str2[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1];
+      } else {
+        dp[i][j] = 1 + Math.min(
+          dp[i - 1][j],     // deletion
+          dp[i][j - 1],     // insertion
+          dp[i - 1][j - 1]  // substitution
+        );
+      }
+    }
+  }
+
+  return dp[m][n];
+}
+
+/**
+ * Calculate string similarity (0-1 scale)
+ */
+function stringSimilarity(str1: string, str2: string): number {
+  if (str1.length === 0 && str2.length === 0) return 1;
+  if (str1.length === 0 || str2.length === 0) return 0;
+
+  const distance = levenshteinDistance(str1, str2);
+  const maxLength = Math.max(str1.length, str2.length);
+  return 1 - (distance / maxLength);
+}
+
+// Common words to filter out when doing distinctive word matching
+const COMMON_WORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+  'of', 'with', 'by', 'from', 'is', 'are', 'was', 'were', 'be', 'been',
+  'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
+  'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'need',
+  'this', 'that', 'these', 'those', 'it', 'its', 'they', 'them', 'their',
+  'we', 'us', 'our', 'you', 'your', 'he', 'him', 'his', 'she', 'her',
+  'i', 'me', 'my', 'so', 'if', 'then', 'than', 'as', 'just', 'also',
+  'like', 'well', 'now', 'here', 'there', 'when', 'where', 'what', 'who',
+  'how', 'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other',
+  'some', 'such', 'no', 'not', 'only', 'own', 'same', 'very', 'just',
+  'about', 'into', 'over', 'after', 'before', 'between', 'under', 'again',
+  'going', 'know', 'think', 'right', 'really', 'actually', 'gonna', 'yeah'
+]);
+
+/**
  * Find the timestamp for a phrase in the transcript
- * Uses 3-tier matching: exact → normalized → fuzzy
+ * Uses 5-strategy matching (like ClipChimp):
+ * 1. Direct substring match
+ * 2. Shorter prefix match
+ * 3. Fuzzy matching with Levenshtein
+ * 4. Distinctive word matching
+ * 5. Cross-segment matching
  */
 export function findPhraseTimestamp(
   phrase: string,
   srtSegments: SRTSegment[],
-  threshold: number = 0.5
+  threshold: number = 0.5,
+  minTimestamp: number = 0
 ): number | null {
   if (!phrase || !srtSegments || srtSegments.length === 0) {
     return null;
   }
 
-  const searchPhrase = phrase.toLowerCase().trim();
-  if (searchPhrase.length === 0) {
+  const normalizedPhrase = normalizeForComparison(phrase);
+  if (normalizedPhrase.length === 0) {
     return null;
   }
 
-  // Build full transcript with character position to timestamp mapping
-  let fullText = '';
-  const charToTimestamp: { pos: number; timestamp: number }[] = [];
+  // Build segment index for matching
+  interface SegmentEntry {
+    text: string;
+    normalizedText: string;
+    timestamp: number;
+  }
+  const segments: SegmentEntry[] = [];
 
   for (const segment of srtSegments) {
-    const segmentText = (segment.text || '').trim();
-    if (segmentText.length > 0) {
-      const timestampSeconds = TimeUtils.srtTimeToSeconds(segment.start);
-      charToTimestamp.push({ pos: fullText.length, timestamp: timestampSeconds });
-      fullText += segmentText + ' ';
+    const timestampSeconds = TimeUtils.srtTimeToSeconds(segment.start);
+    if (timestampSeconds < minTimestamp) continue;
+
+    const text = (segment.text || '').trim();
+    if (text.length > 0) {
+      segments.push({
+        text,
+        normalizedText: normalizeForComparison(text),
+        timestamp: timestampSeconds
+      });
     }
   }
 
-  const fullTextLower = fullText.toLowerCase();
+  if (segments.length === 0) return null;
 
-  // Try exact substring match first
-  let matchPos = fullTextLower.indexOf(searchPhrase);
+  // Use first ~50 chars for matching
+  const searchPhrase = normalizedPhrase.substring(0, 50);
 
-  // If no exact match, try matching with normalized whitespace
-  if (matchPos === -1) {
-    const normalizedSearch = searchPhrase.replace(/\s+/g, ' ');
-    const normalizedText = fullTextLower.replace(/\s+/g, ' ');
-    matchPos = normalizedText.indexOf(normalizedSearch);
+  // STRATEGY 1: Direct substring match
+  for (const seg of segments) {
+    if (seg.normalizedText.includes(searchPhrase)) {
+      return seg.timestamp;
+    }
   }
 
-  // If still no match, try word-based fuzzy matching
-  if (matchPos === -1) {
-    const phraseWords = searchPhrase.split(/\s+/).filter(w => w.length > 2);
-
-    if (phraseWords.length > 0) {
-      let bestPos = -1;
-      let bestWordCount = 0;
-
-      // Slide a window across the transcript looking for best match
-      for (let i = 0; i < fullTextLower.length - 20; i += 10) {
-        const window = fullTextLower.substring(i, i + searchPhrase.length + 50);
-        let wordCount = 0;
-        for (const word of phraseWords) {
-          if (window.includes(word)) wordCount++;
-        }
-        if (wordCount > bestWordCount) {
-          bestWordCount = wordCount;
-          bestPos = i;
-        }
-      }
-
-      // Accept if we found enough matching words
-      if (bestWordCount >= phraseWords.length * threshold) {
-        matchPos = bestPos;
+  // STRATEGY 2: Shorter prefix match (first 25 chars)
+  if (searchPhrase.length > 25) {
+    const shortPhrase = normalizedPhrase.substring(0, 25);
+    for (const seg of segments) {
+      if (seg.normalizedText.includes(shortPhrase)) {
+        return seg.timestamp;
       }
     }
   }
 
-  if (matchPos === -1) {
-    return null;
-  }
+  // STRATEGY 3: Fuzzy matching with Levenshtein (65% threshold)
+  const FUZZY_THRESHOLD = 0.65;
+  let bestFuzzyMatch: { segment: SegmentEntry; score: number } | null = null;
 
-  // Find the timestamp for this character position
-  let timestamp = charToTimestamp[0]?.timestamp ?? 0;
-  for (const entry of charToTimestamp) {
-    if (entry.pos <= matchPos) {
-      timestamp = entry.timestamp;
-    } else {
-      break;
+  for (const seg of segments) {
+    // Compare against a window of similar length
+    const compareText = seg.normalizedText.substring(0, searchPhrase.length + 10);
+    const similarity = stringSimilarity(searchPhrase, compareText);
+
+    if (similarity > FUZZY_THRESHOLD) {
+      if (!bestFuzzyMatch || similarity > bestFuzzyMatch.score) {
+        bestFuzzyMatch = { segment: seg, score: similarity };
+      }
     }
   }
 
-  return timestamp;
+  if (bestFuzzyMatch) {
+    return bestFuzzyMatch.segment.timestamp;
+  }
+
+  // STRATEGY 4: Distinctive word matching
+  const phraseWords = normalizedPhrase
+    .split(/\s+/)
+    .filter(w => w.length > 2 && !COMMON_WORDS.has(w));
+
+  if (phraseWords.length > 0) {
+    let bestMatch: { segment: SegmentEntry; score: number } | null = null;
+
+    for (const seg of segments) {
+      const segWords = seg.normalizedText.split(/\s+/);
+      let matchCount = 0;
+
+      for (const phraseWord of phraseWords) {
+        // Exact match
+        if (segWords.includes(phraseWord)) {
+          matchCount++;
+          continue;
+        }
+        // Fuzzy word match (75% similarity)
+        for (const segWord of segWords) {
+          if (stringSimilarity(phraseWord, segWord) > 0.75) {
+            matchCount += 0.75;
+            break;
+          }
+        }
+      }
+
+      const score = matchCount / phraseWords.length;
+      if (score > 0.4 && (!bestMatch || score > bestMatch.score)) {
+        bestMatch = { segment: seg, score };
+      }
+    }
+
+    if (bestMatch) {
+      return bestMatch.segment.timestamp;
+    }
+  }
+
+  // STRATEGY 5: Cross-segment matching (for quotes spanning segments)
+  for (let i = 0; i < segments.length - 1; i++) {
+    const combinedText = segments[i].normalizedText + ' ' + segments[i + 1].normalizedText;
+
+    // Try exact match on combined
+    if (combinedText.includes(searchPhrase)) {
+      return segments[i].timestamp;
+    }
+
+    // Try fuzzy match on combined
+    const compareText = combinedText.substring(0, searchPhrase.length + 20);
+    if (stringSimilarity(searchPhrase, compareText) > FUZZY_THRESHOLD) {
+      return segments[i].timestamp;
+    }
+  }
+
+  return null;
 }
 
 /**

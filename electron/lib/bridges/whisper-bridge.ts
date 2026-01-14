@@ -326,15 +326,21 @@ export class WhisperBridge extends EventEmitter {
     let percent: number | null = null;
     let message: string | null = null;
 
-    // whisper.cpp with -pp outputs: "progress = XX%"
-    const progressMatch = output.match(/progress\s*=\s*(\d+)%/i);
+    // whisper.cpp with -pp outputs: "whisper_print_progress_callback: progress = XX%"
+    // Match any line containing progress = XX%
+    const progressMatch = output.match(/progress\s*=\s*(\d+)\s*%/i);
     if (progressMatch) {
-      percent = Math.min(95, parseInt(progressMatch[1], 10));
+      const parsed = parseInt(progressMatch[1], 10);
+      // Only update if it's a meaningful change (avoid spam)
+      if (parsed > processInfo.lastReportedPercent) {
+        percent = Math.min(95, parsed);
+        log.info(`[WhisperBridge] [${processId}] Progress: ${percent}%`);
+      }
     }
 
-    // Simple percentage pattern
+    // Simple percentage pattern as fallback
     if (percent === null) {
-      const simpleMatch = output.match(/(\d+)%/);
+      const simpleMatch = output.match(/(\d+)\s*%/);
       if (simpleMatch) {
         const parsed = parseInt(simpleMatch[1], 10);
         if (parsed > processInfo.lastReportedPercent + 5) {

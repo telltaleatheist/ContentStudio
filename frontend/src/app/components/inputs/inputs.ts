@@ -18,6 +18,7 @@ import { CdkDragDrop, DragDropModule, moveItemInArray } from '@angular/cdk/drag-
 import { ElectronService } from '../../services/electron';
 import { TextSubjectDialog } from '../text-subject-dialog/text-subject-dialog';
 import { NotesDialog } from '../notes-dialog/notes-dialog';
+import { EditTextSubjectDialog, EditTextSubjectData } from '../edit-text-subject-dialog/edit-text-subject-dialog';
 import { InputsStateService, InputItem } from '../../services/inputs-state';
 import { JobQueueService, QueuedJob } from '../../services/job-queue';
 import { NotificationService } from '../../services/notification';
@@ -28,6 +29,7 @@ interface PromptSetOption {
   platform: string;
   instructions_prompt: string;
 }
+
 
 @Component({
   selector: 'app-inputs',
@@ -359,6 +361,35 @@ export class Inputs implements OnInit, OnDestroy {
         this.inputsState.inputItems.set(updatedItems);
       }
     });
+  }
+
+  openEditTextSubjectDialog(index: number) {
+    const item = this.inputsState.inputItems()[index];
+    const dialogRef = this.dialog.open(EditTextSubjectDialog, {
+      width: '650px',
+      data: {
+        title: item.displayName,
+        description: item.textContent || item.path || ''
+      } as EditTextSubjectData
+    });
+
+    dialogRef.afterClosed().subscribe((result: EditTextSubjectData | undefined) => {
+      if (result) {
+        const items = this.inputsState.inputItems();
+        const updatedItems = [...items];
+        updatedItems[index] = {
+          ...updatedItems[index],
+          displayName: result.title,
+          textContent: result.description,
+          path: result.description // Keep path in sync for backwards compatibility
+        };
+        this.inputsState.inputItems.set(updatedItems);
+      }
+    });
+  }
+
+  isTextSubject(item: InputItem): boolean {
+    return item.type === 'text-subject' || item.type === 'subject';
   }
 
   clearAllInputs() {

@@ -46,7 +46,7 @@ export class PromptsComponent implements OnInit {
 
   // Instructions Builder
   builderTitles = signal({ enabled: false, count: 10, minLength: 45, maxLength: 70 });
-  builderDescription = signal({ enabled: false, minWords: 200, maxWords: 300 });
+  builderDescription = signal({ enabled: false, minWords: 125, maxWords: 200 });
   builderTags = signal({ enabled: false, count: 15 });
   builderHashtags = signal({ enabled: false, count: 3 });
   builderThumbnailText = signal({ enabled: false, count: 5, maxWords: 3 });

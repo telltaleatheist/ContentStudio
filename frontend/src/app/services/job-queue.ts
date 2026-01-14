@@ -42,13 +42,13 @@ export class JobQueueService {
     // Auto-save when jobs change
     effect(() => {
       const jobs = this.jobs();
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(jobs));
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(jobs));
     });
   }
 
   private loadFromStorage() {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = sessionStorage.getItem(STORAGE_KEY);
       if (stored) {
         const jobs = JSON.parse(stored) as QueuedJob[];
         // Convert date strings back to Date objects and reset processing jobs to pending

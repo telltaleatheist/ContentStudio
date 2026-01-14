@@ -11,13 +11,20 @@ const api = {
   getSettings: () => ipcRenderer.invoke('get-settings'),
   updateSettings: (settings: any) => ipcRenderer.invoke('update-settings', settings),
 
-  // Prompt Sets
+  // Prompt Sets (Metadata)
   getPromptSetsPath: () => ipcRenderer.invoke('get-prompt-sets-path'),
   listPromptSets: () => ipcRenderer.invoke('list-prompt-sets'),
   getPromptSet: (id: string) => ipcRenderer.invoke('get-prompt-set', id),
   createPromptSet: (promptSet: any) => ipcRenderer.invoke('create-prompt-set', promptSet),
   updatePromptSet: (id: string, promptSet: any) => ipcRenderer.invoke('update-prompt-set', id, promptSet),
   deletePromptSet: (id: string) => ipcRenderer.invoke('delete-prompt-set', id),
+
+  // Master Prompt Sets (Analysis)
+  listMasterPromptSets: () => ipcRenderer.invoke('list-master-prompt-sets'),
+  getMasterPromptSet: (id: string) => ipcRenderer.invoke('get-master-prompt-set', id),
+  createMasterPromptSet: (promptSet: any) => ipcRenderer.invoke('create-master-prompt-set', promptSet),
+  updateMasterPromptSet: (id: string, promptSet: any) => ipcRenderer.invoke('update-master-prompt-set', id, promptSet),
+  deleteMasterPromptSet: (id: string) => ipcRenderer.invoke('delete-master-prompt-set', id),
 
   // File operations
   selectFiles: () => ipcRenderer.invoke('select-files'),
@@ -72,7 +79,20 @@ const api = {
     ipcRenderer.invoke('get-available-models', provider, apiKey, host),
 
   // External URLs
-  openExternal: (url: string) => ipcRenderer.invoke('open-external', url)
+  openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
+
+  // Master Analysis
+  selectMasterVideo: () => ipcRenderer.invoke('select-master-video'),
+  analyzeMaster: (params: { videoPath: string; masterPromptSet?: string; jobId?: string }) =>
+    ipcRenderer.invoke('analyze-master', params),
+  getMasterReport: (reportPath: string) => ipcRenderer.invoke('get-master-report', reportPath),
+  listMasterReports: () => ipcRenderer.invoke('list-master-reports'),
+  deleteMasterReport: (reportPath: string) => ipcRenderer.invoke('delete-master-report', reportPath),
+  onMasterAnalysisProgress: (callback: (progress: any) => void) => {
+    const listener = (_event: any, progress: any) => callback(progress);
+    ipcRenderer.on('master-analysis-progress', listener);
+    return () => ipcRenderer.removeListener('master-analysis-progress', listener);
+  }
 };
 
 // Expose the API to the renderer process

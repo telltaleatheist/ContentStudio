@@ -1,7 +1,7 @@
 import { Injectable, signal, effect } from '@angular/core';
 
 export interface InputItem {
-  type: string;
+  type: string; // 'subject', 'video', 'transcript_file', 'master-report', 'text-subject'
   path: string;
   displayName: string;
   icon: string;
@@ -9,6 +9,14 @@ export interface InputItem {
   promptSet: string; // ID of the prompt set to use (e.g., "sample-youtube")
   notes?: string; // Optional notes/instructions for the AI (e.g., "focus on tax fraud")
   generateChapters?: boolean; // For video files: generate YouTube chapter markers (default: true)
+  textContent?: string; // For text-subject items: the actual text content
+  // Master report specific fields
+  masterReportPath?: string; // Path to the master report JSON file
+  masterReportData?: {
+    sectionCount: number;
+    totalDuration: string;
+    masterVideoName: string;
+  };
 }
 
 export interface GenerationState {
@@ -55,13 +63,13 @@ export class InputsStateService {
         compilationMode: this.compilationMode(),
         masterPromptSet: this.masterPromptSet()
       };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     });
   }
 
   private loadFromStorage() {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = sessionStorage.getItem(STORAGE_KEY);
       if (stored) {
         const state = JSON.parse(stored);
         if (state.inputItems) this.inputItems.set(state.inputItems);
