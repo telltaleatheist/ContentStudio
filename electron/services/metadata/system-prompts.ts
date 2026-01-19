@@ -58,14 +58,15 @@ Watch these people embarrass themselves...  <-- NO outro text
    * Chapter detection prompt - uses phrase-based timestamp mapping
    * Placeholder: {transcript}
    */
-  CHAPTER_DETECTION_PROMPT: `Identify chapter boundaries based on topic/subject changes in this transcript.
+  CHAPTER_DETECTION_PROMPT: `Identify chapter boundaries based on MAJOR topic/subject changes in this transcript.
 
 Rules:
 - First chapter MUST start at the very beginning of the transcript
-- Create a new chapter ONLY when the subject/topic significantly changes
-- Very short videos (under 2 minutes) may have just 1-2 chapters
-- Longer videos should have 3-8 chapters depending on content
-- Minimum chapter length: ~30 seconds of content
+- Create a new chapter ONLY when there is a SIGNIFICANT topic shift (not minor tangents)
+- Very short videos (under 5 minutes) may have just 1-2 chapters
+- Longer videos should have 4-6 chapters maximum - prefer fewer, longer chapters
+- Minimum chapter length: 3-4 minutes of content (be conservative - don't over-segment)
+- If unsure whether something is a new chapter, keep it as part of the current one
 
 Title requirements:
 - Titles should be 50-80 characters - concise but descriptive
@@ -108,8 +109,8 @@ SKIP entirely:
 
 For each story, provide:
 1. start_phrase: An exact quote (5-10 words) from where this story FIRST begins
-2. title: The primary subject's name or a short topic label (e.g., "John Smith Interview", "New Product Launch", "Breaking News Story")
-3. description: A 2-4 sentence summary covering the key points, claims, and people discussed in this story.
+2. title: The primary subject's name or a short topic label (e.g., "John Smith", "New Product Launch", "Breaking News Story")
+3. description: 2-3 sentences summarizing what happens - who is discussed and what they did or said.
 
 Return JSON:
 {

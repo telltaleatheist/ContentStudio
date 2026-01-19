@@ -59,9 +59,16 @@ export class MasterAnalysis implements OnInit, OnDestroy {
   async ngOnInit() {
     await this.loadMasterPromptSets();
 
-    // If we were processing when we left, resume
-    if (this.state.isProcessing() && this.state.getNextPendingJob()) {
-      this.processNextJob();
+    // If we were processing when we left, reset state (jobs need to be restarted manually)
+    if (this.state.isProcessing()) {
+      // Reset processing jobs to pending
+      const jobs = this.state.jobs();
+      jobs.forEach(job => {
+        if (job.status === 'processing') {
+          this.state.updateJob(job.id, { status: 'pending', progress: 0, message: '' });
+        }
+      });
+      this.state.isProcessing.set(false);
     }
   }
 
@@ -181,46 +188,54 @@ export class MasterAnalysis implements OnInit, OnDestroy {
     if (pendingJobs.length === 0) return;
 
     this.state.isProcessing.set(true);
-    this.processNextJob();
-  }
 
-  private async processNextJob() {
-    const pendingJob = this.state.getNextPendingJob();
-    if (!pendingJob) {
-      this.state.isProcessing.set(false);
-      return;
-    }
-
-    // Update job status
-    this.state.updateJob(pendingJob.id, { status: 'processing', progress: 0, message: 'Starting analysis...' });
-
-    // Subscribe to progress (run in NgZone to trigger change detection)
+    // Subscribe to progress events (routes by jobId)
     this.progressUnsubscribe = this.electron.onMasterAnalysisProgress((progress) => {
       this.ngZone.run(() => {
-        this.state.updateJob(pendingJob.id, {
-          progress: progress.percent || 0,
-          message: progress.message || 'Processing...'
-        });
+        if (progress.jobId) {
+          this.state.updateJob(progress.jobId, {
+            progress: progress.percent || 0,
+            message: progress.message || 'Processing...'
+          });
+        }
       });
     });
 
+    // Start ALL pending jobs in parallel (backend queue manager handles concurrency: 5 transcription, 1 AI)
+    const jobPromises = pendingJobs.map(job => this.processJob(job));
+
+    // Wait for all jobs to complete
+    await Promise.allSettled(jobPromises);
+
+    // Cleanup
+    if (this.progressUnsubscribe) {
+      this.progressUnsubscribe();
+      this.progressUnsubscribe = null;
+    }
+    this.state.isProcessing.set(false);
+  }
+
+  private async processJob(job: MasterJob): Promise<void> {
+    // Update job status
+    this.state.updateJob(job.id, { status: 'processing', progress: 0, message: 'Queued for analysis...' });
+
     try {
       const result = await this.electron.analyzeMaster({
-        videoPath: pendingJob.videoPath,
-        masterPromptSet: pendingJob.promptSet,
-        jobId: pendingJob.id
+        videoPath: job.videoPath,
+        masterPromptSet: job.promptSet,
+        jobId: job.id
       });
 
       if (result.success) {
-        this.state.updateJob(pendingJob.id, {
+        this.state.updateJob(job.id, {
           status: 'completed',
           progress: 100,
           message: `Found ${result.report?.sectionCount || 0} sections`
         });
 
-        this.notificationService.success('Analysis Complete', `"${pendingJob.name}" - Found ${result.report?.sectionCount || 0} sections`);
+        this.notificationService.success('Analysis Complete', `"${job.name}" - Found ${result.report?.sectionCount || 0} sections`);
       } else {
-        this.state.updateJob(pendingJob.id, {
+        this.state.updateJob(job.id, {
           status: 'failed',
           progress: 0,
           message: 'Failed',
@@ -230,7 +245,7 @@ export class MasterAnalysis implements OnInit, OnDestroy {
         this.notificationService.error('Analysis Failed', result.error || 'Unknown error');
       }
     } catch (error) {
-      this.state.updateJob(pendingJob.id, {
+      this.state.updateJob(job.id, {
         status: 'failed',
         progress: 0,
         message: 'Error',
@@ -238,14 +253,6 @@ export class MasterAnalysis implements OnInit, OnDestroy {
       });
 
       this.notificationService.error('Analysis Error', (error as Error).message);
-    } finally {
-      if (this.progressUnsubscribe) {
-        this.progressUnsubscribe();
-        this.progressUnsubscribe = null;
-      }
-
-      // Process next job
-      setTimeout(() => this.processNextJob(), 500);
     }
   }
 

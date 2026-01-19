@@ -200,44 +200,53 @@ export class AIManagerService {
       // Load prompts
       this.loadPrompts();
 
+      // Helper to check if a model belongs to a specific provider
+      const isClaudeModel = (model: string) =>
+        model.startsWith('claude-') || model.startsWith('claude:');
+      const isOpenAIModel = (model: string) =>
+        model.startsWith('gpt-') || model.startsWith('openai:');
+      const isOllamaModel = (model: string) =>
+        !isClaudeModel(model) && !isOpenAIModel(model);
+
       // Detect which providers are needed based on models
-      const needsOllama = !this.summaryModel.startsWith('gpt-') &&
-                          !this.summaryModel.startsWith('claude-') &&
-                          !this.summaryModel.startsWith('openai:') ||
-                          !this.metadataModel.startsWith('gpt-') &&
-                          !this.metadataModel.startsWith('claude-') &&
-                          !this.metadataModel.startsWith('openai:');
+      const needsOllama = isOllamaModel(this.summaryModel) || isOllamaModel(this.metadataModel);
+      const needsOpenAI = isOpenAIModel(this.summaryModel) || isOpenAIModel(this.metadataModel);
+      const needsClaude = isClaudeModel(this.summaryModel) || isClaudeModel(this.metadataModel);
 
-      const needsOpenAI = this.summaryModel.startsWith('gpt-') ||
-                          this.summaryModel.startsWith('openai:') ||
-                          this.metadataModel.startsWith('gpt-') ||
-                          this.metadataModel.startsWith('openai:');
-
-      const needsClaude = this.summaryModel.startsWith('claude-') ||
-                          this.summaryModel.startsWith('claude:') ||
-                          this.metadataModel.startsWith('claude-') ||
-                          this.metadataModel.startsWith('claude:');
+      log.info(`[AIManager] Provider detection: needsOllama=${needsOllama}, needsOpenAI=${needsOpenAI}, needsClaude=${needsClaude}`);
+      log.info(`[AIManager] Models: summary=${this.summaryModel}, metadata=${this.metadataModel}`);
 
       // Initialize all needed providers
       let anySuccess = false;
 
       if (needsOllama) {
+        log.info('[AIManager] Initializing Ollama...');
         const success = await this.initializeOllama();
+        log.info(`[AIManager] Ollama initialization: ${success ? 'SUCCESS' : 'FAILED'}`);
         if (success) anySuccess = true;
       }
 
       if (needsOpenAI) {
+        log.info('[AIManager] Initializing OpenAI...');
         const success = await this.initializeOpenAI();
+        log.info(`[AIManager] OpenAI initialization: ${success ? 'SUCCESS' : 'FAILED'}`);
         if (success) anySuccess = true;
       }
 
       if (needsClaude) {
+        log.info('[AIManager] Initializing Claude...');
         const success = await this.initializeClaude();
+        log.info(`[AIManager] Claude initialization: ${success ? 'SUCCESS' : 'FAILED'}`);
         if (success) anySuccess = true;
+      }
+
+      if (!anySuccess) {
+        log.error('[AIManager] No AI providers initialized successfully');
       }
 
       return anySuccess;
     } catch (error) {
+      log.error('[AIManager] Initialization failed:', error);
       console.error('[AIManager] Initialization failed:', error);
       return false;
     }
@@ -249,6 +258,7 @@ export class AIManagerService {
   private async initializeOllama(): Promise<boolean> {
     try {
       const host = this.config.host || 'http://localhost:11434';
+      log.info(`[AIManager] Connecting to Ollama at ${host}...`);
 
       this.ollamaClient = axios.create({
         baseURL: host,
@@ -259,10 +269,10 @@ export class AIManagerService {
       // Test connection
       const response = await this.ollamaClient.get('/api/tags');
 
-      console.log('[AIManager] Ollama server connected');
+      log.info('[AIManager] Ollama server connected');
       return true;
-    } catch (error) {
-      console.error('[AIManager] Cannot connect to Ollama:', error);
+    } catch (error: any) {
+      log.error('[AIManager] Cannot connect to Ollama:', error?.message || error);
       return false;
     }
   }
@@ -273,7 +283,7 @@ export class AIManagerService {
   private async initializeOpenAI(): Promise<boolean> {
     try {
       if (!this.config.apiKey) {
-        console.error('[AIManager] OpenAI API key required');
+        log.error('[AIManager] OpenAI API key required');
         return false;
       }
 
@@ -282,16 +292,17 @@ export class AIManagerService {
       });
 
       // Test with a simple request
+      log.info(`[AIManager] Testing OpenAI connection with model: ${this.summaryModel}`);
       await this.openaiClient.chat.completions.create({
         model: this.summaryModel,
         messages: [{ role: 'user', content: 'Test' }],
         max_tokens: 5,
       });
 
-      console.log('[AIManager] OpenAI connected successfully');
+      log.info('[AIManager] OpenAI connected successfully');
       return true;
-    } catch (error) {
-      console.error('[AIManager] Cannot connect to OpenAI:', error);
+    } catch (error: any) {
+      log.error('[AIManager] Cannot connect to OpenAI:', error?.message || error);
       return false;
     }
   }
@@ -302,7 +313,7 @@ export class AIManagerService {
   private async initializeClaude(): Promise<boolean> {
     try {
       if (!this.config.apiKey) {
-        console.error('[AIManager] Anthropic API key required');
+        log.error('[AIManager] Anthropic API key required');
         return false;
       }
 
@@ -312,16 +323,22 @@ export class AIManagerService {
 
       // Test with a simple request
       // Use metadataModel since that's the Claude model (summaryModel might be from a different provider)
+      // Strip the "claude:" prefix if present
+      const testModel = this.metadataModel.replace('claude:', '');
+      log.info(`[AIManager] Testing Claude connection with model: ${testModel}`);
       await this.anthropicClient.messages.create({
-        model: this.metadataModel,
+        model: testModel,
         max_tokens: 5,
         messages: [{ role: 'user', content: 'Test' }],
       });
 
-      console.log('[AIManager] Claude (Anthropic) connected successfully');
+      log.info('[AIManager] Claude (Anthropic) connected successfully');
       return true;
-    } catch (error) {
-      console.error('[AIManager] Cannot connect to Claude:', error);
+    } catch (error: any) {
+      log.error('[AIManager] Cannot connect to Claude:', error?.message || error);
+      if (error?.status === 404) {
+        log.error(`[AIManager] Model '${this.metadataModel.replace('claude:', '')}' not found - check model name`);
+      }
       return false;
     }
   }

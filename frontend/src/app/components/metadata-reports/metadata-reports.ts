@@ -1,4 +1,4 @@
-import { Component, OnInit, OnDestroy, signal } from '@angular/core';
+import { Component, OnInit, signal } from '@angular/core';
 import { MatCardModule } from '@angular/material/card';
 import { MatListModule } from '@angular/material/list';
 import { MatIconModule } from '@angular/material/icon';
@@ -50,7 +50,7 @@ interface ParsedMetadata {
   templateUrl: './metadata-reports.html',
   styleUrl: './metadata-reports.scss'
 })
-export class MetadataReports implements OnInit, OnDestroy {
+export class MetadataReports implements OnInit {
   reports = signal<MetadataReport[]>([]);
   selectedReport = signal<MetadataReport | null>(null);
   metadata = signal<ParsedMetadata | null>(null);
@@ -61,8 +61,6 @@ export class MetadataReports implements OnInit, OnDestroy {
   copiedItem = signal<string | null>(null);
   private copiedTimeout: any = null;
 
-  private visibilityChangeHandler: (() => void) | null = null;
-
   constructor(
     private electron: ElectronService,
     private notificationService: NotificationService
@@ -70,21 +68,6 @@ export class MetadataReports implements OnInit, OnDestroy {
 
   async ngOnInit() {
     await this.loadReports();
-
-    // Auto-refresh when tab becomes visible (e.g., after Cmd+Tab back to app)
-    this.visibilityChangeHandler = () => {
-      if (!document.hidden) {
-        console.log('Tab became visible, refreshing reports...');
-        this.loadReports();
-      }
-    };
-    document.addEventListener('visibilitychange', this.visibilityChangeHandler);
-  }
-
-  ngOnDestroy() {
-    if (this.visibilityChangeHandler) {
-      document.removeEventListener('visibilitychange', this.visibilityChangeHandler);
-    }
   }
 
   async loadReports() {

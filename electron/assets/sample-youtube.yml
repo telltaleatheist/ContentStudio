@@ -18,11 +18,10 @@ editorial_prompt: |-
   - "I Tried [Thing] for [Time] - Here's What Happened"
 
   DESCRIPTION APPROACH:
-  - First 2 sentences are critical - they appear in search results
-  - Include primary keywords naturally in the first 150 characters
+  - Keep it brief - 3-5 sentences maximum
+  - First sentence is critical - it appears in search results
+  - Include primary keywords naturally
   - Provide value and context - tell viewers what they'll learn
-  - Add timestamps for longer videos (if applicable)
-  - Include relevant links and calls to action
 
   TAGS STRATEGY:
   - Mix of broad and specific long-tail keywords
@@ -49,11 +48,9 @@ instructions_prompt: |-
   - Include variety: questions, statements, how-tos, listicles
 
   DESCRIPTION:
-  - 125-200 words (optimal for SEO without overwhelming readers)
-  - First 125-150 characters are CRITICAL - they appear in search results and previews
-  - Opening sentences: Compelling hook with primary keyword
-  - Include 2-3 natural keyword variations (keep density under 2%)
-  - Brief content summary with key takeaways
+  - 3-5 sentences only (one short paragraph)
+  - First sentence: Compelling hook with primary keyword (appears in search results)
+  - Briefly summarize what viewers will learn or see
   - End with a clear call to action
 
   TAGS:

@@ -9,10 +9,12 @@ import * as path from 'path';
 import * as log from 'electron-log';
 import { app } from 'electron';
 
+import * as crypto from 'crypto';
 import { WhisperService, SRTSegment } from './whisper.service';
 import { AIManagerService, AIConfig } from './ai-manager.service';
 import { buildPlainTranscript, findPhraseTimestamp, TimeUtils } from './chapter-generator.service';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
+import { queueTranscription, queueAITask } from '../queue-manager.service';
 
 /**
  * A detected section in the master video
@@ -114,13 +116,14 @@ export class MasterAnalyzerService {
 
       const videoName = path.basename(videoPath, path.extname(videoPath));
 
-      // Phase 1: Transcribe video (0-50%)
-      sendProgress('transcribing', 'Extracting audio from video...', 5);
+      // Phase 1: Transcribe video (0-50%) - queued through main pool (max 5 concurrent)
+      sendProgress('transcribing', 'Queuing transcription...', 5);
 
       if (isCancelled()) {
         return { success: false, error: 'Cancelled by user' };
       }
 
+      const transcriptionTaskId = `transcribe-${crypto.randomBytes(4).toString('hex')}`;
       const whisperService = new WhisperService();
 
       // Forward transcription progress
@@ -130,7 +133,13 @@ export class MasterAnalyzerService {
         sendProgress('transcribing', progress.message, scaledPercent);
       });
 
-      const transcriptionResult = await whisperService.transcribeVideo(videoPath);
+      // Queue transcription through main pool (max 5 concurrent)
+      const transcriptionResult = await queueTranscription<{ jobId: string; srtPath: string; segments: SRTSegment[] }>(
+        transcriptionTaskId,
+        `Transcribe: ${videoName}`,
+        () => whisperService.transcribeVideo(videoPath),
+        (percent, message) => sendProgress('transcribing', message, Math.round(5 + percent * 0.45))
+      );
       const { segments: srtSegments } = transcriptionResult;
 
       if (!srtSegments || srtSegments.length === 0) {
@@ -424,15 +433,16 @@ CRITICAL: Each start_phrase MUST be copied EXACTLY from the transcript - copy-pa
 
 Return ONLY valid JSON:
 {"sections":[
-{"start_phrase":"EXACT 5-8 words from transcript","title":"${originalSection.title} Part 1","description":"brief summary"},
-{"start_phrase":"EXACT 5-8 words from transcript","title":"${originalSection.title} Part 2","description":"brief summary"}
+{"start_phrase":"EXACT 5-8 words from transcript","title":"Topic Name","description":"2-3 sentences explaining what happens in this part"},
+{"start_phrase":"EXACT 5-8 words from transcript","title":"Another Topic","description":"2-3 sentences explaining what happens in this part"}
 ]}
 
 Rules:
-- start_phrase for Part 1: copy the first 5-8 words of the transcript
-- start_phrase for Parts 2-${numSplits}: copy 5-8 words from where each part should begin
+- start_phrase for section 1: copy the first 5-8 words of the transcript
+- start_phrase for sections 2-${numSplits}: copy 5-8 words from where each section should begin
 - DO NOT paraphrase or modify the text - copy EXACTLY as written
-- Keep descriptions under 20 words, no special characters or quotes
+- title: The subject's name or topic, NO "Part 1:", "Part 2:", etc. prefixes
+- description: 2-3 sentences explaining WHO is discussed, WHAT they did/said, and key details
 - Output valid JSON only, no markdown or extra text
 
 Transcript:
@@ -441,8 +451,8 @@ ${sectionTranscript}`;
     const response = await this.makeAIRequest(aiService, prompt);
 
     if (!response) {
-      log.warn('[MasterAnalyzer] No response for breakpoints, keeping original section');
-      return [originalSection];
+      log.warn('[MasterAnalyzer] No response for breakpoints, using time-based fallback');
+      return this.createTimeBasedSplits(originalSection, numSplits);
     }
 
     // Log raw response for debugging
@@ -456,8 +466,8 @@ ${sectionTranscript}`;
     }
 
     if (aiSections.length < 2) {
-      log.warn('[MasterAnalyzer] Not enough breakpoints found, keeping original section');
-      return [originalSection];
+      log.warn('[MasterAnalyzer] Not enough breakpoints found, using time-based fallback');
+      return this.createTimeBasedSplits(originalSection, numSplits);
     }
 
     // Map the sub-sections to timestamps
@@ -468,7 +478,7 @@ ${sectionTranscript}`;
     for (let i = 0; i < aiSections.length; i++) {
       const section = aiSections[i];
       const startPhrase = section.start_phrase || '';
-      const title = section.title?.trim() || `${originalSection.title} Part ${i + 1}`;
+      const title = section.title?.trim() || `Section ${i + 1}`;
       const description = section.description?.trim() || '';
 
       // Find timestamp for start phrase
@@ -552,8 +562,8 @@ ${sectionTranscript}`;
         endTimestamp: TimeUtils.secondsToYoutubeTime(endSeconds),
         startSeconds,
         endSeconds,
-        title: `${originalSection.title} Part ${i + 1}`,
-        description: `Part ${i + 1} of ${numSplits} (auto-split by time)`,
+        title: `${originalSection.title} (${TimeUtils.secondsToYoutubeTime(startSeconds)})`,
+        description: `Segment ${i + 1} of ${numSplits} (auto-split by time)`,
         startPhrase: `[time-based split at ${TimeUtils.secondsToYoutubeTime(startSeconds)}]`,
       });
 
@@ -565,14 +575,12 @@ ${sectionTranscript}`;
 
   /**
    * Make AI request using the service's model configuration
+   * Queued through AI pool (max 1 concurrent across all AI tasks)
    */
   private static async makeAIRequest(
     aiService: AIManagerService,
     prompt: string
   ): Promise<string | null> {
-    // We'll use a workaround since makeRequest is private
-    // Create a mock "metadata generation" that just returns the raw response
-
     try {
       // Access the private method via any casting (not ideal but works)
       const service = aiService as any;
@@ -580,10 +588,15 @@ ${sectionTranscript}`;
       // Get the model from the service
       const model = service.metadataModel;
 
-      log.info(`[MasterAnalyzer] Making AI request with model: ${model}`);
+      log.info(`[MasterAnalyzer] Queuing AI request with model: ${model}`);
 
-      // Call the private makeRequest method
-      const response = await service.makeRequest(prompt, model, 600); // 10 minute timeout
+      // Queue AI request through AI pool (max 1 concurrent)
+      const aiTaskId = `ai-${crypto.randomBytes(4).toString('hex')}`;
+      const response = await queueAITask<string>(
+        aiTaskId,
+        `AI Analysis: ${model}`,
+        () => service.makeRequest(prompt, model, 600) // 10 minute timeout
+      );
 
       return response;
     } catch (error) {

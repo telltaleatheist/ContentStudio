@@ -79,15 +79,19 @@ export class MetadataGeneratorService {
         promptSetsDir: params.promptSetsDir,
       };
 
+      log.info('[MetadataGenerator] Creating AIManagerService...');
       const aiManager = new AIManagerService(aiConfig);
+      log.info('[MetadataGenerator] Initializing AI manager...');
       const initialized = await aiManager.initialize();
 
       if (!initialized) {
+        log.error('[MetadataGenerator] AI manager initialization failed');
         return {
           success: false,
           error: 'Failed to initialize AI manager',
         };
       }
+      log.info('[MetadataGenerator] AI manager initialized successfully');
 
       // Process inputs - normalize input format
       // Inputs can be either strings or objects with {path: string}
@@ -99,6 +103,7 @@ export class MetadataGeneratorService {
         }
         return String(input);
       });
+      log.info(`[MetadataGenerator] Normalized ${normalizedInputs.length} inputs`);
 
       // Set up progress forwarding from WhisperService
       // Progress events now include jobId and videoPath for multi-transcription support
@@ -123,11 +128,12 @@ export class MetadataGeneratorService {
       });
 
       const customNotesMap = new Map(Object.entries(params.inputNotes || {}));
+      log.info('[MetadataGenerator] Processing inputs...');
       const contentItems = await inputHandler.processMultipleInputs(normalizedInputs, customNotesMap);
 
       // Check for cancellation after input processing
       if (params.cancelCallback && params.cancelCallback()) {
-        console.log('[MetadataGenerator] Job cancelled after input processing');
+        log.info('[MetadataGenerator] Job cancelled after input processing');
         return {
           success: false,
           error: 'Job cancelled by user',
@@ -135,13 +141,17 @@ export class MetadataGeneratorService {
       }
 
       if (contentItems.length === 0) {
+        log.error('[MetadataGenerator] No content items processed from inputs');
         return {
           success: false,
           error: 'No content could be processed',
         };
       }
 
-      console.log(`[MetadataGenerator] Processed ${contentItems.length} content items`);
+      log.info(`[MetadataGenerator] Processed ${contentItems.length} content items`);
+      contentItems.forEach((item, idx) => {
+        log.info(`[MetadataGenerator]   Item ${idx + 1}: type=${item.contentType}, content=${item.content.substring(0, 100)}...`);
+      });
 
       // Initialize job and output handler
       const outputPath = params.outputPath || this.getDefaultOutputPath();
@@ -362,13 +372,72 @@ export class MetadataGeneratorService {
       return [];
     }
 
-    // Limit transcript length to avoid token limits (keep ~30k chars)
-    const limitedTranscript = transcript.substring(0, 30000);
+    // Process transcript in chunks if too long (30k chars ≈ 25-30 min of speech)
+    const CHUNK_SIZE = 30000;
+    const OVERLAP_SIZE = 2000; // Overlap to avoid missing chapter boundaries
 
-    // Ask AI to identify chapter points using phrase-based approach
-    const prompt = formatPrompt(SYSTEM_PROMPTS.CHAPTER_DETECTION_PROMPT, {
-      transcript: limitedTranscript,
+    let allAiChapters: AIChapter[] = [];
+
+    if (transcript.length <= CHUNK_SIZE) {
+      // Short transcript - process in one go
+      const aiChapters = await this.processTranscriptChunk(transcript, aiManager);
+      allAiChapters = aiChapters;
+    } else {
+      // Long transcript - process in chunks
+      log.info(`[MetadataGenerator] Transcript is ${transcript.length} chars, processing in chunks`);
+
+      let offset = 0;
+      let chunkIndex = 0;
+
+      while (offset < transcript.length) {
+        const chunkEnd = Math.min(offset + CHUNK_SIZE, transcript.length);
+        const chunk = transcript.substring(offset, chunkEnd);
+
+        log.info(`[MetadataGenerator] Processing chunk ${chunkIndex + 1} (chars ${offset}-${chunkEnd})`);
+
+        const chunkChapters = await this.processTranscriptChunk(chunk, aiManager, chunkIndex > 0);
+        allAiChapters.push(...chunkChapters);
+
+        // Move to next chunk with overlap (unless we're at the end)
+        if (chunkEnd >= transcript.length) {
+          break;
+        }
+        offset = chunkEnd - OVERLAP_SIZE;
+        chunkIndex++;
+      }
+
+      // Deduplicate chapters that might appear in overlapping regions
+      allAiChapters = this.deduplicateChapters(allAiChapters);
+    }
+
+    if (allAiChapters.length === 0) {
+      return [];
+    }
+
+    // Map phrases to timestamps
+    const mapper = new ChapterMapper(item.srtSegments);
+    return mapper.mapChapters(allAiChapters);
+  }
+
+  /**
+   * Process a single transcript chunk for chapter detection
+   */
+  private static async processTranscriptChunk(
+    transcript: string,
+    aiManager: AIManagerService,
+    isContinuation: boolean = false
+  ): Promise<AIChapter[]> {
+    let prompt = formatPrompt(SYSTEM_PROMPTS.CHAPTER_DETECTION_PROMPT, {
+      transcript: transcript,
     });
+
+    // For continuation chunks, adjust the prompt
+    if (isContinuation) {
+      prompt = prompt.replace(
+        '- First chapter MUST start at the very beginning of the transcript',
+        '- This is a CONTINUATION of a longer transcript - do NOT require a chapter at the very beginning unless there is a clear topic change'
+      );
+    }
 
     const response = await (aiManager as any).makeRequest(prompt, (aiManager as any).metadataModel);
 
@@ -376,15 +445,27 @@ export class MetadataGeneratorService {
       return [];
     }
 
-    // Parse response
-    const aiChapters = this.parseChaptersFromAI(response);
-    if (aiChapters.length === 0) {
-      return [];
+    return this.parseChaptersFromAI(response);
+  }
+
+  /**
+   * Remove duplicate chapters that may appear in overlapping regions
+   */
+  private static deduplicateChapters(chapters: AIChapter[]): AIChapter[] {
+    const seen = new Set<string>();
+    const unique: AIChapter[] = [];
+
+    for (const chapter of chapters) {
+      // Normalize the start phrase for comparison
+      const normalizedPhrase = chapter.start_phrase.toLowerCase().trim().substring(0, 30);
+
+      if (!seen.has(normalizedPhrase)) {
+        seen.add(normalizedPhrase);
+        unique.push(chapter);
+      }
     }
 
-    // Map phrases to timestamps
-    const mapper = new ChapterMapper(item.srtSegments);
-    return mapper.mapChapters(aiChapters);
+    return unique;
   }
 
   /**

@@ -143,6 +143,7 @@ export class MasterReports implements OnInit {
     if (!report) return;
 
     // Create input items from selected sections
+    // Include title in textContent so the AI knows who/what the subject is
     const inputItems: InputItem[] = selected.map(section => ({
       path: `text-subject-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       displayName: section.title,
@@ -150,7 +151,7 @@ export class MasterReports implements OnInit {
       icon: 'subject',
       promptSet: this.inputsState.masterPromptSet(),
       selected: false,
-      textContent: section.description
+      textContent: `${section.title}: ${section.description}`
     }));
 
     // Add to inputs state

@@ -26,43 +26,45 @@ export class InputDetector {
    * Detect input type
    */
   static detectInputType(input: string): 'subject' | 'video' | 'directory' | 'transcript_file' {
-    const parsedPath = path.parse(input);
-
-    // Check if it looks like a file path
-    const hasExtension = parsedPath.ext !== '';
+    // First check: if input has path separators and the file/dir exists, it's definitely a path
     const hasPathSeparators = input.includes('/') || input.includes('\\');
 
-    if (hasExtension || hasPathSeparators) {
-      // It looks like a file path
-      if (fs.existsSync(input)) {
-        const stats = fs.statSync(input);
-
-        if (stats.isFile()) {
-          const ext = parsedPath.ext.toLowerCase();
-          if (this.SUPPORTED_VIDEO_FORMATS.has(ext)) {
-            return 'video';
-          } else if (ext === '.txt') {
-            return 'transcript_file';
-          } else {
-            return 'transcript_file';
-          }
-        } else if (stats.isDirectory()) {
-          return 'directory';
-        }
-      } else {
-        // File doesn't exist, determine type by extension
-        const ext = parsedPath.ext.toLowerCase();
+    if (hasPathSeparators && fs.existsSync(input)) {
+      const stats = fs.statSync(input);
+      if (stats.isFile()) {
+        const ext = path.extname(input).toLowerCase();
         if (this.SUPPORTED_VIDEO_FORMATS.has(ext)) {
           return 'video';
-        } else if (ext === '.txt') {
-          return 'transcript_file';
-        } else {
-          return 'transcript_file';
         }
+        return 'transcript_file';
+      } else if (stats.isDirectory()) {
+        return 'directory';
       }
     }
 
-    // If not a file path, treat as subject
+    // Check for valid file extensions (not just any period - must be a real extension)
+    const ext = path.extname(input).toLowerCase();
+    const validFileExtensions = new Set([
+      ...this.SUPPORTED_VIDEO_FORMATS,
+      '.txt', '.srt', '.vtt', '.json'
+    ]);
+
+    // Only treat as file path if it has a recognized file extension
+    if (validFileExtensions.has(ext)) {
+      if (fs.existsSync(input)) {
+        if (this.SUPPORTED_VIDEO_FORMATS.has(ext)) {
+          return 'video';
+        }
+        return 'transcript_file';
+      }
+      // File doesn't exist but has valid extension - still treat as file path
+      if (this.SUPPORTED_VIDEO_FORMATS.has(ext)) {
+        return 'video';
+      }
+      return 'transcript_file';
+    }
+
+    // Everything else (including text with periods like sentences) is a subject
     return 'subject';
   }
 
@@ -78,8 +80,8 @@ export class InputDetector {
       if (!input || input.trim().length < 3) {
         return { valid: false, error: 'Subject must be at least 3 characters' };
       }
-      if (input.length > 1000) {
-        return { valid: false, error: 'Subject too long (max 1000 characters)' };
+      if (input.length > 2000) {
+        return { valid: false, error: 'Subject too long (max 2000 characters)' };
       }
       return { valid: true };
     }

@@ -201,13 +201,16 @@ export class Inputs implements OnInit, OnDestroy {
       if (result) {
         const lines = result.split('\n').filter((line: string) => line.trim());
         lines.forEach((subject: string) => {
+          const content = subject.trim();
+          const displayName = content.length > 50 ? content.substring(0, 50) + '...' : content;
           this.inputsState.addItem({
             type: 'subject',
-            path: subject.trim(),
-            displayName: subject.trim(),
+            path: content,
+            displayName: displayName,
             icon: 'text_fields',
             selected: true,
-            promptSet: this.inputsState.masterPromptSet()
+            promptSet: this.inputsState.masterPromptSet(),
+            textContent: content
           });
         });
       }
@@ -368,8 +371,7 @@ export class Inputs implements OnInit, OnDestroy {
     const dialogRef = this.dialog.open(EditTextSubjectDialog, {
       width: '650px',
       data: {
-        title: item.displayName,
-        description: item.textContent || item.path || ''
+        content: item.textContent || item.path || ''
       } as EditTextSubjectData
     });
 
@@ -377,11 +379,14 @@ export class Inputs implements OnInit, OnDestroy {
       if (result) {
         const items = this.inputsState.inputItems();
         const updatedItems = [...items];
+        // Use first line (up to 50 chars) as display name
+        const firstLine = result.content.split('\n')[0].trim();
+        const displayName = firstLine.length > 50 ? firstLine.substring(0, 50) + '...' : firstLine;
         updatedItems[index] = {
           ...updatedItems[index],
-          displayName: result.title,
-          textContent: result.description,
-          path: result.description // Keep path in sync for backwards compatibility
+          displayName: displayName || 'Text Subject',
+          textContent: result.content,
+          path: result.content // Keep path in sync for backwards compatibility
         };
         this.inputsState.inputItems.set(updatedItems);
       }
@@ -708,8 +713,9 @@ export class Inputs implements OnInit, OnDestroy {
       });
 
       // Extract inputs with notes
+      // For text subjects, use textContent as the path (the actual content to analyze)
       const inputs = nextJob.inputs.map(item => ({
-        path: item.path,
+        path: item.type === 'text-subject' || item.type === 'subject' ? (item.textContent || item.path) : item.path,
         notes: item.notes
       }));
 

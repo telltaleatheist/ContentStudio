@@ -6,8 +6,7 @@ import { MatInputModule } from '@angular/material/input';
 import { FormsModule } from '@angular/forms';
 
 export interface EditTextSubjectData {
-  title: string;
-  description: string;
+  content: string;  // Combined title and description as single text
 }
 
 @Component({
@@ -24,23 +23,18 @@ export interface EditTextSubjectData {
     <h2 mat-dialog-title>Edit Text Subject</h2>
     <mat-dialog-content>
       <mat-form-field appearance="outline" class="full-width">
-        <mat-label>Title</mat-label>
-        <input matInput [(ngModel)]="data.title" placeholder="Subject title">
-      </mat-form-field>
-
-      <mat-form-field appearance="outline" class="full-width">
-        <mat-label>Description / Content</mat-label>
+        <mat-label>Subject Content</mat-label>
         <textarea
           matInput
-          [(ngModel)]="data.description"
+          [(ngModel)]="data.content"
           rows="12"
-          placeholder="The text content that will be used for metadata generation"></textarea>
+          placeholder="Enter the subject content for AI analysis"></textarea>
         <mat-hint>This text will be analyzed by the AI to generate metadata</mat-hint>
       </mat-form-field>
     </mat-dialog-content>
     <mat-dialog-actions align="end">
       <button mat-button (click)="onCancel()">Cancel</button>
-      <button mat-raised-button color="primary" (click)="onSave()" [disabled]="!data.title.trim()">
+      <button mat-raised-button color="primary" (click)="onSave()" [disabled]="!data.content.trim()">
         Save
       </button>
     </mat-dialog-actions>
@@ -49,13 +43,16 @@ export interface EditTextSubjectData {
     mat-dialog-content {
       min-width: 550px;
       padding: 20px 24px;
+      padding-top: 24px;
       display: flex;
       flex-direction: column;
       gap: 8px;
+      overflow: visible;
     }
 
     .full-width {
       width: 100%;
+      margin-top: 8px;
     }
 
     textarea {
@@ -85,7 +82,7 @@ export class EditTextSubjectDialog {
   }
 
   onSave(): void {
-    if (this.data.title.trim()) {
+    if (this.data.content.trim()) {
       this.dialogRef.close(this.data);
     }
   }

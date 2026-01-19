@@ -75,7 +75,8 @@
       "mcp__context7__resolve-library-id",
       "mcp__context7__query-docs",
       "Bash(npm run build:main:*)",
-      "Bash(npm run build:all:*)"
+      "Bash(npm run build:all:*)",
+      "Bash(npm run:*)"
     ]
   }
 }

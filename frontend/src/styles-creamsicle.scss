@@ -745,6 +745,8 @@ router-outlet + * {
   }
 
   .mat-mdc-tab:not(.mat-mdc-tab-disabled) {
+    min-width: 160px;
+
     &.mdc-tab--active {
       .mdc-tab__text-label {
         color: var(--primary-orange) !important;
