@@ -39,8 +39,11 @@ export class Settings implements OnInit {
 
   // Provider availability
   availableOllamaModels = signal<string[]>([]);
+  availableClaudeModels = signal<Array<{ id: string; name: string }>>([]);
+  availableOpenAIModels = signal<Array<{ id: string; name: string }>>([]);
   hasOpenAIKey = signal(false);
   hasClaudeKey = signal(false);
+  isLoadingModels = signal(false);
 
   // Save notification
   showSaveNotification = signal(false);
@@ -60,22 +63,32 @@ export class Settings implements OnInit {
   modelOptions = computed<ModelOption[]>(() => {
     const options: ModelOption[] = [];
 
-    // Add OpenAI models if API key is configured
-    if (this.hasOpenAIKey()) {
-      options.push(
-        { value: 'openai:gpt-4o', label: 'ChatGPT 4o', provider: 'cloud', icon: 'cloud', needsApiKey: true },
-        { value: 'openai:gpt-4-turbo', label: 'ChatGPT 4 Turbo', provider: 'cloud', icon: 'cloud', needsApiKey: true },
-        { value: 'openai:gpt-3.5-turbo', label: 'ChatGPT 3.5 Turbo', provider: 'cloud', icon: 'cloud', needsApiKey: true }
-      );
+    // Add OpenAI models fetched from API
+    const openaiModels = this.availableOpenAIModels();
+    if (openaiModels.length > 0) {
+      openaiModels.forEach(model => {
+        options.push({
+          value: `openai:${model.id}`,
+          label: model.name,
+          provider: 'cloud',
+          icon: 'cloud',
+          needsApiKey: true
+        });
+      });
     }
 
-    // Add Claude models if API key is configured
-    if (this.hasClaudeKey()) {
-      options.push(
-        { value: 'claude:claude-sonnet-4', label: 'Claude Sonnet 4.5 (Newest)', provider: 'cloud', icon: 'cloud', needsApiKey: true },
-        { value: 'claude:claude-3-5-sonnet', label: 'Claude 3.5 Sonnet (Recommended)', provider: 'cloud', icon: 'cloud', needsApiKey: true },
-        { value: 'claude:claude-3-5-haiku', label: 'Claude 3.5 Haiku', provider: 'cloud', icon: 'cloud', needsApiKey: true }
-      );
+    // Add Claude models fetched from API
+    const claudeModels = this.availableClaudeModels();
+    if (claudeModels.length > 0) {
+      claudeModels.forEach(model => {
+        options.push({
+          value: `claude:${model.id}`,
+          label: model.name,
+          provider: 'cloud',
+          icon: 'cloud',
+          needsApiKey: true
+        });
+      });
     }
 
     // Add local Ollama models if Ollama is available
@@ -104,22 +117,38 @@ export class Settings implements OnInit {
     try {
       const settings = await this.electron.getSettings();
 
-      // Load AI model (used for both summarization and metadata generation)
-      if (settings.metadataProvider && settings.metadataModel) {
-        this.metadataModel.set(`${settings.metadataProvider}:${settings.metadataModel}`);
-      } else if (settings.aiProvider && settings.ollamaModel) {
-        // Use old settings format if new format not available
-        this.metadataModel.set(`${settings.aiProvider}:${settings.ollamaModel}`);
-      }
-
       if (settings.outputDirectory) this.outputDirectory.set(settings.outputDirectory);
       if (settings.promptSet) this.selectedPromptSet.set(settings.promptSet);
 
       // Load available prompt sets
       await this.loadPromptSets();
 
-      // Check which AI providers are configured
+      // Check which AI providers are configured and fetch available models from APIs
       await this.checkProviderAvailability();
+
+      // Now load AI model (after we have the available models)
+      let savedModel = '';
+      if (settings.metadataProvider && settings.metadataModel) {
+        savedModel = `${settings.metadataProvider}:${settings.metadataModel}`;
+      } else if (settings.aiProvider && settings.ollamaModel) {
+        // Use old settings format if new format not available
+        savedModel = `${settings.aiProvider}:${settings.ollamaModel}`;
+      }
+
+      if (savedModel) {
+        // Check if the saved model is in our available options
+        const availableValues = this.modelOptions().map(o => o.value);
+        if (availableValues.includes(savedModel)) {
+          this.metadataModel.set(savedModel);
+        } else if (availableValues.length > 0) {
+          // Model not available (might be outdated), default to first available
+          console.warn('Saved model not available:', savedModel, '- defaulting to:', availableValues[0]);
+          this.metadataModel.set(availableValues[0]);
+        }
+      } else if (this.modelOptions().length > 0) {
+        // No saved model, default to first available
+        this.metadataModel.set(this.modelOptions()[0].value);
+      }
     } catch (error) {
       this.notificationService.error('Settings Error', 'Failed to load settings: ' + (error as Error).message, false);
     }
@@ -137,19 +166,44 @@ export class Settings implements OnInit {
   }
 
   async checkProviderAvailability() {
+    this.isLoadingModels.set(true);
     try {
-      // Check Ollama
-      const ollamaResult = await this.electron.checkOllama();
+      // Check API keys first
+      const apiKeys = await this.electron.getApiKeys();
+      this.hasOpenAIKey.set(!!apiKeys.openaiApiKey);
+      this.hasClaudeKey.set(!!apiKeys.claudeApiKey);
+
+      // Fetch all models in parallel
+      const [ollamaResult, claudeResult, openaiResult] = await Promise.all([
+        this.electron.checkOllama(),
+        apiKeys.claudeApiKey ? this.electron.getAvailableModels('claude') : Promise.resolve({ success: false, models: [] as Array<{ id: string; name: string }>, error: undefined }),
+        apiKeys.openaiApiKey ? this.electron.getAvailableModels('openai') : Promise.resolve({ success: false, models: [] as Array<{ id: string; name: string }>, error: undefined })
+      ]);
+
+      // Set Ollama models
       if (ollamaResult.available && ollamaResult.models.length > 0) {
         this.availableOllamaModels.set(ollamaResult.models);
       }
 
-      // Check API keys
-      const apiKeys = await this.electron.getApiKeys();
-      this.hasOpenAIKey.set(!!apiKeys.openaiApiKey);
-      this.hasClaudeKey.set(!!apiKeys.claudeApiKey);
+      // Set Claude models (fetched directly from API)
+      if (claudeResult.success && claudeResult.models.length > 0) {
+        this.availableClaudeModels.set(claudeResult.models);
+        console.log('Loaded Claude models from API:', claudeResult.models);
+      } else if (apiKeys.claudeApiKey && 'error' in claudeResult) {
+        console.warn('Failed to fetch Claude models from API:', claudeResult.error);
+      }
+
+      // Set OpenAI models (fetched directly from API)
+      if (openaiResult.success && openaiResult.models.length > 0) {
+        this.availableOpenAIModels.set(openaiResult.models);
+        console.log('Loaded OpenAI models from API:', openaiResult.models);
+      } else if (apiKeys.openaiApiKey && 'error' in openaiResult) {
+        console.warn('Failed to fetch OpenAI models from API:', openaiResult.error);
+      }
     } catch (error) {
       console.log('Error checking provider availability:', error);
+    } finally {
+      this.isLoadingModels.set(false);
     }
   }
 
@@ -233,19 +287,30 @@ export class Settings implements OnInit {
 
   async wizardCompleted() {
     this.showWizard.set(false);
-    // Reload settings to pick up new AI configuration
+    // Reload settings and refresh available models from APIs
     try {
       const settings = await this.electron.getSettings();
 
-      // Load AI model
-      if (settings.metadataProvider && settings.metadataModel) {
-        this.metadataModel.set(`${settings.metadataProvider}:${settings.metadataModel}`);
-      }
-
-      // Refresh provider availability
+      // Refresh provider availability and fetch models from APIs
       await this.checkProviderAvailability();
 
-      this.notificationService.success('AI Setup Complete', 'Your AI configuration has been saved', false);
+      // Load AI model (if valid)
+      if (settings.metadataProvider && settings.metadataModel) {
+        const modelValue = `${settings.metadataProvider}:${settings.metadataModel}`;
+        // Check if the saved model is in our available options
+        const availableValues = this.modelOptions().map(o => o.value);
+        if (availableValues.includes(modelValue)) {
+          this.metadataModel.set(modelValue);
+        } else {
+          // Model not available, select first available model
+          if (availableValues.length > 0) {
+            this.metadataModel.set(availableValues[0]);
+            console.log('Previously selected model not available, defaulting to:', availableValues[0]);
+          }
+        }
+      }
+
+      this.notificationService.success('AI Setup Complete', 'Your AI configuration has been saved. Please select a model from the dropdown.', false);
     } catch (error) {
       this.notificationService.error('Settings Error', 'Failed to reload settings: ' + (error as Error).message, false);
     }

@@ -73,14 +73,33 @@ export class AIManagerService {
         }
 
         const anthropic = new Anthropic({ apiKey });
+        log.info('[AIManager] Fetching Claude models from API...');
         const response = await anthropic.models.list();
+        log.info(`[AIManager] Received ${response.data.length} models from Claude API`);
 
-        // Get top 3 models (sorted by creation date, newest first)
-        const sortedModels = response.data
-          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-          .slice(0, 3);
+        // Log all models for debugging
+        response.data.forEach(model => {
+          log.info(`[AIManager] Claude model: ${model.id} (${model.display_name || 'no display name'})`);
+        });
 
-        return sortedModels.map(model => ({
+        // Filter for chat-capable models (claude-3 and claude-sonnet/opus/haiku families)
+        // Exclude embedding models and other non-chat models
+        const chatModels = response.data
+          .filter(model => {
+            const id = model.id.toLowerCase();
+            // Include Claude 3.x, Claude 4.x, and sonnet/opus/haiku models
+            return (id.includes('claude-3') ||
+                    id.includes('claude-sonnet') ||
+                    id.includes('claude-opus') ||
+                    id.includes('claude-haiku')) &&
+                   !id.includes('embedding');
+          })
+          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+        log.info(`[AIManager] Filtered to ${chatModels.length} chat-capable Claude models`);
+
+        // Return up to 10 most recent chat models
+        return chatModels.slice(0, 10).map(model => ({
           id: model.id,
           name: model.display_name || model.id
         }));
@@ -674,10 +693,11 @@ export class AIManagerService {
       console.log(`[AIManager]   Response length: ${result?.length || 0} chars`);
 
       return result;
-    } catch (error) {
+    } catch (error: any) {
       const endTimestamp = new Date().toISOString();
       console.error(`[AIManager] ✖ AI REQUEST FAILED [${requestId}] at ${endTimestamp}:`, error);
-      return null;
+      // Re-throw with context so the caller gets a useful error message
+      throw new Error(error?.message || `AI request failed for model "${model}"`);
     }
   }
 
@@ -709,9 +729,22 @@ export class AIManagerService {
       );
 
       return response.data.response;
-    } catch (error) {
-      console.error('[AIManager] Ollama request failed:', error);
-      return null;
+    } catch (error: any) {
+      // Extract useful error details from Ollama response
+      const ollamaError = error?.response?.data?.error || error?.message || 'Unknown error';
+      const status = error?.response?.status;
+      const isTimeout = error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT';
+
+      if (isTimeout) {
+        log.error(`[AIManager] Ollama request timed out after ${timeout}s for model "${model}"`);
+        throw new Error(`Ollama request timed out after ${timeout}s. Model "${model}" may be too large for your hardware, or Ollama is still loading the model. Try a smaller model or increase available memory.`);
+      } else if (status === 404) {
+        log.error(`[AIManager] Ollama model "${model}" not found`);
+        throw new Error(`Ollama model "${model}" not found. Make sure you've pulled it with: ollama pull ${model}`);
+      } else {
+        log.error(`[AIManager] Ollama request failed for model "${model}":`, ollamaError);
+        throw new Error(`Ollama request failed (model: ${model}): ${ollamaError}`);
+      }
     }
   }
 
@@ -743,9 +776,10 @@ export class AIManagerService {
 
       return content || null;
     } catch (error: any) {
-      console.error('[AIManager] OpenAI request failed:', error?.message || error);
+      const errorMsg = error?.message || 'Unknown error';
+      console.error('[AIManager] OpenAI request failed:', errorMsg);
       console.error('[AIManager] OpenAI error details:', error?.response?.data || error);
-      return null;
+      throw new Error(`OpenAI request failed (model: ${model}): ${errorMsg}`);
     }
   }
 
@@ -799,10 +833,11 @@ export class AIManagerService {
 
       const textBlock = response.content.find((block) => block.type === 'text');
       return textBlock?.type === 'text' ? textBlock.text : null;
-    } catch (error) {
-      log.error('[AIManager] Claude request failed:', error);
+    } catch (error: any) {
+      const errorMsg = error?.message || 'Unknown error';
+      log.error('[AIManager] Claude request failed:', errorMsg);
       console.error('[AIManager] Claude request failed:', error);
-      return null;
+      throw new Error(`Claude request failed (model: ${model}): ${errorMsg}`);
     }
   }
 

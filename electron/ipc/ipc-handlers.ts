@@ -449,9 +449,10 @@ export function setupIpcHandlers(store: Store<any>) {
       }
 
       // Reconstruct full model with provider prefix (e.g., "claude:claude-sonnet-4-5")
-      // Settings stores aiProvider and aiModel separately, but AIManagerService needs prefixed format
-      const aiModel = settings.aiModel || settings.metadataModel || settings.ollamaModel;
-      const aiProvider = settings.aiProvider || settings.metadataProvider || 'ollama';
+      // Settings stores provider and model separately, but AIManagerService needs prefixed format
+      // Prefer newer metadataProvider/metadataModel fields over legacy aiProvider/aiModel
+      const aiModel = settings.metadataModel || settings.aiModel || settings.ollamaModel;
+      const aiProvider = settings.metadataProvider || settings.aiProvider || 'ollama';
       const fullModel = aiModel ? `${aiProvider}:${aiModel}` : undefined;
 
       log.info(`[IPC] Using AI model: ${fullModel} (provider: ${aiProvider}, model: ${aiModel})`);
@@ -1228,8 +1229,9 @@ export function setupIpcHandlers(store: Store<any>) {
       }
 
       // Get AI configuration
-      const aiProvider = settings.aiProvider || 'ollama';
-      const aiModel = settings.aiModel || settings.metadataModel || settings.ollamaModel;
+      // Prefer newer metadataProvider/metadataModel fields over legacy aiProvider/aiModel
+      const aiProvider = settings.metadataProvider || settings.aiProvider || 'ollama';
+      const aiModel = settings.metadataModel || settings.aiModel || settings.ollamaModel;
       const fullModel = aiModel ? `${aiProvider}:${aiModel}` : undefined;
 
       let apiKey = undefined;

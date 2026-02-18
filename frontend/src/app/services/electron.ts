@@ -65,6 +65,7 @@ declare global {
       checkOllama: () => Promise<{ available: boolean; models: string[] }>;
       getApiKeys: () => Promise<{ claudeApiKey?: string; openaiApiKey?: string }>;
       saveApiKey: (provider: string, apiKey: string) => Promise<{ success: boolean; error?: string }>;
+      getAvailableModels: (provider: 'ollama' | 'openai' | 'claude', apiKey?: string, host?: string) => Promise<{ success: boolean; models: Array<{ id: string; name: string }>; error?: string }>;
 
       // External URLs
       openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
@@ -298,6 +299,15 @@ export class ElectronService {
   async saveApiKey(provider: 'claude' | 'openai', apiKey: string): Promise<{ success: boolean; error?: string }> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.saveApiKey(provider, apiKey);
+  }
+
+  async getAvailableModels(
+    provider: 'ollama' | 'openai' | 'claude',
+    apiKey?: string,
+    host?: string
+  ): Promise<{ success: boolean; models: Array<{ id: string; name: string }>; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, models: [], error: 'Electron not available' };
+    return await this.ipcRenderer.getAvailableModels(provider, apiKey, host);
   }
 
   async openExternal(url: string): Promise<{ success: boolean; error?: string }> {
