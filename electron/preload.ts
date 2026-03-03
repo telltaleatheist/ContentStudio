@@ -92,6 +92,19 @@ const api = {
     const listener = (_event: any, progress: any) => callback(progress);
     ipcRenderer.on('master-analysis-progress', listener);
     return () => ipcRenderer.removeListener('master-analysis-progress', listener);
+  },
+
+  // Episode Splitter
+  selectEpisodeAudio: () => ipcRenderer.invoke('select-episode-audio'),
+  analyzeEpisodes: (params: { audioPaths: string[]; jobId?: string }) =>
+    ipcRenderer.invoke('analyze-episodes', params),
+  listEpisodeReports: () => ipcRenderer.invoke('list-episode-reports'),
+  getEpisodeReport: (reportPath: string) => ipcRenderer.invoke('get-episode-report', reportPath),
+  deleteEpisodeReport: (reportPath: string) => ipcRenderer.invoke('delete-episode-report', reportPath),
+  onEpisodeSplitterProgress: (callback: (progress: any) => void) => {
+    const listener = (_event: any, progress: any) => callback(progress);
+    ipcRenderer.on('episode-splitter-progress', listener);
+    return () => ipcRenderer.removeListener('episode-splitter-progress', listener);
   }
 };
 

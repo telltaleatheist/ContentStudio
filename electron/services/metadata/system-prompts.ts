@@ -133,6 +133,59 @@ Key principles:
 
 Transcript:
 {transcript}`,
+
+  /**
+   * Episode split prompt - for finding episode boundaries in multi-hour streams
+   * The transcript comes from multiple sequential audio files concatenated with global timestamps
+   * Placeholders: {transcript}, {duration}, {episodeCount}
+   */
+  EPISODE_SPLIT_PROMPT: `You are analyzing a transcript from a continuous multi-hour livestream (total duration: {duration}).
+The stream was recorded in multiple sequential files that have been combined into one continuous transcript with global timestamps.
+
+Your task: Split this stream into approximately {episodeCount} episodes of roughly 1 hour each.
+
+RULES FOR EPISODE BOUNDARIES:
+1. Target duration: ~60 minutes per episode
+2. Maximum duration: 70 minutes (1 hour 10 minutes) - NEVER exceed this
+3. BALANCED DURATIONS: All episodes must be roughly the same length. The shortest episode should be at least 70% as long as the longest. Do NOT create episodes that are drastically shorter or longer than the others.
+4. Find natural topic/subject changes near the target breakpoints
+5. Look for verbal break cues where the host manually inserted break points:
+   - "tell me what you think in the comments"
+   - "this is [name] and he's/she's talking about [topic]" (intro patterns)
+   - Sign-off phrases, outros, or transitions like "alright, moving on..."
+   - "subscribe", "like and share", "see you next time" type phrases
+   - Any clear verbal indication the host intended a break here
+6. Prefer placing breaks at verbal cues even if the resulting episode is shorter than 60 minutes
+7. The first episode MUST start at the very beginning of the transcript
+
+For each episode provide:
+1. start_phrase: An exact quote (5-10 words) from where this episode begins in the transcript
+2. title: A brief topic label or subject name for this episode segment
+3. description: 1-2 sentences summarizing what this episode covers
+4. verbal_cue_nearby: true/false - whether a verbal break cue was detected near this boundary
+
+Return ONLY valid JSON:
+{
+  "episodes": [
+    {
+      "start_phrase": "exact quote from transcript",
+      "title": "Episode Topic",
+      "description": "Summary of what this episode covers...",
+      "verbal_cue_nearby": false
+    }
+  ]
+}
+
+CRITICAL RULES:
+- start_phrase MUST be verbatim text copied from the transcript (5-10 consecutive words)
+- The first episode's start_phrase should be from the very beginning of the transcript
+- DO NOT paraphrase or modify the text - copy EXACTLY as written
+- Episodes are sequential - each one ends where the next begins
+- The last episode ends at the end of the stream
+- Output valid JSON only, no markdown or extra text
+
+Transcript:
+{transcript}`,
 };
 
 /**

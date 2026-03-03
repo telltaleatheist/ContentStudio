@@ -6,6 +6,7 @@ import * as path from 'path';
 import * as yaml from 'js-yaml';
 import { AIManagerService } from '../services/metadata/ai-manager.service';
 import { MasterAnalyzerService } from '../services/metadata/master-analyzer.service';
+import { EpisodeSplitterService } from '../services/metadata/episode-splitter.service';
 
 /**
  * IPC Handlers
@@ -1355,6 +1356,159 @@ export function setupIpcHandlers(store: Store<any>) {
       return { success: false, error: String(error) };
     }
   });
+
+  // ==================== EPISODE SPLITTER ====================
+
+  // Select episode audio files
+  ipcMain.handle('select-episode-audio', async () => {
+    try {
+      const result = await dialog.showOpenDialog({
+        title: 'Select Audio/Video Files',
+        filters: [
+          { name: 'Audio/Video Files', extensions: ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'mp4', 'mov', 'mkv', 'avi', 'webm', 'm4v'] }
+        ],
+        properties: ['openFile', 'multiSelections']
+      });
+
+      if (result.canceled || result.filePaths.length === 0) {
+        return { success: false, filePaths: [] };
+      }
+
+      return { success: true, filePaths: result.filePaths };
+    } catch (error) {
+      log.error('Error selecting episode audio:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Analyze episodes
+  ipcMain.handle('analyze-episodes', async (_event, params: { audioPaths: string[]; jobId?: string }) => {
+    try {
+      log.info('[IPC] Starting episode analysis:', params.audioPaths.length, 'files');
+
+      const settings = (store as any).store;
+      const mainWindow = BrowserWindow.getAllWindows()[0];
+
+      // Load API keys
+      const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
+      let apiKeys: any = {};
+      if (fs.existsSync(apiKeysPath)) {
+        apiKeys = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
+      }
+
+      // Get AI configuration
+      const aiProvider = settings.metadataProvider || settings.aiProvider || 'ollama';
+      const aiModel = settings.metadataModel || settings.aiModel || settings.ollamaModel;
+      const fullModel = aiModel ? `${aiProvider}:${aiModel}` : undefined;
+
+      let apiKey = undefined;
+      if (aiProvider === 'openai') {
+        apiKey = apiKeys.openaiApiKey;
+      } else if (aiProvider === 'claude') {
+        apiKey = apiKeys.claudeApiKey;
+      }
+
+      // Create cancellation tracking
+      let cancelled = false;
+      const jobId = params.jobId || `episode-${Date.now()}`;
+
+      const cancelCallback = () => {
+        cancelled = true;
+        log.info(`[IPC] Episode analysis ${jobId} cancelled`);
+      };
+
+      runningJobs.set(jobId, { cancel: cancelCallback });
+
+      // Progress callback
+      const progressCallback = (phase: string, message: string, percent?: number) => {
+        if (mainWindow) {
+          mainWindow.webContents.send('episode-splitter-progress', {
+            jobId,
+            phase,
+            message,
+            percent
+          });
+        }
+      };
+
+      // Enqueue the analysis job
+      const result = await enqueueAiJob(jobId, async () => {
+        const analysisResult = await EpisodeSplitterService.analyze({
+          audioPaths: params.audioPaths,
+          outputDirectory: settings.outputDirectory,
+          aiProvider,
+          aiModel: fullModel || 'ollama:phi-3.5:3.8b',
+          aiApiKey: apiKey,
+          aiHost: settings.ollamaHost || 'http://localhost:11434',
+          jobId,
+          progressCallback,
+          cancelCallback: () => cancelled
+        });
+
+        return analysisResult;
+      });
+
+      // Cleanup
+      runningJobs.delete(jobId);
+
+      return result;
+
+    } catch (error) {
+      log.error('Error in episode analysis:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // List episode reports
+  ipcMain.handle('list-episode-reports', async () => {
+    try {
+      const settings = (store as any).store;
+      const outputDirectory = settings.outputDirectory;
+
+      if (!outputDirectory) {
+        return { success: true, reports: [] };
+      }
+
+      const reports = EpisodeSplitterService.listReports(outputDirectory);
+      return { success: true, reports };
+    } catch (error) {
+      log.error('Error listing episode reports:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Get episode report
+  ipcMain.handle('get-episode-report', async (_event, reportPath: string) => {
+    try {
+      const report = EpisodeSplitterService.loadReport(reportPath);
+      if (report) {
+        return { success: true, report };
+      } else {
+        return { success: false, error: 'Report not found' };
+      }
+    } catch (error) {
+      log.error('Error loading episode report:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Delete episode report
+  ipcMain.handle('delete-episode-report', async (_event, reportPath: string) => {
+    try {
+      if (fs.existsSync(reportPath)) {
+        fs.unlinkSync(reportPath);
+        log.info(`Deleted episode report: ${reportPath}`);
+        return { success: true };
+      } else {
+        return { success: false, error: 'Report not found' };
+      }
+    } catch (error) {
+      log.error('Error deleting episode report:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // ==================== END EPISODE SPLITTER ====================
 
   log.info('IPC handlers registered');
 }

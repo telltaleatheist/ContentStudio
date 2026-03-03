@@ -1,0 +1,253 @@
+<div class="episode-reports-container">
+  <div class="page-content">
+
+    <!-- Reports List (Left Panel) -->
+    <div class="panel reports-list-panel">
+      <div class="panel-header">
+        <div>
+          <h4 class="panel-title">Episode Reports</h4>
+          <p class="panel-subtitle">
+            {{ reports().length }} report{{ reports().length !== 1 ? 's' : '' }} found
+          </p>
+        </div>
+        <div class="header-actions">
+          <button mat-icon-button (click)="loadReports()" [disabled]="isLoading()" matTooltip="Refresh reports">
+            <mat-icon>refresh</mat-icon>
+          </button>
+        </div>
+      </div>
+
+      <div class="panel-content">
+        @if (isLoading() && reports().length === 0) {
+          <div class="loading-container">
+            <mat-spinner diameter="40"></mat-spinner>
+            <p>Loading reports...</p>
+          </div>
+        }
+
+        @if (!isLoading() && reports().length === 0) {
+          <div class="empty-state">
+            <mat-icon>content_cut</mat-icon>
+            <p>No episode reports found</p>
+            <small>Analyze episodes in the Episode Splitter to create reports</small>
+          </div>
+        }
+
+        @if (reports().length > 0) {
+          <div class="reports-list">
+            @for (item of reports(); track item.path) {
+              <mat-card
+                class="report-card"
+                [class.selected]="selectedReport()?.path === item.path"
+                (click)="selectReport(item)">
+                <mat-card-content>
+                  <div class="report-row">
+                    <mat-icon class="report-icon">content_cut</mat-icon>
+                    <div class="report-info">
+                      <div class="report-title">{{ getReportTitle(item.report) }}</div>
+                      <div class="report-meta">
+                        <span>{{ formatDate(item.report.analyzedAt) }}</span>
+                        <span class="separator">&middot;</span>
+                        <span>{{ item.report.episodeCount }} episodes</span>
+                        <span class="separator">&middot;</span>
+                        <span>{{ item.report.totalDuration }}</span>
+                      </div>
+                    </div>
+                    <button mat-icon-button (click)="deleteReport(item, $event)" matTooltip="Delete report" class="delete-btn">
+                      <mat-icon>close</mat-icon>
+                    </button>
+                  </div>
+                </mat-card-content>
+              </mat-card>
+            }
+          </div>
+        }
+      </div>
+    </div>
+
+    <!-- Report Viewer (Right Panel) -->
+    <div class="panel report-viewer-panel">
+      @if (!selectedReport()) {
+        <div class="empty-viewer">
+          <mat-icon>touch_app</mat-icon>
+          <p>Select a report to view</p>
+          <small>Click on a report from the list on the left</small>
+        </div>
+      } @else {
+        <div class="panel-header">
+          <div>
+            <h4 class="panel-title">{{ getReportTitle(selectedReport()!.report) }}</h4>
+            <p class="panel-subtitle">
+              {{ selectedReport()!.report.episodeCount }} episodes detected
+            </p>
+          </div>
+          <div class="header-actions">
+            <button mat-button (click)="copyTimecodes()" matTooltip="Copy timecodes to clipboard">
+              <mat-icon>content_copy</mat-icon>
+              Copy Timecodes
+            </button>
+          </div>
+        </div>
+
+        <div class="panel-content viewer-content">
+          <!-- Summary -->
+          <div class="results-summary">
+            <div class="summary-stat">
+              <span class="stat-value">{{ selectedReport()!.report.totalDuration }}</span>
+              <span class="stat-label">Total Duration</span>
+            </div>
+            <div class="summary-stat">
+              <span class="stat-value">{{ selectedReport()!.report.episodeCount }}</span>
+              <span class="stat-label">Episodes</span>
+            </div>
+            <div class="summary-stat">
+              <span class="stat-value">{{ selectedReport()!.report.audioFiles.length }}</span>
+              <span class="stat-label">Source Files</span>
+            </div>
+          </div>
+
+          <!-- Timeline -->
+          <div class="timeline-bar">
+            @for (episode of selectedReport()!.report.episodes; track episode.episodeNumber) {
+              <div
+                class="timeline-segment"
+                [style.width]="getDurationBarWidth(episode)"
+                [style.background-color]="getDurationBarColor(episode)"
+                [matTooltip]="'Ep ' + episode.episodeNumber + ': ' + episode.title + ' (' + formatDuration(episode.durationSeconds) + ')'">
+                <span class="timeline-label">{{ episode.episodeNumber }}</span>
+              </div>
+            }
+          </div>
+
+          <!-- Episode Cards -->
+          <div class="episodes-list">
+            @for (episode of selectedReport()!.report.episodes; track episode.episodeNumber) {
+              <mat-card class="episode-card" [class.warning]="episode.exceedsMaxDuration">
+                <mat-card-content>
+                  <div class="episode-row">
+                    <div class="episode-number">{{ episode.episodeNumber }}</div>
+                    <div class="episode-details">
+                      <div class="episode-title">{{ episode.title }}</div>
+                      <div class="episode-times">
+                        {{ episode.startTimestamp }} - {{ episode.endTimestamp }}
+                        <span class="episode-duration" [class.over-max]="episode.exceedsMaxDuration">
+                          ({{ formatDuration(episode.durationSeconds) }})
+                        </span>
+                      </div>
+                      @if (episode.description) {
+                        <div class="episode-description">{{ episode.description }}</div>
+                      }
+                    </div>
+                    <div class="episode-badges">
+                      @if (episode.profanityMarkers && episode.profanityMarkers.length > 0) {
+                        <span class="badge profanity-warning"
+                          [class.has-opening]="hasOpeningProfanity(episode)"
+                          [matTooltip]="getProfanitySummary(episode)">
+                          <mat-icon>explicit</mat-icon>
+                          {{ episode.profanityMarkers.length }} flagged
+                        </span>
+                      }
+                      @if (episode.verbalCueDetected) {
+                        <span class="badge verbal-cue" matTooltip="Verbal break cue detected near this boundary">
+                          <mat-icon>mic</mat-icon>
+                          Verbal Cue
+                        </span>
+                      }
+                      @if (episode.exceedsMaxDuration) {
+                        <span class="badge over-duration" matTooltip="Exceeds recommended 1h10m maximum">
+                          <mat-icon>warning</mat-icon>
+                          Over Max
+                        </span>
+                      }
+                    </div>
+                  </div>
+                  @if (episode.profanityMarkers && episode.profanityMarkers.length > 0) {
+                    <div class="profanity-timeline">
+                      <div class="profanity-timeline-header">
+                        <mat-icon>explicit</mat-icon>
+                        <span>{{ episode.profanityMarkers.length }} flagged</span>
+                        <span class="profanity-legend">
+                          <span class="legend-dot severe"></span> Severe
+                          <span class="legend-dot mild"></span> Mild
+                          <span class="legend-line opening"></span> 3 min
+                        </span>
+                      </div>
+                      <div class="profanity-bar">
+                        <div class="profanity-bar-opening" [style.width]="getOpeningBarWidth(episode)"></div>
+                        @for (marker of episode.profanityMarkers; track $index) {
+                          <div class="profanity-bar-dot"
+                            [class.severe]="marker.severity === 'severe'"
+                            [class.mild]="marker.severity !== 'severe'"
+                            [style.left]="getProfanityDotPosition(marker, episode)"
+                            [matTooltip]="marker.localTimestamp">
+                          </div>
+                        }
+                        <span class="three-min-label" [style.left]="getOpeningBarWidth(episode)">3:00</span>
+                      </div>
+                    </div>
+                  }
+                </mat-card-content>
+              </mat-card>
+            }
+          </div>
+
+          <!-- Source File Breakdown -->
+          @if (selectedReport()!.report.sourceFileBreakdown && selectedReport()!.report.sourceFileBreakdown.length > 0) {
+            <div class="file-breakdown-section">
+              <h3>Source File Breakdown</h3>
+              <p class="section-hint">How each source file maps to the suggested episodes</p>
+
+              @for (file of selectedReport()!.report.sourceFileBreakdown; track file.fileIndex) {
+                <mat-card class="file-breakdown-card">
+                  <mat-card-content>
+                    <div class="file-breakdown-header">
+                      <div class="file-breakdown-title">
+                        <span class="file-breakdown-number">File {{ file.fileIndex }}</span>
+                        <span class="file-breakdown-name">{{ file.fileName }}</span>
+                      </div>
+                      <span class="file-breakdown-duration">{{ file.fileDuration }}</span>
+                    </div>
+
+                    <!-- Mini timeline showing how this file splits -->
+                    <div class="file-timeline-bar">
+                      @for (seg of file.segments; track seg.episodeNumber) {
+                        <div
+                          class="file-timeline-segment"
+                          [style.width]="getSegmentBarWidth(seg, file)"
+                          [style.background-color]="getSegmentBarColor(seg.episodeNumber - 1)"
+                          [matTooltip]="'Ep ' + seg.episodeNumber + ': ' + seg.localStartTimestamp + ' - ' + seg.localEndTimestamp">
+                          <span class="file-timeline-label">Ep {{ seg.episodeNumber }}</span>
+                        </div>
+                      }
+                    </div>
+
+                    <!-- Segment details -->
+                    <div class="file-segments">
+                      @for (seg of file.segments; track seg.episodeNumber) {
+                        <div class="file-segment-row">
+                          <span class="segment-episode-badge" [style.background-color]="getSegmentBarColor(seg.episodeNumber - 1)">
+                            Ep {{ seg.episodeNumber }}
+                          </span>
+                          <span class="segment-times">{{ seg.localStartTimestamp }} &ndash; {{ seg.localEndTimestamp }}</span>
+                          <span class="segment-duration">({{ formatDuration(seg.durationSeconds) }})</span>
+                          @if (seg.localStartSeconds === 0 && seg.localEndSeconds === file.fileDurationSeconds) {
+                            <span class="segment-note">entire file</span>
+                          } @else if (seg.localStartSeconds === 0) {
+                            <span class="segment-note">first {{ formatDuration(seg.durationSeconds) }}</span>
+                          } @else if (seg.localEndSeconds === file.fileDurationSeconds) {
+                            <span class="segment-note">last {{ formatDuration(seg.durationSeconds) }}</span>
+                          }
+                        </div>
+                      }
+                    </div>
+                  </mat-card-content>
+                </mat-card>
+              }
+            </div>
+          }
+        </div>
+      }
+    </div>
+
+  </div>
+</div>

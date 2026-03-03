@@ -1,0 +1,321 @@
+<div class="episode-splitter-page">
+  <!-- Header -->
+  <div class="header">
+    <h2>Episode Splitter</h2>
+    <mat-chip-set>
+      <mat-chip>{{ audioFiles().length }} files</mat-chip>
+      @if (jobs().length > 0) {
+        <mat-chip [highlighted]="isProcessing()">
+          {{ jobs().length }} job(s) in queue
+        </mat-chip>
+      }
+    </mat-chip-set>
+  </div>
+
+  <!-- Add Audio Files Section -->
+  <div class="add-content-section">
+    <h3>Audio Files</h3>
+    <p class="section-hint">Add sequential audio/video files from one continuous stream. File order determines timeline order.</p>
+    <div class="button-group">
+      <button mat-raised-button color="primary" (click)="browseAudio()">
+        <mat-icon>audio_file</mat-icon>
+        Browse Audio/Video Files
+      </button>
+    </div>
+  </div>
+
+  <!-- Files List -->
+  <div class="files-section">
+    <div class="section-header">
+      <h3>File Order (drag to reorder)</h3>
+      @if (audioFiles().length > 0) {
+        <button mat-button (click)="clearAllFiles()" class="clear-button" matTooltip="Clear all files">
+          <mat-icon>clear_all</mat-icon>
+          Clear
+        </button>
+      }
+    </div>
+
+    <div class="files-list" cdkDropList (cdkDropListDropped)="onDrop($event)">
+      @if (audioFiles().length === 0) {
+        <div class="empty-state">
+          <mat-icon>audio_file</mat-icon>
+          <p>No audio files added yet</p>
+          <p class="hint">Add the sequential parts of your livestream recording</p>
+        </div>
+      } @else {
+        @for (file of audioFiles(); track file.path; let i = $index) {
+          <mat-card class="file-card" cdkDrag>
+            <mat-card-content>
+              <div class="file-row">
+                <mat-icon cdkDragHandle class="drag-handle">drag_indicator</mat-icon>
+                <span class="file-number">{{ i + 1 }}</span>
+                <div class="file-info">
+                  <mat-icon>audiotrack</mat-icon>
+                  <div class="file-details">
+                    <div class="file-title">{{ file.displayName }}</div>
+                    <div class="file-path">{{ file.path }}</div>
+                  </div>
+                </div>
+                <button mat-icon-button (click)="removeFile(i)" matTooltip="Remove" class="remove-btn">
+                  <mat-icon>close</mat-icon>
+                </button>
+              </div>
+            </mat-card-content>
+          </mat-card>
+        }
+
+        <!-- Analyze Button -->
+        <button
+          mat-raised-button
+          color="accent"
+          class="add-to-queue-button"
+          [disabled]="audioFiles().length === 0"
+          (click)="addToQueue()">
+          <mat-icon>playlist_add</mat-icon>
+          Add {{ audioFiles().length }} file(s) to Analysis Queue
+        </button>
+      }
+    </div>
+  </div>
+
+  <!-- Job Queue -->
+  @if (jobs().length > 0) {
+    <div class="queue-section">
+      <div class="queue-progress">
+        <div class="progress-header">
+          <h3>Analysis Queue</h3>
+          <span class="progress-label">{{ getCompletedJobsCount() }}/{{ jobs().length }} complete</span>
+        </div>
+        <mat-progress-bar mode="determinate" [value]="getOverallProgress()"></mat-progress-bar>
+      </div>
+
+      <div class="section-header">
+        <button mat-button (click)="clearCompletedJobs()">
+          <mat-icon>clear_all</mat-icon>
+          Clear Completed
+        </button>
+      </div>
+
+      <div class="jobs-list">
+        @for (job of jobs(); track job.id) {
+          <mat-card class="job-card" [class.processing]="job.status === 'processing'">
+            <mat-card-content>
+              <div class="job-row">
+                <mat-icon [style.color]="getJobStatusColor(job.status)">
+                  {{ getJobStatusIcon(job.status) }}
+                </mat-icon>
+                <div class="job-info">
+                  <div class="job-title">{{ job.name }}</div>
+                  <div class="job-subtitle">{{ job.message }}</div>
+                </div>
+                <div class="job-progress-mini">
+                  <mat-progress-bar mode="determinate" [value]="job.progress"></mat-progress-bar>
+                  <span class="job-progress-percent">{{ job.progress }}%</span>
+                </div>
+                @if (job.status === 'completed') {
+                  <button mat-icon-button (click)="viewJobReport(job)" matTooltip="View Results">
+                    <mat-icon>visibility</mat-icon>
+                  </button>
+                }
+                @if (job.status !== 'processing') {
+                  <button mat-icon-button (click)="removeJob(job.id)" matTooltip="Remove">
+                    <mat-icon>close</mat-icon>
+                  </button>
+                }
+              </div>
+            </mat-card-content>
+          </mat-card>
+        }
+
+        <!-- Start Queue Button -->
+        @if (!isProcessing()) {
+          <button
+            mat-raised-button
+            color="primary"
+            class="start-queue-button"
+            [disabled]="getPendingJobsCount() === 0"
+            (click)="startQueue()">
+            <mat-icon>play_arrow</mat-icon>
+            Start Analysis ({{ getPendingJobsCount() }} job(s))
+          </button>
+        }
+      </div>
+    </div>
+  }
+
+  <!-- Results Section -->
+  @if (activeReport()) {
+    <div class="results-section">
+      <div class="results-header">
+        <h3>Episode Boundaries</h3>
+        <div class="results-actions">
+          <button mat-button (click)="copyTimecodes()" matTooltip="Copy timecodes to clipboard">
+            <mat-icon>content_copy</mat-icon>
+            Copy Timecodes
+          </button>
+          <button mat-button (click)="clearReport()" matTooltip="Close results">
+            <mat-icon>close</mat-icon>
+            Close
+          </button>
+        </div>
+      </div>
+
+      <!-- Summary -->
+      <div class="results-summary">
+        <div class="summary-stat">
+          <span class="stat-value">{{ activeReport().totalDuration }}</span>
+          <span class="stat-label">Total Duration</span>
+        </div>
+        <div class="summary-stat">
+          <span class="stat-value">{{ activeReport().episodeCount }}</span>
+          <span class="stat-label">Episodes</span>
+        </div>
+        <div class="summary-stat">
+          <span class="stat-value">{{ activeReport().audioFiles.length }}</span>
+          <span class="stat-label">Source Files</span>
+        </div>
+      </div>
+
+      <!-- Timeline -->
+      <div class="timeline-bar">
+        @for (episode of activeReport().episodes; track episode.episodeNumber) {
+          <div
+            class="timeline-segment"
+            [style.width]="getDurationBarWidth(episode)"
+            [style.background-color]="getDurationBarColor(episode)"
+            [matTooltip]="'Ep ' + episode.episodeNumber + ': ' + episode.title + ' (' + formatDuration(episode.durationSeconds) + ')'">
+            <span class="timeline-label">{{ episode.episodeNumber }}</span>
+          </div>
+        }
+      </div>
+
+      <!-- Episode Cards -->
+      <div class="episodes-list">
+        @for (episode of activeReport().episodes; track episode.episodeNumber) {
+          <mat-card class="episode-card" [class.warning]="episode.exceedsMaxDuration">
+            <mat-card-content>
+              <div class="episode-row">
+                <div class="episode-number">{{ episode.episodeNumber }}</div>
+                <div class="episode-details">
+                  <div class="episode-title">{{ episode.title }}</div>
+                  <div class="episode-times">
+                    {{ episode.startTimestamp }} - {{ episode.endTimestamp }}
+                    <span class="episode-duration" [class.over-max]="episode.exceedsMaxDuration">
+                      ({{ formatDuration(episode.durationSeconds) }})
+                    </span>
+                  </div>
+                  @if (episode.description) {
+                    <div class="episode-description">{{ episode.description }}</div>
+                  }
+                </div>
+                <div class="episode-badges">
+                  @if (episode.profanityMarkers && episode.profanityMarkers.length > 0) {
+                    <span class="badge profanity-warning"
+                      [class.has-opening]="hasOpeningProfanity(episode)"
+                      [matTooltip]="getProfanitySummary(episode)">
+                      <mat-icon>explicit</mat-icon>
+                      {{ episode.profanityMarkers.length }} flagged
+                    </span>
+                  }
+                  @if (episode.verbalCueDetected) {
+                    <span class="badge verbal-cue" matTooltip="Verbal break cue detected near this boundary">
+                      <mat-icon>mic</mat-icon>
+                      Verbal Cue
+                    </span>
+                  }
+                  @if (episode.exceedsMaxDuration) {
+                    <span class="badge over-duration" matTooltip="Exceeds recommended 1h10m maximum">
+                      <mat-icon>warning</mat-icon>
+                      Over Max
+                    </span>
+                  }
+                </div>
+              </div>
+              @if (episode.profanityMarkers && episode.profanityMarkers.length > 0) {
+                <div class="profanity-timeline">
+                  <div class="profanity-timeline-header">
+                    <mat-icon>explicit</mat-icon>
+                    <span>{{ episode.profanityMarkers.length }} flagged</span>
+                    <span class="profanity-legend">
+                      <span class="legend-dot severe"></span> Severe
+                      <span class="legend-dot mild"></span> Mild
+                      <span class="legend-line opening"></span> 3 min
+                    </span>
+                  </div>
+                  <div class="profanity-bar">
+                    <div class="profanity-bar-opening" [style.width]="getOpeningBarWidth(episode)"></div>
+                    @for (marker of episode.profanityMarkers; track $index) {
+                      <div class="profanity-bar-dot"
+                        [class.severe]="marker.severity === 'severe'"
+                        [class.mild]="marker.severity !== 'severe'"
+                        [style.left]="getProfanityDotPosition(marker, episode)"
+                        [matTooltip]="marker.localTimestamp">
+                      </div>
+                    }
+                    <span class="three-min-label" [style.left]="getOpeningBarWidth(episode)">3:00</span>
+                  </div>
+                </div>
+              }
+            </mat-card-content>
+          </mat-card>
+        }
+      </div>
+
+      <!-- Source File Breakdown -->
+      @if (activeReport().sourceFileBreakdown && activeReport().sourceFileBreakdown.length > 0) {
+        <div class="file-breakdown-section">
+          <h3>Source File Breakdown</h3>
+          <p class="section-hint">How each source file maps to the suggested episodes</p>
+
+          @for (file of activeReport().sourceFileBreakdown; track file.fileIndex) {
+            <mat-card class="file-breakdown-card">
+              <mat-card-content>
+                <div class="file-breakdown-header">
+                  <div class="file-breakdown-title">
+                    <span class="file-breakdown-number">File {{ file.fileIndex }}</span>
+                    <span class="file-breakdown-name">{{ file.fileName }}</span>
+                  </div>
+                  <span class="file-breakdown-duration">{{ file.fileDuration }}</span>
+                </div>
+
+                <!-- Mini timeline showing how this file splits -->
+                <div class="file-timeline-bar">
+                  @for (seg of file.segments; track seg.episodeNumber) {
+                    <div
+                      class="file-timeline-segment"
+                      [style.width]="getSegmentBarWidth(seg, file)"
+                      [style.background-color]="getSegmentBarColor(seg.episodeNumber - 1)"
+                      [matTooltip]="'Ep ' + seg.episodeNumber + ': ' + seg.localStartTimestamp + ' - ' + seg.localEndTimestamp">
+                      <span class="file-timeline-label">Ep {{ seg.episodeNumber }}</span>
+                    </div>
+                  }
+                </div>
+
+                <!-- Segment details -->
+                <div class="file-segments">
+                  @for (seg of file.segments; track seg.episodeNumber) {
+                    <div class="file-segment-row">
+                      <span class="segment-episode-badge" [style.background-color]="getSegmentBarColor(seg.episodeNumber - 1)">
+                        Ep {{ seg.episodeNumber }}
+                      </span>
+                      <span class="segment-times">{{ seg.localStartTimestamp }} &ndash; {{ seg.localEndTimestamp }}</span>
+                      <span class="segment-duration">({{ formatDuration(seg.durationSeconds) }})</span>
+                      @if (seg.localStartSeconds === 0 && seg.localEndSeconds === file.fileDurationSeconds) {
+                        <span class="segment-note">entire file</span>
+                      } @else if (seg.localStartSeconds === 0) {
+                        <span class="segment-note">first {{ formatDuration(seg.durationSeconds) }}</span>
+                      } @else if (seg.localEndSeconds === file.fileDurationSeconds) {
+                        <span class="segment-note">last {{ formatDuration(seg.durationSeconds) }}</span>
+                      }
+                    </div>
+                  }
+                </div>
+              </mat-card-content>
+            </mat-card>
+          }
+        </div>
+      }
+    </div>
+  }
+</div>

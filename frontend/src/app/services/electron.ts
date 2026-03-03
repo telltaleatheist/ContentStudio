@@ -77,6 +77,14 @@ declare global {
       listMasterReports: () => Promise<any>;
       deleteMasterReport: (reportPath: string) => Promise<{ success: boolean; error?: string }>;
       onMasterAnalysisProgress: (callback: (progress: any) => void) => () => void;
+
+      // Episode Splitter
+      selectEpisodeAudio: () => Promise<{ success: boolean; filePaths?: string[]; error?: string }>;
+      analyzeEpisodes: (params: { audioPaths: string[]; jobId?: string }) => Promise<any>;
+      listEpisodeReports: () => Promise<any>;
+      getEpisodeReport: (reportPath: string) => Promise<any>;
+      deleteEpisodeReport: (reportPath: string) => Promise<{ success: boolean; error?: string }>;
+      onEpisodeSplitterProgress: (callback: (progress: any) => void) => () => void;
     };
   }
 }
@@ -348,5 +356,36 @@ export class ElectronService {
   onMasterAnalysisProgress(callback: (progress: any) => void): () => void {
     if (!this.ipcRenderer) return () => {};
     return this.ipcRenderer.onMasterAnalysisProgress(callback);
+  }
+
+  // Episode Splitter
+  async selectEpisodeAudio(): Promise<{ success: boolean; filePaths?: string[]; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.selectEpisodeAudio();
+  }
+
+  async analyzeEpisodes(params: { audioPaths: string[]; jobId?: string }): Promise<any> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.analyzeEpisodes(params);
+  }
+
+  async listEpisodeReports(): Promise<any> {
+    if (!this.ipcRenderer) return { success: false, reports: [] };
+    return await this.ipcRenderer.listEpisodeReports();
+  }
+
+  async getEpisodeReport(reportPath: string): Promise<any> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.getEpisodeReport(reportPath);
+  }
+
+  async deleteEpisodeReport(reportPath: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.deleteEpisodeReport(reportPath);
+  }
+
+  onEpisodeSplitterProgress(callback: (progress: any) => void): () => void {
+    if (!this.ipcRenderer) return () => {};
+    return this.ipcRenderer.onEpisodeSplitterProgress(callback);
   }
 }

@@ -1,0 +1,691 @@
+// Episode Reports Viewer — two-panel layout from master-reports + episode visualizations
+:host {
+  display: flex;
+  flex: 1;
+  margin: 0;
+  overflow: hidden;
+  min-height: 0;
+  height: 100%;
+}
+
+:host *, :host *::before, :host *::after {
+  box-sizing: border-box;
+}
+
+.episode-reports-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  overflow: hidden;
+  min-height: 0;
+  height: 100%;
+}
+
+.page-content {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 350px 1fr;
+  gap: 1rem;
+  padding: 1.5rem;
+  overflow: hidden;
+  min-height: 0;
+}
+
+// Panels
+.panel {
+  background: var(--bg-card);
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+  transition: all 0.3s ease;
+
+  &:hover {
+    box-shadow: var(--shadow-lg), 0 0 0 1px rgba(255, 107, 53, 0.1);
+  }
+}
+
+.panel-header {
+  background: var(--gradient-primary);
+  padding: 1rem 1.25rem;
+  border-bottom: none;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+
+  color: white !important;
+
+  * {
+    color: white !important;
+  }
+
+  mat-icon, .mat-icon {
+    color: white !important;
+  }
+
+  .mat-mdc-icon-button {
+    color: white !important;
+
+    mat-icon {
+      color: white !important;
+    }
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.2) !important;
+    }
+  }
+
+  button.mat-mdc-button {
+    color: white !important;
+
+    mat-icon {
+      color: white !important;
+    }
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.2) !important;
+    }
+  }
+}
+
+.panel-title {
+  font-weight: 600;
+  color: white !important;
+  margin: 0;
+  font-size: 1.25rem;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.panel-subtitle {
+  color: rgba(255, 255, 255, 0.85) !important;
+  margin: 0.25rem 0 0 0;
+  font-size: 0.85rem;
+}
+
+.header-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+
+  button, .mat-mdc-icon-button, .mat-mdc-button, .mat-mdc-raised-button {
+    color: white !important;
+
+    mat-icon {
+      color: white !important;
+    }
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.2) !important;
+    }
+  }
+}
+
+.panel-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+  min-height: 0;
+}
+
+// Reports List Panel
+.reports-list-panel {
+  .panel-content {
+    padding: 0;
+  }
+}
+
+.reports-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+
+  .report-card {
+    background: var(--bg-secondary);
+    transition: all 0.2s ease;
+    border: 2px solid transparent;
+    cursor: pointer;
+
+    &:hover {
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    }
+
+    &.selected {
+      border-color: var(--primary-orange);
+      background: var(--bg-card);
+    }
+
+    mat-card-content {
+      padding: 0.75rem 1rem;
+    }
+
+    .report-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+
+      .report-icon {
+        color: var(--primary-orange);
+        flex-shrink: 0;
+      }
+
+      .report-info {
+        flex: 1;
+        min-width: 0;
+
+        .report-title {
+          font-weight: 500;
+          color: var(--text-primary);
+          font-size: 0.9rem;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .report-meta {
+          color: var(--text-secondary);
+          font-size: 0.75rem;
+          display: flex;
+          align-items: center;
+          flex-wrap: wrap;
+          gap: 0.25rem;
+          margin-top: 0.25rem;
+
+          .separator {
+            opacity: 0.5;
+          }
+        }
+      }
+
+      .delete-btn {
+        color: var(--text-muted);
+        flex-shrink: 0;
+
+        &:hover {
+          color: var(--error-color) !important;
+          background: rgba(255, 82, 82, 0.2) !important;
+        }
+      }
+    }
+  }
+}
+
+// Loading and Empty States
+.loading-container, .empty-state, .empty-viewer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem 1rem;
+  color: var(--text-secondary);
+  text-align: center;
+  height: 100%;
+
+  mat-icon {
+    font-size: 3rem;
+    width: 3rem;
+    height: 3rem;
+    margin-bottom: 1rem;
+    opacity: 0.5;
+  }
+
+  p {
+    margin: 0.5rem 0;
+    font-size: 1rem;
+  }
+
+  small {
+    font-size: 0.875rem;
+    opacity: 0.7;
+  }
+}
+
+// Report Viewer Panel
+.report-viewer-panel {
+  .panel-content {
+    padding: 0;
+  }
+}
+
+.viewer-content {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 1.5rem;
+  gap: 1.5rem;
+
+  h3 {
+    color: var(--text-primary);
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin: 0 0 0.25rem 0;
+  }
+
+  .section-hint {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    margin: 0 0 1rem 0;
+  }
+}
+
+// Results Summary
+.results-summary {
+  display: flex;
+  gap: 2rem;
+  padding: 1rem 1.25rem;
+  background-color: rgba(255, 107, 53, 0.08);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 107, 53, 0.2);
+  flex-shrink: 0;
+
+  .summary-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+
+    .stat-value {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--primary-orange);
+    }
+
+    .stat-label {
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      margin-top: 0.25rem;
+    }
+  }
+}
+
+// Timeline Bar
+.timeline-bar {
+  display: flex;
+  height: 32px;
+  border-radius: 6px;
+  overflow: hidden;
+  gap: 2px;
+  flex-shrink: 0;
+
+  .timeline-segment {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 24px;
+    transition: opacity 0.2s ease;
+    cursor: default;
+
+    .timeline-label {
+      color: white;
+      font-weight: 700;
+      font-size: 0.8rem;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    }
+
+    &:hover {
+      opacity: 0.85;
+    }
+  }
+}
+
+// Episode Cards
+.episodes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+
+  .episode-card {
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    transition: all 0.2s ease;
+
+    &.warning {
+      border-color: #f44336;
+      border-width: 2px;
+    }
+
+    &:hover {
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    }
+
+    mat-card-content {
+      padding: 1rem 1.25rem;
+    }
+
+    .episode-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 1rem;
+
+      .episode-number {
+        flex-shrink: 0;
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        background: var(--primary-orange);
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 700;
+        font-size: 1rem;
+      }
+
+      .episode-details {
+        flex: 1;
+        min-width: 0;
+
+        .episode-title {
+          color: var(--text-primary);
+          font-weight: 600;
+          font-size: 1.05rem;
+          margin-bottom: 0.25rem;
+        }
+
+        .episode-times {
+          color: var(--text-secondary);
+          font-size: 0.9rem;
+          font-family: 'Roboto Mono', monospace;
+
+          .episode-duration {
+            font-weight: 500;
+
+            &.over-max {
+              color: #f44336;
+              font-weight: 700;
+            }
+          }
+        }
+
+        .episode-description {
+          color: var(--text-secondary);
+          font-size: 0.9rem;
+          margin-top: 0.5rem;
+          line-height: 1.4;
+        }
+      }
+
+      .episode-badges {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        flex-shrink: 0;
+
+        .badge {
+          display: flex;
+          align-items: center;
+          gap: 0.25rem;
+          padding: 0.25rem 0.75rem;
+          border-radius: 16px;
+          font-size: 0.75rem;
+          font-weight: 600;
+          white-space: nowrap;
+
+          mat-icon {
+            font-size: 14px;
+            width: 14px;
+            height: 14px;
+          }
+
+          &.verbal-cue {
+            background: rgba(76, 175, 80, 0.15);
+            color: #4caf50;
+            border: 1px solid rgba(76, 175, 80, 0.3);
+          }
+
+          &.over-duration {
+            background: rgba(244, 67, 54, 0.15);
+            color: #f44336;
+            border: 1px solid rgba(244, 67, 54, 0.3);
+          }
+
+          &.profanity-warning {
+            background: rgba(255, 152, 0, 0.15);
+            color: #ff9800;
+            border: 1px solid rgba(255, 152, 0, 0.3);
+
+            &.has-opening {
+              background: rgba(244, 67, 54, 0.15);
+              color: #f44336;
+              border: 1px solid rgba(244, 67, 54, 0.3);
+            }
+          }
+        }
+      }
+    }
+
+    // Profanity timeline within episode card
+    .profanity-timeline {
+      margin-top: 0.75rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid var(--border-color);
+
+      .profanity-timeline-header {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0.5rem;
+        font-size: 0.85rem;
+        color: var(--text-secondary);
+        font-weight: 600;
+
+        mat-icon {
+          font-size: 16px;
+          width: 16px;
+          height: 16px;
+          color: #ff9800;
+        }
+
+        .profanity-legend {
+          margin-left: auto;
+          font-size: 0.75rem;
+          font-weight: 400;
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+
+          .legend-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+
+            &.severe {
+              background: #f44336;
+            }
+
+            &.mild {
+              background: #ff9800;
+            }
+          }
+
+          .legend-line {
+            display: inline-block;
+            width: 2px;
+            height: 10px;
+            border-radius: 1px;
+
+            &.opening {
+              background: #f44336;
+            }
+          }
+        }
+      }
+
+      .profanity-bar {
+        position: relative;
+        height: 14px;
+        background: var(--bg-tertiary);
+        border-radius: 7px;
+        overflow: visible;
+
+        .profanity-bar-opening {
+          position: absolute;
+          top: 0;
+          left: 0;
+          height: 100%;
+          background: rgba(244, 67, 54, 0.08);
+          border-radius: 7px 0 0 7px;
+          border-right: 2px solid #f44336;
+        }
+
+        .profanity-bar-dot {
+          position: absolute;
+          top: 50%;
+          width: 3px;
+          height: 14px;
+          border-radius: 1px;
+          transform: translate(-50%, -50%);
+          cursor: default;
+
+          &.severe {
+            background: #f44336;
+          }
+
+          &.mild {
+            background: #ff9800;
+          }
+        }
+
+        .three-min-label {
+          position: absolute;
+          top: -14px;
+          transform: translateX(-50%);
+          font-size: 0.65rem;
+          font-weight: 700;
+          color: #f44336;
+          white-space: nowrap;
+        }
+      }
+    }
+  }
+}
+
+// Source file breakdown
+.file-breakdown-section {
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-color);
+
+  .file-breakdown-card {
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    margin-bottom: 0.75rem;
+
+    &:hover {
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    }
+
+    mat-card-content {
+      padding: 1rem 1.25rem;
+    }
+
+    .file-breakdown-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.75rem;
+
+      .file-breakdown-title {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+
+        .file-breakdown-number {
+          font-weight: 700;
+          color: var(--primary-orange);
+          font-size: 0.85rem;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+
+        .file-breakdown-name {
+          font-weight: 600;
+          color: var(--text-primary);
+          font-size: 1rem;
+        }
+      }
+
+      .file-breakdown-duration {
+        color: var(--text-secondary);
+        font-size: 0.9rem;
+        font-family: 'Roboto Mono', monospace;
+        font-weight: 500;
+      }
+    }
+
+    .file-timeline-bar {
+      display: flex;
+      height: 24px;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 0.75rem;
+      gap: 1px;
+
+      .file-timeline-segment {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 32px;
+        cursor: default;
+
+        .file-timeline-label {
+          color: white;
+          font-weight: 700;
+          font-size: 0.7rem;
+          text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+          white-space: nowrap;
+        }
+
+        &:hover {
+          opacity: 0.85;
+        }
+      }
+    }
+
+    .file-segments {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+
+      .file-segment-row {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        font-size: 0.9rem;
+
+        .segment-episode-badge {
+          flex-shrink: 0;
+          padding: 0.15rem 0.6rem;
+          border-radius: 10px;
+          color: white;
+          font-weight: 700;
+          font-size: 0.75rem;
+          white-space: nowrap;
+        }
+
+        .segment-times {
+          color: var(--text-primary);
+          font-family: 'Roboto Mono', monospace;
+          font-weight: 500;
+        }
+
+        .segment-duration {
+          color: var(--text-secondary);
+          font-family: 'Roboto Mono', monospace;
+        }
+
+        .segment-note {
+          color: var(--text-muted);
+          font-size: 0.85rem;
+          font-style: italic;
+        }
+      }
+    }
+  }
+}
