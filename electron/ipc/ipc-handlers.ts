@@ -7,6 +7,7 @@ import * as yaml from 'js-yaml';
 import { AIManagerService } from '../services/metadata/ai-manager.service';
 import { MasterAnalyzerService } from '../services/metadata/master-analyzer.service';
 import { EpisodeSplitterService } from '../services/metadata/episode-splitter.service';
+import type { ContentItem } from '../services/metadata/input-handler.service';
 
 /**
  * IPC Handlers
@@ -135,51 +136,190 @@ function ensureMasterPromptSetsDirectory(): void {
 // Track running jobs and their cancellation callbacks
 const runningJobs = new Map<string, { cancel: () => void }>();
 
-// AI Job Queue - ensures only ONE AI job runs at a time
-// Transcription can happen in parallel (up to 5), but AI operations (summarize/generate) must be sequential
-interface QueuedJob {
+// ==================== TWO-PHASE PIPELINE ====================
+// Phase 1: Transcription pool — up to 5 concurrent (WhisperService supports concurrent jobs)
+// Phase 2: AI generation queue — 1 at a time, sequential (protects AI API rate limits)
+
+interface PipelineJob {
+  jobId: string;
+  metadataParams: any;
+  progressCallback: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => void;
+  contentItems?: ContentItem[];
+  resolve: (value: any) => void;
+  reject: (error: any) => void;
+  cancelled: boolean;
+}
+
+interface AiGenerationJob {
   jobId: string;
   execute: () => Promise<any>;
   resolve: (value: any) => void;
   reject: (error: any) => void;
 }
 
-const aiJobQueue: QueuedJob[] = [];
-let isAiJobRunning = false;
+const MAX_CONCURRENT_TRANSCRIPTIONS = 5;
+let activeTranscriptions = 0;
+const transcriptionQueue: PipelineJob[] = [];
+const aiGenerationQueue: AiGenerationJob[] = [];
+let isAiGenerationRunning = false;
 
-async function processAiJobQueue() {
-  if (isAiJobRunning || aiJobQueue.length === 0) {
-    return;
-  }
+function enqueuePipelineJob(job: PipelineJob): void {
+  const queuePosition = transcriptionQueue.length + activeTranscriptions;
+  log.info(`[Pipeline] Enqueueing job: ${job.jobId} (${queuePosition} jobs ahead)`);
+  transcriptionQueue.push(job);
+  processTranscriptionQueue();
+}
 
-  isAiJobRunning = true;
-  const job = aiJobQueue.shift();
+function processTranscriptionQueue(): void {
+  while (activeTranscriptions < MAX_CONCURRENT_TRANSCRIPTIONS && transcriptionQueue.length > 0) {
+    const job = transcriptionQueue.shift()!;
 
-  if (job) {
-    log.info(`[JobQueue] Starting AI job: ${job.jobId} (${aiJobQueue.length} jobs remaining in queue)`);
-    try {
-      const result = await job.execute();
-      job.resolve(result);
-    } catch (error) {
-      log.error(`[JobQueue] AI job ${job.jobId} failed:`, error);
-      job.reject(error);
-    } finally {
-      isAiJobRunning = false;
-      log.info(`[JobQueue] AI job ${job.jobId} completed`);
-      // Process next job in queue
-      processAiJobQueue();
+    if (job.cancelled) {
+      job.resolve({ success: false, error: 'Job cancelled by user' });
+      continue;
     }
+
+    activeTranscriptions++;
+    log.info(`[Pipeline] Starting transcription for job: ${job.jobId} (${activeTranscriptions} active, ${transcriptionQueue.length} queued)`);
+
+    // Run transcription in background (don't await — allows multiple to run concurrently)
+    runTranscription(job).finally(() => {
+      activeTranscriptions--;
+      log.info(`[Pipeline] Transcription finished for job: ${job.jobId} (${activeTranscriptions} active)`);
+      processTranscriptionQueue();
+    });
   }
 }
 
-function enqueueAiJob(jobId: string, execute: () => Promise<any>): Promise<any> {
+async function runTranscription(job: PipelineJob): Promise<void> {
+  try {
+    const { WhisperService } = require('../services/metadata/whisper.service');
+    const { InputHandlerService } = require('../services/metadata/input-handler.service');
+
+    const whisperService = new WhisperService();
+    const inputHandler = new InputHandlerService(whisperService, job.progressCallback);
+
+    // Normalize inputs
+    const normalizedInputs = job.metadataParams.inputs.map((input: any) => {
+      if (typeof input === 'string') return input;
+      if (input && typeof input === 'object' && input.path) return input.path;
+      return String(input);
+    });
+
+    // Set up whisper progress forwarding
+    whisperService.on('progress', (progress: any) => {
+      if (job.cancelled) return;
+      if (job.progressCallback && progress.videoPath) {
+        const filename = progress.videoPath.split('/').pop() || progress.videoPath;
+        let itemIndex: number | undefined = undefined;
+        for (let i = 0; i < normalizedInputs.length; i++) {
+          if (normalizedInputs[i] === progress.videoPath) {
+            itemIndex = i;
+            break;
+          }
+        }
+        job.progressCallback('transcription', progress.message, progress.percent, filename, itemIndex);
+      }
+    });
+
+    // Process inputs (transcription happens here)
+    const customNotesMap = new Map(Object.entries(job.metadataParams.inputNotes || {}));
+    const contentItems = await inputHandler.processMultipleInputs(normalizedInputs, customNotesMap);
+
+    if (job.cancelled) {
+      job.resolve({ success: false, error: 'Job cancelled by user' });
+      return;
+    }
+
+    if (contentItems.length === 0) {
+      const mainWindow = BrowserWindow.getAllWindows()[0];
+      if (mainWindow) {
+        mainWindow.webContents.send('generation-progress', {
+          phase: 'error',
+          message: 'No content could be processed',
+          jobId: job.jobId
+        });
+      }
+      job.resolve({ success: false, error: 'No content could be processed' });
+      return;
+    }
+
+    // Store content items and move to AI generation queue
+    job.contentItems = contentItems;
+
+    // Send queued status if AI generation is busy
+    if (isAiGenerationRunning || aiGenerationQueue.length > 0) {
+      const mainWindow = BrowserWindow.getAllWindows()[0];
+      if (mainWindow) {
+        mainWindow.webContents.send('generation-progress', {
+          phase: 'queued',
+          message: 'Waiting for AI generation...',
+          jobId: job.jobId
+        });
+      }
+    }
+
+    // Enqueue AI generation for this job
+    enqueueAiGenerationJob(job.jobId, async () => {
+      if (job.cancelled) {
+        return { success: false, error: 'Job cancelled by user' };
+      }
+
+      const { MetadataGeneratorService } = require('../services/metadata/metadata-generator.service');
+
+      const paramsWithCallback = {
+        ...job.metadataParams,
+        preTranscribedContent: job.contentItems,
+        progressCallback: job.progressCallback,
+        cancelCallback: () => job.cancelled
+      };
+
+      const jobResult = await MetadataGeneratorService.generate(paramsWithCallback);
+
+      const mainWindow = BrowserWindow.getAllWindows()[0];
+      if (mainWindow) {
+        if (jobResult.success) {
+          mainWindow.webContents.send('generation-progress', {
+            phase: 'complete',
+            message: 'Metadata generation complete!'
+          });
+        } else {
+          mainWindow.webContents.send('generation-progress', {
+            phase: 'error',
+            message: jobResult.error || 'Unknown error'
+          });
+        }
+      }
+
+      return jobResult;
+    }).then(result => {
+      job.resolve(result);
+    }).catch(error => {
+      job.reject(error);
+    });
+
+  } catch (error) {
+    log.error(`[Pipeline] Transcription failed for job ${job.jobId}:`, error);
+    const mainWindow = BrowserWindow.getAllWindows()[0];
+    if (mainWindow) {
+      mainWindow.webContents.send('generation-progress', {
+        phase: 'error',
+        message: error instanceof Error ? error.message : String(error),
+        jobId: job.jobId
+      });
+    }
+    job.resolve({ success: false, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+function enqueueAiGenerationJob(jobId: string, execute: () => Promise<any>): Promise<any> {
   return new Promise((resolve, reject) => {
-    const queuePosition = aiJobQueue.length + (isAiJobRunning ? 1 : 0);
-    log.info(`[JobQueue] Enqueueing AI job: ${jobId} (position ${queuePosition} in queue)`);
+    const queuePosition = aiGenerationQueue.length + (isAiGenerationRunning ? 1 : 0);
+    log.info(`[AiQueue] Enqueueing AI job: ${jobId} (position ${queuePosition})`);
 
-    aiJobQueue.push({ jobId, execute, resolve, reject });
+    aiGenerationQueue.push({ jobId, execute, resolve, reject });
 
-    // Send queue position to frontend
+    // Send queue position to frontend for non-pipeline jobs
     const mainWindow = BrowserWindow.getAllWindows()[0];
     if (mainWindow && queuePosition > 0) {
       mainWindow.webContents.send('generation-progress', {
@@ -189,8 +329,31 @@ function enqueueAiJob(jobId: string, execute: () => Promise<any>): Promise<any> 
       });
     }
 
-    processAiJobQueue();
+    processAiGenerationQueue();
   });
+}
+
+async function processAiGenerationQueue(): Promise<void> {
+  if (isAiGenerationRunning || aiGenerationQueue.length === 0) {
+    return;
+  }
+
+  isAiGenerationRunning = true;
+  const job = aiGenerationQueue.shift()!;
+
+  log.info(`[AiQueue] Starting AI job: ${job.jobId} (${aiGenerationQueue.length} remaining)`);
+
+  try {
+    const result = await job.execute();
+    job.resolve(result);
+  } catch (error) {
+    log.error(`[AiQueue] AI job ${job.jobId} failed:`, error);
+    job.reject(error);
+  } finally {
+    isAiGenerationRunning = false;
+    log.info(`[AiQueue] AI job ${job.jobId} completed`);
+    processAiGenerationQueue();
+  }
 }
 
 export function setupIpcHandlers(store: Store<any>) {
@@ -488,64 +651,53 @@ export function setupIpcHandlers(store: Store<any>) {
         });
       }
 
-      // Enqueue the AI job to ensure only one runs at a time
-      const result = await enqueueAiJob(params.jobId || 'metadata-job', async () => {
-        // Generate metadata using TypeScript service (no Python needed!)
-        const { MetadataGeneratorService } = require('../services/metadata/metadata-generator.service');
-
-        // Create cancellation callback
-        let cancelled = false;
-        const cancelCallback = () => {
-          cancelled = true;
-          log.info(`[IPC] Job ${params.jobId} cancelled`);
-        };
-
-        // Store the cancellation callback
-        if (params.jobId) {
-          runningJobs.set(params.jobId, { cancel: cancelCallback });
-        }
-
-        // Add progress callback to forward events to frontend
-        const paramsWithCallback = {
-          ...metadataParams,
-          progressCallback: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => {
-            log.info(`[IPC] Progress event: phase=${phase}, message=${message}, percent=${percent}, filename=${filename}, itemIndex=${itemIndex}`);
-            if (mainWindow) {
-              mainWindow.webContents.send('generation-progress', {
-                phase,
-                message,
-                percent,
-                ...(filename && { filename }), // Include filename if provided
-                ...(itemIndex !== undefined && { itemIndex }) // Include itemIndex if provided
-              });
-            }
-          },
-          cancelCallback: () => cancelled
-        };
-
-        const jobResult = await MetadataGeneratorService.generate(paramsWithCallback);
-
-        // Remove from running jobs
-        if (params.jobId) {
-          runningJobs.delete(params.jobId);
-        }
-
-        if (mainWindow) {
-          if (jobResult.success) {
+      // Submit to two-phase pipeline (transcription pool → AI generation queue)
+      const result = await new Promise<any>((resolve, reject) => {
+        const progressCallback = (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => {
+          log.info(`[IPC] Progress event: phase=${phase}, message=${message}, percent=${percent}, filename=${filename}, itemIndex=${itemIndex}`);
+          if (mainWindow) {
             mainWindow.webContents.send('generation-progress', {
-              phase: 'complete',
-              message: 'Metadata generation complete!'
-            });
-          } else {
-            mainWindow.webContents.send('generation-progress', {
-              phase: 'error',
-              message: jobResult.error || 'Unknown error'
+              phase,
+              message,
+              percent,
+              ...(filename && { filename }),
+              ...(itemIndex !== undefined && { itemIndex })
             });
           }
+        };
+
+        const pipelineJob: PipelineJob = {
+          jobId: params.jobId || 'metadata-job',
+          metadataParams,
+          progressCallback,
+          resolve,
+          reject,
+          cancelled: false
+        };
+
+        // Store cancellation callback
+        if (params.jobId) {
+          runningJobs.set(params.jobId, {
+            cancel: () => {
+              pipelineJob.cancelled = true;
+              log.info(`[Pipeline] Job ${params.jobId} marked as cancelled`);
+              // Remove from transcription queue if still waiting
+              const tIdx = transcriptionQueue.indexOf(pipelineJob);
+              if (tIdx !== -1) {
+                transcriptionQueue.splice(tIdx, 1);
+                resolve({ success: false, error: 'Job cancelled by user' });
+              }
+            }
+          });
         }
 
-        return jobResult;
+        enqueuePipelineJob(pipelineJob);
       });
+
+      // Cleanup
+      if (params.jobId) {
+        runningJobs.delete(params.jobId);
+      }
 
       return result;
 
@@ -603,6 +755,10 @@ export function setupIpcHandlers(store: Store<any>) {
       const promptSets = [];
 
       for (const file of files) {
+        // summarization_prompts.yml is pipeline config, not a selectable prompt set
+        if (file.startsWith('summarization_prompts')) {
+          continue;
+        }
         if (file.endsWith('.yml') || file.endsWith('.yaml')) {
           const filePath = path.join(promptSetsDir, file);
           const content = fs.readFileSync(filePath, 'utf8');
@@ -912,6 +1068,8 @@ export function setupIpcHandlers(store: Store<any>) {
   // ==================== END MASTER PROMPT SETS ====================
 
   // Get job history
+  // Returns only text/subject-input jobs from the last 4 weeks.
+  // Auto-prunes older job metadata files.
   ipcMain.handle('get-job-history', async () => {
     try {
       const settings = (store as any).store;
@@ -929,6 +1087,7 @@ export function setupIpcHandlers(store: Store<any>) {
 
       const files = fs.readdirSync(metadataDir);
       const jobs = [];
+      const fourWeeksAgo = Date.now() - (4 * 7 * 24 * 60 * 60 * 1000);
 
       for (const file of files) {
         if (file.startsWith('job-') && file.endsWith('.json')) {
@@ -936,6 +1095,36 @@ export function setupIpcHandlers(store: Store<any>) {
             const filePath = path.join(metadataDir, file);
             const content = fs.readFileSync(filePath, 'utf8');
             const job = JSON.parse(content);
+
+            // Auto-prune jobs older than 4 weeks
+            const createdAt = new Date(job.created_at || job.createdAt).getTime();
+            if (createdAt < fourWeeksAgo) {
+              log.info(`[JobHistory] Pruning old job: ${file} (created ${new Date(createdAt).toISOString()})`);
+              try {
+                // Delete txt folder if it exists
+                if (job.txt_folder && fs.existsSync(job.txt_folder)) {
+                  fs.rmSync(job.txt_folder, { recursive: true, force: true });
+                }
+                fs.unlinkSync(filePath);
+              } catch (deleteError) {
+                log.warn(`[JobHistory] Failed to prune ${file}:`, deleteError);
+              }
+              continue;
+            }
+
+            // Only include text/subject-input jobs in history
+            // Jobs with input_types field: check if all types are 'subject'
+            // Jobs without input_types: skip (legacy jobs will age out)
+            if (job.input_types && Array.isArray(job.input_types)) {
+              const allSubjects = job.input_types.every((t: string) => t === 'subject');
+              if (!allSubjects) {
+                continue;
+              }
+            } else {
+              // No input_types field — legacy job, skip from history display
+              continue;
+            }
+
             job.metadataPath = filePath;
             jobs.push(job);
           } catch (error) {
@@ -946,8 +1135,8 @@ export function setupIpcHandlers(store: Store<any>) {
 
       // Sort by creation date (newest first)
       jobs.sort((a, b) => {
-        const dateA = new Date(a.createdAt).getTime();
-        const dateB = new Date(b.createdAt).getTime();
+        const dateA = new Date(a.created_at || a.createdAt).getTime();
+        const dateB = new Date(b.created_at || b.createdAt).getTime();
         return dateB - dateA;
       });
 
@@ -1281,7 +1470,7 @@ export function setupIpcHandlers(store: Store<any>) {
       }
 
       // Enqueue the analysis job
-      const result = await enqueueAiJob(jobId, async () => {
+      const result = await enqueueAiGenerationJob(jobId, async () => {
         const analysisResult = await MasterAnalyzerService.analyze({
           videoPath: params.videoPath,
           outputDirectory: settings.outputDirectory,
@@ -1365,7 +1554,8 @@ export function setupIpcHandlers(store: Store<any>) {
       const result = await dialog.showOpenDialog({
         title: 'Select Audio/Video Files',
         filters: [
-          { name: 'Audio/Video Files', extensions: ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'mp4', 'mov', 'mkv', 'avi', 'webm', 'm4v'] }
+          { name: 'Audio/Video Files', extensions: ['mp3', 'wav', 'aiff', 'aif', 'm4a', 'aac', 'flac', 'ogg', 'mp4', 'mov', 'mkv', 'avi', 'webm', 'm4v'] },
+          { name: 'All Files', extensions: ['*'] }
         ],
         properties: ['openFile', 'multiSelections']
       });
@@ -1432,7 +1622,7 @@ export function setupIpcHandlers(store: Store<any>) {
       };
 
       // Enqueue the analysis job
-      const result = await enqueueAiJob(jobId, async () => {
+      const result = await enqueueAiGenerationJob(jobId, async () => {
         const analysisResult = await EpisodeSplitterService.analyze({
           audioPaths: params.audioPaths,
           outputDirectory: settings.outputDirectory,

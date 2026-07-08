@@ -33,8 +33,9 @@ CRITICAL REQUIREMENTS:
    - ONLY the bulleted list itself
    - Use "-" prefix for each line
    - Write exactly {sourceCount} lines (one per item)
-   - Each line: compelling one-sentence summary in your editorial voice
-   - Keep each line to 10-15 words maximum
+   - Each line: compelling 1-2 sentence summary in your editorial voice
+   - NEVER write "This compilation also covers..." or "This compilation includes..." or any sentence starting with "This compilation"
+   - NEVER add any framing, context, or commentary around the bullets — output ONLY the bulleted lines
 
    CRITICAL: The order MUST match the ITEM numbers below!
    - Line 1 of your list = ITEM 1
@@ -50,8 +51,40 @@ WRONG (do not do this):
 Here's a compilation about religious grifters...  <-- NO intro text
 - First bullet
 - Second bullet
+This compilation also covers Topic X...  <-- NO framing text
 Watch these people embarrass themselves...  <-- NO outro text
 ===
+`,
+
+  /**
+   * Compilation mode instructions override
+   * Appended AFTER the prompt set's instructions_prompt to replace the
+   * TITLES / DESCRIPTION / TAGS rules when in compilation mode.
+   * Placeholder: {sourceCount}
+   */
+  COMPILATION_INSTRUCTIONS_OVERRIDE: `
+## COMPILATION MODE OVERRIDES
+
+This is a compilation of {sourceCount} separate items. The rules in this section REPLACE the TITLES, DESCRIPTION, and TAGS rules above. Every other section (thumbnail text, hashtags, pinned comment, chapters, output format, self-check) still applies unchanged.
+
+TITLES (replaces the rules above):
+- Generate 10 title options, 45-60 characters each
+- Each title must focus on ONE specific item's subject OR use a generic umbrella title
+- DO NOT merge/blend subjects from different items into one title
+- Include a mix: some titles based on different items, some umbrella titles
+- Example umbrella: "{sourceCount} Stories That Will Blow Your Mind" (illustration only — never output it verbatim)
+
+DESCRIPTION (replaces the rules above):
+- Generate ONLY a bulleted list using "-" prefix (no intro or outro text)
+- Write exactly {sourceCount} bullet points (one per item, in ITEM order)
+- Each bullet: compelling 1-2 sentence summary of that item's subject
+- NEVER write "This compilation also covers..." or any framing text — ONLY output the bulleted lines
+
+TAGS (replaces the rules above):
+- 15-20 tags that reflect ALL {sourceCount} items in the compilation
+- Include key names, topics, and themes from EACH item
+- Mix of broad topics and specific phrases
+- Format as comma-separated list
 `,
 
   /**

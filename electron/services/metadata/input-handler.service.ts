@@ -17,9 +17,12 @@ export interface ContentItem {
 }
 
 export class InputDetector {
-  private static readonly SUPPORTED_VIDEO_FORMATS = new Set([
+  private static readonly SUPPORTED_MEDIA_FORMATS = new Set([
+    // Video formats
     '.mp4', '.avi', '.mov', '.mkv', '.webm', '.m4v', '.flv',
-    '.wmv', '.mpg', '.mpeg', '.3gp', '.ogv'
+    '.wmv', '.mpg', '.mpeg', '.3gp', '.ogv',
+    // Audio formats
+    '.mp3', '.wav', '.aiff', '.aif', '.m4a', '.aac', '.flac', '.ogg', '.wma',
   ]);
 
   /**
@@ -33,7 +36,7 @@ export class InputDetector {
       const stats = fs.statSync(input);
       if (stats.isFile()) {
         const ext = path.extname(input).toLowerCase();
-        if (this.SUPPORTED_VIDEO_FORMATS.has(ext)) {
+        if (this.SUPPORTED_MEDIA_FORMATS.has(ext)) {
           return 'video';
         }
         return 'transcript_file';
@@ -45,20 +48,20 @@ export class InputDetector {
     // Check for valid file extensions (not just any period - must be a real extension)
     const ext = path.extname(input).toLowerCase();
     const validFileExtensions = new Set([
-      ...this.SUPPORTED_VIDEO_FORMATS,
+      ...this.SUPPORTED_MEDIA_FORMATS,
       '.txt', '.srt', '.vtt', '.json'
     ]);
 
     // Only treat as file path if it has a recognized file extension
     if (validFileExtensions.has(ext)) {
       if (fs.existsSync(input)) {
-        if (this.SUPPORTED_VIDEO_FORMATS.has(ext)) {
+        if (this.SUPPORTED_MEDIA_FORMATS.has(ext)) {
           return 'video';
         }
         return 'transcript_file';
       }
       // File doesn't exist but has valid extension - still treat as file path
-      if (this.SUPPORTED_VIDEO_FORMATS.has(ext)) {
+      if (this.SUPPORTED_MEDIA_FORMATS.has(ext)) {
         return 'video';
       }
       return 'transcript_file';

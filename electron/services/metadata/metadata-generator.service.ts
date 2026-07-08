@@ -30,6 +30,7 @@ export interface GenerationParams {
   jobName?: string;
   chapterFlags?: { [key: string]: boolean };
   inputNotes?: { [key: string]: string };
+  preTranscribedContent?: ContentItem[]; // Pre-transcribed content from pipeline (skips transcription phase)
   progressCallback?: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => void;
   cancelCallback?: () => boolean; // Returns true if job should be cancelled
 }
@@ -127,9 +128,15 @@ export class MetadataGeneratorService {
         }
       });
 
-      const customNotesMap = new Map(Object.entries(params.inputNotes || {}));
-      log.info('[MetadataGenerator] Processing inputs...');
-      const contentItems = await inputHandler.processMultipleInputs(normalizedInputs, customNotesMap);
+      let contentItems: ContentItem[];
+      if (params.preTranscribedContent && params.preTranscribedContent.length > 0) {
+        contentItems = params.preTranscribedContent;
+        log.info(`[MetadataGenerator] Using ${contentItems.length} pre-transcribed content items`);
+      } else {
+        const customNotesMap = new Map(Object.entries(params.inputNotes || {}));
+        log.info('[MetadataGenerator] Processing inputs...');
+        contentItems = await inputHandler.processMultipleInputs(normalizedInputs, customNotesMap);
+      }
 
       // Check for cancellation after input processing
       if (params.cancelCallback && params.cancelCallback()) {
@@ -165,6 +172,12 @@ export class MetadataGeneratorService {
         params.jobId
       );
 
+      // Store original inputs and content types for history filtering
+      outputHandler.updateJobData(jobInfo.jobId, {
+        original_inputs: normalizedInputs,
+        input_types: contentItems.map(item => item.contentType),
+      });
+
       console.log(`[MetadataGenerator] Job initialized: ${jobInfo.jobId}`);
 
       // Generate metadata based on mode
@@ -180,15 +193,20 @@ export class MetadataGeneratorService {
         const contentTypes = contentItems.map(item => item.contentType);
         const uniqueContentTypes = Array.from(new Set(contentTypes));
 
-        // Combine all content with numbered ITEM format (for bulleted description ordering)
-        const combinedContent = contentItems.map((item, idx) => {
-          const sourceLabel = item.source || `Item ${idx + 1}`;
-          return `ITEM ${idx + 1} (${sourceLabel}):\n${item.content}`;
-        }).join('\n\n');
-
-        // Summarize combined content
+        // Summarize each item SEPARATELY to preserve distinct subjects
+        // (Combining first then summarizing loses the ITEM structure during chunking)
         params.progressCallback?.('generating', 'Analyzing combined content...', 0);
-        const summary = await aiManager.summarizeTranscript(combinedContent, jobName);
+        const itemSummaries: string[] = [];
+        for (let i = 0; i < contentItems.length; i++) {
+          const item = contentItems[i];
+          const sourceLabel = item.source || `Item ${i + 1}`;
+          console.log(`[MetadataGenerator] Summarizing compilation item ${i + 1}/${contentItems.length}: ${sourceLabel}`);
+          const itemSummary = await aiManager.summarizeTranscript(item.content, sourceLabel);
+          itemSummaries.push(`ITEM ${i + 1} (${sourceLabel}):\n${itemSummary}`);
+        }
+
+        // Recombine summaries with ITEM labels intact
+        const summary = itemSummaries.join('\n\n');
 
         // Generate single metadata for compilation with hardcoded compilation instructions
         params.progressCallback?.('generating', 'Generating metadata for compilation...', 50);

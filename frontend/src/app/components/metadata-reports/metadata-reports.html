@@ -266,6 +266,31 @@
                 </div>
               </div>
             }
+
+            <!-- Clip Suggestions Section (if present) -->
+            @if (metadata()!.clip_suggestions && metadata()!.clip_suggestions.length > 0) {
+              <div class="metadata-section">
+                <div class="section-header">
+                  <div class="section-title-row">
+                    <mat-icon>content_cut</mat-icon>
+                    <h3>Clip Suggestions</h3>
+                    <span class="count-badge">{{ metadata()!.clip_suggestions.length }}</span>
+                  </div>
+                </div>
+                <div class="list-container">
+                  @for (clip of metadata()!.clip_suggestions; track $index; let i = $index) {
+                    <div class="list-item"
+                         [class.copied]="isCopied('clip-' + i)"
+                         (click)="copyToClipboard(clip, 'clip-' + i)"
+                         title="Click to copy">
+                      <span class="item-number">{{ i + 1 }}</span>
+                      <span class="list-item-text">{{ clip }}</span>
+                      <span class="copy-hint">{{ isCopied('clip-' + i) ? '✓ Copied!' : '📋' }}</span>
+                    </div>
+                  }
+                </div>
+              </div>
+            }
           </div>
         }
 

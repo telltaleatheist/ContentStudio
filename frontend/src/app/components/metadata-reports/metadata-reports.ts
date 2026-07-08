@@ -30,6 +30,7 @@ interface ParsedMetadata {
   tags: string | string[]; // Can be comma-separated string OR array
   hashtags: string;
   pinned_comment?: string[]; // Pinned comment suggestions
+  clip_suggestions?: string[]; // Shorts-able moment suggestions
   chapters?: Array<{ timestamp: string; title: string; sequence: number }>; // YouTube chapter markers
   _title?: string; // The display title from the source
   _prompt_set?: string; // The prompt set used for generation
@@ -276,7 +277,7 @@ export class MetadataReports implements OnInit {
         throw new Error(`Item index ${report.itemIndex} out of bounds (only ${jobData.items.length} items in job)`);
       }
 
-      const selectedItem = jobData.items[report.itemIndex];
+      const selectedItem = this.normalizeMetadataKeys(jobData.items[report.itemIndex]);
       console.log('[MetadataReports] Selected item from array:', selectedItem);
       console.log('[MetadataReports] Titles array:', selectedItem.titles);
       console.log('[MetadataReports] Thumbnail text array:', selectedItem.thumbnail_text);
@@ -566,6 +567,50 @@ export class MetadataReports implements OnInit {
     return String(chapter || 'Untitled');
   }
 
+  /**
+   * Normalize variant key names from different AI models to the expected ParsedMetadata fields.
+   * Also flattens objects to strings (some models return {text: "...", style: "..."} instead of plain strings).
+   */
+  private normalizeMetadataKeys(raw: any): ParsedMetadata {
+    // Extract string from any value (handles objects AI models might return)
+    const toStr = (val: any): string => {
+      if (typeof val === 'string') return val;
+      if (val && typeof val === 'object') {
+        return val.text || val.title || val.value || val.content || val.label || JSON.stringify(val);
+      }
+      return String(val ?? '');
+    };
+
+    // Normalize an array of items to string[]
+    const toStrArray = (arr: any): string[] => {
+      if (!arr) return [];
+      if (!Array.isArray(arr)) return [toStr(arr)];
+      return arr.map(toStr);
+    };
+
+    // Tags: strip # prefix, handle string or array
+    let tags: string | string[] = raw.tags || '';
+    if (Array.isArray(tags)) {
+      tags = tags.map((t: any) => toStr(t).replace(/^#\s*/, ''));
+    } else if (typeof tags === 'string') {
+      tags = tags.split(',').map((t: string) => t.trim().replace(/^#\s*/, '')).join(',');
+    }
+
+    return {
+      titles: toStrArray(raw.titles || raw.titleOptions || raw.title_options || raw.titleSuggestions),
+      thumbnail_text: toStrArray(raw.thumbnail_text || raw.thumbnailText || raw.thumbnailTextOptions
+        || raw.thumbnail_text_options || raw.thumbnailOptions),
+      description: raw.description || '',
+      tags,
+      hashtags: raw.hashtags || '',
+      pinned_comment: toStrArray(raw.pinned_comment || raw.pinnedComment || raw.pinned_comments) || undefined,
+      clip_suggestions: toStrArray(raw.clip_suggestions || raw.clipSuggestions || raw.clips) || undefined,
+      chapters: raw.chapters,
+      _title: raw._title,
+      _prompt_set: raw._prompt_set,
+    };
+  }
+
   private getUserHome(): string {
     // This will be replaced by actual electron call in production
     return '/Users/telltale';
@@ -646,7 +691,7 @@ export class MetadataReports implements OnInit {
             continue;
           }
 
-          const metadata: ParsedMetadata = jobData.items[report.itemIndex];
+          const metadata: ParsedMetadata = this.normalizeMetadataKeys(jobData.items[report.itemIndex]);
 
           // Format the metadata as text
           const txtContent = this.formatMetadataAsTxt(metadata, report);
@@ -723,6 +768,15 @@ export class MetadataReports implements OnInit {
       output += '--- PINNED COMMENT ---\n\n';
       metadata.pinned_comment.forEach((comment, i) => {
         output += `${i + 1}. ${comment}\n`;
+      });
+      output += '\n';
+    }
+
+    // Clip Suggestions
+    if (metadata.clip_suggestions && metadata.clip_suggestions.length > 0) {
+      output += '--- CLIP SUGGESTIONS ---\n\n';
+      metadata.clip_suggestions.forEach((clip, i) => {
+        output += `${i + 1}. ${clip}\n`;
       });
       output += '\n';
     }

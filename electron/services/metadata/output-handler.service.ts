@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { MetadataResult } from './ai-manager.service';
 import { Chapter } from './chapter-generator.service';
+import { METADATA_FIELDS } from './metadata-fields';
 
 export interface JobMetadata {
   job_id: string;
@@ -17,6 +18,8 @@ export interface JobMetadata {
   items: MetadataResult[];
   status: string;
   source_items?: any[];
+  original_inputs?: string[];  // Raw inputs provided by the user
+  input_types?: string[];      // Content types: 'subject' | 'video' | 'transcript_file'
 }
 
 export interface SaveJobResult {
@@ -150,6 +153,29 @@ export class OutputHandlerService {
   }
 
   /**
+   * Update arbitrary job data fields
+   */
+  updateJobData(jobId: string, data: Partial<JobMetadata>): boolean {
+    try {
+      const job = this.getJobMetadata(jobId);
+      if (!job) {
+        return false;
+      }
+
+      Object.assign(job, data);
+
+      const jsonPath = path.join(this.metadataDir, `${jobId}.json`);
+      this.saveJson(job, jsonPath);
+
+      console.log(`[OutputHandler] Updated job ${jobId} data`);
+      return true;
+    } catch (error) {
+      console.error(`[OutputHandler] Failed to update job data:`, error);
+      return false;
+    }
+  }
+
+  /**
    * Save metadata for a batch job
    */
   saveJobMetadata(
@@ -246,58 +272,42 @@ export class OutputHandlerService {
       lines.push('='.repeat(80));
       lines.push('');
 
-      // Titles section
-      if (metadata.titles && metadata.titles.length > 0) {
-        lines.push('TITLES');
+      // Emit one section (label line, 80-dash line, content, blank line).
+      const emitSection = (label: string, contentLines: string[]): void => {
+        lines.push(label);
         lines.push('-'.repeat(80));
-        metadata.titles.forEach((title, i) => {
-          lines.push(`${i + 1}. ${title}`);
-        });
+        contentLines.forEach((l) => lines.push(l));
         lines.push('');
-      }
+      };
 
-      // Description section
-      if (metadata.description) {
-        lines.push('DESCRIPTION');
-        lines.push('-'.repeat(80));
-        lines.push(metadata.description);
-        lines.push('');
-      }
+      // Sections are driven by the field registry so adding a future field is a
+      // single entry in metadata-fields.ts. Chapters are not in the registry
+      // (typed object array) and are injected right after thumbnail_text.
+      for (const def of METADATA_FIELDS) {
+        const value = (metadata as any)[def.key];
 
-      // Tags section (after description)
-      if (metadata.tags) {
-        lines.push('TAGS');
-        lines.push('-'.repeat(80));
-        lines.push(metadata.tags);
-        lines.push('');
-      }
+        if (def.txtStyle === 'numbered') {
+          if (Array.isArray(value) && value.length > 0) {
+            emitSection(def.txtLabel, value.map((v: string, i: number) => `${i + 1}. ${v}`));
+          }
+        } else if (def.txtStyle === 'block') {
+          if (value) {
+            emitSection(def.txtLabel, [value]);
+          }
+        } else if (def.txtStyle === 'inline') {
+          if (Array.isArray(value)) {
+            if (value.length > 0) {
+              emitSection(def.txtLabel, [value.join(', ')]);
+            }
+          } else if (value) {
+            emitSection(def.txtLabel, [value]);
+          }
+        }
 
-      // Thumbnail text section
-      if (metadata.thumbnail_text && metadata.thumbnail_text.length > 0) {
-        lines.push('THUMBNAIL TEXT OPTIONS');
-        lines.push('-'.repeat(80));
-        metadata.thumbnail_text.forEach((text, i) => {
-          lines.push(`${i + 1}. ${text}`);
-        });
-        lines.push('');
-      }
-
-      // Chapters section
-      if (metadata.chapters && metadata.chapters.length > 0) {
-        lines.push('CHAPTERS');
-        lines.push('-'.repeat(80));
-        metadata.chapters.forEach((chapter) => {
-          lines.push(`${chapter.timestamp} - ${chapter.title}`);
-        });
-        lines.push('');
-      }
-
-      // Hashtags section
-      if (metadata.hashtags) {
-        lines.push('HASHTAGS');
-        lines.push('-'.repeat(80));
-        lines.push(metadata.hashtags);
-        lines.push('');
+        // Chapters section - injected in its current position (after thumbnail_text)
+        if (def.key === 'thumbnail_text' && metadata.chapters && metadata.chapters.length > 0) {
+          emitSection('CHAPTERS', metadata.chapters.map((chapter) => `${chapter.timestamp} - ${chapter.title}`));
+        }
       }
 
       // Write to file

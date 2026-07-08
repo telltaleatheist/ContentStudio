@@ -13,6 +13,7 @@ import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
+import { METADATA_FIELDS } from './metadata-fields';
 
 export interface AIConfig {
   provider: 'ollama' | 'openai' | 'claude';
@@ -32,6 +33,8 @@ export interface MetadataResult {
   tags?: string;
   hashtags?: string;
   pinned_comment?: string[];
+  spoken_keywords?: string[];
+  clip_suggestions?: string[];
   chapters?: Array<{
     timestamp: string;
     title: string;
@@ -47,6 +50,16 @@ export interface PromptSet {
 }
 
 export class AIManagerService {
+  // Ollama context window size - controls KV cache memory allocation.
+  // 131072 (default) creates a ~40GB KV cache for 70B models, causing OOM on most systems.
+  // 32768 reduces it to ~10GB while still supporting long prompts (master analysis, episode splitting).
+  private static readonly OLLAMA_NUM_CTX = 32768;
+  private static readonly OLLAMA_NUM_PREDICT = 2000;
+  // Max prompt chars before truncation: (context - response - margin) * ~3.5 chars/token
+  private static readonly OLLAMA_MAX_PROMPT_CHARS = Math.floor(
+    (AIManagerService.OLLAMA_NUM_CTX - AIManagerService.OLLAMA_NUM_PREDICT - 512) * 3.5
+  );
+
   private config: AIConfig;
   private ollamaClient?: AxiosInstance;
   private openaiClient?: OpenAI;
@@ -522,22 +535,40 @@ export class AIManagerService {
     console.log(`[AIManager]     Compilation: ${compilationInfo ? `yes (${compilationInfo.sourceCount} items)` : 'no'}`);
 
     const prompt = this.createMetadataPrompt(content, sourceName, compilationInfo);
-    const response = await this.makeRequest(prompt, this.metadataModel, 300);
 
-    if (!response) {
-      console.error('[AIManager] === METADATA GENERATION FAILED ===');
-      console.error('[AIManager]     No response from AI');
-      throw new Error('No response from AI');
+    const maxAttempts = 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const response = await this.makeRequest(prompt, this.metadataModel, 300);
+
+      if (!response) {
+        log.error('[AIManager] === METADATA GENERATION FAILED ===');
+        log.error('[AIManager]     No response from AI');
+        if (attempt < maxAttempts) {
+          log.info(`[AIManager] Retrying metadata generation (attempt ${attempt + 1}/${maxAttempts})...`);
+          continue;
+        }
+        throw new Error('No response from AI');
+      }
+
+      try {
+        // Parse the response
+        const metadata = this.parseMetadataResponse(response);
+
+        console.log(`[AIManager] === METADATA GENERATION COMPLETE for ${sourceName || 'unknown'} ===`);
+        console.log(`[AIManager]     Generated ${Object.keys(metadata).length} fields`);
+
+        return this.addDescriptionLinks(metadata);
+      } catch (parseError) {
+        if (attempt < maxAttempts) {
+          log.warn(`[AIManager] Metadata parse failed on attempt ${attempt}, retrying...`);
+          continue;
+        }
+        throw parseError;
+      }
     }
 
-    // Parse the response
-    const metadata = this.parseMetadataResponse(response);
-
-    console.log(`[AIManager] === METADATA GENERATION COMPLETE for ${sourceName || 'unknown'} ===`);
-    console.log(`[AIManager]     Generated ${Object.keys(metadata).length} fields`);
-
-    // Add description links from prompt set
-    return this.addDescriptionLinks(metadata);
+    // Should not reach here, but satisfy TypeScript
+    throw new Error('Failed to generate metadata after retries');
   }
 
   /**
@@ -573,7 +604,17 @@ export class AIManagerService {
     const editorialPrompt = this.currentPromptSet.editorial_prompt.replace('{subject}', subject);
 
     // Instructions prompt defines what to generate
-    const instructionsPrompt = this.currentPromptSet.instructions_prompt;
+    let instructionsPrompt = this.currentPromptSet.instructions_prompt;
+
+    // In compilation mode, append an override block that REPLACES the TITLES,
+    // DESCRIPTION, and TAGS rules to reflect all items. Appending (rather than
+    // regex-surgery on the user-editable YAML) is robust to any prompt-set format.
+    if (compilationInfo) {
+      const overrideBlock = formatPrompt(SYSTEM_PROMPTS.COMPILATION_INSTRUCTIONS_OVERRIDE, {
+        sourceCount: compilationInfo.sourceCount,
+      });
+      instructionsPrompt = `${instructionsPrompt}\n${overrideBlock}`;
+    }
 
     return `${systemPrompt}\n\n${editorialPrompt}\n\n${instructionsPrompt}`;
   }
@@ -594,32 +635,139 @@ export class AIManagerService {
       // Step 2: Try to extract JSON object
       const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
-        console.error('[AIManager] No JSON found in response');
+        log.error('[AIManager] No JSON found in response');
+        log.error('[AIManager] Response preview:', response.substring(0, 500));
         throw new Error('No JSON found in response');
       }
 
       let jsonStr = jsonMatch[0];
 
-      // Step 3: Try parsing
-      try {
-        // First attempt: try parsing as-is
-        return JSON.parse(jsonStr);
-      } catch (firstError) {
-        console.log('[AIManager] Initial parse failed, trying to clean JSON...');
-        console.log('[AIManager] Parse error was:', firstError);
-        console.log('[AIManager] JSON preview:', jsonStr.substring(0, 500));
+      // Step 3: Try parsing with increasingly aggressive repair
+      const parseAttempts: { name: string; transform: (s: string) => string }[] = [
+        { name: 'as-is', transform: (s) => s },
+        { name: 'fix trailing commas', transform: (s) => s.replace(/,\s*([\]}])/g, '$1') },
+        { name: 'fix newlines in strings', transform: (s) => {
+          // Replace literal newlines inside JSON string values with \\n
+          return s.replace(/"([^"]*?)"/g, (_match, content) => {
+            return '"' + content.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t') + '"';
+          });
+        }},
+        { name: 'aggressive repair', transform: (s) => {
+          let fixed = s;
+          // Fix trailing commas
+          fixed = fixed.replace(/,\s*([\]}])/g, '$1');
+          // Fix newlines in strings
+          fixed = fixed.replace(/"([^"]*?)"/g, (_match, content) => {
+            return '"' + content.replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t') + '"';
+          });
+          // Fix single quotes used as JSON quotes (only around values)
+          fixed = fixed.replace(/:\s*'([^']*)'/g, ': "$1"');
+          // Remove control characters
+          fixed = fixed.replace(/[\x00-\x1f\x7f]/g, (ch) => {
+            if (ch === '\n' || ch === '\r' || ch === '\t') return ch; // already handled
+            return '';
+          });
+          return fixed;
+        }},
+      ];
 
-        // If parsing fails, it's likely due to unescaped newlines in strings
-        // This is a last-resort fallback - log and throw
-        console.error('[AIManager] Cleaned JSON:', jsonStr.substring(0, 1000));
-        console.error('[AIManager] Parse error:', firstError);
-        throw new Error('Failed to parse metadata response');
+      for (const attempt of parseAttempts) {
+        try {
+          const transformed = attempt.transform(jsonStr);
+          const parsed = JSON.parse(transformed);
+          if (attempt.name !== 'as-is') {
+            log.info(`[AIManager] JSON parsed successfully after repair: ${attempt.name}`);
+          }
+          return this.normalizeMetadataKeys(parsed);
+        } catch {
+          // Continue to next attempt
+        }
       }
+
+      // All attempts failed - log details for debugging
+      log.error('[AIManager] All JSON parse attempts failed');
+      log.error('[AIManager] JSON preview:', jsonStr.substring(0, 1000));
+      throw new Error('Failed to parse metadata response');
     } catch (error) {
-      console.error('[AIManager] Error parsing metadata response:', error);
-      console.error('[AIManager] Response preview:', response.substring(0, 1000));
+      log.error('[AIManager] Error parsing metadata response:', error);
+      log.error('[AIManager] Response preview:', response.substring(0, 1000));
       throw new Error('Failed to parse metadata response');
     }
+  }
+
+  /**
+   * Normalize AI response keys to match MetadataResult interface.
+   * Different models return varying key names (e.g. "titleOptions" vs "titles").
+   */
+  private normalizeMetadataKeys(raw: any): MetadataResult {
+    const result: MetadataResult = {};
+
+    // Helper: extract string from any value (handles objects AI models might return)
+    const toStr = (val: any): string => {
+      if (typeof val === 'string') return val;
+      if (val && typeof val === 'object') {
+        return val.text || val.title || val.value || val.content || val.label || JSON.stringify(val);
+      }
+      return String(val ?? '');
+    };
+
+    // Helper: normalize an array of items to string[]
+    const toStrArray = (arr: any): string[] => {
+      if (!arr) return [];
+      if (!Array.isArray(arr)) return [toStr(arr)];
+      return arr.map(toStr);
+    };
+
+    // Pick the first truthy value among [canonical key, ...aliases] (replicates
+    // the previous `raw.a || raw.b || raw.c` resolution semantics).
+    const pick = (keys: string[]): any => {
+      let val: any = undefined;
+      for (const k of keys) {
+        val = val || raw[k];
+      }
+      return val;
+    };
+
+    // Drive normalization entirely from the field registry so adding a future
+    // field is a single entry in metadata-fields.ts.
+    for (const def of METADATA_FIELDS) {
+      const target = result as any;
+
+      switch (def.kind) {
+        case 'string': {
+          target[def.key] = pick([def.key, ...def.aliases]);
+          break;
+        }
+        case 'stringArray': {
+          const arr = toStrArray(pick([def.key, ...def.aliases]));
+          if (def.emptyToUndefined && arr.length === 0) {
+            target[def.key] = undefined;
+          } else {
+            target[def.key] = arr;
+          }
+          break;
+        }
+        case 'tags': {
+          // Could be string or array; strip leading "#" from individual tags.
+          const rawTags = raw[def.key];
+          if (Array.isArray(rawTags)) {
+            target[def.key] = rawTags.map((t: any) => toStr(t).replace(/^#\s*/, '')).join(',');
+          } else if (typeof rawTags === 'string') {
+            target[def.key] = rawTags.split(',').map((t: string) => t.trim().replace(/^#\s*/, '')).join(',');
+          } else {
+            target[def.key] = rawTags;
+          }
+          break;
+        }
+        case 'hashtags': {
+          // Plain passthrough.
+          target[def.key] = raw[def.key];
+          break;
+        }
+      }
+    }
+
+    return result;
   }
 
   /**
@@ -713,16 +861,24 @@ export class AIManagerService {
       throw new Error('Ollama client not initialized');
     }
 
+    // Truncate prompt if it exceeds the context window capacity
+    let effectivePrompt = prompt;
+    if (prompt.length > AIManagerService.OLLAMA_MAX_PROMPT_CHARS) {
+      log.warn(`[AIManager] Prompt too long (${prompt.length} chars, max ${AIManagerService.OLLAMA_MAX_PROMPT_CHARS}), truncating`);
+      effectivePrompt = prompt.substring(0, AIManagerService.OLLAMA_MAX_PROMPT_CHARS);
+    }
+
     try {
       const response = await this.ollamaClient.post(
         '/api/generate',
         {
           model,
-          prompt,
+          prompt: effectivePrompt,
           stream: false,
           options: {
             temperature: 0.7,
-            num_predict: 2000,
+            num_predict: AIManagerService.OLLAMA_NUM_PREDICT,
+            num_ctx: AIManagerService.OLLAMA_NUM_CTX,
           },
         },
         { timeout: timeout * 1000 }

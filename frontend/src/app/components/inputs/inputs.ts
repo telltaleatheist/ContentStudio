@@ -242,6 +242,9 @@ export class Inputs implements OnInit, OnDestroy {
           if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v'].includes(ext)) {
             icon = 'movie';
             type = 'video';
+          } else if (['mp3', 'wav', 'aiff', 'aif', 'm4a', 'aac', 'flac', 'ogg', 'wma'].includes(ext)) {
+            icon = 'audiotrack';
+            type = 'video';
           } else if (ext === 'txt') {
             icon = 'text_fields';
             type = 'transcript';
@@ -309,6 +312,9 @@ export class Inputs implements OnInit, OnDestroy {
 
         if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v'].includes(ext)) {
           icon = 'movie';
+          type = 'video';
+        } else if (['mp3', 'wav', 'aiff', 'aif', 'm4a', 'aac', 'flac', 'ogg', 'wma'].includes(ext)) {
+          icon = 'audiotrack';
           type = 'video';
         } else if (ext === 'txt') {
           icon = 'text_fields';
