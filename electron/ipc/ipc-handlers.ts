@@ -55,7 +55,11 @@ function ensurePromptSetsDirectory(): void {
     const samplePromptsDir = getSamplePromptsDirectory();
 
     if (fs.existsSync(samplePromptsDir)) {
-      const sampleFiles = fs.readdirSync(samplePromptsDir).filter(f => f.endsWith('.yml') || f.endsWith('.yaml'));
+      // Starter metadata prompt sets + summarization_prompts.yml (pipeline config).
+      // master-*.yml files are seeded separately into master_prompt_sets.
+      const sampleFiles = fs.readdirSync(samplePromptsDir).filter(f =>
+        (f.endsWith('.yml') || f.endsWith('.yaml')) && !f.startsWith('master-')
+      );
 
       for (const file of sampleFiles) {
         const srcPath = path.join(samplePromptsDir, file);
@@ -74,6 +78,22 @@ function ensurePromptSetsDirectory(): void {
       }
     } else {
       log.info(`Sample prompts directory not found at: ${samplePromptsDir}`);
+    }
+  }
+
+  // summarization_prompts.yml is pipeline config (not a user prompt set) — without
+  // it, transcript summarization falls back to a generic prompt. Ensure it exists
+  // even on installs whose prompt_sets directory already has prompts.
+  const summarizationDest = path.join(promptSetsDir, 'summarization_prompts.yml');
+  if (!fs.existsSync(summarizationDest)) {
+    const summarizationSrc = path.join(getSamplePromptsDirectory(), 'summarization_prompts.yml');
+    if (fs.existsSync(summarizationSrc)) {
+      try {
+        fs.copyFileSync(summarizationSrc, summarizationDest);
+        log.info('Installed summarization_prompts.yml (pipeline config)');
+      } catch (error) {
+        log.warn('Failed to copy summarization_prompts.yml:', error);
+      }
     }
   }
 }
