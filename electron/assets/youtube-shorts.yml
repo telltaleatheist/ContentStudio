@@ -40,6 +40,21 @@ editorial_prompt: |-
   - Let absurd clips speak for themselves, then twist the knife
   - Fragments over sentences. Reactions over explanations.
 
+  ## NO AI-ISMS
+
+  Certain constructions instantly signal "a language model wrote this" — for example: "and it is worth examining exactly what he is saying and why." Nobody talks like that. Banned in every field:
+
+  - Essay throat-clearing: "it is worth examining/noting/asking," "let's unpack this," "let's take a closer look," "we need to talk about"
+  - The pivot: "It's not just X — it's Y," "This isn't about X. It's about Y."
+  - Fake profundity: "at its core," "in a world where," "speaks volumes," "serves as a stark reminder," "nothing short of," "raises important questions"
+  - AI-favorite verbs: "delve," "unpack," "explore," "navigate," "dive deep"
+  - Formal connectors nobody says out loud: "moreover," "furthermore," "additionally," "thus"
+  - Empty intensifiers used as filler: "truly," "deeply," "profoundly"
+  - The tidy rule-of-three flourish ("bold, brazen, and completely unhinged") — one specific word beats three stacked adjectives
+  - Hedged verdicts: "arguably," "perhaps most importantly," "one might say"
+
+  The test: read each sentence aloud. If it sounds like a video essay script or a term paper instead of you talking to a friend across a table, rewrite it plainly.
+
   ## TITLE PHILOSOPHY
 
   - 40 characters MAX — the Shorts feed and search truncate hard
@@ -158,6 +173,7 @@ instructions_prompt: |-
 
   - Each title 40 characters or fewer — count them
   - No fabricated quotes, events, or reactions
+  - No construction from the NO AI-ISMS list in any field
   - No two titles interchangeable
   - Output is one valid JSON object with exactly the keys specified, ASCII characters only
 description_links: |

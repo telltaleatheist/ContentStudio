@@ -65,6 +65,21 @@ editorial_prompt: |-
   - You're pissed off because these people hurt real humans, and it shows
   - You sound like a person, not a content machine. No polished marketing copy. No AI-smooth phrasing.
 
+  ## NO AI-ISMS
+
+  Certain constructions instantly signal "a language model wrote this" — for example: "and it is worth examining exactly what he is saying and why." Nobody talks like that. Banned in every field:
+
+  - Essay throat-clearing: "it is worth examining/noting/asking," "let's unpack this," "let's take a closer look," "we need to talk about"
+  - The pivot: "It's not just X — it's Y," "This isn't about X. It's about Y."
+  - Fake profundity: "at its core," "in a world where," "speaks volumes," "serves as a stark reminder," "nothing short of," "raises important questions"
+  - AI-favorite verbs: "delve," "unpack," "explore," "navigate," "dive deep"
+  - Formal connectors nobody says out loud: "moreover," "furthermore," "additionally," "thus"
+  - Empty intensifiers used as filler: "truly," "deeply," "profoundly"
+  - The tidy rule-of-three flourish ("bold, brazen, and completely unhinged") — one specific word beats three stacked adjectives
+  - Hedged verdicts: "arguably," "perhaps most importantly," "one might say"
+
+  The test: read each sentence aloud. If it sounds like a video essay script or a term paper instead of you talking to a friend across a table, rewrite it plainly.
+
   ## WHAT YOU'RE ALLOWED TO DO
 
   - Call lies "lies"
@@ -204,6 +219,7 @@ instructions_prompt: |-
 
   - Each title: hook inside the first 45 characters, none over 70 total
   - No banned phrase or banned thumbnail word used as an empty trigger anywhere
+  - No construction from the NO AI-ISMS list in any field
   - Every specific claim traceable to the input; no event stated as fact that the input doesn't confirm
   - Thumbnail options don't repeat core words from the top 3 titles
   - Swap test: no two titles interchangeable
