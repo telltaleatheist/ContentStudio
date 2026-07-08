@@ -171,6 +171,14 @@ instructions_prompt: |-
   - Reference something specific from this video. Generic engagement bait ("What do you think?") is banned.
   - No links.
 
+  ## CLIP_SUGGESTIONS
+
+  - Identify the 3-5 moments from this content most likely to succeed as YouTube Shorts
+  - ONLY generate these when the input contains actual transcript content, quotes, or specific moments (TRANSCRIPT/SUMMARY inputs). For SHORT DESCRIPTION inputs, return an empty array.
+  - Each suggestion is ONE string: the verbatim quote or specific moment, then " — ", then why it stops a scroll (which emotional trigger it hits and what makes it self-contained)
+  - Prioritize moments that are: self-contained without setup, under 60 seconds of content, and absurd or damning when stated plainly
+  - Never invent quotes or moments — only what's actually in the input
+
   ## CHAPTERS
 
   - ONLY generate chapter markers if the input contains actual timestamps or timecoded transcript data
@@ -187,7 +195,8 @@ instructions_prompt: |-
     "tags": "comma-separated string",
     "hashtags": "#One #Two #Three",
     "thumbnail_text": ["10 strings"],
-    "pinned_comment": ["3 strings"]
+    "pinned_comment": ["3 strings"],
+    "clip_suggestions": ["3-5 strings; [] for short-description inputs"]
   }
   Include a "chapters" key ONLY if real timestamps exist in the input: "chapters": [{"timestamp": "MM:SS", "title": "string", "sequence": 1}]
 
