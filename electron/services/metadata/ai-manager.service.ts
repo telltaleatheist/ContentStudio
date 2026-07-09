@@ -196,15 +196,24 @@ export class AIManagerService {
     console.log('[AIManager] Metadata model:', this.metadataModel);
   }
 
+  // Token-efficiency thresholds (chars). ~3.5-4 chars/token, ~50k chars/hour of speech.
+  // Direct pass: below this, the metadata model reads the raw transcript — no
+  // summarization call. Summarizing first costs MORE (the summarizer reads the same
+  // input, plus you pay its output and a second call) and loses verbatim quotes.
+  private static readonly CLOUD_DIRECT_PASS_MAX_CHARS = 60000;
+  // Above direct-pass size, extract evidence in large chunks (few requests, less
+  // prompt overhead, better per-chunk context than the old 8k chunks).
+  private static readonly CLOUD_SUMMARIZE_CHUNK_CHARS = 60000;
+  private static readonly OLLAMA_SUMMARIZE_CHUNK_CHARS = 8000;
+
   /**
-   * Max transcript chars to send in a single chapter-detection request.
-   * Ollama's 32k context needs chunking; cloud providers (Claude 200k, OpenAI 128k)
-   * handle full transcripts in one shot, which produces far better chapters —
-   * the model sees the whole video, so topic boundaries and chapter-count
-   * calibration ("4-6 for a long video") work as intended.
+   * Char budget for the chapter-detection transcript. Transcripts over this are
+   * evenly SAMPLED (whole segments kept verbatim) rather than chunked, so the
+   * model keeps a global view of the whole video in one request and every
+   * quoted start_phrase still maps back to the full SRT.
    */
-  getMaxTranscriptChunkChars(): number {
-    return this.config.provider === 'ollama' ? 30000 : 300000;
+  getChapterTranscriptBudgetChars(): number {
+    return this.config.provider === 'ollama' ? 30000 : 60000;
   }
 
   /**
@@ -416,10 +425,30 @@ export class AIManagerService {
   }
 
   /**
-   * Summarize transcript using fast model
+   * Prepare transcript content for metadata generation.
+   *
+   * Cloud providers (Claude/OpenAI): transcripts up to CLOUD_DIRECT_PASS_MAX_CHARS
+   * pass through UNCHANGED — the metadata model reads the raw transcript, which is
+   * both cheaper (no summarizer input+output, no second call) and higher quality
+   * (verbatim quotes survive). Longer transcripts get evidence-extraction in
+   * large chunks. Ollama always condenses (small context window).
+   *
+   * options.forceCondense: always condense regardless of size — used for
+   * compilation items, whose outputs get joined into one combined prompt.
    */
-  async summarizeTranscript(transcript: string, sourceName: string): Promise<string> {
+  async summarizeTranscript(
+    transcript: string,
+    sourceName: string,
+    options?: { forceCondense?: boolean }
+  ): Promise<string> {
     if (transcript.length <= 1000) {
+      return transcript;
+    }
+
+    const isCloud = this.config.provider !== 'ollama';
+
+    if (isCloud && !options?.forceCondense && transcript.length <= AIManagerService.CLOUD_DIRECT_PASS_MAX_CHARS) {
+      console.log(`[AIManager] Direct pass for ${sourceName}: ${transcript.length} chars sent to metadata model unsummarized`);
       return transcript;
     }
 
@@ -427,12 +456,16 @@ export class AIManagerService {
     console.log(`[AIManager]     Transcript length: ${transcript.length} chars`);
     console.log(`[AIManager]     Using model: ${this.summaryModel}`);
 
+    const chunkSize = isCloud
+      ? AIManagerService.CLOUD_SUMMARIZE_CHUNK_CHARS
+      : AIManagerService.OLLAMA_SUMMARIZE_CHUNK_CHARS;
+
     try {
       let result: string;
 
       // Handle large transcripts with chunking
-      if (transcript.length > 8000) {
-        result = await this.summarizeLargeTranscript(transcript, sourceName);
+      if (transcript.length > chunkSize) {
+        result = await this.summarizeLargeTranscript(transcript, sourceName, chunkSize);
       } else {
         result = await this.summarizeSingleChunk(transcript, sourceName);
       }
@@ -450,8 +483,7 @@ export class AIManagerService {
   /**
    * Summarize large transcript in chunks
    */
-  private async summarizeLargeTranscript(transcript: string, sourceName: string): Promise<string> {
-    const chunkSize = 8000;
+  private async summarizeLargeTranscript(transcript: string, sourceName: string, chunkSize: number): Promise<string> {
     const chunks: string[] = [];
 
     // Split into chunks

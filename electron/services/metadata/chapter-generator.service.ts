@@ -158,6 +158,33 @@ export function buildFullTimestampTranscript(srtSegments: SRTSegment[]): string 
 }
 
 /**
+ * Evenly sample segments so the built transcript fits a character budget.
+ * Keeps whole segments verbatim (never truncates text), so any phrase the AI
+ * quotes from the sampled transcript still exists in the full SRT and maps to
+ * a timestamp. Sampling stride grows until the total fits the budget.
+ */
+export function sampleSegmentsToBudget(srtSegments: SRTSegment[], budgetChars: number): SRTSegment[] {
+  const totalChars = srtSegments.reduce((n, s) => n + (s.text?.length || 0), 0);
+  if (totalChars <= budgetChars) {
+    return srtSegments;
+  }
+
+  let stride = Math.ceil(totalChars / budgetChars);
+  let sampled = srtSegments.filter((_, i) => i % stride === 0);
+
+  // Uneven segment lengths can leave us over budget — widen the stride until we fit
+  while (
+    sampled.reduce((n, s) => n + (s.text?.length || 0), 0) > budgetChars &&
+    stride < srtSegments.length
+  ) {
+    stride++;
+    sampled = srtSegments.filter((_, i) => i % stride === 0);
+  }
+
+  return sampled;
+}
+
+/**
  * Normalize text for comparison: lowercase, remove punctuation, normalize whitespace
  */
 function normalizeForComparison(text: string): string {

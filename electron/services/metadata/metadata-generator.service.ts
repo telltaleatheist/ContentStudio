@@ -7,7 +7,7 @@
 import { AIManagerService, AIConfig, MetadataResult } from './ai-manager.service';
 import { WhisperService } from './whisper.service';
 import { InputHandlerService, ContentItem } from './input-handler.service';
-import { ChapterMapper, AIChapter, buildTimestampedTranscript } from './chapter-generator.service';
+import { ChapterMapper, AIChapter, buildTimestampedTranscript, sampleSegmentsToBudget } from './chapter-generator.service';
 import { OutputHandlerService, SaveJobResult } from './output-handler.service';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import * as log from 'electron-log';
@@ -201,7 +201,8 @@ export class MetadataGeneratorService {
           const item = contentItems[i];
           const sourceLabel = item.source || `Item ${i + 1}`;
           console.log(`[MetadataGenerator] Summarizing compilation item ${i + 1}/${contentItems.length}: ${sourceLabel}`);
-          const itemSummary = await aiManager.summarizeTranscript(item.content, sourceLabel);
+          // Always condense compilation items — their outputs get joined into one prompt
+          const itemSummary = await aiManager.summarizeTranscript(item.content, sourceLabel, { forceCondense: true });
           itemSummaries.push(`ITEM ${i + 1} (${sourceLabel}):\n${itemSummary}`);
         }
 
@@ -383,58 +384,33 @@ export class MetadataGeneratorService {
       return [];
     }
 
+    // Sample the transcript to the provider's budget instead of chunking:
+    // the model keeps a global view of the WHOLE video in one request, and
+    // because sampling keeps whole segments verbatim, every quoted start_phrase
+    // still maps back to the full SRT.
+    const budget = aiManager.getChapterTranscriptBudgetChars();
+    const sampledSegments = sampleSegmentsToBudget(item.srtSegments, budget);
+
+    if (sampledSegments.length < item.srtSegments.length) {
+      log.info(
+        `[MetadataGenerator] Sampled transcript for chapters: ${item.srtSegments.length} -> ${sampledSegments.length} segments (budget ${budget} chars)`
+      );
+    }
+
     // Build timestamped transcript for AI
-    const transcript = buildTimestampedTranscript(item.srtSegments);
+    const transcript = buildTimestampedTranscript(sampledSegments);
 
     if (!transcript || transcript.length === 0) {
       return [];
     }
 
-    // Process transcript in chunks only when the provider's context requires it.
-    // Cloud providers take the whole transcript in one request (much better
-    // chapter quality); Ollama chunks at 30k chars (≈ 25-30 min of speech).
-    const CHUNK_SIZE = aiManager.getMaxTranscriptChunkChars();
-    const OVERLAP_SIZE = 2000; // Overlap to avoid missing chapter boundaries
-
-    let allAiChapters: AIChapter[] = [];
-
-    if (transcript.length <= CHUNK_SIZE) {
-      // Short transcript - process in one go
-      const aiChapters = await this.processTranscriptChunk(transcript, aiManager);
-      allAiChapters = aiChapters;
-    } else {
-      // Long transcript - process in chunks
-      log.info(`[MetadataGenerator] Transcript is ${transcript.length} chars, processing in chunks`);
-
-      let offset = 0;
-      let chunkIndex = 0;
-
-      while (offset < transcript.length) {
-        const chunkEnd = Math.min(offset + CHUNK_SIZE, transcript.length);
-        const chunk = transcript.substring(offset, chunkEnd);
-
-        log.info(`[MetadataGenerator] Processing chunk ${chunkIndex + 1} (chars ${offset}-${chunkEnd})`);
-
-        const chunkChapters = await this.processTranscriptChunk(chunk, aiManager, chunkIndex > 0);
-        allAiChapters.push(...chunkChapters);
-
-        // Move to next chunk with overlap (unless we're at the end)
-        if (chunkEnd >= transcript.length) {
-          break;
-        }
-        offset = chunkEnd - OVERLAP_SIZE;
-        chunkIndex++;
-      }
-
-      // Deduplicate chapters that might appear in overlapping regions
-      allAiChapters = this.deduplicateChapters(allAiChapters);
-    }
+    const allAiChapters = await this.processTranscriptChunk(transcript, aiManager);
 
     if (allAiChapters.length === 0) {
       return [];
     }
 
-    // Map phrases to timestamps
+    // Map phrases to timestamps against the FULL segment list
     const mapper = new ChapterMapper(item.srtSegments);
     return mapper.mapChapters(allAiChapters);
   }
@@ -444,20 +420,11 @@ export class MetadataGeneratorService {
    */
   private static async processTranscriptChunk(
     transcript: string,
-    aiManager: AIManagerService,
-    isContinuation: boolean = false
+    aiManager: AIManagerService
   ): Promise<AIChapter[]> {
-    let prompt = formatPrompt(SYSTEM_PROMPTS.CHAPTER_DETECTION_PROMPT, {
+    const prompt = formatPrompt(SYSTEM_PROMPTS.CHAPTER_DETECTION_PROMPT, {
       transcript: transcript,
     });
-
-    // For continuation chunks, adjust the prompt
-    if (isContinuation) {
-      prompt = prompt.replace(
-        '- First chapter MUST start at the very beginning of the transcript',
-        '- This is a CONTINUATION of a longer transcript - do NOT require a chapter at the very beginning unless there is a clear topic change'
-      );
-    }
 
     const response = await (aiManager as any).makeRequest(prompt, (aiManager as any).metadataModel);
 
@@ -466,26 +433,6 @@ export class MetadataGeneratorService {
     }
 
     return this.parseChaptersFromAI(response);
-  }
-
-  /**
-   * Remove duplicate chapters that may appear in overlapping regions
-   */
-  private static deduplicateChapters(chapters: AIChapter[]): AIChapter[] {
-    const seen = new Set<string>();
-    const unique: AIChapter[] = [];
-
-    for (const chapter of chapters) {
-      // Normalize the start phrase for comparison
-      const normalizedPhrase = chapter.start_phrase.toLowerCase().trim().substring(0, 30);
-
-      if (!seen.has(normalizedPhrase)) {
-        seen.add(normalizedPhrase);
-        unique.push(chapter);
-      }
-    }
-
-    return unique;
   }
 
   /**

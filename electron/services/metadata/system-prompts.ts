@@ -97,7 +97,8 @@ Rules:
 - First chapter MUST start at the very beginning of the transcript
 - Create a new chapter ONLY when there is a SIGNIFICANT topic shift (not minor tangents)
 - Very short videos (under 5 minutes) may have just 1-2 chapters
-- Longer videos should have 4-6 chapters maximum - prefer fewer, longer chapters
+- Typical videos (30-60 minutes) should have 4-8 chapters - prefer fewer, longer chapters
+- Multi-hour videos scale up: roughly one chapter per 10-20 minutes (use the [H:MM:SS] timestamps to judge total duration, and spread chapters across the ENTIRE runtime - do not stop partway)
 - Minimum chapter length: 3-4 minutes of content (be conservative - don't over-segment)
 - If unsure whether something is a new chapter, keep it as part of the current one
 
@@ -113,6 +114,7 @@ Return JSON:
 
 Important:
 - start_phrase MUST be verbatim text copied from the transcript (3-8 words)
+- The transcript may be an evenly-sampled excerpt of the full video (some sentences omitted between lines) - quote start_phrase EXACTLY as it appears in the text provided, never bridge or paraphrase across gaps
 - The first chapter's start_phrase should be from the very beginning
 - Each subsequent chapter's start_phrase marks where a new topic begins
 - Chapters are sequential - each one ends where the next begins
