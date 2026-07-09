@@ -390,8 +390,10 @@ export class MetadataGeneratorService {
       return [];
     }
 
-    // Process transcript in chunks if too long (30k chars ≈ 25-30 min of speech)
-    const CHUNK_SIZE = 30000;
+    // Process transcript in chunks only when the provider's context requires it.
+    // Cloud providers take the whole transcript in one request (much better
+    // chapter quality); Ollama chunks at 30k chars (≈ 25-30 min of speech).
+    const CHUNK_SIZE = aiManager.getMaxTranscriptChunkChars();
     const OVERLAP_SIZE = 2000; // Overlap to avoid missing chapter boundaries
 
     let allAiChapters: AIChapter[] = [];

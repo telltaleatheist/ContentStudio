@@ -410,6 +410,10 @@ export class ChapterMapper {
       // Find timestamp for start phrase
       const startSeconds = findPhraseTimestamp(startPhrase, this.srtSegments);
 
+      if (startSeconds === null) {
+        console.warn(`[ChapterMapper] Dropping chapter "${title}" — could not map start_phrase to a timestamp: "${startPhrase}"`);
+      }
+
       if (startSeconds !== null) {
         // Calculate end time (next chapter's start or video end)
         let endSeconds = this.videoDuration;

@@ -197,6 +197,17 @@ export class AIManagerService {
   }
 
   /**
+   * Max transcript chars to send in a single chapter-detection request.
+   * Ollama's 32k context needs chunking; cloud providers (Claude 200k, OpenAI 128k)
+   * handle full transcripts in one shot, which produces far better chapters —
+   * the model sees the whole video, so topic boundaries and chapter-count
+   * calibration ("4-6 for a long video") work as intended.
+   */
+  getMaxTranscriptChunkChars(): number {
+    return this.config.provider === 'ollama' ? 30000 : 300000;
+  }
+
+  /**
    * Get the prompts directory path
    * Note: Legacy prompts are no longer used - we use system-prompts.ts and promptSetsDir instead
    */
