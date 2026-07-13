@@ -11,9 +11,10 @@ import * as crypto from 'crypto';
 
 import { WhisperService, SRTSegment } from './whisper.service';
 import { AIManagerService, AIConfig } from './ai-manager.service';
-import { buildPlainTranscript, findPhraseTimestamp, TimeUtils } from './chapter-generator.service';
+import { buildSparseTimestampTranscript, sampleSegmentsToBudget, findPhraseTimestamp, TimeUtils } from './chapter-generator.service';
 import { SYSTEM_PROMPTS } from './system-prompts';
-import { queueTranscription, queueAITask } from '../queue-manager.service';
+import { queueTranscription } from '../queue-manager.service';
+import { getRuntimePaths, FfprobeBridge } from '../../lib/bridges';
 
 /**
  * A suggested episode boundary
@@ -181,6 +182,10 @@ export class EpisodeSplitterService {
       const fileInfos: Array<{ path: string; name: string; durationSeconds: number }> = [];
       let globalTimeOffset = 0;
 
+      // Real audio durations come from ffprobe (not the last transcribed segment,
+      // which undercounts by any trailing silence/music).
+      const ffprobe = new FfprobeBridge(getRuntimePaths().ffprobe);
+
       for (let fileIndex = 0; fileIndex < audioPaths.length; fileIndex++) {
         const audioPath = audioPaths[fileIndex];
         const fileName = path.basename(audioPath, path.extname(audioPath));
@@ -217,14 +222,28 @@ export class EpisodeSplitterService {
 
         const { segments: srtSegments } = transcriptionResult;
 
+        // A file yielding zero segments is a hard error. Silently skipping it would
+        // exclude it from BOTH fileInfos and the timeline, shifting every later file
+        // (and its cut points) by an entire file's duration.
         if (!srtSegments || srtSegments.length === 0) {
-          log.warn(`[EpisodeSplitter] No segments from file ${fileIndex + 1}: ${audioPath}`);
-          continue;
+          return { success: false, error: `Transcription produced no segments for ${path.basename(audioPath)} — cannot compute reliable episode boundaries` };
         }
 
-        // Calculate this file's duration from its last segment
-        const lastSegment = srtSegments[srtSegments.length - 1];
-        const fileDuration = TimeUtils.srtTimeToSeconds(lastSegment.end);
+        // Use the REAL audio duration for the timeline. The last transcribed
+        // segment's end undercounts by any trailing silence/music, and that error
+        // compounds through globalTimeOffset into wrong cut points in later files.
+        const realDuration = await ffprobe.getDuration(audioPath);
+        if (realDuration === undefined || realDuration === null || Number.isNaN(realDuration) || realDuration <= 0) {
+          return { success: false, error: `Could not determine audio duration for ${path.basename(audioPath)} (ffprobe returned ${realDuration}) — cannot compute reliable episode boundaries` };
+        }
+
+        // Sanity check: the transcript should never extend past the real audio.
+        const lastSegmentEnd = TimeUtils.srtTimeToSeconds(srtSegments[srtSegments.length - 1].end);
+        if (realDuration < lastSegmentEnd) {
+          log.warn(`[EpisodeSplitter] File ${fileIndex + 1}: real duration ${TimeUtils.secondsToYoutubeTime(realDuration)} < last segment end ${TimeUtils.secondsToYoutubeTime(lastSegmentEnd)} — transcript extends past reported audio duration`);
+        }
+
+        const fileDuration = realDuration;
 
         fileInfos.push({
           path: audioPath,
@@ -267,8 +286,18 @@ export class EpisodeSplitterService {
       // Phase 2: AI episode boundary detection (50-90%)
       sendProgress('analyzing', 'Building combined transcript...', 52);
 
-      // Build plain transcript (no timestamps — saves tokens, timestamps recovered via phrase matching)
-      const transcript = buildPlainTranscript(allSegments);
+      // Sample segments to a provider-aware char budget BEFORE building the
+      // transcript. ai-manager silently truncates Ollama prompts, so a multi-hour
+      // stream would otherwise lose its tail and episodes would stop partway.
+      // Sampling keeps whole segments verbatim, so quoted start_phrases still match
+      // against the FULL allSegments list below.
+      const EPISODE_TRANSCRIPT_BUDGET_CHARS = aiProvider === 'ollama' ? 90000 : 300000;
+      const budgetedSegments = sampleSegmentsToBudget(allSegments, EPISODE_TRANSCRIPT_BUDGET_CHARS);
+
+      // Sparse [H:MM:SS] markers every 5 minutes give the model real temporal
+      // context so it can hit the ~60-minute targets and spread boundaries across
+      // the entire runtime. Exact timestamps are still recovered via phrase matching.
+      const transcript = buildSparseTimestampTranscript(budgetedSegments, 5);
 
       sendProgress('analyzing', 'Analyzing transcript for episode boundaries...', 55);
 
@@ -285,7 +314,12 @@ export class EpisodeSplitterService {
       const initialized = await aiService.initialize();
 
       if (!initialized) {
-        return { success: false, error: 'Failed to initialize AI service' };
+        return {
+          success: false,
+          error: aiService.lastInitError
+            ? `Failed to initialize AI service: ${aiService.lastInitError}`
+            : 'Failed to initialize AI service',
+        };
       }
 
       // Detect episode boundaries
@@ -384,7 +418,7 @@ export class EpisodeSplitterService {
 
     // Build the prompt
     let prompt = SYSTEM_PROMPTS.EPISODE_SPLIT_PROMPT;
-    prompt = prompt.replace('{transcript}', transcript);
+    prompt = prompt.replace('{transcript}', () => transcript); // function replacer: transcript may contain $-patterns
     prompt = prompt.replace('{duration}', durationStr);
     prompt = prompt.replace('{episodeCount}', String(targetEpisodeCount));
 
@@ -510,8 +544,9 @@ export class EpisodeSplitterService {
    *
    * Strategy: iteratively shift the boundary between the shortest episode
    * and its longer neighbour to equalize the pair. This minimises movement
-   * from the AI-suggested boundaries. If 20 iterations aren't enough,
-   * fall back to a fully even redistribution.
+   * from the AI-suggested boundaries. If 20 iterations aren't enough, keep the
+   * AI boundaries as-is — an honest imbalance beats fabricated even splits whose
+   * titles/descriptions no longer describe their time ranges.
    */
   private static balanceEpisodeDurations(
     episodes: EpisodeBoundary[],
@@ -574,23 +609,13 @@ export class EpisodeSplitterService {
       }
     }
 
-    // Phase 2 — if still unbalanced, force even redistribution
+    // If pairwise balancing couldn't reach the target ratio, keep the AI's
+    // boundaries. Redistributing evenly would leave each episode's title,
+    // description and startPhrase attached to time ranges they no longer
+    // describe — an honest imbalance is the lesser evil. Now that the model sees
+    // [H:MM:SS] markers it should already spread boundaries across the runtime.
     if (ratio() < this.BALANCE_RATIO) {
-      log.info(`[EpisodeSplitter] Pairwise balancing insufficient (ratio ${ratio().toFixed(2)}), redistributing evenly`);
-      const idealDuration = totalDurationSeconds / episodes.length;
-      const globalStart = episodes[0].startSeconds;
-
-      for (let i = 0; i < episodes.length; i++) {
-        const newStart = globalStart + idealDuration * i;
-        const newEnd = i < episodes.length - 1
-          ? globalStart + idealDuration * (i + 1)
-          : totalDurationSeconds;
-        episodes[i].startSeconds = newStart;
-        episodes[i].endSeconds = newEnd;
-        episodes[i].durationSeconds = newEnd - newStart;
-        episodes[i].startTimestamp = TimeUtils.secondsToYoutubeTime(newStart);
-        episodes[i].endTimestamp = TimeUtils.secondsToYoutubeTime(newEnd);
-      }
+      log.warn(`[EpisodeSplitter] Pairwise balancing insufficient (ratio ${ratio().toFixed(2)} < ${this.BALANCE_RATIO}); keeping AI boundaries rather than fabricating even splits`);
     }
 
     // Final cleanup
@@ -688,13 +713,25 @@ ${episodeTranscript}`;
     // Map the sub-episodes to timestamps
     const subEpisodes: EpisodeBoundary[] = [];
 
+    // Constrain phrase matching to this episode's own time range. Without a lower
+    // bound, a phrase that also occurs in an earlier episode maps before this
+    // episode's start; without an upper bound it maps past its end. Either
+    // corrupts every boundary after the global re-sort/recalc. Advance the lower
+    // bound past each match, mirroring mapEpisodesToTimestamps.
+    let minTimestamp = originalEpisode.startSeconds;
+
     for (let i = 0; i < aiEpisodes.length; i++) {
       const ep = aiEpisodes[i];
       const startPhrase = ep.start_phrase || '';
       const title = ep.title?.trim() || `Part ${i + 1}`;
       const description = ep.description?.trim() || '';
 
-      let startSeconds = findPhraseTimestamp(startPhrase, srtSegments);
+      let startSeconds = findPhraseTimestamp(startPhrase, srtSegments, 0.5, minTimestamp);
+
+      // Reject matches at or past this episode's end — treat as unmatched
+      if (startSeconds !== null && startSeconds >= originalEpisode.endSeconds) {
+        startSeconds = null;
+      }
 
       // First sub-episode starts at the original episode's start
       if (i === 0 && (startSeconds === null || startSeconds < originalEpisode.startSeconds)) {
@@ -705,6 +742,9 @@ ${episodeTranscript}`;
         log.warn(`[EpisodeSplitter] Pass 2: Could not match phrase for part ${i + 1}: "${startPhrase}"`);
         continue;
       }
+
+      // Advance the lower bound so the next phrase matches later in the episode
+      minTimestamp = startSeconds + 1;
 
       log.info(`[EpisodeSplitter] Pass 2 matched: "${startPhrase.substring(0, 40)}..." → ${TimeUtils.secondsToYoutubeTime(startSeconds)}`);
 
@@ -747,7 +787,8 @@ ${episodeTranscript}`;
   }
 
   /**
-   * Make AI request queued through AI pool
+   * Make AI request. Queueing lives inside aiManager.makeRequest, so wrapping this
+   * in queueAITask would nest queue tasks and deadlock the 1-slot AI pool.
    */
   private static async makeAIRequest(
     aiService: AIManagerService,
@@ -757,14 +798,9 @@ ${episodeTranscript}`;
       const service = aiService as any;
       const model = service.metadataModel;
 
-      log.info(`[EpisodeSplitter] Queuing AI request with model: ${model}`);
+      log.info(`[EpisodeSplitter] Requesting AI analysis with model: ${model}`);
 
-      const aiTaskId = `ai-${crypto.randomBytes(4).toString('hex')}`;
-      const response = await queueAITask<string>(
-        aiTaskId,
-        `AI Episode Analysis: ${model}`,
-        () => service.makeRequest(prompt, model, 600)
-      );
+      const response = await service.makeRequest(prompt, model, 600);
 
       return response;
     } catch (error) {

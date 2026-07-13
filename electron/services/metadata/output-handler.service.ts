@@ -32,6 +32,9 @@ export interface SaveJobResult {
 export class OutputHandlerService {
   private userOutputDir: string;
   private metadataDir: string;
+  // Serializes addItemToJob so concurrent calls can't clobber each other's
+  // read-modify-write of the job JSON.
+  private writeQueue: Promise<unknown> = Promise.resolve();
 
   constructor(outputDir: string) {
     this.userOutputDir = outputDir;
@@ -94,39 +97,57 @@ export class OutputHandlerService {
   }
 
   /**
-   * Add a single item to an existing job
+   * Add a single item to an existing job.
+   *
+   * Concurrent calls are serialized through a per-instance promise chain so the
+   * json read -> push -> write sequence for one item can't clobber another's.
+   * Rejects (rather than silently returning null) on a genuine failure so the
+   * caller can surface it.
    */
   addItemToJob(
     jobId: string,
     metadataItem: MetadataResult
-  ): { txtPath: string } | null {
-    try {
-      // Load existing job
-      const job = this.getJobMetadata(jobId);
-      if (!job) {
-        console.error(`[OutputHandler] Job not found: ${jobId}`);
-        return null;
-      }
+  ): Promise<{ txtPath: string }> {
+    const run = this.writeQueue.then(() => this.writeItemToJob(jobId, metadataItem));
+    // Keep the chain alive even if this call rejects, so one failed item doesn't
+    // poison the queue for subsequent items.
+    this.writeQueue = run.then(() => undefined, () => undefined);
+    return run;
+  }
 
-      // Add item to job
-      job.items.push(metadataItem);
-
-      // Save updated job metadata
-      const jsonPath = path.join(this.metadataDir, `${jobId}.json`);
-      this.saveJson(job, jsonPath);
-
-      // Save TXT file for this item
-      const cleanName = (metadataItem as any)._title || `item_${job.items.length}`;
-      const txtPath = path.join(job.txt_folder, `${cleanName}.txt`);
-      this.saveReadable(metadataItem, txtPath, job.prompt_set);
-
-      console.log(`[OutputHandler] Added item to job ${jobId}: ${cleanName}`);
-
-      return { txtPath };
-    } catch (error) {
-      console.error(`[OutputHandler] Failed to add item to job:`, error);
-      return null;
+  /**
+   * Synchronous read-modify-write for a single job item (serialized via writeQueue).
+   */
+  private writeItemToJob(
+    jobId: string,
+    metadataItem: MetadataResult
+  ): { txtPath: string } {
+    // Load existing job
+    const job = this.getJobMetadata(jobId);
+    if (!job) {
+      const message = `Job not found: ${jobId}`;
+      console.error(`[OutputHandler] ${message}`);
+      throw new Error(message);
     }
+
+    // Add item to job
+    job.items.push(metadataItem);
+
+    // Save updated job metadata
+    const jsonPath = path.join(this.metadataDir, `${jobId}.json`);
+    this.saveJson(job, jsonPath);
+
+    // Save TXT file for this item. The AI-generated title is untrusted input, so
+    // sanitize it for filesystem use and de-collide so untitled/duplicate items
+    // don't throw or overwrite each other.
+    const rawName = (metadataItem as any)._title || `item_${job.items.length}`;
+    const cleanName = this.sanitizeFilename(rawName) || `item_${job.items.length}`;
+    const txtPath = this.resolveUniqueTxtPath(job.txt_folder, cleanName);
+    this.saveReadable(metadataItem, txtPath, job.prompt_set);
+
+    console.log(`[OutputHandler] Added item to job ${jobId}: ${cleanName}`);
+
+    return { txtPath };
   }
 
   /**
@@ -229,8 +250,11 @@ export class OutputHandlerService {
     const txtFiles: string[] = [];
 
     for (const item of metadataItems) {
-      const cleanName = (item as any)._title || 'metadata';
-      const txtPath = path.join(txtFolder, `${cleanName}.txt`);
+      // Sanitize the (untrusted) AI title and de-collide so multiple untitled items
+      // don't all resolve to "metadata.txt" and overwrite each other.
+      const rawName = (item as any)._title || 'metadata';
+      const cleanName = this.sanitizeFilename(rawName) || 'metadata';
+      const txtPath = this.resolveUniqueTxtPath(txtFolder, cleanName);
 
       this.saveReadable(item, txtPath, promptSet);
       txtFiles.push(txtPath);
@@ -316,6 +340,40 @@ export class OutputHandlerService {
     } catch (error) {
       throw new Error(`Failed to save readable text: ${error}`);
     }
+  }
+
+  /**
+   * Sanitize an AI-generated title for safe use as a filename.
+   * Replaces path separators / reserved characters / control chars with spaces,
+   * collapses whitespace, trims, and caps the length (leaving room for a numeric
+   * de-collision suffix and the .txt extension).
+   */
+  private sanitizeFilename(name: string): string {
+    let clean = (name || '')
+      .replace(/[/\\:*?"<>|\x00-\x1F]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const MAX_LEN = 120;
+    if (clean.length > MAX_LEN) {
+      clean = clean.slice(0, MAX_LEN).trim();
+    }
+
+    return clean;
+  }
+
+  /**
+   * Resolve a collision-free `<baseName>.txt` path inside `dir`, appending a
+   * numeric suffix (" (1)", " (2)", ...) if a file with that name already exists.
+   */
+  private resolveUniqueTxtPath(dir: string, baseName: string): string {
+    let candidate = path.join(dir, `${baseName}.txt`);
+    let counter = 1;
+    while (fs.existsSync(candidate)) {
+      candidate = path.join(dir, `${baseName} (${counter}).txt`);
+      counter++;
+    }
+    return candidate;
   }
 
   /**

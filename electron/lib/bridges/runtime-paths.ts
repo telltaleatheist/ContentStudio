@@ -174,7 +174,10 @@ export function verifyBinary(binaryPath: string, name: string): void {
       if (err.message?.includes('wrong architecture')) {
         throw err;
       }
-      // Ignore verification errors
+      // The `file` check itself failed (not an architecture mismatch). Don't block
+      // startup on it, but don't hide it either — a corrupt binary that slips past
+      // here fails later at spawn time with a far less clear error.
+      console.warn(`[RuntimePaths] Could not verify ${name} binary at ${binaryPath}:`, err?.message || err);
     }
   }
 }

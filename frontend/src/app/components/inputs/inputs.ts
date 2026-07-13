@@ -462,6 +462,11 @@ export class Inputs implements OnInit, OnDestroy {
       return;
     }
 
+    // Claim the guard immediately so a rapid double-click can't launch two
+    // queue processor loops during the awaits below. Reset on early-return
+    // error paths so the user can retry.
+    this.queueStarted.set(true);
+
     // Validate output directory before starting
     try {
       console.log('[StartQueue] Getting settings...');
@@ -472,6 +477,7 @@ export class Inputs implements OnInit, OnDestroy {
       if (!outputDir) {
         console.log('[StartQueue] No output directory configured');
         this.notificationService.error('Configuration Error', 'No output directory configured. Please set one in Settings before processing.');
+        this.queueStarted.set(false);
         return;
       }
 
@@ -483,6 +489,7 @@ export class Inputs implements OnInit, OnDestroy {
       if (!dirCheck.exists) {
         console.log('[StartQueue] Directory does not exist');
         this.notificationService.error('Directory Error', `Output directory does not exist: ${outputDir}\n\nPlease create the directory or choose a different one in Settings.`);
+        this.queueStarted.set(false);
         return;
       }
 
@@ -490,16 +497,17 @@ export class Inputs implements OnInit, OnDestroy {
       if (!dirCheck.writable) {
         console.log('[StartQueue] Directory not writable');
         this.notificationService.error('Permission Error', `Output directory is not writable: ${outputDir}\n\nPlease check permissions or choose a different directory in Settings.`);
+        this.queueStarted.set(false);
         return;
       }
     } catch (error) {
       console.error('[StartQueue] Error validating directory:', error);
       this.notificationService.error('Directory Error', 'Failed to validate output directory. Please check your settings.');
+      this.queueStarted.set(false);
       return;
     }
 
     console.log('[StartQueue] Starting queue processor...');
-    this.queueStarted.set(true);
     this.jobQueue.isProcessing.set(true);
     this.startQueueProcessor();
   }
@@ -547,6 +555,7 @@ export class Inputs implements OnInit, OnDestroy {
 
     const startTime = Date.now();
     let elapsedInterval: any;
+    let unsubscribe: (() => void) | undefined;
 
     try {
       // Start elapsed time tracker for this job
@@ -592,7 +601,7 @@ export class Inputs implements OnInit, OnDestroy {
       let generatingItemIndex = -1;
 
       // Listen for progress updates from Python
-      const unsubscribe = this.electron.onProgress((progress: any) => {
+      unsubscribe = this.electron.onProgress((progress: any) => {
         const job = this.jobQueue.getJob(nextJob.id);
         if (!job) return;
 
@@ -751,10 +760,15 @@ export class Inputs implements OnInit, OnDestroy {
         chapterFlags
       });
 
-      unsubscribe();
-      clearInterval(elapsedInterval);
-
       const processingTime = ((Date.now() - startTime) / 1000);
+
+      // Surface any backend warnings (partial item failures, chapters that
+      // couldn't be generated) regardless of overall success/failure
+      if (result.warnings?.length) {
+        result.warnings.forEach((warning: string) => {
+          this.notificationService.warning('Generation Warning', warning);
+        });
+      }
 
       if (result.success) {
         // Mark all items as completed
@@ -778,10 +792,15 @@ export class Inputs implements OnInit, OnDestroy {
         this.showCompletionMessageFor(`Job "${nextJob.name}" completed in ${processingTime.toFixed(1)}s`);
         this.notificationService.success('Job Completed', `"${nextJob.name}" completed successfully in ${processingTime.toFixed(1)}s`);
       } else {
-        // Mark current item as failed if there is one
+        // Mark every item that never reached a terminal state as failed;
+        // otherwise siblings stay stuck on 'transcribing'/'generating' forever
         const job = this.jobQueue.getJob(nextJob.id);
-        if (job && currentItemIndex < job.inputs.length) {
-          this.jobQueue.updateItemProgress(nextJob.id, currentItemIndex, 100, 'failed');
+        if (job) {
+          job.itemProgress.forEach((item, i) => {
+            if (item.status !== 'completed' && item.status !== 'failed') {
+              this.jobQueue.updateItemProgress(nextJob.id, i, 100, 'failed');
+            }
+          });
         }
 
         this.jobQueue.updateJob(nextJob.id, {
@@ -798,7 +817,16 @@ export class Inputs implements OnInit, OnDestroy {
       }
     } catch (error) {
       this.notificationService.error('Job Processing Error', `Error processing job: ${(error as Error).message}`);
-      if (elapsedInterval) clearInterval(elapsedInterval);
+
+      // Mark every non-terminal item as failed so nothing stays stuck
+      const job = this.jobQueue.getJob(nextJob.id);
+      if (job) {
+        job.itemProgress.forEach((item, i) => {
+          if (item.status !== 'completed' && item.status !== 'failed') {
+            this.jobQueue.updateItemProgress(nextJob.id, i, 100, 'failed');
+          }
+        });
+      }
 
       this.jobQueue.updateJob(nextJob.id, {
         status: 'failed',
@@ -808,6 +836,10 @@ export class Inputs implements OnInit, OnDestroy {
         error: String(error)
       });
     } finally {
+      // Tear down the progress listener and timer on every path so a failed
+      // job's listener can't rewrite its progress from later jobs' events
+      if (unsubscribe) unsubscribe();
+      if (elapsedInterval) clearInterval(elapsedInterval);
       // After job completes (success or failure), process next job in queue
       this.processNextJob();
     }
@@ -875,18 +907,35 @@ export class Inputs implements OnInit, OnDestroy {
       return;
     }
 
-    // Remove the item from the job's inputs array
-    job.inputs.splice(itemIndex, 1);
+    // Build new arrays instead of mutating the signal-held job in place, and
+    // keep inputs / itemProgress spliced in lockstep so progress math stays sane
+    const newInputs = job.inputs.filter((_, i) => i !== itemIndex);
 
     // If no items left, remove the entire job
-    if (job.inputs.length === 0) {
+    if (newInputs.length === 0) {
       console.log('[Inputs] Last item removed, removing entire job');
       this.removeJob(jobId);
-    } else {
-      console.log(`[Inputs] Removed item ${itemIndex} from job ${jobId}. ${job.inputs.length} items remaining.`);
-      // Update the job with the modified inputs array
-      this.jobQueue.updateJob(jobId, { inputs: job.inputs });
+      return;
     }
+
+    const newItemProgress = job.itemProgress.filter((_, i) => i !== itemIndex);
+
+    // Adjust the currently-processing pointer: shift down if it referenced an
+    // item after the removed one, then clamp into the new bounds
+    let newCurrentItemIndex = job.currentItemIndex;
+    if (newCurrentItemIndex > itemIndex) {
+      newCurrentItemIndex -= 1;
+    }
+    if (newCurrentItemIndex > newItemProgress.length - 1) {
+      newCurrentItemIndex = newItemProgress.length - 1;
+    }
+
+    console.log(`[Inputs] Removed item ${itemIndex} from job ${jobId}. ${newInputs.length} items remaining.`);
+    this.jobQueue.updateJob(jobId, {
+      inputs: newInputs,
+      itemProgress: newItemProgress,
+      currentItemIndex: newCurrentItemIndex
+    });
   }
 
   getJobStatusIcon(status: string): string {

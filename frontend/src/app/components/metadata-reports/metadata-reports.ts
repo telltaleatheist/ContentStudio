@@ -75,9 +75,18 @@ export class MetadataReports implements OnInit {
     try {
       this.isLoading.set(true);
 
-      // Get settings to determine output directory
+      // Get settings to determine output directory. The backend get-settings
+      // handler always returns a populated outputDirectory; if it's somehow
+      // empty, show an explicit empty state instead of scanning a guessed path.
       const settings = await this.electron.getSettings();
-      const baseDir = settings.outputDirectory || `${this.getUserHome()}/Documents/ContentStudio Output`;
+      const baseDir = settings.outputDirectory;
+
+      if (!baseDir) {
+        this.reports.set([]);
+        this.reportsDirectory.set('');
+        this.notificationService.warning('No Output Directory', 'No output directory configured — set one in Settings.');
+        return;
+      }
 
       // New structure: JSON files are in .contentstudio/metadata/
       const metadataJsonDir = `${baseDir}/.contentstudio/metadata`;
@@ -172,11 +181,9 @@ export class MetadataReports implements OnInit {
   }
 
   private async loadReportsLegacy(baseDir: string) {
-    // Legacy structure: Try old metadata folder locations
+    // Legacy structure: try the old metadata folder under the output directory
     const possiblePaths = [
-      `${baseDir}/metadata`,
-      `${this.getUserHome()}/Documents/ContentStudio Output/metadata`,
-      `${this.getUserHome()}/Documents/LaunchPad Output/metadata`
+      `${baseDir}/metadata`
     ];
 
     let metadataDir = '';
@@ -359,8 +366,28 @@ export class MetadataReports implements OnInit {
         }
       }
 
-      // Remove from UI list (use unique name, not shared path)
-      this.reports.update(reports => reports.filter(r => r.name !== report.name));
+      // Remove from UI list (use unique name, not shared path) and renumber the
+      // sibling rows for this job so their itemIndex stays aligned with the now
+      // spliced jobData.items array (otherwise clicking a later sibling throws
+      // "Item index out of bounds"). The txt file each sibling points at is
+      // unchanged by the splice, so txtFilePath stays as-is.
+      const deletedIndex = report.itemIndex;
+      this.reports.update(reports =>
+        reports
+          .filter(r => r.name !== report.name)
+          .map(r => {
+            if (
+              r.jobId === report.jobId &&
+              deletedIndex !== undefined &&
+              r.itemIndex !== undefined &&
+              r.itemIndex > deletedIndex
+            ) {
+              const newIndex = r.itemIndex - 1;
+              return { ...r, itemIndex: newIndex, name: `${r.jobId}-item-${newIndex}` };
+            }
+            return r;
+          })
+      );
 
       // Clear selection if deleted report was selected
       if (this.selectedReport()?.name === report.name) {
@@ -609,11 +636,6 @@ export class MetadataReports implements OnInit {
       _title: raw._title,
       _prompt_set: raw._prompt_set,
     };
-  }
-
-  private getUserHome(): string {
-    // This will be replaced by actual electron call in production
-    return '/Users/telltale';
   }
 
   toggleSelection(report: MetadataReport, event: Event) {

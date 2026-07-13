@@ -197,11 +197,22 @@ export class WhisperService extends EventEmitter {
       const srtContent = fs.readFileSync(whisperResult.srtPath, 'utf-8');
       const segments = this.parseSRT(srtContent);
 
+      // A whisper exit of 0 with an empty / segment-less SRT is NOT a success: it
+      // means silent, music-only, or failed-extraction audio. Returning empty
+      // content here would let the AI generation stage fabricate metadata from
+      // nothing, so surface a clear error for the caller to report per-item.
+      if (segments.length === 0) {
+        throw new Error(`Transcription produced no speech segments for ${videoPath}`);
+      }
+
       log.info(`[WhisperService] [${jobId}] Transcription complete: ${segments.length} segments`);
       this.emitProgress(jobId, 100, 'Transcription complete');
 
-      // Clean up audio file (keep SRT)
-      this.cleanupAudio(job);
+      // Segments are parsed in memory, so clean up the whole job temp dir (audio.wav
+      // AND the whisper-<jobId> dir with its .srt) instead of leaking it on success.
+      // srtPath is still returned for backward compatibility with existing callers'
+      // type contracts, but the file no longer exists — consumers should use segments.
+      this.cleanupJob(job);
 
       // Remove from active jobs
       this.activeJobs.delete(jobId);
@@ -240,10 +251,12 @@ export class WhisperService extends EventEmitter {
    */
   private parseSRT(srtContent: string): SRTSegment[] {
     const segments: SRTSegment[] = [];
-    const blocks = srtContent.trim().split(/\n\n+/);
+    // Tolerate CRLF line endings (Windows): split blocks on blank lines that may use
+    // \r\n, and strip any trailing \r from individual lines so timestamps parse.
+    const blocks = srtContent.trim().split(/\r?\n\r?\n+/);
 
     for (const block of blocks) {
-      const lines = block.trim().split('\n');
+      const lines = block.trim().split('\n').map((line) => line.replace(/\r$/, ''));
       if (lines.length < 3) continue;
 
       const index = parseInt(lines[0], 10);

@@ -175,15 +175,15 @@ Transcript:
    * Placeholders: {transcript}, {duration}, {episodeCount}
    */
   EPISODE_SPLIT_PROMPT: `You are analyzing a transcript from a continuous multi-hour livestream (total duration: {duration}).
-The stream was recorded in multiple sequential files that have been combined into one continuous transcript with global timestamps.
+The stream was recorded in multiple sequential files that have been combined into one continuous transcript. Time markers in the form [H:MM:SS] (for example [1:35:00]) are inserted throughout the text every few minutes — each marks how far into the stream that point occurs. Use these markers to measure elapsed time and pace the episode boundaries.
 
 Your task: Split this stream into approximately {episodeCount} episodes of roughly 1 hour each.
 
 RULES FOR EPISODE BOUNDARIES:
-1. Target duration: ~60 minutes per episode
+1. Target duration: ~60 minutes per episode — use the [H:MM:SS] markers to gauge this
 2. Maximum duration: 70 minutes (1 hour 10 minutes) - NEVER exceed this
-3. BALANCED DURATIONS: All episodes must be roughly the same length. The shortest episode should be at least 70% as long as the longest. Do NOT create episodes that are drastically shorter or longer than the others.
-4. Find natural topic/subject changes near the target breakpoints
+3. SPREAD the boundaries across the ENTIRE runtime, all the way to {duration} - do not bunch them early or stop partway. Consecutive boundaries should sit roughly 60 minutes apart on the [H:MM:SS] markers, so every episode comes out roughly the same length (the shortest at least 70% as long as the longest).
+4. Find natural topic/subject changes near each ~60-minute target
 5. Look for verbal break cues where the host manually inserted break points:
    - "tell me what you think in the comments"
    - "this is [name] and he's/she's talking about [topic]" (intro patterns)
@@ -194,7 +194,7 @@ RULES FOR EPISODE BOUNDARIES:
 7. The first episode MUST start at the very beginning of the transcript
 
 For each episode provide:
-1. start_phrase: An exact quote (5-10 words) from where this episode begins in the transcript
+1. start_phrase: An exact quote (5-10 words) of the SPOKEN words from where this episode begins in the transcript
 2. title: A brief topic label or subject name for this episode segment
 3. description: 1-2 sentences summarizing what this episode covers
 4. verbal_cue_nearby: true/false - whether a verbal break cue was detected near this boundary
@@ -212,7 +212,9 @@ Return ONLY valid JSON:
 }
 
 CRITICAL RULES:
-- start_phrase MUST be verbatim text copied from the transcript (5-10 consecutive words)
+- start_phrase MUST be verbatim spoken text copied from the transcript (5-10 consecutive words)
+- NEVER quote a [H:MM:SS] time marker as a start_phrase - those are inserted markers, not spoken words. Quote the actual words spoken at that point instead.
+- The transcript may be an evenly-sampled excerpt (some sentences omitted between lines) - quote start_phrase EXACTLY as it appears in the text provided, never bridge or paraphrase across gaps
 - The first episode's start_phrase should be from the very beginning of the transcript
 - DO NOT paraphrase or modify the text - copy EXACTLY as written
 - Episodes are sequential - each one ends where the next begins
@@ -232,7 +234,9 @@ export function formatPrompt(
 ): string {
   let result = prompt;
   for (const [key, value] of Object.entries(replacements)) {
-    result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), String(value));
+    // Function replacer: a plain string replacement would interpret $-patterns
+    // ($&, $', $`) inside transcript text and corrupt the prompt.
+    result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), () => String(value));
   }
   return result;
 }

@@ -22,12 +22,44 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const http = require('http');
+const crypto = require('crypto');
 const { execSync } = require('child_process');
 const { createGunzip } = require('zlib');
 
 const BIN_DIR = path.join(__dirname, '..', 'utilities', 'bin');
 const MODELS_DIR = path.join(__dirname, '..', 'utilities', 'models');
 const CACHE_DIR = path.join(__dirname, '..', '.build-cache', 'whisper-cpp');
+
+// Windows binaries must be staged into utilities/bin/win32/ so that the
+// electron-builder win config (from: utilities/bin/win32 -> to: utilities/bin)
+// lands them at resources/utilities/bin/ in the packaged app, which is exactly
+// where runtime-paths.ts looks for whisper-cli.exe + DLLs when packaged.
+const WIN_STAGE_DIR = path.join(BIN_DIR, 'win32');
+
+// Target platform/arch to stage for. This is the platform being PACKAGED, which
+// may differ from the build machine (e.g. `download:all:win` on a Mac).
+// download-all.sh passes these via env; when run directly we fall back to host.
+function hostPlatformName() {
+  if (process.platform === 'darwin') return 'mac';
+  if (process.platform === 'win32') return 'win';
+  return 'linux';
+}
+const TARGET_PLATFORM = (process.env.TARGET_PLATFORM || hostPlatformName()).toLowerCase();
+const TARGET_ARCHS = (process.env.TARGET_ARCHS || '')
+  .split(/[\s,]+/)
+  .map(s => s.trim())
+  .filter(Boolean);
+
+function requestedMacArchs() {
+  const archs = TARGET_ARCHS.filter(a => a === 'arm64' || a === 'x64');
+  return archs.length ? archs : ['arm64', 'x64'];
+}
+
+// Where a given binary is staged (Windows lives under win32/, others in bin/).
+function stagedBinaryPath(key) {
+  if (key === 'win32-x64') return path.join(WIN_STAGE_DIR, BINARY_NAMES[key]);
+  return path.join(BIN_DIR, BINARY_NAMES[key]);
+}
 
 // Models to bundle (tiny, base, small)
 const MODELS = [
@@ -59,13 +91,29 @@ const MACOS_DYLIBS = [
 ];
 
 /**
- * Download a file with redirect support
+ * Download a file with redirect support.
+ *
+ * Integrity: the body is streamed to a `.partial` sibling; the file is only
+ * renamed into `destPath` after (a) the byte count matches the content-length
+ * header (when present) and (b) the sha256 matches `expectedSha256` (when
+ * provided). Any failure deletes the partial file, so an interrupted or
+ * corrupt download can never masquerade as a valid cached artifact.
  */
-function downloadFile(url, destPath, headers = {}) {
+function downloadFile(url, destPath, headers = {}, expectedSha256 = null) {
   return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(destPath);
+    const tmpPath = `${destPath}.partial`;
+    const file = fs.createWriteStream(tmpPath);
+    const hash = expectedSha256 ? crypto.createHash('sha256') : null;
     let redirectCount = 0;
     const maxRedirects = 10;
+    let settled = false;
+
+    function fail(err) {
+      if (settled) return;
+      settled = true;
+      try { file.destroy(); } catch (_) {}
+      fs.unlink(tmpPath, () => reject(err));
+    }
 
     function doRequest(currentUrl) {
       const protocol = currentUrl.startsWith('https') ? https : http;
@@ -81,7 +129,7 @@ function downloadFile(url, destPath, headers = {}) {
         if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
           redirectCount++;
           if (redirectCount > maxRedirects) {
-            reject(new Error('Too many redirects'));
+            fail(new Error('Too many redirects'));
             return;
           }
 
@@ -91,12 +139,13 @@ function downloadFile(url, destPath, headers = {}) {
             redirectUrl = `${urlObj.protocol}//${urlObj.host}${redirectUrl}`;
           }
 
+          response.resume(); // drain the redirect body
           doRequest(redirectUrl);
           return;
         }
 
         if (response.statusCode !== 200) {
-          reject(new Error(`HTTP ${response.statusCode}: ${response.statusMessage} for ${currentUrl}`));
+          fail(new Error(`HTTP ${response.statusCode}: ${response.statusMessage} for ${currentUrl}`));
           return;
         }
 
@@ -106,6 +155,7 @@ function downloadFile(url, destPath, headers = {}) {
 
         response.on('data', (chunk) => {
           downloadedBytes += chunk.length;
+          if (hash) hash.update(chunk);
           if (totalBytes) {
             const percent = Math.floor((downloadedBytes / totalBytes) * 100);
             if (percent >= lastPercent + 10) {
@@ -115,22 +165,45 @@ function downloadFile(url, destPath, headers = {}) {
           }
         });
 
+        response.on('error', (err) => fail(err));
+
         response.pipe(file);
 
         file.on('finish', () => {
-          file.close();
-          console.log('\r   Progress: 100%');
-          resolve();
+          file.close(() => {
+            if (settled) return;
+            console.log('\r   Progress: 100%');
+
+            // Verify completeness against content-length (when the server sent one).
+            if (!Number.isNaN(totalBytes) && totalBytes > 0 && downloadedBytes !== totalBytes) {
+              fail(new Error(
+                `Incomplete download: expected ${totalBytes} bytes but received ${downloadedBytes} for ${currentUrl}`
+              ));
+              return;
+            }
+
+            // Verify sha256 when a checksum is available for this artifact.
+            if (hash) {
+              const digest = hash.digest('hex').toLowerCase();
+              if (digest !== String(expectedSha256).toLowerCase()) {
+                fail(new Error(
+                  `SHA256 mismatch for ${currentUrl}: expected ${expectedSha256}, got ${digest}`
+                ));
+                return;
+              }
+            }
+
+            // Only now, atomically move the verified file into place.
+            fs.rename(tmpPath, destPath, (err) => {
+              if (err) { fail(err); return; }
+              settled = true;
+              resolve();
+            });
+          });
         });
 
-        file.on('error', (err) => {
-          fs.unlink(destPath, () => {});
-          reject(err);
-        });
-      }).on('error', (err) => {
-        fs.unlink(destPath, () => {});
-        reject(err);
-      });
+        file.on('error', (err) => fail(err));
+      }).on('error', (err) => fail(err));
     }
 
     doRequest(url);
@@ -248,7 +321,7 @@ async function downloadHomebrewBottle(arch) {
     await downloadFile(bottleInfo.url, cacheBottlePath, {
       'Authorization': 'Bearer QQ==',
       'Accept': 'application/vnd.oci.image.layer.v1.tar+gzip'
-    });
+    }, bottleInfo.sha256);
   } else {
     console.log(`   Using cached bottle`);
   }
@@ -325,15 +398,19 @@ async function downloadHomebrewBottle(arch) {
 }
 
 /**
- * Setup whisper.cpp for all macOS architectures
+ * Setup whisper.cpp for the requested macOS architectures
  */
-async function setupMacOS() {
-  const arm64Path = path.join(BIN_DIR, BINARY_NAMES['darwin-arm64']);
-  const x64Path = path.join(BIN_DIR, BINARY_NAMES['darwin-x64']);
+async function setupMacOS(archs = ['arm64', 'x64']) {
+  const targets = archs.filter(a => a === 'arm64' || a === 'x64');
+  if (targets.length === 0) {
+    throw new Error(`No valid macOS architectures requested (got: ${archs.join(', ') || 'none'})`);
+  }
 
-  // Check if both already exist
-  if (isValidBinary(arm64Path) && isValidBinary(x64Path)) {
-    console.log(`✅ whisper.cpp: Both macOS binaries already exist`);
+  const needed = targets.filter(a => !isValidBinary(path.join(BIN_DIR, BINARY_NAMES[`darwin-${a}`])));
+
+  // Check if all requested archs already exist
+  if (needed.length === 0) {
+    console.log(`✅ whisper.cpp: requested macOS binaries already exist (${targets.join(', ')})`);
     return;
   }
 
@@ -356,17 +433,13 @@ async function setupMacOS() {
     execSync('brew update', { stdio: 'pipe' });
   }
 
-  // Download both architectures
-  if (!isValidBinary(arm64Path)) {
-    await downloadHomebrewBottle('arm64');
-  } else {
-    console.log(`✅ whisper.cpp arm64 already exists`);
-  }
-
-  if (!isValidBinary(x64Path)) {
-    await downloadHomebrewBottle('x64');
-  } else {
-    console.log(`✅ whisper.cpp x64 already exists`);
+  // Download each requested architecture
+  for (const arch of targets) {
+    if (isValidBinary(path.join(BIN_DIR, BINARY_NAMES[`darwin-${arch}`]))) {
+      console.log(`✅ whisper.cpp ${arch} already exists`);
+    } else {
+      await downloadHomebrewBottle(arch);
+    }
   }
 }
 
@@ -375,7 +448,12 @@ async function setupMacOS() {
  */
 async function downloadWindowsBinary() {
   const binaryName = BINARY_NAMES['win32-x64'];
-  const destPath = path.join(BIN_DIR, binaryName);
+  // Stage into utilities/bin/win32/ so packaging copies it to
+  // resources/utilities/bin/ (see WIN_STAGE_DIR comment + runtime-paths.ts).
+  if (!fs.existsSync(WIN_STAGE_DIR)) {
+    fs.mkdirSync(WIN_STAGE_DIR, { recursive: true });
+  }
+  const destPath = path.join(WIN_STAGE_DIR, binaryName);
   const cacheZipPath = path.join(CACHE_DIR, `whisper-cpp-win32-v${WHISPER_CPP_VERSION}.zip`);
   const cacheExtractDir = path.join(CACHE_DIR, `whisper-cpp-win32`);
 
@@ -419,17 +497,32 @@ async function downloadWindowsBinary() {
   fs.copyFileSync(foundBinary, destPath);
   console.log(`✅ Windows binary installed: ${binaryName}`);
 
-  // Copy required DLLs
+  // Copy required DLLs next to the binary (utilities/bin/win32/) so they end up
+  // alongside whisper-cli.exe in the packaged resources/utilities/bin/.
   const requiredDlls = ['ggml.dll', 'ggml-base.dll', 'ggml-cpu.dll', 'whisper.dll'];
   const binaryDir = path.dirname(foundBinary);
 
+  const missingDlls = [];
   for (const dll of requiredDlls) {
     const dllPath = path.join(binaryDir, dll);
     if (fs.existsSync(dllPath)) {
-      const destDllPath = path.join(BIN_DIR, dll);
+      const destDllPath = path.join(WIN_STAGE_DIR, dll);
       fs.copyFileSync(dllPath, destDllPath);
       console.log(`   ✓ ${dll}`);
+    } else {
+      missingDlls.push(dll);
     }
+  }
+
+  if (missingDlls.length === requiredDlls.length) {
+    // None of the expected runtime DLLs were found — whisper-cli.exe cannot run.
+    throw new Error(
+      `None of the required Windows DLLs (${requiredDlls.join(', ')}) were found in the ` +
+      `whisper.cpp archive; the staged whisper-cli.exe would fail to launch.`
+    );
+  }
+  if (missingDlls.length > 0) {
+    console.warn(`   ⚠ Missing DLLs (not found in archive): ${missingDlls.join(', ')}`);
   }
 
   return destPath;
@@ -476,12 +569,13 @@ async function downloadModels() {
 }
 
 /**
- * Check if all required binaries and models are cached
+ * Check if all required binaries and models are cached FOR THE REQUESTED TARGET.
+ * Note: this keys off TARGET_PLATFORM/TARGET_ARCHS (the platform being packaged),
+ * not the build machine, so `download:all:win` on a Mac does not falsely short-
+ * circuit because Mac binaries happen to exist.
  */
 function isEverythingCached() {
-  const platform = process.platform;
-
-  // Check models
+  // Models are always required
   const hasAllModels = MODELS.every(model => {
     const modelPath = path.join(MODELS_DIR, model.name);
     return fs.existsSync(modelPath) && fs.statSync(modelPath).size > 1024 * 1024;
@@ -489,16 +583,14 @@ function isEverythingCached() {
 
   if (!hasAllModels) return false;
 
-  // Check binaries based on platform
-  if (platform === 'darwin') {
-    const arm64Path = path.join(BIN_DIR, BINARY_NAMES['darwin-arm64']);
-    const x64Path = path.join(BIN_DIR, BINARY_NAMES['darwin-x64']);
-    return isValidBinary(arm64Path) && isValidBinary(x64Path);
-  } else if (platform === 'win32') {
-    return isValidBinary(path.join(BIN_DIR, BINARY_NAMES['win32-x64']));
-  } else {
-    return isValidBinary(path.join(BIN_DIR, BINARY_NAMES['linux-x64']));
+  // Check binaries based on the requested TARGET platform
+  if (TARGET_PLATFORM === 'mac') {
+    return requestedMacArchs().every(a => isValidBinary(path.join(BIN_DIR, BINARY_NAMES[`darwin-${a}`])));
+  } else if (TARGET_PLATFORM === 'win') {
+    return isValidBinary(stagedBinaryPath('win32-x64'));
   }
+  // Linux is unsupported: never report "cached" so main() runs and errors out.
+  return false;
 }
 
 /**
@@ -508,7 +600,16 @@ async function main() {
   try {
     const platform = process.platform;
 
-    // Quick check if everything is cached
+    // Linux is not supported: fail loudly BEFORE any "success" so that
+    // clean:package:linux stops instead of producing a binary-less AppImage.
+    if (TARGET_PLATFORM === 'linux') {
+      throw new Error(
+        'Linux target is not supported — no binaries staged. ' +
+        'Aborting so packaging fails loudly rather than shipping an empty AppImage.'
+      );
+    }
+
+    // Quick check if everything is cached (for the requested target)
     if (isEverythingCached()) {
       console.log('✅ whisper.cpp: All binaries and models already cached');
       return;
@@ -516,10 +617,10 @@ async function main() {
 
     console.log('╔═══════════════════════════════════════════════════════════╗');
     console.log('║         whisper.cpp Pre-Built Binary Setup               ║');
-    console.log('║   Downloading for ALL target platforms/architectures     ║');
     console.log('╚═══════════════════════════════════════════════════════════╝\n');
 
-    console.log(`Build platform: ${platform} (${process.arch})\n`);
+    console.log(`Build platform: ${platform} (${process.arch})`);
+    console.log(`Target platform: ${TARGET_PLATFORM}${TARGET_PLATFORM === 'mac' ? ` (${requestedMacArchs().join(', ')})` : ''}\n`);
 
     // Create directories
     for (const dir of [BIN_DIR, MODELS_DIR, CACHE_DIR]) {
@@ -528,16 +629,15 @@ async function main() {
       }
     }
 
-    // Download binaries based on platform
+    // Download binaries based on the requested TARGET platform
     console.log('📋 Step 1: Download whisper.cpp binaries\n');
 
-    if (platform === 'darwin') {
-      await setupMacOS();
-    } else if (platform === 'win32') {
+    if (TARGET_PLATFORM === 'mac') {
+      await setupMacOS(requestedMacArchs());
+    } else if (TARGET_PLATFORM === 'win') {
       await downloadWindowsBinary();
     } else {
-      // Linux - use Windows download approach with Linux binary
-      console.log('⚠️  Linux not yet supported in this version');
+      throw new Error(`Unsupported target platform: ${TARGET_PLATFORM}`);
     }
 
     // Download models
@@ -551,7 +651,7 @@ async function main() {
     // List what was installed
     console.log('📁 Binaries:');
     for (const [key, name] of Object.entries(BINARY_NAMES)) {
-      const binPath = path.join(BIN_DIR, name);
+      const binPath = stagedBinaryPath(key);
       if (fs.existsSync(binPath)) {
         const stats = fs.statSync(binPath);
         console.log(`   ✓ ${name} (${(stats.size / 1024 / 1024).toFixed(1)}MB)`);

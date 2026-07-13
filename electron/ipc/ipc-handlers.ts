@@ -3,6 +3,7 @@ import Store from 'electron-store';
 import * as log from 'electron-log';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import * as yaml from 'js-yaml';
 import { AIManagerService } from '../services/metadata/ai-manager.service';
 import { MasterAnalyzerService } from '../services/metadata/master-analyzer.service';
@@ -156,6 +157,18 @@ function ensureMasterPromptSetsDirectory(): void {
 // Track running jobs and their cancellation callbacks
 const runningJobs = new Map<string, { cancel: () => void }>();
 
+/**
+ * Send an IPC message to the renderer, re-fetching the current window on every call.
+ * Guards against "Object has been destroyed" crashes when the window is closed while a
+ * long-running job's progress callback is still firing.
+ */
+function sendToRenderer(channel: string, payload: any): void {
+  const win = BrowserWindow.getAllWindows()[0];
+  if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+    win.webContents.send(channel, payload);
+  }
+}
+
 // ==================== TWO-PHASE PIPELINE ====================
 // Phase 1: Transcription pool — up to 5 concurrent (WhisperService supports concurrent jobs)
 // Phase 2: AI generation queue — 1 at a time, sequential (protects AI API rate limits)
@@ -242,9 +255,11 @@ async function runTranscription(job: PipelineJob): Promise<void> {
       }
     });
 
-    // Process inputs (transcription happens here)
+    // Process inputs (transcription happens here). Collect per-input failures so
+    // skipped items surface in result.warnings instead of silently vanishing.
     const customNotesMap = new Map(Object.entries(job.metadataParams.inputNotes || {}));
-    const contentItems = await inputHandler.processMultipleInputs(normalizedInputs, customNotesMap);
+    const inputFailures: string[] = [];
+    const contentItems = await inputHandler.processMultipleInputs(normalizedInputs, customNotesMap, inputFailures);
 
     if (job.cancelled) {
       job.resolve({ success: false, error: 'Job cancelled by user' });
@@ -252,15 +267,15 @@ async function runTranscription(job: PipelineJob): Promise<void> {
     }
 
     if (contentItems.length === 0) {
-      const mainWindow = BrowserWindow.getAllWindows()[0];
-      if (mainWindow) {
-        mainWindow.webContents.send('generation-progress', {
-          phase: 'error',
-          message: 'No content could be processed',
-          jobId: job.jobId
-        });
-      }
-      job.resolve({ success: false, error: 'No content could be processed' });
+      const errorMessage = inputFailures.length > 0
+        ? `No content could be processed: ${inputFailures.join('; ')}`
+        : 'No content could be processed';
+      sendToRenderer('generation-progress', {
+        phase: 'error',
+        message: errorMessage,
+        jobId: job.jobId
+      });
+      job.resolve({ success: false, error: errorMessage });
       return;
     }
 
@@ -269,14 +284,11 @@ async function runTranscription(job: PipelineJob): Promise<void> {
 
     // Send queued status if AI generation is busy
     if (isAiGenerationRunning || aiGenerationQueue.length > 0) {
-      const mainWindow = BrowserWindow.getAllWindows()[0];
-      if (mainWindow) {
-        mainWindow.webContents.send('generation-progress', {
-          phase: 'queued',
-          message: 'Waiting for AI generation...',
-          jobId: job.jobId
-        });
-      }
+      sendToRenderer('generation-progress', {
+        phase: 'queued',
+        message: 'Waiting for AI generation...',
+        jobId: job.jobId
+      });
     }
 
     // Enqueue AI generation for this job
@@ -290,44 +302,46 @@ async function runTranscription(job: PipelineJob): Promise<void> {
       const paramsWithCallback = {
         ...job.metadataParams,
         preTranscribedContent: job.contentItems,
+        inputWarnings: inputFailures,
         progressCallback: job.progressCallback,
         cancelCallback: () => job.cancelled
       };
 
       const jobResult = await MetadataGeneratorService.generate(paramsWithCallback);
 
-      const mainWindow = BrowserWindow.getAllWindows()[0];
-      if (mainWindow) {
-        if (jobResult.success) {
-          mainWindow.webContents.send('generation-progress', {
-            phase: 'complete',
-            message: 'Metadata generation complete!'
-          });
-        } else {
-          mainWindow.webContents.send('generation-progress', {
-            phase: 'error',
-            message: jobResult.error || 'Unknown error'
-          });
-        }
+      if (jobResult.success) {
+        sendToRenderer('generation-progress', {
+          phase: 'complete',
+          message: 'Metadata generation complete!'
+        });
+      } else {
+        sendToRenderer('generation-progress', {
+          phase: 'error',
+          message: jobResult.error || 'Unknown error'
+        });
       }
 
       return jobResult;
     }).then(result => {
       job.resolve(result);
     }).catch(error => {
+      // Generation THREW (rather than returning success:false) — emit a terminal error
+      // event so progress-stream UIs don't hang on "generating".
+      sendToRenderer('generation-progress', {
+        phase: 'error',
+        message: error instanceof Error ? error.message : String(error),
+        jobId: job.jobId
+      });
       job.reject(error);
     });
 
   } catch (error) {
     log.error(`[Pipeline] Transcription failed for job ${job.jobId}:`, error);
-    const mainWindow = BrowserWindow.getAllWindows()[0];
-    if (mainWindow) {
-      mainWindow.webContents.send('generation-progress', {
-        phase: 'error',
-        message: error instanceof Error ? error.message : String(error),
-        jobId: job.jobId
-      });
-    }
+    sendToRenderer('generation-progress', {
+      phase: 'error',
+      message: error instanceof Error ? error.message : String(error),
+      jobId: job.jobId
+    });
     job.resolve({ success: false, error: error instanceof Error ? error.message : String(error) });
   }
 }
@@ -340,9 +354,8 @@ function enqueueAiGenerationJob(jobId: string, execute: () => Promise<any>): Pro
     aiGenerationQueue.push({ jobId, execute, resolve, reject });
 
     // Send queue position to frontend for non-pipeline jobs
-    const mainWindow = BrowserWindow.getAllWindows()[0];
-    if (mainWindow && queuePosition > 0) {
-      mainWindow.webContents.send('generation-progress', {
+    if (queuePosition > 0) {
+      sendToRenderer('generation-progress', {
         phase: 'queued',
         message: `Queued (position ${queuePosition})`,
         jobId
@@ -385,7 +398,18 @@ export function setupIpcHandlers(store: Store<any>) {
   ipcMain.handle('get-settings', async () => {
     try {
       // Get all store data using electron-store API
-      return (store as any).store;
+      const settings = { ...(store as any).store };
+
+      // Single source of truth for the default output directory. The frontend no
+      // longer hardcodes a fallback, so populate it here when unset. This is NOT
+      // persisted to disk — it only fills the returned object.
+      // NOTE: must stay in sync with MetadataGeneratorService.getDefaultOutputPath()
+      // in electron/services/metadata/metadata-generator.service.ts.
+      if (!settings.outputDirectory) {
+        settings.outputDirectory = path.join(os.homedir(), 'Documents', 'ContentStudio Output');
+      }
+
+      return settings;
     } catch (error) {
       log.error('Error getting settings:', error);
       throw error;
@@ -614,7 +638,6 @@ export function setupIpcHandlers(store: Store<any>) {
 
       // Determine AI provider from settings
       // Try new separate provider fields first, fall back to legacy aiProvider field
-      const summProvider = settings.summarizationProvider || settings.aiProvider;
       const metaProvider = settings.metadataProvider || settings.aiProvider;
 
       // Load API keys from api-keys.json
@@ -624,20 +647,22 @@ export function setupIpcHandlers(store: Store<any>) {
         apiKeys = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
       }
 
-      // Get API key based on metadata provider (metadata generation usually more important)
-      let apiKey = undefined;
-      if (metaProvider === 'openai' || summProvider === 'openai') {
-        apiKey = apiKeys.openaiApiKey;
-      } else if (metaProvider === 'claude' || summProvider === 'claude') {
-        apiKey = apiKeys.claudeApiKey;
-      }
-
       // Reconstruct full model with provider prefix (e.g., "claude:claude-sonnet-4-5")
       // Settings stores provider and model separately, but AIManagerService needs prefixed format
       // Prefer newer metadataProvider/metadataModel fields over legacy aiProvider/aiModel
       const aiModel = settings.metadataModel || settings.aiModel || settings.ollamaModel;
       const aiProvider = settings.metadataProvider || settings.aiProvider || 'ollama';
       const fullModel = aiModel ? `${aiProvider}:${aiModel}` : undefined;
+
+      // Get the API key strictly for the provider that fullModel is built from.
+      // (OR-ing meta/summ providers here would pick the wrong key when they differ —
+      // e.g. metadata=claude + summarization=openai must send Claude requests with the Claude key.)
+      let apiKey = undefined;
+      if (aiProvider === 'openai') {
+        apiKey = apiKeys.openaiApiKey;
+      } else if (aiProvider === 'claude') {
+        apiKey = apiKeys.claudeApiKey;
+      }
 
       log.info(`[IPC] Using AI model: ${fullModel} (provider: ${aiProvider}, model: ${aiModel})`);
 
@@ -663,27 +688,22 @@ export function setupIpcHandlers(store: Store<any>) {
       log.info('Prepared metadata params:', JSON.stringify(metadataParams, null, 2));
 
       // Send progress update
-      const mainWindow = BrowserWindow.getAllWindows()[0];
-      if (mainWindow) {
-        mainWindow.webContents.send('generation-progress', {
-          phase: 'starting',
-          message: 'Initializing metadata generation...'
-        });
-      }
+      sendToRenderer('generation-progress', {
+        phase: 'starting',
+        message: 'Initializing metadata generation...'
+      });
 
       // Submit to two-phase pipeline (transcription pool → AI generation queue)
       const result = await new Promise<any>((resolve, reject) => {
         const progressCallback = (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => {
           log.info(`[IPC] Progress event: phase=${phase}, message=${message}, percent=${percent}, filename=${filename}, itemIndex=${itemIndex}`);
-          if (mainWindow) {
-            mainWindow.webContents.send('generation-progress', {
-              phase,
-              message,
-              percent,
-              ...(filename && { filename }),
-              ...(itemIndex !== undefined && { itemIndex })
-            });
-          }
+          sendToRenderer('generation-progress', {
+            phase,
+            message,
+            percent,
+            ...(filename && { filename }),
+            ...(itemIndex !== undefined && { itemIndex })
+          });
         };
 
         const pipelineJob: PipelineJob = {
@@ -714,16 +734,22 @@ export function setupIpcHandlers(store: Store<any>) {
         enqueuePipelineJob(pipelineJob);
       });
 
-      // Cleanup
-      if (params.jobId) {
-        runningJobs.delete(params.jobId);
-      }
-
       return result;
 
     } catch (error) {
       log.error('Error generating metadata:', error);
+      // Terminal error event so progress-stream UIs don't hang on "generating"
+      // when generation rejects rather than returning success:false.
+      sendToRenderer('generation-progress', {
+        phase: 'error',
+        message: error instanceof Error ? error.message : String(error)
+      });
       throw error;
+    } finally {
+      // Always release the cancel closure — on rejection too, not just success.
+      if (params.jobId) {
+        runningJobs.delete(params.jobId);
+      }
     }
   });
 
@@ -1107,6 +1133,9 @@ export function setupIpcHandlers(store: Store<any>) {
 
       const files = fs.readdirSync(metadataDir);
       const jobs = [];
+      // Resolved timestamp per job (created_at/createdAt, or file mtime fallback).
+      // Used for both pruning and sorting so invalid dates never randomize order.
+      const jobDates = new Map<any, number>();
       const fourWeeksAgo = Date.now() - (4 * 7 * 24 * 60 * 60 * 1000);
 
       for (const file of files) {
@@ -1116,8 +1145,13 @@ export function setupIpcHandlers(store: Store<any>) {
             const content = fs.readFileSync(filePath, 'utf8');
             const job = JSON.parse(content);
 
-            // Auto-prune jobs older than 4 weeks
-            const createdAt = new Date(job.created_at || job.createdAt).getTime();
+            // Auto-prune jobs older than 4 weeks. Fall back to the file's mtime when
+            // created_at/createdAt is missing or invalid (otherwise NaN < cutoff is
+            // false, so stale jobs never prune and NaN sort order is random).
+            let createdAt = new Date(job.created_at || job.createdAt).getTime();
+            if (isNaN(createdAt)) {
+              createdAt = fs.statSync(filePath).mtimeMs;
+            }
             if (createdAt < fourWeeksAgo) {
               log.info(`[JobHistory] Pruning old job: ${file} (created ${new Date(createdAt).toISOString()})`);
               try {
@@ -1146,6 +1180,7 @@ export function setupIpcHandlers(store: Store<any>) {
             }
 
             job.metadataPath = filePath;
+            jobDates.set(job, createdAt);
             jobs.push(job);
           } catch (error) {
             log.warn(`Error reading job metadata file ${file}:`, error);
@@ -1153,12 +1188,8 @@ export function setupIpcHandlers(store: Store<any>) {
         }
       }
 
-      // Sort by creation date (newest first)
-      jobs.sort((a, b) => {
-        const dateA = new Date(a.created_at || a.createdAt).getTime();
-        const dateB = new Date(b.created_at || b.createdAt).getTime();
-        return dateB - dateA;
-      });
+      // Sort by creation date (newest first), using the resolved timestamps
+      jobs.sort((a, b) => (jobDates.get(b) ?? 0) - (jobDates.get(a) ?? 0));
 
       return jobs;
     } catch (error) {
@@ -1425,11 +1456,11 @@ export function setupIpcHandlers(store: Store<any>) {
 
   // Analyze master video
   ipcMain.handle('analyze-master', async (_event, params: { videoPath: string; masterPromptSet?: string; jobId?: string }) => {
+    let jobId: string | undefined;
     try {
       log.info('[IPC] Starting master analysis:', params.videoPath);
 
       const settings = (store as any).store;
-      const mainWindow = BrowserWindow.getAllWindows()[0];
 
       // Load API keys
       const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
@@ -1444,6 +1475,12 @@ export function setupIpcHandlers(store: Store<any>) {
       const aiModel = settings.metadataModel || settings.aiModel || settings.ollamaModel;
       const fullModel = aiModel ? `${aiProvider}:${aiModel}` : undefined;
 
+      // No model configured — surface a clear error rather than silently routing to a
+      // local Ollama fallback (which fails confusingly on a claude/openai setup).
+      if (!fullModel) {
+        return { success: false, error: 'No AI model selected. Please select an AI model in Settings.' };
+      }
+
       let apiKey = undefined;
       if (aiProvider === 'openai') {
         apiKey = apiKeys.openaiApiKey;
@@ -1453,7 +1490,7 @@ export function setupIpcHandlers(store: Store<any>) {
 
       // Create cancellation tracking
       let cancelled = false;
-      const jobId = params.jobId || `master-${Date.now()}`;
+      jobId = params.jobId || `master-${Date.now()}`;
 
       const cancelCallback = () => {
         cancelled = true;
@@ -1464,14 +1501,12 @@ export function setupIpcHandlers(store: Store<any>) {
 
       // Progress callback
       const progressCallback = (phase: string, message: string, percent?: number) => {
-        if (mainWindow) {
-          mainWindow.webContents.send('master-analysis-progress', {
-            jobId,
-            phase,
-            message,
-            percent
-          });
-        }
+        sendToRenderer('master-analysis-progress', {
+          jobId,
+          phase,
+          message,
+          percent
+        });
       };
 
       // Load master prompt set
@@ -1493,10 +1528,12 @@ export function setupIpcHandlers(store: Store<any>) {
       const result = await enqueueAiGenerationJob(jobId, async () => {
         const analysisResult = await MasterAnalyzerService.analyze({
           videoPath: params.videoPath,
-          outputDirectory: settings.outputDirectory,
+          // Same default as get-settings / MetadataGeneratorService.getDefaultOutputPath()
+          // — an unset directory must not reach saveReport as undefined.
+          outputDirectory: settings.outputDirectory || path.join(os.homedir(), 'Documents', 'ContentStudio Output'),
           masterPrompt,
           aiProvider,
-          aiModel: fullModel || 'ollama:phi-3.5:3.8b',
+          aiModel: fullModel,
           aiApiKey: apiKey,
           aiHost: settings.ollamaHost || 'http://localhost:11434',
           progressCallback,
@@ -1506,14 +1543,16 @@ export function setupIpcHandlers(store: Store<any>) {
         return analysisResult;
       });
 
-      // Cleanup
-      runningJobs.delete(jobId);
-
       return result;
 
     } catch (error) {
       log.error('Error in master analysis:', error);
       return { success: false, error: String(error) };
+    } finally {
+      // Always release the cancel closure — on rejection too, not just success.
+      if (jobId) {
+        runningJobs.delete(jobId);
+      }
     }
   });
 
@@ -1593,11 +1632,11 @@ export function setupIpcHandlers(store: Store<any>) {
 
   // Analyze episodes
   ipcMain.handle('analyze-episodes', async (_event, params: { audioPaths: string[]; jobId?: string }) => {
+    let jobId: string | undefined;
     try {
       log.info('[IPC] Starting episode analysis:', params.audioPaths.length, 'files');
 
       const settings = (store as any).store;
-      const mainWindow = BrowserWindow.getAllWindows()[0];
 
       // Load API keys
       const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
@@ -1611,6 +1650,12 @@ export function setupIpcHandlers(store: Store<any>) {
       const aiModel = settings.metadataModel || settings.aiModel || settings.ollamaModel;
       const fullModel = aiModel ? `${aiProvider}:${aiModel}` : undefined;
 
+      // No model configured — surface a clear error rather than silently routing to a
+      // local Ollama fallback (which fails confusingly on a claude/openai setup).
+      if (!fullModel) {
+        return { success: false, error: 'No AI model selected. Please select an AI model in Settings.' };
+      }
+
       let apiKey = undefined;
       if (aiProvider === 'openai') {
         apiKey = apiKeys.openaiApiKey;
@@ -1620,7 +1665,7 @@ export function setupIpcHandlers(store: Store<any>) {
 
       // Create cancellation tracking
       let cancelled = false;
-      const jobId = params.jobId || `episode-${Date.now()}`;
+      jobId = params.jobId || `episode-${Date.now()}`;
 
       const cancelCallback = () => {
         cancelled = true;
@@ -1631,23 +1676,23 @@ export function setupIpcHandlers(store: Store<any>) {
 
       // Progress callback
       const progressCallback = (phase: string, message: string, percent?: number) => {
-        if (mainWindow) {
-          mainWindow.webContents.send('episode-splitter-progress', {
-            jobId,
-            phase,
-            message,
-            percent
-          });
-        }
+        sendToRenderer('episode-splitter-progress', {
+          jobId,
+          phase,
+          message,
+          percent
+        });
       };
 
       // Enqueue the analysis job
       const result = await enqueueAiGenerationJob(jobId, async () => {
         const analysisResult = await EpisodeSplitterService.analyze({
           audioPaths: params.audioPaths,
-          outputDirectory: settings.outputDirectory,
+          // Same default as get-settings / MetadataGeneratorService.getDefaultOutputPath()
+          // — an unset directory must not reach saveReport as undefined.
+          outputDirectory: settings.outputDirectory || path.join(os.homedir(), 'Documents', 'ContentStudio Output'),
           aiProvider,
-          aiModel: fullModel || 'ollama:phi-3.5:3.8b',
+          aiModel: fullModel,
           aiApiKey: apiKey,
           aiHost: settings.ollamaHost || 'http://localhost:11434',
           jobId,
@@ -1658,14 +1703,16 @@ export function setupIpcHandlers(store: Store<any>) {
         return analysisResult;
       });
 
-      // Cleanup
-      runningJobs.delete(jobId);
-
       return result;
 
     } catch (error) {
       log.error('Error in episode analysis:', error);
       return { success: false, error: String(error) };
+    } finally {
+      // Always release the cancel closure — on rejection too, not just success.
+      if (jobId) {
+        runningJobs.delete(jobId);
+      }
     }
   });
 

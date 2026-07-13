@@ -68,9 +68,13 @@ echo ""
 # No manual download needed
 
 # Download whisper.cpp
+# Pass the TARGET platform/arch through to node so it stages for the platform
+# being packaged (not the build machine). If node exits non-zero (e.g. an
+# unsupported Linux target or a corrupt download), `set -e` aborts here BEFORE
+# the "success" banner below, so failures are never masked.
 echo -e "${GREEN}[1/1] Downloading whisper.cpp...${NC}"
 echo "----------------------------------------"
-node scripts/download-whisper-cpp.js
+TARGET_PLATFORM="$PLATFORM_BASE" TARGET_ARCHS="${ARCHITECTURES[*]}" node scripts/download-whisper-cpp.js
 echo ""
 
 echo ""

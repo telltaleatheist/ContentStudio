@@ -263,6 +263,12 @@ const COMMON_WORDS = new Set([
  * 3. Fuzzy matching with Levenshtein
  * 4. Distinctive word matching
  * 5. Cross-segment matching
+ *
+ * NOTE: `threshold` is currently unused — fuzzy matching uses a fixed internal
+ * threshold (see FUZZY_THRESHOLD below). It is retained only for call-site
+ * compatibility (callers pass it positionally before `minTimestamp`).
+ * `minTimestamp` is a lower bound in seconds: segments before it are ignored,
+ * which callers use to enforce chronological order across successive lookups.
  */
 export function findPhraseTimestamp(
   phrase: string,
@@ -424,6 +430,7 @@ export class ChapterMapper {
    */
   mapChapters(aiChapters: AIChapter[]): Chapter[] {
     const mappedChapters: Chapter[] = [];
+    let lastTimestamp = 0; // Enforce chronological order across successive lookups
 
     for (let i = 0; i < aiChapters.length; i++) {
       const chapter = aiChapters[i];
@@ -434,43 +441,35 @@ export class ChapterMapper {
         continue;
       }
 
-      // Find timestamp for start phrase
-      const startSeconds = findPhraseTimestamp(startPhrase, this.srtSegments);
+      // Find timestamp for start phrase at or after the previous chapter's start.
+      // Without the lower bound a phrase that also occurs earlier maps to the
+      // FIRST occurrence, shuffling chapter order.
+      const startSeconds = findPhraseTimestamp(startPhrase, this.srtSegments, 0.5, lastTimestamp);
 
       if (startSeconds === null) {
-        console.warn(`[ChapterMapper] Dropping chapter "${title}" — could not map start_phrase to a timestamp: "${startPhrase}"`);
+        console.warn(`[ChapterMapper] Dropping chapter "${title}" — could not map start_phrase at/after ${TimeUtils.secondsToYoutubeTime(lastTimestamp)}: "${startPhrase}"`);
+        continue;
       }
 
-      if (startSeconds !== null) {
-        // Calculate end time (next chapter's start or video end)
-        let endSeconds = this.videoDuration;
+      // Advance the lower bound so later chapters map strictly after this one
+      lastTimestamp = startSeconds + 1;
 
-        if (i < aiChapters.length - 1) {
-          const nextPhrase = aiChapters[i + 1].start_phrase || '';
-          const nextStart = findPhraseTimestamp(nextPhrase, this.srtSegments);
-          if (nextStart !== null) {
-            endSeconds = nextStart;
-          }
-        }
-
-        mappedChapters.push({
-          timestamp: TimeUtils.secondsToYoutubeTime(startSeconds),
-          title,
-          sequence: i,
-          endTimestamp: TimeUtils.secondsToYoutubeTime(endSeconds),
-        });
-      }
+      mappedChapters.push({
+        timestamp: TimeUtils.secondsToYoutubeTime(startSeconds),
+        title,
+        sequence: mappedChapters.length,
+        endTimestamp: '', // Computed below, once the ordered list is final
+      });
     }
 
-    // Sort by timestamp
-    mappedChapters.sort(
-      (a, b) => TimeUtils.youtubeTimeToSeconds(a.timestamp) - TimeUtils.youtubeTimeToSeconds(b.timestamp)
-    );
-
-    // Update sequence numbers after sorting
-    mappedChapters.forEach((chapter, i) => {
-      chapter.sequence = i;
-    });
+    // The list is inherently ordered (each match is >= the previous + 1), so no
+    // sort is needed. Compute each chapter's end from its successor's start.
+    for (let i = 0; i < mappedChapters.length; i++) {
+      const endSeconds = i < mappedChapters.length - 1
+        ? TimeUtils.youtubeTimeToSeconds(mappedChapters[i + 1].timestamp)
+        : this.videoDuration;
+      mappedChapters[i].endTimestamp = TimeUtils.secondsToYoutubeTime(endSeconds);
+    }
 
     // Validate YouTube chapter requirements
     return this.validateYoutubeChapters(mappedChapters);
@@ -484,29 +483,10 @@ export class ChapterMapper {
       return [];
     }
 
-    // Ensure first chapter starts at 0:00
-    const firstTimestamp = TimeUtils.youtubeTimeToSeconds(chapters[0].timestamp);
-    if (firstTimestamp > 0) {
-      // Insert a chapter at 0:00 using the first chapter's title
-      // (better than generic "Introduction")
-      chapters.unshift({
-        timestamp: '0:00',
-        title: chapters[0].title,
-        sequence: 0,
-        endTimestamp: chapters[0].timestamp,
-      });
-
-      // The original first chapter now becomes the second
-      // Update its title to reflect it's a continuation
-      chapters[1].sequence = 1;
-
-      // Update all sequence numbers
-      chapters.forEach((chapter, i) => {
-        chapter.sequence = i;
-      });
-    }
-
-    // Filter out chapters that are too short (< 10 seconds)
+    // Filter out chapters that are too short (< 10 seconds) FIRST, before we
+    // anchor the 0:00 chapter below. Running it afterwards could delete the
+    // freshly-inserted 0:00 chapter and recreate the "first chapter not at
+    // 0:00" violation this method is supposed to fix.
     const validChapters: Chapter[] = [];
 
     for (let i = 0; i < chapters.length; i++) {
@@ -524,6 +504,32 @@ export class ChapterMapper {
       }
 
       validChapters.push(chapters[i]);
+    }
+
+    if (validChapters.length === 0) {
+      return [];
+    }
+
+    // Ensure first chapter starts at 0:00 (YouTube requirement)
+    const firstTimestamp = TimeUtils.youtubeTimeToSeconds(validChapters[0].timestamp);
+    if (firstTimestamp > 0) {
+      if (firstTimestamp <= 15) {
+        // First chapter is essentially at the start — snap it to 0:00 rather
+        // than inserting a near-zero-length synthetic chapter.
+        validChapters[0].timestamp = '0:00';
+      } else {
+        // Meaningful pre-roll before the first mapped phrase — insert a 0:00
+        // chapter to cover the intro. Reuse the first chapter's title (more
+        // descriptive than a generic "Introduction") with a " (start)" suffix
+        // so the two adjacent chapters aren't identically named. The gap here
+        // is > 15s, so the too-short filter (already run above) won't remove it.
+        validChapters.unshift({
+          timestamp: '0:00',
+          title: `${validChapters[0].title} (start)`,
+          sequence: 0,
+          endTimestamp: validChapters[0].timestamp,
+        });
+      }
     }
 
     // Update sequence numbers

@@ -82,6 +82,11 @@ export class FfmpegBridge extends EventEmitter {
 
       this.activeProcesses.set(processId, processInfo);
 
+      // ffmpeg writes progress to stderr; nothing reads stdout. Drain it anyway so
+      // a caller that directs output to stdout (pipe:1 / "-") can't fill the 64KB
+      // OS pipe buffer and hang the process waiting for a reader.
+      proc.stdout?.resume();
+
       let stderrBuffer = '';
 
       proc.stderr?.on('data', (data: Buffer) => {

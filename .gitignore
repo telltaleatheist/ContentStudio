@@ -37,8 +37,10 @@ logs/
 *.pyo
 __pycache__/
 ._*
+# API keys / secrets — never commit
 claude api key.txt
 chatgpt api key.txt
+*api key*.txt
 *.bin
 .build-cache/*
 utilities/bin/*

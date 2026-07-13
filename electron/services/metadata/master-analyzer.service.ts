@@ -12,9 +12,9 @@ import { app } from 'electron';
 import * as crypto from 'crypto';
 import { WhisperService, SRTSegment } from './whisper.service';
 import { AIManagerService, AIConfig } from './ai-manager.service';
-import { buildPlainTranscript, findPhraseTimestamp, TimeUtils } from './chapter-generator.service';
+import { buildPlainTranscript, findPhraseTimestamp, sampleSegmentsToBudget, TimeUtils } from './chapter-generator.service';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
-import { queueTranscription, queueAITask } from '../queue-manager.service';
+import { queueTranscription } from '../queue-manager.service';
 
 /**
  * A detected section in the master video
@@ -160,9 +160,9 @@ export class MasterAnalyzerService {
       // Phase 2: AI section detection (50-90%)
       sendProgress('analyzing', 'Building transcript...', 52);
 
-      // Build plain transcript (no timestamps)
-      // AI returns phrases that we match programmatically to timestamps
-      const transcript = buildPlainTranscript(srtSegments);
+      // The plain transcript is built inside detectSections, where it is sampled
+      // to a provider-aware char budget. AI returns phrases that we match
+      // programmatically back to timestamps against the full segment list.
 
       sendProgress('analyzing', 'Analyzing transcript for sections...', 55);
 
@@ -179,13 +179,18 @@ export class MasterAnalyzerService {
       const initialized = await aiService.initialize();
 
       if (!initialized) {
-        return { success: false, error: 'Failed to initialize AI service' };
+        return {
+          success: false,
+          error: aiService.lastInitError
+            ? `Failed to initialize AI service: ${aiService.lastInitError}`
+            : 'Failed to initialize AI service',
+        };
       }
 
       // Detect sections using AI
       const sections = await this.detectSections(
         aiService,
-        transcript,
+        aiProvider,
         srtSegments,
         totalDurationSeconds,
         masterPrompt,
@@ -242,9 +247,15 @@ export class MasterAnalyzerService {
   /**
    * Detect sections using AI (with multi-pass for long sections)
    */
+  // Pass-1 transcript char budgets. ai-manager silently truncates Ollama prompts
+  // at ~105k chars, so the full transcript of a long stream would lose its tail
+  // (sections silently stop part-way through). Sample whole segments down to fit.
+  private static readonly PASS1_OLLAMA_BUDGET = 90000;   // fits Ollama's ~105k truncation with prompt overhead
+  private static readonly PASS1_CLOUD_BUDGET = 300000;   // cloud providers accept far larger prompts
+
   private static async detectSections(
     aiService: AIManagerService,
-    transcript: string,
+    provider: string,
     srtSegments: SRTSegment[],
     totalDurationSeconds: number,
     masterPrompt?: string,
@@ -257,6 +268,16 @@ export class MasterAnalyzerService {
       promptTemplate = SYSTEM_PROMPTS.MASTER_SECTION_DETECTION_PROMPT;
     }
 
+    // Build the plain transcript from segments sampled to a provider-aware budget.
+    // Sampling keeps whole segments verbatim, so phrases the AI quotes still exist
+    // in the FULL srtSegments list and map back to accurate timestamps below.
+    const budget = provider === 'ollama' ? this.PASS1_OLLAMA_BUDGET : this.PASS1_CLOUD_BUDGET;
+    const sampledSegments = sampleSegmentsToBudget(srtSegments, budget);
+    const transcript = buildPlainTranscript(sampledSegments);
+    if (sampledSegments.length < srtSegments.length) {
+      log.info(`[MasterAnalyzer] Sampled pass-1 transcript to fit ${provider} budget (${budget} chars): ${sampledSegments.length}/${srtSegments.length} segments, ${transcript.length} chars`);
+    }
+
     // Format total duration as human-readable string
     const hours = Math.floor(totalDurationSeconds / 3600);
     const minutes = Math.floor((totalDurationSeconds % 3600) / 60);
@@ -265,7 +286,7 @@ export class MasterAnalyzerService {
       : `${minutes} minutes`;
 
     // Replace placeholders with actual values
-    let prompt = promptTemplate.replace('{transcript}', transcript);
+    let prompt = promptTemplate.replace('{transcript}', () => transcript); // function replacer: transcript may contain $-patterns
     prompt = prompt.replace('{duration}', durationStr);
 
     if (progressCallback) progressCallback(60);
@@ -276,14 +297,13 @@ export class MasterAnalyzerService {
     const response = await this.makeAIRequest(aiService, prompt);
 
     // Log raw AI response for debugging
-    log.info('[MasterAnalyzer] Raw AI response:', response?.substring(0, 1000));
+    log.info('[MasterAnalyzer] Raw AI response:', response.substring(0, 1000));
 
     if (progressCallback) progressCallback(70);
 
-    if (!response) {
-      log.error('[MasterAnalyzer] No response from AI');
-      return [];
-    }
+    // makeAIRequest throws if the AI call itself fails, so a returned response
+    // here is genuine. An empty/garbage response parses to [] below, which
+    // surfaces as the distinct "No sections detected" result in analyze().
 
     // Parse AI response
     const aiSections = this.parseAIResponse(response);
@@ -448,10 +468,11 @@ Rules:
 Transcript:
 ${sectionTranscript}`;
 
-    const response = await this.makeAIRequest(aiService, prompt);
-
-    if (!response) {
-      log.warn('[MasterAnalyzer] No response for breakpoints, using time-based fallback');
+    let response: string;
+    try {
+      response = await this.makeAIRequest(aiService, prompt);
+    } catch (error) {
+      log.warn('[MasterAnalyzer] AI request failed for breakpoints, using time-based fallback:', error);
       return this.createTimeBasedSplits(originalSection, numSplits);
     }
 
@@ -470,10 +491,13 @@ ${sectionTranscript}`;
       return this.createTimeBasedSplits(originalSection, numSplits);
     }
 
-    // Map the sub-sections to timestamps
+    // Map the sub-sections to timestamps, constrained to this section's range.
+    // A sub-phrase that also occurs before/after the long section must not map
+    // outside it, so we bound the search to [startSeconds, endSeconds).
     const subSections: MasterSection[] = [];
     let matchedCount = 0;
     let failedPhrases: string[] = [];
+    let lastTimestamp = originalSection.startSeconds; // Chronological lower bound
 
     for (let i = 0; i < aiSections.length; i++) {
       const section = aiSections[i];
@@ -481,13 +505,21 @@ ${sectionTranscript}`;
       const title = section.title?.trim() || `Section ${i + 1}`;
       const description = section.description?.trim() || '';
 
-      // Find timestamp for start phrase
-      let startSeconds = findPhraseTimestamp(startPhrase, srtSegments);
+      // Find timestamp for start phrase, at or after the previous match and
+      // never before the section start
+      let startSeconds = findPhraseTimestamp(startPhrase, srtSegments, 0.5, lastTimestamp);
 
       // First sub-section should start at original section's start
       if (i === 0 && (startSeconds === null || startSeconds < originalSection.startSeconds)) {
         log.info(`[MasterAnalyzer] Part 1 using section start: ${originalSection.startSeconds}s`);
         startSeconds = originalSection.startSeconds;
+      }
+
+      // Reject a match that lands past the section end (a phrase that also
+      // occurs later in the video) — treat as unmatched so the fallback handles it
+      if (startSeconds !== null && startSeconds >= originalSection.endSeconds) {
+        log.warn(`[MasterAnalyzer] Sub-section ${i + 1} phrase mapped past section end (${TimeUtils.secondsToYoutubeTime(startSeconds)} >= ${originalSection.endTimestamp}), treating as unmatched`);
+        startSeconds = null;
       }
 
       if (startSeconds === null) {
@@ -498,6 +530,9 @@ ${sectionTranscript}`;
 
       log.info(`[MasterAnalyzer] Matched Part ${i + 1}: "${startPhrase.substring(0, 40)}..." → ${TimeUtils.secondsToYoutubeTime(startSeconds)}`);
       matchedCount++;
+
+      // Advance the lower bound so later sub-sections map strictly after this one
+      lastTimestamp = startSeconds + 1;
 
       // End time will be recalculated after sorting
       subSections.push({
@@ -574,34 +609,35 @@ ${sectionTranscript}`;
   }
 
   /**
-   * Make AI request using the service's model configuration
-   * Queued through AI pool (max 1 concurrent across all AI tasks)
+   * Make AI request using the service's model configuration.
+   * Queueing now lives inside aiManager.makeRequest, so we call it directly —
+   * wrapping it in queueAITask here would nest queue tasks and deadlock the
+   * 1-slot AI pool. Throws on failure so callers can distinguish a genuine AI
+   * error from a parsed-but-empty result.
    */
   private static async makeAIRequest(
     aiService: AIManagerService,
     prompt: string
-  ): Promise<string | null> {
+  ): Promise<string> {
+    // Access the private method via any casting (not ideal but works)
+    const service = aiService as any;
+
+    // Get the model from the service
+    const model = service.metadataModel;
+
+    log.info(`[MasterAnalyzer] Making AI request with model: ${model}`);
+
     try {
-      // Access the private method via any casting (not ideal but works)
-      const service = aiService as any;
-
-      // Get the model from the service
-      const model = service.metadataModel;
-
-      log.info(`[MasterAnalyzer] Queuing AI request with model: ${model}`);
-
-      // Queue AI request through AI pool (max 1 concurrent)
-      const aiTaskId = `ai-${crypto.randomBytes(4).toString('hex')}`;
-      const response = await queueAITask<string>(
-        aiTaskId,
-        `AI Analysis: ${model}`,
-        () => service.makeRequest(prompt, model, 600) // 10 minute timeout
-      );
-
+      const response = await service.makeRequest(prompt, model, 600); // 10 minute timeout
+      if (response === null || response === undefined) {
+        throw new Error(`AI analysis returned no response (model: ${model})`);
+      }
       return response;
     } catch (error) {
       log.error('[MasterAnalyzer] AI request failed:', error);
-      return null;
+      throw error instanceof Error
+        ? error
+        : new Error(`AI analysis failed (model: ${model}): ${String(error)}`);
     }
   }
 

@@ -14,6 +14,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import { METADATA_FIELDS } from './metadata-fields';
+import { queueAITask } from '../queue-manager.service';
 
 export interface AIConfig {
   provider: 'ollama' | 'openai' | 'claude';
@@ -54,7 +55,9 @@ export class AIManagerService {
   // 131072 (default) creates a ~40GB KV cache for 70B models, causing OOM on most systems.
   // 32768 reduces it to ~10GB while still supporting long prompts (master analysis, episode splitting).
   private static readonly OLLAMA_NUM_CTX = 32768;
-  private static readonly OLLAMA_NUM_PREDICT = 2000;
+  // A full metadata JSON can exceed 2000 tokens; too small a budget truncates the
+  // JSON mid-object and fails parsing. 4096 leaves ample room in the 32k context.
+  private static readonly OLLAMA_NUM_PREDICT = 4096;
   // Max prompt chars before truncation: (context - response - margin) * ~3.5 chars/token
   private static readonly OLLAMA_MAX_PROMPT_CHARS = Math.floor(
     (AIManagerService.OLLAMA_NUM_CTX - AIManagerService.OLLAMA_NUM_PREDICT - 512) * 3.5
@@ -70,6 +73,10 @@ export class AIManagerService {
   private metadataModel: string = '';
   private promptsDir: string;
   private promptSetsDir: string;
+  // Why the last initialize() returned false — callers append this to their error
+  // so users see the actual cause (bad API key, Ollama down, malformed prompt set)
+  // instead of a bare "Failed to initialize AI manager".
+  lastInitError?: string;
 
   /**
    * Get available models for a provider
@@ -173,15 +180,15 @@ export class AIManagerService {
     } else {
       // Provider defaults
       if (config.provider === 'ollama') {
-        // Use different models for speed vs quality
-        this.summaryModel = 'phi-3.5:3.8b'; // Fast model for summaries (2.2GB)
-        this.metadataModel = 'qwen2.5:7b'; // Quality model for metadata (4.7GB)
+        // Use different models for speed vs quality (provider-prefixed for makeRequest routing)
+        this.summaryModel = 'ollama:phi-3.5:3.8b'; // Fast model for summaries (2.2GB)
+        this.metadataModel = 'ollama:qwen2.5:7b'; // Quality model for metadata (4.7GB)
       } else if (config.provider === 'openai') {
-        this.summaryModel = 'gpt-4o-mini'; // Fast/cheap for summaries
-        this.metadataModel = 'gpt-4o'; // Quality for metadata
+        this.summaryModel = 'openai:gpt-4o-mini'; // Fast/cheap for summaries
+        this.metadataModel = 'openai:gpt-4o'; // Quality for metadata
       } else if (config.provider === 'claude') {
-        this.summaryModel = 'claude-3-haiku-20240307'; // Fast
-        this.metadataModel = 'claude-3-5-sonnet-20241022'; // Quality
+        this.summaryModel = 'claude:claude-3-haiku-20240307'; // Fast
+        this.metadataModel = 'claude:claude-3-5-sonnet-20241022'; // Quality
       }
     }
 
@@ -248,6 +255,7 @@ export class AIManagerService {
    * Initialize the AI provider(s) - supports multi-provider setups
    */
   async initialize(): Promise<boolean> {
+    this.lastInitError = undefined;
     try {
       // Load prompts
       this.loadPrompts();
@@ -294,12 +302,14 @@ export class AIManagerService {
 
       if (!anySuccess) {
         log.error('[AIManager] No AI providers initialized successfully');
+        this.lastInitError = this.lastInitError || 'No AI providers initialized successfully';
       }
 
       return anySuccess;
     } catch (error) {
       log.error('[AIManager] Initialization failed:', error);
       console.error('[AIManager] Initialization failed:', error);
+      this.lastInitError = error instanceof Error ? error.message : String(error);
       return false;
     }
   }
@@ -325,6 +335,7 @@ export class AIManagerService {
       return true;
     } catch (error: any) {
       log.error('[AIManager] Cannot connect to Ollama:', error?.message || error);
+      this.lastInitError = `Cannot connect to Ollama at ${this.config.host || 'http://localhost:11434'}: ${error?.message || error}`;
       return false;
     }
   }
@@ -336,6 +347,7 @@ export class AIManagerService {
     try {
       if (!this.config.apiKey) {
         log.error('[AIManager] OpenAI API key required');
+        this.lastInitError = 'OpenAI API key required';
         return false;
       }
 
@@ -343,10 +355,17 @@ export class AIManagerService {
         apiKey: this.config.apiKey,
       });
 
+      // Pick whichever configured model is actually an OpenAI model — either
+      // summaryModel or metadataModel may belong to a different provider. Strip
+      // the "openai:" prefix before sending to the API.
+      const isOpenAIModel = (m: string) => m.startsWith('openai:') || m.startsWith('gpt-');
+      const openaiModel = isOpenAIModel(this.summaryModel) ? this.summaryModel : this.metadataModel;
+      const testModel = openaiModel.replace('openai:', '');
+
       // Test with a simple request
-      log.info(`[AIManager] Testing OpenAI connection with model: ${this.summaryModel}`);
+      log.info(`[AIManager] Testing OpenAI connection with model: ${testModel}`);
       await this.openaiClient.chat.completions.create({
-        model: this.summaryModel,
+        model: testModel,
         messages: [{ role: 'user', content: 'Test' }],
         max_tokens: 5,
       });
@@ -355,6 +374,7 @@ export class AIManagerService {
       return true;
     } catch (error: any) {
       log.error('[AIManager] Cannot connect to OpenAI:', error?.message || error);
+      this.lastInitError = `Cannot connect to OpenAI: ${error?.message || error}`;
       return false;
     }
   }
@@ -363,9 +383,17 @@ export class AIManagerService {
    * Initialize Claude (Anthropic) provider
    */
   private async initializeClaude(): Promise<boolean> {
+    // Pick whichever configured model is actually a Claude model — either
+    // summaryModel or metadataModel may belong to a different provider. Strip
+    // the "claude:" prefix if present.
+    const isClaudeModel = (m: string) => m.startsWith('claude:') || m.startsWith('claude-');
+    const claudeModel = isClaudeModel(this.metadataModel) ? this.metadataModel : this.summaryModel;
+    const testModel = claudeModel.replace('claude:', '');
+
     try {
       if (!this.config.apiKey) {
         log.error('[AIManager] Anthropic API key required');
+        this.lastInitError = 'Anthropic API key required';
         return false;
       }
 
@@ -374,9 +402,6 @@ export class AIManagerService {
       });
 
       // Test with a simple request
-      // Use metadataModel since that's the Claude model (summaryModel might be from a different provider)
-      // Strip the "claude:" prefix if present
-      const testModel = this.metadataModel.replace('claude:', '');
       log.info(`[AIManager] Testing Claude connection with model: ${testModel}`);
       await this.anthropicClient.messages.create({
         model: testModel,
@@ -389,8 +414,11 @@ export class AIManagerService {
     } catch (error: any) {
       log.error('[AIManager] Cannot connect to Claude:', error?.message || error);
       if (error?.status === 404) {
-        log.error(`[AIManager] Model '${this.metadataModel.replace('claude:', '')}' not found - check model name`);
+        log.error(`[AIManager] Model '${testModel}' not found - check model name`);
       }
+      this.lastInitError = error?.status === 404
+        ? `Claude model '${testModel}' not found - check model name`
+        : `Cannot connect to Claude: ${error?.message || error}`;
       return false;
     }
   }
@@ -399,29 +427,50 @@ export class AIManagerService {
    * Load prompts from YAML files
    */
   private loadPrompts(): void {
+    // Summarization prompts are optional — a generic built-in prompt covers their
+    // absence, so failures here are soft.
     try {
-      // Load summarization prompts
       const summarizationPath = path.join(this.promptsDir, 'summarization_prompts.yml');
       if (fs.existsSync(summarizationPath)) {
         const content = fs.readFileSync(summarizationPath, 'utf-8');
         this.summarizationPrompts = yaml.load(content);
         console.log('[AIManager] Loaded summarization prompts');
       }
-
-      // Load prompt set
-      const promptSetName = this.config.promptSet || 'sample-youtube';
-      const promptSetPath = path.join(this.promptSetsDir, `${promptSetName}.yml`);
-
-      if (fs.existsSync(promptSetPath)) {
-        const content = fs.readFileSync(promptSetPath, 'utf-8');
-        this.currentPromptSet = yaml.load(content) as PromptSet;
-        console.log(`[AIManager] Loaded prompt set: ${this.currentPromptSet.name}`);
-      } else {
-        console.warn(`[AIManager] Prompt set not found: ${promptSetName}`);
-      }
     } catch (error) {
-      console.error('[AIManager] Error loading prompts:', error);
+      console.error('[AIManager] Error loading summarization prompts:', error);
     }
+
+    // The prompt set is required for metadata generation. A malformed file must
+    // fail HERE with its real cause — swallowing it surfaces later as a bare
+    // "No prompt set loaded", hiding the actual problem from the user.
+    // (A missing file stays a warning: master/episode analysis construct this
+    // service without a prompt set and never call generateMetadata.)
+    const promptSetName = this.config.promptSet || 'sample-youtube';
+    const promptSetPath = path.join(this.promptSetsDir, `${promptSetName}.yml`);
+
+    if (!fs.existsSync(promptSetPath)) {
+      console.warn(`[AIManager] Prompt set not found: ${promptSetName}`);
+      return;
+    }
+
+    let loaded: unknown;
+    try {
+      const content = fs.readFileSync(promptSetPath, 'utf-8');
+      loaded = yaml.load(content);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`Prompt set "${promptSetName}" is not valid YAML (${promptSetPath}): ${reason}`);
+    }
+
+    const promptSet = loaded as PromptSet;
+    if (!promptSet || typeof promptSet.editorial_prompt !== 'string' || typeof promptSet.instructions_prompt !== 'string') {
+      throw new Error(
+        `Prompt set "${promptSetName}" (${promptSetPath}) is missing required fields: editorial_prompt and instructions_prompt must be strings`
+      );
+    }
+
+    this.currentPromptSet = promptSet;
+    console.log(`[AIManager] Loaded prompt set: ${promptSet.name}`);
   }
 
   /**
@@ -475,8 +524,11 @@ export class AIManagerService {
 
       return result;
     } catch (error) {
+      // Propagate instead of silently substituting truncated raw transcript — a
+      // masked failure produces plausible-but-wrong metadata. The thrown error
+      // already carries source/chunk context from the inner summarize methods.
       console.error('[AIManager] ═══ SUMMARIZATION FAILED ═══:', error);
-      return this.fallbackTruncate(transcript);
+      throw error;
     }
   }
 
@@ -496,21 +548,23 @@ export class AIManagerService {
     const summaries: string[] = [];
 
     for (let i = 0; i < chunks.length; i++) {
+      console.log(`[AIManager] Chunk ${i + 1}/${chunks.length}`);
+
+      const prompt = this.createSummarizationPrompt(chunks[i], `${sourceName}_chunk_${i}`);
+      let response: string | null;
       try {
-        console.log(`[AIManager] Chunk ${i + 1}/${chunks.length}`);
-
-        const prompt = this.createSummarizationPrompt(chunks[i], `${sourceName}_chunk_${i}`);
-        const response = await this.makeRequest(prompt, this.summaryModel, 120);
-
-        if (response && response.trim().length > 10) {
-          summaries.push(response.trim());
-        } else {
-          summaries.push(this.fallbackTruncate(chunks[i]));
-        }
+        response = await this.makeRequest(prompt, this.summaryModel, 120);
       } catch (error) {
-        console.error(`[AIManager] Error processing chunk ${i}:`, error);
-        summaries.push(this.fallbackTruncate(chunks[i]));
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new Error(`Summarization failed for ${sourceName} chunk ${i + 1}/${chunks.length}: ${reason}`);
       }
+
+      // A trivially short/empty summary means the model produced nothing usable —
+      // fail loudly rather than silently substituting truncated raw transcript.
+      if (!response || response.trim().length <= 10) {
+        throw new Error(`Summarization returned empty/too-short response for ${sourceName} chunk ${i + 1}/${chunks.length}`);
+      }
+      summaries.push(response.trim());
     }
 
     return summaries.join('\n\n');
@@ -520,19 +574,15 @@ export class AIManagerService {
    * Summarize single chunk
    */
   private async summarizeSingleChunk(transcript: string, sourceName: string): Promise<string> {
-    try {
-      const prompt = this.createSummarizationPrompt(transcript, sourceName);
-      const response = await this.makeRequest(prompt, this.summaryModel, 120);
+    const prompt = this.createSummarizationPrompt(transcript, sourceName);
+    const response = await this.makeRequest(prompt, this.summaryModel, 120);
 
-      if (response && response.trim().length > 10) {
-        return response.trim();
-      } else {
-        return this.fallbackTruncate(transcript);
-      }
-    } catch (error) {
-      console.error('[AIManager] Error in single chunk summarization:', error);
-      return this.fallbackTruncate(transcript);
+    // A trivially short/empty summary means the model produced nothing usable —
+    // fail loudly rather than silently substituting truncated raw transcript.
+    if (!response || response.trim().length <= 10) {
+      throw new Error(`Summarization returned empty/too-short response for ${sourceName}`);
     }
+    return response.trim();
   }
 
   /**
@@ -543,21 +593,12 @@ export class AIManagerService {
       'You are a helpful assistant that summarizes video transcripts.';
 
     const userPrompt = (this.summarizationPrompts?.youtube?.user || 'Summarize this transcript:\n\n{transcript}')
-      .replace('{transcript}', text);
+      .replace('{transcript}', () => text); // function replacer: transcript text may contain $-patterns
 
     // Add source filename context if available
     const sourceContext = sourceName ? `\n\nSource: ${sourceName}\n(Use the source filename for context about names, topics, and proper nouns)` : '';
 
     return `${systemPrompt}\n\n${userPrompt}${sourceContext}`;
-  }
-
-  /**
-   * Fallback truncation for when summarization fails
-   */
-  private fallbackTruncate(text: string): string {
-    const truncated = text.slice(0, 4000);
-    console.log(`[AIManager] Using fallback truncation (${truncated.length} chars)`);
-    return truncated;
   }
 
   /**
@@ -778,7 +819,11 @@ export class AIManagerService {
 
       switch (def.kind) {
         case 'string': {
-          target[def.key] = pick([def.key, ...def.aliases]);
+          // Stringify when the model returns an object for a string field —
+          // otherwise a raw object is assigned and downstream .replace() throws,
+          // getting misdiagnosed as a parse error.
+          const val = pick([def.key, ...def.aliases]);
+          target[def.key] = val == null ? val : toStr(val);
           break;
         }
         case 'stringArray': {
@@ -861,23 +906,30 @@ export class AIManagerService {
     console.log(`[AIManager]   Prompt length: ${prompt.length} chars`);
 
     try {
-      let result: string | null = null;
-
-      // Detect provider from model name - EXPLICIT routing, no fallbacks
-      // Model format must be "provider:model" (e.g., "ollama:cogito:14b", "openai:gpt-4o", "claude:claude-3-5-sonnet")
-      if (model.startsWith('openai:')) {
-        console.log(`[AIManager]   Provider: OpenAI`);
-        result = await this.makeOpenAIRequest(prompt, model.replace('openai:', ''));
-      } else if (model.startsWith('claude:')) {
-        console.log(`[AIManager]   Provider: Claude`);
-        result = await this.makeClaudeRequest(prompt, model.replace('claude:', ''));
-      } else if (model.startsWith('ollama:')) {
-        console.log(`[AIManager]   Provider: Ollama`);
-        result = await this.makeOllamaRequest(prompt, model.replace('ollama:', ''), timeout);
-      } else {
-        // No valid provider prefix - this is a bug, throw error
-        throw new Error(`Invalid model format: "${model}". Model must have provider prefix (openai:, claude:, or ollama:)`);
-      }
+      // Route every provider call through the single-slot AI queue (Ollama OOM
+      // protection). Callers must NOT wrap makeRequest in queueAITask — nesting
+      // would deadlock the 1-slot pool.
+      const result = await queueAITask<string | null>(
+        `ai-${requestId}`,
+        `AI Request: ${model}`,
+        async () => {
+          // Detect provider from model name - EXPLICIT routing, no fallbacks
+          // Model format must be "provider:model" (e.g., "ollama:cogito:14b", "openai:gpt-4o", "claude:claude-3-5-sonnet")
+          if (model.startsWith('openai:')) {
+            console.log(`[AIManager]   Provider: OpenAI`);
+            return await this.makeOpenAIRequest(prompt, model.replace('openai:', ''));
+          } else if (model.startsWith('claude:')) {
+            console.log(`[AIManager]   Provider: Claude`);
+            return await this.makeClaudeRequest(prompt, model.replace('claude:', ''));
+          } else if (model.startsWith('ollama:')) {
+            console.log(`[AIManager]   Provider: Ollama`);
+            return await this.makeOllamaRequest(prompt, model.replace('ollama:', ''), timeout);
+          } else {
+            // No valid provider prefix - this is a bug, throw error
+            throw new Error(`Invalid model format: "${model}". Model must have provider prefix (openai:, claude:, or ollama:)`);
+          }
+        }
+      );
 
       const endTimestamp = new Date().toISOString();
       console.log(`[AIManager] ■ AI REQUEST END [${requestId}] at ${endTimestamp}`);
@@ -904,11 +956,19 @@ export class AIManagerService {
       throw new Error('Ollama client not initialized');
     }
 
-    // Truncate prompt if it exceeds the context window capacity
+    // Truncate prompt if it exceeds the context window capacity. Use MIDDLE
+    // truncation: metadata prompts put the field instructions LAST, so plain
+    // head-truncation would delete the instructions and keep only transcript,
+    // yielding garbage. Keep the head and tail, drop the middle of the transcript.
     let effectivePrompt = prompt;
-    if (prompt.length > AIManagerService.OLLAMA_MAX_PROMPT_CHARS) {
-      log.warn(`[AIManager] Prompt too long (${prompt.length} chars, max ${AIManagerService.OLLAMA_MAX_PROMPT_CHARS}), truncating`);
-      effectivePrompt = prompt.substring(0, AIManagerService.OLLAMA_MAX_PROMPT_CHARS);
+    const maxChars = AIManagerService.OLLAMA_MAX_PROMPT_CHARS;
+    if (prompt.length > maxChars) {
+      const marker = '\n[... transcript truncated to fit context ...]\n';
+      const keep = maxChars - marker.length;
+      const headLen = Math.ceil(keep / 2);
+      const tailLen = Math.floor(keep / 2);
+      effectivePrompt = prompt.substring(0, headLen) + marker + prompt.substring(prompt.length - tailLen);
+      log.warn(`[AIManager] Prompt too long (${prompt.length} chars, max ${maxChars}), middle-truncating to ${effectivePrompt.length} chars`);
     }
 
     try {
@@ -926,6 +986,12 @@ export class AIManagerService {
         },
         { timeout: timeout * 1000 }
       );
+
+      // Warn if the response was cut off at num_predict — the JSON is likely
+      // incomplete and will fail parsing (mirror the Claude max_tokens check).
+      if (response.data.done_reason === 'length') {
+        log.warn(`[AIManager] Ollama response was truncated (done_reason=length, hit num_predict=${AIManagerService.OLLAMA_NUM_PREDICT} limit)!`);
+      }
 
       return response.data.response;
     } catch (error: any) {

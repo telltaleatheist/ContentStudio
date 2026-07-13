@@ -82,7 +82,12 @@ export class InputsStateService {
   }
 
   addItem(item: InputItem) {
-    this.inputItems.update(items => [...items, item]);
+    // Dedup by path (matching episode-splitter/master-analysis state services).
+    // For text subjects the path is the content, so adding the same text twice
+    // is a no-op. Keeps @for track-by-path keys unique in the template.
+    this.inputItems.update(items =>
+      items.some(existing => existing.path === item.path) ? items : [...items, item]
+    );
   }
 
   removeItem(index: number) {

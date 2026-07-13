@@ -31,6 +31,7 @@ export interface GenerationParams {
   chapterFlags?: { [key: string]: boolean };
   inputNotes?: { [key: string]: string };
   preTranscribedContent?: ContentItem[]; // Pre-transcribed content from pipeline (skips transcription phase)
+  inputWarnings?: string[]; // Input-stage failures from the pipeline (surfaced in result.warnings)
   progressCallback?: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => void;
   cancelCallback?: () => boolean; // Returns true if job should be cancelled
 }
@@ -44,6 +45,7 @@ export interface GenerationResult {
   job_id?: string;
   processing_time?: number;
   error?: string;
+  warnings?: string[]; // Per-item / partial-failure messages surfaced to the user
 }
 
 export class MetadataGeneratorService {
@@ -89,7 +91,9 @@ export class MetadataGeneratorService {
         log.error('[MetadataGenerator] AI manager initialization failed');
         return {
           success: false,
-          error: 'Failed to initialize AI manager',
+          error: aiManager.lastInitError
+            ? `Failed to initialize AI manager: ${aiManager.lastInitError}`
+            : 'Failed to initialize AI manager',
         };
       }
       log.info('[MetadataGenerator] AI manager initialized successfully');
@@ -128,6 +132,10 @@ export class MetadataGeneratorService {
         }
       });
 
+      // Input-stage failures (skipped items) — carried into result.warnings so
+      // items can't silently vanish from the job.
+      const inputFailures: string[] = [...(params.inputWarnings || [])];
+
       let contentItems: ContentItem[];
       if (params.preTranscribedContent && params.preTranscribedContent.length > 0) {
         contentItems = params.preTranscribedContent;
@@ -135,7 +143,7 @@ export class MetadataGeneratorService {
       } else {
         const customNotesMap = new Map(Object.entries(params.inputNotes || {}));
         log.info('[MetadataGenerator] Processing inputs...');
-        contentItems = await inputHandler.processMultipleInputs(normalizedInputs, customNotesMap);
+        contentItems = await inputHandler.processMultipleInputs(normalizedInputs, customNotesMap, inputFailures);
       }
 
       // Check for cancellation after input processing
@@ -151,7 +159,9 @@ export class MetadataGeneratorService {
         log.error('[MetadataGenerator] No content items processed from inputs');
         return {
           success: false,
-          error: 'No content could be processed',
+          error: inputFailures.length > 0
+            ? `No content could be processed: ${inputFailures.join('; ')}`
+            : 'No content could be processed',
         };
       }
 
@@ -182,6 +192,8 @@ export class MetadataGeneratorService {
 
       // Generate metadata based on mode
       const metadataItems: MetadataResult[] = [];
+      // Partial failures / dropped-content notices, seeded with input-stage skips
+      const warnings: string[] = [...inputFailures];
       const mode = params.mode || 'individual';
       console.log(`[MetadataGenerator] Processing mode: ${mode}`);
 
@@ -198,6 +210,16 @@ export class MetadataGeneratorService {
         params.progressCallback?.('generating', 'Analyzing combined content...', 0);
         const itemSummaries: string[] = [];
         for (let i = 0; i < contentItems.length; i++) {
+          // Check for cancellation before each (potentially long) summarization
+          if (params.cancelCallback && params.cancelCallback()) {
+            console.log(`[MetadataGenerator] Job cancelled while summarizing item ${i + 1}/${contentItems.length}`);
+            outputHandler.updateJobStatus(jobInfo.jobId, 'cancelled');
+            return {
+              success: false,
+              error: 'Job cancelled by user',
+            };
+          }
+
           const item = contentItems[i];
           const sourceLabel = item.source || `Item ${i + 1}`;
           console.log(`[MetadataGenerator] Summarizing compilation item ${i + 1}/${contentItems.length}: ${sourceLabel}`);
@@ -208,6 +230,16 @@ export class MetadataGeneratorService {
 
         // Recombine summaries with ITEM labels intact
         const summary = itemSummaries.join('\n\n');
+
+        // Check for cancellation before the final (long) metadata generation
+        if (params.cancelCallback && params.cancelCallback()) {
+          console.log('[MetadataGenerator] Job cancelled before compilation metadata generation');
+          outputHandler.updateJobStatus(jobInfo.jobId, 'cancelled');
+          return {
+            success: false,
+            error: 'Job cancelled by user',
+          };
+        }
 
         // Generate single metadata for compilation with hardcoded compilation instructions
         params.progressCallback?.('generating', 'Generating metadata for compilation...', 50);
@@ -227,10 +259,8 @@ export class MetadataGeneratorService {
         (metadata as any)._source_count = contentItems.length;
 
         // Save compilation result
-        const saveResult = outputHandler.addItemToJob(jobInfo.jobId, metadata);
-        if (saveResult) {
-          console.log(`[MetadataGenerator] Saved compilation to: ${saveResult.txtPath}`);
-        }
+        const saveResult = await outputHandler.addItemToJob(jobInfo.jobId, metadata);
+        console.log(`[MetadataGenerator] Saved compilation to: ${saveResult.txtPath}`);
 
         params.progressCallback?.('generating', 'Compilation complete', 100);
         metadataItems.push(metadata);
@@ -274,36 +304,59 @@ export class MetadataGeneratorService {
           (metadata as any)._title = this.getCleanTitle(item);
           (metadata as any)._prompt_set = params.promptSet;
 
-          if (shouldGenerateChapters && item.srtSegments && item.srtSegments.length > 0) {
-            console.log('[MetadataGenerator] Generating chapters...');
-            console.log(`[MetadataGenerator] Sending generating phase: Generating chapters for item ${i}`);
-            params.progressCallback?.('generating', 'Generating chapters...', 75, undefined, i);
+          if (shouldGenerateChapters) {
+            const chapterLabel = item.source || `item_${i + 1}`;
 
-            try {
-              const chapters = await this.generateChapters(item, aiManager);
-              if (chapters && chapters.length >= 3) {
-                metadata.chapters = chapters;
-                console.log(`[MetadataGenerator] Generated ${chapters.length} chapters`);
+            if (item.srtSegments && item.srtSegments.length > 0) {
+              console.log('[MetadataGenerator] Generating chapters...');
+              console.log(`[MetadataGenerator] Sending generating phase: Generating chapters for item ${i}`);
+              params.progressCallback?.('generating', 'Generating chapters...', 75, undefined, i);
+
+              try {
+                const chapters = await this.generateChapters(item, aiManager);
+                if (chapters && chapters.length >= 3) {
+                  metadata.chapters = chapters;
+                  console.log(`[MetadataGenerator] Generated ${chapters.length} chapters`);
+                } else {
+                  // <3 chapters are dropped (YouTube requires at least 3). Don't let
+                  // that vanish silently when the user explicitly asked for chapters.
+                  const found = chapters ? chapters.length : 0;
+                  const msg = `${chapterLabel}: chapters were requested but only ${found} chapter(s) were found (YouTube requires at least 3), so none were added`;
+                  console.warn(`[MetadataGenerator] ${msg}`);
+                  warnings.push(msg);
+                }
+              } catch (error) {
+                const errMsg = error instanceof Error ? error.message : String(error);
+                const msg = `${chapterLabel}: chapter generation failed: ${errMsg}`;
+                console.error(`[MetadataGenerator] ${msg}`);
+                warnings.push(msg);
+                // Continue without chapters
               }
-            } catch (error) {
-              console.error('[MetadataGenerator] Chapter generation failed:', error);
-              // Continue without chapters
+            } else {
+              // Chapters need a timestamped transcript (SRT segments); a subject or
+              // plain transcript file has none, so report why they were skipped.
+              const msg = `${chapterLabel}: chapters were requested but no timestamped transcript was available to generate them`;
+              console.warn(`[MetadataGenerator] ${msg}`);
+              warnings.push(msg);
             }
           }
 
           // Save this item to the job immediately
-          const saveResult = outputHandler.addItemToJob(jobInfo.jobId, metadata);
-          if (saveResult) {
-            console.log(`[MetadataGenerator] Saved metadata to: ${saveResult.txtPath}`);
-          }
+          const saveResult = await outputHandler.addItemToJob(jobInfo.jobId, metadata);
+          console.log(`[MetadataGenerator] Saved metadata to: ${saveResult.txtPath}`);
 
           // Mark this item as complete
           console.log(`[MetadataGenerator] Sending generating phase: Completed for item ${i}`);
           params.progressCallback?.('generating', `Completed ${i + 1}/${contentItems.length}`, 100, undefined, i);
           metadataItems.push(metadata);
         } catch (error) {
+          const errMsg = error instanceof Error ? error.message : String(error);
+          const sourceLabel = item.source || `item_${i + 1}`;
           log.error(`[MetadataGenerator] Failed to generate metadata for item ${i + 1}:`, error);
           console.error(`[MetadataGenerator] Failed to generate metadata for item ${i + 1}:`, error);
+          // Record the partial failure so the caller can surface it instead of
+          // silently returning success with a missing item.
+          warnings.push(`${sourceLabel}: ${errMsg}`);
           // Continue with other items
         }
       }
@@ -315,6 +368,7 @@ export class MetadataGeneratorService {
         return {
           success: false,
           error: 'Failed to generate metadata for any items',
+          warnings: warnings.length > 0 ? warnings : undefined,
         };
       }
 
@@ -354,6 +408,9 @@ export class MetadataGeneratorService {
         json_file: jobInfo.jsonPath,
         job_id: jobInfo.jobId,
         processing_time: processingTime,
+        // Partial failures (skipped items, dropped chapters) — success is still true
+        // as long as at least one item succeeded, but the caller can surface these.
+        warnings: warnings.length > 0 ? warnings : undefined,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

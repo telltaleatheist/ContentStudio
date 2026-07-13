@@ -5,10 +5,31 @@ Migrates old metadata structure to new organized structure
 """
 
 import os
+import re
 import json
 import shutil
 from pathlib import Path
 from datetime import datetime
+
+
+def sanitize_for_filesystem(name: str, fallback: str = 'Unknown') -> str:
+    """
+    Make a string safe to use as a single path component.
+
+    Replaces path separators and characters that are illegal on common
+    filesystems (Windows in particular) so that a '/' in a title cannot
+    scatter output across nested directories.
+    """
+    if name is None:
+        return fallback
+    # Replace path separators and illegal filesystem characters with '_'
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', str(name))
+    # Windows does not allow trailing dots/spaces in names
+    cleaned = cleaned.strip().rstrip('. ')
+    if not cleaned:
+        return fallback
+    return cleaned
+
 
 def migrate_metadata(old_metadata_dir: str, output_base_dir: str):
     """
@@ -50,6 +71,8 @@ def migrate_metadata(old_metadata_dir: str, output_base_dir: str):
 
     migrated_count = 0
     skipped_count = 0
+    collision_count = 0
+    used_job_ids = set()
 
     for old_dir in old_dirs:
         try:
@@ -81,6 +104,13 @@ def migrate_metadata(old_metadata_dir: str, output_base_dir: str):
             display_title = metadata.get('_title', 'Unknown')
             prompt_set = metadata.get('_prompt_set', 'youtube-telltale')
 
+            # Sanitize the title before using it as a directory name so a '/'
+            # (or other illegal char) cannot scatter output across directories.
+            safe_title = sanitize_for_filesystem(display_title)
+            if safe_title != display_title:
+                collision_count += 1
+                print(f"⚠️  Sanitized title for filesystem: {display_title!r} -> {safe_title!r}")
+
             # Find the txt file
             txt_files = list(old_dir.glob('*.txt'))
             if not txt_files:
@@ -90,15 +120,35 @@ def migrate_metadata(old_metadata_dir: str, output_base_dir: str):
 
             txt_file = txt_files[0]
 
-            # Generate job ID
-            job_id = f"job-{timestamp}"
+            # Generate a UNIQUE job ID. The timestamp is only second-resolution,
+            # so two jobs can share one; de-collide by appending a counter and
+            # also guard against JSON files left by a previous run.
+            base_job_id = f"job-{timestamp}"
+            job_id = base_job_id
+            dupe = 1
+            while job_id in used_job_ids or (json_dir / f"{job_id}.json").exists():
+                job_id = f"{base_job_id}-{dupe}"
+                dupe += 1
+            if job_id != base_job_id:
+                collision_count += 1
+                print(f"⚠️  Job id collision for {base_job_id}; using {job_id}")
+            used_job_ids.add(job_id)
 
-            # Create new TXT folder with clean name
-            txt_folder = output_base_path / display_title
+            # Create new TXT folder with sanitized name
+            txt_folder = output_base_path / safe_title
             txt_folder.mkdir(parents=True, exist_ok=True)
 
-            # Copy TXT file to new location
+            # Copy TXT file to new location; de-collide the filename so a same-
+            # titled job does not overwrite an already-migrated TXT file.
             new_txt_path = txt_folder / txt_file.name
+            if new_txt_path.exists():
+                stem, suffix = new_txt_path.stem, new_txt_path.suffix
+                dupe = 1
+                while new_txt_path.exists():
+                    new_txt_path = txt_folder / f"{stem}-{dupe}{suffix}"
+                    dupe += 1
+                collision_count += 1
+                print(f"⚠️  TXT filename collision in {safe_title!r}; writing as {new_txt_path.name}")
             shutil.copy2(txt_file, new_txt_path)
 
             # Create new JSON structure
@@ -118,7 +168,7 @@ def migrate_metadata(old_metadata_dir: str, output_base_dir: str):
 
             print(f"✅ Migrated: {display_title}")
             print(f"   JSON: {new_json_path.name}")
-            print(f"   TXT:  {txt_folder.name}/{txt_file.name}")
+            print(f"   TXT:  {txt_folder.name}/{new_txt_path.name}")
             print()
 
             migrated_count += 1
@@ -129,9 +179,10 @@ def migrate_metadata(old_metadata_dir: str, output_base_dir: str):
 
     print("\n" + "="*60)
     print(f"Migration complete!")
-    print(f"  Migrated: {migrated_count}")
-    print(f"  Skipped:  {skipped_count}")
-    print(f"  Total:    {len(old_dirs)}")
+    print(f"  Migrated:   {migrated_count}")
+    print(f"  Skipped:    {skipped_count}")
+    print(f"  Collisions: {collision_count} (de-collided / sanitized)")
+    print(f"  Total:      {len(old_dirs)}")
     print("="*60)
 
     if migrated_count > 0:

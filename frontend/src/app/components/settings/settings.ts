@@ -52,12 +52,18 @@ export class Settings implements OnInit {
   // AI Setup Wizard
   showWizard = signal(false);
 
-  // Output settings
-  outputDirectory = signal('~/Documents/LaunchPad Output');
+  // Output settings — populated from the backend's get-settings (always a real
+  // path) in ngOnInit; empty until then.
+  outputDirectory = signal('');
 
   // Prompt set selection
   selectedPromptSet = signal('sample-youtube');
   availablePromptSets = signal<Array<{id: string, name: string, platform: string}>>([]);
+
+  // A saved model that isn't present in the fetched provider lists (e.g. the
+  // provider's model-list fetch failed, or the API's top-N changed). Kept as a
+  // selectable option so we never silently swap the user's saved choice.
+  savedModelFallback = signal<ModelOption | null>(null);
 
   // Model options for dropdown - filtered by configured providers
   modelOptions = computed<ModelOption[]>(() => {
@@ -104,8 +110,28 @@ export class Settings implements OnInit {
       });
     }
 
+    // Keep a saved-but-unavailable model selectable rather than dropping it
+    const fallback = this.savedModelFallback();
+    if (fallback && !options.some(o => o.value === fallback.value)) {
+      options.push(fallback);
+    }
+
     return options;
   });
+
+  // Build a placeholder option for a saved model that isn't in the fetched lists
+  private makeSavedModelOption(savedModel: string): ModelOption {
+    const [provider, ...modelParts] = savedModel.split(':');
+    const model = modelParts.join(':');
+    const isLocal = provider === 'ollama';
+    return {
+      value: savedModel,
+      label: `${model} (saved)`,
+      provider: isLocal ? 'local' : 'cloud',
+      icon: isLocal ? 'computer' : 'cloud',
+      needsApiKey: !isLocal
+    };
+  }
 
   constructor(
     private electron: ElectronService,
@@ -140,10 +166,13 @@ export class Settings implements OnInit {
         const availableValues = this.modelOptions().map(o => o.value);
         if (availableValues.includes(savedModel)) {
           this.metadataModel.set(savedModel);
-        } else if (availableValues.length > 0) {
-          // Model not available (might be outdated), default to first available
-          console.warn('Saved model not available:', savedModel, '- defaulting to:', availableValues[0]);
-          this.metadataModel.set(availableValues[0]);
+        } else {
+          // Saved model isn't in the fetched list (fetch failed, or the API's
+          // top-N changed). Keep the user's choice selected instead of silently
+          // swapping it — append it as an extra option and select it.
+          console.warn('Saved model not in fetched list:', savedModel, '- keeping it selected');
+          this.savedModelFallback.set(this.makeSavedModelOption(savedModel));
+          this.metadataModel.set(savedModel);
         }
       } else if (this.modelOptions().length > 0) {
         // No saved model, default to first available
@@ -302,11 +331,10 @@ export class Settings implements OnInit {
         if (availableValues.includes(modelValue)) {
           this.metadataModel.set(modelValue);
         } else {
-          // Model not available, select first available model
-          if (availableValues.length > 0) {
-            this.metadataModel.set(availableValues[0]);
-            console.log('Previously selected model not available, defaulting to:', availableValues[0]);
-          }
+          // Keep the user's saved model selected instead of silently swapping it
+          console.log('Previously selected model not in fetched list, keeping it selected:', modelValue);
+          this.savedModelFallback.set(this.makeSavedModelOption(modelValue));
+          this.metadataModel.set(modelValue);
         }
       }
 

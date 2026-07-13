@@ -162,7 +162,8 @@ export class InputHandlerService {
    */
   async processInput(
     input: string,
-    customNotes?: string
+    customNotes?: string,
+    itemIndex?: number
   ): Promise<ContentItem> {
     console.log(`[InputHandler] Processing input: ${input}`);
 
@@ -179,7 +180,7 @@ export class InputHandlerService {
     if (inputType === 'subject') {
       return this.processSubject(input, customNotes);
     } else if (inputType === 'video') {
-      return await this.processVideo(input, customNotes);
+      return await this.processVideo(input, customNotes, itemIndex);
     } else if (inputType === 'transcript_file') {
       return this.processTranscriptFile(input, customNotes);
     } else if (inputType === 'directory') {
@@ -206,24 +207,25 @@ export class InputHandlerService {
       content,
       contentType: 'subject',
       source: undefined,
-      processingNotes: customNotes,
+      processingNotes: customNotes?.trim(),
     };
   }
 
   /**
    * Process a video file
    */
-  private async processVideo(videoPath: string, customNotes?: string): Promise<ContentItem> {
+  private async processVideo(videoPath: string, customNotes?: string, itemIndex?: number): Promise<ContentItem> {
     log.info(`[InputHandler] Processing video: ${videoPath}`);
 
     try {
-      // Store and send 'preparing' event before transcription starts
-      const filename = videoPath.split('/').pop() || videoPath;
-      this.currentFilename = filename;
+      // Send 'preparing' event before transcription starts. The item index is
+      // threaded in per-call (not read from a shared instance field) so concurrent
+      // transcriptions don't attribute progress to the wrong item.
+      const filename = path.basename(videoPath);
 
       if (this.progressCallback) {
         log.info(`[InputHandler] Sending preparing phase for: ${filename}`);
-        this.progressCallback('preparing', `Preparing ${filename}`, 0, filename, this.currentItemIndex >= 0 ? this.currentItemIndex : undefined);
+        this.progressCallback('preparing', `Preparing ${filename}`, 0, filename, itemIndex !== undefined && itemIndex >= 0 ? itemIndex : undefined);
       }
 
       // Transcribe video (returns jobId along with result)
@@ -246,7 +248,7 @@ export class InputHandlerService {
         content,
         contentType: 'video',
         source: videoPath,
-        processingNotes: customNotes,
+        processingNotes: customNotes?.trim(),
         srtSegments: result.segments,
       };
     } catch (error) {
@@ -285,7 +287,7 @@ export class InputHandlerService {
         content,
         contentType: 'transcript_file',
         source: filePath,
-        processingNotes: customNotes,
+        processingNotes: customNotes?.trim(),
       };
     } catch (error) {
       console.error(`[InputHandler] Failed to read transcript file:`, error);
@@ -343,11 +345,17 @@ export class InputHandlerService {
   }
 
   /**
-   * Process multiple inputs
+   * Process multiple inputs.
+   *
+   * Inputs that fail (e.g. transcription produced no speech segments) are skipped
+   * so the rest of the batch still processes; when `failures` is provided, a
+   * "<input>: <reason>" entry is pushed for each skip so the caller can surface
+   * them instead of items silently vanishing from the job.
    */
   async processMultipleInputs(
     inputs: string[],
-    customNotesMap?: Map<string, string>
+    customNotesMap?: Map<string, string>,
+    failures?: string[]
   ): Promise<ContentItem[]> {
     console.log(`[InputHandler] Processing ${inputs.length} inputs (max 5 concurrent transcriptions)`);
 
@@ -357,10 +365,9 @@ export class InputHandlerService {
     // Process inputs with concurrency limit
     const processInput = async (input: string, index: number): Promise<ContentItem | null> => {
       try {
-        // Set current item index for progress tracking
-        this.currentItemIndex = index;
-        this.currentFilename = input.split('/').pop() || input;
-
+        // Thread the item index through the call chain (per-task) so that under the
+        // concurrent processing loop below, progress events are attributed to the
+        // correct item rather than to whichever task last wrote a shared field.
         const inputType = InputDetector.detectInputType(input);
 
         if (inputType === 'directory') {
@@ -368,10 +375,15 @@ export class InputHandlerService {
           return dirItems[0] || null; // Return first item (directories processed separately)
         } else {
           const customNotes = customNotesMap?.get(input);
-          return await this.processInput(input, customNotes);
+          return await this.processInput(input, customNotes, index);
         }
       } catch (error) {
         console.error(`[InputHandler] Failed to process input ${input}:`, error);
+        const reason = error instanceof Error ? error.message : String(error);
+        const label = input.includes('/') || input.includes('\\')
+          ? path.basename(input)
+          : input.slice(0, 60);
+        failures?.push(`${label}: ${reason}`);
         return null;
       }
     };
@@ -398,9 +410,6 @@ export class InputHandlerService {
 
     // Wait for all remaining promises to complete
     await Promise.all(executing);
-
-    // Reset item index after processing
-    this.currentItemIndex = -1;
 
     console.log(`[InputHandler] Processed ${items.length} content items`);
     return items;

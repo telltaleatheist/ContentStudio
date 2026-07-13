@@ -27,7 +27,6 @@ export interface QueueTask {
 interface ActiveTask {
   task: QueueTask;
   startTime: number;
-  lastProgressTime: number;
 }
 
 export class QueueManagerService extends EventEmitter {
@@ -47,16 +46,25 @@ export class QueueManagerService extends EventEmitter {
 
   // Watchdog settings
   private readonly WATCHDOG_INTERVAL_MS = 60000; // Check every 60 seconds
-  private readonly MAIN_TASK_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+  // The watchdog force-fails tasks past these limits, so they must exceed the longest
+  // LEGITIMATE run: transcribing a multi-hour livestream can take well over an hour
+  // on slow hardware. AI requests self-timeout at the HTTP layer (<=10 min), so the
+  // AI limit only backstops stalled-but-alive connections.
+  private readonly MAIN_TASK_TIMEOUT_MS = 3 * 60 * 60 * 1000; // 3 hours
   private readonly AI_TASK_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
-  private readonly PROGRESS_WARN_MS = 5 * 60 * 1000; // Warn if no progress for 5 min
 
   private watchdogTimer: NodeJS.Timeout | null = null;
   private isProcessing = false;
   private cancelledTasks = new Set<string>();
+  // Tasks the watchdog force-failed on timeout. Lets executeTask's completion/failure
+  // path skip double-emitting and double-freeing when the orphaned execute() settles.
+  private timedOutTasks = new Set<string>();
 
   private constructor() {
     super();
+    // queueTranscription/queueAITask each add 2 listeners per task on this singleton
+    // emitter; with concurrent + queued tasks that can exceed the default cap of 10.
+    this.setMaxListeners(100);
     this.startWatchdog();
   }
 
@@ -97,6 +105,8 @@ export class QueueManagerService extends EventEmitter {
       this.mainQueue[mainIndex].status = 'cancelled';
       this.mainQueue.splice(mainIndex, 1);
       log.info(`[QueueManager] Cancelled queued main task: ${taskId}`);
+      // Settle the awaiting queueTranscription/queueAITask promise so it doesn't hang.
+      this.emit('taskFailed', { taskId, error: 'Task cancelled' });
       return true;
     }
 
@@ -105,6 +115,8 @@ export class QueueManagerService extends EventEmitter {
       this.aiQueue[aiIndex].status = 'cancelled';
       this.aiQueue.splice(aiIndex, 1);
       log.info(`[QueueManager] Cancelled queued AI task: ${taskId}`);
+      // Settle the awaiting queueTranscription/queueAITask promise so it doesn't hang.
+      this.emit('taskFailed', { taskId, error: 'Task cancelled' });
       return true;
     }
 
@@ -189,8 +201,7 @@ export class QueueManagerService extends EventEmitter {
     const now = Date.now();
     const activeTask: ActiveTask = {
       task,
-      startTime: now,
-      lastProgressTime: now
+      startTime: now
     };
 
     // Add to pool
@@ -212,15 +223,6 @@ export class QueueManagerService extends EventEmitter {
         throw new Error('Task cancelled');
       }
 
-      // Wrap progress callback to track activity
-      const originalOnProgress = task.onProgress;
-      if (originalOnProgress) {
-        task.onProgress = (percent: number, message: string) => {
-          activeTask.lastProgressTime = Date.now();
-          originalOnProgress(percent, message);
-        };
-      }
-
       // Execute the task
       const result = await task.execute();
 
@@ -229,7 +231,10 @@ export class QueueManagerService extends EventEmitter {
       task.endTime = Date.now();
 
       log.info(`[QueueManager] Completed ${poolType} task: ${task.name} (${task.endTime - task.startTime}ms)`);
-      this.emit('taskCompleted', { taskId: task.id, result });
+      // If the watchdog already force-failed this task on timeout, don't double-emit.
+      if (!this.timedOutTasks.has(task.id)) {
+        this.emit('taskCompleted', { taskId: task.id, result });
+      }
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -238,14 +243,22 @@ export class QueueManagerService extends EventEmitter {
       task.endTime = Date.now();
 
       log.error(`[QueueManager] Failed ${poolType} task: ${task.name} - ${errorMessage}`);
-      this.emit('taskFailed', { taskId: task.id, error: errorMessage });
+      // If the watchdog already force-failed this task on timeout, don't double-emit.
+      if (!this.timedOutTasks.has(task.id)) {
+        this.emit('taskFailed', { taskId: task.id, error: errorMessage });
+      }
 
     } finally {
-      // Remove from pool
-      if (poolType === 'main') {
-        this.mainPool.delete(task.id);
-      } else {
-        this.aiPool = null;
+      // The watchdog frees the slot itself on timeout; only free it here if it didn't,
+      // otherwise a late-settling orphan would clobber a slot a newer task now owns.
+      const wasTimedOut = this.timedOutTasks.delete(task.id);
+      if (!wasTimedOut) {
+        // Remove from pool
+        if (poolType === 'main') {
+          this.mainPool.delete(task.id);
+        } else {
+          this.aiPool = null;
+        }
       }
 
       // Clean up cancelled set
@@ -266,26 +279,25 @@ export class QueueManagerService extends EventEmitter {
       // Check main pool tasks
       for (const [taskId, activeTask] of this.mainPool) {
         const runtime = now - activeTask.startTime;
-        const timeSinceProgress = now - activeTask.lastProgressTime;
 
         if (runtime > this.MAIN_TASK_TIMEOUT_MS) {
+          const errorMessage = `Task timed out after ${Math.round(runtime / 1000)}s`;
           log.warn(`[QueueManager] Main task timeout: ${activeTask.task.name} (${taskId}) - ${Math.round(runtime / 1000)}s`);
           this.emit('taskTimeout', { taskId, type: 'main', runtime });
-        } else if (timeSinceProgress > this.PROGRESS_WARN_MS) {
-          log.warn(`[QueueManager] Main task stalled: ${activeTask.task.name} (${taskId}) - no progress for ${Math.round(timeSinceProgress / 1000)}s`);
+          this.failTimedOutTask(taskId, activeTask, 'main', errorMessage);
         }
       }
 
       // Check AI pool task
       if (this.aiPool) {
         const runtime = now - this.aiPool.startTime;
-        const timeSinceProgress = now - this.aiPool.lastProgressTime;
 
         if (runtime > this.AI_TASK_TIMEOUT_MS) {
-          log.warn(`[QueueManager] AI task timeout: ${this.aiPool.task.name} (${this.aiPool.task.id}) - ${Math.round(runtime / 1000)}s`);
-          this.emit('taskTimeout', { taskId: this.aiPool.task.id, type: 'ai', runtime });
-        } else if (timeSinceProgress > this.PROGRESS_WARN_MS) {
-          log.warn(`[QueueManager] AI task stalled: ${this.aiPool.task.name} - no progress for ${Math.round(timeSinceProgress / 1000)}s`);
+          const timedOut = this.aiPool;
+          const errorMessage = `Task timed out after ${Math.round(runtime / 1000)}s`;
+          log.warn(`[QueueManager] AI task timeout: ${timedOut.task.name} (${timedOut.task.id}) - ${Math.round(runtime / 1000)}s`);
+          this.emit('taskTimeout', { taskId: timedOut.task.id, type: 'ai', runtime });
+          this.failTimedOutTask(timedOut.task.id, timedOut, 'ai', errorMessage);
         }
       }
 
@@ -295,6 +307,29 @@ export class QueueManagerService extends EventEmitter {
         log.info(`[QueueManager] Status - Main: ${status.mainPoolSize}/${this.MAX_MAIN_CONCURRENT} running, ${status.mainQueueSize} queued | AI: ${status.aiPoolSize}/${this.MAX_AI_CONCURRENT} running, ${status.aiQueueSize} queued`);
       }
     }, this.WATCHDOG_INTERVAL_MS);
+  }
+
+  /**
+   * Force-fail a task the watchdog found past its timeout: mark it failed, free its pool
+   * slot, reject the awaiting promise via 'taskFailed', and keep processing the queue.
+   * The task is recorded in timedOutTasks so that when the orphaned execute() promise
+   * eventually settles, executeTask skips its own emit/pool-cleanup (avoids double-free).
+   */
+  private failTimedOutTask(taskId: string, activeTask: ActiveTask, poolType: 'main' | 'ai', errorMessage: string): void {
+    this.timedOutTasks.add(taskId);
+    activeTask.task.status = 'failed';
+    activeTask.task.error = errorMessage;
+    activeTask.task.endTime = Date.now();
+
+    // Free the pool slot so the queue can advance
+    if (poolType === 'main') {
+      this.mainPool.delete(taskId);
+    } else {
+      this.aiPool = null;
+    }
+
+    this.emit('taskFailed', { taskId, error: errorMessage });
+    this.processQueue();
   }
 
   /**
@@ -311,6 +346,13 @@ export class QueueManagerService extends EventEmitter {
    * Clear all queues and cancel running tasks
    */
   clearAll(): void {
+    // Settle any queued (not-yet-started) tasks so their awaiting promises reject
+    // instead of hanging forever with leaked listeners.
+    for (const task of [...this.mainQueue, ...this.aiQueue]) {
+      task.status = 'cancelled';
+      this.emit('taskFailed', { taskId: task.id, error: 'Task cancelled' });
+    }
+
     // Clear queues
     this.mainQueue = [];
     this.aiQueue = [];
