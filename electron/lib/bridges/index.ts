@@ -26,6 +26,8 @@ export {
   getBinaryExtension,
   verifyBinary,
   getWhisperLibraryPath,
+  getSelectedWhisperModel,
+  setSelectedWhisperModel,
   type RuntimePaths,
 } from './runtime-paths';
 

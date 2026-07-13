@@ -19,6 +19,7 @@ import * as log from 'electron-log';
 import {
   getRuntimePaths,
   getWhisperLibraryPath,
+  getSelectedWhisperModel,
   verifyBinary,
   FfmpegBridge,
   FfprobeBridge,
@@ -64,9 +65,16 @@ export class WhisperService extends EventEmitter {
     // Get runtime paths
     const paths = getRuntimePaths();
 
-    // Verify binaries exist and have correct architecture
-    verifyBinary(paths.ffmpeg, 'FFmpeg');
-    verifyBinary(paths.whisper, 'Whisper');
+    // Verify downloaded prerequisites before constructing process bridges.
+    try {
+      verifyBinary(paths.ffmpeg, 'FFmpeg');
+      verifyBinary(paths.ffprobe, 'FFprobe');
+      verifyBinary(paths.whisper, 'Whisper');
+      const selectedModel = path.join(paths.whisperModelsDir, `ggml-${getSelectedWhisperModel()}.bin`);
+      if (!fs.existsSync(selectedModel)) throw new Error(`Whisper model not found at: ${selectedModel}`);
+    } catch (error) {
+      throw new Error(`Transcription components are not installed. Open Settings → Transcription Downloads and install FFmpeg, the Whisper engine, and your selected model. ${error instanceof Error ? error.message : String(error)}`);
+    }
 
     // Initialize bridges
     this.ffmpeg = new FfmpegBridge(paths.ffmpeg);
@@ -183,7 +191,7 @@ export class WhisperService extends EventEmitter {
       }, 3000); // Update every 3 seconds
 
       const whisperResult = await this.whisper.transcribe(audioPath, tempDir, {
-        model: modelName,
+        model: modelName || getSelectedWhisperModel(),
         processId: jobId, // Use jobId so we can correlate progress events
       });
 

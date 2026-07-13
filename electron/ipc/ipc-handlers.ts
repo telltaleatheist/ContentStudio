@@ -391,6 +391,26 @@ async function processAiGenerationQueue(): Promise<void> {
 
 export function setupIpcHandlers(store: Store<any>) {
 
+  const { setSelectedWhisperModel } = require('../lib/bridges/runtime-paths');
+  const componentManager = require('../components/component-manager');
+  setSelectedWhisperModel((store as any).get('whisperModel', 'small'));
+
+  ipcMain.handle('components:list', async () => componentManager.listStatus());
+  ipcMain.handle('components:install', async (event, id: string) =>
+    componentManager.install(id, (progress: any) => event.sender.send('component-progress', progress)));
+  ipcMain.handle('components:cancel', async (_event, id: string) => {
+    componentManager.cancel(id);
+    return { success: true };
+  });
+  ipcMain.handle('components:uninstall', async (_event, id: string) => {
+    const selected = (store as any).get('whisperModel', 'small');
+    if (id === `whisper-${selected}`) {
+      return { success: false, error: 'Choose and save a different default Whisper model before removing this one.' };
+    }
+    componentManager.uninstall(id);
+    return { success: true };
+  });
+
   // Ensure prompt sets directory exists
   ensurePromptSetsDirectory();
 
@@ -422,6 +442,7 @@ export function setupIpcHandlers(store: Store<any>) {
       Object.keys(settings).forEach(key => {
         (store as any).set(key, settings[key]);
       });
+      if (settings.whisperModel) setSelectedWhisperModel(settings.whisperModel);
       return { success: true };
     } catch (error) {
       log.error('Error updating settings:', error);

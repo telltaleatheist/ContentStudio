@@ -11,6 +11,17 @@ const api = {
   getSettings: () => ipcRenderer.invoke('get-settings'),
   updateSettings: (settings: any) => ipcRenderer.invoke('update-settings', settings),
 
+  // Downloadable transcription components
+  listComponents: () => ipcRenderer.invoke('components:list'),
+  installComponent: (id: string) => ipcRenderer.invoke('components:install', id),
+  cancelComponentInstall: (id: string) => ipcRenderer.invoke('components:cancel', id),
+  uninstallComponent: (id: string) => ipcRenderer.invoke('components:uninstall', id),
+  onComponentProgress: (callback: (progress: any) => void) => {
+    const listener = (_event: any, progress: any) => callback(progress);
+    ipcRenderer.on('component-progress', listener);
+    return () => ipcRenderer.removeListener('component-progress', listener);
+  },
+
   // Prompt Sets (Metadata)
   getPromptSetsPath: () => ipcRenderer.invoke('get-prompt-sets-path'),
   listPromptSets: () => ipcRenderer.invoke('list-prompt-sets'),

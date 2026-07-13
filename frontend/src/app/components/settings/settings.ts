@@ -1,4 +1,4 @@
-import { Component, signal, OnInit, computed } from '@angular/core';
+import { Component, signal, OnInit, OnDestroy, computed } from '@angular/core';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
@@ -18,6 +18,12 @@ interface ModelOption {
   needsApiKey?: boolean;
 }
 
+interface DownloadComponent {
+  component: { id: string; name: string; description: string; category: 'tool' | 'whisper'; sizeBytes: number; recommended?: boolean };
+  state: 'available' | 'installed' | 'incompatible';
+  reason?: string;
+}
+
 @Component({
   selector: 'app-settings',
   imports: [
@@ -33,7 +39,7 @@ interface ModelOption {
   templateUrl: './settings.html',
   styleUrl: './settings.scss',
 })
-export class Settings implements OnInit {
+export class Settings implements OnInit, OnDestroy {
   // Single model for all AI tasks (summarization + metadata generation)
   metadataModel = signal('ollama:cogito:70b');
 
@@ -64,6 +70,10 @@ export class Settings implements OnInit {
   // provider's model-list fetch failed, or the API's top-N changed). Kept as a
   // selectable option so we never silently swap the user's saved choice.
   savedModelFallback = signal<ModelOption | null>(null);
+  downloadableComponents = signal<DownloadComponent[]>([]);
+  componentProgress = signal<Record<string, number>>({});
+  whisperModel = signal('small');
+  private removeComponentProgressListener?: () => void;
 
   // Model options for dropdown - filtered by configured providers
   modelOptions = computed<ModelOption[]>(() => {
@@ -139,12 +149,17 @@ export class Settings implements OnInit {
   ) {}
 
   async ngOnInit() {
+    this.removeComponentProgressListener = this.electron.onComponentProgress((progress) => {
+      this.componentProgress.update((current) => ({ ...current, [progress.id]: progress.pct }));
+    });
     // Load current settings from Electron
     try {
       const settings = await this.electron.getSettings();
 
       if (settings.outputDirectory) this.outputDirectory.set(settings.outputDirectory);
       if (settings.promptSet) this.selectedPromptSet.set(settings.promptSet);
+      if (settings.whisperModel) this.whisperModel.set(settings.whisperModel);
+      await this.loadComponents();
 
       // Load available prompt sets
       await this.loadPromptSets();
@@ -181,6 +196,34 @@ export class Settings implements OnInit {
     } catch (error) {
       this.notificationService.error('Settings Error', 'Failed to load settings: ' + (error as Error).message, false);
     }
+  }
+
+  ngOnDestroy() {
+    this.removeComponentProgressListener?.();
+  }
+
+  async loadComponents() {
+    this.downloadableComponents.set(await this.electron.listComponents());
+  }
+
+  async installComponent(id: string) {
+    const result = await this.electron.installComponent(id);
+    if (!result.ok) this.notificationService.error('Download failed', result.error || 'Component installation failed', false);
+    await this.loadComponents();
+  }
+
+  async uninstallComponent(id: string) {
+    const result = await this.electron.uninstallComponent(id);
+    if (!result.success) this.notificationService.error('Cannot remove model', result.error || 'Component removal failed', false);
+    await this.loadComponents();
+  }
+
+  formatBytes(bytes: number): string {
+    return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
+  }
+
+  installedWhisperModels(): DownloadComponent[] {
+    return this.downloadableComponents().filter((item) => item.component.category === 'whisper' && item.state === 'installed');
   }
 
   async loadPromptSets() {
@@ -259,7 +302,8 @@ export class Settings implements OnInit {
       ollamaModel: model,
       // Other settings
       outputDirectory: this.outputDirectory(),
-      promptSet: this.selectedPromptSet()
+      promptSet: this.selectedPromptSet(),
+      whisperModel: this.whisperModel()
     };
 
     try {

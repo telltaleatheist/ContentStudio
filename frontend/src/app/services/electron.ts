@@ -7,6 +7,11 @@ declare global {
       // Settings
       getSettings: () => Promise<any>;
       updateSettings: (settings: any) => Promise<any>;
+      listComponents: () => Promise<any[]>;
+      installComponent: (id: string) => Promise<{ id: string; ok: boolean; error?: string }>;
+      cancelComponentInstall: (id: string) => Promise<{ success: boolean }>;
+      uninstallComponent: (id: string) => Promise<{ success: boolean; error?: string }>;
+      onComponentProgress: (callback: (progress: any) => void) => () => void;
 
       // Prompt Sets (Metadata)
       listPromptSets: () => Promise<any>;
@@ -114,6 +119,31 @@ export class ElectronService {
   async updateSettings(settings: any): Promise<any> {
     if (!this.ipcRenderer) return { success: false };
     return await this.ipcRenderer.updateSettings(settings);
+  }
+
+  async listComponents(): Promise<any[]> {
+    if (!this.ipcRenderer) return [];
+    return await this.ipcRenderer.listComponents();
+  }
+
+  async installComponent(id: string): Promise<{ id: string; ok: boolean; error?: string }> {
+    if (!this.ipcRenderer) return { id, ok: false, error: 'Electron not available' };
+    return await this.ipcRenderer.installComponent(id);
+  }
+
+  async cancelComponentInstall(id: string): Promise<{ success: boolean }> {
+    if (!this.ipcRenderer) return { success: false };
+    return await this.ipcRenderer.cancelComponentInstall(id);
+  }
+
+  async uninstallComponent(id: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.ipcRenderer) return { success: false };
+    return await this.ipcRenderer.uninstallComponent(id);
+  }
+
+  onComponentProgress(callback: (progress: any) => void): () => void {
+    if (!this.ipcRenderer) return () => {};
+    return this.ipcRenderer.onComponentProgress(callback);
   }
 
   // Prompt Sets

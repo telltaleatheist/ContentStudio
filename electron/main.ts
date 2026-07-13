@@ -114,7 +114,8 @@ app.whenReady().then(async () => {
         claudeApiKey: '',
         defaultPlatform: 'youtube',
         defaultMode: 'individual',
-        outputDirectory: path.join(app.getPath('documents'), 'ContentStudio Output')
+        outputDirectory: path.join(app.getPath('documents'), 'ContentStudio Output'),
+        whisperModel: 'small'
       }
     });
 

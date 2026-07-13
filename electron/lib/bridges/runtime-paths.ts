@@ -5,6 +5,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import { expectedEntry, resolveEntry } from '../../components/component-manager';
 
 // Try to load electron app, but don't fail if not available
 let app: any = null;
@@ -105,6 +106,19 @@ export interface RuntimePaths {
   whisperModelsDir: string;
 }
 
+let selectedWhisperModel = 'small';
+
+export function setSelectedWhisperModel(model: string): void {
+  if (!['tiny', 'base', 'small'].includes(model)) {
+    throw new Error(`Unsupported Whisper model: ${model}`);
+  }
+  selectedWhisperModel = model;
+}
+
+export function getSelectedWhisperModel(): string {
+  return selectedWhisperModel;
+}
+
 /**
  * Get all runtime binary paths
  */
@@ -118,10 +132,9 @@ export function getRuntimePaths(): RuntimePaths {
   let whisperPath: string;
 
   if (isPackaged()) {
-    // Packaged: binaries in resources/utilities/bin/
-    ffmpegPath = path.join(resourcesPath, 'utilities', 'bin', `ffmpeg${ext}`);
-    ffprobePath = path.join(resourcesPath, 'utilities', 'bin', `ffprobe${ext}`);
-    whisperPath = path.join(resourcesPath, 'utilities', 'bin', getWhisperBinaryName());
+    ffmpegPath = resolveEntry('ffmpeg') || expectedEntry('ffmpeg');
+    ffprobePath = ffmpegPath ? path.join(path.dirname(ffmpegPath), `ffprobe${ext}`) : '';
+    whisperPath = resolveEntry('whisper-engine') || expectedEntry('whisper-engine');
   } else {
     // Development: ffmpeg from npm package, whisper from utilities/bin
     ffmpegPath = path.join(
@@ -141,11 +154,14 @@ export function getRuntimePaths(): RuntimePaths {
     whisperPath = path.join(resourcesPath, 'utilities', 'bin', getWhisperBinaryName());
   }
 
+  const installedModel = isPackaged()
+    ? (resolveEntry(`whisper-${selectedWhisperModel}`) || expectedEntry(`whisper-${selectedWhisperModel}`))
+    : null;
   return {
     ffmpeg: ffmpegPath,
     ffprobe: ffprobePath,
     whisper: whisperPath,
-    whisperModelsDir: path.join(resourcesPath, 'utilities', 'models'),
+    whisperModelsDir: installedModel ? path.dirname(installedModel) : path.join(resourcesPath, 'utilities', 'models'),
   };
 }
 
@@ -190,10 +206,6 @@ export function getWhisperLibraryPath(): string | undefined {
     return undefined;
   }
 
-  const resourcesPath = getResourcesPath();
-  const binDir = isPackaged()
-    ? path.join(resourcesPath, 'utilities', 'bin')
-    : path.join(resourcesPath, 'utilities', 'bin');
-
-  return binDir;
+  const whisper = getRuntimePaths().whisper;
+  return whisper ? path.dirname(whisper) : undefined;
 }

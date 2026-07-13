@@ -6,7 +6,8 @@ python/**/__pycache__/
 
 # Build outputs
 dist/
-dist-build/
+dist-build
+dist-build-exfat-backup/
 *.dmg
 *.dmg.blockmap
 
