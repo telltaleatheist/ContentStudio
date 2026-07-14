@@ -1,5 +1,17 @@
 import { Injectable } from '@angular/core';
 
+export interface StartupReadiness {
+  ready: boolean;
+  ai: { ready: boolean; provider: string; model: string; reason: string };
+  transcription: {
+    ready: boolean;
+    missingComponents: string[];
+    missingRequiredTools: Array<{ id: string; name: string }>;
+    installedWhisperModels: Array<{ id: string; name: string }>;
+    selectedModelInstalled: boolean;
+  };
+}
+
 // Declare window.launchpad interface for TypeScript
 declare global {
   interface Window {
@@ -7,6 +19,7 @@ declare global {
       // Settings
       getSettings: () => Promise<any>;
       updateSettings: (settings: any) => Promise<any>;
+      getStartupReadiness: () => Promise<StartupReadiness>;
       listComponents: () => Promise<any[]>;
       installComponent: (id: string) => Promise<{ id: string; ok: boolean; error?: string }>;
       cancelComponentInstall: (id: string) => Promise<{ success: boolean }>;
@@ -119,6 +132,23 @@ export class ElectronService {
   async updateSettings(settings: any): Promise<any> {
     if (!this.ipcRenderer) return { success: false };
     return await this.ipcRenderer.updateSettings(settings);
+  }
+
+  async getStartupReadiness(): Promise<StartupReadiness> {
+    if (!this.ipcRenderer) {
+      return {
+        ready: true,
+        ai: { ready: true, provider: 'web', model: '', reason: '' },
+        transcription: {
+          ready: true,
+          missingComponents: [],
+          missingRequiredTools: [],
+          installedWhisperModels: [],
+          selectedModelInstalled: true,
+        },
+      };
+    }
+    return await this.ipcRenderer.getStartupReadiness();
   }
 
   async listComponents(): Promise<any[]> {

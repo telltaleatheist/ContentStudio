@@ -1,4 +1,4 @@
-import { Component, signal } from '@angular/core';
+import { Component, signal, OnInit } from '@angular/core';
 import { RouterOutlet, RouterLink, RouterLinkActive } from '@angular/router';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatSidenavModule } from '@angular/material/sidenav';
@@ -9,6 +9,9 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { NotificationBellComponent } from './components/notification-bell/notification-bell';
 import { NotificationModalComponent } from './components/notification-modal/notification-modal';
 import { ElectronService } from './services/electron';
+import { EnvironmentSetupService } from './services/environment-setup';
+import { EnvironmentSetupDialog } from './components/environment-setup-dialog/environment-setup-dialog';
+import { EnvironmentDownloadDock } from './components/environment-download-dock/environment-download-dock';
 
 // Console log buffer
 const consoleLogBuffer: Array<{ timestamp: string; level: string; message: string }> = [];
@@ -53,19 +56,29 @@ const originalConsole = {
     MatButtonModule,
     MatTooltipModule,
     NotificationBellComponent,
-    NotificationModalComponent
+    NotificationModalComponent,
+    EnvironmentSetupDialog,
+    EnvironmentDownloadDock
   ],
   templateUrl: './app.html',
   styleUrl: './app.scss'
 })
-export class App {
+export class App implements OnInit {
   protected readonly title = signal('LaunchPad');
   protected readonly isDarkMode = signal(true);
   protected readonly sidenavOpened = signal(true);
 
-  constructor(private electron: ElectronService) {
+  constructor(private electron: ElectronService, private environmentSetup: EnvironmentSetupService) {
     // Set dark theme as default on init
     document.body.setAttribute('data-theme', 'dark');
+  }
+
+  async ngOnInit() {
+    try {
+      await this.environmentSetup.initialize();
+    } catch (error) {
+      console.error('Startup readiness check failed:', error);
+    }
   }
 
   toggleTheme() {

@@ -411,6 +411,77 @@ export function setupIpcHandlers(store: Store<any>) {
     return { success: true };
   });
 
+  ipcMain.handle('get-startup-readiness', async () => {
+    const settings = (store as any).store;
+    const provider = settings.metadataProvider || settings.aiProvider || 'openai';
+    const model = settings.metadataModel || settings.ollamaModel || '';
+    let aiReady = false;
+    let aiReason = '';
+
+    if (!model) {
+      aiReason = 'No AI model is selected.';
+    } else if (provider === 'openai' || provider === 'claude') {
+      const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
+      let keys: any = {};
+      if (fs.existsSync(apiKeysPath)) {
+        keys = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
+      }
+      const key = provider === 'openai' ? keys.openaiApiKey : keys.claudeApiKey;
+      aiReady = typeof key === 'string' && key.trim().length > 0;
+      if (!aiReady) aiReason = `The selected ${provider === 'openai' ? 'OpenAI' : 'Claude'} provider has no API key.`;
+    } else if (provider === 'ollama') {
+      const host = String(settings.ollamaHost || 'http://localhost:11434').replace(/\/$/, '');
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 4000);
+      try {
+        const response = await fetch(`${host}/api/tags`, { signal: controller.signal });
+        if (response.ok) {
+          const data = await response.json() as any;
+          const models = Array.isArray(data.models) ? data.models.map((item: any) => item.name) : [];
+          aiReady = models.includes(model);
+          if (!aiReady) aiReason = `The selected Ollama model (${model}) is not installed.`;
+        } else {
+          aiReason = `Ollama returned HTTP ${response.status}.`;
+        }
+      } catch {
+        aiReason = `Ollama is not reachable at ${host}.`;
+      } finally {
+        clearTimeout(timeout);
+      }
+    } else {
+      aiReason = `Unsupported AI provider: ${provider}.`;
+    }
+
+    const whisperModel = settings.whisperModel || 'small';
+    const requiredToolIds = ['ffmpeg', 'whisper-engine'];
+    const selectedModelId = `whisper-${whisperModel}`;
+    const componentStatuses = componentManager.listStatus();
+    const missingRequiredTools = requiredToolIds.flatMap((id: string) => {
+      const status = componentStatuses.find((item: any) => item.component.id === id);
+      return status?.state === 'installed' ? [] : [{ id, name: status?.component?.name || id }];
+    });
+    const installedWhisperModels = componentStatuses
+      .filter((status: any) => status.component.category === 'whisper' && status.state === 'installed')
+      .map((status: any) => ({ id: status.component.id, name: status.component.name }));
+    const selectedModelInstalled = installedWhisperModels.some((item: any) => item.id === selectedModelId);
+    const missingComponents = [
+      ...missingRequiredTools.map((item: any) => item.name),
+      ...(selectedModelInstalled ? [] : [componentStatuses.find((item: any) => item.component.id === selectedModelId)?.component.name || selectedModelId]),
+    ];
+
+    return {
+      ready: aiReady && missingComponents.length === 0,
+      ai: { ready: aiReady, provider, model, reason: aiReason },
+      transcription: {
+        ready: missingComponents.length === 0,
+        missingComponents,
+        missingRequiredTools,
+        installedWhisperModels,
+        selectedModelInstalled,
+      },
+    };
+  });
+
   // Ensure prompt sets directory exists
   ensurePromptSetsDirectory();
 
@@ -1344,7 +1415,8 @@ export function setupIpcHandlers(store: Store<any>) {
   // AI Setup - Check Ollama availability and get models
   ipcMain.handle('check-ollama', async () => {
     try {
-      const response = await fetch('http://localhost:11434/api/tags');
+      const host = String((store as any).get('ollamaHost', 'http://localhost:11434')).replace(/\/$/, '');
+      const response = await fetch(`${host}/api/tags`);
       if (!response.ok) {
         return { available: false, models: [] };
       }

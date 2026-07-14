@@ -1,0 +1,60 @@
+.download-dock {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 10030;
+  width: min(360px, calc(100vw - 40px));
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: 13px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-xl);
+}
+
+.dock-header { display: flex; align-items: center; min-height: 48px; }
+.dock-toggle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  align-self: stretch;
+  padding: 0 14px;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+.chevron { margin-left: auto; color: var(--text-secondary); }
+.dock-close { border: 0; background: transparent; color: var(--text-secondary); font-size: 1.25rem; padding: 10px 14px; cursor: pointer; }
+
+.status-orbit {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--primary-orange);
+  border-radius: 50%;
+  color: var(--primary-orange);
+  font-size: 0.7rem;
+}
+.status-orbit.spinning { border-color: rgba(255, 107, 53, 0.25); border-top-color: var(--primary-orange); animation: orbit 800ms linear infinite; }
+@keyframes orbit { to { transform: rotate(360deg); } }
+
+.aggregate-track, .item-track { height: 3px; background: var(--bg-tertiary); }
+.aggregate-track span, .item-track span { display: block; height: 100%; background: var(--gradient-primary); transition: width 180ms ease; }
+.dock-items { display: grid; gap: 12px; padding: 12px 14px 14px; border-top: 1px solid var(--border-color); }
+.dock-item { display: grid; gap: 6px; }
+.item-line { display: flex; justify-content: space-between; gap: 16px; font-size: 0.8rem; }
+.item-line strong { overflow: hidden; color: var(--text-primary); text-overflow: ellipsis; white-space: nowrap; }
+.item-line span, small { color: var(--text-secondary); }
+.item-line .failed { color: var(--danger-text); }
+.item-track { height: 4px; border-radius: 4px; overflow: hidden; }
+small { font-size: 0.72rem; line-height: 1.35; }
+
+@media (prefers-reduced-motion: reduce) {
+  .status-orbit.spinning { animation: none; }
+}

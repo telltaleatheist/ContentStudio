@@ -78,17 +78,35 @@
   justify-content: space-between;
   gap: 20px;
   padding: 14px 0;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .download-details {
   display: grid;
   gap: 4px;
 
-  span, small { color: rgba(0, 0, 0, 0.65); }
+  strong { color: var(--text-primary); }
+  span, small { color: var(--text-secondary); }
 }
 
 .whisper-default { margin-top: 8px; }
+
+.setup-required-card {
+  border: 1px solid #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.setup-required-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+
+  mat-icon { color: #f59e0b; }
+  h3 { margin: 0 0 6px; color: var(--text-primary); }
+  p { margin: 4px 0; color: var(--text-secondary); }
+}
+
+.settings-card mat-card-subtitle { color: var(--text-secondary) !important; }
 
 .settings-container {
   display: flex;

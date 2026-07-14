@@ -17,6 +17,26 @@
       <h2>Settings</h2>
     </div>
 
+    @if (setupRequired()) {
+      <mat-card class="setup-required-card">
+        <mat-card-content>
+          <div class="setup-required-content">
+            <mat-icon>build_circle</mat-icon>
+            <div>
+              <h3>Setup required</h3>
+              <p>ContentStudio needs AI and local transcription tools before it can process media.</p>
+              @if (setupNeedsAI()) {
+                <p><strong>AI:</strong> {{ setupAIReason() }}</p>
+              }
+              @if (setupNeedsTranscription()) {
+                <p><strong>Transcription:</strong> Download {{ setupMissingComponents().join(', ') }} below.</p>
+              }
+            </div>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    }
+
     <!-- AI Model Section -->
     <mat-card class="settings-card">
     <mat-card-header>

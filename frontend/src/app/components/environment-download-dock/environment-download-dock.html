@@ -1,0 +1,37 @@
+@if (visible()) {
+  <aside class="download-dock" aria-live="polite">
+    <div class="dock-header">
+      <button class="dock-toggle" type="button" (click)="setup.dockExpanded.set(!setup.dockExpanded())">
+        <span class="status-orbit" [class.spinning]="running()">
+          @if (!running()) { {{ failed() ? '!' : '✓' }} }
+        </span>
+        <span>{{ title() }}</span>
+        <span class="chevron">{{ setup.dockExpanded() ? '▾' : '▸' }}</span>
+      </button>
+      <button class="dock-close" type="button" aria-label="Dismiss downloads" (click)="setup.dockDismissed.set(true)">×</button>
+    </div>
+
+    @if (running()) {
+      <div class="aggregate-track"><span [style.width.%]="aggregateProgress()"></span></div>
+    }
+
+    @if (setup.dockExpanded()) {
+      <div class="dock-items">
+        @for (item of items(); track item.id) {
+          <div class="dock-item">
+            <div class="item-line">
+              <strong>{{ item.name }}</strong>
+              <span [class.failed]="item.state === 'failed'">
+                {{ item.state === 'done' ? 'Installed' : item.state === 'failed' ? 'Failed' : item.state === 'queued' ? 'Queued' : item.pct + '%' }}
+              </span>
+            </div>
+            @if (item.state === 'queued' || item.state === 'downloading') {
+              <div class="item-track"><span [style.width.%]="item.pct"></span></div>
+            }
+            @if (item.state === 'failed') { <small>{{ item.message }}</small> }
+          </div>
+        }
+      </div>
+    }
+  </aside>
+}

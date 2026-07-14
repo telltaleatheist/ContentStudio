@@ -10,6 +10,7 @@ const api = {
   // Settings
   getSettings: () => ipcRenderer.invoke('get-settings'),
   updateSettings: (settings: any) => ipcRenderer.invoke('update-settings', settings),
+  getStartupReadiness: () => ipcRenderer.invoke('get-startup-readiness'),
 
   // Downloadable transcription components
   listComponents: () => ipcRenderer.invoke('components:list'),

@@ -9,6 +9,8 @@ import { FormsModule } from '@angular/forms';
 import { ElectronService } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
 import { AiSetupWizard } from '../ai-setup-wizard/ai-setup-wizard';
+import { ActivatedRoute, Router } from '@angular/router';
+import type { Subscription } from 'rxjs';
 
 interface ModelOption {
   value: string;
@@ -73,7 +75,13 @@ export class Settings implements OnInit, OnDestroy {
   downloadableComponents = signal<DownloadComponent[]>([]);
   componentProgress = signal<Record<string, number>>({});
   whisperModel = signal('small');
+  setupRequired = signal(false);
+  setupNeedsAI = signal(false);
+  setupNeedsTranscription = signal(false);
+  setupAIReason = signal('');
+  setupMissingComponents = signal<string[]>([]);
   private removeComponentProgressListener?: () => void;
+  private routeSubscription?: Subscription;
 
   // Model options for dropdown - filtered by configured providers
   modelOptions = computed<ModelOption[]>(() => {
@@ -145,10 +153,22 @@ export class Settings implements OnInit, OnDestroy {
 
   constructor(
     private electron: ElectronService,
-    private notificationService: NotificationService
+    private notificationService: NotificationService,
+    private route: ActivatedRoute,
+    private router: Router
   ) {}
 
   async ngOnInit() {
+    this.routeSubscription = this.route.queryParamMap.subscribe((params) => {
+      const required = params.get('setup') === 'required';
+      const needsAI = params.get('ai') === 'required';
+      this.setupRequired.set(required);
+      this.setupNeedsAI.set(needsAI);
+      this.setupNeedsTranscription.set(params.get('transcription') === 'required');
+      this.setupAIReason.set(params.get('aiReason') || '');
+      this.setupMissingComponents.set((params.get('missing') || '').split('|').filter(Boolean));
+      if (required && needsAI) this.showWizard.set(true);
+    });
     this.removeComponentProgressListener = this.electron.onComponentProgress((progress) => {
       this.componentProgress.update((current) => ({ ...current, [progress.id]: progress.pct }));
     });
@@ -200,6 +220,7 @@ export class Settings implements OnInit, OnDestroy {
 
   ngOnDestroy() {
     this.removeComponentProgressListener?.();
+    this.routeSubscription?.unsubscribe();
   }
 
   async loadComponents() {
@@ -210,12 +231,37 @@ export class Settings implements OnInit, OnDestroy {
     const result = await this.electron.installComponent(id);
     if (!result.ok) this.notificationService.error('Download failed', result.error || 'Component installation failed', false);
     await this.loadComponents();
+    await this.refreshSetupReadiness();
   }
 
   async uninstallComponent(id: string) {
     const result = await this.electron.uninstallComponent(id);
     if (!result.success) this.notificationService.error('Cannot remove model', result.error || 'Component removal failed', false);
     await this.loadComponents();
+    await this.refreshSetupReadiness();
+  }
+
+  private async refreshSetupReadiness() {
+    const readiness = await this.electron.getStartupReadiness();
+    this.setupRequired.set(!readiness.ready);
+    this.setupNeedsAI.set(!readiness.ai.ready);
+    this.setupNeedsTranscription.set(!readiness.transcription.ready);
+    this.setupAIReason.set(readiness.ai.reason);
+    this.setupMissingComponents.set(readiness.transcription.missingComponents);
+    if (readiness.ready) {
+      await this.router.navigate([], {
+        relativeTo: this.route,
+        queryParams: {
+          setup: null,
+          ai: null,
+          transcription: null,
+          aiReason: null,
+          missing: null,
+        },
+        queryParamsHandling: 'merge',
+        replaceUrl: true,
+      });
+    }
   }
 
   formatBytes(bytes: number): string {
@@ -311,6 +357,7 @@ export class Settings implements OnInit, OnDestroy {
       if (result.success) {
         this.notificationService.success('Settings Saved', 'Your settings have been saved successfully', false);
         this.showSaveSuccess();
+        await this.refreshSetupReadiness();
       } else {
         this.notificationService.error('Save Failed', 'Failed to save settings', false);
       }
@@ -383,6 +430,7 @@ export class Settings implements OnInit, OnDestroy {
       }
 
       this.notificationService.success('AI Setup Complete', 'Your AI configuration has been saved. Please select a model from the dropdown.', false);
+      await this.refreshSetupReadiness();
     } catch (error) {
       this.notificationService.error('Settings Error', 'Failed to reload settings: ' + (error as Error).message, false);
     }

@@ -193,6 +193,17 @@ export class AiSetupWizard implements OnInit {
 
       // If Ollama is ready with models, go to done
       if (this.ollamaAvailable() && this.ollamaModels().length > 0) {
+        const settings = await this.electronService.getSettings();
+        const model = this.ollamaModels()[0];
+        await this.electronService.updateSettings({
+          ...settings,
+          aiProvider: 'ollama',
+          ollamaModel: model,
+          metadataProvider: 'ollama',
+          metadataModel: model,
+          summarizationProvider: 'ollama',
+          summarizationModel: model,
+        });
         this.currentStep.set('done');
       }
     } catch (error) {
@@ -232,6 +243,18 @@ export class AiSetupWizard implements OnInit {
 
       if (result.success) {
         await this.refreshAvailability();
+        const models = await this.electronService.getAvailableModels('claude');
+        if (!models.success || models.models.length === 0) throw new Error(models.error || 'No Claude models are available');
+        const settings = await this.electronService.getSettings();
+        await this.electronService.updateSettings({
+          ...settings,
+          aiProvider: 'claude',
+          ollamaModel: models.models[0].id,
+          metadataProvider: 'claude',
+          metadataModel: models.models[0].id,
+          summarizationProvider: 'claude',
+          summarizationModel: models.models[0].id,
+        });
         this.currentStep.set('done');
       } else {
         alert(`Failed to save API key: ${result.error || 'Unknown error'}`);
@@ -255,6 +278,18 @@ export class AiSetupWizard implements OnInit {
 
       if (result.success) {
         await this.refreshAvailability();
+        const models = await this.electronService.getAvailableModels('openai');
+        if (!models.success || models.models.length === 0) throw new Error(models.error || 'No OpenAI models are available');
+        const settings = await this.electronService.getSettings();
+        await this.electronService.updateSettings({
+          ...settings,
+          aiProvider: 'openai',
+          ollamaModel: models.models[0].id,
+          metadataProvider: 'openai',
+          metadataModel: models.models[0].id,
+          summarizationProvider: 'openai',
+          summarizationModel: models.models[0].id,
+        });
         this.currentStep.set('done');
       } else {
         alert(`Failed to save API key: ${result.error || 'Unknown error'}`);

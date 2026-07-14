@@ -1,0 +1,63 @@
+@if (aiWizardOpen()) {
+  <app-ai-setup-wizard (closed)="closeAIWizard()" (completed)="completeAIWizard()"></app-ai-setup-wizard>
+} @else if (setup.optionalDialogOpen()) {
+  <div class="setup-backdrop" role="presentation">
+    <section class="setup-dialog" role="dialog" aria-modal="true" aria-labelledby="setup-title">
+      <button class="dialog-close" type="button" aria-label="Close setup" (click)="setup.closeOptionalDialog()">×</button>
+      <header>
+        <span class="eyebrow">ContentStudio setup</span>
+        <h2 id="setup-title">Choose what powers your workflow</h2>
+        <p>Connect AI and choose a transcription model. You can change either later in Settings.</p>
+      </header>
+
+      @if (needsAI()) {
+        <div class="setup-section ai-section">
+          <div class="section-copy">
+            <span class="section-mark">AI</span>
+            <div>
+              <h3>Connect an AI provider</h3>
+              <p>{{ setup.readiness()?.ai?.reason }}</p>
+            </div>
+          </div>
+          <button class="secondary-action" type="button" (click)="configureAI()">Open AI setup</button>
+        </div>
+      }
+
+      @if (needsWhisper() && !whisperQueued()) {
+        <div class="setup-section whisper-section">
+          <div class="section-copy">
+            <span class="section-mark">TXT</span>
+            <div>
+              <h3>Choose a transcription model</h3>
+              <p>Larger models improve accuracy but take longer to download and transcribe.</p>
+            </div>
+          </div>
+
+          <div class="model-choices">
+            @for (item of setup.whisperModels(); track item.component.id) {
+              <label class="model-choice" [class.selected]="selectedWhisper() === item.component.id">
+                <input type="radio" name="whisper-model" [value]="item.component.id"
+                  [checked]="selectedWhisper() === item.component.id"
+                  (change)="selectedWhisper.set(item.component.id)">
+                <span class="choice-copy">
+                  <strong>{{ item.component.name }}</strong>
+                  <small>{{ item.component.description }}</small>
+                </span>
+                <span class="choice-size">{{ formatBytes(item.component.sizeBytes) }}</span>
+              </label>
+            }
+          </div>
+          <button class="primary-action" type="button" (click)="downloadWhisper()">Use this transcription model</button>
+        </div>
+      }
+
+      @if (whisperQueued()) {
+        <div class="queued-note">Your transcription model is downloading in the setup shelf.</div>
+      }
+
+      <footer>
+        <button type="button" class="skip-action" (click)="setup.closeOptionalDialog()">Set up later</button>
+      </footer>
+    </section>
+  </div>
+}
