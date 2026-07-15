@@ -777,7 +777,11 @@ export function setupIpcHandlers(store: Store<any>) {
         inputNotes: params.inputNotes || {}
       };
 
-      log.info('Prepared metadata params:', JSON.stringify(metadataParams, null, 2));
+      const safeMetadataParams = {
+        ...metadataParams,
+        aiApiKey: metadataParams.aiApiKey ? '***' : undefined
+      };
+      log.info('Prepared metadata params:', JSON.stringify(safeMetadataParams, null, 2));
 
       // Send progress update
       sendToRenderer('generation-progress', {

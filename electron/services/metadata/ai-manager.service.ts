@@ -1084,7 +1084,6 @@ export class AIManagerService {
         max_tokens: 16000,
         system: 'You are a helpful assistant. When asked to return JSON, output ONLY valid JSON with no markdown, no commentary, and no extra text. Start your response with { and end with }.',
         messages: [{ role: 'user', content: prompt }],
-        temperature: 0.3,
       });
 
       // Log why Claude stopped
