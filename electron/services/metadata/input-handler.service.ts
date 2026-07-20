@@ -7,6 +7,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as log from 'electron-log';
 import { WhisperService, SRTSegment } from './whisper.service';
+import type { TranscriptImportMeta } from './transcript-import.service';
+import {
+  parseTranscriptImport,
+  buildImportedContentItem,
+  isTranscriptImportPath,
+} from './transcript-import.service';
 
 export interface ContentItem {
   content: string;
@@ -14,6 +20,11 @@ export interface ContentItem {
   source?: string;
   processingNotes?: string;
   srtSegments?: SRTSegment[];
+  /** Preferred display title (used for the job/TXT name). Set for imported
+   *  transcripts so the project reads as the story title rather than a filename. */
+  title?: string;
+  /** Provenance + speaker/split data for transcripts imported from AutoCutStudio. */
+  importMeta?: TranscriptImportMeta;
 }
 
 export class InputDetector {
@@ -270,6 +281,14 @@ export class InputHandlerService {
   private processTranscriptFile(filePath: string, customNotes?: string): ContentItem {
     console.log(`[InputHandler] Processing transcript file: ${filePath}`);
 
+    // A .json file is treated as an AutoCutStudio transcript import: parse the
+    // word-level data into a fully-timestamped ContentItem (content + srtSegments
+    // + speaker attribution) so it lands in the same state a Whisper transcription
+    // would, without ever calling Whisper.
+    if (isTranscriptImportPath(filePath)) {
+      return this.processTranscriptImport(filePath, customNotes);
+    }
+
     try {
       let content = fs.readFileSync(filePath, 'utf-8');
 
@@ -293,6 +312,35 @@ export class InputHandlerService {
       console.error(`[InputHandler] Failed to read transcript file:`, error);
       throw new Error(`Failed to read transcript file: ${error}`);
     }
+  }
+
+  /**
+   * Process an AutoCutStudio transcript import (.json).
+   * Parses the word-level transcript into a ContentItem with plain-text content,
+   * timestamped srtSegments (grouped from words), and preserved mic/screen
+   * speaker attribution. Whisper is never invoked.
+   */
+  private processTranscriptImport(filePath: string, customNotes?: string): ContentItem {
+    log.info(`[InputHandler] Importing transcript: ${filePath}`);
+
+    let raw: string;
+    try {
+      raw = fs.readFileSync(filePath, 'utf-8');
+    } catch (error) {
+      throw new Error(`Failed to read transcript file: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    const parsed = parseTranscriptImport(raw, filePath);
+    if (!parsed.ok) {
+      throw new Error(`Invalid transcript import: ${parsed.error}`);
+    }
+
+    const item = buildImportedContentItem(parsed.data, filePath, customNotes);
+    log.info(
+      `[InputHandler] Imported "${item.title}": ${item.srtSegments?.length ?? 0} segments, ` +
+      `${item.content.length} chars, speakers=[${parsed.data.meta.speakers.map(s => s.id).join(', ')}]`
+    );
+    return item;
   }
 
   /**

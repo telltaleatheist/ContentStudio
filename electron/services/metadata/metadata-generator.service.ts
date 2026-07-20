@@ -532,6 +532,11 @@ export class MetadataGeneratorService {
    * Get clean title from content item
    */
   private static getCleanTitle(item: ContentItem): string {
+    // Prefer an explicit title (e.g. an imported story title) over the filename.
+    if (item.title && item.title.trim()) {
+      return item.title.trim();
+    }
+
     if (item.source) {
       // Extract filename without extension - handle both Windows and Unix paths
       const basename = item.source.split(/[/\\]/).pop() || item.source;
