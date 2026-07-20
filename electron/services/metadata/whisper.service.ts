@@ -39,6 +39,12 @@ export interface SRTSegment {
   start: string;
   end: string;
   text: string;
+  /** Speaker/track id this segment is attributed to (e.g. "mic", "screen").
+   *  Set only for imported transcripts that carry source attribution; Whisper
+   *  output leaves it undefined. */
+  speaker?: string;
+  /** Human-readable speaker label (e.g. "Mic", "Screen audio"). */
+  speakerLabel?: string;
 }
 
 interface TranscriptionJob {

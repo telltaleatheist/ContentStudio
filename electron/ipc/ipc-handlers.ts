@@ -9,6 +9,7 @@ import { AIManagerService } from '../services/metadata/ai-manager.service';
 import { MasterAnalyzerService } from '../services/metadata/master-analyzer.service';
 import { EpisodeSplitterService } from '../services/metadata/episode-splitter.service';
 import type { ContentItem } from '../services/metadata/input-handler.service';
+import { parseTranscriptImport } from '../services/metadata/transcript-import.service';
 
 /**
  * IPC Handlers
@@ -1701,6 +1702,52 @@ export function setupIpcHandlers(store: Store<any>) {
       return { success: false, error: String(error) };
     }
   });
+
+  // ==================== TRANSCRIPT IMPORT ====================
+
+  // Pick one or more AutoCutStudio transcript JSON files, validate them, and
+  // return a per-story summary the renderer turns into input items. The heavy
+  // lifting (words -> segments) happens later in the pipeline via InputHandler.
+  ipcMain.handle('import-transcript', async () => {
+    try {
+      const result = await dialog.showOpenDialog({
+        title: 'Import Transcript',
+        filters: [
+          { name: 'Transcript JSON', extensions: ['json'] },
+          { name: 'All Files', extensions: ['*'] }
+        ],
+        properties: ['openFile', 'multiSelections']
+      });
+
+      if (result.canceled || result.filePaths.length === 0) {
+        return { success: false, items: [], errors: [] };
+      }
+
+      const items: any[] = [];
+      const errors: string[] = [];
+
+      for (const filePath of result.filePaths) {
+        try {
+          const raw = await fs.promises.readFile(filePath, 'utf-8');
+          const parsed = parseTranscriptImport(raw, filePath);
+          if (parsed.ok) {
+            items.push({ path: filePath, ...parsed.data.summary });
+          } else {
+            errors.push(`${path.basename(filePath)}: ${parsed.error}`);
+          }
+        } catch (err) {
+          errors.push(`${path.basename(filePath)}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      return { success: items.length > 0, items, errors };
+    } catch (error) {
+      log.error('Error importing transcript:', error);
+      return { success: false, items: [], errors: [String(error)] };
+    }
+  });
+
+  // ==================== END TRANSCRIPT IMPORT ====================
 
   // ==================== EPISODE SPLITTER ====================
 

@@ -264,6 +264,39 @@ export class Inputs implements OnInit, OnDestroy {
     }
   }
 
+  /**
+   * Import one or more AutoCutStudio transcript JSON files. Each valid file
+   * becomes an input named after its story title; when its job runs, the
+   * transcript is loaded directly (no Whisper) and metadata is generated as usual.
+   */
+  async importTranscript() {
+    const result = await this.electron.importTranscript();
+
+    if (result.errors?.length) {
+      result.errors.forEach(err =>
+        this.notificationService.warning('Transcript Import', err));
+    }
+
+    if (result.success && result.items.length > 0) {
+      for (const item of result.items) {
+        this.inputsState.addItem({
+          type: 'transcript-import',
+          path: item.path,
+          displayName: item.title,
+          icon: 'record_voice_over',
+          selected: true,
+          promptSet: this.inputsState.masterPromptSet(),
+          generateChapters: true,
+        });
+      }
+      const count = result.items.length;
+      this.notificationService.success(
+        'Transcript Import',
+        `Imported ${count} transcript${count === 1 ? '' : 's'} — ready to generate (transcription skipped).`
+      );
+    }
+  }
+
   // Drag and drop support
   isDraggingOver = signal(false);
 
@@ -743,7 +776,9 @@ export class Inputs implements OnInit, OnDestroy {
       if (isYouTube && isIndividual) {
         nextJob.inputs.forEach(item => {
           console.log('Processing item:', item.type, item.path, 'generateChapters:', item.generateChapters);
-          if (item.type === 'video' && item.generateChapters !== false) {
+          // Videos and imported transcripts both carry timestamped segments, so
+          // both can produce chapters.
+          if ((item.type === 'video' || item.type === 'transcript-import') && item.generateChapters !== false) {
             chapterFlags[item.path] = true;
           }
         });
@@ -978,8 +1013,8 @@ export class Inputs implements OnInit, OnDestroy {
 
   // Helper to check if chapters should be available for an item
   canGenerateChapters(item: InputItem): boolean {
-    // Chapters available for any video or transcript file
-    return item.type === 'video' || item.type === 'transcript';
+    // Chapters available for any video, transcript file, or imported transcript
+    return item.type === 'video' || item.type === 'transcript' || item.type === 'transcript-import';
   }
 
   // Master chapters checkbox helpers

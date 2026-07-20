@@ -49,6 +49,9 @@ const api = {
   showInFolder: (filePath: string) => ipcRenderer.invoke('show-in-folder', filePath),
   checkDirectory: (dirPath: string) => ipcRenderer.invoke('check-directory', dirPath),
 
+  // Transcript import (AutoCutStudio)
+  importTranscript: () => ipcRenderer.invoke('import-transcript'),
+
   // Metadata generation
   generateMetadata: (params: any) => ipcRenderer.invoke('generate-metadata', params),
   cancelJob: (jobId: string) => ipcRenderer.invoke('cancel-job', jobId),

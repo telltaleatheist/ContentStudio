@@ -12,6 +12,24 @@ export interface StartupReadiness {
   };
 }
 
+export interface ImportedTranscriptSummary {
+  path: string;
+  title: string;
+  slug?: string;
+  number?: number;
+  sourceSession?: string;
+  language: string;
+  durationSeconds: number;
+  speakers: Array<{ id: string; label: string }>;
+  wordCount: number;
+}
+
+export interface ImportTranscriptResult {
+  success: boolean;
+  items: ImportedTranscriptSummary[];
+  errors: string[];
+}
+
 // Declare window.launchpad interface for TypeScript
 declare global {
   interface Window {
@@ -50,6 +68,9 @@ declare global {
       deleteDirectory: (dirPath: string) => Promise<void>;
       showInFolder: (filePath: string) => Promise<void>;
       checkDirectory: (dirPath: string) => Promise<{ exists: boolean; writable: boolean }>;
+
+      // Transcript import (AutoCutStudio)
+      importTranscript: () => Promise<ImportTranscriptResult>;
 
       // Metadata generation
       generateMetadata: (params: any) => Promise<any>;
@@ -232,6 +253,11 @@ export class ElectronService {
   async selectFiles(): Promise<{ success: boolean; files: string[] }> {
     if (!this.ipcRenderer) return { success: false, files: [] };
     return await this.ipcRenderer.selectFiles();
+  }
+
+  async importTranscript(): Promise<ImportTranscriptResult> {
+    if (!this.ipcRenderer) return { success: false, items: [], errors: ['Electron not available'] };
+    return await this.ipcRenderer.importTranscript();
   }
 
   async selectDirectory(): Promise<{ success: boolean; directory: string | null }> {
