@@ -39,9 +39,11 @@ import {
   VideoRecordValidationError,
 } from './analytics-types';
 import { AnalyticsStoreService } from './analytics-store.service';
+import { DistillationService } from './distillation.service';
 
 export const DEFAULT_INGEST_PORT = 43117;
 const MAX_BODY_BYTES = 20 * 1024 * 1024; // 20 MB — a full back-catalog batch fits comfortably
+const REDISTILL_DEBOUNCE_MS = 4000; // let a burst of per-channel ingest batches settle before re-distilling
 
 export interface IngestServerStatus {
   running: boolean;
@@ -53,17 +55,35 @@ export interface IngestServerStatus {
 export class IngestServerService {
   private server: http.Server | null = null;
   private store: AnalyticsStoreService;
+  private distillation: DistillationService;
   // Vestigial: kept only so getToken() can feed the ContentStudio frontend's
   // (now cosmetic) token display. No endpoint enforces it — see file header.
   private token: string;
   private port: number;
   private status: IngestServerStatus;
+  private redistillTimer: NodeJS.Timeout | null = null;
 
-  constructor(store: AnalyticsStoreService, port: number) {
+  constructor(store: AnalyticsStoreService, port: number, distillation: DistillationService) {
     this.store = store;
+    this.distillation = distillation;
     this.port = port;
     this.token = this.loadOrCreateToken();
     this.status = { running: false, port, error: null, lastIngestAt: null };
+  }
+
+  /**
+   * The extension pushes snapshots in per-channel batches. Re-distill once the
+   * pushes settle (debounced) so verdicts/insights reflect the new data with no
+   * manual "Run Distillation" — a burst of batches coalesces into a single run.
+   */
+  private scheduleRedistill(): void {
+    if (this.redistillTimer) clearTimeout(this.redistillTimer);
+    this.redistillTimer = setTimeout(() => {
+      this.redistillTimer = null;
+      this.distillation.runDistillation().catch((err) => {
+        console.error('[IngestServer] auto-distillation after ingest failed:', err);
+      });
+    }, REDISTILL_DEBOUNCE_MS);
   }
 
   /**
@@ -264,6 +284,7 @@ export class IngestServerService {
           const accepted = await this.store.appendSnapshots(body.snapshots as Snapshot[]);
           this.status = { ...this.status, lastIngestAt: new Date().toISOString() };
           console.log(`[IngestServer] Accepted ${accepted} snapshot(s)`);
+          if (accepted > 0) this.scheduleRedistill();
           this.sendJson(res, 200, { accepted });
         }
       } catch (error) {

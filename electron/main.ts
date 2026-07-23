@@ -133,9 +133,13 @@ app.whenReady().then(async () => {
     // If the port is taken the server records an error state (surfaced via the
     // analytics-get-ingest-info IPC) instead of silently picking another port.
     const analyticsStore = new AnalyticsStoreService(path.join(app.getPath('userData'), 'analytics'));
+    // Shared distillation service: the ingest server uses it to re-distill (debounced)
+    // whenever the extension pushes new snapshots, and the API collector reuses it too.
+    const distillation = new DistillationService(analyticsStore);
     const ingestServer = new IngestServerService(
       analyticsStore,
-      (store as any).get('analyticsIngestPort') || DEFAULT_INGEST_PORT
+      (store as any).get('analyticsIngestPort') || DEFAULT_INGEST_PORT,
+      distillation
     );
     await ingestServer.start();
 
@@ -145,12 +149,11 @@ app.whenReady().then(async () => {
     const userDataPath = app.getPath('userData');
     const youtubeAuth = new YouTubeAuthService(userDataPath, analyticsStore);
     const youtubeApi = new YouTubeApiService(youtubeAuth);
-    const collectorDistillation = new DistillationService(analyticsStore);
     apiCollector = new ApiCollectorService(
       analyticsStore,
       youtubeAuth,
       youtubeApi,
-      collectorDistillation,
+      distillation,
       analyticsStore.getBaseDir()
     );
 
