@@ -27,6 +27,12 @@ const FIRST_WEEK_TARGET_HOURS = 168;
 const FIRST_WEEK_TOLERANCE_HOURS = 48;
 
 const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
+// How far back channel insights (and thus the AI prompt block) look for "what works
+// now": baselines, packaging rankings, and search terms are drawn ONLY from videos
+// published within this window. Older videos' lifetime CTR is confounded by years of
+// stale feed impressions, and for a topical channel old topics aren't useful guidance.
+// Widen/narrow here (a natural future candidate for a per-channel UI setting).
+const INSIGHTS_WINDOW_MS = 180 * 24 * 60 * 60 * 1000;
 
 export interface DistillationSummary {
   channels: number;
@@ -261,25 +267,34 @@ export class DistillationService {
     const verdicts = this.store.loadVerdicts(channelId);
     const now = Date.now();
 
-    const firstWeeks = verdicts
+    // Recency window: insights — and therefore the AI prompt block — should reflect
+    // CURRENT performance, so restrict the learning set to videos published within
+    // INSIGHTS_WINDOW_MS. This is what keeps old, confounded, and off-topic videos
+    // (including long-dead uploads) out of the baselines, rankings, and search terms.
+    const windowStart = now - INSIGHTS_WINDOW_MS;
+    const recent = verdicts.filter((v) => {
+      const t = Date.parse(v.publishedAt);
+      return !Number.isNaN(t) && t >= windowStart;
+    });
+
+    const firstWeeks = recent
       .map((v) => v.firstWeek)
       .filter((fw): fw is NonNullable<VideoVerdict['firstWeek']> => fw !== null);
 
     const baselines: ChannelInsights['baselines'] = {
       // CTR baseline from lifetime (cumulative) CTR — first-week CTR is null across
       // the back-catalog, so the median would be empty. (Field name kept for the schema.)
-      medianCtrFirstWeek: median(verdicts.map((v) => v.lifetime.ctr).filter((v): v is number => v !== null)),
+      medianCtrFirstWeek: median(recent.map((v) => v.lifetime.ctr).filter((v): v is number => v !== null)),
       medianAvgPctViewed: median(firstWeeks.map((fw) => fw.avgPctViewed).filter((v): v is number => v !== null)),
       medianRetention30s: median(firstWeeks.map((fw) => fw.retention30s).filter((v): v is number => v !== null)),
       medianFirstWeekViews: median(firstWeeks.map((fw) => fw.views)),
     };
 
-    // Packaging rankings need enough reach to carry a real signal. Exclude near-
-    // zero-impression videos — unlisted / private uploads (never surfaced, so ~0
-    // impressions) and barely-seen items — whose CTR is statistically meaningless
-    // and would otherwise fill the "bottom packaging" list with irrelevant noise.
+    // Within the window, packaging rankings still need enough reach to carry a real
+    // signal — exclude near-zero-impression videos (unlisted / private / barely-seen),
+    // whose CTR is statistically meaningless.
     const MIN_PACKAGING_IMPRESSIONS = 1000;
-    const scored = verdicts.filter(
+    const scored = recent.filter(
       (v) => v.packagingScore !== null && (v.lifetime.impressions ?? 0) >= MIN_PACKAGING_IMPRESSIONS,
     );
 
