@@ -9,6 +9,7 @@ export interface InputItem {
   promptSet: string; // ID of the prompt set to use (e.g., "sample-youtube")
   notes?: string; // Optional notes/instructions for the AI (e.g., "focus on tax fraud")
   generateChapters?: boolean; // For video files: generate YouTube chapter markers (default: true)
+  splitEpisode?: boolean; // For transcript imports: mark for split-into-segments before generating
   textContent?: string; // For text-subject items: the actual text content
   // Master report specific fields
   masterReportPath?: string; // Path to the master report JSON file
@@ -82,7 +83,7 @@ export class InputsStateService {
   }
 
   addItem(item: InputItem) {
-    // Dedup by path (matching episode-splitter/master-analysis state services).
+    // Dedup by path.
     // For text subjects the path is the content, so adding the same text twice
     // is a no-op. Keeps @for track-by-path keys unique in the template.
     this.inputItems.update(items =>
@@ -92,6 +93,17 @@ export class InputsStateService {
 
   removeItem(index: number) {
     this.inputItems.update(items => items.filter((_, i) => i !== index));
+  }
+
+  /** Replace the item at `index` with `replacements` (splice in place). Used by
+   *  the split-episode flow to fan one transcript into N segment items. */
+  replaceItemAt(index: number, replacements: InputItem[]) {
+    this.inputItems.update(items => {
+      if (index < 0 || index >= items.length) return items;
+      const result = [...items];
+      result.splice(index, 1, ...replacements);
+      return result;
+    });
   }
 
   clearItems() {

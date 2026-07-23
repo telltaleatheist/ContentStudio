@@ -31,13 +31,6 @@ const api = {
   updatePromptSet: (id: string, promptSet: any) => ipcRenderer.invoke('update-prompt-set', id, promptSet),
   deletePromptSet: (id: string) => ipcRenderer.invoke('delete-prompt-set', id),
 
-  // Master Prompt Sets (Analysis)
-  listMasterPromptSets: () => ipcRenderer.invoke('list-master-prompt-sets'),
-  getMasterPromptSet: (id: string) => ipcRenderer.invoke('get-master-prompt-set', id),
-  createMasterPromptSet: (promptSet: any) => ipcRenderer.invoke('create-master-prompt-set', promptSet),
-  updateMasterPromptSet: (id: string, promptSet: any) => ipcRenderer.invoke('update-master-prompt-set', id, promptSet),
-  deleteMasterPromptSet: (id: string) => ipcRenderer.invoke('delete-master-prompt-set', id),
-
   // File operations
   selectFiles: () => ipcRenderer.invoke('select-files'),
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
@@ -51,6 +44,10 @@ const api = {
 
   // Transcript import (AutoCutStudio)
   importTranscript: () => ipcRenderer.invoke('import-transcript'),
+  analyzeTranscriptSplit: (filePath: string) =>
+    ipcRenderer.invoke('analyze-transcript-split', { filePath }),
+  commitTranscriptSplit: (filePath: string, cuts: Array<{ startSeconds: number; endSeconds: number; title?: string }>) =>
+    ipcRenderer.invoke('commit-transcript-split', { filePath, cuts }),
 
   // Metadata generation
   generateMetadata: (params: any) => ipcRenderer.invoke('generate-metadata', params),
@@ -96,19 +93,6 @@ const api = {
   // External URLs
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
 
-  // Master Analysis
-  selectMasterVideo: () => ipcRenderer.invoke('select-master-video'),
-  analyzeMaster: (params: { videoPath: string; masterPromptSet?: string; jobId?: string }) =>
-    ipcRenderer.invoke('analyze-master', params),
-  getMasterReport: (reportPath: string) => ipcRenderer.invoke('get-master-report', reportPath),
-  listMasterReports: () => ipcRenderer.invoke('list-master-reports'),
-  deleteMasterReport: (reportPath: string) => ipcRenderer.invoke('delete-master-report', reportPath),
-  onMasterAnalysisProgress: (callback: (progress: any) => void) => {
-    const listener = (_event: any, progress: any) => callback(progress);
-    ipcRenderer.on('master-analysis-progress', listener);
-    return () => ipcRenderer.removeListener('master-analysis-progress', listener);
-  },
-
   // Analytics (performance feedback loop)
   analyticsListChannels: () => ipcRenderer.invoke('analytics-list-channels'),
   analyticsAddChannel: (entry: any) => ipcRenderer.invoke('analytics-add-channel', entry),
@@ -125,20 +109,7 @@ const api = {
   youtubeDisconnectChannel: (channelId: string) => ipcRenderer.invoke('youtube-disconnect-channel', channelId),
   youtubeListConnections: () => ipcRenderer.invoke('youtube-list-connections'),
   youtubeCollectNow: (channelId?: string) => ipcRenderer.invoke('youtube-collect-now', channelId),
-  youtubeGetCollectorState: () => ipcRenderer.invoke('youtube-get-collector-state'),
-
-  // Episode Splitter
-  selectEpisodeAudio: () => ipcRenderer.invoke('select-episode-audio'),
-  analyzeEpisodes: (params: { audioPaths: string[]; jobId?: string }) =>
-    ipcRenderer.invoke('analyze-episodes', params),
-  listEpisodeReports: () => ipcRenderer.invoke('list-episode-reports'),
-  getEpisodeReport: (reportPath: string) => ipcRenderer.invoke('get-episode-report', reportPath),
-  deleteEpisodeReport: (reportPath: string) => ipcRenderer.invoke('delete-episode-report', reportPath),
-  onEpisodeSplitterProgress: (callback: (progress: any) => void) => {
-    const listener = (_event: any, progress: any) => callback(progress);
-    ipcRenderer.on('episode-splitter-progress', listener);
-    return () => ipcRenderer.removeListener('episode-splitter-progress', listener);
-  }
+  youtubeGetCollectorState: () => ipcRenderer.invoke('youtube-get-collector-state')
 };
 
 // Expose the API to the renderer process

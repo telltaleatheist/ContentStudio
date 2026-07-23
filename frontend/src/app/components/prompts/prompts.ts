@@ -24,19 +24,6 @@ interface PromptSetListItem {
   name: string;
 }
 
-interface MasterPromptSet {
-  id: string;
-  name: string;
-  description?: string;
-  prompt?: string;
-}
-
-interface MasterPromptSetListItem {
-  id: string;
-  name: string;
-  description?: string;
-}
-
 @Component({
   selector: 'app-prompts',
   standalone: true,
@@ -55,18 +42,10 @@ interface MasterPromptSetListItem {
   styleUrl: './prompts.scss',
 })
 export class Prompts implements OnInit {
-  // Active tab (0 = Metadata, 1 = Master Analysis)
-  activeTabIndex = signal(0);
-
   // Metadata prompt sets list
   promptSets = signal<PromptSetListItem[]>([]);
   selectedPromptSetId = signal<string | null>(null);
   currentPromptSet = signal<PromptSet | null>(null);
-
-  // Master prompt sets list
-  masterPromptSets = signal<MasterPromptSetListItem[]>([]);
-  selectedMasterPromptSetId = signal<string | null>(null);
-  currentMasterPromptSet = signal<MasterPromptSet | null>(null);
 
   // Edit mode signals (Metadata)
   editName = signal('');
@@ -74,26 +53,13 @@ export class Prompts implements OnInit {
   editInstructionsPrompt = signal('');
   editDescriptionLinks = signal('');
 
-  // Edit mode signals (Master)
-  editMasterName = signal('');
-  editMasterDescription = signal('');
-  editMasterPrompt = signal('');
-
   // Dialog states (Metadata)
   showCreateDialog = signal(false);
   showDeleteDialog = signal(false);
   promptSetToDelete = signal<string | null>(null);
 
-  // Dialog states (Master)
-  showMasterCreateDialog = signal(false);
-  showMasterDeleteDialog = signal(false);
-  masterPromptSetToDelete = signal<string | null>(null);
-
   // Create dialog fields (Metadata)
   newPromptSetName = signal('');
-
-  // Create dialog fields (Master)
-  newMasterPromptSetName = signal('');
 
   // Instructions Builder
   showBuilderDialog = signal(false);
@@ -110,20 +76,11 @@ export class Prompts implements OnInit {
   ) {}
 
   async ngOnInit() {
-    // Load both types of prompt sets
-    await Promise.all([
-      this.loadPromptSets(),
-      this.loadMasterPromptSets()
-    ]);
+    await this.loadPromptSets();
 
     // Select first metadata prompt set
     if (this.promptSets().length > 0) {
       this.selectPromptSet(this.promptSets()[0].id);
-    }
-
-    // Select first master prompt set
-    if (this.masterPromptSets().length > 0) {
-      this.selectMasterPromptSet(this.masterPromptSets()[0].id);
     }
   }
 
@@ -299,119 +256,5 @@ export class Prompts implements OnInit {
       }
     }
     this.closeBuilderDialog();
-  }
-
-  // ==================== MASTER PROMPT SETS ====================
-
-  async loadMasterPromptSets() {
-    try {
-      const result = await this.electron.listMasterPromptSets();
-      if (result.success) {
-        this.masterPromptSets.set(result.promptSets);
-      }
-    } catch (error) {
-      this.notificationService.error('Load Error', 'Failed to load master prompt sets: ' + (error as Error).message, false);
-    }
-  }
-
-  async selectMasterPromptSet(id: string) {
-    this.selectedMasterPromptSetId.set(id);
-    const result = await this.electron.getMasterPromptSet(id);
-    if (result.success) {
-      this.currentMasterPromptSet.set(result.promptSet);
-      this.editMasterName.set(result.promptSet.name);
-      this.editMasterDescription.set(result.promptSet.description || '');
-      this.editMasterPrompt.set(result.promptSet.prompt || '');
-    }
-  }
-
-  async saveCurrentMasterPromptSet() {
-    if (!this.selectedMasterPromptSetId()) return;
-
-    // Validate {transcript} is present in prompt
-    if (!this.editMasterPrompt().includes('{transcript}')) {
-      this.notificationService.error('Validation Error', 'Prompt must contain {transcript} placeholder', false);
-      return;
-    }
-
-    try {
-      const result = await this.electron.updateMasterPromptSet(
-        this.selectedMasterPromptSetId()!,
-        {
-          name: this.editMasterName(),
-          description: this.editMasterDescription(),
-          prompt: this.editMasterPrompt()
-        }
-      );
-
-      if (result.success) {
-        await this.loadMasterPromptSets();
-        this.notificationService.success('Saved', 'Master prompt set saved successfully', false);
-      } else {
-        this.notificationService.error('Save Error', result.error || 'Unknown error', false);
-      }
-    } catch (error) {
-      this.notificationService.error('Save Error', 'Failed to save master prompt set: ' + (error as Error).message, false);
-    }
-  }
-
-  openMasterCreateDialog() {
-    this.newMasterPromptSetName.set('');
-    this.showMasterCreateDialog.set(true);
-  }
-
-  closeMasterCreateDialog() {
-    this.showMasterCreateDialog.set(false);
-  }
-
-  async createNewMasterPromptSet() {
-    if (!this.newMasterPromptSetName().trim()) {
-      return;
-    }
-
-    try {
-      const result = await this.electron.createMasterPromptSet({
-        name: this.newMasterPromptSetName(),
-        description: '',
-        prompt: 'Analyze this transcript and identify sections.\n\n{transcript}'
-      });
-
-      if (result.success) {
-        await this.loadMasterPromptSets();
-        this.selectMasterPromptSet(result.id);
-        this.closeMasterCreateDialog();
-      }
-    } catch (error) {
-      this.notificationService.error('Create Error', 'Failed to create master prompt set: ' + (error as Error).message, false);
-    }
-  }
-
-  confirmMasterDelete(id: string) {
-    this.masterPromptSetToDelete.set(id);
-    this.showMasterDeleteDialog.set(true);
-  }
-
-  async deleteMasterPromptSet() {
-    const id = this.masterPromptSetToDelete();
-    if (!id) return;
-
-    try {
-      const result = await this.electron.deleteMasterPromptSet(id);
-      if (result.success) {
-        await this.loadMasterPromptSets();
-        this.showMasterDeleteDialog.set(false);
-        this.masterPromptSetToDelete.set(null);
-
-        // Select first available master prompt set
-        if (this.masterPromptSets().length > 0) {
-          this.selectMasterPromptSet(this.masterPromptSets()[0].id);
-        } else {
-          this.selectedMasterPromptSetId.set(null);
-          this.currentMasterPromptSet.set(null);
-        }
-      }
-    } catch (error) {
-      this.notificationService.error('Delete Error', 'Failed to delete master prompt set: ' + (error as Error).message, false);
-    }
   }
 }

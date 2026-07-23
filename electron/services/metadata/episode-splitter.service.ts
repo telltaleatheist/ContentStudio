@@ -125,6 +125,21 @@ interface AIEpisodeResponse {
   }>;
 }
 
+/**
+ * One AI-detected chapter — a contiguous subject/topic segment. Chapters TILE the
+ * whole transcript in order (chapter[i].endSeconds === chapter[i+1].startSeconds,
+ * first starts at 0, last ends at duration). The user groups consecutive chapters
+ * into output "stories" in the review UI.
+ */
+export interface TranscriptChapter {
+  index: number;            // 1-based, chronological
+  startSeconds: number;     // story-local, 0-based — where the subject begins
+  endSeconds: number;       // where it ends (= next chapter's start, or duration)
+  timestamp: string;        // H:MM:SS mirror of startSeconds
+  label: string;            // short AI subject label
+  verbalCue: boolean;       // explicit break cue detected nearby
+}
+
 export class EpisodeSplitterService {
   // Target and max episode duration in seconds
   private static readonly TARGET_EPISODE_SECONDS = 3600;    // 60 minutes
@@ -385,6 +400,141 @@ export class EpisodeSplitterService {
   }
 
   /**
+   * Transcript-based chapter detection (the "Split episode" feature).
+   *
+   * Takes already-timestamped SRT segments (e.g. from an imported AutoCutStudio
+   * transcript — no Whisper, no ffprobe) and asks the AI to segment the WHOLE
+   * transcript into consecutive subject "chapters" that tile 0..duration. The
+   * review UI then lets the user group consecutive chapters into output stories.
+   */
+  static async detectChapters(params: {
+    srtSegments: SRTSegment[];
+    totalDurationSeconds: number;
+    aiService: AIManagerService;
+    provider?: string;
+  }): Promise<TranscriptChapter[]> {
+    const { srtSegments, totalDurationSeconds, aiService } = params;
+    const provider = params.provider ?? 'claude';
+
+    if (!srtSegments || srtSegments.length === 0) {
+      throw new Error('Transcript has no segments to analyze.');
+    }
+
+    // Same char-budget sampling as the audio path so Ollama prompts aren't
+    // silently truncated. Whole segments are kept verbatim so quoted
+    // start_phrases still map against the full segment list.
+    const budgetChars = provider === 'ollama' ? 90000 : 300000;
+    const budgetedSegments = sampleSegmentsToBudget(srtSegments, budgetChars);
+    const transcript = buildSparseTimestampTranscript(budgetedSegments, 5);
+
+    const prompt = this.buildChaptersPrompt(totalDurationSeconds)
+      .replace('{transcript}', () => transcript); // function replacer: transcript may contain $-patterns
+
+    const response = await this.makeAIRequest(aiService, prompt);
+    if (!response) {
+      log.error('[TranscriptSplit] No response from AI');
+      return [];
+    }
+
+    const aiItems = this.parseAIResponse(response);
+    log.info(`[TranscriptSplit] AI proposed ${aiItems.length} chapters`);
+
+    // Map each start_phrase to a real timestamp, enforcing chronological order
+    // and a minimum spacing so near-duplicate starts collapse.
+    const MIN_GAP_SECONDS = 45;
+    const starts: Array<{ startSeconds: number; label: string; verbalCue: boolean }> = [];
+    let minTimestamp = 0;
+
+    for (const item of aiItems) {
+      const phrase = item.start_phrase || '';
+      const label = item.title?.trim() || 'Subject';
+      const ts = findPhraseTimestamp(phrase, srtSegments, 0.5, minTimestamp);
+      if (ts === null) {
+        log.warn(`[TranscriptSplit] Could not map chapter phrase: "${phrase.substring(0, 40)}"`);
+        continue;
+      }
+      if (ts > totalDurationSeconds - MIN_GAP_SECONDS) continue;
+      if (starts.length && ts - starts[starts.length - 1].startSeconds < MIN_GAP_SECONDS) continue;
+      minTimestamp = ts + 1;
+      starts.push({ startSeconds: ts, label, verbalCue: !!item.verbal_cue_nearby });
+    }
+
+    if (starts.length === 0) {
+      // Fall back to a single chapter spanning the whole transcript.
+      return [{
+        index: 1, startSeconds: 0, endSeconds: totalDurationSeconds,
+        timestamp: TimeUtils.secondsToYoutubeTime(0), label: 'Full transcript', verbalCue: false,
+      }];
+    }
+
+    // The first chapter always starts at 0 (force it, whatever the AI quoted).
+    starts[0].startSeconds = 0;
+
+    // Build tiling chapters: each ends where the next begins; last ends at duration.
+    const chapters: TranscriptChapter[] = starts.map((s, i) => ({
+      index: i + 1,
+      startSeconds: s.startSeconds,
+      endSeconds: i < starts.length - 1 ? starts[i + 1].startSeconds : totalDurationSeconds,
+      timestamp: TimeUtils.secondsToYoutubeTime(s.startSeconds),
+      label: s.label,
+      verbalCue: s.verbalCue,
+    }));
+
+    log.info(`[TranscriptSplit] ${chapters.length} chapters after mapping/dedup`);
+    return chapters;
+  }
+
+  /**
+   * Prompt for segmenting the WHOLE transcript into consecutive subject chapters.
+   * Keeps a `description` field so parseAIResponse's malformed-JSON recovery
+   * regex still works. {transcript} is filled by the caller.
+   */
+  private static buildChaptersPrompt(totalDurationSeconds: number): string {
+    const hours = Math.floor(totalDurationSeconds / 3600);
+    const minutes = Math.floor((totalDurationSeconds % 3600) / 60);
+    const durationStr = hours > 0
+      ? `${hours} hour${hours > 1 ? 's' : ''} ${minutes} minutes`
+      : `${minutes} minutes`;
+
+    return `You are analyzing a transcript from a long recording (total duration: ${durationStr}).
+Time markers in the form [H:MM:SS] (for example [1:35:00]) are inserted throughout the text every few minutes — each marks how far into the recording that point occurs. Use these markers to gauge where each moment falls.
+
+Your task: segment the ENTIRE transcript into consecutive CHAPTERS — one chapter per distinct subject, story, or topic — in chronological order covering the whole runtime from start to finish. Each chapter begins where the speaker clearly moves to a new subject. In this kind of content a genuine shift typically occurs every ~10-25 minutes. Do NOT invent breaks inside a single continuous subject — only start a new chapter at a real subject change.
+
+The FIRST chapter starts at the very beginning of the recording. Every following chapter starts at a real subject change. Together the chapters must span the whole runtime with no gaps.
+
+For each chapter provide:
+1. start_phrase: an exact quote (5-10 words) of the SPOKEN words at the moment the chapter begins (for the first chapter, the very first words spoken)
+2. title: a short label for the chapter's subject
+3. description: 1 sentence on what the chapter covers
+4. verbal_cue_nearby: true if there is an explicit break cue at its start (sign-off, "moving on...", an intro to a new segment), else false
+
+Return ONLY valid JSON:
+{
+  "episodes": [
+    {
+      "start_phrase": "exact quote from transcript",
+      "title": "Chapter Subject",
+      "description": "What the chapter covers...",
+      "verbal_cue_nearby": false
+    }
+  ]
+}
+
+CRITICAL RULES:
+- start_phrase MUST be verbatim spoken text copied from the transcript (5-10 consecutive words)
+- NEVER quote a [H:MM:SS] time marker as a start_phrase — those are inserted markers, not spoken words. Quote the actual words spoken at that point instead.
+- The transcript may be an evenly-sampled excerpt (some sentences omitted between lines) — quote start_phrase EXACTLY as it appears in the text provided, never bridge or paraphrase across gaps
+- The first chapter's start_phrase is the very first words of the transcript
+- DO NOT paraphrase or modify the text — copy EXACTLY as written
+- List chapters in chronological order across the whole runtime, not bunched early
+- Output valid JSON only, no markdown or extra text
+
+Transcript:
+{transcript}`;
+  }
+
+  /**
    * Convert seconds to SRT time format (hh:mm:ss,ms)
    */
   private static secondsToSrtTime(totalSeconds: number): string {
@@ -404,10 +554,18 @@ export class EpisodeSplitterService {
     transcript: string,
     srtSegments: SRTSegment[],
     totalDurationSeconds: number,
-    progressCallback?: (percent: number) => void
+    progressCallback?: (percent: number) => void,
+    bounds?: { targetSeconds: number; maxSeconds: number; balanceRatio: number },
+    promptTemplate?: string
   ): Promise<EpisodeBoundary[]> {
+    // Length bounds default to the static audio-path constants; the transcript
+    // split feature passes user-configured values instead.
+    const targetSeconds = bounds?.targetSeconds ?? this.TARGET_EPISODE_SECONDS;
+    const maxSeconds = bounds?.maxSeconds ?? this.MAX_EPISODE_SECONDS;
+    const balanceRatio = bounds?.balanceRatio ?? this.BALANCE_RATIO;
+
     // Calculate expected number of episodes
-    const targetEpisodeCount = Math.max(1, Math.round(totalDurationSeconds / this.TARGET_EPISODE_SECONDS));
+    const targetEpisodeCount = Math.max(1, Math.round(totalDurationSeconds / targetSeconds));
 
     // Format duration info for AI
     const hours = Math.floor(totalDurationSeconds / 3600);
@@ -417,7 +575,7 @@ export class EpisodeSplitterService {
       : `${minutes} minutes`;
 
     // Build the prompt
-    let prompt = SYSTEM_PROMPTS.EPISODE_SPLIT_PROMPT;
+    let prompt = promptTemplate ?? SYSTEM_PROMPTS.EPISODE_SPLIT_PROMPT;
     prompt = prompt.replace('{transcript}', () => transcript); // function replacer: transcript may contain $-patterns
     prompt = prompt.replace('{duration}', durationStr);
     prompt = prompt.replace('{episodeCount}', String(targetEpisodeCount));
@@ -463,8 +621,8 @@ export class EpisodeSplitterService {
     const PROPORTION_THRESHOLD = 1.5;
     const avgDuration = mappedEpisodes.length > 0
       ? mappedEpisodes.reduce((sum, ep) => sum + ep.durationSeconds, 0) / mappedEpisodes.length
-      : this.TARGET_EPISODE_SECONDS;
-    const splitThreshold = Math.min(this.MAX_EPISODE_SECONDS, avgDuration * PROPORTION_THRESHOLD);
+      : targetSeconds;
+    const splitThreshold = Math.min(maxSeconds, avgDuration * PROPORTION_THRESHOLD);
 
     const longEpisodes = mappedEpisodes.filter(ep => ep.durationSeconds > splitThreshold);
 
@@ -473,7 +631,7 @@ export class EpisodeSplitterService {
 
       for (const longEp of longEpisodes) {
         const durationMinutes = Math.round(longEp.durationSeconds / 60);
-        const numSplits = Math.ceil(longEp.durationSeconds / this.TARGET_EPISODE_SECONDS);
+        const numSplits = Math.ceil(longEp.durationSeconds / targetSeconds);
 
         if (numSplits < 2) continue; // Not worth splitting
 
@@ -519,7 +677,7 @@ export class EpisodeSplitterService {
         }
         mappedEpisodes[i].endTimestamp = TimeUtils.secondsToYoutubeTime(mappedEpisodes[i].endSeconds);
         mappedEpisodes[i].durationSeconds = mappedEpisodes[i].endSeconds - mappedEpisodes[i].startSeconds;
-        mappedEpisodes[i].exceedsMaxDuration = mappedEpisodes[i].durationSeconds > this.MAX_EPISODE_SECONDS;
+        mappedEpisodes[i].exceedsMaxDuration = mappedEpisodes[i].durationSeconds > maxSeconds;
         mappedEpisodes[i].episodeNumber = i + 1;
       }
 
@@ -531,7 +689,7 @@ export class EpisodeSplitterService {
     }
 
     // Balance episode durations so shortest >= 70% of longest
-    mappedEpisodes = this.balanceEpisodeDurations(mappedEpisodes, totalDurationSeconds);
+    mappedEpisodes = this.balanceEpisodeDurations(mappedEpisodes, totalDurationSeconds, { maxSeconds, balanceRatio });
 
     if (progressCallback) progressCallback(90);
 
@@ -550,9 +708,13 @@ export class EpisodeSplitterService {
    */
   private static balanceEpisodeDurations(
     episodes: EpisodeBoundary[],
-    totalDurationSeconds: number
+    totalDurationSeconds: number,
+    bounds?: { maxSeconds: number; balanceRatio: number }
   ): EpisodeBoundary[] {
     if (episodes.length <= 1) return episodes;
+
+    const maxSeconds = bounds?.maxSeconds ?? this.MAX_EPISODE_SECONDS;
+    const balanceRatio = bounds?.balanceRatio ?? this.BALANCE_RATIO;
 
     const ratio = () => {
       const durations = episodes.map(ep => ep.durationSeconds);
@@ -560,17 +722,17 @@ export class EpisodeSplitterService {
     };
 
     const currentRatio = ratio();
-    if (currentRatio >= this.BALANCE_RATIO) {
+    if (currentRatio >= balanceRatio) {
       log.info(`[EpisodeSplitter] Episodes already balanced (ratio ${currentRatio.toFixed(2)})`);
       return episodes;
     }
 
-    log.info(`[EpisodeSplitter] Balancing episodes (ratio ${currentRatio.toFixed(2)}, target >= ${this.BALANCE_RATIO})`);
+    log.info(`[EpisodeSplitter] Balancing episodes (ratio ${currentRatio.toFixed(2)}, target >= ${balanceRatio})`);
 
     // Phase 1 — iterative pairwise equalization (preserves AI boundaries as much as possible)
     const MAX_ITER = 20;
     for (let iter = 0; iter < MAX_ITER; iter++) {
-      if (ratio() >= this.BALANCE_RATIO) break;
+      if (ratio() >= balanceRatio) break;
 
       // Find the shortest episode
       let shortIdx = 0;
@@ -614,13 +776,13 @@ export class EpisodeSplitterService {
     // description and startPhrase attached to time ranges they no longer
     // describe — an honest imbalance is the lesser evil. Now that the model sees
     // [H:MM:SS] markers it should already spread boundaries across the runtime.
-    if (ratio() < this.BALANCE_RATIO) {
-      log.warn(`[EpisodeSplitter] Pairwise balancing insufficient (ratio ${ratio().toFixed(2)} < ${this.BALANCE_RATIO}); keeping AI boundaries rather than fabricating even splits`);
+    if (ratio() < balanceRatio) {
+      log.warn(`[EpisodeSplitter] Pairwise balancing insufficient (ratio ${ratio().toFixed(2)} < ${balanceRatio}); keeping AI boundaries rather than fabricating even splits`);
     }
 
     // Final cleanup
     for (let i = 0; i < episodes.length; i++) {
-      episodes[i].exceedsMaxDuration = episodes[i].durationSeconds > this.MAX_EPISODE_SECONDS;
+      episodes[i].exceedsMaxDuration = episodes[i].durationSeconds > maxSeconds;
       episodes[i].episodeNumber = i + 1;
     }
 

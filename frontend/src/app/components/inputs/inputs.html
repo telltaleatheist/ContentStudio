@@ -183,27 +183,40 @@
                     </button>
                   }
 
-                  <!-- Notes Button -->
+                  <!-- Notes Button (boxed, lights up orange when notes exist) -->
                   <button
-                    mat-raised-button
+                    mat-stroked-button
                     (click)="openNotesDialog(i)"
                     [matTooltip]="item.notes ? 'Edit custom AI instructions' : 'Add custom AI instructions'"
-                    [color]="item.notes ? 'accent' : ''"
-                    class="notes-btn">
-                    <mat-icon>{{ item.notes ? 'edit_note' : 'note_add' }}</mat-icon>
-                    {{ item.notes ? 'Notes' : 'Add Notes' }}
+                    class="box-toggle"
+                    [class.active]="!!item.notes">
+                    Notes
                   </button>
 
-                <!-- Chapter Generation Checkbox (only for YouTube videos in individual mode) -->
+                <!-- Chapters toggle (boxed, lit orange when on) -->
                 @if (canGenerateChapters(item)) {
-                  <mat-checkbox
-                    [checked]="item.generateChapters !== false"
-                    (change)="toggleChapterGeneration(i, $event.checked)"
-                    color="primary"
-                    matTooltip="Generate YouTube chapter markers from video transcript"
-                    class="chapter-checkbox">
+                  <button
+                    mat-stroked-button
+                    class="box-toggle"
+                    [class.active]="item.generateChapters !== false"
+                    [matTooltip]="(item.generateChapters !== false ? 'Chapters on' : 'Chapters off') + ' — generate YouTube chapter markers'"
+                    (click)="toggleChapterGeneration(i, item.generateChapters === false)">
                     Chapters
-                  </mat-checkbox>
+                  </button>
+                }
+
+                <!-- Split Episode (imported transcripts only) -->
+                @if (isTranscriptImport(item)) {
+                  <button
+                    mat-raised-button
+                    color="primary"
+                    class="split-btn"
+                    [disabled]="splittingIndex() !== null"
+                    matTooltip="Detect chapters and group them into separate stories"
+                    (click)="openSplitDialog(i)">
+                    <mat-icon>content_cut</mat-icon>
+                    Split
+                  </button>
                 }
 
                 <!-- Remove Button -->
