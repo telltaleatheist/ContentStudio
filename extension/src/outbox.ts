@@ -46,8 +46,8 @@ export interface FlushResult {
   remaining: number;
   /**
    * Set when the flush stopped early because of an environmental failure
-   * (unreachable / unauthorized / unexpected-response) that would fail every
-   * remaining entry too. The failing entry stays queued.
+   * (unreachable / unexpected-response) that would fail every remaining entry
+   * too. The failing entry stays queued.
    */
   stopped: { kind: IngestFailureKind; message: string } | null;
   /**
@@ -72,7 +72,7 @@ async function sendEntry(entry: OutboxEntry): Promise<void> {
  * - Success: entry is removed.
  * - IngestError 'validation': entry stays queued, error recorded, flush
  *   continues (the failure is specific to that payload).
- * - IngestError 'unreachable' / 'unauthorized' / 'unexpected-response':
+ * - IngestError 'unreachable' / 'unexpected-response':
  *   entry stays queued and the flush stops (environmental — the rest would
  *   fail identically).
  *

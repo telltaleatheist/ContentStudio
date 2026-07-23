@@ -5,15 +5,23 @@
  * companion browser extension posts YouTube Studio analytics to.
  *
  * Endpoints:
- *   GET  /health             -> 200 {"ok":true,"app":"contentstudio"}   (no auth)
- *   GET  /analytics/channels -> 200 {channels: [{channelId,name}]}   (Bearer)
+ *   GET  /health             -> 200 {"ok":true,"app":"contentstudio"}
+ *   GET  /analytics/channels -> 200 {channels: [{channelId,name}]}
  *   POST /analytics/videos   -> body {videos: VideoRecord[]}   -> upsert, 200 {accepted:N}
  *   POST /analytics/ingest   -> body {snapshots: Snapshot[]}   -> validate+append, 200 {accepted:N}
  *
- * Auth: Bearer token (Authorization: Bearer <token>) on the POST endpoints and
- * GET /analytics/channels.
- * The token is auto-generated (crypto.randomBytes hex) on first run and
- * persisted at <analytics dir>/ingest-token.
+ * Auth: NONE — there is no token to configure. Because the server is bound to
+ * 127.0.0.1, the only realistic attacker is a malicious web page the user
+ * visits that tries to POST to 127.0.0.1. Such cross-site browser requests
+ * ALWAYS carry an `Origin: http(s)://…` header, so /analytics/channels,
+ * /analytics/videos and /analytics/ingest reject any request whose Origin
+ * starts with http:// or https:// (403) as a zero-config CSRF safeguard.
+ * Requests with no Origin (curl / local tools) or a chrome-extension:// Origin
+ * (the companion extension) are allowed. GET /health is fully open.
+ *
+ * A random token is still generated and persisted at <analytics dir>/ingest-token
+ * and exposed via getToken() for the ContentStudio frontend to display, but it
+ * is VESTIGIAL — no endpoint enforces it.
  *
  * Port: default 43117, overridable via the `analyticsIngestPort` settings key.
  * If the port is already taken the server does NOT silently pick another one —
@@ -45,6 +53,8 @@ export interface IngestServerStatus {
 export class IngestServerService {
   private server: http.Server | null = null;
   private store: AnalyticsStoreService;
+  // Vestigial: kept only so getToken() can feed the ContentStudio frontend's
+  // (now cosmetic) token display. No endpoint enforces it — see file header.
   private token: string;
   private port: number;
   private status: IngestServerStatus;
@@ -74,6 +84,10 @@ export class IngestServerService {
     return token;
   }
 
+  /**
+   * Returns the vestigial ingest token. Endpoints no longer enforce it; this
+   * exists only so IPC can surface it on ContentStudio's Analytics page.
+   */
   getToken(): string {
     return this.token;
   }
@@ -164,15 +178,36 @@ export class IngestServerService {
     });
   }
 
-  private isAuthorized(req: http.IncomingMessage): boolean {
-    const header = req.headers['authorization'];
-    if (typeof header !== 'string' || !header.startsWith('Bearer ')) {
-      return false;
+  /**
+   * Zero-config CSRF safeguard for the /analytics/* endpoints.
+   *
+   * The server is localhost-bound (127.0.0.1), so the only realistic attacker
+   * is a malicious web page the user visits that tries to POST to 127.0.0.1.
+   * A browser ALWAYS attaches an `Origin: http(s)://…` header to such a
+   * cross-site request, so rejecting any http/https Origin blocks the CSRF
+   * vector. The companion extension sends `Origin: chrome-extension://…` (or no
+   * Origin at all) and local tools (curl) send no Origin — both are allowed.
+   *
+   * Returns true only when the request looks like a cross-origin WEB request
+   * (Origin present and http:// or https://); such requests must be rejected
+   * with 403 before their body is read.
+   */
+  private isCrossOriginWebRequest(req: http.IncomingMessage): boolean {
+    const header = req.headers['origin']; // Node lowercases header names, so this is case-insensitive.
+    const origin = Array.isArray(header) ? header[0] : header;
+    // WHITELIST (not blacklist): allow ONLY the two shapes we actually expect —
+    //   (a) no Origin header at all (curl / local tools / the extension SW), or
+    //   (b) the companion extension (chrome-extension://…).
+    // Everything else is rejected, including the opaque `null` origin that a
+    // sandboxed iframe / data: URL sends — otherwise a malicious page could use
+    // one to bypass an http(s)-only check. Node only ever exposes one Origin.
+    if (typeof origin !== 'string' || origin === '') {
+      return false; // no Origin -> allow
     }
-    const presented = header.slice('Bearer '.length).trim();
-    const expected = Buffer.from(this.token);
-    const actual = Buffer.from(presented);
-    return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+    if (origin.toLowerCase().startsWith('chrome-extension://')) {
+      return false; // the companion extension -> allow
+    }
+    return true; // any other Origin (http/https/null/…) -> reject as cross-origin web
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -185,10 +220,10 @@ export class IngestServerService {
 
     // The companion extension pulls its channel list from here instead of being
     // configured by hand — the channels ContentStudio already has registered
-    // (with OAuth) are the single source of truth. Bearer-authed like the POSTs.
+    // (with OAuth) are the single source of truth. CSRF-guarded like the POSTs.
     if (req.method === 'GET' && url === '/analytics/channels') {
-      if (!this.isAuthorized(req)) {
-        this.sendJson(res, 401, { error: 'Missing or invalid bearer token' });
+      if (this.isCrossOriginWebRequest(req)) {
+        this.sendJson(res, 403, { error: 'cross-origin web requests are not allowed' });
         return;
       }
       const channels = this.store.listChannels().map((c) => ({ channelId: c.channelId, name: c.name }));
@@ -197,8 +232,9 @@ export class IngestServerService {
     }
 
     if (req.method === 'POST' && (url === '/analytics/videos' || url === '/analytics/ingest')) {
-      if (!this.isAuthorized(req)) {
-        this.sendJson(res, 401, { error: 'Missing or invalid bearer token' });
+      // CSRF guard: reject cross-origin web requests BEFORE reading the body.
+      if (this.isCrossOriginWebRequest(req)) {
+        this.sendJson(res, 403, { error: 'cross-origin web requests are not allowed' });
         return;
       }
 

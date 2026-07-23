@@ -15,12 +15,7 @@
     <div class="field">
       <label for="port">Port</label>
       <input id="port" type="number" min="1" max="65535" step="1">
-      <div class="hint">The localhost port ContentStudio's ingest server listens on (default 43117). Shown on ContentStudio's Analytics page.</div>
-    </div>
-    <div class="field">
-      <label for="token">Token</label>
-      <input id="token" type="password" autocomplete="off" spellcheck="false">
-      <div class="hint">Paste the bearer token from ContentStudio's Analytics page.</div>
+      <div class="hint">The localhost port ContentStudio's ingest server listens on (default 43117). Shown on ContentStudio's Analytics page. No token is needed — the connection requires no configuration beyond the port.</div>
     </div>
   </section>
 
@@ -33,7 +28,7 @@
 
   <section>
     <h2>Channels (from ContentStudio)</h2>
-    <div class="hint" style="margin-bottom: 8px;">Channels are pulled live from ContentStudio — the app already has them registered, so there is nothing to configure here. Save the port and token above, then Refresh.</div>
+    <div class="hint" style="margin-bottom: 8px;">Channels are pulled live from ContentStudio — the app already has them registered, so there is nothing to configure here. Save the port above, then Refresh.</div>
     <div id="channels-readonly"></div>
     <div class="actions" style="margin-top: 10px;">
       <button id="refresh-channels" type="button" class="secondary">Refresh</button>

@@ -12,9 +12,9 @@
 //   - Flushes the outbox after every cycle (and on manual "Sync now").
 //   - onInstalled: initializes default settings and the alarm.
 //
-// No fallbacks: if the channel list can't be fetched (ContentStudio down or bad
-// token) the cycle records that as its channelSourceError and stops — it never
-// collects against a stale/cached list.
+// No fallbacks: if the channel list can't be fetched (ContentStudio down) the
+// cycle records that as its channelSourceError and stops — it never collects
+// against a stale/cached list.
 
 import { CollectorNotImplementedError, collectChannel } from './collector';
 import { enqueueSnapshots, enqueueVideos, flushOutbox, outboxDepth, type FlushResult } from './outbox';
@@ -75,8 +75,8 @@ async function doRunCollectionCycle(trigger: CycleSummary['trigger']): Promise<C
   const startedAt = new Date().toISOString();
 
   // The channel list comes LIVE from ContentStudio — never a stored/stale list.
-  // If it can't be fetched (app down or bad token), there is nothing to collect
-  // AND nothing could be pushed anyway, so record the distinct error and stop.
+  // If it can't be fetched (app down), there is nothing to collect AND nothing
+  // could be pushed anyway, so record the distinct error and stop.
   let channels;
   try {
     channels = await fetchChannels();

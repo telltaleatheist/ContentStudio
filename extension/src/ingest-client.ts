@@ -1,10 +1,15 @@
 // HTTP client for the ContentStudio desktop app's localhost ingest API.
 //
 // Endpoints (base http://127.0.0.1:<port>, port from settings, default 43117):
-//   GET  /health             (no auth)       -> { ok: true, app: "contentstudio" }
-//   GET  /analytics/channels (Bearer token)  -> { channels: [{ channelId, name }] }
-//   POST /analytics/videos   (Bearer token)  -> body { videos: VideoRecord[] }
-//   POST /analytics/ingest   (Bearer token)  -> body { snapshots: Snapshot[] }
+//   GET  /health             -> { ok: true, app: "contentstudio" }
+//   GET  /analytics/channels -> { channels: [{ channelId, name }] }
+//   POST /analytics/videos   -> body { videos: VideoRecord[] }
+//   POST /analytics/ingest   -> body { snapshots: Snapshot[] }
+//
+// No auth: the server is localhost-bound and requires no token. As a CSRF guard
+// it rejects cross-origin web requests (Origin: http(s)://…) with 403; this
+// extension sends a chrome-extension:// Origin (or none) and is allowed, so no
+// Authorization header is sent on any call.
 //
 // Failure handling policy (see README "No fallbacks"):
 //   Every failure is a DISTINCT typed state that must reach the UI unchanged.
@@ -14,13 +19,11 @@ import type { Snapshot, VideoRecord } from './types';
 import { getSettings, type ChannelConfig } from './settings';
 
 export type IngestFailureKind =
-  /** HTTP 401 — the bearer token is missing or was rejected. */
-  | 'unauthorized'
   /** HTTP 400 — ContentStudio rejected the payload; details body is logged and preserved. */
   | 'validation'
   /** Network-level failure (connection refused) — the app is not running or the port is wrong. */
   | 'unreachable'
-  /** Anything else: unexpected HTTP status or a response body that is not ContentStudio's. */
+  /** Anything else: unexpected HTTP status (e.g. a 403 CSRF rejection) or a response body that is not ContentStudio's. */
   | 'unexpected-response';
 
 export class IngestError extends Error {
@@ -44,7 +47,6 @@ export class IngestError extends Error {
 export type HealthResult =
   | { state: 'connected'; app: string }
   | { state: 'unreachable'; detail: string }
-  | { state: 'unauthorized'; detail: string }
   | { state: 'unexpected-response'; detail: string };
 
 async function baseUrl(): Promise<string> {
@@ -78,12 +80,6 @@ export async function checkHealth(): Promise<HealthResult> {
       detail: `No response from ${base} — ContentStudio is not running, or the port is wrong.`,
     };
   }
-  if (response.status === 401) {
-    return {
-      state: 'unauthorized',
-      detail: `GET /health returned 401 — the server at ${base} rejected the request.`,
-    };
-  }
   if (!response.ok) {
     return {
       state: 'unexpected-response',
@@ -104,19 +100,17 @@ export async function checkHealth(): Promise<HealthResult> {
  * GET /analytics/channels — the live channel list ContentStudio has registered.
  * This is the SINGLE SOURCE OF TRUTH for which channels the collector covers;
  * the extension no longer stores a hand-entered list. Throws IngestError with a
- * DISTINCT kind on every failure (unreachable = app not running, unauthorized =
- * bad token, unexpected-response = wrong shape / other status). An EMPTY list is
- * a valid success (ContentStudio has no channels registered yet) — NOT an error.
+ * DISTINCT kind on every failure (unreachable = app not running,
+ * unexpected-response = wrong shape / other status such as a 403 CSRF
+ * rejection). An EMPTY list is a valid success (ContentStudio has no channels
+ * registered yet) — NOT an error.
  */
 export async function fetchChannels(): Promise<ChannelConfig[]> {
   const settings = await getSettings();
   const url = `http://127.0.0.1:${settings.port}/analytics/channels`;
   let response: Response;
   try {
-    response = await fetch(url, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${settings.token}` },
-    });
+    response = await fetch(url, { method: 'GET' });
   } catch (err) {
     throw new IngestError(
       'unreachable',
@@ -125,13 +119,6 @@ export async function fetchChannels(): Promise<ChannelConfig[]> {
     );
   }
 
-  if (response.status === 401) {
-    throw new IngestError(
-      'unauthorized',
-      'ContentStudio rejected the token (HTTP 401). Paste a fresh token from the Analytics page into Options.',
-      { status: 401, details: await readBody(response) },
-    );
-  }
   if (!response.ok) {
     throw new IngestError(
       'unexpected-response',
@@ -175,10 +162,7 @@ async function post(path: string, body: unknown): Promise<void> {
   try {
     response = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${settings.token}`,
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
   } catch (err) {
@@ -189,13 +173,6 @@ async function post(path: string, body: unknown): Promise<void> {
     );
   }
 
-  if (response.status === 401) {
-    throw new IngestError(
-      'unauthorized',
-      'ContentStudio rejected the token (HTTP 401). Paste a fresh token from the Analytics page into Options.',
-      { status: 401, details: await readBody(response) },
-    );
-  }
   if (response.status === 400) {
     const details = await readBody(response);
     // Validation details are load-bearing for debugging schema drift — always log them.

@@ -1,6 +1,7 @@
-// Options page: edit the ContentStudio port + bearer token. The channel list is
-// NOT edited here — it is pulled live from ContentStudio (GET /analytics/channels)
-// and shown read-only, with a Refresh button.
+// Options page: edit the ContentStudio port. There is no token — the ingest
+// server requires no auth. The channel list is NOT edited here — it is pulled
+// live from ContentStudio (GET /analytics/channels) and shown read-only, with a
+// Refresh button.
 
 import { getSettings, saveSettings, type Settings } from './settings';
 import { fetchChannels, IngestError } from './ingest-client';
@@ -36,8 +37,6 @@ async function renderChannels(): Promise<void> {
     container.className = 'channel-error';
     if (err instanceof IngestError && err.kind === 'unreachable') {
       container.textContent = 'ContentStudio is not reachable — start the app, then check the port above and Refresh.';
-    } else if (err instanceof IngestError && err.kind === 'unauthorized') {
-      container.textContent = 'ContentStudio rejected the token (401) — paste a fresh token from its Analytics page, Save, then Refresh.';
     } else {
       container.textContent = `Could not load channels — ${err instanceof Error ? err.message : String(err)}`;
     }
@@ -75,7 +74,6 @@ async function renderChannels(): Promise<void> {
 async function load(): Promise<void> {
   const settings = await getSettings();
   el<HTMLInputElement>('port').value = String(settings.port);
-  el<HTMLInputElement>('token').value = settings.token;
   await renderChannels();
 }
 
@@ -87,12 +85,10 @@ async function save(): Promise<void> {
     return;
   }
 
-  const token = el<HTMLInputElement>('token').value.trim();
-
-  const settings: Settings = { port, token };
+  const settings: Settings = { port };
   await saveSettings(settings);
   showFeedback('Saved.', false);
-  // Re-fetch with the just-saved connection so the list reflects the new port/token.
+  // Re-fetch with the just-saved connection so the list reflects the new port.
   await renderChannels();
 }
 
