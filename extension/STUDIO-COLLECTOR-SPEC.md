@@ -59,14 +59,14 @@ as the user-facing config.
     { "type": "VIDEO_THUMBNAIL_IMPRESSIONS" },
     { "type": "VIDEO_THUMBNAIL_IMPRESSIONS_VTR" },   // <-- impressions CTR, %  (THE gap metric)
     { "type": "EXTERNAL_VIEWS" },
-    { "type": "EXTERNAL_WATCH_TIME" },               // hours
+    { "type": "EXTERNAL_WATCH_TIME" },               // MILLISECONDS (see holder note)
     { "type": "SUBSCRIBERS_NET_CHANGE" },
     { "type": "AVERAGE_WATCH_PERCENTAGE" }
   ],
   "restricts": [{ "dimension": { "type": "USER" }, "inValues": ["<CHANNEL_ID>"] }],
   "orders": [{ "metric": { "type": "EXTERNAL_VIEWS" }, "direction": "ANALYTICS_ORDER_DIRECTION_DESC" }],
   "timeRange": { "dateIdRange": { "inclusiveStart": 20080101, "exclusiveEnd": <YYYYMMDD tomorrow> } },
-  "limit": { "pageSize": 500, "pageOffset": 0 },
+  "limit": { "pageSize": 10000, "pageOffset": 0 },
   "currency": "USD",
   "returnDataInNewFormat": true,
   "limitedToBatchedData": false
@@ -76,8 +76,20 @@ as the user-facing config.
 - **Lifetime cumulative counters**: an all-time `timeRange` (start 2008-01-01) returns each
   video's lifetime totals — exactly matching the Snapshot contract. For windowed values, diff
   two snapshots (never trust a windowed query to be the cumulative value).
-- **Pagination**: `pageSize` 500 returned all 500 of this channel's videos in one call. Page via
-  `pageOffset` for channels with more. (Studio's own UI uses pageSize 50.)
+- **Pagination — CORRECTED 2026-07-22 (end-to-end live validation of the extension collector):**
+  `pageOffset > 0` is REJECTED with HTTP 400 ("invalid argument") — there is NO offset paging.
+  The endpoint returns up to `pageSize` rows in a single request, and it CAPS pageSize: 10000 is
+  accepted (returned a full 1,559-video catalog in one call), 15000+ returns HTTP 400. So issue
+  ONE request with `pageSize: 10000, pageOffset: 0`; that covers any realistic channel. If a
+  response ever fills the page exactly, fail loud (catalog exceeds one request, can't offset-page)
+  rather than silently truncating. (The original recon only pulled the top 500 and wrongly assumed
+  offset paging would fetch the rest — the live extension test caught it.)
+- **Transient 400s**: rapid repeated identical POSTs occasionally return a one-off HTTP 400; a
+  single retry clears it. Distinguish from the real pageSize/pageOffset 400s (which persist).
+- **`EXTERNAL_WATCH_TIME` holder = `milliseconds`, NOT `doubles`/`counts`** (verified live; the
+  agent's synthetic test used the wrong holder and passed, then failed on real data). Read
+  `column.milliseconds.values` and divide by 3,600,000 to get `watchHours`. Sanity: the top video
+  returned 160,843,471,982 ms = 44,679 hours.
 - `includeTotal:true` on a metric was NOT reliably populated (`total` came back undefined) —
   do not depend on server totals; sum client-side if needed.
 
@@ -146,7 +158,7 @@ only due to post-load hook-injection timing, which a real content script avoids)
 ## Mapping to the Snapshot contract
 - `impressions` ← VIDEO_THUMBNAIL_IMPRESSIONS.counts
 - `impressionsCtr` ← VIDEO_THUMBNAIL_IMPRESSIONS_VTR.percentages
-- `views` ← EXTERNAL_VIEWS.counts   `watchHours` ← EXTERNAL_WATCH_TIME
+- `views` ← EXTERNAL_VIEWS.counts   `watchHours` ← EXTERNAL_WATCH_TIME.milliseconds ÷ 3,600,000
 - `avgPctViewed` ← AVERAGE_WATCH_PERCENTAGE.percentages
 - `subsGained` ← SUBSCRIBERS_NET_CHANGE.counts
 - `source: 'studio-extension'`, `schemaVersion: 1`, `capturedAt` = now, counters lifetime.
