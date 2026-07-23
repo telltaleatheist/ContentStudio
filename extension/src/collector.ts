@@ -421,6 +421,13 @@ export async function collectStudioAnalyticsInPage(
     if (activeChannel !== channelId) return fail('CHANNEL_MISMATCH', 'ytcfg CHANNEL_ID (' + activeChannel + ') does not match requested channel (' + channelId + ').');
     const delegation = cfg.get('INNERTUBE_CONTEXT_SERIALIZED_DELEGATION_CONTEXT');
     if (!delegation) return fail('NO_DELEGATION', 'ytcfg INNERTUBE_CONTEXT_SERIALIZED_DELEGATION_CONTEXT is missing — tab is not a signed-in channel context.');
+    // Brand (non-primary) channels require the delegation ALSO as the
+    // X-YouTube-Delegation-Context header plus the auth-user index; without them
+    // the analytics call 403s "caller does not have permission" for any channel
+    // that isn't the Google account's default. Verified live 2026-07-22. The
+    // primary channel happens to work without them, which is why it succeeded.
+    const authUser = (cfg.get('SESSION_INDEX') != null) ? String(cfg.get('SESSION_INDEX')) : '0';
+    const visitorData = (innertube.client && innertube.client.visitorData) || null;
 
     // ---- all-time timeRange: [2008-01-01, tomorrow) in the page's local tz ----
     const nowDate = new Date();
@@ -473,7 +480,16 @@ export async function collectStudioAnalyticsInPage(
         resp = await fetch(ENDPOINT, {
           method: 'POST',
           credentials: 'include',
-          headers: { 'Content-Type': 'application/json', 'Authorization': authorization, 'X-Origin': ORIGIN },
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': authorization,
+            'X-Origin': ORIGIN,
+            'X-Goog-AuthUser': authUser,
+            'X-YouTube-Delegation-Context': delegation,
+            'X-YouTube-Client-Name': '62',
+            'X-YouTube-Client-Version': clientVersion,
+            ...(visitorData ? { 'X-Goog-Visitor-Id': visitorData } : {}),
+          },
           body: JSON.stringify(buildBody(pageOffset)),
         });
       } catch (netErr: any) {
