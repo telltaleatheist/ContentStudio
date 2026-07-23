@@ -26,6 +26,24 @@ A content script running on studio.youtube.com at `document_start` has everythin
    X-Origin: https://studio.youtube.com
    fetch(..., { credentials: 'include' })   // cookies ride along
    ```
+
+   **BRAND / NON-PRIMARY CHANNELS — CORRECTED 2026-07-22 (live end-to-end test):** the
+   body's `serializedDelegationContext` is enough ONLY for the Google account's *default*
+   channel. For every OTHER channel the user owns (separate brand accounts), the analytics
+   call 403s "The caller does not have permission" unless the delegation is ALSO passed as
+   HEADERS. Studio's own working call sends these; the collector must too:
+   ```
+   X-YouTube-Delegation-Context: <same value as ytcfg INNERTUBE_CONTEXT_SERIALIZED_DELEGATION_CONTEXT>
+   X-Goog-AuthUser:              <ytcfg SESSION_INDEX, default "0">
+   X-YouTube-Client-Name:        62
+   X-YouTube-Client-Version:     <ytcfg clientVersion>
+   X-Goog-Visitor-Id:            <ytcfg INNERTUBE_CONTEXT.client.visitorData, if present>
+   ```
+   Verified: with these headers + the collector's OWN SAPISIDHASH, a brand channel (Fireside,
+   2,930 videos) returned 200 with real impressions. The delegation value is identical to the
+   one already in the body — it just also has to travel as `X-YouTube-Delegation-Context`.
+   This is why the primary channel (Owen Morgan) collected fine while the two brand channels
+   403'd until the fix.
 2. **Context** — read straight from `window.ytcfg`, no request interception:
    - `ytcfg.get('INNERTUBE_CONTEXT').client.clientVersion`  → e.g. `"1.20260721.02.00"`
    - `ytcfg.get('CHANNEL_ID')`  → the active channel's UC… id
