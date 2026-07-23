@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ContentStudio Companion — Options</title>
+  <link rel="stylesheet" href="companion.css">
+</head>
+<body class="options-body">
+  <header>
+    <h1><span class="accent">ContentStudio</span> Companion — Options</h1>
+  </header>
+
+  <section>
+    <h2>ContentStudio connection</h2>
+    <div class="field">
+      <label for="port">Port</label>
+      <input id="port" type="number" min="1" max="65535" step="1">
+      <div class="hint">The localhost port ContentStudio's ingest server listens on (default 43117). Shown on ContentStudio's Analytics page.</div>
+    </div>
+    <div class="field">
+      <label for="token">Token</label>
+      <input id="token" type="password" autocomplete="off" spellcheck="false">
+      <div class="hint">Paste the bearer token from ContentStudio's Analytics page.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Channels</h2>
+    <div id="channels"></div>
+    <button id="add-channel" type="button" class="secondary">Add channel</button>
+    <div class="hint" style="margin-top: 6px;">Channel IDs start with "UC" and are 24 characters long (find them in YouTube Studio → Settings → Channel → Advanced settings).</div>
+  </section>
+
+  <section>
+    <div class="actions">
+      <button id="save" type="button">Save</button>
+      <div id="save-feedback" class="feedback"></div>
+    </div>
+  </section>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>

@@ -1,0 +1,381 @@
+<div class="analytics-container">
+  <!-- Header -->
+  <div class="header">
+    <div class="header-left">
+      <h2>Analytics</h2>
+      <p class="subtitle">Performance feedback loop: channel data, ingest status, and distilled insights that feed metadata generation.</p>
+    </div>
+    <div class="header-actions">
+      <button mat-stroked-button (click)="seedFakeData()" [disabled]="seeding()">
+        <mat-icon>science</mat-icon>
+        {{ seeding() ? 'Seeding…' : 'Seed Fake Data' }}
+      </button>
+      <button mat-raised-button color="primary" (click)="runDistillation()" [disabled]="distilling()">
+        <mat-icon>auto_awesome</mat-icon>
+        {{ distilling() ? 'Distilling…' : 'Run Distillation' }}
+      </button>
+    </div>
+  </div>
+
+  <!-- YouTube connections card -->
+  <div class="card youtube-card">
+    <div class="card-title">
+      <mat-icon>smart_display</mat-icon>
+      <h3>YouTube Connections</h3>
+      @if (collectorState(); as state) {
+        <span class="computed-at">
+          last run {{ fmtDate(state.lastRunAt) }}@if (state.lastCompactedAt) { · compacted {{ fmtDate(state.lastCompactedAt) }} }
+        </span>
+      }
+    </div>
+
+    <p class="empty-hint yt-copy">
+      Connect each brand channel (Owen Unfiltered, Owen Morgan, Owen Fireside Chat) so ContentStudio can pull
+      real analytics via the YouTube API. When Google shows an "unverified app" warning, click
+      <strong>Advanced → continue</strong> to proceed. The collector runs automatically at startup and every 6 hours.
+    </p>
+
+    @if (connections().length === 0) {
+      <p class="empty-hint">No channels connected yet. Click Connect Channel and pick a brand account on Google's chooser.</p>
+    }
+
+    @for (conn of connections(); track conn.channelId) {
+      <div class="channel-row yt-conn-row">
+        <div class="channel-info">
+          <span class="channel-name">{{ conn.channelTitle }}</span>
+          <span class="channel-id mono">{{ conn.channelId }}</span>
+          <span class="channel-sets">connected {{ fmtDate(conn.connectedAt) }}</span>
+          @if (channelRunResult(conn.channelId); as run) {
+            <span class="yt-run-stats">
+              last collect: {{ fmtNum(run.videos) }} videos · {{ fmtNum(run.snapshotsWritten) }} snapshots ·
+              {{ run.errors.length }} error(s) · {{ fmtDuration(run.durationMs) }}
+            </span>
+            @if (run.errors.length > 0) {
+              <span class="yt-run-error">{{ run.errors[0] }}</span>
+            }
+          }
+        </div>
+        <div class="channel-actions yt-conn-actions">
+          <button mat-stroked-button (click)="collectNow(conn.channelId)"
+                  [disabled]="collectingChannel() !== null">
+            @if (collectingChannel() === conn.channelId) {
+              <mat-spinner diameter="16"></mat-spinner>
+            } @else {
+              <mat-icon>sync</mat-icon>
+            }
+            Refresh
+          </button>
+          <button mat-stroked-button color="warn" (click)="disconnectChannel(conn)"
+                  [disabled]="disconnectingChannel() === conn.channelId">
+            <mat-icon>link_off</mat-icon>
+            Disconnect
+          </button>
+        </div>
+      </div>
+    }
+
+    <div class="yt-actions">
+      <button mat-raised-button color="primary" (click)="connectChannel()" [disabled]="connecting()">
+        @if (connecting()) {
+          <mat-spinner diameter="18"></mat-spinner>
+        } @else {
+          <mat-icon>add_link</mat-icon>
+        }
+        <span>{{ connecting() ? 'Waiting for Google…' : 'Connect Channel' }}</span>
+      </button>
+      <button mat-stroked-button (click)="collectNow()"
+              [disabled]="collectingChannel() !== null || connections().length === 0">
+        @if (collectingChannel() === '*') {
+          <mat-spinner diameter="18"></mat-spinner>
+        } @else {
+          <mat-icon>cloud_download</mat-icon>
+        }
+        <span>{{ collectingChannel() === '*' ? 'Refreshing…' : 'Refresh All Data' }}</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Ingest status card -->
+  <div class="card ingest-card">
+    <div class="card-title">
+      <mat-icon>sensors</mat-icon>
+      <h3>Ingest Server</h3>
+      @if (ingestInfo(); as info) {
+        @if (info.running) {
+          <span class="status-chip status-ok">Running</span>
+        } @else {
+          <span class="status-chip status-error">Stopped</span>
+        }
+      }
+    </div>
+    @if (ingestInfo(); as info) {
+      @if (info.error) {
+        <div class="ingest-error">
+          <mat-icon>error_outline</mat-icon>
+          <span>{{ info.error }}</span>
+        </div>
+      }
+      <div class="ingest-grid">
+        <div class="ingest-item">
+          <span class="label">Endpoint</span>
+          <span class="value mono">http://127.0.0.1:{{ info.port }}</span>
+        </div>
+        <div class="ingest-item">
+          <span class="label">Bearer token</span>
+          <span class="value mono token-value">
+            {{ maskedToken() }}
+            <button mat-icon-button (click)="toggleTokenReveal()" [matTooltip]="tokenRevealed() ? 'Hide token' : 'Reveal token'">
+              <mat-icon>{{ tokenRevealed() ? 'visibility_off' : 'visibility' }}</mat-icon>
+            </button>
+            <button mat-icon-button (click)="copyToken()" matTooltip="Copy token">
+              <mat-icon>content_copy</mat-icon>
+            </button>
+          </span>
+        </div>
+        <div class="ingest-item">
+          <span class="label">Last ingest</span>
+          <span class="value">{{ fmtDate(info.lastIngestAt) }}</span>
+        </div>
+      </div>
+    }
+  </div>
+
+  <!-- Channel registry -->
+  <div class="card">
+    <div class="card-title">
+      <mat-icon>subscriptions</mat-icon>
+      <h3>Channel Registry</h3>
+    </div>
+
+    @if (channels().length === 0) {
+      <p class="empty-hint">No channels registered yet. Add a channel below, or use Seed Fake Data to try the loop end-to-end.</p>
+    }
+
+    @for (channel of channels(); track channel.channelId) {
+      <div class="channel-row">
+        @if (editingChannelId() === channel.channelId) {
+          <div class="channel-edit-form">
+            <mat-form-field appearance="outline" class="field-id">
+              <mat-label>Channel ID (UC…)</mat-label>
+              <input matInput [ngModel]="editChannelId()" (ngModelChange)="editChannelId.set($event)">
+            </mat-form-field>
+            <mat-form-field appearance="outline" class="field-name">
+              <mat-label>Name</mat-label>
+              <input matInput [ngModel]="editChannelName()" (ngModelChange)="editChannelName.set($event)">
+            </mat-form-field>
+            <mat-form-field appearance="outline" class="field-sets">
+              <mat-label>Prompt sets</mat-label>
+              <mat-select multiple [ngModel]="editChannelPromptSets()" (ngModelChange)="editChannelPromptSets.set($event)">
+                @for (set of promptSets(); track set.id) {
+                  <mat-option [value]="set.id">{{ set.name }}</mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
+            <div class="channel-edit-actions">
+              <button mat-raised-button color="primary" (click)="saveEdit()">
+                <mat-icon>save</mat-icon>
+                Save
+              </button>
+              <button mat-stroked-button (click)="cancelEdit()">Cancel</button>
+            </div>
+          </div>
+        } @else {
+          <div class="channel-info">
+            <span class="channel-name">{{ channel.name }}</span>
+            <span class="channel-id mono">{{ channel.channelId }}</span>
+            <span class="channel-sets">{{ promptSetNames(channel.promptSets) }}</span>
+          </div>
+          <div class="channel-actions">
+            <button mat-icon-button (click)="startEdit(channel)" matTooltip="Edit channel">
+              <mat-icon>edit</mat-icon>
+            </button>
+            <button mat-icon-button (click)="deleteChannel(channel)" matTooltip="Remove channel">
+              <mat-icon>delete</mat-icon>
+            </button>
+          </div>
+        }
+      </div>
+    }
+
+    <!-- Add channel -->
+    <div class="add-channel-form">
+      <mat-form-field appearance="outline" class="field-id">
+        <mat-label>Channel ID (UC…)</mat-label>
+        <input matInput [ngModel]="newChannelId()" (ngModelChange)="newChannelId.set($event)" placeholder="UCxxxxxxxxxxxxxxxxxxxxxx">
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="field-name">
+        <mat-label>Name</mat-label>
+        <input matInput [ngModel]="newChannelName()" (ngModelChange)="newChannelName.set($event)" placeholder="Owen Unfiltered">
+      </mat-form-field>
+      <mat-form-field appearance="outline" class="field-sets">
+        <mat-label>Prompt sets</mat-label>
+        <mat-select multiple [ngModel]="newChannelPromptSets()" (ngModelChange)="newChannelPromptSets.set($event)">
+          @for (set of promptSets(); track set.id) {
+            <mat-option [value]="set.id">{{ set.name }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+      <button mat-raised-button color="primary" (click)="addChannel()">
+        <mat-icon>add</mat-icon>
+        Add Channel
+      </button>
+    </div>
+  </div>
+
+  <!-- Per-channel summary cards -->
+  @if (summaries().length > 0) {
+    <div class="summary-grid">
+      @for (summary of summaries(); track summary.channelId) {
+        <div class="card summary-card">
+          <h4>{{ summary.name }}</h4>
+          <div class="summary-stats">
+            <div class="stat">
+              <span class="stat-value">{{ fmtNum(summary.videoCount) }}</span>
+              <span class="stat-label">videos</span>
+            </div>
+            <div class="stat">
+              <span class="stat-value">{{ fmtNum(summary.snapshotCount) }}</span>
+              <span class="stat-label">snapshots</span>
+            </div>
+          </div>
+          <div class="summary-footer">Last ingest: {{ fmtDate(summary.lastIngestAt) }}</div>
+        </div>
+      }
+    </div>
+  }
+
+  <!-- Per-channel insights -->
+  @for (entry of channelInsights(); track entry.channelId) {
+    @if (entry.insights; as insights) {
+      <div class="card insights-card">
+        <div class="card-title">
+          <mat-icon>insights</mat-icon>
+          <h3>{{ entry.name }}</h3>
+          <span class="computed-at">computed {{ fmtDate(insights.computedAt) }} · {{ insights.videoCount }} videos</span>
+        </div>
+
+        <div class="baselines">
+          <div class="baseline">
+            <span class="stat-value">{{ fmtPct(insights.baselines.medianCtrFirstWeek) }}</span>
+            <span class="stat-label">median first-week CTR</span>
+          </div>
+          <div class="baseline">
+            <span class="stat-value">{{ fmtPct(insights.baselines.medianAvgPctViewed) }}</span>
+            <span class="stat-label">median avg % viewed</span>
+          </div>
+          <div class="baseline">
+            <span class="stat-value">{{ fmtPct(insights.baselines.medianRetention30s) }}</span>
+            <span class="stat-label">median 30s retention</span>
+          </div>
+          <div class="baseline">
+            <span class="stat-value">{{ fmtNum(insights.baselines.medianFirstWeekViews) }}</span>
+            <span class="stat-label">median first-week views</span>
+          </div>
+        </div>
+
+        @if (insights.topPackaging.length > 0) {
+          <h4 class="table-heading top">Top packaging</h4>
+          <div class="table-wrapper">
+            <table class="insights-table">
+              <thead>
+                <tr><th>Title</th><th>CTR</th><th>CTR %ile</th><th>30s retention</th><th>Views</th></tr>
+              </thead>
+              <tbody>
+                @for (item of insights.topPackaging; track item.title) {
+                  <tr>
+                    <td class="title-cell">{{ item.title }}</td>
+                    <td>{{ fmtPct(item.ctr) }}</td>
+                    <td>{{ fmtPctl(item.ctrPercentile) }}</td>
+                    <td>{{ fmtPct(item.retention30s) }}</td>
+                    <td>{{ fmtNum(item.views) }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
+
+        @if (insights.bottomPackaging.length > 0) {
+          <h4 class="table-heading bottom">Bottom packaging</h4>
+          <div class="table-wrapper">
+            <table class="insights-table">
+              <thead>
+                <tr><th>Title</th><th>CTR</th><th>CTR %ile</th><th>30s retention</th><th>Views</th></tr>
+              </thead>
+              <tbody>
+                @for (item of insights.bottomPackaging; track item.title) {
+                  <tr>
+                    <td class="title-cell">{{ item.title }}</td>
+                    <td>{{ fmtPct(item.ctr) }}</td>
+                    <td>{{ fmtPctl(item.ctrPercentile) }}</td>
+                    <td>{{ fmtPct(item.retention30s) }}</td>
+                    <td>{{ fmtNum(item.views) }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
+
+        @if (insights.abLearnings.length > 0) {
+          <h4 class="table-heading">A/B learnings</h4>
+          <ul class="ab-list">
+            @for (ab of insights.abLearnings; track ab.winner) {
+              <li>Winner: "{{ ab.winner }}" (+{{ ab.liftPct }}% lift) of {{ ab.variants.length }} variants</li>
+            }
+          </ul>
+        }
+
+        @if (insights.topSearchTerms.length > 0) {
+          <h4 class="table-heading">Top search terms</h4>
+          <div class="term-chips">
+            @for (term of insights.topSearchTerms; track term.term) {
+              <span class="term-chip">{{ term.term }} <span class="term-views">{{ fmtNum(term.views) }}</span></span>
+            }
+          </div>
+        }
+      </div>
+    }
+  }
+
+  <!-- Cross-channel insights -->
+  @if (crossChannel(); as cross) {
+    <div class="card insights-card cross-channel-card">
+      <div class="card-title">
+        <mat-icon>hub</mat-icon>
+        <h3>Cross-Channel</h3>
+        <span class="computed-at">computed {{ fmtDate(cross.computedAt) }} · {{ cross.channelIds.length }} channels</span>
+      </div>
+
+      @if (cross.recentOverperformers.length > 0) {
+        <h4 class="table-heading top">Recent overperformers (last 90 days)</h4>
+        <div class="table-wrapper">
+          <table class="insights-table">
+            <thead>
+              <tr><th>Channel</th><th>Title</th><th>Packaging score</th><th>Views</th></tr>
+            </thead>
+            <tbody>
+              @for (item of cross.recentOverperformers; track item.title) {
+                <tr>
+                  <td>{{ channelName(item.channelId) }}</td>
+                  <td class="title-cell">{{ item.title }}</td>
+                  <td>{{ fmtNum(item.packagingScore) }}</td>
+                  <td>{{ fmtNum(item.views) }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      }
+
+      @if (cross.risingSearchTerms.length > 0) {
+        <h4 class="table-heading">Rising search terms</h4>
+        <div class="term-chips">
+          @for (term of cross.risingSearchTerms; track term.term) {
+            <span class="term-chip rising">{{ term.term }} <span class="term-views">{{ fmtNum(term.views) }} · {{ fmtTrend(term.trendVsPriorPeriod) }}</span></span>
+          }
+        </div>
+      }
+    </div>
+  }
+</div>

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ContentStudio Companion</title>
+  <link rel="stylesheet" href="companion.css">
+</head>
+<body class="popup-body">
+  <header>
+    <h1><span class="accent">ContentStudio</span> Companion</h1>
+    <a href="#" id="open-options">Options</a>
+  </header>
+
+  <section>
+    <h2>ContentStudio connection</h2>
+    <div class="status-line">
+      <span id="connection-dot" class="dot"></span>
+      <span id="connection-text">Checking…</span>
+    </div>
+    <div id="connection-detail" class="detail"></div>
+  </section>
+
+  <section>
+    <h2>Collector</h2>
+    <span id="collector-status" class="badge badge-pending">Checking…</span>
+  </section>
+
+  <section>
+    <h2>Channels</h2>
+    <div id="channel-list"></div>
+  </section>
+
+  <section>
+    <h2>Outbox</h2>
+    <div><span id="outbox-depth">–</span> payload(s) queued</div>
+    <div id="last-cycle" class="detail"></div>
+    <div id="last-cycle-error" class="detail channel-error"></div>
+  </section>
+
+  <section>
+    <div class="actions">
+      <button id="sync-now" type="button">Sync now</button>
+      <div id="sync-feedback" class="muted"></div>
+    </div>
+  </section>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

@@ -30,6 +30,98 @@ export interface ImportTranscriptResult {
   errors: string[];
 }
 
+// ==================== ANALYTICS (performance feedback loop) ====================
+
+export interface AnalyticsChannel {
+  channelId: string;
+  name: string;
+  promptSets: string[];
+}
+
+export interface AnalyticsIngestInfo {
+  success: boolean;
+  port?: number;
+  token?: string;
+  running?: boolean;
+  error?: string | null;
+  lastIngestAt?: string | null;
+}
+
+export interface AnalyticsChannelSummary {
+  channelId: string;
+  name: string;
+  promptSets: string[];
+  videoCount: number;
+  snapshotCount: number;
+  lastIngestAt: string | null;
+}
+
+export interface AnalyticsVerdictSummary {
+  title: string;
+  ctr: number | null;
+  ctrPercentile: number | null;
+  retention30s: number | null;
+  views: number;
+}
+
+export interface AnalyticsChannelInsights {
+  channelId: string;
+  computedAt: string;
+  videoCount: number;
+  baselines: {
+    medianCtrFirstWeek: number | null;
+    medianAvgPctViewed: number | null;
+    medianRetention30s: number | null;
+    medianFirstWeekViews: number | null;
+  };
+  topPackaging: AnalyticsVerdictSummary[];
+  bottomPackaging: AnalyticsVerdictSummary[];
+  abLearnings: Array<{ variants: string[]; winner: string; liftPct: number }>;
+  topSearchTerms: Array<{ term: string; views: number }>;
+  aiBrief: string | null;
+}
+
+export interface AnalyticsCrossChannelInsights {
+  computedAt: string;
+  channelIds: string[];
+  recentOverperformers: Array<{ channelId: string; title: string; packagingScore: number; views: number }>;
+  risingSearchTerms: Array<{ term: string; views: number; trendVsPriorPeriod: number }>;
+  aiBrief: string | null;
+}
+
+export interface AnalyticsInsightsResult {
+  success: boolean;
+  channels?: Array<{ channelId: string; name: string; insights: AnalyticsChannelInsights | null }>;
+  crossChannel?: AnalyticsCrossChannelInsights | null;
+  error?: string;
+}
+
+// ==================== YOUTUBE (OAuth + API collector) ====================
+
+// A connection with every secret stripped (tokens NEVER reach the renderer).
+export interface YouTubeConnection {
+  channelId: string;
+  channelTitle: string;
+  scopes: string[];
+  connectedAt: string;
+  accessTokenExpiry: string;
+}
+
+export interface YouTubeChannelCollectResult {
+  channelId: string;
+  channelTitle: string;
+  videos: number;
+  snapshotsWritten: number;
+  errors: string[];
+  durationMs: number;
+}
+
+export interface YouTubeCollectorState {
+  lastRunAt: string | null;
+  lastCompactedAt: string | null;
+  channels: Record<string, { lastRunAt: string | null; lastResult: YouTubeChannelCollectResult | null }>;
+}
+
 // Declare window.launchpad interface for TypeScript
 declare global {
   interface Window {
@@ -116,6 +208,24 @@ declare global {
       listMasterReports: () => Promise<any>;
       deleteMasterReport: (reportPath: string) => Promise<{ success: boolean; error?: string }>;
       onMasterAnalysisProgress: (callback: (progress: any) => void) => () => void;
+
+      // Analytics (performance feedback loop)
+      analyticsListChannels: () => Promise<{ success: boolean; channels?: AnalyticsChannel[]; error?: string }>;
+      analyticsAddChannel: (entry: AnalyticsChannel) => Promise<{ success: boolean; channels?: AnalyticsChannel[]; error?: string }>;
+      analyticsUpdateChannel: (channelId: string, entry: AnalyticsChannel) => Promise<{ success: boolean; channels?: AnalyticsChannel[]; error?: string }>;
+      analyticsDeleteChannel: (channelId: string) => Promise<{ success: boolean; channels?: AnalyticsChannel[]; error?: string }>;
+      analyticsGetIngestInfo: () => Promise<AnalyticsIngestInfo>;
+      analyticsGetSummary: () => Promise<{ success: boolean; channels?: AnalyticsChannelSummary[]; error?: string }>;
+      analyticsRunDistillation: () => Promise<{ success: boolean; summary?: { channels: number; videosProcessed: number; verdictsWritten: number }; error?: string }>;
+      analyticsGetInsights: () => Promise<AnalyticsInsightsResult>;
+      analyticsSeedFakeData: () => Promise<{ success: boolean; summary?: { channels: number; videos: number; snapshots: number; channelIds: string[] }; error?: string }>;
+
+      // YouTube (OAuth + API collector)
+      youtubeConnectChannel: () => Promise<{ success: boolean; channelId?: string; channelTitle?: string; error?: string }>;
+      youtubeDisconnectChannel: (channelId: string) => Promise<{ success: boolean; error?: string }>;
+      youtubeListConnections: () => Promise<{ success: boolean; connections?: YouTubeConnection[]; error?: string }>;
+      youtubeCollectNow: (channelId?: string) => Promise<{ success: boolean; results?: YouTubeChannelCollectResult[]; error?: string }>;
+      youtubeGetCollectorState: () => Promise<{ success: boolean; state?: YouTubeCollectorState; error?: string }>;
 
       // Episode Splitter
       selectEpisodeAudio: () => Promise<{ success: boolean; filePaths?: string[]; error?: string }>;
@@ -442,6 +552,78 @@ export class ElectronService {
   onMasterAnalysisProgress(callback: (progress: any) => void): () => void {
     if (!this.ipcRenderer) return () => {};
     return this.ipcRenderer.onMasterAnalysisProgress(callback);
+  }
+
+  // Analytics (performance feedback loop)
+  async analyticsListChannels(): Promise<{ success: boolean; channels?: AnalyticsChannel[]; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.analyticsListChannels();
+  }
+
+  async analyticsAddChannel(entry: AnalyticsChannel): Promise<{ success: boolean; channels?: AnalyticsChannel[]; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.analyticsAddChannel(entry);
+  }
+
+  async analyticsUpdateChannel(channelId: string, entry: AnalyticsChannel): Promise<{ success: boolean; channels?: AnalyticsChannel[]; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.analyticsUpdateChannel(channelId, entry);
+  }
+
+  async analyticsDeleteChannel(channelId: string): Promise<{ success: boolean; channels?: AnalyticsChannel[]; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.analyticsDeleteChannel(channelId);
+  }
+
+  async analyticsGetIngestInfo(): Promise<AnalyticsIngestInfo> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.analyticsGetIngestInfo();
+  }
+
+  async analyticsGetSummary(): Promise<{ success: boolean; channels?: AnalyticsChannelSummary[]; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.analyticsGetSummary();
+  }
+
+  async analyticsRunDistillation(): Promise<{ success: boolean; summary?: { channels: number; videosProcessed: number; verdictsWritten: number }; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.analyticsRunDistillation();
+  }
+
+  async analyticsGetInsights(): Promise<AnalyticsInsightsResult> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.analyticsGetInsights();
+  }
+
+  async analyticsSeedFakeData(): Promise<{ success: boolean; summary?: { channels: number; videos: number; snapshots: number; channelIds: string[] }; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.analyticsSeedFakeData();
+  }
+
+  // YouTube (OAuth + API collector)
+  async youtubeConnectChannel(): Promise<{ success: boolean; channelId?: string; channelTitle?: string; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.youtubeConnectChannel();
+  }
+
+  async youtubeDisconnectChannel(channelId: string): Promise<{ success: boolean; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.youtubeDisconnectChannel(channelId);
+  }
+
+  async youtubeListConnections(): Promise<{ success: boolean; connections?: YouTubeConnection[]; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.youtubeListConnections();
+  }
+
+  async youtubeCollectNow(channelId?: string): Promise<{ success: boolean; results?: YouTubeChannelCollectResult[]; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.youtubeCollectNow(channelId);
+  }
+
+  async youtubeGetCollectorState(): Promise<{ success: boolean; state?: YouTubeCollectorState; error?: string }> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.youtubeGetCollectorState();
   }
 
   // Episode Splitter
