@@ -1,4 +1,4 @@
-import { Component, signal, OnInit } from '@angular/core';
+import { Component, signal, OnInit, OnDestroy } from '@angular/core';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
@@ -49,7 +49,11 @@ interface ChannelInsightsEntry {
   templateUrl: './analytics.html',
   styleUrl: './analytics.scss',
 })
-export class Analytics implements OnInit {
+export class Analytics implements OnInit, OnDestroy {
+  // Poll the read-only display data so the page updates live as the extension
+  // pushes snapshots and the backend auto-re-distills (no manual refresh needed).
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+
   // Channel registry
   channels = signal<AnalyticsChannel[]>([]);
   promptSets = signal<PromptSetListItem[]>([]);
@@ -102,6 +106,27 @@ export class Analytics implements OnInit {
       this.loadConnections(),
       this.loadCollectorState(),
     ]);
+    // Live refresh: re-pull the display data on an interval so newly ingested +
+    // re-distilled analytics appear without the user reloading or re-distilling.
+    this.pollTimer = setInterval(() => void this.refreshLiveData(), 8000);
+  }
+
+  ngOnDestroy() {
+    if (this.pollTimer) clearInterval(this.pollTimer);
+  }
+
+  /** Read-only refreshers only — never touches edit state or triggers a collection. */
+  private async refreshLiveData() {
+    try {
+      await Promise.all([
+        this.loadIngestInfo(),
+        this.loadSummary(),
+        this.loadInsights(),
+        this.loadCollectorState(),
+      ]);
+    } catch {
+      // Transient read failure — the next tick retries; don't spam the console.
+    }
   }
 
   // ==================== LOADERS ====================

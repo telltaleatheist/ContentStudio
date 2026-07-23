@@ -109,6 +109,19 @@ export class DistillationService {
       const latest = snapshots.length > 0 ? snapshots[snapshots.length - 1] : null;
       const firstWeekSnapshot = this.pickFirstWeekSnapshot(snapshots);
 
+      // Cross-source merge: a video's metrics are split across sources — impressions
+      // and CTR come from the studio-extension snapshots, retention/subs/traffic from
+      // the analytics-api snapshots. Taking a single "latest" snapshot would read
+      // null for whichever source didn't sync last, so instead take the latest
+      // NON-NULL value per field across all of the video's snapshots.
+      const latestNonNull = <T>(get: (s: Snapshot) => T | null | undefined): T | null => {
+        for (let i = snapshots.length - 1; i >= 0; i--) {
+          const v = get(snapshots[i]);
+          if (v !== null && v !== undefined) return v;
+        }
+        return null;
+      };
+
       const firstWeek: VideoVerdict['firstWeek'] = firstWeekSnapshot
         ? {
             impressions: firstWeekSnapshot.impressions,
@@ -122,11 +135,11 @@ export class DistillationService {
 
       const lifetime: VideoVerdict['lifetime'] | null = latest
         ? {
-            impressions: latest.impressions,
-            ctr: latest.impressionsCtr,
-            views: latest.views,
-            watchHours: latest.watchHours,
-            subsGained: latest.subsGained,
+            impressions: latestNonNull((s) => s.impressions),
+            ctr: latestNonNull((s) => s.impressionsCtr),
+            views: latestNonNull((s) => s.views) ?? 0,
+            watchHours: latestNonNull((s) => s.watchHours) ?? 0,
+            subsGained: latestNonNull((s) => s.subsGained),
           }
         : null;
 
@@ -143,15 +156,18 @@ export class DistillationService {
     });
 
     // Percentile cohorts: age-matched first-week metrics, nulls excluded.
+    // CTR percentile uses lifetime (cumulative) CTR — the studio-extension supplies
+    // it for the whole catalog, whereas first-week CTR is null for the back-catalog
+    // (no snapshot near the 168h mark). Retention still uses first-week (API-sourced).
     const ctrCohort = drafts
-      .map((d) => d.firstWeek?.ctr)
+      .map((d) => d.lifetime?.ctr)
       .filter((v): v is number => v !== null && v !== undefined);
     const retentionCohort = drafts
       .map((d) => d.firstWeek?.retention30s)
       .filter((v): v is number => v !== null && v !== undefined);
 
     return drafts.map((draft) => {
-      const ctr = draft.firstWeek?.ctr ?? null;
+      const ctr = draft.lifetime?.ctr ?? null;
       const retention30s = draft.firstWeek?.retention30s ?? null;
 
       const ctrPercentile = ctr !== null ? round1(percentileRank(ctrCohort, ctr)) : null;
@@ -250,7 +266,9 @@ export class DistillationService {
       .filter((fw): fw is NonNullable<VideoVerdict['firstWeek']> => fw !== null);
 
     const baselines: ChannelInsights['baselines'] = {
-      medianCtrFirstWeek: median(firstWeeks.map((fw) => fw.ctr).filter((v): v is number => v !== null)),
+      // CTR baseline from lifetime (cumulative) CTR — first-week CTR is null across
+      // the back-catalog, so the median would be empty. (Field name kept for the schema.)
+      medianCtrFirstWeek: median(verdicts.map((v) => v.lifetime.ctr).filter((v): v is number => v !== null)),
       medianAvgPctViewed: median(firstWeeks.map((fw) => fw.avgPctViewed).filter((v): v is number => v !== null)),
       medianRetention30s: median(firstWeeks.map((fw) => fw.retention30s).filter((v): v is number => v !== null)),
       medianFirstWeekViews: median(firstWeeks.map((fw) => fw.views)),
@@ -301,7 +319,7 @@ export class DistillationService {
   private toSummary(verdict: VideoVerdict): VideoVerdictSummary {
     return {
       title: verdict.titles[verdict.titles.length - 1],
-      ctr: verdict.firstWeek ? verdict.firstWeek.ctr : null,
+      ctr: verdict.lifetime ? verdict.lifetime.ctr : null,
       ctrPercentile: verdict.ctrPercentile,
       retention30s: verdict.firstWeek ? verdict.firstWeek.retention30s : null,
       views: verdict.lifetime.views,
