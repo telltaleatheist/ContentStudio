@@ -2,7 +2,7 @@
 // lastAttempt/lastError, outbox depth, and a manual "Sync now" trigger.
 
 import { COLLECTOR_IMPLEMENTED } from './collector';
-import { checkHealth, type HealthResult } from './ingest-client';
+import { checkHealth, fetchChannels, IngestError, type HealthResult } from './ingest-client';
 import { outboxDepth } from './outbox';
 import { getSettings } from './settings';
 import { getChannelStatuses, getLastCycle } from './status';
@@ -63,20 +63,39 @@ function renderCollectorStatus(): void {
 }
 
 async function renderChannels(): Promise<void> {
-  const settings = await getSettings();
-  const statuses = await getChannelStatuses();
   const list = el<HTMLDivElement>('channel-list');
   list.textContent = '';
 
-  if (settings.channels.length === 0) {
+  // Channels come LIVE from ContentStudio — the single source of truth. Each
+  // failure kind gets a distinct message; an empty list ("none registered") is
+  // rendered distinctly from "ContentStudio unreachable".
+  let channels;
+  try {
+    channels = await fetchChannels();
+  } catch (err) {
+    const div = document.createElement('div');
+    div.className = 'muted channel-error';
+    if (err instanceof IngestError && err.kind === 'unreachable') {
+      div.textContent = 'Cannot list channels — ContentStudio is not running.';
+    } else if (err instanceof IngestError && err.kind === 'unauthorized') {
+      div.textContent = 'Cannot list channels — ContentStudio rejected the token (401). Fix it in Options.';
+    } else {
+      div.textContent = `Cannot list channels — ${err instanceof Error ? err.message : String(err)}`;
+    }
+    list.appendChild(div);
+    return;
+  }
+
+  if (channels.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'muted';
-    empty.textContent = 'No channels configured — add them in Options.';
+    empty.textContent = 'No channels registered in ContentStudio yet.';
     list.appendChild(empty);
     return;
   }
 
-  for (const channel of settings.channels) {
+  const statuses = await getChannelStatuses();
+  for (const channel of channels) {
     const status = statuses[channel.channelId];
     const row = document.createElement('div');
     row.className = 'channel-row';
@@ -103,7 +122,11 @@ async function renderChannels(): Promise<void> {
     } else if (status?.lastSuccess) {
       const ok = document.createElement('div');
       ok.className = 'channel-meta channel-ok';
-      ok.textContent = `Last success: ${formatTimestamp(status.lastSuccess)}`;
+      const count = status.lastSnapshotCount;
+      const snaps = count === null || count === undefined
+        ? ''
+        : ` · ${count} snapshot${count === 1 ? '' : 's'}`;
+      ok.textContent = `Last success: ${formatTimestamp(status.lastSuccess)}${snaps}`;
       row.appendChild(ok);
     }
 
@@ -128,7 +151,9 @@ async function renderOutboxAndCycle(): Promise<void> {
   ];
   line.textContent = parts.join(' ');
   const err = el<HTMLDivElement>('last-cycle-error');
-  if (cycle.flush.stopped) {
+  if (cycle.channelSourceError) {
+    err.textContent = `Could not fetch channels from ContentStudio (${cycle.channelSourceError.name}): ${cycle.channelSourceError.message} — nothing was collected.`;
+  } else if (cycle.flush.stopped) {
     err.textContent = `Flush stopped (${cycle.flush.stopped.kind}): ${cycle.flush.stopped.message}`;
   } else if (cycle.flush.entryErrors.length > 0) {
     err.textContent = `${cycle.flush.entryErrors.length} entr${cycle.flush.entryErrors.length === 1 ? 'y' : 'ies'} rejected as invalid (HTTP 400) — see service worker console.`;

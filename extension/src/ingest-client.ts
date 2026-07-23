@@ -2,6 +2,7 @@
 //
 // Endpoints (base http://127.0.0.1:<port>, port from settings, default 43117):
 //   GET  /health             (no auth)       -> { ok: true, app: "contentstudio" }
+//   GET  /analytics/channels (Bearer token)  -> { channels: [{ channelId, name }] }
 //   POST /analytics/videos   (Bearer token)  -> body { videos: VideoRecord[] }
 //   POST /analytics/ingest   (Bearer token)  -> body { snapshots: Snapshot[] }
 //
@@ -10,7 +11,7 @@
 //   Nothing in this module retries, degrades, or swallows errors.
 
 import type { Snapshot, VideoRecord } from './types';
-import { getSettings } from './settings';
+import { getSettings, type ChannelConfig } from './settings';
 
 export type IngestFailureKind =
   /** HTTP 401 — the bearer token is missing or was rejected. */
@@ -97,6 +98,74 @@ export async function checkHealth(): Promise<HealthResult> {
     state: 'unexpected-response',
     detail: `GET /health returned 200 but not {ok:true,app:"contentstudio"} — something else is listening at ${base}.`,
   };
+}
+
+/**
+ * GET /analytics/channels — the live channel list ContentStudio has registered.
+ * This is the SINGLE SOURCE OF TRUTH for which channels the collector covers;
+ * the extension no longer stores a hand-entered list. Throws IngestError with a
+ * DISTINCT kind on every failure (unreachable = app not running, unauthorized =
+ * bad token, unexpected-response = wrong shape / other status). An EMPTY list is
+ * a valid success (ContentStudio has no channels registered yet) — NOT an error.
+ */
+export async function fetchChannels(): Promise<ChannelConfig[]> {
+  const settings = await getSettings();
+  const url = `http://127.0.0.1:${settings.port}/analytics/channels`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${settings.token}` },
+    });
+  } catch (err) {
+    throw new IngestError(
+      'unreachable',
+      `ContentStudio is not reachable at ${url} — is the app running?`,
+      { cause: err },
+    );
+  }
+
+  if (response.status === 401) {
+    throw new IngestError(
+      'unauthorized',
+      'ContentStudio rejected the token (HTTP 401). Paste a fresh token from the Analytics page into Options.',
+      { status: 401, details: await readBody(response) },
+    );
+  }
+  if (!response.ok) {
+    throw new IngestError(
+      'unexpected-response',
+      `Unexpected HTTP ${response.status} from GET /analytics/channels.`,
+      { status: response.status, details: await readBody(response) },
+    );
+  }
+
+  const body = (await readBody(response)) as { channels?: unknown } | null;
+  if (!body || !Array.isArray(body.channels)) {
+    throw new IngestError(
+      'unexpected-response',
+      'GET /analytics/channels returned 200 but not { channels: [...] } — something other than ContentStudio may be listening.',
+      { status: response.status, details: body },
+    );
+  }
+
+  const channels: ChannelConfig[] = [];
+  for (const entry of body.channels) {
+    if (
+      entry && typeof entry === 'object' &&
+      typeof (entry as ChannelConfig).channelId === 'string' &&
+      typeof (entry as ChannelConfig).name === 'string'
+    ) {
+      channels.push({ channelId: (entry as ChannelConfig).channelId, name: (entry as ChannelConfig).name });
+    } else {
+      throw new IngestError(
+        'unexpected-response',
+        'GET /analytics/channels returned a channel entry that is not { channelId: string; name: string }.',
+        { status: response.status, details: entry },
+      );
+    }
+  }
+  return channels;
 }
 
 async function post(path: string, body: unknown): Promise<void> {

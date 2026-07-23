@@ -25,16 +25,18 @@
   </section>
 
   <section>
-    <h2>Channels</h2>
-    <div id="channels"></div>
-    <button id="add-channel" type="button" class="secondary">Add channel</button>
-    <div class="hint" style="margin-top: 6px;">Channel IDs start with "UC" and are 24 characters long (find them in YouTube Studio → Settings → Channel → Advanced settings).</div>
-  </section>
-
-  <section>
     <div class="actions">
       <button id="save" type="button">Save</button>
       <div id="save-feedback" class="feedback"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Channels (from ContentStudio)</h2>
+    <div class="hint" style="margin-bottom: 8px;">Channels are pulled live from ContentStudio — the app already has them registered, so there is nothing to configure here. Save the port and token above, then Refresh.</div>
+    <div id="channels-readonly"></div>
+    <div class="actions" style="margin-top: 10px;">
+      <button id="refresh-channels" type="button" class="secondary">Refresh</button>
     </div>
   </section>
 

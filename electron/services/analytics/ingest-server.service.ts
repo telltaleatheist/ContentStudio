@@ -5,11 +5,13 @@
  * companion browser extension posts YouTube Studio analytics to.
  *
  * Endpoints:
- *   GET  /health            -> 200 {"ok":true,"app":"contentstudio"}   (no auth)
- *   POST /analytics/videos  -> body {videos: VideoRecord[]}   -> upsert, 200 {accepted:N}
- *   POST /analytics/ingest  -> body {snapshots: Snapshot[]}   -> validate+append, 200 {accepted:N}
+ *   GET  /health             -> 200 {"ok":true,"app":"contentstudio"}   (no auth)
+ *   GET  /analytics/channels -> 200 {channels: [{channelId,name}]}   (Bearer)
+ *   POST /analytics/videos   -> body {videos: VideoRecord[]}   -> upsert, 200 {accepted:N}
+ *   POST /analytics/ingest   -> body {snapshots: Snapshot[]}   -> validate+append, 200 {accepted:N}
  *
- * Auth: Bearer token (Authorization: Bearer <token>) on the POST endpoints.
+ * Auth: Bearer token (Authorization: Bearer <token>) on the POST endpoints and
+ * GET /analytics/channels.
  * The token is auto-generated (crypto.randomBytes hex) on first run and
  * persisted at <analytics dir>/ingest-token.
  *
@@ -178,6 +180,19 @@ export class IngestServerService {
 
     if (req.method === 'GET' && url === '/health') {
       this.sendJson(res, 200, { ok: true, app: 'contentstudio' });
+      return;
+    }
+
+    // The companion extension pulls its channel list from here instead of being
+    // configured by hand — the channels ContentStudio already has registered
+    // (with OAuth) are the single source of truth. Bearer-authed like the POSTs.
+    if (req.method === 'GET' && url === '/analytics/channels') {
+      if (!this.isAuthorized(req)) {
+        this.sendJson(res, 401, { error: 'Missing or invalid bearer token' });
+        return;
+      }
+      const channels = this.store.listChannels().map((c) => ({ channelId: c.channelId, name: c.name }));
+      this.sendJson(res, 200, { channels });
       return;
     }
 

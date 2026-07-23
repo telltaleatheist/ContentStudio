@@ -1,17 +1,25 @@
 // MV3 background service worker (ES module).
 //
 // Responsibilities:
-//   - Master alarm every 6 hours -> one collection cycle over all configured
-//     channels. Per-video cadence tiering (age <7d every cycle, 7-28d daily,
-//     28-365d weekly, >1y monthly) is the COLLECTOR's future concern — see
-//     src/collector.ts; this cycle just calls collectChannel per channel.
-//   - Records lastAttempt / lastError per channel in chrome.storage.local.
+//   - Master alarm every 6 hours -> one collection cycle. The cycle first pulls
+//     the channel list LIVE from ContentStudio (GET /analytics/channels) — the
+//     extension holds no hand-entered list — then calls collectChannel per
+//     returned channel. Per-video cadence tiering (age <7d every cycle, 7-28d
+//     daily, 28-365d weekly, >1y monthly) is the COLLECTOR's concern — see
+//     src/collector.ts.
+//   - Records lastAttempt / lastError / snapshot count per channel in
+//     chrome.storage.local.
 //   - Flushes the outbox after every cycle (and on manual "Sync now").
 //   - onInstalled: initializes default settings and the alarm.
+//
+// No fallbacks: if the channel list can't be fetched (ContentStudio down or bad
+// token) the cycle records that as its channelSourceError and stops — it never
+// collects against a stale/cached list.
 
 import { CollectorNotImplementedError, collectChannel } from './collector';
-import { enqueueSnapshots, enqueueVideos, flushOutbox, type FlushResult } from './outbox';
-import { DEFAULT_SETTINGS, getSettings, saveSettings } from './settings';
+import { enqueueSnapshots, enqueueVideos, flushOutbox, outboxDepth, type FlushResult } from './outbox';
+import { fetchChannels } from './ingest-client';
+import { DEFAULT_SETTINGS, saveSettings } from './settings';
 import { recordChannelAttempt, setLastCycle, type CycleSummary } from './status';
 
 const CYCLE_ALARM = 'contentstudio-collection-cycle';
@@ -30,7 +38,7 @@ chrome.runtime.onInstalled.addListener((details) => {
       // Initialize defaults only when nothing is stored yet — never clobber.
       const stored = await chrome.storage.local.get('settings');
       if (stored['settings'] === undefined) {
-        await saveSettings({ ...DEFAULT_SETTINGS, channels: [] });
+        await saveSettings({ ...DEFAULT_SETTINGS });
       }
     }
     await ensureAlarm();
@@ -65,9 +73,29 @@ function runCollectionCycle(trigger: CycleSummary['trigger']): Promise<CycleSumm
 
 async function doRunCollectionCycle(trigger: CycleSummary['trigger']): Promise<CycleSummary> {
   const startedAt = new Date().toISOString();
-  const settings = await getSettings();
 
-  for (const channel of settings.channels) {
+  // The channel list comes LIVE from ContentStudio — never a stored/stale list.
+  // If it can't be fetched (app down or bad token), there is nothing to collect
+  // AND nothing could be pushed anyway, so record the distinct error and stop.
+  let channels;
+  try {
+    channels = await fetchChannels();
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    console.error('[background] could not fetch the channel list from ContentStudio:', err);
+    const summary: CycleSummary = {
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      trigger,
+      channelsAttempted: 0,
+      channelSourceError: { name: error.name, message: error.message },
+      flush: { attempted: 0, delivered: 0, remaining: await outboxDepth(), stopped: null, entryErrors: [] },
+    };
+    await setLastCycle(summary);
+    return summary;
+  }
+
+  for (const channel of channels) {
     const attemptAt = new Date().toISOString();
     try {
       const result = await collectChannel(channel.channelId);
@@ -77,7 +105,7 @@ async function doRunCollectionCycle(trigger: CycleSummary['trigger']): Promise<C
       if (result.snapshots.length > 0) {
         await enqueueSnapshots(result.snapshots);
       }
-      await recordChannelAttempt(channel.channelId, attemptAt, null);
+      await recordChannelAttempt(channel.channelId, attemptAt, null, result.snapshots.length);
     } catch (err) {
       // Every failure is recorded with its distinct error name so the popup
       // can tell "collector pending" apart from a real collection failure.
@@ -108,7 +136,8 @@ async function doRunCollectionCycle(trigger: CycleSummary['trigger']): Promise<C
     startedAt,
     finishedAt: new Date().toISOString(),
     trigger,
-    channelsAttempted: settings.channels.length,
+    channelsAttempted: channels.length,
+    channelSourceError: null,
     flush,
   };
   await setLastCycle(summary);
