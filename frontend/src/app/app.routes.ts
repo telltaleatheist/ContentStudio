@@ -4,19 +4,11 @@ import { Settings } from './components/settings/settings';
 import { MetadataReports } from './components/metadata-reports/metadata-reports';
 import { Prompts } from './components/prompts/prompts';
 import { History } from './components/history/history';
-import { MasterAnalysis } from './components/master-analysis/master-analysis';
-import { MasterReports } from './components/master-reports/master-reports';
-import { EpisodeSplitter } from './components/episode-splitter/episode-splitter';
-import { EpisodeReports } from './components/episode-reports/episode-reports';
 import { Analytics } from './components/analytics/analytics';
 
 export const routes: Routes = [
   { path: '', redirectTo: '/inputs', pathMatch: 'full' },
   { path: 'inputs', component: Inputs },
-  { path: 'master-analysis', component: MasterAnalysis },
-  { path: 'master-reports', component: MasterReports },
-  { path: 'episode-splitter', component: EpisodeSplitter },
-  { path: 'episode-reports', component: EpisodeReports },
   { path: 'metadata-reports', component: MetadataReports },
   { path: 'analytics', component: Analytics },
   { path: 'prompts', component: Prompts },

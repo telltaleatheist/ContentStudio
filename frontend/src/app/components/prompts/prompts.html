@@ -1,6 +1,6 @@
 <div class="prompts-page">
   <!-- Tab Group -->
-  <mat-tab-group [(selectedIndex)]="activeTabIndex" class="prompts-tabs">
+  <mat-tab-group class="prompts-tabs">
     <!-- Metadata Prompts Tab -->
     <mat-tab label="Metadata Prompts">
       <div class="tab-content">
@@ -106,93 +106,6 @@
         </div>
       </div>
     </mat-tab>
-
-    <!-- Master Analysis Prompts Tab -->
-    <mat-tab label="Master Analysis">
-      <div class="tab-content">
-        <!-- Header -->
-        <div class="header">
-          <div class="header-content">
-            <div class="header-text">
-              <h2>Master Analysis Prompts</h2>
-              <p class="subtitle">Create and manage prompts for analyzing long-form videos and detecting sections.</p>
-            </div>
-            <div class="header-actions">
-              @if (masterPromptSets().length === 0) {
-                <button mat-raised-button color="primary" (click)="openMasterCreateDialog()">
-                  <mat-icon>add</mat-icon>
-                  Create First Prompt
-                </button>
-              } @else {
-                <mat-form-field appearance="outline" class="prompt-selector">
-                  <mat-label>Current Prompt</mat-label>
-                  <mat-select [value]="selectedMasterPromptSetId()" (selectionChange)="selectMasterPromptSet($event.value)">
-                    @for (promptSet of masterPromptSets(); track promptSet.id) {
-                      <mat-option [value]="promptSet.id">{{ promptSet.name }}</mat-option>
-                    }
-                  </mat-select>
-                </mat-form-field>
-                <button mat-raised-button color="primary" (click)="openMasterCreateDialog()">
-                  <mat-icon>add</mat-icon>
-                  New
-                </button>
-                @if (selectedMasterPromptSetId()) {
-                  <button mat-raised-button color="warn" (click)="confirmMasterDelete(selectedMasterPromptSetId()!)">
-                    <mat-icon>delete</mat-icon>
-                    Delete
-                  </button>
-                }
-              }
-            </div>
-          </div>
-        </div>
-
-        <div class="content-wrapper">
-          <!-- Edit Panel -->
-          <div class="panel edit-panel">
-            <div class="panel-content">
-              @if (currentMasterPromptSet()) {
-                <div class="edit-card">
-                  <mat-form-field appearance="outline" class="full-width">
-                    <mat-label>Name</mat-label>
-                    <input matInput [ngModel]="editMasterName()" (ngModelChange)="editMasterName.set($event)">
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline" class="full-width">
-                    <mat-label>Description</mat-label>
-                    <input matInput [ngModel]="editMasterDescription()" (ngModelChange)="editMasterDescription.set($event)"
-                           placeholder="Brief description of when to use this prompt...">
-                    <mat-hint>Helps identify when to use this analysis type</mat-hint>
-                  </mat-form-field>
-
-                  <mat-form-field appearance="outline" class="full-width master-prompt-section">
-                    <mat-label>Analysis Prompt</mat-label>
-                    <textarea matInput [ngModel]="editMasterPrompt()"
-                              (ngModelChange)="editMasterPrompt.set($event)"
-                              rows="20"
-                              placeholder="Instructions for analyzing the transcript. Use {{ '{' }}transcript{{ '}' }} where the transcript should be inserted..."></textarea>
-                    <mat-hint>Must contain {{ '{' }}transcript{{ '}' }} placeholder. Define how to detect and describe sections.</mat-hint>
-                  </mat-form-field>
-
-                  <div class="card-actions">
-                    <button mat-raised-button color="primary" (click)="saveCurrentMasterPromptSet()">
-                      <mat-icon>save</mat-icon>
-                      Save Prompt
-                    </button>
-                  </div>
-                </div>
-              } @else {
-                <div class="empty-edit-panel">
-                  <mat-icon>analytics</mat-icon>
-                  <h3>No Master Prompt Selected</h3>
-                  <p>Select a master prompt from the dropdown or create a new one to get started.</p>
-                </div>
-              }
-            </div>
-          </div>
-        </div>
-      </div>
-    </mat-tab>
   </mat-tab-group>
 
   <!-- Create Dialog (Metadata) -->
@@ -231,47 +144,6 @@
         <mat-card-actions>
           <button mat-button (click)="showDeleteDialog.set(false)">Cancel</button>
           <button mat-raised-button color="warn" (click)="deletePromptSet()">Delete</button>
-        </mat-card-actions>
-      </mat-card>
-    </div>
-  }
-
-  <!-- Create Dialog (Master) -->
-  @if (showMasterCreateDialog()) {
-    <div class="dialog-overlay" (click)="closeMasterCreateDialog()">
-      <mat-card class="dialog-card" (click)="$event.stopPropagation()">
-        <mat-card-header>
-          <mat-card-title>Create New Master Prompt</mat-card-title>
-        </mat-card-header>
-        <mat-card-content>
-          <mat-form-field appearance="outline" class="full-width">
-            <mat-label>Name</mat-label>
-            <input matInput [ngModel]="newMasterPromptSetName()" (ngModelChange)="newMasterPromptSetName.set($event)" placeholder="e.g., Fireside Episodes">
-          </mat-form-field>
-        </mat-card-content>
-        <mat-card-actions>
-          <button mat-button (click)="closeMasterCreateDialog()">Cancel</button>
-          <button mat-raised-button color="primary" (click)="createNewMasterPromptSet()" [disabled]="!newMasterPromptSetName().trim()">
-            Create
-          </button>
-        </mat-card-actions>
-      </mat-card>
-    </div>
-  }
-
-  <!-- Delete Confirmation Dialog (Master) -->
-  @if (showMasterDeleteDialog()) {
-    <div class="dialog-overlay" (click)="showMasterDeleteDialog.set(false)">
-      <mat-card class="dialog-card" (click)="$event.stopPropagation()">
-        <mat-card-header>
-          <mat-card-title>Delete Master Prompt?</mat-card-title>
-        </mat-card-header>
-        <mat-card-content>
-          <p>Are you sure you want to delete this master prompt? This action cannot be undone.</p>
-        </mat-card-content>
-        <mat-card-actions>
-          <button mat-button (click)="showMasterDeleteDialog.set(false)">Cancel</button>
-          <button mat-raised-button color="warn" (click)="deleteMasterPromptSet()">Delete</button>
         </mat-card-actions>
       </mat-card>
     </div>

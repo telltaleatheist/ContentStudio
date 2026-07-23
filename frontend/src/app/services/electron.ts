@@ -30,6 +30,53 @@ export interface ImportTranscriptResult {
   errors: string[];
 }
 
+// ==================== TRANSCRIPT SPLIT (split-episode feature) ====================
+
+export interface TranscriptSplitBounds {
+  targetSeconds: number;
+  minSeconds: number;
+  maxSeconds: number;
+}
+
+// One AI-detected chapter (contiguous subject segment tiling the transcript).
+export interface TranscriptChapter {
+  index: number;
+  startSeconds: number;
+  endSeconds: number;
+  timestamp: string;
+  label: string;
+  verbalCue: boolean;
+}
+
+export interface AnalyzeTranscriptSplitResult {
+  success: boolean;
+  title?: string;
+  durationSeconds?: number;
+  chapters?: TranscriptChapter[];
+  error?: string;
+}
+
+export interface TranscriptSplitCut {
+  startSeconds: number;
+  endSeconds: number;
+  title?: string;
+}
+
+export interface CommitTranscriptSplitItem {
+  path: string;
+  displayName: string;
+  startSeconds: number;
+  endSeconds: number;
+  durationSeconds: number;
+  wordCount: number;
+}
+
+export interface CommitTranscriptSplitResult {
+  success: boolean;
+  items?: CommitTranscriptSplitItem[];
+  error?: string;
+}
+
 // ==================== ANALYTICS (performance feedback loop) ====================
 
 export interface AnalyticsChannel {
@@ -143,13 +190,6 @@ declare global {
       updatePromptSet: (id: string, promptSet: any) => Promise<any>;
       deletePromptSet: (id: string) => Promise<any>;
 
-      // Master Prompt Sets (Analysis)
-      listMasterPromptSets: () => Promise<any>;
-      getMasterPromptSet: (id: string) => Promise<any>;
-      createMasterPromptSet: (promptSet: any) => Promise<any>;
-      updateMasterPromptSet: (id: string, promptSet: any) => Promise<any>;
-      deleteMasterPromptSet: (id: string) => Promise<any>;
-
       // File operations
       selectFiles: () => Promise<{ success: boolean; files: string[] }>;
       selectDirectory: () => Promise<{ success: boolean; directory: string | null }>;
@@ -163,6 +203,8 @@ declare global {
 
       // Transcript import (AutoCutStudio)
       importTranscript: () => Promise<ImportTranscriptResult>;
+      analyzeTranscriptSplit: (filePath: string) => Promise<AnalyzeTranscriptSplitResult>;
+      commitTranscriptSplit: (filePath: string, cuts: TranscriptSplitCut[]) => Promise<CommitTranscriptSplitResult>;
 
       // Metadata generation
       generateMetadata: (params: any) => Promise<any>;
@@ -201,14 +243,6 @@ declare global {
       // External URLs
       openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
 
-      // Master Analysis
-      selectMasterVideo: () => Promise<{ success: boolean; videoPath?: string; error?: string }>;
-      analyzeMaster: (params: { videoPath: string; masterPromptSet?: string; jobId?: string }) => Promise<any>;
-      getMasterReport: (reportPath: string) => Promise<any>;
-      listMasterReports: () => Promise<any>;
-      deleteMasterReport: (reportPath: string) => Promise<{ success: boolean; error?: string }>;
-      onMasterAnalysisProgress: (callback: (progress: any) => void) => () => void;
-
       // Analytics (performance feedback loop)
       analyticsListChannels: () => Promise<{ success: boolean; channels?: AnalyticsChannel[]; error?: string }>;
       analyticsAddChannel: (entry: AnalyticsChannel) => Promise<{ success: boolean; channels?: AnalyticsChannel[]; error?: string }>;
@@ -226,14 +260,6 @@ declare global {
       youtubeListConnections: () => Promise<{ success: boolean; connections?: YouTubeConnection[]; error?: string }>;
       youtubeCollectNow: (channelId?: string) => Promise<{ success: boolean; results?: YouTubeChannelCollectResult[]; error?: string }>;
       youtubeGetCollectorState: () => Promise<{ success: boolean; state?: YouTubeCollectorState; error?: string }>;
-
-      // Episode Splitter
-      selectEpisodeAudio: () => Promise<{ success: boolean; filePaths?: string[]; error?: string }>;
-      analyzeEpisodes: (params: { audioPaths: string[]; jobId?: string }) => Promise<any>;
-      listEpisodeReports: () => Promise<any>;
-      getEpisodeReport: (reportPath: string) => Promise<any>;
-      deleteEpisodeReport: (reportPath: string) => Promise<{ success: boolean; error?: string }>;
-      onEpisodeSplitterProgress: (callback: (progress: any) => void) => () => void;
     };
   }
 }
@@ -333,32 +359,6 @@ export class ElectronService {
     return await this.ipcRenderer.deletePromptSet(id);
   }
 
-  // Master Prompt Sets (Analysis)
-  async listMasterPromptSets(): Promise<any> {
-    if (!this.ipcRenderer) return { success: false, promptSets: [] };
-    return await this.ipcRenderer.listMasterPromptSets();
-  }
-
-  async getMasterPromptSet(id: string): Promise<any> {
-    if (!this.ipcRenderer) return { success: false };
-    return await this.ipcRenderer.getMasterPromptSet(id);
-  }
-
-  async createMasterPromptSet(promptSet: any): Promise<any> {
-    if (!this.ipcRenderer) return { success: false };
-    return await this.ipcRenderer.createMasterPromptSet(promptSet);
-  }
-
-  async updateMasterPromptSet(id: string, promptSet: any): Promise<any> {
-    if (!this.ipcRenderer) return { success: false };
-    return await this.ipcRenderer.updateMasterPromptSet(id, promptSet);
-  }
-
-  async deleteMasterPromptSet(id: string): Promise<any> {
-    if (!this.ipcRenderer) return { success: false };
-    return await this.ipcRenderer.deleteMasterPromptSet(id);
-  }
-
   // File operations
   async selectFiles(): Promise<{ success: boolean; files: string[] }> {
     if (!this.ipcRenderer) return { success: false, files: [] };
@@ -368,6 +368,16 @@ export class ElectronService {
   async importTranscript(): Promise<ImportTranscriptResult> {
     if (!this.ipcRenderer) return { success: false, items: [], errors: ['Electron not available'] };
     return await this.ipcRenderer.importTranscript();
+  }
+
+  async analyzeTranscriptSplit(filePath: string): Promise<AnalyzeTranscriptSplitResult> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.analyzeTranscriptSplit(filePath);
+  }
+
+  async commitTranscriptSplit(filePath: string, cuts: TranscriptSplitCut[]): Promise<CommitTranscriptSplitResult> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.commitTranscriptSplit(filePath, cuts);
   }
 
   async selectDirectory(): Promise<{ success: boolean; directory: string | null }> {
@@ -523,37 +533,6 @@ export class ElectronService {
     return await this.ipcRenderer.openExternal(url);
   }
 
-  // Master Analysis
-  async selectMasterVideo(): Promise<{ success: boolean; videoPath?: string; error?: string }> {
-    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.selectMasterVideo();
-  }
-
-  async analyzeMaster(params: { videoPath: string; masterPromptSet?: string; jobId?: string }): Promise<any> {
-    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.analyzeMaster(params);
-  }
-
-  async getMasterReport(reportPath: string): Promise<any> {
-    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.getMasterReport(reportPath);
-  }
-
-  async listMasterReports(): Promise<any> {
-    if (!this.ipcRenderer) return { success: false, reports: [] };
-    return await this.ipcRenderer.listMasterReports();
-  }
-
-  async deleteMasterReport(reportPath: string): Promise<{ success: boolean; error?: string }> {
-    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.deleteMasterReport(reportPath);
-  }
-
-  onMasterAnalysisProgress(callback: (progress: any) => void): () => void {
-    if (!this.ipcRenderer) return () => {};
-    return this.ipcRenderer.onMasterAnalysisProgress(callback);
-  }
-
   // Analytics (performance feedback loop)
   async analyticsListChannels(): Promise<{ success: boolean; channels?: AnalyticsChannel[]; error?: string }> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
@@ -624,36 +603,5 @@ export class ElectronService {
   async youtubeGetCollectorState(): Promise<{ success: boolean; state?: YouTubeCollectorState; error?: string }> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.youtubeGetCollectorState();
-  }
-
-  // Episode Splitter
-  async selectEpisodeAudio(): Promise<{ success: boolean; filePaths?: string[]; error?: string }> {
-    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.selectEpisodeAudio();
-  }
-
-  async analyzeEpisodes(params: { audioPaths: string[]; jobId?: string }): Promise<any> {
-    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.analyzeEpisodes(params);
-  }
-
-  async listEpisodeReports(): Promise<any> {
-    if (!this.ipcRenderer) return { success: false, reports: [] };
-    return await this.ipcRenderer.listEpisodeReports();
-  }
-
-  async getEpisodeReport(reportPath: string): Promise<any> {
-    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.getEpisodeReport(reportPath);
-  }
-
-  async deleteEpisodeReport(reportPath: string): Promise<{ success: boolean; error?: string }> {
-    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.deleteEpisodeReport(reportPath);
-  }
-
-  onEpisodeSplitterProgress(callback: (progress: any) => void): () => void {
-    if (!this.ipcRenderer) return () => {};
-    return this.ipcRenderer.onEpisodeSplitterProgress(callback);
   }
 }

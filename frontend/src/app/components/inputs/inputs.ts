@@ -18,6 +18,7 @@ import { CdkDragDrop, DragDropModule, moveItemInArray } from '@angular/cdk/drag-
 import { ElectronService } from '../../services/electron';
 import { TextSubjectDialog } from '../text-subject-dialog/text-subject-dialog';
 import { NotesDialog } from '../notes-dialog/notes-dialog';
+import { SplitReviewDialog, SplitReviewDialogData, SplitReviewDialogResult } from '../split-review-dialog/split-review-dialog';
 import { EditTextSubjectDialog, EditTextSubjectData } from '../edit-text-subject-dialog/edit-text-subject-dialog';
 import { InputsStateService, InputItem } from '../../services/inputs-state';
 import { JobQueueService, QueuedJob } from '../../services/job-queue';
@@ -248,6 +249,10 @@ export class Inputs implements OnInit, OnDestroy {
           } else if (ext === 'txt') {
             icon = 'text_fields';
             type = 'transcript';
+          } else if (ext === 'json') {
+            // AutoCutStudio transcript JSON — same as the Import Transcript button.
+            icon = 'record_voice_over';
+            type = 'transcript-import';
           }
 
           this.inputsState.addItem({
@@ -257,7 +262,7 @@ export class Inputs implements OnInit, OnDestroy {
             icon,
             selected: true,
             promptSet: this.inputsState.masterPromptSet(),
-            generateChapters: type === 'video' ? true : undefined
+            generateChapters: (type === 'video' || type === 'transcript-import') ? true : undefined
           });
         }
       }
@@ -352,6 +357,10 @@ export class Inputs implements OnInit, OnDestroy {
         } else if (ext === 'txt') {
           icon = 'text_fields';
           type = 'transcript';
+        } else if (ext === 'json') {
+          // AutoCutStudio transcript JSON — same as the Import Transcript button.
+          icon = 'record_voice_over';
+          type = 'transcript-import';
         }
 
         this.inputsState.addItem({
@@ -361,7 +370,7 @@ export class Inputs implements OnInit, OnDestroy {
           icon,
           selected: true,
           promptSet: this.inputsState.masterPromptSet(),
-          generateChapters: type === 'video' ? true : undefined
+          generateChapters: (type === 'video' || type === 'transcript-import') ? true : undefined
         });
       }
     }
@@ -382,6 +391,65 @@ export class Inputs implements OnInit, OnDestroy {
     const updatedItems = [...items];
     updatedItems[index] = { ...updatedItems[index], generateChapters: value };
     this.inputsState.inputItems.set(updatedItems);
+  }
+
+  // ==================== Split episode ====================
+
+  // Which item's split modal is currently open (disables its button).
+  splittingIndex = signal<number | null>(null);
+
+  isTranscriptImport(item: InputItem): boolean {
+    if (item.type === 'transcript-import') return true;
+    // Also recognize a transcript .json added via Browse Files / drag-drop
+    // (which may have been classified as a generic 'file' before it was routed
+    // to the transcript-import type). Text subjects store content in `path`, so
+    // exclude them.
+    if (item.type === 'text-subject' || item.type === 'subject') return false;
+    return item.path?.toLowerCase().endsWith('.json') ?? false;
+  }
+
+  /** Open the split modal for a transcript. The modal runs AI chapter detection
+   *  on demand and lets the user group chapters into stories; on confirm the
+   *  item is fanned into N transcript-import queue items. */
+  openSplitDialog(index: number) {
+    const item = this.inputsState.inputItems()[index];
+    if (!item || !this.isTranscriptImport(item) || this.splittingIndex() !== null) return;
+
+    this.splittingIndex.set(index);
+    const dialogRef = this.dialog.open(SplitReviewDialog, {
+      width: '860px',
+      data: {
+        filePath: item.path,
+        title: item.displayName,
+      } as SplitReviewDialogData,
+    });
+
+    dialogRef.afterClosed().subscribe(async (outcome: SplitReviewDialogResult | undefined) => {
+      this.splittingIndex.set(null);
+      if (!outcome || !outcome.cuts || outcome.cuts.length < 1) return;
+
+      // Re-locate by path: the list may have changed while the dialog was open.
+      const curIndex = this.inputsState.inputItems().findIndex(it => it.path === item.path);
+      if (curIndex === -1) return;
+
+      const commit = await this.electron.commitTranscriptSplit(item.path, outcome.cuts);
+      if (!commit.success || !commit.items) {
+        this.notificationService.error('Split Episode', commit.error || 'Failed to write split stories.');
+        return;
+      }
+
+      const newItems: InputItem[] = commit.items.map(s => ({
+        type: 'transcript-import',
+        path: s.path,
+        displayName: s.displayName,
+        icon: 'record_voice_over',
+        selected: true,
+        promptSet: item.promptSet,
+        generateChapters: item.generateChapters !== false,
+      }));
+      this.inputsState.replaceItemAt(curIndex, newItems);
+      this.notificationService.success('Split Episode', `Split into ${newItems.length} stories.`);
+    });
   }
 
   openNotesDialog(index: number) {
@@ -589,6 +657,10 @@ export class Inputs implements OnInit, OnDestroy {
     const startTime = Date.now();
     let elapsedInterval: any;
     let unsubscribe: (() => void) | undefined;
+    // Guards against finalizing twice: the backend sends a terminal
+    // 'complete'/'error' progress event AND the generateMetadata promise
+    // resolves. Whichever arrives first finalizes the job; the other is ignored.
+    let settled = false;
 
     try {
       // Start elapsed time tracker for this job
@@ -637,6 +709,42 @@ export class Inputs implements OnInit, OnDestroy {
       unsubscribe = this.electron.onProgress((progress: any) => {
         const job = this.jobQueue.getJob(nextJob.id);
         if (!job) return;
+
+        // Terminal events from the backend: finalize the job here so the UI can
+        // never hang on "generating" if the generateMetadata promise is delayed
+        // or lost. The post-await block below is skipped once `settled` is set.
+        if ((progress.phase === 'complete' || progress.phase === 'error') && !settled) {
+          settled = true;
+          if (progress.phase === 'complete') {
+            for (let i = 0; i < job.inputs.length; i++) {
+              this.jobQueue.updateItemProgress(nextJob.id, i, 100, 'completed');
+            }
+            const processingTime = (Date.now() - startTime) / 1000;
+            this.jobQueue.updateJob(nextJob.id, {
+              status: 'completed', progress: 100, currentlyProcessing: 'Complete!',
+              completedAt: new Date(), processingTime
+            });
+            this.showCompletionMessageFor(`Job "${nextJob.name}" completed in ${processingTime.toFixed(1)}s`);
+            this.notificationService.success('Job Completed', `"${nextJob.name}" completed successfully in ${processingTime.toFixed(1)}s`);
+          } else {
+            job.itemProgress.forEach((item, i) => {
+              if (item.status !== 'completed' && item.status !== 'failed') {
+                this.jobQueue.updateItemProgress(nextJob.id, i, 100, 'failed');
+              }
+            });
+            this.jobQueue.updateJob(nextJob.id, {
+              status: 'failed', progress: 0, currentlyProcessing: 'Failed',
+              completedAt: new Date(), error: progress.message
+            });
+            this.notificationService.error('Job Failed', `"${nextJob.name}" failed: ${progress.message || 'Unknown error'}`);
+          }
+          // Tear down this job's listener/timer and advance the queue now, rather
+          // than waiting on the (possibly stuck) promise's finally block.
+          if (unsubscribe) unsubscribe();
+          if (elapsedInterval) clearInterval(elapsedInterval);
+          this.processNextJob();
+          return;
+        }
 
         // Handle preparing phase (when starting a new video for transcription)
         if (progress.phase === 'preparing' && progress.filename) {
@@ -805,7 +913,13 @@ export class Inputs implements OnInit, OnDestroy {
         });
       }
 
-      if (result.success) {
+      if (settled) {
+        // Already finalized by the terminal 'complete'/'error' progress event.
+        // Just attach output files if the resolved result carries them.
+        if (result?.success && result.output_files) {
+          this.jobQueue.updateJob(nextJob.id, { outputFiles: result.output_files });
+        }
+      } else if (result.success) {
         // Mark all items as completed
         const job = this.jobQueue.getJob(nextJob.id);
         if (job) {

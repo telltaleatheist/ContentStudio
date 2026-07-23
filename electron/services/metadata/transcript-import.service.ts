@@ -430,6 +430,97 @@ export function buildImportedContentItem(
   };
 }
 
+/** A user-finalized cut range within the story's 0-based timeline. */
+export interface TranscriptSliceCut {
+  startSeconds: number;
+  endSeconds: number;
+  /** Optional AI subject label (informational; not used as the project title). */
+  title?: string;
+}
+
+/** One materialized slice: a self-contained import file plus display metadata. */
+export interface TranscriptSliceResult {
+  /** Ready to JSON.stringify and write as a standalone transcript-import file. */
+  file: TranscriptImportFile;
+  /** Project/display name for the resulting queue item ("<title> — Part N"). */
+  displayName: string;
+  slug?: string;
+  startSeconds: number;      // range on the ORIGINAL story timeline
+  endSeconds: number;
+  durationSeconds: number;
+  wordCount: number;
+}
+
+/**
+ * Split a parsed transcript into N standalone import files at the given cuts.
+ * Each slice's word times are rebased to a 0 base so it reads as its own story;
+ * `story.startSeconds` carries the original offset for provenance / the ACS
+ * round-trip. The output files parse back through this same service unchanged,
+ * so each slice becomes a normal transcript-import queue item (no Whisper).
+ */
+export function buildTranscriptSlices(
+  parsed: ParsedTranscriptImport,
+  cuts: TranscriptSliceCut[],
+): TranscriptSliceResult[] {
+  const ordered = [...cuts].sort((a, b) => a.startSeconds - b.startSeconds);
+  const baseTitle = parsed.meta.story.title;
+  const baseSlug = parsed.meta.story.slug;
+  const storyStart = parsed.meta.story.startSeconds ?? 0;
+  const results: TranscriptSliceResult[] = [];
+
+  ordered.forEach((cut, i) => {
+    const partNum = i + 1;
+    const start = Math.max(0, cut.startSeconds);
+    const end = cut.endSeconds;
+
+    // A word belongs to the slice that its START falls into — keeps every word in
+    // exactly one slice and matches how the boundary was chosen (segment start).
+    const sliceWords = parsed.words
+      .filter((w) => w.start >= start && w.start < end)
+      .map((w) => ({
+        speaker: w.speaker,
+        text: w.text,
+        start: Math.max(0, w.start - start),
+        end: Math.max(0, w.end - start),
+        confidence: w.confidence,
+      }));
+
+    const lastEnd = sliceWords.length ? sliceWords[sliceWords.length - 1].end : Math.max(0, end - start);
+    // Prefer the user-supplied story name; fall back to "<title> — Part N".
+    const displayName = cut.title?.trim() || `${baseTitle} — Part ${partNum}`;
+
+    const file: TranscriptImportFile = {
+      formatVersion: parsed.meta.formatVersion,
+      producer: parsed.meta.producer,
+      sourceSession: parsed.meta.sourceSession,
+      story: {
+        number: parsed.meta.story.number,
+        title: displayName,
+        slug: baseSlug ? `${baseSlug}-part-${partNum}` : undefined,
+        startSeconds: storyStart + start,
+      },
+      language: parsed.meta.language,
+      durationSeconds: lastEnd,
+      timebase: 'story',
+      speakers: parsed.meta.speakers.map((s) => ({ id: s.id, label: s.label })),
+      words: sliceWords,
+      splitSuggestions: [],
+    };
+
+    results.push({
+      file,
+      displayName,
+      slug: file.story?.slug,
+      startSeconds: start,
+      endSeconds: end,
+      durationSeconds: Math.max(0, end - start),
+      wordCount: sliceWords.length,
+    });
+  });
+
+  return results;
+}
+
 /** True if a file path is a candidate for transcript import (a .json file). */
 export function isTranscriptImportPath(filePath: string): boolean {
   return path.extname(filePath).toLowerCase() === '.json';
