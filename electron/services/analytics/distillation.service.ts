@@ -274,7 +274,14 @@ export class DistillationService {
       medianFirstWeekViews: median(firstWeeks.map((fw) => fw.views)),
     };
 
-    const scored = verdicts.filter((v) => v.packagingScore !== null);
+    // Packaging rankings need enough reach to carry a real signal. Exclude near-
+    // zero-impression videos — unlisted / private uploads (never surfaced, so ~0
+    // impressions) and barely-seen items — whose CTR is statistically meaningless
+    // and would otherwise fill the "bottom packaging" list with irrelevant noise.
+    const MIN_PACKAGING_IMPRESSIONS = 1000;
+    const scored = verdicts.filter(
+      (v) => v.packagingScore !== null && (v.lifetime.impressions ?? 0) >= MIN_PACKAGING_IMPRESSIONS,
+    );
 
     // Top ~8 by packagingScore, recency-weighted: videos published <90d ago get
     // 2x weight so fresh wins outrank equally-scored old ones.
