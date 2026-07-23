@@ -33,6 +33,11 @@ const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
 // stale feed impressions, and for a topical channel old topics aren't useful guidance.
 // Widen/narrow here (a natural future candidate for a per-channel UI setting).
 const INSIGHTS_WINDOW_MS = 180 * 24 * 60 * 60 * 1000;
+// Minimum lifetime thumbnail impressions for a video to appear in ANY packaging
+// ranking — per-channel top/bottom AND cross-channel overperformers. Below this, CTR
+// is statistically meaningless (unlisted / dead / barely-seen videos), and such a
+// video must never be injected into the AI as a "top example to emulate".
+const MIN_PACKAGING_IMPRESSIONS = 1000;
 
 export interface DistillationSummary {
   channels: number;
@@ -291,9 +296,7 @@ export class DistillationService {
     };
 
     // Within the window, packaging rankings still need enough reach to carry a real
-    // signal — exclude near-zero-impression videos (unlisted / private / barely-seen),
-    // whose CTR is statistically meaningless.
-    const MIN_PACKAGING_IMPRESSIONS = 1000;
+    // signal — exclude near-zero-impression videos (see MIN_PACKAGING_IMPRESSIONS).
     const scored = recent.filter(
       (v) => v.packagingScore !== null && (v.lifetime.impressions ?? 0) >= MIN_PACKAGING_IMPRESSIONS,
     );
@@ -397,6 +400,9 @@ export class DistillationService {
       for (const verdict of this.store.loadVerdicts(channel.channelId)) {
         if (verdict.packagingScore === null || verdict.packagingScore < 80) {
           continue;
+        }
+        if ((verdict.lifetime.impressions ?? 0) < MIN_PACKAGING_IMPRESSIONS) {
+          continue; // enough reach to be a real example — not a 6-view dead/unlisted video
         }
         if (now - Date.parse(verdict.publishedAt) > NINETY_DAYS_MS) {
           continue;
