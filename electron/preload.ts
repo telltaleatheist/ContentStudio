@@ -109,6 +109,24 @@ const api = {
     return () => ipcRenderer.removeListener('master-analysis-progress', listener);
   },
 
+  // Analytics (performance feedback loop)
+  analyticsListChannels: () => ipcRenderer.invoke('analytics-list-channels'),
+  analyticsAddChannel: (entry: any) => ipcRenderer.invoke('analytics-add-channel', entry),
+  analyticsUpdateChannel: (channelId: string, entry: any) => ipcRenderer.invoke('analytics-update-channel', channelId, entry),
+  analyticsDeleteChannel: (channelId: string) => ipcRenderer.invoke('analytics-delete-channel', channelId),
+  analyticsGetIngestInfo: () => ipcRenderer.invoke('analytics-get-ingest-info'),
+  analyticsGetSummary: () => ipcRenderer.invoke('analytics-get-summary'),
+  analyticsRunDistillation: () => ipcRenderer.invoke('analytics-run-distillation'),
+  analyticsGetInsights: () => ipcRenderer.invoke('analytics-get-insights'),
+  analyticsSeedFakeData: () => ipcRenderer.invoke('analytics-seed-fake-data'),
+
+  // YouTube (OAuth + API collector)
+  youtubeConnectChannel: () => ipcRenderer.invoke('youtube-connect-channel'),
+  youtubeDisconnectChannel: (channelId: string) => ipcRenderer.invoke('youtube-disconnect-channel', channelId),
+  youtubeListConnections: () => ipcRenderer.invoke('youtube-list-connections'),
+  youtubeCollectNow: (channelId?: string) => ipcRenderer.invoke('youtube-collect-now', channelId),
+  youtubeGetCollectorState: () => ipcRenderer.invoke('youtube-get-collector-state'),
+
   // Episode Splitter
   selectEpisodeAudio: () => ipcRenderer.invoke('select-episode-audio'),
   analyzeEpisodes: (params: { audioPaths: string[]; jobId?: string }) =>

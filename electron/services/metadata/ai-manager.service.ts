@@ -25,6 +25,9 @@ export interface AIConfig {
   host?: string;
   promptSet?: string;
   promptSetsDir?: string;
+  // "CHANNEL PERFORMANCE DATA" block from the analytics feedback loop, appended
+  // to the metadata prompt when present (resolved by the caller; optional).
+  insightsBlock?: string;
 }
 
 export interface MetadataResult {
@@ -700,7 +703,11 @@ export class AIManagerService {
       instructionsPrompt = `${instructionsPrompt}\n${overrideBlock}`;
     }
 
-    return `${systemPrompt}\n\n${editorialPrompt}\n\n${instructionsPrompt}`;
+    // Analytics feedback loop: append the pre-resolved channel performance
+    // block (if any) AFTER the existing prompt content — purely additive.
+    const insightsSuffix = this.config.insightsBlock ? `\n\n${this.config.insightsBlock}` : '';
+
+    return `${systemPrompt}\n\n${editorialPrompt}\n\n${instructionsPrompt}${insightsSuffix}`;
   }
 
   /**

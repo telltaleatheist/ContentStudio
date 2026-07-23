@@ -28,6 +28,9 @@ export interface GenerationParams {
   promptSetsDir?: string;
   jobId?: string;
   jobName?: string;
+  // Pre-resolved "CHANNEL PERFORMANCE DATA" block from the analytics feedback
+  // loop (appended to the metadata prompt); undefined = omit (expected state).
+  insightsBlock?: string;
   chapterFlags?: { [key: string]: boolean };
   inputNotes?: { [key: string]: string };
   preTranscribedContent?: ContentItem[]; // Pre-transcribed content from pipeline (skips transcription phase)
@@ -80,6 +83,7 @@ export class MetadataGeneratorService {
         host: params.aiHost,
         promptSet: params.promptSet,
         promptSetsDir: params.promptSetsDir,
+        insightsBlock: params.insightsBlock,
       };
 
       log.info('[MetadataGenerator] Creating AIManagerService...');

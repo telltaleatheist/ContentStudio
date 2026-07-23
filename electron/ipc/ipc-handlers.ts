@@ -10,6 +10,24 @@ import { MasterAnalyzerService } from '../services/metadata/master-analyzer.serv
 import { EpisodeSplitterService } from '../services/metadata/episode-splitter.service';
 import type { ContentItem } from '../services/metadata/input-handler.service';
 import { parseTranscriptImport } from '../services/metadata/transcript-import.service';
+import { AnalyticsStoreService } from '../services/analytics/analytics-store.service';
+import { IngestServerService } from '../services/analytics/ingest-server.service';
+import { DistillationService } from '../services/analytics/distillation.service';
+import { seedFakeData } from '../services/analytics/seed-fake-data';
+import { resolveInsightsBlockForPromptSet } from '../services/analytics/insights-prompt';
+import type { ChannelRegistryEntry } from '../services/analytics/analytics-types';
+import { YouTubeAuthService } from '../services/youtube/youtube-auth.service';
+import { ApiCollectorService } from '../services/youtube/api-collector.service';
+
+/**
+ * Analytics services created in main.ts at startup and shared with the IPC layer.
+ */
+export interface AnalyticsServices {
+  analyticsStore: AnalyticsStoreService;
+  ingestServer: IngestServerService;
+  youtubeAuth: YouTubeAuthService;
+  apiCollector: ApiCollectorService;
+}
 
 /**
  * IPC Handlers
@@ -390,7 +408,7 @@ async function processAiGenerationQueue(): Promise<void> {
   }
 }
 
-export function setupIpcHandlers(store: Store<any>) {
+export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices) {
 
   const { setSelectedWhisperModel } = require('../lib/bridges/runtime-paths');
   const componentManager = require('../components/component-manager');
@@ -759,6 +777,13 @@ export function setupIpcHandlers(store: Store<any>) {
 
       log.info(`[IPC] Using AI model: ${fullModel} (provider: ${aiProvider}, model: ${aiModel})`);
 
+      // Performance-feedback loop: when the active prompt set maps to a
+      // registered analytics channel that has computed insights, append the
+      // "CHANNEL PERFORMANCE DATA" block to the generation prompt. null = no
+      // mapping / no insights yet — expected state, block simply omitted.
+      const activePromptSet = params.promptSet || settings.promptSet || 'sample-youtube';
+      const insightsBlock = resolveInsightsBlockForPromptSet(analytics.analyticsStore, activePromptSet);
+
       // Prepare metadata generation parameters
       const metadataParams = {
         inputs: params.inputs,
@@ -770,17 +795,20 @@ export function setupIpcHandlers(store: Store<any>) {
         aiApiKey: apiKey,
         aiHost: settings.ollamaHost || 'http://localhost:11434',
         outputPath: params.outputPath || settings.outputDirectory,
-        promptSet: params.promptSet || settings.promptSet || 'sample-youtube',
+        promptSet: activePromptSet,
         promptSetsDir: getPromptSetsDirectory(),
         jobId: params.jobId,
         jobName: params.jobName,
         chapterFlags: params.chapterFlags || {},
-        inputNotes: params.inputNotes || {}
+        inputNotes: params.inputNotes || {},
+        insightsBlock: insightsBlock || undefined
       };
 
       const safeMetadataParams = {
         ...metadataParams,
-        aiApiKey: metadataParams.aiApiKey ? '***' : undefined
+        aiApiKey: metadataParams.aiApiKey ? '***' : undefined,
+        // Summarized: the full block is several KB and would drown the log
+        insightsBlock: insightsBlock ? `<CHANNEL PERFORMANCE DATA, ${insightsBlock.length} chars>` : undefined
       };
       log.info('Prepared metadata params:', JSON.stringify(safeMetadataParams, null, 2));
 
@@ -1910,6 +1938,213 @@ export function setupIpcHandlers(store: Store<any>) {
   });
 
   // ==================== END EPISODE SPLITTER ====================
+
+  // ==================== ANALYTICS ====================
+
+  const { analyticsStore, ingestServer } = analytics;
+  const distillation = new DistillationService(analyticsStore);
+
+  // Channel registry CRUD
+  ipcMain.handle('analytics-list-channels', async () => {
+    try {
+      return { success: true, channels: analyticsStore.listChannels() };
+    } catch (error) {
+      log.error('Error listing analytics channels:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('analytics-add-channel', async (_event, entry: ChannelRegistryEntry) => {
+    try {
+      if (!entry || !entry.channelId || !entry.name) {
+        return { success: false, error: 'Channel requires channelId and name' };
+      }
+      const channels = analyticsStore.listChannels();
+      if (channels.some((c) => c.channelId === entry.channelId)) {
+        return { success: false, error: `Channel ${entry.channelId} is already registered` };
+      }
+      channels.push({ channelId: entry.channelId, name: entry.name, promptSets: entry.promptSets || [] });
+      await analyticsStore.saveChannels(channels);
+      return { success: true, channels };
+    } catch (error) {
+      log.error('Error adding analytics channel:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('analytics-update-channel', async (_event, channelId: string, entry: ChannelRegistryEntry) => {
+    try {
+      const channels = analyticsStore.listChannels();
+      const index = channels.findIndex((c) => c.channelId === channelId);
+      if (index === -1) {
+        return { success: false, error: `Channel ${channelId} is not registered` };
+      }
+      channels[index] = { channelId: entry.channelId, name: entry.name, promptSets: entry.promptSets || [] };
+      await analyticsStore.saveChannels(channels);
+      return { success: true, channels };
+    } catch (error) {
+      log.error('Error updating analytics channel:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('analytics-delete-channel', async (_event, channelId: string) => {
+    try {
+      const channels = analyticsStore.listChannels();
+      const remaining = channels.filter((c) => c.channelId !== channelId);
+      if (remaining.length === channels.length) {
+        return { success: false, error: `Channel ${channelId} is not registered` };
+      }
+      await analyticsStore.saveChannels(remaining);
+      return { success: true, channels: remaining };
+    } catch (error) {
+      log.error('Error deleting analytics channel:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Ingest server info: port, token, status (incl. port-conflict error state)
+  ipcMain.handle('analytics-get-ingest-info', async () => {
+    try {
+      const status = ingestServer.getStatus();
+      return {
+        success: true,
+        port: status.port,
+        token: ingestServer.getToken(),
+        running: status.running,
+        error: status.error,
+        lastIngestAt: status.lastIngestAt,
+      };
+    } catch (error) {
+      log.error('Error getting ingest info:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Per-channel summary: video count, snapshot count, last capture time
+  ipcMain.handle('analytics-get-summary', async () => {
+    try {
+      const channels = analyticsStore.listChannels().map((channel) => {
+        const stats = analyticsStore.getSnapshotStats(channel.channelId);
+        return {
+          channelId: channel.channelId,
+          name: channel.name,
+          promptSets: channel.promptSets,
+          videoCount: analyticsStore.listVideos(channel.channelId).length,
+          snapshotCount: stats.snapshotCount,
+          lastIngestAt: stats.lastCapturedAt,
+        };
+      });
+      return { success: true, channels };
+    } catch (error) {
+      log.error('Error getting analytics summary:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  ipcMain.handle('analytics-run-distillation', async () => {
+    try {
+      const summary = await distillation.runDistillation();
+      return { success: true, summary };
+    } catch (error) {
+      log.error('Error running distillation:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // Insights: per-channel + cross-channel (null where not yet computed)
+  ipcMain.handle('analytics-get-insights', async () => {
+    try {
+      const channels = analyticsStore.listChannels().map((channel) => ({
+        channelId: channel.channelId,
+        name: channel.name,
+        insights: analyticsStore.loadChannelInsights(channel.channelId),
+      }));
+      return {
+        success: true,
+        channels,
+        crossChannel: analyticsStore.loadCrossChannelInsights(),
+      };
+    } catch (error) {
+      log.error('Error getting analytics insights:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // DEV: seed plausible fake data so the whole loop can be exercised end-to-end
+  ipcMain.handle('analytics-seed-fake-data', async () => {
+    try {
+      const summary = await seedFakeData(analyticsStore);
+      return { success: true, summary };
+    } catch (error) {
+      log.error('Error seeding fake analytics data:', error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  // ==================== END ANALYTICS ====================
+
+  // ==================== YOUTUBE (OAuth + API collector) ====================
+
+  const { youtubeAuth, apiCollector } = analytics;
+
+  // Kick off the interactive OAuth flow for ONE channel. Resolves with the
+  // discovered {channelId, channelTitle}. On failure the NAMED error message is
+  // returned verbatim so the UI can show it (missing creds, denied, timeout…).
+  ipcMain.handle('youtube-connect-channel', async () => {
+    try {
+      const result = await youtubeAuth.connectChannel();
+      return { success: true, channelId: result.channelId, channelTitle: result.channelTitle };
+    } catch (error) {
+      log.error('YouTube connect failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Revoke + remove a channel's tokens.
+  ipcMain.handle('youtube-disconnect-channel', async (_event, channelId: string) => {
+    try {
+      if (!channelId) return { success: false, error: 'channelId is required' };
+      await youtubeAuth.disconnect(channelId);
+      return { success: true };
+    } catch (error) {
+      log.error('YouTube disconnect failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Connections with EVERY secret stripped (never send tokens to the renderer).
+  ipcMain.handle('youtube-list-connections', async () => {
+    try {
+      return { success: true, connections: youtubeAuth.listConnections() };
+    } catch (error) {
+      log.error('YouTube list connections failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Run a collection cycle now — all connected channels, or one when channelId given.
+  ipcMain.handle('youtube-collect-now', async (_event, channelId?: string) => {
+    try {
+      const results = await apiCollector.collectAll(channelId);
+      return { success: true, results };
+    } catch (error) {
+      log.error('YouTube collect-now failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Collector schedule + per-channel last-run stats.
+  ipcMain.handle('youtube-get-collector-state', async () => {
+    try {
+      return { success: true, state: apiCollector.getState() };
+    } catch (error) {
+      log.error('YouTube get collector state failed:', error);
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // ==================== END YOUTUBE ====================
 
   log.info('IPC handlers registered');
 }

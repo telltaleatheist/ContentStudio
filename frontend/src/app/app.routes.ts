@@ -8,6 +8,7 @@ import { MasterAnalysis } from './components/master-analysis/master-analysis';
 import { MasterReports } from './components/master-reports/master-reports';
 import { EpisodeSplitter } from './components/episode-splitter/episode-splitter';
 import { EpisodeReports } from './components/episode-reports/episode-reports';
+import { Analytics } from './components/analytics/analytics';
 
 export const routes: Routes = [
   { path: '', redirectTo: '/inputs', pathMatch: 'full' },
@@ -17,6 +18,7 @@ export const routes: Routes = [
   { path: 'episode-splitter', component: EpisodeSplitter },
   { path: 'episode-reports', component: EpisodeReports },
   { path: 'metadata-reports', component: MetadataReports },
+  { path: 'analytics', component: Analytics },
   { path: 'prompts', component: Prompts },
   { path: 'history', component: History },
   { path: 'settings', component: Settings }

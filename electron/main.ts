@@ -3,6 +3,12 @@ import * as path from 'path';
 import * as log from 'electron-log';
 import Store from 'electron-store';
 import { setupIpcHandlers } from './ipc/ipc-handlers';
+import { AnalyticsStoreService } from './services/analytics/analytics-store.service';
+import { IngestServerService, DEFAULT_INGEST_PORT } from './services/analytics/ingest-server.service';
+import { DistillationService } from './services/analytics/distillation.service';
+import { YouTubeAuthService } from './services/youtube/youtube-auth.service';
+import { YouTubeApiService } from './services/youtube/youtube-api.service';
+import { ApiCollectorService } from './services/youtube/api-collector.service';
 
 /**
  * ContentStudio - Main Electron Process
@@ -36,6 +42,9 @@ log.transports.file.archiveLog = (oldLogFile) => {
 let store: Store<any>;
 
 let mainWindow: BrowserWindow | null = null;
+
+// Held so the scheduled collector loop can be stopped on quit.
+let apiCollector: ApiCollectorService | null = null;
 
 // Note: Single instance lock would go here but causes issues with app.requestSingleInstanceLock
 // being called before app is ready. Skipping for now.
@@ -115,12 +124,42 @@ app.whenReady().then(async () => {
         defaultPlatform: 'youtube',
         defaultMode: 'individual',
         outputDirectory: path.join(app.getPath('documents'), 'ContentStudio Output'),
-        whisperModel: 'small'
+        whisperModel: 'small',
+        analyticsIngestPort: DEFAULT_INGEST_PORT
       }
     });
 
+    // Analytics feedback loop: rolling snapshot store + localhost ingest server.
+    // If the port is taken the server records an error state (surfaced via the
+    // analytics-get-ingest-info IPC) instead of silently picking another port.
+    const analyticsStore = new AnalyticsStoreService(path.join(app.getPath('userData'), 'analytics'));
+    const ingestServer = new IngestServerService(
+      analyticsStore,
+      (store as any).get('analyticsIngestPort') || DEFAULT_INGEST_PORT
+    );
+    await ingestServer.start();
+
+    // YouTube OAuth + API-side analytics collector. Tokens live under userData;
+    // the collector self-schedules (startup catch-up + every 6h while open) and
+    // isolates per-channel failures. compactOldSnapshots() is scheduled here too.
+    const userDataPath = app.getPath('userData');
+    const youtubeAuth = new YouTubeAuthService(userDataPath, analyticsStore);
+    const youtubeApi = new YouTubeApiService(youtubeAuth);
+    const collectorDistillation = new DistillationService(analyticsStore);
+    apiCollector = new ApiCollectorService(
+      analyticsStore,
+      youtubeAuth,
+      youtubeApi,
+      collectorDistillation,
+      analyticsStore.getBaseDir()
+    );
+
     // Set up IPC handlers
-    setupIpcHandlers(store);
+    setupIpcHandlers(store, { analyticsStore, ingestServer, youtubeAuth, apiCollector });
+
+    // Collection is manual (user clicks "Refresh data" on the Analytics page).
+    // At startup we only clear stale per-channel errors from a prior session.
+    apiCollector.clearStaleErrors();
 
     // Create main window
     createMainWindow();
