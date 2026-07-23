@@ -126,7 +126,14 @@ export class StudioTabError extends StudioCollectionError {
 // Constants
 // ============================================================================
 
-const PAGE_SIZE = 500;
+// The Studio analytics endpoint does NOT support pageOffset pagination — a
+// pageOffset > 0 returns HTTP 400 ("invalid argument"), verified live 2026-07-22.
+// It returns up to `pageSize` rows in a single request. The endpoint also caps
+// pageSize: 10000 is accepted (verified returning a full multi-thousand-video
+// catalog in one call), 15000+ returns HTTP 400. So 10000 is the safe maximum —
+// large enough for any realistic channel, under the cap. Channels exceeding it
+// trip the PAGE_CAP fail-loud guard below rather than being silently truncated.
+const PAGE_SIZE = 10000;
 const STUDIO_TAB_KEY = 'studioCollectorTabId';
 const CONTEXT_TIMEOUT_MS = 30_000;
 const CONTEXT_POLL_MS = 1_000;
@@ -374,7 +381,7 @@ export async function collectStudioAnalyticsInPage(
   channelId: string,
   config: { pageSize?: number },
 ): Promise<any> {
-  const PAGE = config && typeof config.pageSize === 'number' && config.pageSize > 0 ? config.pageSize : 500;
+  const PAGE = config && typeof config.pageSize === 'number' && config.pageSize > 0 ? config.pageSize : 10000;
   const ORIGIN = 'https://studio.youtube.com';
   const ENDPOINT = 'https://studio.youtube.com/youtubei/v1/yta_web/join?alt=json';
   const MAX_PAGES = 200; // runaway guard (100k videos)
@@ -513,7 +520,7 @@ export async function collectStudioAnalyticsInPage(
       if (vtrArr && vtrArr.__err) return vtrArr.__err;
       const viewsArr = seriesOf('EXTERNAL_VIEWS', ['counts']);
       if (viewsArr && viewsArr.__err) return viewsArr.__err;
-      const watchArr = seriesOf('EXTERNAL_WATCH_TIME', ['doubles', 'counts']);
+      const watchArr = seriesOf('EXTERNAL_WATCH_TIME', ['milliseconds']);
       if (watchArr && watchArr.__err) return watchArr.__err;
       const avgArr = seriesOf('AVERAGE_WATCH_PERCENTAGE', ['percentages']);
       if (avgArr && avgArr.__err) return avgArr.__err;
@@ -522,10 +529,13 @@ export async function collectStudioAnalyticsInPage(
         const videoId = ids[i];
         if (typeof videoId !== 'string' || videoId.length === 0) return fail('MISSING_COLUMN', 'videoId at row ' + i + ' is not a non-empty string.');
         const views = toNum(viewsArr[i]);
-        const watchHours = toNum(watchArr[i]);
-        if (views === null || watchHours === null) {
-          return fail('MISSING_VALUE', 'Row ' + i + ' (video ' + videoId + ') is missing a required numeric views/watchHours value.');
+        // EXTERNAL_WATCH_TIME comes back in MILLISECONDS (holder `milliseconds`) —
+        // verified live against Studio 2026-07-22; convert to hours for the Snapshot.
+        const watchMs = toNum(watchArr[i]);
+        if (views === null || watchMs === null) {
+          return fail('MISSING_VALUE', 'Row ' + i + ' (video ' + videoId + ') is missing a required numeric views/watch-time value.');
         }
+        const watchHours = watchMs / 3600000;
         rows.push({
           videoId: videoId,
           impressions: toNum(impArr[i]),
@@ -536,8 +546,12 @@ export async function collectStudioAnalyticsInPage(
         });
       }
 
-      if (rowCount < PAGE) break; // last page
-      if (page === MAX_PAGES - 1) return fail('TOO_MANY_PAGES', 'Exceeded ' + MAX_PAGES + ' pages — refusing to loop unbounded.');
+      // Single request only: offset paging is unsupported (see PAGE_SIZE note), so
+      // PAGE is sized to cover a whole channel. A completely full page means the
+      // catalog may exceed one request — fail loud rather than silently dropping the
+      // overflow videos.
+      if (rowCount >= PAGE) return fail('PAGE_CAP', 'Channel returned a full page of ' + PAGE + ' rows; catalog may exceed a single request and offset paging is unsupported.');
+      break;
     }
 
     const capturedAt = new Date().toISOString();
