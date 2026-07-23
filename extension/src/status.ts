@@ -13,6 +13,8 @@ export interface ChannelStatus {
   lastError: string | null;
   /** ISO timestamp of the most recent successful collection, or null. */
   lastSuccess: string | null;
+  /** Snapshots collected on the most recent successful attempt, or null if never succeeded. */
+  lastSnapshotCount: number | null;
 }
 
 export interface CycleSummary {
@@ -20,6 +22,12 @@ export interface CycleSummary {
   finishedAt: string;
   trigger: 'alarm' | 'manual' | 'install';
   channelsAttempted: number;
+  /**
+   * Set when the cycle could not fetch the channel list from ContentStudio
+   * (GET /analytics/channels failed). When set, NO channels were collected —
+   * the cycle stopped rather than falling back to a stale list.
+   */
+  channelSourceError: { name: string; message: string } | null;
   flush: FlushResult;
 }
 
@@ -36,6 +44,7 @@ export async function recordChannelAttempt(
   channelId: string,
   attemptAt: string,
   error: { name: string; message: string } | null,
+  snapshotCount?: number,
 ): Promise<void> {
   const statuses = await getChannelStatuses();
   const previous = statuses[channelId];
@@ -45,6 +54,7 @@ export async function recordChannelAttempt(
     lastErrorName: error ? error.name : null,
     lastError: error ? error.message : null,
     lastSuccess: error ? (previous?.lastSuccess ?? null) : attemptAt,
+    lastSnapshotCount: error ? (previous?.lastSnapshotCount ?? null) : (snapshotCount ?? null),
   };
   await chrome.storage.local.set({ [CHANNEL_STATUS_KEY]: statuses });
 }
