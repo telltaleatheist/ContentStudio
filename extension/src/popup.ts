@@ -38,11 +38,6 @@ function renderHealth(result: HealthResult, port: number): void {
       text.textContent = 'ContentStudio not running';
       detail.textContent = result.detail;
       break;
-    case 'unauthorized':
-      dot.classList.add('dot-err');
-      text.textContent = 'Unauthorized';
-      detail.textContent = result.detail;
-      break;
     case 'unexpected-response':
       dot.classList.add('dot-warn');
       text.textContent = 'Unexpected response';
@@ -77,8 +72,6 @@ async function renderChannels(): Promise<void> {
     div.className = 'muted channel-error';
     if (err instanceof IngestError && err.kind === 'unreachable') {
       div.textContent = 'Cannot list channels — ContentStudio is not running.';
-    } else if (err instanceof IngestError && err.kind === 'unauthorized') {
-      div.textContent = 'Cannot list channels — ContentStudio rejected the token (401). Fix it in Options.';
     } else {
       div.textContent = `Cannot list channels — ${err instanceof Error ? err.message : String(err)}`;
     }

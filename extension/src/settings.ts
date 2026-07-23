@@ -3,12 +3,13 @@
 // The settings shape is intentionally small — ONLY the connection to
 // ContentStudio is user-editable:
 //   port  — the localhost port ContentStudio's ingest server listens on
-//   token — bearer token pasted from ContentStudio's Analytics page
 //
-// The channel list is NO LONGER stored here: it is pulled live from
-// ContentStudio (GET /analytics/channels, see ingest-client.fetchChannels) which
-// is the single source of truth. ChannelConfig is retained as the shared shape
-// of one fetched channel.
+// There is NO token: the ingest server requires no auth. It is localhost-bound
+// and blocks CSRF by rejecting cross-origin web Origins, so the extension talks
+// to it directly. The channel list is NOT stored here either: it is pulled live
+// from ContentStudio (GET /analytics/channels, see ingest-client.fetchChannels)
+// which is the single source of truth. ChannelConfig is retained as the shared
+// shape of one fetched channel.
 
 export interface ChannelConfig {
   channelId: string;
@@ -17,12 +18,10 @@ export interface ChannelConfig {
 
 export interface Settings {
   port: number;
-  token: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   port: 43117,
-  token: '',
 };
 
 const SETTINGS_KEY = 'settings';
@@ -35,7 +34,6 @@ export async function getSettings(): Promise<Settings> {
   }
   return {
     port: typeof raw.port === 'number' && Number.isInteger(raw.port) ? raw.port : DEFAULT_SETTINGS.port,
-    token: typeof raw.token === 'string' ? raw.token : DEFAULT_SETTINGS.token,
   };
 }
 
