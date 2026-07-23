@@ -164,6 +164,13 @@ app.whenReady().then(async () => {
     // At startup we only clear stale per-channel errors from a prior session.
     apiCollector.clearStaleErrors();
 
+    // Recompute verdicts/insights once from whatever snapshots are already on disk,
+    // so the Analytics page reflects the latest data (and any distillation logic
+    // changes) on launch — no API calls, fire-and-forget.
+    void distillation.runDistillation().catch((err) => {
+      log.error('Startup distillation failed:', err);
+    });
+
     // Create main window
     createMainWindow();
 
