@@ -158,6 +158,19 @@ const transcriptionQueue: PipelineJob[] = [];
 const aiGenerationQueue: AiGenerationJob[] = [];
 let isAiGenerationRunning = false;
 
+// ==================== "SHOW PROMPT" HELD TRANSCRIPTS ====================
+// When a job runs with showPrompt=true we transcribe + assemble the prompt but STOP
+// before the AI call, holding the transcription result (ContentItem[]) here keyed by
+// jobId. "Send to AI" (send-held-prompt) then re-runs generation against this SAME
+// transcript via preTranscribedContent — NO re-transcription. Transcripts are NOT
+// otherwise cached (the pipeline transcribes to a temp dir and deletes it), so this
+// map is the only place the result survives between the two IPC calls.
+//
+// Lifecycle: entries are removed on send (success), discard, or job cancel/removal.
+// There is no timer — the frontend MUST send or discard, and cancel/removal is a
+// safety net. Practically bounded by the number of pending queue items.
+const heldTranscripts = new Map<string, { contentItems: ContentItem[]; metadataParams: any }>();
+
 function enqueuePipelineJob(job: PipelineJob): void {
   const queuePosition = transcriptionQueue.length + activeTranscriptions;
   log.info(`[Pipeline] Enqueueing job: ${job.jobId} (${queuePosition} jobs ahead)`);
@@ -270,6 +283,25 @@ async function runTranscription(job: PipelineJob): Promise<void> {
       };
 
       const jobResult = await MetadataGeneratorService.generate(paramsWithCallback);
+
+      // "Show prompt" flow: the transcript is done and the prompt is assembled, but
+      // NO AI call happened. Hold the transcript so "Send to AI" can reuse it, and do
+      // NOT emit a terminal 'complete' — the frontend keys off the RESOLVED value here,
+      // not a progress event. On failure we still surface a terminal 'error' as usual.
+      if (job.metadataParams.showPrompt) {
+        if (jobResult.success) {
+          heldTranscripts.set(job.jobId, {
+            contentItems: job.contentItems!,
+            metadataParams: job.metadataParams,
+          });
+          return { success: true, prompts: jobResult.prompts, jobId: job.jobId, held: true };
+        }
+        sendToRenderer('generation-progress', {
+          phase: 'error',
+          message: jobResult.error || 'Unknown error'
+        });
+        return jobResult;
+      }
 
       if (jobResult.success) {
         sendToRenderer('generation-progress', {
@@ -668,6 +700,10 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     try {
       log.info(`[IPC] Cancelling job: ${jobId}`);
 
+      // A "Show prompt" job may be holding a transcript with no active run — drop it
+      // so cancelling/removing the job can't leak the held ContentItem[].
+      heldTranscripts.delete(jobId);
+
       const job = runningJobs.get(jobId);
       if (job) {
         job.cancel();
@@ -744,7 +780,10 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         jobName: params.jobName,
         chapterFlags: params.chapterFlags || {},
         inputNotes: params.inputNotes || {},
-        insightsBlock: insightsBlock || undefined
+        insightsBlock: insightsBlock || undefined,
+        // "Show prompt": transcribe + assemble the prompt, then STOP (no AI call).
+        // The transcript is held server-side so "Send to AI" can reuse it.
+        showPrompt: params.showPrompt || false
       };
 
       const safeMetadataParams = {
@@ -819,6 +858,81 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         runningJobs.delete(params.jobId);
       }
     }
+  });
+
+  // "Send to AI" for a held ("Show prompt") transcript. Reuses the already-made
+  // transcript (NO re-transcription) and runs the full metadata + chapters + output
+  // generation, wiring progress + a terminal 'complete'/'error' exactly like the
+  // normal AI phase so the frontend's existing progress handling finalizes the job.
+  ipcMain.handle('send-held-prompt', async (_event, { jobId }: { jobId: string }) => {
+    const held = heldTranscripts.get(jobId);
+    if (!held) {
+      // No fallback: never silently re-transcribe. Fail loud so the UI can tell the
+      // user the transcript is gone and the analysis must be re-run.
+      return { success: false, error: `No held transcript for job ${jobId} (it may have expired)` };
+    }
+
+    // Same progress forwarding the normal AI phase uses (see generate-metadata).
+    const progressCallback = (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => {
+      sendToRenderer('generation-progress', {
+        phase,
+        message,
+        percent,
+        ...(filename && { filename }),
+        ...(itemIndex !== undefined && { itemIndex })
+      });
+    };
+
+    try {
+      // Serialize through the AI generation queue (1-at-a-time) like every other AI run.
+      const result = await enqueueAiGenerationJob(jobId, async () => {
+        const { MetadataGeneratorService } = require('../services/metadata/metadata-generator.service');
+
+        const jobResult = await MetadataGeneratorService.generate({
+          ...held.metadataParams,
+          showPrompt: false,
+          preTranscribedContent: held.contentItems,
+          progressCallback,
+        });
+
+        if (jobResult.success) {
+          sendToRenderer('generation-progress', {
+            phase: 'complete',
+            message: 'Metadata generation complete!'
+          });
+        } else {
+          sendToRenderer('generation-progress', {
+            phase: 'error',
+            message: jobResult.error || 'Unknown error'
+          });
+        }
+
+        return jobResult;
+      });
+
+      // Transcript consumed on success — drop it so it can't leak. On failure keep it
+      // so the user can retry "Send to AI" without re-transcribing (cleared later by
+      // discard-held-prompt or job cancel/removal).
+      if (result && result.success) {
+        heldTranscripts.delete(jobId);
+      }
+      return result;
+    } catch (error) {
+      // Generation THREW — emit a terminal error event so progress-stream UIs don't
+      // hang on "generating". The held transcript is retained for a possible retry.
+      sendToRenderer('generation-progress', {
+        phase: 'error',
+        message: error instanceof Error ? error.message : String(error),
+        jobId
+      });
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  // Discard a held ("Show prompt") transcript without sending it to the AI.
+  ipcMain.handle('discard-held-prompt', async (_event, { jobId }: { jobId: string }) => {
+    heldTranscripts.delete(jobId);
+    return { success: true };
   });
 
   // Get app version
@@ -1113,6 +1227,9 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   // Delete job history entry
   ipcMain.handle('delete-job-history', async (_event, jobId: string) => {
     try {
+      // Removing a job also drops any held "Show prompt" transcript for it.
+      heldTranscripts.delete(jobId);
+
       const settings = (store as any).store;
       const outputDirectory = settings.outputDirectory;
 

@@ -20,6 +20,7 @@ import { TextSubjectDialog } from '../text-subject-dialog/text-subject-dialog';
 import { NotesDialog } from '../notes-dialog/notes-dialog';
 import { SplitReviewDialog, SplitReviewDialogData, SplitReviewDialogResult } from '../split-review-dialog/split-review-dialog';
 import { EditTextSubjectDialog, EditTextSubjectData } from '../edit-text-subject-dialog/edit-text-subject-dialog';
+import { PromptViewDialog } from '../prompt-view-dialog/prompt-view-dialog';
 import { InputsStateService, InputItem } from '../../services/inputs-state';
 import { JobQueueService, QueuedJob } from '../../services/job-queue';
 import { NotificationService } from '../../services/notification';
@@ -65,6 +66,16 @@ export class Inputs implements OnInit, OnDestroy {
   showCompletionMessage = signal(false);
   queueStarted = signal(false);
   expandedJobIds = signal<Set<string>>(new Set());
+
+  // Universal "Transcribe only" toggle at the top of the Job Queue. When ON,
+  // Start Queue transcribes each pending job and STOPS with the prompt held for
+  // review ('held' status) instead of sending to the AI; pressing Start Queue
+  // again (only held jobs remain) sends them. When OFF, Start Queue transcribes
+  // AND sends in one stage (the original behavior).
+  transcribeOnly = signal(false);
+  // Locked at each Start Queue press so a transcribe run never auto-sends the
+  // 'held' jobs it just produced: a run processes only jobs of this status.
+  private queueRunTarget: 'pending' | 'held' = 'pending';
 
   // Available prompt sets
   availablePromptSets = signal<PromptSetOption[]>([]);
@@ -608,7 +619,12 @@ export class Inputs implements OnInit, OnDestroy {
       return;
     }
 
-    console.log('[StartQueue] Starting queue processor...');
+    // Lock this run's target: if any pending jobs exist we transcribe them
+    // (Stage 1 when "Transcribe only" is on; full run when off). Only once there
+    // are no pending jobs does a Start Queue press send the held jobs (Stage 2).
+    this.queueRunTarget = this.jobQueue.getPendingJobs().length > 0 ? 'pending' : 'held';
+
+    console.log('[StartQueue] Starting queue processor... target:', this.queueRunTarget);
     this.jobQueue.isProcessing.set(true);
     this.startQueueProcessor();
   }
@@ -633,9 +649,14 @@ export class Inputs implements OnInit, OnDestroy {
       return;
     }
 
-    const nextJob = this.jobQueue.getNextPendingJob();
+    // A run processes only jobs matching the target locked at Start Queue time,
+    // so a "transcribe" run never sweeps up the 'held' jobs it just created.
+    const nextJob = this.queueRunTarget === 'held'
+      ? this.jobQueue.getNextHeldJob()
+      : this.jobQueue.getNextPendingJob();
+
     if (!nextJob) {
-      // No more jobs - stop processing
+      // No more jobs of this run's target - stop processing
       if (this.queueStarted()) {
         this.queueStarted.set(false);
         this.jobQueue.isProcessing.set(false);
@@ -646,6 +667,34 @@ export class Inputs implements OnInit, OnDestroy {
       }
       return;
     }
+
+    if (this.queueRunTarget === 'held') {
+      // Stage 2: send an already-transcribed job to the AI, reusing its transcript.
+      await this.sendHeldJob(nextJob, { advanceQueue: true });
+    } else {
+      // Stage 1 (transcribeOnly) transcribes + holds; a normal run transcribes + sends.
+      await this.runJob(nextJob, { showPrompt: this.transcribeOnly(), advanceQueue: true });
+    }
+  }
+
+  /**
+   * Runs a single job end-to-end: marks it processing, wires the elapsed timer
+   * and the Python progress listener, calls generateMetadata, and finalizes the
+   * job (success/failure). Used both by the queue processor (advanceQueue:true)
+   * and by the per-job "Analyze" / "Show prompt" buttons (advanceQueue:false).
+   *
+   * With opts.showPrompt the backend transcribes + assembles the prompt but skips
+   * the AI call, resolving { held: true, prompts }. In that case we pop the prompt
+   * preview modal instead of completing the job.
+   *
+   * The normal (advanceQueue:true) path is behavior-identical to the original
+   * processNextJob: the `settled` terminal-event guard, all progress handling and
+   * the finally teardown are preserved exactly. The only advance-gating change is
+   * that processNextJob() is now called only when opts.advanceQueue is true, so a
+   * single-job button run never kicks the whole queue.
+   */
+  private async runJob(job: QueuedJob, opts: { showPrompt?: boolean; advanceQueue?: boolean }): Promise<void> {
+    const nextJob = job;
 
     // Mark job as processing
     this.jobQueue.updateJob(nextJob.id, {
@@ -742,7 +791,7 @@ export class Inputs implements OnInit, OnDestroy {
           // than waiting on the (possibly stuck) promise's finally block.
           if (unsubscribe) unsubscribe();
           if (elapsedInterval) clearInterval(elapsedInterval);
-          this.processNextJob();
+          if (opts.advanceQueue) this.processNextJob();
           return;
         }
 
@@ -900,8 +949,35 @@ export class Inputs implements OnInit, OnDestroy {
         mode: nextJob.mode,
         jobId: nextJob.id,
         jobName: nextJob.name,
-        chapterFlags
+        chapterFlags,
+        showPrompt: opts.showPrompt
       });
+
+      // Show-prompt path: the backend transcribed + assembled the prompt, is
+      // holding the transcript, and skipped the AI call (no terminal 'complete'
+      // event fires — we key off result.held). Tear down the transcription
+      // listener/timer and pop the preview modal instead of completing the job.
+      if (result?.held === true) {
+        if (unsubscribe) { unsubscribe(); unsubscribe = undefined; }
+        if (elapsedInterval) { clearInterval(elapsedInterval); elapsedInterval = undefined; }
+        const prompt = (result.prompts || []).join('\n\n' + '─'.repeat(60) + '\n\n');
+        // Mark the job transcribed & waiting. The backend holds the transcript; the
+        // assembled prompt is captured for the view-only "Show prompt" modal; the job
+        // now waits for the next Start Queue press (Stage 2) to send it. No modal here.
+        const heldJob = this.jobQueue.getJob(nextJob.id);
+        if (heldJob) {
+          for (let i = 0; i < heldJob.inputs.length; i++) {
+            this.jobQueue.updateItemProgress(nextJob.id, i, 100, 'transcribed');
+          }
+        }
+        this.jobQueue.updateJob(nextJob.id, {
+          status: 'held',
+          progress: 100,
+          currentlyProcessing: 'Transcribed — ready to send',
+          heldPrompt: prompt
+        });
+        return;
+      }
 
       const processingTime = ((Date.now() - startTime) / 1000);
 
@@ -989,8 +1065,135 @@ export class Inputs implements OnInit, OnDestroy {
       // job's listener can't rewrite its progress from later jobs' events
       if (unsubscribe) unsubscribe();
       if (elapsedInterval) clearInterval(elapsedInterval);
-      // After job completes (success or failure), process next job in queue
-      this.processNextJob();
+      // After job completes (success or failure), process next job in queue —
+      // but only when this run owns the queue (single-job button runs must not).
+      if (opts.advanceQueue) this.processNextJob();
+    }
+  }
+
+  // ==================== Job Queue: view prompt / send held ====================
+
+  /**
+   * View-only "Show prompt" for a transcribed ('held') job: opens the modal with
+   * the already-assembled prompt for reading/copying. No transcription and no AI
+   * call — sending is done by pressing Start Queue again.
+   */
+  viewPrompt(job: QueuedJob) {
+    if (!job.heldPrompt) return;
+    this.dialog.open(PromptViewDialog, {
+      data: { prompt: job.heldPrompt, jobName: job.name },
+      width: '900px',
+      maxWidth: '95vw'
+    });
+  }
+
+  /**
+   * Stage 2 of the "Transcribe only" flow: send an already-transcribed ('held')
+   * job to the AI, reusing the transcript the backend is holding (no re-transcribe).
+   * sendHeldPrompt emits 'generating' + terminal 'complete'/'error'; a lightweight
+   * listener only animates the bar and we finalize from the resolved result.
+   * Advances the queue when opts.advanceQueue is set.
+   */
+  private async sendHeldJob(job: QueuedJob, opts: { advanceQueue?: boolean }) {
+    const startTime = Date.now();
+
+    // Transcription already ran; jump straight into generation.
+    this.jobQueue.updateJob(job.id, {
+      status: 'processing',
+      progress: 50,
+      currentlyProcessing: 'Generating metadata...',
+      heldPrompt: undefined
+    });
+    const startJob = this.jobQueue.getJob(job.id);
+    if (startJob) {
+      for (let i = 0; i < startJob.itemProgress.length; i++) {
+        this.jobQueue.updateItemProgress(job.id, i, 50, 'generating');
+      }
+    }
+
+    let unsubscribe: (() => void) | undefined;
+
+    try {
+      unsubscribe = this.electron.onProgress((progress: any) => {
+        const cur = this.jobQueue.getJob(job.id);
+        if (!cur) return;
+        // Animate only; finalization happens from the resolved value below.
+        if (progress.phase === 'generating' && progress.percent !== undefined) {
+          const message = progress.message || 'Generating metadata...';
+          const overall = 50 + Math.floor((progress.percent || 0) / 2);
+          this.jobQueue.updateJob(job.id, {
+            currentlyProcessing: message,
+            progress: Math.min(overall, 99)
+          });
+        }
+      });
+
+      const result = await this.electron.sendHeldPrompt(job.id);
+      const processingTime = ((Date.now() - startTime) / 1000);
+
+      if (result.warnings?.length) {
+        result.warnings.forEach((warning: string) => {
+          this.notificationService.warning('Generation Warning', warning);
+        });
+      }
+
+      if (result.success) {
+        const cur = this.jobQueue.getJob(job.id);
+        if (cur) {
+          for (let i = 0; i < cur.inputs.length; i++) {
+            this.jobQueue.updateItemProgress(job.id, i, 100, 'completed');
+          }
+        }
+        this.jobQueue.updateJob(job.id, {
+          status: 'completed',
+          progress: 100,
+          currentlyProcessing: 'Complete!',
+          completedAt: new Date(),
+          outputFiles: result.output_files,
+          processingTime
+        });
+        this.showCompletionMessageFor(`Job "${job.name}" completed in ${processingTime.toFixed(1)}s`);
+        this.notificationService.success('Job Completed', `"${job.name}" completed successfully in ${processingTime.toFixed(1)}s`);
+      } else {
+        const cur = this.jobQueue.getJob(job.id);
+        if (cur) {
+          cur.itemProgress.forEach((item, i) => {
+            if (item.status !== 'completed' && item.status !== 'failed') {
+              this.jobQueue.updateItemProgress(job.id, i, 100, 'failed');
+            }
+          });
+        }
+        this.jobQueue.updateJob(job.id, {
+          status: 'failed',
+          progress: 0,
+          currentlyProcessing: 'Failed',
+          completedAt: new Date(),
+          error: result.error,
+          processingTime
+        });
+        this.notificationService.error('Job Failed', `"${job.name}" failed: ${result.error}`);
+      }
+    } catch (error) {
+      this.notificationService.error('Job Processing Error', `Error processing job: ${(error as Error).message}`);
+      const cur = this.jobQueue.getJob(job.id);
+      if (cur) {
+        cur.itemProgress.forEach((item, i) => {
+          if (item.status !== 'completed' && item.status !== 'failed') {
+            this.jobQueue.updateItemProgress(job.id, i, 100, 'failed');
+          }
+        });
+      }
+      this.jobQueue.updateJob(job.id, {
+        status: 'failed',
+        progress: 0,
+        currentlyProcessing: 'Error',
+        completedAt: new Date(),
+        error: String(error)
+      });
+    } finally {
+      if (unsubscribe) unsubscribe();
+      // Advance the queue only when this run owns it (Stage 2 queue processing).
+      if (opts.advanceQueue) this.processNextJob();
     }
   }
 
@@ -1046,6 +1249,11 @@ export class Inputs implements OnInit, OnDestroy {
   }
 
   removeJob(jobId: string) {
+    // Free any held transcript the backend is keeping for this job so it can't leak.
+    const job = this.jobQueue.getJob(jobId);
+    if (job?.status === 'held') {
+      void this.electron.discardHeldPrompt(jobId);
+    }
     this.jobQueue.removeJob(jobId);
   }
 
@@ -1091,6 +1299,7 @@ export class Inputs implements OnInit, OnDestroy {
     switch (status) {
       case 'pending': return 'schedule';
       case 'processing': return 'hourglass_empty';
+      case 'held': return 'pause_circle';
       case 'completed': return 'check_circle';
       case 'failed': return 'error';
       default: return 'help';
@@ -1101,6 +1310,7 @@ export class Inputs implements OnInit, OnDestroy {
     switch (status) {
       case 'pending': return 'accent';
       case 'processing': return 'primary';
+      case 'held': return 'accent';
       case 'completed': return 'primary';
       case 'failed': return 'warn';
       default: return '';

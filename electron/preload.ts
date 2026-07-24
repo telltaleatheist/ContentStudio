@@ -53,6 +53,10 @@ const api = {
   generateMetadata: (params: any) => ipcRenderer.invoke('generate-metadata', params),
   cancelJob: (jobId: string) => ipcRenderer.invoke('cancel-job', jobId),
 
+  // "Show prompt" flow: send-to-AI / discard a held (already-transcribed) prompt
+  sendHeldPrompt: (jobId: string) => ipcRenderer.invoke('send-held-prompt', { jobId }),
+  discardHeldPrompt: (jobId: string) => ipcRenderer.invoke('discard-held-prompt', { jobId }),
+
   // Progress updates
   onProgress: (callback: (progress: any) => void) => {
     const listener = (_event: any, progress: any) => callback(progress);

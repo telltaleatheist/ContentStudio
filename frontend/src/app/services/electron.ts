@@ -208,6 +208,8 @@ declare global {
 
       // Metadata generation
       generateMetadata: (params: any) => Promise<any>;
+      sendHeldPrompt: (jobId: string) => Promise<any>;
+      discardHeldPrompt: (jobId: string) => Promise<any>;
       cancelJob: (jobId: string) => Promise<{ success: boolean; error?: string }>;
 
       // Progress updates
@@ -428,9 +430,23 @@ export class ElectronService {
     jobId?: string;
     jobName?: string;
     chapterFlags?: { [path: string]: boolean };
+    showPrompt?: boolean;
   }): Promise<any> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.generateMetadata(params);
+  }
+
+  // Run full generation reusing a transcript the backend is holding from a
+  // prior showPrompt:true call (no re-transcription).
+  async sendHeldPrompt(jobId: string): Promise<any> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.sendHeldPrompt(jobId);
+  }
+
+  // Free a held transcript when the user closes the prompt preview without sending.
+  async discardHeldPrompt(jobId: string): Promise<any> {
+    if (!this.ipcRenderer) return { success: true };
+    return await this.ipcRenderer.discardHeldPrompt(jobId);
   }
 
   async cancelJob(jobId: string): Promise<{ success: boolean; error?: string }> {

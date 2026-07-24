@@ -35,6 +35,7 @@ export interface GenerationParams {
   inputNotes?: { [key: string]: string };
   preTranscribedContent?: ContentItem[]; // Pre-transcribed content from pipeline (skips transcription phase)
   inputWarnings?: string[]; // Input-stage failures from the pipeline (surfaced in result.warnings)
+  showPrompt?: boolean; // "Show prompt" flow: assemble the prompt(s) and STOP — no AI call, chapters, job, or output
   progressCallback?: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => void;
   cancelCallback?: () => boolean; // Returns true if job should be cancelled
 }
@@ -49,6 +50,7 @@ export interface GenerationResult {
   processing_time?: number;
   error?: string;
   warnings?: string[]; // Per-item / partial-failure messages surfaced to the user
+  prompts?: string[]; // "Show prompt" flow: the assembled prompt(s), one per item (compilation = single)
 }
 
 export class MetadataGeneratorService {
@@ -178,6 +180,66 @@ export class MetadataGeneratorService {
       const outputPath = params.outputPath || this.getDefaultOutputPath();
       const outputHandler = new OutputHandlerService(outputPath);
       const jobName = params.jobName || this.generateJobName(contentItems);
+
+      // "Show prompt" flow: assemble the exact prompt(s) that would be sent to the
+      // AI and return them WITHOUT initializing a job, calling the AI, generating
+      // chapters, or writing any output. The IPC layer holds the transcript so
+      // "Send to AI" can later run the real generation via preTranscribedContent.
+      if (params.showPrompt) {
+        const mode = params.mode || 'individual';
+        console.log(`[MetadataGenerator] Show-prompt mode: assembling prompt(s) only (${mode})`);
+        const prompts: string[] = [];
+
+        if (mode === 'compilation') {
+          // Mirror the compilation path's per-item summarize + join so the assembled
+          // prompt matches EXACTLY what a real compilation generation would send.
+          const contentTypes = contentItems.map(item => item.contentType);
+          const uniqueContentTypes = Array.from(new Set(contentTypes));
+
+          params.progressCallback?.('generating', 'Assembling prompt...', 50);
+          const itemSummaries: string[] = [];
+          for (let i = 0; i < contentItems.length; i++) {
+            if (params.cancelCallback && params.cancelCallback()) {
+              console.log(`[MetadataGenerator] Job cancelled while assembling compilation prompt (item ${i + 1}/${contentItems.length})`);
+              return { success: false, error: 'Job cancelled by user' };
+            }
+            const item = contentItems[i];
+            const sourceLabel = item.source || `Item ${i + 1}`;
+            const itemSummary = await aiManager.summarizeTranscript(item.content, sourceLabel, { forceCondense: true });
+            itemSummaries.push(`ITEM ${i + 1} (${sourceLabel}):\n${itemSummary}`);
+          }
+          const summary = itemSummaries.join('\n\n');
+
+          prompts.push(aiManager.buildMetadataPrompt(summary, jobName, {
+            sourceCount: contentItems.length,
+            contentTypes: uniqueContentTypes,
+          }));
+        } else {
+          // Individual mode: one prompt per item, mirroring the normal per-item summarize.
+          for (let i = 0; i < contentItems.length; i++) {
+            if (params.cancelCallback && params.cancelCallback()) {
+              console.log(`[MetadataGenerator] Job cancelled while assembling prompt (item ${i + 1}/${contentItems.length})`);
+              return { success: false, error: 'Job cancelled by user' };
+            }
+            const item = contentItems[i];
+            params.progressCallback?.('generating', 'Assembling prompt...', 50, undefined, i);
+            const summary = await aiManager.summarizeTranscript(
+              item.content,
+              item.source || `item_${i + 1}`
+            );
+            prompts.push(aiManager.buildMetadataPrompt(summary, item.source || `item_${i + 1}`));
+          }
+        }
+
+        // Cleanup — no job was initialized and no output was written.
+        aiManager.cleanup();
+        console.log(`[MetadataGenerator] Show-prompt: assembled ${prompts.length} prompt(s)`);
+        return {
+          success: true,
+          prompts,
+          job_id: params.jobId,
+        };
+      }
 
       // Initialize the job (creates job metadata file with empty items)
       const jobInfo = outputHandler.initializeJob(
