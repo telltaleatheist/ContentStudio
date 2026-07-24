@@ -1,0 +1,22 @@
+CHANNEL PERFORMANCE DATA
+(Real audience data for this channel, 1559 videos analyzed. Emulate the framing patterns of overperformers; avoid patterns of underperformers; this data outranks generic best practices.)
+
+Channel baselines (first-week medians):
+- CTR 4.8% | avg % viewed 41.2% | 30s retention 72.5% | views 18,400
+
+Top-performing titles (best packaging):
+- "The Preacher Who Told His Church God Wants Them Broke" — CTR 9.1% (p96), 30s retention 81.0%, 512,300 views
+- "Kenneth Copeland's Private Jet Excuse Just Got Worse" — CTR 8.4% (p94), 30s retention 78.2%, 388,900 views
+- "This Megachurch Pastor Confessed On His Own Livestream" — CTR 7.9% (p91), 30s retention 76.4%, 341,700 views
+
+Worst-performing titles (avoid these patterns):
+- "A Discussion About Modern Prosperity Theology" — CTR 2.1% (p12), 30s retention 55.0%, 6,200 views
+- "Some Thoughts On Televangelism In 2025" — CTR 2.4% (p15), 30s retention 58.1%, 7,900 views
+
+Top search terms driving views: kenneth copeland (48,200), prosperity gospel (31,050), megachurch scandal (22,700), televangelist private jet (18,900), pastor exposed (15,400)
+
+Rising search terms (last 90 days, across channels): christian nationalism (3x prior period), seven mountain mandate (new, 12,400 views)
+
+Recent overperformers across all channels (last 90 days):
+- "He Asked God For A Private Jet On Live Television" — packaging score 94, 288,000 views
+- "The Cult That Rebranded Itself As A Church" — packaging score 91, 210,500 views
