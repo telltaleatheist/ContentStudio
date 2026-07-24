@@ -14,7 +14,10 @@ export interface QueuedJob {
   inputs: InputItem[];
   promptSet: string; // ID of the prompt set to use
   mode: 'individual' | 'compilation';
-  status: 'pending' | 'processing' | 'completed' | 'failed';
+  // 'held' = transcribed and the prompt is assembled, waiting for the user to send
+  // it to the AI (the "Transcribe only" two-stage flow). The backend holds the
+  // transcript so sending reuses it without re-transcribing.
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'held';
   createdAt: Date;
   completedAt?: Date;
   progress: number;
@@ -22,6 +25,7 @@ export interface QueuedJob {
   error?: string;
   outputFiles?: string[];
   processingTime?: number;
+  heldPrompt?: string; // Assembled prompt captured when the job reaches 'held' (view-only)
   itemProgress: ItemProgress[]; // Track progress for each individual item
   currentItemIndex: number; // Index of the currently processing item
 }
@@ -56,9 +60,12 @@ export class JobQueueService {
           ...job,
           createdAt: new Date(job.createdAt),
           completedAt: job.completedAt ? new Date(job.completedAt) : undefined,
-          // Reset processing jobs to pending (they were interrupted)
-          status: job.status === 'processing' ? 'pending' as const : job.status,
-          currentlyProcessing: job.status === 'processing' ? '' : job.currentlyProcessing
+          // Reset interrupted 'processing' jobs to pending. Also reset 'held' jobs:
+          // their transcript lived only in the (now-restarted) main process, so the
+          // prompt can't be sent anymore — they must be re-transcribed.
+          status: (job.status === 'processing' || job.status === 'held') ? 'pending' as const : job.status,
+          currentlyProcessing: (job.status === 'processing' || job.status === 'held') ? '' : job.currentlyProcessing,
+          heldPrompt: job.status === 'held' ? undefined : job.heldPrompt
         }));
         this.jobs.set(restoredJobs);
       }
@@ -118,6 +125,14 @@ export class JobQueueService {
 
   getNextPendingJob(): QueuedJob | undefined {
     return this.jobs().find(job => job.status === 'pending');
+  }
+
+  getHeldJobs(): QueuedJob[] {
+    return this.jobs().filter(job => job.status === 'held');
+  }
+
+  getNextHeldJob(): QueuedJob | undefined {
+    return this.jobs().find(job => job.status === 'held');
   }
 
   hasProcessingJob(): boolean {

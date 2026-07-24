@@ -605,24 +605,24 @@ export class AIManagerService {
   }
 
   /**
-   * Generate metadata from transcript/summary
+   * Assemble the metadata prompt WITHOUT sending it to the AI.
+   * Thin public wrapper over createMetadataPrompt so callers (e.g. the
+   * "Show prompt" flow) can obtain the exact prompt generateMetadata would submit.
    */
-  async generateMetadata(
+  buildMetadataPrompt(
     content: string,
     sourceName?: string,
     compilationInfo?: { sourceCount: number; contentTypes: string[] }
-  ): Promise<MetadataResult> {
-    if (!this.currentPromptSet) {
-      throw new Error('No prompt set loaded');
-    }
+  ): string {
+    return this.createMetadataPrompt(content, sourceName, compilationInfo);
+  }
 
-    console.log(`[AIManager] === METADATA GENERATION STARTING for ${sourceName || 'unknown'} ===`);
-    console.log(`[AIManager]     Content length: ${content.length} chars`);
-    console.log(`[AIManager]     Using model: ${this.metadataModel}`);
-    console.log(`[AIManager]     Compilation: ${compilationInfo ? `yes (${compilationInfo.sourceCount} items)` : 'no'}`);
-
-    const prompt = this.createMetadataPrompt(content, sourceName, compilationInfo);
-
+  /**
+   * Run the request + parse + links loop against an ALREADY-assembled prompt.
+   * Split out of generateMetadata so the "Show prompt" flow can assemble the prompt
+   * up front and later send this exact prompt when the user confirms.
+   */
+  async generateMetadataFromAssembledPrompt(prompt: string): Promise<MetadataResult> {
     const maxAttempts = 2;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const response = await this.makeRequest(prompt, this.metadataModel, 300);
@@ -641,7 +641,7 @@ export class AIManagerService {
         // Parse the response
         const metadata = this.parseMetadataResponse(response);
 
-        console.log(`[AIManager] === METADATA GENERATION COMPLETE for ${sourceName || 'unknown'} ===`);
+        console.log(`[AIManager] === METADATA GENERATION COMPLETE ===`);
         console.log(`[AIManager]     Generated ${Object.keys(metadata).length} fields`);
 
         return this.addDescriptionLinks(metadata);
@@ -656,6 +656,27 @@ export class AIManagerService {
 
     // Should not reach here, but satisfy TypeScript
     throw new Error('Failed to generate metadata after retries');
+  }
+
+  /**
+   * Generate metadata from transcript/summary
+   */
+  async generateMetadata(
+    content: string,
+    sourceName?: string,
+    compilationInfo?: { sourceCount: number; contentTypes: string[] }
+  ): Promise<MetadataResult> {
+    if (!this.currentPromptSet) {
+      throw new Error('No prompt set loaded');
+    }
+
+    console.log(`[AIManager] === METADATA GENERATION STARTING for ${sourceName || 'unknown'} ===`);
+    console.log(`[AIManager]     Content length: ${content.length} chars`);
+    console.log(`[AIManager]     Using model: ${this.metadataModel}`);
+    console.log(`[AIManager]     Compilation: ${compilationInfo ? `yes (${compilationInfo.sourceCount} items)` : 'no'}`);
+
+    const prompt = this.createMetadataPrompt(content, sourceName, compilationInfo);
+    return this.generateMetadataFromAssembledPrompt(prompt);
   }
 
   /**

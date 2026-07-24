@@ -259,6 +259,14 @@
       </div>
 
       <div class="section-header">
+        <mat-checkbox
+          [checked]="transcribeOnly()"
+          (change)="transcribeOnly.set($event.checked)"
+          color="primary"
+          class="transcribe-only-checkbox"
+          matTooltip="When on, Start Queue transcribes and holds each job so you can review its prompt; press Start Queue again to send everything to the AI.">
+          Transcribe only (review prompt before sending)
+        </mat-checkbox>
         <button mat-button (click)="clearCompletedJobs()">
           <mat-icon>clear_all</mat-icon>
           Clear Completed
@@ -271,7 +279,7 @@
             <mat-card-content>
               <div class="input-row" (click)="toggleJobExpansion(job.id)">
                 <!-- Status Icon -->
-                <mat-icon [style.color]="job.status === 'processing' ? '#ff6b35' : job.status === 'completed' ? '#4caf50' : job.status === 'failed' ? '#f44336' : '#999'">
+                <mat-icon [style.color]="job.status === 'processing' ? '#ff6b35' : job.status === 'held' ? '#ffb300' : job.status === 'completed' ? '#4caf50' : job.status === 'failed' ? '#f44336' : '#999'">
                   {{ getJobStatusIcon(job.status) }}
                 </mat-icon>
 
@@ -306,6 +314,17 @@
                 <mat-icon class="expand-icon">
                   {{ isJobExpanded(job.id) ? 'expand_less' : 'expand_more' }}
                 </mat-icon>
+
+                <!-- View the assembled prompt for a transcribed/waiting job -->
+                @if (job.status === 'held') {
+                  <button
+                    mat-stroked-button
+                    class="box-toggle"
+                    (click)="viewPrompt(job); $event.stopPropagation()"
+                    matTooltip="View the exact prompt (copy it, or press Start Queue to send)">
+                    Show prompt
+                  </button>
+                }
 
                 <!-- Cancel Button (for processing jobs) -->
                 @if (job.status === 'processing') {
@@ -366,16 +385,22 @@
           </mat-card>
         }
 
-        <!-- Start Queue Button as part of the list -->
+        <!-- Start Queue Button as part of the list. Two stages: transcribe pending
+             jobs first; once only held jobs remain, a press sends them to the AI. -->
         @if (!jobQueue.isProcessing()) {
           <button
             mat-raised-button
             color="primary"
             class="start-button start-queue-button"
-            [disabled]="jobQueue.getPendingJobs().length === 0"
+            [disabled]="jobQueue.getPendingJobs().length === 0 && jobQueue.getHeldJobs().length === 0"
             (click)="startQueue()">
-            <mat-icon>play_arrow</mat-icon>
-            Start Queue ({{ jobQueue.getPendingJobs().length }} job(s))
+            @if (jobQueue.getPendingJobs().length > 0) {
+              <mat-icon>play_arrow</mat-icon>
+              Start Queue ({{ jobQueue.getPendingJobs().length }} job(s))
+            } @else {
+              <mat-icon>send</mat-icon>
+              Send {{ jobQueue.getHeldJobs().length }} to AI
+            }
           </button>
         }
       </div>

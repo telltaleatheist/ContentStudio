@@ -48,3 +48,26 @@ utilities/bin/*
 .claude/*
 .claude/settings.local.json
 creamsicle/.angular/*
+
+# Angular build cache (any project in the repo)
+**/.angular/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Test coverage
+coverage/
+
+# Electron-builder packaged installers (also land in dist/, ignored above)
+release/
+*.AppImage
+*.snap
+
+# Prompt-harness run outputs (transient AI outputs)
+prompt-harness/out/
+
+# Prompt-harness working fixtures — the actual transcript / analytics you test
+# with may be real, private data. The committed *.example.txt templates are the
+# starting point; your working copies stay local.
+prompt-harness/fixtures/transcript.txt
+prompt-harness/fixtures/insights.txt
