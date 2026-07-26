@@ -57,8 +57,17 @@ function channelIdFromUrl(url) {
   return (url || '').match(/\/channel\/(UC[\w-]+)/)?.[1] ?? null;
 }
 
-/** Pause between video page loads. Deliberately unhurried. */
-const PER_VIDEO_DELAY_MS = 1200;
+/**
+ * Pause between video page loads, randomized.
+ *
+ * The jitter matters more than the average: a perfectly regular interval sustained over
+ * dozens of page loads is a far cleaner automation signal than the request rate itself.
+ * This also roughly halves the rate versus a fixed short delay.
+ */
+const DELAY_MIN_MS = 2000;
+const DELAY_MAX_MS = 5000;
+const jitteredDelay = () =>
+  DELAY_MIN_MS + Math.floor(Math.random() * (DELAY_MAX_MS - DELAY_MIN_MS));
 
 const state = {
   running: false,
@@ -89,51 +98,102 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // These run in the page. They must be self-contained — no closures over anything here.
 
 /**
- * Enumerate every video row in the Studio content list.
+ * Enumerate every video in the Studio content list, ACROSS ALL PAGES.
  *
- * The list lazy-loads, so this scrolls until the row count stops growing. Returns the
- * A/B label when present ("A/B Test running" / "A/B Test completed"), which is how we
- * decide which videos are worth opening.
+ * The list is paginated (30 per page by default) — not infinite-scroll — so it must be
+ * walked with the pager. The footer reads "1–30 of about 776"; that string changing is
+ * the reliable signal that a page turn actually completed, since the row elements are
+ * recycled rather than replaced.
+ *
+ * Deduplicates by videoId: pages can overlap if the list re-sorts mid-walk, and a video
+ * counted twice would produce duplicate CSV rows.
+ *
+ * Returns the A/B label when present ("A/B Test running" / "A/B Test completed"), which
+ * is how we decide which videos are worth opening at all.
  */
-async function scrapeVideoList() {
+async function scrapeVideoList(emptyPageStreakLimit) {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // Scroll the list until it stops growing (lazy loading), with a hard cap so a
-  // pathological page can't spin forever.
-  let previous = -1;
-  for (let pass = 0; pass < 400; pass++) {
-    const rows = document.querySelectorAll('ytcp-video-row');
-    if (rows.length === previous) break;
-    previous = rows.length;
-    const last = rows[rows.length - 1];
-    if (last) last.scrollIntoView({ block: 'end' });
-    window.scrollTo(0, document.body.scrollHeight);
-    await sleep(700);
+  const footerText = () =>
+    document.querySelector('ytcp-table-footer')?.innerText?.trim() || '';
+
+  const collectPage = (into) => {
+    for (const row of document.querySelectorAll('ytcp-video-row')) {
+      const href = row.querySelector('a[href*="/video/"]')?.getAttribute('href') || '';
+      const videoId = href.match(/\/video\/([^/]+)/)?.[1] || null;
+      if (!videoId || into.has(videoId)) continue;
+
+      const lines = (row.innerText || '').split('\n').map((s) => s.trim()).filter(Boolean);
+      const abLabel = lines.find((l) => /a\/b test/i.test(l)) || null;
+
+      // Title = first line that isn't a duration, a bare number, or the A/B label.
+      // Duration badges sort first in this component.
+      const title =
+        lines.find(
+          (l) =>
+            !/^\d+:\d+/.test(l) &&
+            !/a\/b test/i.test(l) &&
+            !/^[\d,.%]+$/.test(l) &&
+            l.length > 3,
+        ) || null;
+
+      into.set(videoId, { videoId, title, abLabel });
+    }
+  };
+
+  const byId = new Map();
+  let pagesWalked = 0;
+  let emptyStreak = 0;
+  let stoppedEarly = false;
+
+  // Hard page cap: generous enough for a very large channel, bounded so a pager that
+  // never disables can't spin forever.
+  for (let page = 0; page < 600; page++) {
+    // Wait for rows to be present on this page.
+    for (let i = 0; i < 40; i++) {
+      if (document.querySelectorAll('ytcp-video-row').length) break;
+      await sleep(300);
+    }
+
+    const beforeCount = [...byId.values()].filter((v) => v.abLabel).length;
+    collectPage(byId);
+    pagesWalked++;
+    const foundHere = [...byId.values()].filter((v) => v.abLabel).length - beforeCount;
+
+    // A/B testing is recent and the list is date-descending, so tested videos cluster at
+    // the top. Once several consecutive pages have none, the rest of the back catalogue
+    // is almost certainly barren — stop rather than paging through years of uploads.
+    // Reported explicitly so an early stop is never mistaken for a complete scan.
+    if (emptyPageStreakLimit > 0) {
+      emptyStreak = foundHere === 0 ? emptyStreak + 1 : 0;
+      if (emptyStreak >= emptyPageStreakLimit) {
+        stoppedEarly = true;
+        break;
+      }
+    }
+
+    const next = document.querySelector('ytcp-icon-button#navigate-after');
+    const done =
+      !next || next.hasAttribute('disabled') || next.getAttribute('aria-disabled') === 'true';
+    if (done) break;
+
+    const before = footerText();
+    next.click();
+
+    // A page turn is confirmed by the footer range changing, not by a timer.
+    let turned = false;
+    for (let i = 0; i < 50; i++) {
+      await sleep(300);
+      if (footerText() !== before) {
+        turned = true;
+        break;
+      }
+    }
+    if (!turned) break; // pager stopped responding — return what we have rather than looping
+    await sleep(400);
   }
 
-  const out = [];
-  for (const row of document.querySelectorAll('ytcp-video-row')) {
-    const href = row.querySelector('a[href*="/video/"]')?.getAttribute('href') || '';
-    const videoId = href.match(/\/video\/([^/]+)/)?.[1] || null;
-    if (!videoId) continue;
-
-    const lines = (row.innerText || '').split('\n').map((s) => s.trim()).filter(Boolean);
-    const abLine = lines.find((l) => /a\/b test/i.test(l)) || null;
-
-    // The visible title is the first line that isn't a duration, a date, a number, or
-    // the A/B label. Duration badges sort first in this component.
-    const title =
-      lines.find(
-        (l) =>
-          !/^\d+:\d+/.test(l) &&
-          !/a\/b test/i.test(l) &&
-          !/^[\d,.]+$/.test(l) &&
-          l.length > 3,
-      ) || null;
-
-    out.push({ videoId, title, abLabel: abLine });
-  }
-  return out;
+  return { videos: [...byId.values()], footer: footerText(), pagesWalked, stoppedEarly };
 }
 
 /**
@@ -265,12 +325,12 @@ async function waitForTabLoad(tabId, timeoutMs = 45000) {
   }
 }
 
-async function inject(tabId, func) {
-  const [result] = await chrome.scripting.executeScript({ target: { tabId }, func });
+async function inject(tabId, func, args = []) {
+  const [result] = await chrome.scripting.executeScript({ target: { tabId }, func, args });
   return result?.result;
 }
 
-async function run(tabId) {
+async function run(tabId, emptyPageStreakLimit) {
   setState({ phase: 'listing', message: 'Loading your video list…', scanned: 0, total: 0, found: 0 });
 
   // Anchor everything to the tab's CURRENT url so the account context is preserved.
@@ -298,7 +358,9 @@ async function run(tabId) {
     );
   }
 
-  const videos = await inject(tabId, scrapeVideoList);
+  setState({ message: 'Reading your video list (this walks every page)…' });
+  const listing = await inject(tabId, scrapeVideoList, [emptyPageStreakLimit]);
+  const videos = listing?.videos;
   if (!Array.isArray(videos) || videos.length === 0) {
     throw new Error('Could not read the video list. Make sure you are signed in to YouTube Studio.');
   }
@@ -308,7 +370,13 @@ async function run(tabId) {
   setState({
     phase: 'scraping',
     total: tested.length,
-    message: `${videos.length} videos found, ${tested.length} with A/B tests.`,
+    message:
+      `${videos.length} videos across ${listing.pagesWalked} page(s), ` +
+      `${tested.length} with A/B tests.` +
+      // Never let an early stop look like a complete scan.
+      (listing.stoppedEarly
+        ? ` Stopped early: ${emptyPageStreakLimit} consecutive pages had no tests. Untick "stop early" to scan everything.`
+        : ''),
   });
 
   if (tested.length === 0) {
@@ -383,7 +451,29 @@ async function run(tabId) {
     }
 
     setState({ scanned: state.scanned + 1 });
-    await sleep(PER_VIDEO_DELAY_MS);
+
+    // Stop immediately if Studio starts pushing back. Continuing into a throttle turns a
+    // soft rate-limit into something that looks a lot more deliberate.
+    const blocked = await inject(tabId, () => {
+      const text = document.body?.innerText || '';
+      if (/unusual traffic|are you a robot|verify you'?re human|recaptcha/i.test(text)) return 'captcha';
+      if (/too many requests|rate limit/i.test(text)) return 'rate-limit';
+      if (/don'?t have permission|do not have permission/i.test(text)) return 'permission';
+      return null;
+    }).catch(() => null);
+
+    if (blocked) {
+      setState({
+        phase: 'error',
+        error:
+          blocked === 'permission'
+            ? 'Studio returned a permission error partway through. Partial results kept.'
+            : `Studio started rate-limiting (${blocked}). Stopped early — partial results kept. Wait a while before retrying.`,
+      });
+      return;
+    }
+
+    await sleep(jitteredDelay());
   }
 
   setState({ phase: 'done', message: `Done. ${state.found} test report(s) read.` });
@@ -406,6 +496,25 @@ const CSV_COLUMNS = [
   'ranTo',
 ];
 
+/**
+ * Drop duplicate rows before export.
+ *
+ * A scan resets `rows`, so this is belt-and-braces rather than load-bearing — but a
+ * re-sorting list can hand back the same video on two pages, and duplicate variant rows
+ * would quietly skew anything trained on the CSV.
+ */
+function dedupeRows(rows) {
+  const seen = new Set();
+  const out = [];
+  for (const row of rows) {
+    const key = `${row.videoId}::${row.variantIndex}::${row.variantTitle}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
+}
+
 function toCsv(rows) {
   const escape = (value) => {
     const s = value === null || value === undefined ? '' : String(value);
@@ -421,7 +530,7 @@ function toCsv(rows) {
 
 async function downloadCsv() {
   if (state.rows.length === 0) throw new Error('Nothing to export yet.');
-  const csv = toCsv(state.rows);
+  const csv = toCsv(dedupeRows(state.rows));
   // MV3 service workers have no URL.createObjectURL, so use a data: URL.
   const url = `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`;
   const stamp = new Date().toISOString().slice(0, 10);
@@ -466,7 +575,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         });
         try {
           // Reuse the user's own Studio tab — see accountParams() for why.
-          await run(message.tabId);
+          await run(message.tabId, Number.isInteger(message.emptyPageStreakLimit) ? message.emptyPageStreakLimit : 3);
         } catch (error) {
           setState({ phase: 'error', error: error?.message || String(error) });
         } finally {

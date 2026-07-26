@@ -40,6 +40,15 @@ It opens a tab and steps through the relevant pages. Leave that tab alone while 
 Only videos your list marks as having an A/B test are opened, so a channel with thousands
 of uploads still only takes a handful of page loads.
 
+**Stop early once tests run out** (on by default): A/B testing is a recent YouTube
+feature, so tested videos sit at the top of a date-sorted list. This stops after 3
+consecutive pages with no tests rather than paging through years of back catalogue. If
+you have tested an older video, untick it to scan everything — the run tells you when it
+stopped early, so a short scan is never mistaken for a complete one.
+
+It pauses a random 2–5 seconds between videos and stops immediately if Studio starts
+rate-limiting, rather than pushing through.
+
 ## What you get
 
 One row per **variant** (long format, which is what you want for training or analysis):

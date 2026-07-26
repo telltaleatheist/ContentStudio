@@ -36,6 +36,9 @@
       .err { color: #ff8a80; }
       .ok { color: #7ddc7d; }
       .hidden { display: none; }
+      label.check { display: flex; align-items: center; gap: 7px; margin: 12px 0 4px;
+                    color: #f1f1f1; font-size: 12px; cursor: pointer; }
+      label.check input { accent-color: #ff6b35; }
       code { background: #2c2c2c; padding: 1px 4px; border-radius: 4px; font-size: 11px; }
     </style>
   </head>
@@ -88,6 +91,16 @@
       </p>
 
       <div id="detected" class="muted"></div>
+
+      <label class="check">
+        <input id="stopEarly" type="checkbox" checked />
+        Stop early once tests run out
+      </label>
+      <p class="muted">
+        A/B testing is a recent YouTube feature, so tested videos sit at the top of your
+        list. This stops after 3 straight pages with none, instead of paging through your
+        whole back catalogue. Untick it to scan everything.
+      </p>
 
       <button id="start" class="primary">Scan this channel</button>
       <button id="cancel" class="hidden">Stop</button>

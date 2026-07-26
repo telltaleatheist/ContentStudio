@@ -66,7 +66,9 @@ async function onStart() {
     $('error').textContent = 'Open YouTube Studio → Content first.';
     return;
   }
-  render(await send({ type: 'start', tabId: studioTab.tabId }));
+  // 0 disables the early exit entirely and walks every page.
+  const limit = $('stopEarly').checked ? 3 : 0;
+  render(await send({ type: 'start', tabId: studioTab.tabId, emptyPageStreakLimit: limit }));
 }
 
 function render(state) {
