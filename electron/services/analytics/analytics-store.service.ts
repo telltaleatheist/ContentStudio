@@ -22,6 +22,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import {
+  AbTestResult,
   ANALYTICS_SCHEMA_VERSION,
   ChannelInsights,
   ChannelRegistryEntry,
@@ -439,6 +440,39 @@ export class AnalyticsStoreService {
     return this.enqueue(() => {
       this.writeJson(path.join(this.channelDir(channelId), 'verdicts.json'), verdicts);
       console.log(`[AnalyticsStore] Saved ${verdicts.length} verdict(s) for ${channelId}`);
+    });
+  }
+
+  // ==================== A/B TESTS ====================
+  //
+  // Stored separately from verdicts on purpose. Verdicts are REGENERATED on every
+  // distillation, so anything living only inside them is lost on the next run; A/B
+  // results are permanent facts about a finished experiment and must outlive that.
+
+  loadAbTests(channelId: string): AbTestResult[] {
+    return this.readJson<AbTestResult[]>(path.join(this.channelDir(channelId), 'ab-tests.json')) || [];
+  }
+
+  /** Upsert by videoId — re-collecting a channel must not duplicate its history. */
+  upsertAbTests(tests: AbTestResult[]): Promise<number> {
+    return this.enqueue(() => {
+      const byChannel = new Map<string, AbTestResult[]>();
+      for (const test of tests) {
+        if (!byChannel.has(test.channelId)) byChannel.set(test.channelId, []);
+        byChannel.get(test.channelId)!.push(test);
+      }
+
+      let written = 0;
+      for (const [channelId, incoming] of byChannel) {
+        const filePath = path.join(this.channelDir(channelId), 'ab-tests.json');
+        const existing = this.readJson<AbTestResult[]>(filePath) || [];
+        const byId = new Map(existing.map((t) => [t.videoId, t]));
+        for (const test of incoming) byId.set(test.videoId, test);
+        this.writeJson(filePath, Array.from(byId.values()));
+        written += incoming.length;
+      }
+      console.log(`[AnalyticsStore] Upserted ${written} A/B test result(s)`);
+      return written;
     });
   }
 
