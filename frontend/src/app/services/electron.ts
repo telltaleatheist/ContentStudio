@@ -1,4 +1,5 @@
 import { Injectable } from '@angular/core';
+import type { ChosenMetadata, PublishResult, ResolvedMetadata } from '../features/publish/publish.types';
 
 export interface StartupReadiness {
   ready: boolean;
@@ -262,6 +263,18 @@ declare global {
       youtubeListConnections: () => Promise<{ success: boolean; connections?: YouTubeConnection[]; error?: string }>;
       youtubeCollectNow: (channelId?: string) => Promise<{ success: boolean; results?: YouTubeChannelCollectResult[]; error?: string }>;
       youtubeGetCollectorState: () => Promise<{ success: boolean; state?: YouTubeCollectorState; error?: string }>;
+
+      // Publish (chosen titles / A-B test setup)
+      publishGetSelections: (jobId: string) => Promise<PublishResult<Record<number, ChosenMetadata>>>;
+      publishSetTitles: (jobId: string, itemIndex: number, titles: string[]) => Promise<PublishResult<ChosenMetadata>>;
+      publishSetFields: (
+        jobId: string,
+        itemIndex: number,
+        fields: { descriptionOverride?: string | null; tagsOverride?: string | null; channelId?: string | null }
+      ) => Promise<PublishResult<ChosenMetadata>>;
+      publishGetResolved: (jobId: string, itemIndex: number) => Promise<PublishResult<ResolvedMetadata>>;
+      publishListActionable: () => Promise<PublishResult<ChosenMetadata[]>>;
+      publishClear: (jobId: string, itemIndex: number) => Promise<PublishResult<boolean>>;
     };
   }
 }
@@ -619,5 +632,43 @@ export class ElectronService {
   async youtubeGetCollectorState(): Promise<{ success: boolean; state?: YouTubeCollectorState; error?: string }> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.youtubeGetCollectorState();
+  }
+
+  // Publish (chosen titles / A-B test setup)
+
+  async publishGetSelections(jobId: string): Promise<PublishResult<Record<number, ChosenMetadata>>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishGetSelections(jobId);
+  }
+
+  /** `titles` order is meaningful: index 0 becomes the main title AND A/B variant 1. */
+  async publishSetTitles(jobId: string, itemIndex: number, titles: string[]): Promise<PublishResult<ChosenMetadata>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishSetTitles(jobId, itemIndex, titles);
+  }
+
+  /** Pass null for a field to clear the override and fall back to the generated value. */
+  async publishSetFields(
+    jobId: string,
+    itemIndex: number,
+    fields: { descriptionOverride?: string | null; tagsOverride?: string | null; channelId?: string | null }
+  ): Promise<PublishResult<ChosenMetadata>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishSetFields(jobId, itemIndex, fields);
+  }
+
+  async publishGetResolved(jobId: string, itemIndex: number): Promise<PublishResult<ResolvedMetadata>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishGetResolved(jobId, itemIndex);
+  }
+
+  async publishListActionable(): Promise<PublishResult<ChosenMetadata[]>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishListActionable();
+  }
+
+  async publishClear(jobId: string, itemIndex: number): Promise<PublishResult<boolean>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishClear(jobId, itemIndex);
   }
 }

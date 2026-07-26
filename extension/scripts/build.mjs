@@ -59,10 +59,26 @@ const options = {
   plugins: [copyStaticsPlugin],
 };
 
+// Content scripts are a SEPARATE build: MV3 loads them as classic scripts, so the ESM
+// output used for the service worker / pages would fail with an import error at runtime.
+/** @type {esbuild.BuildOptions} */
+const contentOptions = {
+  entryPoints: [path.join(extensionRoot, 'src/publish-content.ts')],
+  outdir: dist,
+  bundle: true,
+  format: 'iife',
+  target: ['chrome120'],
+  sourcemap: false,
+  logLevel: 'info',
+};
+
 if (process.argv.includes('--watch')) {
   const ctx = await esbuild.context(options);
+  const contentCtx = await esbuild.context(contentOptions);
   await ctx.watch();
+  await contentCtx.watch();
   console.log('[watch] watching src/ for changes…');
 } else {
   await esbuild.build(options);
+  await esbuild.build(contentOptions);
 }

@@ -17,6 +17,8 @@
 // against a stale/cached list.
 
 import { CollectorNotImplementedError, collectChannel } from './collector';
+import { PublishClientError, fetchPending, reportFilled, resolveForPage } from './publish/publish-client';
+import { isPublishMessage, type PublishMessage } from './publish/publish-messages';
 import { enqueueSnapshots, enqueueVideos, flushOutbox, outboxDepth, type FlushResult } from './outbox';
 import { fetchChannels } from './ingest-client';
 import { DEFAULT_SETTINGS, saveSettings } from './settings';
@@ -161,5 +163,39 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
     );
     return true; // keep the message channel open for the async response
   }
+
+  // Publish requests from the Studio content script.
+  //
+  // These MUST be serviced here rather than by fetching from the content script: a
+  // content-script fetch carries the page's origin (https://studio.youtube.com), which
+  // ContentStudio's CSRF whitelist rejects with 403, and it also trips Chrome's
+  // local-network access prompt. The worker's chrome-extension:// origin is whitelisted.
+  if (isPublishMessage(message)) {
+    handlePublishMessage(message).then(
+      (data) => sendResponse({ ok: true, data }),
+      (err: unknown) => {
+        const error = err instanceof Error ? err : new Error(String(err));
+        sendResponse({
+          ok: false,
+          error: error.message,
+          kind: error instanceof PublishClientError ? error.kind : 'unknown',
+        });
+      },
+    );
+    return true;
+  }
+
   return false;
 });
+
+async function handlePublishMessage(message: PublishMessage): Promise<unknown> {
+  switch (message.type) {
+    case 'publish-pending':
+      return fetchPending();
+    case 'publish-resolve':
+      return resolveForPage(message.videoId, message.filename);
+    case 'publish-filled':
+      await reportFilled(message.jobId, message.itemIndex, message.videoId);
+      return null;
+  }
+}

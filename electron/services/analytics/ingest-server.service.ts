@@ -52,10 +52,27 @@ export interface IngestServerStatus {
   lastIngestAt: string | null;
 }
 
+/**
+ * Publish routes, served here so the extension still only needs one port.
+ *
+ * Declared STRUCTURALLY on purpose — this file imports nothing from services/publish,
+ * so the two modules stay independent and either can be lifted out on its own. The
+ * publish module supplies an object that happens to match this shape.
+ */
+export interface PublishRoutes {
+  listPending(): Promise<unknown[]>;
+  resolveForPage(videoId: string, filename: string | null): Promise<unknown>;
+  markFilled(jobId: string, itemIndex: number, videoId: string): Promise<void>;
+}
+
 export class IngestServerService {
   private server: http.Server | null = null;
   private store: AnalyticsStoreService;
   private distillation: DistillationService;
+  // Attached after construction (main.ts) because the publish module is built later in
+  // the startup sequence. Absent => /publish/* returns 503 rather than 404, so a stale
+  // extension gets a clear "not available" instead of a confusing missing route.
+  private publishRoutes: PublishRoutes | null = null;
   // Vestigial: kept only so getToken() can feed the ContentStudio frontend's
   // (now cosmetic) token display. No endpoint enforces it — see file header.
   private token: string;
@@ -108,6 +125,14 @@ export class IngestServerService {
    * Returns the vestigial ingest token. Endpoints no longer enforce it; this
    * exists only so IPC can surface it on ContentStudio's Analytics page.
    */
+  /**
+   * Attach the publish routes. Called from main.ts once the publish module exists.
+   * Until then /publish/* answers 503.
+   */
+  setPublishRoutes(routes: PublishRoutes): void {
+    this.publishRoutes = routes;
+  }
+
   getToken(): string {
     return this.token;
   }
@@ -248,6 +273,65 @@ export class IngestServerService {
       }
       const channels = this.store.listChannels().map((c) => ({ channelId: c.channelId, name: c.name }));
       this.sendJson(res, 200, { channels });
+      return;
+    }
+
+    // ---- publish routes (optional; only present once the publish module is wired) ----
+    // Same CSRF whitelist as the analytics routes: extension or no-Origin only.
+    if (url.startsWith('/publish/')) {
+      if (this.isCrossOriginWebRequest(req)) {
+        this.sendJson(res, 403, { error: 'cross-origin web requests are not allowed' });
+        return;
+      }
+      if (!this.publishRoutes) {
+        this.sendJson(res, 503, { error: 'publish routes are not available' });
+        return;
+      }
+
+      try {
+        // Everything the operator could fill right now — backs the extension's list.
+        if (req.method === 'GET' && url === '/publish/pending') {
+          this.sendJson(res, 200, { items: await this.publishRoutes.listPending() });
+          return;
+        }
+
+        // The extension reports what it can see; ContentStudio decides which item it is.
+        if (req.method === 'POST' && url === '/publish/resolve') {
+          const body = JSON.parse(await this.readBody(req));
+          if (!body || typeof body.videoId !== 'string' || !body.videoId) {
+            this.sendJson(res, 400, { error: 'Body must be {videoId: string, filename?: string|null}' });
+            return;
+          }
+          const filename = typeof body.filename === 'string' ? body.filename : null;
+          this.sendJson(res, 200, await this.publishRoutes.resolveForPage(body.videoId, filename));
+          return;
+        }
+
+        // Filling only puts text in the form — the operator still presses Save in Studio.
+        if (req.method === 'POST' && url === '/publish/filled') {
+          const body = JSON.parse(await this.readBody(req));
+          if (
+            !body ||
+            typeof body.jobId !== 'string' ||
+            typeof body.itemIndex !== 'number' ||
+            typeof body.videoId !== 'string'
+          ) {
+            this.sendJson(res, 400, { error: 'Body must be {jobId, itemIndex, videoId}' });
+            return;
+          }
+          await this.publishRoutes.markFilled(body.jobId, body.itemIndex, body.videoId);
+          this.sendJson(res, 200, { ok: true });
+          return;
+        }
+      } catch (error) {
+        console.error('[IngestServer] Publish route failed:', error);
+        this.sendJson(res, 500, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+
+      this.sendJson(res, 404, { error: 'Not found' });
       return;
     }
 

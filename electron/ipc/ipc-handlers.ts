@@ -16,7 +16,11 @@ import { seedFakeData } from '../services/analytics/seed-fake-data';
 import { resolveInsightsBlockForPromptSet } from '../services/analytics/insights-prompt';
 import type { ChannelRegistryEntry } from '../services/analytics/analytics-types';
 import { YouTubeAuthService } from '../services/youtube/youtube-auth.service';
+import { YouTubeApiService } from '../services/youtube/youtube-api.service';
 import { ApiCollectorService } from '../services/youtube/api-collector.service';
+import { PublishStoreService, GeneratedFallback } from '../services/publish/publish-store.service';
+import { setupPublishIpc } from '../services/publish/publish-ipc';
+import { PublishBridge } from '../services/publish/publish-bridge';
 
 /**
  * Analytics services created in main.ts at startup and shared with the IPC layer.
@@ -25,7 +29,9 @@ export interface AnalyticsServices {
   analyticsStore: AnalyticsStoreService;
   ingestServer: IngestServerService;
   youtubeAuth: YouTubeAuthService;
+  youtubeApi: YouTubeApiService;
   apiCollector: ApiCollectorService;
+  publishStore: PublishStoreService;
 }
 
 /**
@@ -1817,6 +1823,69 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   });
 
   // ==================== END YOUTUBE ====================
+
+  // ==================== PUBLISH (title A/B) ====================
+
+  // Registered as a single seam. `readGenerated` is injected so the publish module
+  // never imports from services/metadata — see electron/services/publish/README notes
+  // in publish-types.ts. It reads the same <jobId>.json that get-job-history reads.
+  const readGeneratedForPublish = (jobId: string, itemIndex: number): GeneratedFallback | null => {
+    {
+      try {
+        const outputDirectory = (store as any).store?.outputDirectory;
+        if (!outputDirectory) return null;
+
+        const jsonPath = path.join(outputDirectory, '.contentstudio', 'metadata', `${jobId}.json`);
+        if (!fs.existsSync(jsonPath)) return null;
+
+        const job = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+        const item = job?.items?.[itemIndex];
+        if (!item) return null;
+
+        // Source filename drives draft matching. In 'individual' mode items line up
+        // 1:1 with original_inputs; in compilation mode one item is built from many
+        // inputs, so there is no single source file and matching falls back to a
+        // manual pick. Only treat it as a filename when it looks like a real path.
+        let sourceFilename: string | null = null;
+        const inputs = Array.isArray(job.original_inputs) ? job.original_inputs : [];
+        if (inputs.length === job.items.length) {
+          const raw = inputs[itemIndex];
+          if (typeof raw === 'string' && /\.[A-Za-z0-9]{2,5}$/.test(raw)) {
+            sourceFilename = path.basename(raw);
+          }
+        }
+
+        return {
+          titles: Array.isArray(item.titles) ? item.titles : [],
+          description: typeof item.description === 'string' ? item.description : '',
+          tags: typeof item.tags === 'string' ? item.tags : '',
+          sourceFilename,
+          // TODO: probe the source with ffprobe so the duration guard can verify the
+          // match. Null is handled — it downgrades the match to 'filename' (unverified)
+          // rather than failing.
+          sourceDurationSec: null,
+        };
+      } catch (error) {
+        log.error(`[Publish] readGenerated failed for ${jobId}[${itemIndex}]:`, error);
+        return null;
+      }
+    }
+  };
+
+  setupPublishIpc({
+    store: analytics.publishStore,
+    readGenerated: readGeneratedForPublish,
+    listRecentUploads: (channelId: string) => analytics.youtubeApi.listRecentUploads(channelId),
+  });
+
+  // Expose the publish routes on the existing localhost ingest server so the companion
+  // extension has one port to talk to. The server only knows a structural interface, so
+  // analytics/ and publish/ remain independent.
+  analytics.ingestServer.setPublishRoutes(
+    new PublishBridge(analytics.publishStore, readGeneratedForPublish)
+  );
+
+  // ==================== END PUBLISH ====================
 
   log.info('IPC handlers registered');
 }

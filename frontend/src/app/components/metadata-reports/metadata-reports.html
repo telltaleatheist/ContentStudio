@@ -126,16 +126,61 @@
                     <h3>Titles</h3>
                     <span class="count-badge">{{ metadata()!.titles.length }}</span>
                   </div>
+                  <span class="ab-progress"
+                        [class.complete]="publish.chosenCount() === MAX_AB_VARIANTS">
+                    {{ publish.chosenCount() }}/{{ MAX_AB_VARIANTS }} picked for A/B test
+                  </span>
+                  @if (publish.chosenCount() > 0) {
+                    <button class="copy-btn" (click)="publish.clear()">Clear</button>
+                  }
                 </div>
+
+                <p class="ab-hint">
+                  Click titles in the order you want them tested. #1 becomes the video's
+                  main title and is what YouTube keeps if the test is inconclusive.
+                </p>
+
+                @if (publish.error(); as err) {
+                  <div class="ab-error" (click)="publish.dismissError()">{{ err }}</div>
+                }
+
                 <div class="list-container">
                   @for (title of metadata()!.titles; track $index; let i = $index) {
-                    <div class="list-item"
+                    <div class="list-item ab-selectable"
                          [class.copied]="isCopied('title-' + i)"
-                         (click)="copyToClipboard(getTitleText(title), 'title-' + i)"
-                         title="Click to copy">
-                      <span class="item-number">{{ i + 1 }}</span>
+                         [class.ab-chosen]="isTitleChosen(title)"
+                         [class.ab-blocked]="isTitleBlocked(title)"
+                         (click)="toggleChosenTitle(title, $event)"
+                         [title]="isTitleChosen(title)
+                                    ? 'Click to remove from the A/B test'
+                                    : (isTitleBlocked(title)
+                                        ? 'Deselect one first — YouTube allows 3 variants'
+                                        : 'Click to add to the A/B test')">
+
+                      @if (titleVariantNumber(title); as variant) {
+                        <span class="ab-variant-badge">{{ variant }}</span>
+                      } @else {
+                        <span class="item-number">{{ i + 1 }}</span>
+                      }
+
                       <span class="list-item-text">{{ getTitleText(title) }}</span>
-                      <span class="copy-hint">{{ isCopied('title-' + i) ? '✓ Copied!' : '📋' }}</span>
+
+                      @if (isTitleChosen(title)) {
+                        <span class="ab-reorder">
+                          <button class="ab-arrow"
+                                  [disabled]="titleVariantNumber(title) === 1"
+                                  (click)="moveChosenTitle(title, -1, $event)"
+                                  title="Move earlier">▲</button>
+                          <button class="ab-arrow"
+                                  [disabled]="titleVariantNumber(title) === publish.chosenCount()"
+                                  (click)="moveChosenTitle(title, 1, $event)"
+                                  title="Move later">▼</button>
+                        </span>
+                      }
+
+                      <span class="copy-hint"
+                            (click)="copyToClipboard(getTitleText(title), 'title-' + i); $event.stopPropagation()"
+                            title="Copy to clipboard">{{ isCopied('title-' + i) ? '✓' : '📋' }}</span>
                     </div>
                   }
                 </div>
