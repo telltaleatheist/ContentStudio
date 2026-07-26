@@ -746,13 +746,23 @@ function setBadge(text, color = '#ff6b35') {
   // Studio ends the sentence with a period, which lands inside the second capture.
   const ran = dialogText.match(/Ran from (.+?) to (.+?)(?:\n|$)/i);
   const trimDate = (s) => (s ? s.trim().replace(/[.\s]+$/, '') : null);
+  // The headline is the dialog's own verdict line. Keep the raw text when it isn't one
+  // of the phrases we know, so an unrecognised outcome can be diagnosed from the CSV
+  // instead of collapsing to a useless "unknown".
+  const headlineText = (dialogText.split('\n').map((l) => l.trim()).find(
+    (l) => l && !/^a\/b test report$/i.test(l) && !/^title only$/i.test(l) &&
+           !/^thumbnail only$/i.test(l) && !/^title and thumbnail$/i.test(l),
+  ) || '').slice(0, 80);
+
   const headline = /we have a winner/i.test(dialogText)
     ? 'winner'
-    : /performed the same|performed same/i.test(dialogText)
+    : /performed the same|performed same|no clear winner|too close/i.test(dialogText)
       ? 'performed-same'
       : /inconclusive/i.test(dialogText)
         ? 'inconclusive'
-        : 'unknown';
+        : /still (running|in progress)|test in progress|results (are )?not ready/i.test(dialogText)
+          ? 'running'
+          : `unrecognised: ${headlineText}`;
 
   // Close the dialog without touching "New test".
   const close =
@@ -769,6 +779,7 @@ function setBadge(text, color = '#ff6b35') {
     variants,
     ranFrom: trimDate(ran?.[1]),
     ranTo: trimDate(ran?.[2]),
+    headlineText,
   };
 }
 
@@ -915,7 +926,10 @@ async function run(tabId, emptyPageStreakLimit) {
             videoUrl: `https://youtu.be/${video.videoId}`,
             currentTitle: video.title ?? '',
             testStatus: video.abLabel ?? '',
-            testOutcome: report.outcome ?? '',
+            // The list label is authoritative about whether a test has concluded: a
+            // running test shows live shares but no verdict, which is a state rather
+            // than a parse failure and must not be conflated with one.
+            testOutcome: /running/i.test(video.abLabel || '') ? 'running' : (report.outcome ?? ''),
             variantIndex: variant.index,
             variantTitle: variant.title ?? '',
             watchTimeSharePct: variant.watchTimeSharePct ?? '',
@@ -1183,8 +1197,17 @@ async function downloadCsv(saveAs = true) {
 
   const csv = toCsv(dedupeRows(state.rows));
   const url = await csvUrl(csv);
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-  const filename = `ab-title-tests-${state.channelId || 'channel'}-${stamp}.csv`;
+  // Local time, not UTC: toISOString() produced names that disagreed with the file's own
+  // modified time by the timezone offset. Colons are excluded because they are illegal in
+  // Windows filenames — this ships to Windows and Linux users too.
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const stamp =
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  // Only [A-Za-z0-9._-] survives, so the name is valid on every platform Chrome runs on.
+  const safeChannel = String(state.channelId || 'channel').replace(/[^A-Za-z0-9_-]/g, '');
+  const filename = `ab-title-tests-${safeChannel}-${stamp}.csv`;
   await chrome.downloads.download({ url, filename, saveAs });
   return filename;
 }

@@ -72,6 +72,15 @@ survives Chrome suspending the extension (which it does aggressively). The downl
 available from the popup afterwards until you run the next scan — so grab or note each
 channel's file before starting another one.
 
+## Windows, macOS and Linux
+
+Identical on all three. The extension only uses Chrome APIs, and the CSV is written via
+Chrome's own downloads system, so it lands in whatever you have set as your download
+folder on that machine. Filenames are restricted to letters, digits, dashes, underscores
+and dots — no colons — so they are valid on Windows as well.
+
+Timestamps in the filename are your **local** time.
+
 ## Permissions, and why
 
 | permission | why |
@@ -117,7 +126,7 @@ single self-contained table.
 | `watchHours` | lifetime watch time in hours |
 | `avgPctViewed` | average percentage of the video watched |
 | `testStatus` | `A/B Test running` or `A/B Test completed` |
-| `testOutcome` | `winner`, `performed-same`, `inconclusive`, or a reason it couldn't be read |
+| `testOutcome` | `winner`, `performed-same`, `inconclusive`, `running` (still in progress), `no-test`, or `unrecognised: <text>` carrying Studio's own wording if YouTube changes it |
 | `variantIndex` | 1, 2, 3 — the order YouTube showed them in |
 | `variantTitle` | the title text of that variant |
 | `watchTimeSharePct` | that variant's watch-time share, e.g. `42.1` |
