@@ -100,6 +100,23 @@ async function init() {
     if (res?.error) $('error').textContent = res.error;
   });
 
+  // Surface a missing permission plainly — otherwise persistence or the auto-save would
+  // fail silently and a long unattended run would be lost.
+  const caps = await send({ type: 'capability-check' });
+  const missing = caps && Object.entries(caps).filter(([, ok]) => !ok).map(([k]) => k);
+  if (missing && missing.length) {
+    $('caps').textContent =
+      `Missing permission(s): ${missing.join(', ')}. Remove and re-add the extension at chrome://extensions.`;
+    $('caps').className = 'err';
+  }
+
+  $('clear').addEventListener('click', async () => {
+    if (!confirm('Discard the saved results from the last scan?')) return;
+    resumeRows = null;
+    $('resumeInfo').textContent = '';
+    render(await send({ type: 'clear' }));
+  });
+
   if (stored[CONSENT_KEY]) await detectTab();
   render(await send({ type: 'get-state' }));
 }
@@ -165,8 +182,10 @@ function render(state) {
     ? `${state.scanned} / ${state.total} videos · ${state.rowCount} CSV row(s)`
     : '';
 
-  const finished = ['done', 'cancelled', 'error'].includes(state.phase);
-  $('download').classList.toggle('hidden', !(finished && state.rowCount > 0));
+  // Results persist across worker restarts, so the download is offered whenever rows
+  // exist and nothing is running — not only immediately after a run finishes.
+  $('download').classList.toggle('hidden', running || !state.rowCount);
+  $('clear').classList.toggle('hidden', running || !state.rowCount);
 }
 
 chrome.runtime.onMessage.addListener((message) => {

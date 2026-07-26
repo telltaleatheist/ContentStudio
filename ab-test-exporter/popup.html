@@ -69,7 +69,19 @@
       <ul>
         <li><strong>Nowhere.</strong> It builds a CSV and saves it to your Downloads
             folder. Nothing is uploaded, and this extension has no server.</li>
+        <li>Results are also kept in the extension's own local storage so a long scan
+            survives Chrome putting it to sleep. They stay on your machine and are
+            replaced by your next scan.</li>
         <li>Sharing that file with anyone is a separate, deliberate act by you.</li>
+      </ul>
+
+      <h2>Permissions it asks for</h2>
+      <ul>
+        <li><b>studio.youtube.com</b> — the only site it can touch.</li>
+        <li><b>Tabs / scripting</b> — to open and read those Studio pages.</li>
+        <li><b>Downloads</b> — to save the CSV when the scan finishes.</li>
+        <li><b>Storage</b> — to keep results safe mid-scan.</li>
+        <li><b>Notifications</b> — to tell you when it's done.</li>
       </ul>
 
       <div class="warn">
@@ -102,6 +114,11 @@
         list. This stops after 3 straight pages with none, instead of paging through your
         whole back catalogue. Untick it to scan everything.
       </p>
+      <p class="muted">
+        The CSV saves itself to Downloads when a scan finishes, so you can start it and
+        walk away. Results are kept on disk until the next scan — download or note them
+        before scanning a second channel.
+      </p>
 
       <label class="check" for="resumeFile" style="display:block">
         Resume from a previous CSV (optional)
@@ -117,7 +134,9 @@
         <div class="bar"><i id="bar"></i></div>
         <div id="counts" class="muted"></div>
         <div id="error" class="err"></div>
+        <div id="caps" class="muted"></div>
         <button id="download" class="hidden">Download CSV</button>
+        <button id="clear" class="hidden">Clear saved results</button>
       </div>
     </section>
 

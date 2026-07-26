@@ -49,6 +49,31 @@ stopped early, so a short scan is never mistaken for a complete one.
 It pauses a random 2–5 seconds between videos and stops immediately if Studio starts
 rate-limiting, rather than pushing through.
 
+## It runs unattended
+
+Start it and walk away. When the scan finishes the CSV **saves itself to your Downloads
+folder** and you get a desktop notification, so nothing depends on you having a window
+open at the right moment.
+
+Results are written to the extension's local storage as they're collected, so a scan
+survives Chrome suspending the extension (which it does aggressively). The download stays
+available from the popup afterwards until you run the next scan — so grab or note each
+channel's file before starting another one.
+
+## Permissions, and why
+
+| permission | why |
+|---|---|
+| `studio.youtube.com` | the only site it can access |
+| `tabs`, `scripting` | open and read your Studio pages |
+| `downloads` | save the CSV |
+| `storage`, `unlimitedStorage` | keep results safe mid-scan; a full channel is a few MB |
+| `notifications` | tell you when a scan finishes |
+| `offscreen` | build the file for very large exports |
+
+All are granted when the extension is loaded — nothing prompts mid-run. The popup checks
+them on open and says so if any are missing.
+
 ## Stopping and resuming
 
 A full channel takes a while, so you don't have to do it in one sitting.

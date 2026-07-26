@@ -3,20 +3,44 @@
   "name": "YouTube A/B Title Test Exporter",
   "version": "1.0.0",
   "description": "Exports your own YouTube A/B title test results (variants, watch-time share, winner) to a CSV file on your computer. Nothing is uploaded anywhere.",
-  "permissions": ["tabs", "scripting", "downloads", "storage"],
-  "host_permissions": ["https://studio.youtube.com/*"],
+  "permissions": [
+    "tabs",
+    "scripting",
+    "downloads",
+    "storage",
+    "unlimitedStorage",
+    "notifications",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "https://studio.youtube.com/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["https://studio.youtube.com/*"],
-      "js": ["overlay.js"],
+      "matches": [
+        "https://studio.youtube.com/*"
+      ],
+      "js": [
+        "overlay.js"
+      ],
       "run_at": "document_idle"
     }
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "A/B Title Test Exporter"
+    "default_title": "A/B Title Test Exporter",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
   }
 }

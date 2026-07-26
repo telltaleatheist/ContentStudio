@@ -73,6 +73,7 @@ const state = {
   running: false,
   /** Tab being driven, so the on-page overlay can be addressed directly. */
   workingTabId: null,
+  channelId: null,
   cancelled: false,
   phase: 'idle',
   message: '',
@@ -102,6 +103,80 @@ function publicState() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ---------------------------------------------------------------- persistence
+//
+// MV3 service workers are killed after ~30s idle, taking every in-memory variable with
+// them. Holding a finished run only in memory meant the results silently evaporated
+// shortly after the scan ended — the popup still showed the last message it had
+// received, so it LOOKED complete while the data was already gone.
+//
+// Rows are therefore written to chrome.storage.local as they are collected, and restored
+// on worker start-up. unlimitedStorage is requested because a full channel is a few MB.
+
+const STORE_KEY = 'runState';
+let persistQueue = Promise.resolve();
+
+function persist() {
+  const snapshot = {
+    rows: state.rows,
+    phase: state.phase,
+    message: state.message,
+    scanned: state.scanned,
+    total: state.total,
+    found: state.found,
+    channelId: state.channelId,
+    savedAt: Date.now(),
+  };
+  persistQueue = persistQueue
+    .then(() => chrome.storage.local.set({ [STORE_KEY]: snapshot }))
+    .catch((err) => console.error('[exporter] persist failed', err));
+  return persistQueue;
+}
+
+let restorePromise = null;
+
+/** Rehydrate after a worker restart. Every message handler awaits this first. */
+function ensureRestored() {
+  if (!restorePromise) {
+    restorePromise = chrome.storage.local
+      .get(STORE_KEY)
+      .then(({ [STORE_KEY]: stored }) => {
+        // Never clobber a run that is actually in progress in this worker.
+        if (!stored || state.running || state.rows.length) return;
+        state.rows = Array.isArray(stored.rows) ? stored.rows : [];
+        state.phase = stored.phase || 'idle';
+        state.message = stored.message || '';
+        state.scanned = stored.scanned || 0;
+        state.total = stored.total || 0;
+        state.found = stored.found || 0;
+        state.channelId = stored.channelId || null;
+      })
+      .catch((err) => console.error('[exporter] restore failed', err));
+  }
+  return restorePromise;
+}
+
+/**
+ * Keep the worker alive for the duration of a run.
+ *
+ * The scan's own chrome.* calls mostly reset the idle timer, but the gaps between videos
+ * are long enough to be risky, and a worker death mid-run would strand the scan.
+ */
+function setKeepalive(on) {
+  if (on) chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
+  else chrome.alarms.clear('keepalive');
+}
+chrome.alarms.onAlarm.addListener(() => {
+  // Existing purely to wake the worker; touching state is enough.
+  void state.running;
+});
+
+/** Badge so a finished run is visible even with every window closed. */
+function setBadge(text, color = '#ff6b35') {
+  chrome.action.setBadgeText({ text: text || '' }).catch(() => {});
+  if (text) chrome.action.setBadgeBackgroundColor({ color }).catch(() => {});
+}
+
 // ---------------------------------------------------------------- injected scrapers
 // These run in the page. They must be self-contained — no closures over anything here.
 
@@ -121,6 +196,80 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  */
 async function scrapeVideoList(emptyPageStreakLimit) {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---------------------------------------------------------------- persistence
+//
+// MV3 service workers are killed after ~30s idle, taking every in-memory variable with
+// them. Holding a finished run only in memory meant the results silently evaporated
+// shortly after the scan ended — the popup still showed the last message it had
+// received, so it LOOKED complete while the data was already gone.
+//
+// Rows are therefore written to chrome.storage.local as they are collected, and restored
+// on worker start-up. unlimitedStorage is requested because a full channel is a few MB.
+
+const STORE_KEY = 'runState';
+let persistQueue = Promise.resolve();
+
+function persist() {
+  const snapshot = {
+    rows: state.rows,
+    phase: state.phase,
+    message: state.message,
+    scanned: state.scanned,
+    total: state.total,
+    found: state.found,
+    channelId: state.channelId,
+    savedAt: Date.now(),
+  };
+  persistQueue = persistQueue
+    .then(() => chrome.storage.local.set({ [STORE_KEY]: snapshot }))
+    .catch((err) => console.error('[exporter] persist failed', err));
+  return persistQueue;
+}
+
+let restorePromise = null;
+
+/** Rehydrate after a worker restart. Every message handler awaits this first. */
+function ensureRestored() {
+  if (!restorePromise) {
+    restorePromise = chrome.storage.local
+      .get(STORE_KEY)
+      .then(({ [STORE_KEY]: stored }) => {
+        // Never clobber a run that is actually in progress in this worker.
+        if (!stored || state.running || state.rows.length) return;
+        state.rows = Array.isArray(stored.rows) ? stored.rows : [];
+        state.phase = stored.phase || 'idle';
+        state.message = stored.message || '';
+        state.scanned = stored.scanned || 0;
+        state.total = stored.total || 0;
+        state.found = stored.found || 0;
+        state.channelId = stored.channelId || null;
+      })
+      .catch((err) => console.error('[exporter] restore failed', err));
+  }
+  return restorePromise;
+}
+
+/**
+ * Keep the worker alive for the duration of a run.
+ *
+ * The scan's own chrome.* calls mostly reset the idle timer, but the gaps between videos
+ * are long enough to be risky, and a worker death mid-run would strand the scan.
+ */
+function setKeepalive(on) {
+  if (on) chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
+  else chrome.alarms.clear('keepalive');
+}
+chrome.alarms.onAlarm.addListener(() => {
+  // Existing purely to wake the worker; touching state is enough.
+  void state.running;
+});
+
+/** Badge so a finished run is visible even with every window closed. */
+function setBadge(text, color = '#ff6b35') {
+  chrome.action.setBadgeText({ text: text || '' }).catch(() => {});
+  if (text) chrome.action.setBadgeBackgroundColor({ color }).catch(() => {});
+}
 
   const footerText = () =>
     document.querySelector('ytcp-table-footer')?.innerText?.trim() || '';
@@ -398,6 +547,80 @@ async function fetchLifetimeAnalytics(channelId) {
  */
 async function scrapeReport() {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---------------------------------------------------------------- persistence
+//
+// MV3 service workers are killed after ~30s idle, taking every in-memory variable with
+// them. Holding a finished run only in memory meant the results silently evaporated
+// shortly after the scan ended — the popup still showed the last message it had
+// received, so it LOOKED complete while the data was already gone.
+//
+// Rows are therefore written to chrome.storage.local as they are collected, and restored
+// on worker start-up. unlimitedStorage is requested because a full channel is a few MB.
+
+const STORE_KEY = 'runState';
+let persistQueue = Promise.resolve();
+
+function persist() {
+  const snapshot = {
+    rows: state.rows,
+    phase: state.phase,
+    message: state.message,
+    scanned: state.scanned,
+    total: state.total,
+    found: state.found,
+    channelId: state.channelId,
+    savedAt: Date.now(),
+  };
+  persistQueue = persistQueue
+    .then(() => chrome.storage.local.set({ [STORE_KEY]: snapshot }))
+    .catch((err) => console.error('[exporter] persist failed', err));
+  return persistQueue;
+}
+
+let restorePromise = null;
+
+/** Rehydrate after a worker restart. Every message handler awaits this first. */
+function ensureRestored() {
+  if (!restorePromise) {
+    restorePromise = chrome.storage.local
+      .get(STORE_KEY)
+      .then(({ [STORE_KEY]: stored }) => {
+        // Never clobber a run that is actually in progress in this worker.
+        if (!stored || state.running || state.rows.length) return;
+        state.rows = Array.isArray(stored.rows) ? stored.rows : [];
+        state.phase = stored.phase || 'idle';
+        state.message = stored.message || '';
+        state.scanned = stored.scanned || 0;
+        state.total = stored.total || 0;
+        state.found = stored.found || 0;
+        state.channelId = stored.channelId || null;
+      })
+      .catch((err) => console.error('[exporter] restore failed', err));
+  }
+  return restorePromise;
+}
+
+/**
+ * Keep the worker alive for the duration of a run.
+ *
+ * The scan's own chrome.* calls mostly reset the idle timer, but the gaps between videos
+ * are long enough to be risky, and a worker death mid-run would strand the scan.
+ */
+function setKeepalive(on) {
+  if (on) chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
+  else chrome.alarms.clear('keepalive');
+}
+chrome.alarms.onAlarm.addListener(() => {
+  // Existing purely to wake the worker; touching state is enough.
+  void state.running;
+});
+
+/** Badge so a finished run is visible even with every window closed. */
+function setBadge(text, color = '#ff6b35') {
+  chrome.action.setBadgeText({ text: text || '' }).catch(() => {});
+  if (text) chrome.action.setBadgeBackgroundColor({ color }).catch(() => {});
+}
   const visAll = (sel) =>
     [...document.querySelectorAll(sel)].filter((e) => e.getBoundingClientRect().height > 0);
 
@@ -537,6 +760,7 @@ async function run(tabId, emptyPageStreakLimit) {
     );
   }
 
+  state.channelId = channelId;
   await chrome.tabs.update(tabId, { url: LIST_URL(channelId, sourceUrl) });
   await waitForTabLoad(tabId);
   await sleep(3000);
@@ -563,7 +787,12 @@ async function run(tabId, emptyPageStreakLimit) {
     setState({
       message:
         `Lifetime analytics for ${analytics.rows.length} videos.` +
-        (analytics.truncated ? ' NOTE: hit the single-request cap — some videos may be missing.' : ''),
+        // The query sorts by views descending and the endpoint refuses pageOffset > 0,
+        // so a full page means we have the TOP 10,000 by views and cannot reach the
+        // rest. Say exactly that rather than implying full coverage.
+        (analytics.truncated
+          ? ' CAPPED: this channel exceeds 10,000 videos, so analytics covers only the top 10,000 by views. A/B results are unaffected.'
+          : ''),
     });
   } else {
     // Not fatal: the A/B export is still worth producing without analytics columns.
@@ -626,6 +855,7 @@ async function run(tabId, emptyPageStreakLimit) {
   for (const video of tested) {
     if (state.cancelled) {
       setState({ phase: 'cancelled', message: 'Stopped. Partial results kept.' });
+      await finishRun('Scan stopped');
       return;
     }
 
@@ -690,6 +920,9 @@ async function run(tabId, emptyPageStreakLimit) {
     }
 
     setState({ scanned: state.scanned + 1 });
+    // Throttled: writing a few MB after every single video is wasteful, but losing more
+    // than a handful of videos to a crash is worse.
+    if (state.scanned % 5 === 0) void persist();
 
     // Stop immediately if Studio starts pushing back. Continuing into a throttle turns a
     // soft rate-limit into something that looks a lot more deliberate.
@@ -709,6 +942,7 @@ async function run(tabId, emptyPageStreakLimit) {
             ? 'Studio returned a permission error partway through. Partial results kept.'
             : `Studio started rate-limiting (${blocked}). Stopped early — partial results kept. Wait a while before retrying.`,
       });
+      await finishRun('Scan stopped early');
       return;
     }
 
@@ -764,6 +998,48 @@ async function run(tabId, emptyPageStreakLimit) {
       `Done. ${state.found} test report(s) read` +
       (analyticsOnly ? `, plus lifetime analytics for ${analyticsOnly} other video(s).` : '.'),
   });
+  await finishRun('Scan complete');
+}
+
+/**
+ * Terminal housekeeping: persist, save the CSV automatically, and make the result
+ * visible even if every window is closed.
+ *
+ * The CSV is written WITHOUT a save dialog on purpose — the whole point is to start a
+ * long scan and walk away, and a modal waiting for a click would defeat that (and, if
+ * the worker were killed first, lose the run entirely).
+ */
+async function finishRun(headline) {
+  await persist();
+  setKeepalive(false);
+
+  if (state.rows.length === 0) {
+    setBadge('!', '#b3261e');
+    return;
+  }
+
+  let savedAs = null;
+  try {
+    savedAs = await downloadCsv(false);
+  } catch (err) {
+    console.error('[exporter] auto-save failed', err);
+  }
+
+  setBadge(String(state.rows.length > 999 ? '999+' : state.rows.length));
+
+  try {
+    await chrome.notifications.create(`ab-export-${Date.now()}`, {
+      type: 'basic',
+      iconUrl: 'icon128.png',
+      title: headline,
+      message:
+        `${state.rows.length} rows` +
+        (savedAs ? ` saved to your Downloads folder as ${savedAs}` : ' ready — open the extension to download'),
+      priority: 2,
+    });
+  } catch (err) {
+    console.error('[exporter] notification failed', err);
+  }
 }
 
 // ---------------------------------------------------------------- CSV
@@ -823,22 +1099,86 @@ function toCsv(rows) {
   return lines.join('\r\n');
 }
 
-async function downloadCsv() {
+/**
+ * A downloadable URL for the CSV.
+ *
+ * Small exports use a data: URL, which needs nothing extra. Large ones go through an
+ * offscreen document, because a service worker has no URL.createObjectURL and data: URLs
+ * hit a size ceiling — a big channel would otherwise fail to auto-save at the very end
+ * of a long unattended run, which is the worst possible moment to lose it.
+ */
+const DATA_URL_LIMIT = 1_000_000;
+
+async function csvUrl(csv) {
+  const dataUrl = `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`;
+  if (dataUrl.length <= DATA_URL_LIMIT) return dataUrl;
+
+  try {
+    const existing = await chrome.runtime.getContexts?.({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
+    if (!existing || existing.length === 0) {
+      await chrome.offscreen.createDocument({
+        url: 'offscreen.html',
+        reasons: ['BLOBS'],
+        justification: 'Create a blob URL for a large CSV export.',
+      });
+    }
+    const res = await chrome.runtime.sendMessage({ type: 'make-blob-url', text: csv });
+    if (res?.ok && res.url) return res.url;
+    console.error('[exporter] offscreen blob failed', res?.error);
+  } catch (err) {
+    console.error('[exporter] offscreen unavailable', err);
+  }
+  // Fall back to the data URL and let chrome.downloads decide — better to try than to
+  // refuse outright.
+  return dataUrl;
+}
+
+async function downloadCsv(saveAs = true) {
+  await ensureRestored();
   if (state.rows.length === 0) throw new Error('Nothing to export yet.');
+
   const csv = toCsv(dedupeRows(state.rows));
-  // MV3 service workers have no URL.createObjectURL, so use a data: URL.
-  const url = `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`;
-  const stamp = new Date().toISOString().slice(0, 10);
-  await chrome.downloads.download({ url, filename: `ab-title-tests-${stamp}.csv`, saveAs: true });
+  const url = await csvUrl(csv);
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const filename = `ab-title-tests-${state.channelId || 'channel'}-${stamp}.csv`;
+  await chrome.downloads.download({ url, filename, saveAs });
+  return filename;
 }
 
 // ---------------------------------------------------------------- messaging
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
+    // The worker may have restarted since the last run; rehydrate before answering
+    // anything, or a finished export looks empty.
+    await ensureRestored();
+
     switch (message?.type) {
       case 'get-state':
         return publicState();
+
+      case 'capability-check': {
+        // Surfaced in the popup so a missing permission is visible rather than silent.
+        return {
+          storage: typeof chrome.storage?.local?.set === 'function',
+          downloads: typeof chrome.downloads?.download === 'function',
+          notifications: typeof chrome.notifications?.create === 'function',
+          scripting: typeof chrome.scripting?.executeScript === 'function',
+        };
+      }
+
+      case 'clear': {
+        state.rows = [];
+        state.phase = 'idle';
+        state.message = '';
+        state.scanned = 0;
+        state.total = 0;
+        state.found = 0;
+        await chrome.storage.local.remove(STORE_KEY);
+        setBadge('');
+        setState({});
+        return publicState();
+      }
 
       case 'find-studio-tab': {
         // Prefer the active tab if it's already a Studio channel page.
@@ -869,14 +1209,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           found: 0,
           error: null,
           workingTabId: message.tabId,
+          channelId: null,
         });
+        setBadge('');
+        setKeepalive(true);
         try {
           // Reuse the user's own Studio tab — see accountParams() for why.
           await run(message.tabId, Number.isInteger(message.emptyPageStreakLimit) ? message.emptyPageStreakLimit : 3);
         } catch (error) {
           setState({ phase: 'error', error: error?.message || String(error) });
+          await finishRun('Scan failed');
         } finally {
           state.running = false;
+          setKeepalive(false);
+          await persist();
           setState({});
         }
         return publicState();
@@ -887,7 +1233,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return publicState();
 
       case 'download':
-        await downloadCsv();
+        await downloadCsv(message.saveAs !== false);
+        setBadge('');
         return { ok: true };
 
       default:
