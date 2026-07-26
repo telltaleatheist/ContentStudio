@@ -19,7 +19,7 @@
 import { CollectorNotImplementedError, collectChannel } from './collector';
 import { PublishClientError, fetchPending, reportFilled, resolveForPage } from './publish/publish-client';
 import { isPublishMessage, type PublishMessage } from './publish/publish-messages';
-import { enqueueSnapshots, enqueueVideos, flushOutbox, outboxDepth, type FlushResult } from './outbox';
+import { enqueueAbTests, enqueueSnapshots, enqueueVideos, flushOutbox, outboxDepth, type FlushResult } from './outbox';
 import { fetchChannels } from './ingest-client';
 import { DEFAULT_SETTINGS, saveSettings } from './settings';
 import { recordChannelAttempt, setLastCycle, type CycleSummary } from './status';
@@ -106,6 +106,11 @@ async function doRunCollectionCycle(trigger: CycleSummary['trigger']): Promise<C
       }
       if (result.snapshots.length > 0) {
         await enqueueSnapshots(result.snapshots);
+      }
+      // Decided A/B tests — these become ChannelInsights.abLearnings and are injected
+      // into the metadata prompt, which is the point of collecting them.
+      if (result.abTests.length > 0) {
+        await enqueueAbTests(result.abTests);
       }
       await recordChannelAttempt(channel.channelId, attemptAt, null, result.snapshots.length);
     } catch (err) {

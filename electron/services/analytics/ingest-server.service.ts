@@ -9,6 +9,7 @@
  *   GET  /analytics/channels -> 200 {channels: [{channelId,name}]}
  *   POST /analytics/videos   -> body {videos: VideoRecord[]}   -> upsert, 200 {accepted:N}
  *   POST /analytics/ingest   -> body {snapshots: Snapshot[]}   -> validate+append, 200 {accepted:N}
+ *   POST /analytics/ab-tests -> body {tests: AbTestResult[]}   -> upsert, 200 {accepted:N}
  *
  * Auth: NONE — there is no token to configure. Because the server is bound to
  * 127.0.0.1, the only realistic attacker is a malicious web page the user
@@ -33,6 +34,7 @@ import * as fs from 'fs';
 import * as http from 'http';
 import * as path from 'path';
 import {
+  AbTestResult,
   Snapshot,
   SnapshotValidationError,
   VideoRecord,
@@ -335,7 +337,10 @@ export class IngestServerService {
       return;
     }
 
-    if (req.method === 'POST' && (url === '/analytics/videos' || url === '/analytics/ingest')) {
+    if (
+      req.method === 'POST' &&
+      (url === '/analytics/videos' || url === '/analytics/ingest' || url === '/analytics/ab-tests')
+    ) {
       // CSRF guard: reject cross-origin web requests BEFORE reading the body.
       if (this.isCrossOriginWebRequest(req)) {
         this.sendJson(res, 403, { error: 'cross-origin web requests are not allowed' });
@@ -352,7 +357,17 @@ export class IngestServerService {
       }
 
       try {
-        if (url === '/analytics/videos') {
+        if (url === '/analytics/ab-tests') {
+          if (!body || !Array.isArray(body.tests)) {
+            this.sendJson(res, 400, { error: 'Body must be {tests: AbTestResult[]}', details: [] });
+            return;
+          }
+          const accepted = await this.store.upsertAbTests(body.tests as AbTestResult[]);
+          console.log(`[IngestServer] Accepted ${accepted} A/B test result(s)`);
+          // New A/B learnings change what the generator is told, so re-distill.
+          if (accepted > 0) this.scheduleRedistill();
+          this.sendJson(res, 200, { accepted });
+        } else if (url === '/analytics/videos') {
           if (!body || !Array.isArray(body.videos)) {
             this.sendJson(res, 400, { error: 'Body must be {videos: VideoRecord[]}', details: [] });
             return;
