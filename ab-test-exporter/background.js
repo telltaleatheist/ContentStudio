@@ -163,16 +163,28 @@ function ensureRestored() {
  * are long enough to be risky, and a worker death mid-run would strand the scan.
  */
 function setKeepalive(on) {
-  if (on) chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
-  else chrome.alarms.clear('keepalive');
+  // Guarded: an undeclared or unavailable API must never take the whole worker down.
+  // Touching chrome.alarms at top level without the "alarms" permission throws during
+  // service-worker registration and bricks the entire extension.
+  if (!chrome.alarms) return;
+  try {
+    if (on) chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
+    else chrome.alarms.clear('keepalive');
+  } catch (err) {
+    console.warn('[exporter] keepalive unavailable', err);
+  }
 }
-chrome.alarms.onAlarm.addListener(() => {
-  // Existing purely to wake the worker; touching state is enough.
-  void state.running;
-});
+
+if (chrome.alarms?.onAlarm) {
+  chrome.alarms.onAlarm.addListener(() => {
+    // Exists purely to wake the worker; touching state is enough.
+    void state.running;
+  });
+}
 
 /** Badge so a finished run is visible even with every window closed. */
 function setBadge(text, color = '#ff6b35') {
+  if (!chrome.action?.setBadgeText) return;
   chrome.action.setBadgeText({ text: text || '' }).catch(() => {});
   if (text) chrome.action.setBadgeBackgroundColor({ color }).catch(() => {});
 }
@@ -257,16 +269,28 @@ function ensureRestored() {
  * are long enough to be risky, and a worker death mid-run would strand the scan.
  */
 function setKeepalive(on) {
-  if (on) chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
-  else chrome.alarms.clear('keepalive');
+  // Guarded: an undeclared or unavailable API must never take the whole worker down.
+  // Touching chrome.alarms at top level without the "alarms" permission throws during
+  // service-worker registration and bricks the entire extension.
+  if (!chrome.alarms) return;
+  try {
+    if (on) chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
+    else chrome.alarms.clear('keepalive');
+  } catch (err) {
+    console.warn('[exporter] keepalive unavailable', err);
+  }
 }
-chrome.alarms.onAlarm.addListener(() => {
-  // Existing purely to wake the worker; touching state is enough.
-  void state.running;
-});
+
+if (chrome.alarms?.onAlarm) {
+  chrome.alarms.onAlarm.addListener(() => {
+    // Exists purely to wake the worker; touching state is enough.
+    void state.running;
+  });
+}
 
 /** Badge so a finished run is visible even with every window closed. */
 function setBadge(text, color = '#ff6b35') {
+  if (!chrome.action?.setBadgeText) return;
   chrome.action.setBadgeText({ text: text || '' }).catch(() => {});
   if (text) chrome.action.setBadgeBackgroundColor({ color }).catch(() => {});
 }
@@ -608,16 +632,28 @@ function ensureRestored() {
  * are long enough to be risky, and a worker death mid-run would strand the scan.
  */
 function setKeepalive(on) {
-  if (on) chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
-  else chrome.alarms.clear('keepalive');
+  // Guarded: an undeclared or unavailable API must never take the whole worker down.
+  // Touching chrome.alarms at top level without the "alarms" permission throws during
+  // service-worker registration and bricks the entire extension.
+  if (!chrome.alarms) return;
+  try {
+    if (on) chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
+    else chrome.alarms.clear('keepalive');
+  } catch (err) {
+    console.warn('[exporter] keepalive unavailable', err);
+  }
 }
-chrome.alarms.onAlarm.addListener(() => {
-  // Existing purely to wake the worker; touching state is enough.
-  void state.running;
-});
+
+if (chrome.alarms?.onAlarm) {
+  chrome.alarms.onAlarm.addListener(() => {
+    // Exists purely to wake the worker; touching state is enough.
+    void state.running;
+  });
+}
 
 /** Badge so a finished run is visible even with every window closed. */
 function setBadge(text, color = '#ff6b35') {
+  if (!chrome.action?.setBadgeText) return;
   chrome.action.setBadgeText({ text: text || '' }).catch(() => {});
   if (text) chrome.action.setBadgeBackgroundColor({ color }).catch(() => {});
 }

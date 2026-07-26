@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "description": "Exports your own YouTube A/B title test results (variants, watch-time share, winner) to a CSV file on your computer. Nothing is uploaded anywhere.",
   "permissions": [
+    "alarms",
     "tabs",
     "scripting",
     "downloads",
