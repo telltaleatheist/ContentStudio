@@ -196,13 +196,11 @@ async function onStart() {
     return;
   }
 
-  // 0 disables the early exit entirely and walks every page.
-  const limit = $('stopEarly').checked ? 3 : 0;
   const res = await send({
     type: 'start',
     jobs,
     tabId: jobs[0].tabId,
-    emptyPageStreakLimit: limit,
+    deepShares: $('deepShares').checked,
     resumeRows,
   });
   if (res?.rejected) $('error').textContent = res.rejected;

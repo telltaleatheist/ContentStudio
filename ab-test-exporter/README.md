@@ -128,22 +128,22 @@ single self-contained table.
 
 | column | meaning |
 |---|---|
-| `videoId` | YouTube video id |
-| `videoUrl` | `https://youtu.be/<id>` |
-| `currentTitle` | the video's title as it appears in your list now |
+| `videoId`, `videoUrl` | YouTube id and link |
+| `title` | current title |
+| `description` | **full** description, untruncated |
+| `publishedAt` | release date (ISO) |
+| `durationSec` | length in seconds |
+| `privacy` | public / unlisted / private |
 | `impressions` | lifetime thumbnail impressions |
-| `impressionsCtrPct` | lifetime impressions click-through rate, e.g. `10.2` |
-| `views` | lifetime views |
-| `watchHours` | lifetime watch time in hours |
-| `avgPctViewed` | average percentage of the video watched |
-| `testStatus` | `A/B Test running` or `A/B Test completed` |
-| `testOutcome` | `winner`, `performed-same` (YouTube says "They all performed well"), `inconclusive` ("Test finished without a conclusive result"), `running`, `no-test`, or `unrecognised: <text>` carrying Studio's own wording if YouTube rewords a result |
-| `variantIndex` | 1, 2, 3 — the order YouTube showed them in |
-| `variantTitle` | the title text of that variant |
-| `watchTimeSharePct` | that variant's watch-time share, e.g. `42.1` |
+| `impressionsCtrPct` | lifetime impressions CTR, e.g. `10.2` |
+| `views`, `watchHours`, `avgPctViewed` | lifetime view metrics |
+| `testState` | `FINISHED`, `INITIALIZED`, or blank |
+| `testOutcome` | `winner`, `no-clear-winner`, `running`, `no-test` |
+| `testFinishedReason` | YouTube's own reason code |
+| `variantIndex` | 1, 2, 3 |
+| `variantTitle` | that variant's title text |
+| `watchTimeSharePct` | share, e.g. `42.1` — only if the deep pass was enabled |
 | `isWinner` | `yes` / `no` |
-| `isCurrentlyLive` | `yes` if this variant is the one now shown to everyone |
-| `ranFrom`, `ranTo` | the test window as Studio reports it |
 
 Note the winning metric is **watch-time share, not CTR** — that is what YouTube itself
 uses to decide a title test.
@@ -156,19 +156,16 @@ Analytics come from a single request covering the entire channel — impressions
 impressions-CTR are not available in the public YouTube Analytics API at all, which is
 part of why this tool exists.
 
-### Descriptions
+### How fast it is
 
-Not included, on purpose. Descriptions are public data, so `yt-dlp` gets them far more
-cheaply than driving Studio thousands of times. Join on `videoId`:
+Titles, full descriptions, release dates, durations, impressions, CTR, views, watch time,
+and which A/B variant won all come from **two requests** — no video pages are opened at
+all. A whole channel takes seconds.
 
-```bash
-yt-dlp "https://www.youtube.com/channel/<UC…>/videos" \
-  --skip-download --ignore-errors \
-  --print-to-file "%(id)s\t%(title)j\t%(description)j" descriptions.tsv
-```
-
-The `j` conversion JSON-encodes each field so newlines inside descriptions don't break
-the file.
+The one exception is each test's **watch-time share percentages**, which exist only inside
+the report dialog. Getting those means loading one page per finished test, so they are
+behind the optional "Also fetch watch-time share %" tick-box. Everything else is there
+without it.
 
 ## What it does and doesn't do
 

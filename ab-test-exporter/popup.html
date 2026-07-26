@@ -112,14 +112,15 @@
       <div id="channels"></div>
 
       <label class="check">
-        <input id="stopEarly" type="checkbox" />
-        Skip my back catalogue (faster, but older videos lose their titles)
+        <input id="deepShares" type="checkbox" />
+        Also fetch watch-time share % (slow)
       </label>
       <p class="muted">
-        Leave this unticked to get every video's title. Walking the full list only costs a
-        few seconds &mdash; it clicks through pages, it does not load them &mdash; and
-        titles come from that list, so skipping it leaves older videos with analytics but
-        no title. Only tested videos are ever opened, which is the slow part either way.
+        Titles, descriptions, release dates, impressions, CTR, and which A/B variant won
+        all come back in seconds without opening a single video. The only thing that costs
+        time is each test's watch-time share percentages &mdash; those live in the report
+        dialog, so getting them means loading one page per finished test. Tick this only if
+        you need those percentages.
       </p>
       <p class="muted">
         The CSV saves itself to Downloads when a scan finishes, so you can start it and

@@ -213,190 +213,144 @@ function setBadge(text, color = '#ff6b35') {
 // These run in the page. They must be self-contained — no closures over anything here.
 
 /**
- * Enumerate every video in the Studio content list, ACROSS ALL PAGES.
+ * The whole video catalogue — id, TITLE, DESCRIPTION, and A/B experiment — in bulk.
  *
- * The list is paginated (30 per page by default) — not infinite-scroll — so it must be
- * walked with the pager. The footer reads "1–30 of about 776"; that string changing is
- * the reliable signal that a page turn actually completed, since the row elements are
- * recycled rather than replaced.
+ * This replaces walking the Studio content list page by page. Studio's own list is backed
+ * by creator/list_creator_videos, and asking it directly is better in every way: it pages
+ * 100 at a time via pageToken (no DOM, no clicking), and the `mask` lets us request
+ * fields the page never displays.
  *
- * Deduplicates by videoId: pages can overlap if the list re-sorts mid-walk, and a video
- * counted twice would produce duplicate CSV rows.
+ * Critically it returns the FULL description (verified: 2,149 chars, untruncated), which
+ * is the training input — the reason this data is being collected at all.
  *
- * Returns the A/B label when present ("A/B Test running" / "A/B Test completed"), which
- * is how we decide which videos are worth opening at all.
+ * It also carries videoCreatorExperiment, so A/B VARIANT TITLES, the experiment state and
+ * the WINNING ARM all arrive here rather than needing one page visit per tested video.
+ * Only the watch-time share percentages are absent; those exist solely in the report
+ * dialog, which is why the per-video pass is still offered as an option.
+ *
+ * MUST run in the MAIN world: needs window.ytcfg and the SAPISID cookie.
  */
-async function scrapeVideoList(emptyPageStreakLimit) {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function fetchCreatorVideos(channelId, maxPages) {
+  const ORIGIN = 'https://studio.youtube.com';
+  const ENDPOINT = 'https://studio.youtube.com/youtubei/v1/creator/list_creator_videos?alt=json';
+  const PAGE_SIZE = 100; // server caps here; larger values are silently clamped
 
-// ---------------------------------------------------------------- persistence
-//
-// MV3 service workers are killed after ~30s idle, taking every in-memory variable with
-// them. Holding a finished run only in memory meant the results silently evaporated
-// shortly after the scan ended — the popup still showed the last message it had
-// received, so it LOOKED complete while the data was already gone.
-//
-// Rows are therefore written to chrome.storage.local as they are collected, and restored
-// on worker start-up. unlimitedStorage is requested because a full channel is a few MB.
+  const fail = (code, message) => ({ ok: false, code, message });
 
-const STORE_KEY = 'runState';
-let persistQueue = Promise.resolve();
-
-function persist() {
-  const snapshot = {
-    rows: state.rows,
-    phase: state.phase,
-    message: state.message,
-    scanned: state.scanned,
-    total: state.total,
-    found: state.found,
-    channelId: state.channelId,
-    savedAt: Date.now(),
-  };
-  persistQueue = persistQueue
-    .then(() => chrome.storage.local.set({ [STORE_KEY]: snapshot }))
-    .catch((err) => console.error('[exporter] persist failed', err));
-  return persistQueue;
-}
-
-let restorePromise = null;
-
-/** Rehydrate after a worker restart. Every message handler awaits this first. */
-function ensureRestored() {
-  if (!restorePromise) {
-    restorePromise = chrome.storage.local
-      .get(STORE_KEY)
-      .then(({ [STORE_KEY]: stored }) => {
-        // Never clobber a run that is actually in progress in this worker.
-        if (!stored || state.running || state.rows.length) return;
-        state.rows = Array.isArray(stored.rows) ? stored.rows : [];
-        state.phase = stored.phase || 'idle';
-        state.message = stored.message || '';
-        state.scanned = stored.scanned || 0;
-        state.total = stored.total || 0;
-        state.found = stored.found || 0;
-        state.channelId = stored.channelId || null;
-      })
-      .catch((err) => console.error('[exporter] restore failed', err));
-  }
-  return restorePromise;
-}
-
-/**
- * Keep the worker alive for the duration of a run.
- *
- * The scan's own chrome.* calls mostly reset the idle timer, but the gaps between videos
- * are long enough to be risky, and a worker death mid-run would strand the scan.
- */
-function setKeepalive(on) {
-  // Guarded: an undeclared or unavailable API must never take the whole worker down.
-  // Touching chrome.alarms at top level without the "alarms" permission throws during
-  // service-worker registration and bricks the entire extension.
-  if (!chrome.alarms) return;
   try {
-    if (on) chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
-    else chrome.alarms.clear('keepalive');
+    const readCookie = (name) => {
+      for (const pair of (document.cookie ? document.cookie.split('; ') : [])) {
+        const eq = pair.indexOf('=');
+        if ((eq === -1 ? pair : pair.slice(0, eq)) === name) {
+          return eq === -1 ? '' : decodeURIComponent(pair.slice(eq + 1));
+        }
+      }
+      return null;
+    };
+    const sapisid = readCookie('SAPISID') || readCookie('__Secure-3PAPISID');
+    if (!sapisid) return fail('NO_SAPISID', 'Not signed in to YouTube Studio.');
+
+    const sha1Hex = async (input) => {
+      const bytes = new Uint8Array(await crypto.subtle.digest('SHA-1', new TextEncoder().encode(input)));
+      let hex = ''; for (const b of bytes) hex += b.toString(16).padStart(2, '0');
+      return hex;
+    };
+
+    const cfg = window.ytcfg;
+    if (!cfg || typeof cfg.get !== 'function') return fail('YTCFG_MISSING', 'Studio page not loaded.');
+    const innertube = cfg.get('INNERTUBE_CONTEXT');
+    const clientVersion = innertube?.client?.clientVersion;
+    const delegation = cfg.get('INNERTUBE_CONTEXT_SERIALIZED_DELEGATION_CONTEXT');
+    if (!clientVersion || !delegation) return fail('YTCFG_MISSING', 'Studio context incomplete — reload the page.');
+    if (cfg.get('CHANNEL_ID') !== channelId) {
+      return fail('CHANNEL_MISMATCH', `Studio is on ${cfg.get('CHANNEL_ID')}, not ${channelId}.`);
+    }
+    const authUser = cfg.get('SESSION_INDEX') != null ? String(cfg.get('SESSION_INDEX')) : '0';
+
+    const buildBody = (pageToken) => {
+      const body = {
+        context: {
+          client: { clientName: 62, clientVersion },
+          user: { serializedDelegationContext: delegation },
+        },
+        // Minimal filter, constructed rather than copied from the page: just this channel.
+        filter: { and: { operands: [{ channelIdIs: { value: channelId } }] } },
+        order: 'VIDEO_ORDER_DISPLAY_TIME_DESC',
+        pageSize: PAGE_SIZE,
+        mask: {
+          videoId: true, title: true, description: true, privacy: true, status: true,
+          lengthSeconds: true, timePublishedSeconds: true, timeCreatedSeconds: true,
+          draftStatus: true, origin: true, contentType: true,
+          videoCreatorExperiment: { all: true },
+        },
+      };
+      if (pageToken) body.pageToken = pageToken;
+      return body;
+    };
+
+    const videos = [];
+    let pageToken = null;
+    let pages = 0;
+    const cap = Number.isInteger(maxPages) && maxPages > 0 ? maxPages : 400;
+
+    for (; pages < cap; pages++) {
+      const ts = Math.floor(Date.now() / 1000);
+      const authorization = `SAPISIDHASH ${ts}_${await sha1Hex(`${ts} ${sapisid} ${ORIGIN}`)}`;
+
+      let resp;
+      try {
+        resp = await fetch(ENDPOINT, {
+          method: 'POST', credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json', Authorization: authorization, 'X-Origin': ORIGIN,
+            'X-Goog-AuthUser': authUser, 'X-YouTube-Delegation-Context': delegation,
+            'X-YouTube-Client-Name': '62', 'X-YouTube-Client-Version': clientVersion,
+          },
+          body: JSON.stringify(buildBody(pageToken)),
+        });
+      } catch (err) {
+        return fail('NETWORK', `Network error: ${err?.message || String(err)}`);
+      }
+      if (resp.status === 401 || resp.status === 403) return fail('HTTP_AUTH', `Rejected (HTTP ${resp.status}).`);
+      if (resp.status === 429) return fail('HTTP_RATELIMIT', 'Rate limited (HTTP 429).');
+      if (!resp.ok) return fail('HTTP_ERROR', `HTTP ${resp.status}.`);
+
+      let data;
+      try { data = await resp.json(); } catch { return fail('BAD_JSON', 'Response was not JSON.'); }
+      if (!Array.isArray(data?.videos)) return fail('BAD_SHAPE', 'Response had no videos array.');
+
+      for (const v of data.videos) {
+        if (!v?.videoId) continue;
+        const exp = v.videoCreatorExperiment || null;
+        const arms = (exp?.experimentArmData || [])
+          .map((a) => a?.title?.textSegments?.[0]?.text ?? null)
+          .filter((t) => typeof t === 'string');
+        // selectedArm is 1-indexed (CREATOR_EXPERIMENT_ARM_1); UNSPECIFIED = no winner.
+        const winnerIndex = Number(String(exp?.selectedArm || '').match(/ARM_(\d+)$/)?.[1] || 0);
+
+        videos.push({
+          videoId: v.videoId,
+          title: typeof v.title === 'string' ? v.title : '',
+          description: typeof v.description === 'string' ? v.description : '',
+          privacy: v.privacy || '',
+          durationSec: v.lengthSeconds ? Number(v.lengthSeconds) : null,
+          publishedAt: v.timePublishedSeconds
+            ? new Date(Number(v.timePublishedSeconds) * 1000).toISOString()
+            : '',
+          experiment: exp
+            ? { state: exp.state || '', finishedReason: exp.finishedReason || '', arms, winnerIndex }
+            : null,
+        });
+      }
+
+      pageToken = data.nextPageToken || null;
+      if (!pageToken) { pages++; break; }
+    }
+
+    return { ok: true, videos, pages, truncated: !!pageToken };
   } catch (err) {
-    console.warn('[exporter] keepalive unavailable', err);
+    return fail('EXCEPTION', `Unexpected error: ${err?.message || String(err)}`);
   }
-}
-
-if (chrome.alarms?.onAlarm) {
-  chrome.alarms.onAlarm.addListener(() => {
-    // Exists purely to wake the worker; touching state is enough.
-    void state.running;
-  });
-}
-
-/** Badge so a finished run is visible even with every window closed. */
-function setBadge(text, color = '#ff6b35') {
-  if (!chrome.action?.setBadgeText) return;
-  chrome.action.setBadgeText({ text: text || '' }).catch(() => {});
-  if (text) chrome.action.setBadgeBackgroundColor({ color }).catch(() => {});
-}
-
-  const footerText = () =>
-    document.querySelector('ytcp-table-footer')?.innerText?.trim() || '';
-
-  const collectPage = (into) => {
-    for (const row of document.querySelectorAll('ytcp-video-row')) {
-      const href = row.querySelector('a[href*="/video/"]')?.getAttribute('href') || '';
-      const videoId = href.match(/\/video\/([^/]+)/)?.[1] || null;
-      if (!videoId || into.has(videoId)) continue;
-
-      const lines = (row.innerText || '').split('\n').map((s) => s.trim()).filter(Boolean);
-      const abLabel = lines.find((l) => /a\/b test/i.test(l)) || null;
-
-      // Title = first line that isn't a duration, a bare number, or the A/B label.
-      // Duration badges sort first in this component.
-      const title =
-        lines.find(
-          (l) =>
-            !/^\d+:\d+/.test(l) &&
-            !/a\/b test/i.test(l) &&
-            !/^[\d,.%]+$/.test(l) &&
-            l.length > 3,
-        ) || null;
-
-      into.set(videoId, { videoId, title, abLabel });
-    }
-  };
-
-  const byId = new Map();
-  let pagesWalked = 0;
-  let emptyStreak = 0;
-  let stoppedEarly = false;
-
-  // Hard page cap: generous enough for a very large channel, bounded so a pager that
-  // never disables can't spin forever.
-  for (let page = 0; page < 600; page++) {
-    // Wait for rows to be present on this page.
-    for (let i = 0; i < 40; i++) {
-      if (document.querySelectorAll('ytcp-video-row').length) break;
-      await sleep(300);
-    }
-
-    const beforeCount = [...byId.values()].filter((v) => v.abLabel).length;
-    collectPage(byId);
-    pagesWalked++;
-    const foundHere = [...byId.values()].filter((v) => v.abLabel).length - beforeCount;
-
-    // Optional, and OFF by default. Stopping here saves only pager clicks — no page
-    // loads — but it costs every later video its TITLE, because titles come from the
-    // list and analytics covers the whole channel regardless. A first full run produced
-    // 1,383 of 1,561 videos with analytics but no title, which is largely useless for
-    // anything title-related. The expensive part of a scan is opening tested videos, and
-    // that is already limited to videos the list marks as tested.
-    if (emptyPageStreakLimit > 0) {
-      emptyStreak = foundHere === 0 ? emptyStreak + 1 : 0;
-      if (emptyStreak >= emptyPageStreakLimit) {
-        stoppedEarly = true;
-        break;
-      }
-    }
-
-    const next = document.querySelector('ytcp-icon-button#navigate-after');
-    const done =
-      !next || next.hasAttribute('disabled') || next.getAttribute('aria-disabled') === 'true';
-    if (done) break;
-
-    const before = footerText();
-    next.click();
-
-    // A page turn is confirmed by the footer range changing, not by a timer.
-    let turned = false;
-    for (let i = 0; i < 50; i++) {
-      await sleep(300);
-      if (footerText() !== before) {
-        turned = true;
-        break;
-      }
-    }
-    if (!turned) break; // pager stopped responding — return what we have rather than looping
-    await sleep(400);
-  }
-
-  return { videos: [...byId.values()], footer: footerText(), pagesWalked, stoppedEarly };
 }
 
 /**
@@ -840,37 +794,30 @@ async function inject(tabId, func, args = [], world = 'ISOLATED') {
   return result?.result;
 }
 
-async function run(sourceTabId, emptyPageStreakLimit) {
-  setState({ phase: 'listing', message: 'Loading your video list…', scanned: 0, total: 0, found: 0 });
+async function run(sourceTabId, opts) {
+  const deepShares = !!(opts && opts.deepShares);
 
-  // Drive the tab the user pointed us at — no extra tabs are created.
-  //
-  // The original "it isn't moving and there's no overlay" bug was NOT caused by using the
-  // user's tab; it was caused by driving a tab without focusing it. chrome.tabs.update
-  // does not raise a tab, so a background Studio tab was driven invisibly. Every
-  // navigation below therefore passes active:true, which makes the scan self-evidently
-  // visible wherever it is running.
+  setState({ phase: 'listing', message: 'Preparing…', scanned: 0, total: 0, found: 0 });
+
+  // Drive the tab the operator pointed us at — no extra tabs. Every navigation forces
+  // focus, because chrome.tabs.update does not raise a tab and a background scan looks
+  // broken while working perfectly.
   const startTab = await chrome.tabs.get(sourceTabId);
   const sourceUrl = startTab.url || '';
   const channelId = channelIdFromUrl(sourceUrl);
   if (!channelId) {
-    throw new Error(
-      'That Studio tab is not on a channel page. Open Studio → Content, then try again.',
-    );
+    throw new Error('That Studio tab is not on a channel page. Open Studio → Content, then try again.');
   }
-
   state.channelId = channelId;
 
-  let tabId = sourceTabId;  // reassigned only if the tab is closed mid-run
+  let tabId = sourceTabId;
   state.workingTabId = tabId;
 
-  // Focus it so the operator can see the scan working. Also raise its window.
   await chrome.tabs.update(tabId, { url: LIST_URL(channelId, sourceUrl), active: true });
   await chrome.windows.update(startTab.windowId, { focused: true }).catch(() => {});
   await waitForTabLoad(tabId);
-  await sleep(3000);
+  await sleep(2500);
 
-  // Fail clearly on the permission interstitial rather than reporting "no videos".
   const denied = await inject(tabId, () =>
     /don't have permission|do not have permission/i.test(document.body?.innerText || ''),
   );
@@ -881,350 +828,209 @@ async function run(sourceTabId, emptyPageStreakLimit) {
     );
   }
 
-  // Lifetime analytics first: one request covers the entire channel, so it is both the
-  // cheapest step and the one that defines the row set the A/B results are merged into.
-  const analyticsById = new Map();
-  setState({ message: 'Fetching lifetime analytics for the whole channel…' });
-  const analytics = await inject(tabId, fetchLifetimeAnalytics, [channelId], 'MAIN');
+  // ---- 1. whole catalogue: id, title, DESCRIPTION, release date, duration, experiment ----
+  setState({ message: 'Fetching your video catalogue (titles, descriptions, tests)…' });
+  const catalogue = await inject(tabId, fetchCreatorVideos, [channelId, 400], 'MAIN');
+  if (!catalogue?.ok) {
+    throw new Error(
+      `Could not read your video catalogue (${catalogue?.code || 'unknown'}): ${catalogue?.message || ''}`,
+    );
+  }
+  const videos = catalogue.videos;
+  if (videos.length === 0) throw new Error('No videos returned for this channel.');
 
+  // ---- 2. lifetime analytics for every video, in one request ----
+  setState({ message: `${videos.length} videos found. Fetching lifetime analytics…` });
+  const analyticsById = new Map();
+  const analytics = await inject(tabId, fetchLifetimeAnalytics, [channelId], 'MAIN');
   if (analytics?.ok) {
     for (const row of analytics.rows) analyticsById.set(row.videoId, row);
-    setState({
-      message:
-        `Lifetime analytics for ${analytics.rows.length} videos.` +
-        // The query sorts by views descending and the endpoint refuses pageOffset > 0,
-        // so a full page means we have the TOP 10,000 by views and cannot reach the
-        // rest. Say exactly that rather than implying full coverage.
-        (analytics.truncated
-          ? ' CAPPED: this channel exceeds 10,000 videos, so analytics covers only the top 10,000 by views. A/B results are unaffected.'
-          : ''),
-    });
   } else {
-    // Not fatal: the A/B export is still worth producing without analytics columns.
+    // Not fatal — catalogue and A/B results are still worth exporting without metrics.
     setState({
-      message: `Analytics unavailable (${analytics?.code || 'unknown'}) — continuing with A/B results only.`,
+      message: `Analytics unavailable (${analytics?.code || 'unknown'}) — continuing without those columns.`,
     });
+    await sleep(1500);
   }
 
-  setState({ message: 'Reading your video list (this walks every page)…' });
-  const listing = await inject(tabId, scrapeVideoList, [emptyPageStreakLimit]);
-  const videos = listing?.videos;
-  if (!Array.isArray(videos) || videos.length === 0) {
-    throw new Error('Could not read the video list. Make sure you are signed in to YouTube Studio.');
-  }
-
-  // Resume: anything already exported successfully is skipped. Rows whose outcome was an
-  // error are NOT treated as done, so a retry picks them up.
-  const alreadyDone = new Set(
-    state.rows
-      .filter((r) => r.testOutcome && !String(r.testOutcome).startsWith('error'))
-      .map((r) => r.videoId),
-  );
-
-  // Only videos the list marks as tested are worth opening.
-  const allTested = videos.filter((v) => v.abLabel);
-  const tested = allTested.filter((v) => !alreadyDone.has(v.videoId));
-  const skipped = allTested.length - tested.length;
-  setState({
-    phase: 'scraping',
-    total: tested.length,
-    message:
-      `${videos.length} videos across ${listing.pagesWalked} page(s), ` +
-      `${tested.length} with A/B tests to read` +
-      (skipped ? ` (${skipped} already in the resumed CSV).` : '.') +
-      // Never let an early stop look like a complete scan.
-      (listing.stoppedEarly
-        ? ` Stopped early: ${emptyPageStreakLimit} consecutive pages had no tests. Untick "stop early" to scan everything.`
-        : ''),
-  });
-
-  if (tested.length === 0) {
-    setState({ phase: 'done', message: 'No A/B tests found on this channel.' });
-    return;
-  }
-
-  // A handful of failures is normal; a long unbroken run of them means something
-  // systemic (dead tab, sign-out, Studio redesign) and continuing just fills the CSV
-  // with noise.
-  let consecutiveFailures = 0;
-  const MAX_CONSECUTIVE_FAILURES = 8;
-
-  // Every emitted row carries the video's lifetime analytics, so the CSV is a single
-  // joined table rather than two that have to be reconciled later.
-  const withAnalytics = (base) => {
-    const a = analyticsById.get(base.videoId);
+  // ---- 3. build rows: one per A/B variant, else one per video ----
+  const base = (v) => {
+    const a = analyticsById.get(v.videoId);
     return {
-      ...base,
+      videoId: v.videoId,
+      videoUrl: `https://youtu.be/${v.videoId}`,
+      title: v.title,
+      description: v.description,
+      publishedAt: v.publishedAt,
+      durationSec: v.durationSec ?? '',
+      privacy: String(v.privacy || '').replace('VIDEO_PRIVACY_', '').toLowerCase(),
       impressions: a?.impressions ?? '',
       impressionsCtrPct: a?.impressionsCtrPct ?? '',
       views: a?.views ?? '',
-      watchHours: a?.watchHours === null || a?.watchHours === undefined ? '' : a.watchHours.toFixed(2),
+      watchHours:
+        a?.watchHours === null || a?.watchHours === undefined ? '' : a.watchHours.toFixed(2),
       avgPctViewed: a?.avgPctViewed ?? '',
     };
   };
 
-  for (const video of tested) {
+  const outcomeOf = (exp) => {
+    if (!exp) return 'no-test';
+    if (/FINISHED/.test(exp.state)) return exp.winnerIndex > 0 ? 'winner' : 'no-clear-winner';
+    if (/INITIALIZED/.test(exp.state)) return 'running';
+    return `state: ${exp.state || 'unknown'}`;
+  };
+
+  const tested = [];
+  for (const v of videos) {
+    const b = base(v);
+    const exp = v.experiment;
+
+    if (!exp || exp.arms.length === 0) {
+      state.rows.push({
+        ...b,
+        testState: '',
+        testOutcome: outcomeOf(exp),
+        variantIndex: '',
+        variantTitle: '',
+        watchTimeSharePct: '',
+        isWinner: '',
+        testFinishedReason: '',
+      });
+      continue;
+    }
+
+    tested.push(v);
+    exp.arms.forEach((armTitle, i) => {
+      state.rows.push({
+        ...b,
+        testState: exp.state.replace('CREATOR_EXPERIMENT_STATE_', ''),
+        testOutcome: outcomeOf(exp),
+        variantIndex: i + 1,
+        variantTitle: armTitle,
+        // Only obtainable from the per-video report dialog — filled in step 4 if asked.
+        watchTimeSharePct: '',
+        isWinner: exp.winnerIndex === i + 1 ? 'yes' : 'no',
+        testFinishedReason: exp.finishedReason.replace('CREATOR_EXPERIMENT_FINISHED_REASON_', ''),
+      });
+    });
+  }
+
+  setState({
+    found: tested.length,
+    message:
+      `${videos.length} videos, ${tested.length} with A/B tests.` +
+      (catalogue.truncated ? ' NOTE: hit the page cap — some videos may be missing.' : ''),
+  });
+  await persist();
+
+  // ---- 4. optional: watch-time share percentages ----
+  // Everything above came from two API calls in seconds. These percentages exist ONLY in
+  // the per-video report dialog, so they cost one page load each — hence opt-in.
+  if (!deepShares) {
+    await chrome.tabs.update(tabId, { url: LIST_URL(channelId, sourceUrl) }).catch(() => {});
+    await finishRun('Scan complete');
+    return;
+  }
+
+  const withReports = tested.filter((v) => /FINISHED/.test(v.experiment.state));
+  setState({
+    phase: 'scraping',
+    total: withReports.length,
+    scanned: 0,
+    message: `Reading watch-time shares for ${withReports.length} finished tests…`,
+  });
+
+  const rowsByVideo = new Map();
+  for (const r of state.rows) {
+    if (!r.variantIndex) continue;
+    if (!rowsByVideo.has(r.videoId)) rowsByVideo.set(r.videoId, []);
+    rowsByVideo.get(r.videoId).push(r);
+  }
+
+  let consecutiveFailures = 0;
+  const MAX_CONSECUTIVE_FAILURES = 8;
+
+  for (const v of withReports) {
     if (state.cancelled) {
-      setState({ phase: 'cancelled', message: 'Stopped. Partial results kept.' });
+      setState({ phase: 'cancelled', message: 'Stopped. Results kept.' });
       await finishRun('Scan stopped');
       return;
     }
 
-    setState({ message: `Reading “${video.title || video.videoId}”…` });
+    setState({ message: `Shares for “${v.title || v.videoId}”…` });
 
-    // The working tab can vanish mid-run — closed by the user, or crashed. Without this
-    // check every subsequent navigation throws, each one caught by the handler below,
-    // silently manufacturing an error row per video and grinding through the whole
-    // channel producing nothing. Recreate it once; give up loudly if that fails.
     try {
       await chrome.tabs.get(tabId);
     } catch {
-      setState({ message: 'Working tab was closed — reopening…' });
-      try {
-        const fresh = await chrome.tabs.create({ url: 'about:blank', active: true });
-        tabId = fresh.id;
-        state.workingTabId = tabId;
-        await waitForTabLoad(tabId, 15000).catch(() => {});
-      } catch (err) {
-        setState({
-          phase: 'error',
-          error: 'The working tab was closed and could not be reopened. Partial results kept.',
-        });
-        await finishRun('Scan stopped');
-        return;
-      }
+      const fresh = await chrome.tabs.create({ url: 'about:blank', active: true });
+      tabId = fresh.id;
+      state.workingTabId = tabId;
+      await waitForTabLoad(tabId, 15000).catch(() => {});
     }
 
     try {
-      await chrome.tabs.update(tabId, { url: EDIT_URL(video.videoId, sourceUrl), active: true });
+      await chrome.tabs.update(tabId, { url: EDIT_URL(v.videoId, sourceUrl), active: true });
       await waitForTabLoad(tabId);
       const report = await inject(tabId, scrapeReport);
 
       if (report?.status === 'ok') {
         consecutiveFailures = 0;
-        for (const variant of report.variants) {
-          state.rows.push(withAnalytics({
-            videoId: video.videoId,
-            videoUrl: `https://youtu.be/${video.videoId}`,
-            currentTitle: video.title ?? '',
-            testStatus: video.abLabel ?? '',
-            // The list label is authoritative about whether a test has concluded: a
-            // running test shows live shares but no verdict, which is a state rather
-            // than a parse failure and must not be conflated with one.
-            testOutcome: /running/i.test(video.abLabel || '') ? 'running' : (report.outcome ?? ''),
-            variantIndex: variant.index,
-            variantTitle: variant.title ?? '',
-            watchTimeSharePct: variant.watchTimeSharePct ?? '',
-            isWinner: variant.isWinner ? 'yes' : 'no',
-            isCurrentlyLive: variant.isLive ? 'yes' : 'no',
-            ranFrom: report.ranFrom ?? '',
-            ranTo: report.ranTo ?? '',
-          }));
-        }
-        setState({ found: state.found + 1 });
+        const rows = rowsByVideo.get(v.videoId) || [];
+        report.variants.forEach((variant, i) => {
+          if (rows[i]) rows[i].watchTimeSharePct = variant.watchTimeSharePct ?? '';
+        });
       } else {
-        // Running tests have no report yet — expected, not an error.
-        state.rows.push(withAnalytics({
-          videoId: video.videoId,
-          videoUrl: `https://youtu.be/${video.videoId}`,
-          currentTitle: video.title ?? '',
-          testStatus: video.abLabel ?? '',
-          testOutcome: report?.status === 'none' ? 'no-report-yet' : (report?.status ?? 'unreadable'),
-          variantIndex: '',
-          variantTitle: '',
-          watchTimeSharePct: '',
-          isWinner: '',
-          isCurrentlyLive: '',
-          ranFrom: '',
-          ranTo: '',
-        }));
+        consecutiveFailures++;
       }
-    } catch (error) {
+    } catch {
       consecutiveFailures++;
-      // Record and continue — one bad video must not lose the whole run.
-      state.rows.push(withAnalytics({
-        videoId: video.videoId,
-        videoUrl: `https://youtu.be/${video.videoId}`,
-        currentTitle: video.title ?? '',
-        testStatus: video.abLabel ?? '',
-        testOutcome: `error: ${error?.message || String(error)}`,
-        variantIndex: '',
-        variantTitle: '',
-        watchTimeSharePct: '',
-        isWinner: '',
-        isCurrentlyLive: '',
-        ranFrom: '',
-        ranTo: '',
-      }));
     }
+
+    state.scanned++;
+    setState({});
+    if (state.scanned % 5 === 0) void persist();
+    if (state.scanned % RECYCLE_EVERY_N_VIDEOS === 0) await flushTabMemory(tabId);
 
     if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
       setState({
         phase: 'error',
-        error:
-          `Stopped after ${consecutiveFailures} videos in a row failed to produce a report. ` +
-          'Something systemic is wrong — check you are still signed in to Studio. Partial results kept.',
+        error: `Stopped after ${consecutiveFailures} reports in a row failed. Everything else is kept.`,
       });
       await finishRun('Scan stopped early');
       return;
     }
-
-    setState({ scanned: state.scanned + 1 });
-    // Throttled: writing a few MB after every single video is wasteful, but losing more
-    // than a handful of videos to a crash is worse.
-    if (state.scanned % 5 === 0) void persist();
-
-    // Hand the accumulated renderer heap back. See RECYCLE_EVERY_N_VIDEOS.
-    if (state.scanned % RECYCLE_EVERY_N_VIDEOS === 0) {
-      await flushTabMemory(tabId);
-    }
-
-    // Stop immediately if Studio starts pushing back. Continuing into a throttle turns a
-    // soft rate-limit into something that looks a lot more deliberate.
-    const blocked = await inject(tabId, () => {
-      const text = document.body?.innerText || '';
-      if (/unusual traffic|are you a robot|verify you'?re human|recaptcha/i.test(text)) return 'captcha';
-      if (/too many requests|rate limit/i.test(text)) return 'rate-limit';
-      if (/don'?t have permission|do not have permission/i.test(text)) return 'permission';
-      return null;
-    }).catch(() => null);
-
-    if (blocked) {
-      setState({
-        phase: 'error',
-        error:
-          blocked === 'permission'
-            ? 'Studio returned a permission error partway through. Partial results kept.'
-            : `Studio started rate-limiting (${blocked}). Stopped early — partial results kept. Wait a while before retrying.`,
-      });
-      await finishRun('Scan stopped early');
-      return;
-    }
-
     await sleep(jitteredDelay());
   }
 
-  // Videos with no A/B test still belong in the export — lifetime analytics for the whole
-  // catalogue is the larger half of the training signal. Titles come from the list walk,
-  // so they are blank for videos on pages the early-exit skipped.
-  // Resumed rows carry analytics from whenever they were exported. Refresh them from
-  // this run's figures so the whole file is internally consistent.
-  for (const row of state.rows) {
-    const a = analyticsById.get(row.videoId);
-    if (!a) continue;
-    row.impressions = a.impressions ?? '';
-    row.impressionsCtrPct = a.impressionsCtrPct ?? '';
-    row.views = a.views ?? '';
-    row.watchHours = a.watchHours === null ? '' : a.watchHours.toFixed(2);
-    row.avgPctViewed = a.avgPctViewed ?? '';
-  }
-
-  const emitted = new Set(state.rows.map((r) => r.videoId));
-  const titleById = new Map(videos.map((v) => [v.videoId, v.title ?? '']));
-  let analyticsOnly = 0;
-
-  for (const [videoId, a] of analyticsById) {
-    if (emitted.has(videoId)) continue;
-    analyticsOnly++;
-    state.rows.push({
-      videoId,
-      videoUrl: `https://youtu.be/${videoId}`,
-      currentTitle: titleById.get(videoId) ?? '',
-      testStatus: '',
-      testOutcome: 'no-test',
-      variantIndex: '',
-      variantTitle: '',
-      watchTimeSharePct: '',
-      isWinner: '',
-      isCurrentlyLive: '',
-      ranFrom: '',
-      ranTo: '',
-      impressions: a.impressions ?? '',
-      impressionsCtrPct: a.impressionsCtrPct ?? '',
-      views: a.views ?? '',
-      watchHours: a.watchHours === null ? '' : a.watchHours.toFixed(2),
-      avgPctViewed: a.avgPctViewed ?? '',
-    });
-  }
-
-  setState({
-    phase: 'done',
-    message:
-      `Done. ${state.found} test report(s) read` +
-      (analyticsOnly ? `, plus lifetime analytics for ${analyticsOnly} other video(s).` : '.'),
-  });
-  // Hand the tab back where the operator started, rather than leaving it on some random
-  // video's edit page. It is their tab; we borrowed it.
   await chrome.tabs.update(tabId, { url: LIST_URL(channelId, sourceUrl) }).catch(() => {});
   await finishRun('Scan complete');
-}
-
-/**
- * Terminal housekeeping: persist, save the CSV automatically, and make the result
- * visible even if every window is closed.
- *
- * The CSV is written WITHOUT a save dialog on purpose — the whole point is to start a
- * long scan and walk away, and a modal waiting for a click would defeat that (and, if
- * the worker were killed first, lose the run entirely).
- */
-async function finishRun(headline) {
-  await persist();
-  // NB: the keepalive is deliberately NOT cleared here — with a multi-channel queue this
-  // runs between channels, and dropping the alarm mid-queue would leave the worker
-  // unprotected during the next one. It is cleared once, when the whole run ends.
-
-  if (state.rows.length === 0) {
-    setBadge('!', '#b3261e');
-    return;
-  }
-
-  let savedAs = null;
-  try {
-    savedAs = await downloadCsv(false);
-  } catch (err) {
-    console.error('[exporter] auto-save failed', err);
-  }
-
-  setBadge(String(state.rows.length > 999 ? '999+' : state.rows.length));
-
-  try {
-    await chrome.notifications.create(`ab-export-${Date.now()}`, {
-      type: 'basic',
-      iconUrl: 'icon128.png',
-      title: headline,
-      message:
-        `${state.rows.length} rows` +
-        (savedAs ? ` saved to your Downloads folder as ${savedAs}` : ' ready — open the extension to download'),
-      priority: 2,
-    });
-  } catch (err) {
-    console.error('[exporter] notification failed', err);
-  }
 }
 
 // ---------------------------------------------------------------- CSV
 
 const CSV_COLUMNS = [
+  // --- video ---
   'videoId',
   'videoUrl',
-  'currentTitle',
-  // Lifetime, whole-channel analytics — repeated on every variant row of a video so the
-  // file is one self-contained table.
+  'title',
+  'description',        // the model's INPUT: description in, titles out
+  'publishedAt',
+  'durationSec',
+  'privacy',
+  // --- lifetime analytics (whole channel, one request) ---
   'impressions',
   'impressionsCtrPct',
   'views',
   'watchHours',
   'avgPctViewed',
-  // A/B test result; blank for videos that were never tested.
-  'testStatus',
+  // --- A/B title test; blank for untested videos ---
+  'testState',
   'testOutcome',
+  'testFinishedReason',
   'variantIndex',
   'variantTitle',
-  'watchTimeSharePct',
+  'watchTimeSharePct',  // only populated when the deep pass is enabled
   'isWinner',
-  'isCurrentlyLive',
-  'ranFrom',
-  'ranTo',
 ];
 
 /**
@@ -1436,7 +1242,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             state.workingTabId = jobs[i].tabId;
             setBadge('');
 
-            await run(jobs[i].tabId, Number.isInteger(message.emptyPageStreakLimit) ? message.emptyPageStreakLimit : 3);
+            await run(jobs[i].tabId, { deepShares: !!message.deepShares });
 
             // finishRun() has already saved this channel's CSV and notified.
             if (i < jobs.length - 1) await sleep(3000);
