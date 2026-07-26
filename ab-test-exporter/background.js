@@ -361,10 +361,12 @@ function setBadge(text, color = '#ff6b35') {
     pagesWalked++;
     const foundHere = [...byId.values()].filter((v) => v.abLabel).length - beforeCount;
 
-    // A/B testing is recent and the list is date-descending, so tested videos cluster at
-    // the top. Once several consecutive pages have none, the rest of the back catalogue
-    // is almost certainly barren — stop rather than paging through years of uploads.
-    // Reported explicitly so an early stop is never mistaken for a complete scan.
+    // Optional, and OFF by default. Stopping here saves only pager clicks — no page
+    // loads — but it costs every later video its TITLE, because titles come from the
+    // list and analytics covers the whole channel regardless. A first full run produced
+    // 1,383 of 1,561 videos with analytics but no title, which is largely useless for
+    // anything title-related. The expensive part of a scan is opening tested videos, and
+    // that is already limited to videos the list marks as tested.
     if (emptyPageStreakLimit > 0) {
       emptyStreak = foundHere === 0 ? emptyStreak + 1 : 0;
       if (emptyStreak >= emptyPageStreakLimit) {
@@ -768,11 +770,16 @@ function setBadge(text, color = '#ff6b35') {
            !/^thumbnail only$/i.test(l) && !/^title and thumbnail$/i.test(l),
   ) || '').slice(0, 80);
 
+  // Wording confirmed against live reports 2026-07-26. "They all performed well" and
+  // "Test finished without a conclusive result" are YouTube's actual strings — the
+  // earlier guesses ("performed the same", "inconclusive") never appear, and were only
+  // caught because unrecognised verdicts record their raw text instead of collapsing to
+  // "unknown". Keep that fallback: it is how the next rewording gets noticed.
   const headline = /we have a winner/i.test(dialogText)
     ? 'winner'
-    : /performed the same|performed same|no clear winner|too close/i.test(dialogText)
+    : /they all performed well|performed the same|no clear winner|too close/i.test(dialogText)
       ? 'performed-same'
-      : /inconclusive/i.test(dialogText)
+      : /without a conclusive result|inconclusive/i.test(dialogText)
         ? 'inconclusive'
         : /still (running|in progress)|test in progress|results (are )?not ready/i.test(dialogText)
           ? 'running'

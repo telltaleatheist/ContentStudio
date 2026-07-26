@@ -40,11 +40,12 @@ It opens a tab and steps through the relevant pages. Leave that tab alone while 
 Only videos your list marks as having an A/B test are opened, so a channel with thousands
 of uploads still only takes a handful of page loads.
 
-**Stop early once tests run out** (on by default): A/B testing is a recent YouTube
-feature, so tested videos sit at the top of a date-sorted list. This stops after 3
-consecutive pages with no tests rather than paging through years of back catalogue. If
-you have tested an older video, untick it to scan everything — the run tells you when it
-stopped early, so a short scan is never mistaken for a complete one.
+**Skip my back catalogue** (off by default, and usually leave it off): titles come from
+the video list, so stopping the walk early leaves older videos with full analytics but no
+title — in one real run, 1,383 of 1,561 videos. Walking the whole list only clicks through
+pages, it does not load them, so it costs seconds. Only tested videos are ever opened, and
+that is the slow part regardless. The run always reports when it stopped early, so a short
+scan is never mistaken for a complete one.
 
 It pauses a random 2–5 seconds between videos and stops immediately if Studio starts
 rate-limiting, rather than pushing through.
@@ -136,7 +137,7 @@ single self-contained table.
 | `watchHours` | lifetime watch time in hours |
 | `avgPctViewed` | average percentage of the video watched |
 | `testStatus` | `A/B Test running` or `A/B Test completed` |
-| `testOutcome` | `winner`, `performed-same`, `inconclusive`, `running` (still in progress), `no-test`, or `unrecognised: <text>` carrying Studio's own wording if YouTube changes it |
+| `testOutcome` | `winner`, `performed-same` (YouTube says "They all performed well"), `inconclusive` ("Test finished without a conclusive result"), `running`, `no-test`, or `unrecognised: <text>` carrying Studio's own wording if YouTube rewords a result |
 | `variantIndex` | 1, 2, 3 — the order YouTube showed them in |
 | `variantTitle` | the title text of that variant |
 | `watchTimeSharePct` | that variant's watch-time share, e.g. `42.1` |
