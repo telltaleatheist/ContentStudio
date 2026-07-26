@@ -395,10 +395,16 @@ and would be discovered only after publishing.
 
 ## 8. Open questions
 
-1. **Is the A/B verdict machine-readable?** Studio shows Winner / Performed Same /
-   Inconclusive. Unknown whether it's exposed via the `yta_web/join` graph the collector
-   already speaks. Needs the same recon that produced `STUDIO-COLLECTOR-SPEC.md`. If not,
-   the operator records the winner manually — the loop still closes, just with a human step.
+1. ✅ **RESOLVED — the A/B verdict IS machine-readable, and the loop is closed.**
+   `creator/get_creator_videos` returns `videoCreatorExperiment.result`: `resultState`
+   (WINNER / NO_WINNER), `armResults[].watchtimeFraction`, and `winnerArm`. 50 ids/batch.
+   Wired end to end: collector → `POST /analytics/ab-tests` → `ab-tests.json` →
+   `computeVerdicts` → `abLearnings` → generation prompt. No manual step.
+   ⚠️ `selectedArm` ≠ `winnerArm` — selectedArm is which title is LIVE, and on an
+   undecided test YouTube defaults to arm 1. Conflating them invented winners for 22 of
+   Telltale's tests. See [[studio-internal-api]] in memory.
+   Also resolved by the same endpoint: `TODO(v1-metadata)` — `list_creator_videos` gives
+   real `publishedAt`, so VideoRecords are emitted and `videoAgeHours: -1` is gone.
 2. **Advanced Features enabled on all three channels?** Required for A/B. Assumed, unverified.
 3. **Editor's access model** — own Google account with a delegated Editor/Manager role, or
    signed in as Owen. Designing for the delegated case covers both, so this is not blocking.
