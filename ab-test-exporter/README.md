@@ -98,6 +98,13 @@ Private and unlisted videos are skipped. Their metrics are not comparable — no
 impressions — and they are usually drafts or archives rather than published work, so they
 would only add noise.
 
+## It fails loudly
+
+There are no fallbacks. If the analytics call fails, or a metric column is missing, or a
+finished test returns no result block, the run STOPS and says why. It will not hand you a
+CSV that looks complete but is quietly missing fifteen columns — nobody re-checks a file
+that looks fine, and a silently partial export is worse than no export.
+
 ## What it does not collect
 
 **No earnings data, ever.** No revenue, RPM, CPM, ad performance or payment metrics are

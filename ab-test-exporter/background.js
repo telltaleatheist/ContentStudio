@@ -39,8 +39,9 @@ function accountParams(sourceUrl) {
       const value = from.get(key);
       if (value) params.set(key, value);
     }
-  } catch {
-    /* not a parseable URL — no account params to carry */
+  } catch (err) {
+    // Losing these silently would send the scan to the wrong Google account.
+    throw new Error(`Could not parse the Studio tab URL, so the account context is unknown: ${sourceUrl}`);
   }
   const qs = params.toString();
   return qs ? `?${qs}` : '';
@@ -49,39 +50,10 @@ function accountParams(sourceUrl) {
 const LIST_URL = (channelId, sourceUrl) =>
   `https://studio.youtube.com/channel/${channelId}/videos/upload${accountParams(sourceUrl)}`;
 
-const EDIT_URL = (videoId, sourceUrl) =>
-  `https://studio.youtube.com/video/${videoId}/edit${accountParams(sourceUrl)}`;
-
 /** Pull the channel id out of any Studio URL. */
 function channelIdFromUrl(url) {
   return (url || '').match(/\/channel\/(UC[\w-]+)/)?.[1] ?? null;
 }
-
-/**
- * Pause between video page loads, randomized.
- *
- * The jitter matters more than the average: a perfectly regular interval sustained over
- * dozens of page loads is a far cleaner automation signal than the request rate itself.
- * This also roughly halves the rate versus a fixed short delay.
- */
-const DELAY_MIN_MS = 2000;
-const DELAY_MAX_MS = 5000;
-
-/**
- * Recycle the working tab every N videos.
- *
- * YouTube Studio is a heavy Polymer app, and Chrome REUSES the same renderer process for
- * successive same-origin navigations. Driving 200+ video pages through one tab therefore
- * grows a single renderer's heap monotonically — it is only reclaimed when the tab
- * closes. On a long unattended run that is the entire memory problem; the scan's own data
- * is about 1 MB.
- *
- * Closing and reopening the tab periodically forces the renderer to be torn down and its
- * memory returned, which keeps a full-channel scan flat instead of ever-growing.
- */
-const RECYCLE_EVERY_N_VIDEOS = 20;
-const jitteredDelay = () =>
-  DELAY_MIN_MS + Math.floor(Math.random() * (DELAY_MAX_MS - DELAY_MIN_MS));
 
 const state = {
   running: false,
@@ -103,12 +75,17 @@ const state = {
 function setState(patch) {
   Object.assign(state, patch);
   const payload = { type: 'progress', state: publicState() };
-  // Popup may be closed; ignore the "no receiver" rejection.
-  chrome.runtime.sendMessage(payload).catch(() => {});
-  // The on-page overlay lives in the tab being driven, and runtime.sendMessage does not
-  // reach content scripts — it needs an explicit tabs.sendMessage.
+  // A closed popup / absent content script rejects with "no receiving end" — that is
+  // expected. Anything else is not, and must not be swallowed with it.
+  const ignoreNoReceiver = (err) => {
+    if (!/receiving end does not exist|message port closed/i.test(err?.message || '')) {
+      console.warn('[exporter] progress broadcast failed', err);
+    }
+  };
+  chrome.runtime.sendMessage(payload).catch(ignoreNoReceiver);
+  // The on-page overlay is a content script, which runtime.sendMessage does not reach.
   if (state.workingTabId) {
-    chrome.tabs.sendMessage(state.workingTabId, payload).catch(() => {});
+    chrome.tabs.sendMessage(state.workingTabId, payload).catch(ignoreNoReceiver);
   }
 }
 
@@ -186,7 +163,10 @@ function setKeepalive(on) {
   // Guarded: an undeclared or unavailable API must never take the whole worker down.
   // Touching chrome.alarms at top level without the "alarms" permission throws during
   // service-worker registration and bricks the entire extension.
-  if (!chrome.alarms) return;
+  if (!chrome.alarms) {
+    console.error('[exporter] chrome.alarms unavailable — the "alarms" permission is missing from the manifest.');
+    return;
+  }
   try {
     if (on) chrome.alarms.create('keepalive', { periodInMinutes: 0.4 });
     else chrome.alarms.clear('keepalive');
@@ -205,8 +185,9 @@ if (chrome.alarms?.onAlarm) {
 /** Badge so a finished run is visible even with every window closed. */
 function setBadge(text, color = '#ff6b35') {
   if (!chrome.action?.setBadgeText) return;
-  chrome.action.setBadgeText({ text: text || '' }).catch(() => {});
-  if (text) chrome.action.setBadgeBackgroundColor({ color }).catch(() => {});
+  const warn = (err) => console.warn('[exporter] badge update failed', err);
+  chrome.action.setBadgeText({ text: text || '' }).catch(warn);
+  if (text) chrome.action.setBadgeBackgroundColor({ color }).catch(warn);
 }
 
 // ---------------------------------------------------------------- injected scrapers
@@ -528,17 +509,16 @@ async function fetchLifetimeAnalytics(channelId) {
     const exclusiveEnd =
       tomorrow.getFullYear() * 10000 + (tomorrow.getMonth() + 1) * 100 + tomorrow.getDate();
 
-    // CORE is verified working. EXTENDED adds the rest of the useful per-video metrics;
-    // if Studio rejects any of them the whole request 400s, so we try extended first and
-    // fall back rather than losing everything to one unsupported name.
-    const CORE = [
+    // Every one of these is verified against the live endpoint. There is deliberately no
+    // fallback to a smaller set: a 400 here means YouTube changed something, and quietly
+    // exporting fewer columns would hide that in a file nobody re-checks.
+    const METRICS = [
       'VIDEO_THUMBNAIL_IMPRESSIONS',
       'VIDEO_THUMBNAIL_IMPRESSIONS_VTR',
       'EXTERNAL_VIEWS',
       'EXTERNAL_WATCH_TIME',
       'AVERAGE_WATCH_PERCENTAGE',
-    ];
-    const EXTENDED = CORE.concat([
+      // extended set
       'AVERAGE_WATCH_TIME',        // average view duration (ms)
       'SUBSCRIBERS_NET_CHANGE',
       'SUBSCRIBERS_GAINED',
@@ -549,7 +529,7 @@ async function fetchLifetimeAnalytics(channelId) {
       'SHARINGS',                  // shares
       'NEW_VIEWERS',
       'RETURNING_VIEWERS',
-    ]);
+    ];
 
     // NO EARNINGS DATA — EVER.
     //
@@ -586,8 +566,7 @@ async function fetchLifetimeAnalytics(channelId) {
     });
 
     let resp;
-    let body = buildBody(EXTENDED);
-    let usedExtended = true;
+    const body = buildBody(METRICS);
     try {
       resp = await fetch(ENDPOINT, {
         method: 'POST',
@@ -608,31 +587,6 @@ async function fetchLifetimeAnalytics(channelId) {
       return fail('NETWORK', `Network error: ${netErr?.message || String(netErr)}`);
     }
 
-    // One unsupported metric name 400s the whole query — retry with the proven set.
-    if (resp.status === 400 && usedExtended) {
-      usedExtended = false;
-      body = buildBody(CORE);
-      try {
-        resp = await fetch(ENDPOINT, {
-          method: 'POST',
-          credentials: 'include',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: authorization,
-            'X-Origin': ORIGIN,
-            'X-Goog-AuthUser': authUser,
-            'X-YouTube-Delegation-Context': delegation,
-            'X-YouTube-Client-Name': '62',
-            'X-YouTube-Client-Version': clientVersion,
-            ...(visitorData ? { 'X-Goog-Visitor-Id': visitorData } : {}),
-          },
-          body: JSON.stringify(body),
-        });
-      } catch (netErr) {
-        return fail('NETWORK', `Network error: ${netErr?.message || String(netErr)}`);
-      }
-    }
-
     if (resp.status === 401 || resp.status === 403) return fail('HTTP_AUTH', `Analytics rejected (HTTP ${resp.status}).`);
     if (resp.status === 429) return fail('HTTP_RATELIMIT', 'Analytics rate limited (HTTP 429).');
     if (!resp.ok) return fail('HTTP_ERROR', `Analytics returned HTTP ${resp.status}.`);
@@ -650,13 +604,17 @@ async function fetchLifetimeAnalytics(channelId) {
     const metricCols = Array.isArray(table.metricColumns) ? table.metricColumns : [];
 
     // Match by metric type, never by index — column order is not guaranteed.
+    // A column that is absent or the wrong length means the response shape changed.
+    // Returning null would silently blank that metric for every video.
+    const missing = [];
     const seriesOf = (metricType, kinds) => {
       const column = metricCols.find((c) => c?.metric?.type === metricType);
-      if (!column) return null;
+      if (!column) { missing.push(metricType); return null; }
       for (const kind of kinds) {
         const arr = column[kind]?.values;
         if (Array.isArray(arr) && arr.length === rowCount) return arr;
       }
+      missing.push(`${metricType} (no ${kinds.join('/')} of length ${rowCount})`);
       return null;
     };
 
@@ -675,7 +633,9 @@ async function fetchLifetimeAnalytics(channelId) {
     const views = seriesOf('EXTERNAL_VIEWS', ['counts']);
     const watchMs = seriesOf('EXTERNAL_WATCH_TIME', ['milliseconds']);
     const avgPct = seriesOf('AVERAGE_WATCH_PERCENTAGE', ['percentages']);
-    if (!views || !watchMs) return fail('MISSING_COLUMN', 'Analytics response was missing views or watch time.');
+    if (missing.length) {
+      return fail('MISSING_COLUMN', `Analytics response is missing: ${missing.join(', ')}.`);
+    }
 
     const toNum = (v) => {
       if (typeof v === 'number') return Number.isFinite(v) ? v : null;
@@ -712,7 +672,7 @@ async function fetchLifetimeAnalytics(channelId) {
     // Offset paging is unsupported, so a completely full page means the catalogue may
     // exceed one request. Say so rather than silently dropping the overflow.
     const truncated = rowCount >= PAGE;
-    return { ok: true, rows, truncated, extended: usedExtended };
+    return { ok: true, rows, truncated };
   } catch (err) {
     return fail('EXCEPTION', `Unexpected error: ${err?.message || String(err)}`);
   }
@@ -727,25 +687,6 @@ async function waitForTabLoad(tabId, timeoutMs = 45000) {
     if (tab.status === 'complete') return;
     if (Date.now() > deadline) throw new Error('Timed out loading a Studio page');
     await sleep(400);
-  }
-}
-
-/**
- * Release the accumulated renderer heap WITHOUT creating or closing any tabs.
- *
- * Chrome reuses one renderer process across successive same-origin navigations, so
- * driving hundreds of Studio pages through a tab grows that process the whole way.
- * Navigating to about:blank leaves the studio.youtube.com origin, which lets Chrome swap
- * process and reclaim the old one — the same benefit as closing the tab, without
- * disturbing the tab the operator chose.
- */
-async function flushTabMemory(tabId) {
-  try {
-    await chrome.tabs.update(tabId, { url: 'about:blank' });
-    await waitForTabLoad(tabId, 10000).catch(() => {});
-    await sleep(400);
-  } catch (err) {
-    console.warn('[exporter] memory flush skipped', err);
   }
 }
 
@@ -773,7 +714,9 @@ async function run(sourceTabId) {
   state.workingTabId = tabId;
 
   await chrome.tabs.update(tabId, { url: LIST_URL(channelId, sourceUrl), active: true });
-  await chrome.windows.update(startTab.windowId, { focused: true }).catch(() => {});
+  await chrome.windows
+    .update(startTab.windowId, { focused: true })
+    .catch((err) => console.warn('[exporter] could not focus the window', err));
   await waitForTabLoad(tabId);
   await sleep(2500);
 
@@ -869,12 +812,27 @@ async function run(sourceTabId) {
   if (testedIds.length) {
     setState({ message: `Fetching A/B results for ${testedIds.length} tests…` });
     const results = await inject(tabId, fetchExperimentResults, [testedIds], 'MAIN');
-    if (results?.ok) {
-      resultsByVideo = results.byVideo;
-    } else {
-      // Non-fatal: variants and winner still come from the catalogue, only the shares are lost.
-      setState({ message: `A/B result shares unavailable (${results?.code || 'unknown'}) — continuing.` });
-      await sleep(1200);
+    // The shares and the verdict ARE the A/B signal. Exporting variants without them
+    // would produce a file that looks fine and teaches nothing.
+    if (!results?.ok) {
+      throw new Error(
+        `A/B results failed (${results?.code || 'unknown'}): ${results?.message || 'no detail'}`,
+      );
+    }
+    resultsByVideo = results.byVideo;
+
+    const absent = testedIds.filter((id) => !resultsByVideo[id]);
+    // A test with no result block is expected only while it is still running; a finished
+    // one missing its result means the response shape changed.
+    const unexpected = absent.filter((id) => {
+      const v = videos.find((x) => x.videoId === id);
+      return v && /FINISHED/.test(v.experiment.state);
+    });
+    if (unexpected.length) {
+      throw new Error(
+        `${unexpected.length} finished test(s) returned no result block (e.g. ${unexpected[0]}). ` +
+          'YouTube may have changed the response — stopping rather than exporting blanks.',
+      );
     }
   }
 
@@ -882,6 +840,11 @@ async function run(sourceTabId) {
   // comparable (no organic impressions), and they are usually drafts or archives rather
   // than published work, so they would only add noise to training data.
   const publicVideos = videos.filter((v) => /PUBLIC/i.test(String(v.privacy || '')));
+
+  // A public video absent from analytics has genuinely never been measured (usually
+  // published minutes ago). That is a fact about the data, not a code path — but it is
+  // counted and reported so a blank column is never mistaken for a silent failure.
+  const missingAnalytics = publicVideos.filter((v) => !analyticsById.has(v.videoId)).length;
 
   const tested = [];
   for (const v of publicVideos) {
@@ -937,14 +900,21 @@ async function run(sourceTabId) {
     found: tested.length,
     message:
       `${publicVideos.length} public videos, ${tested.length} with A/B tests.` +
+      (missingAnalytics ? ` ${missingAnalytics} have no analytics yet.` : '') +
       (catalogue.truncated ? ' NOTE: hit the page cap — some videos may be missing.' : ''),
   });
   await persist();
 
-  await chrome.tabs.update(tabId, { url: LIST_URL(channelId, sourceUrl) }).catch(() => {});
+  // Cosmetic only — returning the operator's tab where they left it. Logged rather than
+  // swallowed so it is never invisible, but it must not fail a completed export.
+  await chrome.tabs
+    .update(tabId, { url: LIST_URL(channelId, sourceUrl) })
+    .catch((err) => console.warn('[exporter] could not restore the tab', err));
   setState({
     phase: 'done',
-    message: `Done. ${publicVideos.length} public videos, ${tested.length} with A/B tests.`,
+    message:
+      `Done. ${publicVideos.length} public videos, ${tested.length} with A/B tests.` +
+      (missingAnalytics ? ` ${missingAnalytics} not yet measured.` : ''),
   });
   await finishRun('Scan complete');
 }
@@ -1089,14 +1059,15 @@ async function csvUrl(csv) {
       });
     }
     const res = await chrome.runtime.sendMessage({ type: 'make-blob-url', text: csv });
-    if (res?.ok && res.url) return res.url;
-    console.error('[exporter] offscreen blob failed', res?.error);
+    if (!res?.ok || !res.url) throw new Error(res?.error || 'offscreen returned no URL');
+    return res.url;
   } catch (err) {
-    console.error('[exporter] offscreen unavailable', err);
+    // No silent fallback to the data URL: it is over the size limit by definition here,
+    // so falling back would produce a truncated or failed download that looks like a save.
+    throw new Error(
+      `Export is too large for a data URL and the offscreen document failed: ${err?.message || err}`,
+    );
   }
-  // Fall back to the data URL and let chrome.downloads decide — better to try than to
-  // refuse outright.
-  return dataUrl;
 }
 
 async function downloadCsv(saveAs = true) {
