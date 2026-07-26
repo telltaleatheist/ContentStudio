@@ -25,12 +25,16 @@ No build step, no npm, nothing to compile.
 
 ## Use
 
-1. Sign in to YouTube Studio in the same browser.
+1. Open **YouTube Studio → Content** for the channel you want to export.
 2. Click the extension icon.
 3. Read the consent screen and continue.
-4. Paste your channel ID (the `UC…` part of your Studio URL) — it usually pre-fills if
-   you have Studio open.
-5. **Scan my channel**, then **Download CSV** when it finishes.
+4. It should say *"Found Studio tab for channel UC…"*. Click **Scan this channel**, then
+   **Download CSV** when it finishes.
+
+There is no channel ID to enter. The scan runs in the Studio tab you already have open,
+so it always uses the account you're already signed in as. If you have several channels
+under one Google login (a brand account), just open the one you want first — switching
+channels in Studio is all it takes.
 
 It opens a tab and steps through the relevant pages. Leave that tab alone while it runs.
 Only videos your list marks as having an A/B test are opened, so a channel with thousands

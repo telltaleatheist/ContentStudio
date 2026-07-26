@@ -1,25 +1,28 @@
 /**
  * Popup: consent gate, then start / progress / download.
  *
- * The consent gate is shown until the user accepts it once; the acceptance is stored so
- * it isn't nagged on every open. Deliberately a real gate — nothing can be started from
- * this UI before it's been read and accepted.
+ * There is deliberately NO channel-id field. The scan reuses whichever YouTube Studio
+ * tab the user already has open, because Studio resolves /channel/<id>/ URLs against the
+ * currently active Google account — so a pasted id belonging to a brand account under a
+ * different signed-in profile produces "you don't have permission to view this page".
+ * Working from the open tab makes that impossible, and removes a confusing step.
  */
 
 const $ = (id) => document.getElementById(id);
 
 const CONSENT_KEY = 'consentAcceptedV1';
-const CHANNEL_KEY = 'lastChannelId';
+
+/** The Studio tab we'll drive, resolved on open. */
+let studioTab = null;
 
 async function init() {
-  const stored = await chrome.storage.local.get([CONSENT_KEY, CHANNEL_KEY]);
-
+  const stored = await chrome.storage.local.get([CONSENT_KEY]);
   if (stored[CONSENT_KEY]) showMain();
-  if (stored[CHANNEL_KEY]) $('channelId').value = stored[CHANNEL_KEY];
 
   $('agree').addEventListener('click', async () => {
     await chrome.storage.local.set({ [CONSENT_KEY]: true });
     showMain();
+    await detectTab();
   });
 
   $('start').addEventListener('click', onStart);
@@ -29,18 +32,7 @@ async function init() {
     if (res?.error) $('error').textContent = res.error;
   });
 
-  // Pre-fill the channel id from an open Studio tab when we can.
-  if (!$('channelId').value) {
-    const tabs = await chrome.tabs.query({ url: 'https://studio.youtube.com/*' });
-    for (const tab of tabs) {
-      const id = (tab.url || '').match(/\/channel\/(UC[\w-]+)/)?.[1];
-      if (id) {
-        $('channelId').value = id;
-        break;
-      }
-    }
-  }
-
+  if (stored[CONSENT_KEY]) await detectTab();
   render(await send({ type: 'get-state' }));
 }
 
@@ -53,28 +45,40 @@ function send(message) {
   return chrome.runtime.sendMessage(message).catch((e) => ({ error: String(e) }));
 }
 
-async function onStart() {
-  const channelId = $('channelId').value.trim();
-  $('error').textContent = '';
+async function detectTab() {
+  studioTab = await send({ type: 'find-studio-tab' });
 
-  if (!/^UC[\w-]{20,}$/.test(channelId)) {
-    $('error').textContent = 'That does not look like a channel ID. It starts with "UC".';
+  if (studioTab?.channelId) {
+    $('detected').textContent = `Found Studio tab for channel ${studioTab.channelId}`;
+    $('detected').className = 'ok';
+    $('start').disabled = false;
+  } else {
+    $('detected').textContent =
+      'No YouTube Studio channel tab open. Open Studio → Content, then reopen this popup.';
+    $('detected').className = 'err';
+    $('start').disabled = true;
+  }
+}
+
+async function onStart() {
+  $('error').textContent = '';
+  if (!studioTab?.tabId) {
+    $('error').textContent = 'Open YouTube Studio → Content first.';
     return;
   }
-
-  await chrome.storage.local.set({ [CHANNEL_KEY]: channelId });
-  render(await send({ type: 'start', channelId }));
+  render(await send({ type: 'start', tabId: studioTab.tabId }));
 }
 
 function render(state) {
-  if (!state || state.error === undefined && state.phase === undefined) return;
+  if (!state || (state.error === undefined && state.phase === undefined)) return;
 
-  const running = state.running;
+  const running = !!state.running;
   $('start').classList.toggle('hidden', running);
   $('cancel').classList.toggle('hidden', !running);
-  $('start').disabled = running;
+  if (!running && studioTab?.channelId) $('start').disabled = false;
 
   $('message').textContent = state.message || 'Ready.';
+  $('message').className = state.phase === 'done' ? 'ok' : 'muted';
   $('error').textContent = state.error || '';
 
   const pct = state.total ? Math.round((state.scanned / state.total) * 100) : 0;
@@ -86,9 +90,6 @@ function render(state) {
 
   const finished = ['done', 'cancelled', 'error'].includes(state.phase);
   $('download').classList.toggle('hidden', !(finished && state.rowCount > 0));
-
-  if (state.phase === 'done') $('message').className = 'ok';
-  else $('message').className = 'muted';
 }
 
 chrome.runtime.onMessage.addListener((message) => {

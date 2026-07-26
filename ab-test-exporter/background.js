@@ -18,9 +18,44 @@
  * own account and hammering Studio helps nobody.
  */
 
-const LIST_URL = (channelId) =>
-  `https://studio.youtube.com/channel/${channelId}/videos/upload`;
-const EDIT_URL = (videoId) => `https://studio.youtube.com/video/${videoId}/edit`;
+/**
+ * URLs are built from the tab the user already has open, NOT from a pasted channel id.
+ *
+ * Studio resolves a /channel/<id>/ URL against the CURRENTLY ACTIVE Google account. If
+ * the signed-in default isn't the account that owns that channel — which is normal for
+ * brand accounts, where several channels sit under one login — you get
+ * "you don't have permission to view this page" even though the channel is yours.
+ *
+ * Reusing the open tab's own URL sidesteps that completely: whatever channel and account
+ * the user is already looking at is the one that gets scanned. Any `authuser` /
+ * `pageId` parameters are carried across every subsequent navigation to keep the same
+ * account context.
+ */
+function accountParams(sourceUrl) {
+  const params = new URLSearchParams();
+  try {
+    const from = new URL(sourceUrl).searchParams;
+    for (const key of ['authuser', 'pageId']) {
+      const value = from.get(key);
+      if (value) params.set(key, value);
+    }
+  } catch {
+    /* not a parseable URL — no account params to carry */
+  }
+  const qs = params.toString();
+  return qs ? `?${qs}` : '';
+}
+
+const LIST_URL = (channelId, sourceUrl) =>
+  `https://studio.youtube.com/channel/${channelId}/videos/upload${accountParams(sourceUrl)}`;
+
+const EDIT_URL = (videoId, sourceUrl) =>
+  `https://studio.youtube.com/video/${videoId}/edit${accountParams(sourceUrl)}`;
+
+/** Pull the channel id out of any Studio URL. */
+function channelIdFromUrl(url) {
+  return (url || '').match(/\/channel\/(UC[\w-]+)/)?.[1] ?? null;
+}
 
 /** Pause between video page loads. Deliberately unhurried. */
 const PER_VIDEO_DELAY_MS = 1200;
@@ -235,12 +270,33 @@ async function inject(tabId, func) {
   return result?.result;
 }
 
-async function run(channelId, tabId) {
+async function run(tabId) {
   setState({ phase: 'listing', message: 'Loading your video list…', scanned: 0, total: 0, found: 0 });
 
-  await chrome.tabs.update(tabId, { url: LIST_URL(channelId) });
+  // Anchor everything to the tab's CURRENT url so the account context is preserved.
+  const startTab = await chrome.tabs.get(tabId);
+  const sourceUrl = startTab.url || '';
+  const channelId = channelIdFromUrl(sourceUrl);
+  if (!channelId) {
+    throw new Error(
+      'That Studio tab is not on a channel page. Open Studio → Content, then try again.',
+    );
+  }
+
+  await chrome.tabs.update(tabId, { url: LIST_URL(channelId, sourceUrl) });
   await waitForTabLoad(tabId);
   await sleep(3000);
+
+  // Fail clearly on the permission interstitial rather than reporting "no videos".
+  const denied = await inject(tabId, () =>
+    /don't have permission|do not have permission/i.test(document.body?.innerText || ''),
+  );
+  if (denied) {
+    throw new Error(
+      "Studio says you don't have permission for this channel. Switch to the right " +
+        'account in Studio, open Content, and run the scan from that tab.',
+    );
+  }
 
   const videos = await inject(tabId, scrapeVideoList);
   if (!Array.isArray(videos) || videos.length === 0) {
@@ -269,7 +325,7 @@ async function run(channelId, tabId) {
     setState({ message: `Reading “${video.title || video.videoId}”…` });
 
     try {
-      await chrome.tabs.update(tabId, { url: EDIT_URL(video.videoId) });
+      await chrome.tabs.update(tabId, { url: EDIT_URL(video.videoId, sourceUrl) });
       await waitForTabLoad(tabId);
       const report = await inject(tabId, scrapeReport);
 
@@ -380,8 +436,25 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       case 'get-state':
         return publicState();
 
+      case 'find-studio-tab': {
+        // Prefer the active tab if it's already a Studio channel page.
+        const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (active && channelIdFromUrl(active.url)) {
+          return { tabId: active.id, url: active.url, channelId: channelIdFromUrl(active.url) };
+        }
+        const candidates = await chrome.tabs.query({ url: 'https://studio.youtube.com/*' });
+        const match = candidates.find((t) => channelIdFromUrl(t.url));
+        return match
+          ? { tabId: match.id, url: match.url, channelId: channelIdFromUrl(match.url) }
+          : null;
+      }
+
       case 'start': {
         if (state.running) return publicState();
+        if (!message.tabId) {
+          setState({ phase: 'error', error: 'No Studio tab selected.' });
+          return publicState();
+        }
         Object.assign(state, {
           running: true,
           cancelled: false,
@@ -391,9 +464,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           found: 0,
           error: null,
         });
-        const tab = await chrome.tabs.create({ url: 'about:blank', active: true });
         try {
-          await run(message.channelId, tab.id);
+          // Reuse the user's own Studio tab — see accountParams() for why.
+          await run(message.tabId);
         } catch (error) {
           setState({ phase: 'error', error: error?.message || String(error) });
         } finally {

@@ -81,14 +81,15 @@
     <section id="main" class="hidden">
       <h1>A/B Title Test Exporter</h1>
 
-      <label for="channelId">Your channel ID</label>
-      <input id="channelId" type="text" placeholder="UCxxxxxxxxxxxxxxxxxxxxxx" spellcheck="false" />
       <p class="muted">
-        Open YouTube Studio and copy the <code>UC…</code> part of the URL
-        (<code>studio.youtube.com/channel/<b>UC…</b>/</code>).
+        Open <b>YouTube Studio → Content</b> for the channel you want to export, then come
+        back here. The scan runs in that tab, so it always uses the account you are
+        already signed in as.
       </p>
 
-      <button id="start" class="primary">Scan my channel</button>
+      <div id="detected" class="muted"></div>
+
+      <button id="start" class="primary">Scan this channel</button>
       <button id="cancel" class="hidden">Stop</button>
 
       <div class="status">
