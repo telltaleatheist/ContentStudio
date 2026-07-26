@@ -334,9 +334,12 @@ async function fetchCreatorVideos(channelId, maxPages) {
           description: typeof v.description === 'string' ? v.description : '',
           privacy: v.privacy || '',
           durationSec: v.lengthSeconds ? Number(v.lengthSeconds) : null,
-          publishedAt: v.timePublishedSeconds
-            ? new Date(Number(v.timePublishedSeconds) * 1000).toISOString()
-            : '',
+          // A 0 timestamp means "not published", not 1970 — leave it blank so date
+          // filters downstream don't silently include 44 phantom 1970 videos.
+          publishedAt:
+            v.timePublishedSeconds && Number(v.timePublishedSeconds) > 0
+              ? new Date(Number(v.timePublishedSeconds) * 1000).toISOString()
+              : '',
           experiment: exp
             ? { state: exp.state || '', finishedReason: exp.finishedReason || '', arms, winnerIndex }
             : null,
@@ -796,7 +799,10 @@ async function run(sourceTabId) {
   if (videos.length === 0) throw new Error('No videos returned for this channel.');
 
   // ---- 2. lifetime analytics for every video, in one request ----
-  setState({ message: `${videos.length} videos found. Fetching lifetime analytics…` });
+  const publicCount = videos.filter((v) => /PUBLIC/i.test(String(v.privacy || ''))).length;
+  setState({
+    message: `${publicCount} public videos (${videos.length - publicCount} private/unlisted skipped). Fetching analytics…`,
+  });
   const analyticsById = new Map();
   const analytics = await inject(tabId, fetchLifetimeAnalytics, [channelId], 'MAIN');
   if (analytics?.ok) {
@@ -855,6 +861,7 @@ async function run(sourceTabId) {
   // ---- 3. A/B results (watch-time share per variant) for tested videos ----
   // Two API calls for a channel's worth of tests — no video pages are opened at all.
   const testedIds = videos
+    .filter((v) => /PUBLIC/i.test(String(v.privacy || '')))
     .filter((v) => v.experiment && v.experiment.arms.length && v.experiment.state)
     .map((v) => v.videoId);
 
@@ -871,8 +878,13 @@ async function run(sourceTabId) {
     }
   }
 
+  // Public videos only. Private and unlisted are excluded: their metrics are not
+  // comparable (no organic impressions), and they are usually drafts or archives rather
+  // than published work, so they would only add noise to training data.
+  const publicVideos = videos.filter((v) => /PUBLIC/i.test(String(v.privacy || '')));
+
   const tested = [];
-  for (const v of videos) {
+  for (const v of publicVideos) {
     const b = base(v);
     const exp = v.experiment;
 
@@ -888,15 +900,19 @@ async function run(sourceTabId) {
         variantTitle: '',
         watchTimeSharePct: '',
         isWinner: '',
+        isCurrentlyLive: '',
       });
       continue;
     }
 
     tested.push(v);
     const res = resultsByVideo[v.videoId];
-    // The result block is authoritative about the winner when present; the catalogue's
-    // selectedArm is the fallback for tests with no results yet.
-    const winnerIndex = res?.winnerIndex || exp.winnerIndex;
+    // WINNER vs LIVE are different things and must not be conflated. `winnerArm` is which
+    // variant actually won; `selectedArm` is which is now shown to everyone — and for an
+    // inconclusive test that is just YouTube falling back to variant 1. Treating
+    // selectedArm as a winner invented winners for tests YouTube declared undecided.
+    const winnerIndex = res ? res.winnerIndex : 0;
+    const liveIndex = exp.winnerIndex; // selectedArm from the catalogue
 
     exp.arms.forEach((armTitle, i) => {
       state.rows.push({
@@ -912,6 +928,7 @@ async function run(sourceTabId) {
         variantTitle: armTitle,
         watchTimeSharePct: res?.shares?.[i + 1] ?? '',
         isWinner: winnerIndex === i + 1 ? 'yes' : 'no',
+        isCurrentlyLive: liveIndex === i + 1 ? 'yes' : 'no',
       });
     });
   }
@@ -919,7 +936,7 @@ async function run(sourceTabId) {
   setState({
     found: tested.length,
     message:
-      `${videos.length} videos, ${tested.length} with A/B tests.` +
+      `${publicVideos.length} public videos, ${tested.length} with A/B tests.` +
       (catalogue.truncated ? ' NOTE: hit the page cap — some videos may be missing.' : ''),
   });
   await persist();
@@ -927,7 +944,7 @@ async function run(sourceTabId) {
   await chrome.tabs.update(tabId, { url: LIST_URL(channelId, sourceUrl) }).catch(() => {});
   setState({
     phase: 'done',
-    message: `Done. ${videos.length} videos, ${tested.length} with A/B tests.`,
+    message: `Done. ${publicVideos.length} public videos, ${tested.length} with A/B tests.`,
   });
   await finishRun('Scan complete');
 }
@@ -1011,8 +1028,9 @@ const CSV_COLUMNS = [
   'testFinishedAt',
   'variantIndex',
   'variantTitle',
-  'watchTimeSharePct',  // only populated when the deep pass is enabled
-  'isWinner',
+  'watchTimeSharePct',
+  'isWinner',          // won the test outright (YouTube's winnerArm)
+  'isCurrentlyLive',   // now shown to everyone — variant 1 by default if undecided
 ];
 
 /**

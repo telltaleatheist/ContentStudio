@@ -92,6 +92,12 @@ and dots — no colons — so they are valid on Windows as well.
 
 Timestamps in the filename are your **local** time.
 
+## Only public videos
+
+Private and unlisted videos are skipped. Their metrics are not comparable — no organic
+impressions — and they are usually drafts or archives rather than published work, so they
+would only add noise.
+
 ## What it does not collect
 
 **No earnings data, ever.** No revenue, RPM, CPM, ad performance or payment metrics are
@@ -155,7 +161,8 @@ single self-contained table.
 | `variantTitle` | that variant's title text |
 | `testStartedAt`, `testFinishedAt` | when the test ran |
 | `watchTimeSharePct` | that variant's watch-time share, e.g. `42.15` |
-| `isWinner` | `yes` / `no` |
+| `isWinner` | `yes` only if YouTube declared that variant the winner |
+| `isCurrentlyLive` | `yes` if that variant is the title now shown — on an undecided test this is just variant 1 by default, which is NOT a win |
 
 Note the winning metric is **watch-time share, not CTR** — that is what YouTube itself
 uses to decide a title test.
