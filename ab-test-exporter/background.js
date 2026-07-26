@@ -66,6 +66,20 @@ function channelIdFromUrl(url) {
  */
 const DELAY_MIN_MS = 2000;
 const DELAY_MAX_MS = 5000;
+
+/**
+ * Recycle the working tab every N videos.
+ *
+ * YouTube Studio is a heavy Polymer app, and Chrome REUSES the same renderer process for
+ * successive same-origin navigations. Driving 200+ video pages through one tab therefore
+ * grows a single renderer's heap monotonically — it is only reclaimed when the tab
+ * closes. On a long unattended run that is the entire memory problem; the scan's own data
+ * is about 1 MB.
+ *
+ * Closing and reopening the tab periodically forces the renderer to be torn down and its
+ * memory returned, which keeps a full-channel scan flat instead of ever-growing.
+ */
+const RECYCLE_EVERY_N_VIDEOS = 20;
 const jitteredDelay = () =>
   DELAY_MIN_MS + Math.floor(Math.random() * (DELAY_MAX_MS - DELAY_MIN_MS));
 
@@ -795,12 +809,40 @@ async function waitForTabLoad(tabId, timeoutMs = 45000) {
   }
 }
 
+/**
+ * Replace the working tab with a fresh one, releasing the old renderer process.
+ *
+ * Returns the new tab id, or the original if recycling failed — a failure here should
+ * cost memory, never the run.
+ */
+async function recycleTab(oldTabId) {
+  try {
+    const fresh = await chrome.tabs.create({ url: 'about:blank', active: false });
+    await chrome.tabs.remove(oldTabId).catch(() => {});
+    await waitForTabLoad(fresh.id, 15000).catch(() => {});
+    return fresh.id;
+  } catch (err) {
+    console.warn('[exporter] tab recycle failed, continuing on the existing tab', err);
+    return oldTabId;
+  }
+}
+
+/** Park the tab on a blank page so a heavy Studio document isn't left resident. */
+async function releaseTab(tabId) {
+  try {
+    await chrome.tabs.update(tabId, { url: 'about:blank' });
+  } catch {
+    /* tab already gone */
+  }
+}
+
 async function inject(tabId, func, args = [], world = 'ISOLATED') {
   const [result] = await chrome.scripting.executeScript({ target: { tabId }, func, args, world });
   return result?.result;
 }
 
-async function run(tabId, emptyPageStreakLimit) {
+async function run(tabIdInitial, emptyPageStreakLimit) {
+  let tabId = tabIdInitial;
   setState({ phase: 'listing', message: 'Loading your video list…', scanned: 0, total: 0, found: 0 });
 
   // Anchor everything to the tab's CURRENT url so the account context is preserved.
@@ -980,6 +1022,12 @@ async function run(tabId, emptyPageStreakLimit) {
     // than a handful of videos to a crash is worse.
     if (state.scanned % 5 === 0) void persist();
 
+    // Hand the accumulated renderer heap back to the OS. See RECYCLE_EVERY_N_VIDEOS.
+    if (state.scanned % RECYCLE_EVERY_N_VIDEOS === 0) {
+      tabId = await recycleTab(tabId);
+      state.workingTabId = tabId;
+    }
+
     // Stop immediately if Studio starts pushing back. Continuing into a throttle turns a
     // soft rate-limit into something that looks a lot more deliberate.
     const blocked = await inject(tabId, () => {
@@ -1054,6 +1102,8 @@ async function run(tabId, emptyPageStreakLimit) {
       `Done. ${state.found} test report(s) read` +
       (analyticsOnly ? `, plus lifetime analytics for ${analyticsOnly} other video(s).` : '.'),
   });
+  // A 2,900-row Studio list left resident is the single heaviest thing on the page.
+  await releaseTab(tabId);
   await finishRun('Scan complete');
 }
 

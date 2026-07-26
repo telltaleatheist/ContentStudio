@@ -49,6 +49,12 @@ stopped early, so a short scan is never mistaken for a complete one.
 It pauses a random 2–5 seconds between videos and stops immediately if Studio starts
 rate-limiting, rather than pushing through.
 
+**Memory:** YouTube Studio is a heavy page, and Chrome reuses one renderer process for
+successive navigations — so driving hundreds of video pages through a single tab would
+grow that process the whole way. The scan replaces its working tab every 20 videos to hand
+that memory back, and parks it on a blank page when it finishes, so a full-channel run
+stays flat rather than climbing. The scan's own data is about 1 MB.
+
 ## Several channels at once
 
 Open **Studio → Content** for each channel in its own tab. The popup lists every channel
