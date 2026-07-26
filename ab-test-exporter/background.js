@@ -254,8 +254,19 @@ async function fetchCreatorVideos(channelId, maxPages) {
           client: { clientName: 62, clientVersion },
           user: { serializedDelegationContext: delegation },
         },
-        // Minimal filter, constructed rather than copied from the page: just this channel.
-        filter: { and: { operands: [{ channelIdIs: { value: channelId } }] } },
+        // Shorts are excluded deliberately. They cannot be A/B tested at all, and their
+        // titles are a different genre (lowercase, hashtags) that would only add noise to
+        // anything trained on long-form titles. Filtering on contentType rather than
+        // duration matters: on this channel 343 Shorts are removed while 33 genuinely
+        // short long-form videos are kept, which a duration cut-off would have discarded.
+        filter: {
+          and: {
+            operands: [
+              { channelIdIs: { value: channelId } },
+              { not: { operand: { contentTypeIs: { value: 'CREATOR_CONTENT_TYPE_SHORTS' } } } },
+            ],
+          },
+        },
         order: 'VIDEO_ORDER_DISPLAY_TIME_DESC',
         pageSize: PAGE_SIZE,
         mask: {

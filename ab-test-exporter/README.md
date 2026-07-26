@@ -92,11 +92,18 @@ and dots — no colons — so they are valid on Windows as well.
 
 Timestamps in the filename are your **local** time.
 
-## Only public videos
+## What gets included
 
-Private and unlisted videos are skipped. Their metrics are not comparable — no organic
-impressions — and they are usually drafts or archives rather than published work, so they
-would only add noise.
+**Public, long-form videos only.**
+
+Private and unlisted are skipped: no organic impressions, so their metrics are not
+comparable, and they are usually drafts rather than published work.
+
+**Shorts are skipped too.** They cannot be A/B tested at all, and their titles are a
+different genre — mixing them in would only add noise to anything trained on long-form
+titles. The filter uses YouTube's own content type rather than video length, which matters:
+on one real channel that removed 343 Shorts while keeping 33 genuinely short long-form
+videos that a duration cut-off would have thrown away.
 
 ## It fails loudly
 
