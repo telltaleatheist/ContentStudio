@@ -961,11 +961,14 @@ async function run(sourceTabId, opts) {
     };
   };
 
+  // Untested videos still carry an empty videoCreatorExperiment object, so presence of
+  // the object means nothing — only arms and state do.
   const outcomeOf = (exp) => {
-    if (!exp) return 'no-test';
+    if (!exp || !exp.arms.length || !exp.state) return 'no-test';
     if (/FINISHED/.test(exp.state)) return exp.winnerIndex > 0 ? 'winner' : 'no-clear-winner';
     if (/INITIALIZED/.test(exp.state)) return 'running';
-    return `state: ${exp.state || 'unknown'}`;
+    // Genuinely unrecognised: keep YouTube's own value so a new state is diagnosable.
+    return `state: ${exp.state}`;
   };
 
   const tested = [];
@@ -973,7 +976,7 @@ async function run(sourceTabId, opts) {
     const b = base(v);
     const exp = v.experiment;
 
-    if (!exp || exp.arms.length === 0) {
+    if (!exp || exp.arms.length === 0 || !exp.state) {
       state.rows.push({
         ...b,
         testState: '',
@@ -1016,6 +1019,10 @@ async function run(sourceTabId, opts) {
   // the per-video report dialog, so they cost one page load each — hence opt-in.
   if (!deepShares) {
     await chrome.tabs.update(tabId, { url: LIST_URL(channelId, sourceUrl) }).catch(() => {});
+    setState({
+      phase: 'done',
+      message: `Done. ${videos.length} videos, ${tested.length} with A/B tests.`,
+    });
     await finishRun('Scan complete');
     return;
   }
@@ -1091,6 +1098,10 @@ async function run(sourceTabId, opts) {
   }
 
   await chrome.tabs.update(tabId, { url: LIST_URL(channelId, sourceUrl) }).catch(() => {});
+  setState({
+    phase: 'done',
+    message: `Done. ${videos.length} videos, ${tested.length} with A/B tests, shares read for ${state.scanned}.`,
+  });
   await finishRun('Scan complete');
 }
 
