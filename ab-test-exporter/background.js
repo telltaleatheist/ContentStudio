@@ -424,7 +424,26 @@ async function fetchLifetimeAnalytics(channelId) {
     const exclusiveEnd =
       tomorrow.getFullYear() * 10000 + (tomorrow.getMonth() + 1) * 100 + tomorrow.getDate();
 
-    const body = {
+    // CORE is verified working. EXTENDED adds the rest of the useful per-video metrics;
+    // if Studio rejects any of them the whole request 400s, so we try extended first and
+    // fall back rather than losing everything to one unsupported name.
+    const CORE = [
+      'VIDEO_THUMBNAIL_IMPRESSIONS',
+      'VIDEO_THUMBNAIL_IMPRESSIONS_VTR',
+      'EXTERNAL_VIEWS',
+      'EXTERNAL_WATCH_TIME',
+      'AVERAGE_WATCH_PERCENTAGE',
+    ];
+    const EXTENDED = CORE.concat([
+      'AVERAGE_WATCH_TIME',        // average view duration
+      'SUBSCRIBERS_NET_CHANGE',    // net subs gained
+      'RATINGS_LIKES',
+      'RATINGS_DISLIKES',
+      'COMMENTS',
+      'SHARINGS',                  // shares
+    ]);
+
+    const buildBody = (metricSet) => ({
       context: {
         client: { clientName: 62, clientVersion },
         user: { serializedDelegationContext: delegation },
@@ -434,13 +453,7 @@ async function fetchLifetimeAnalytics(channelId) {
         value: {
           query: {
             dimensions: [{ type: 'VIDEO' }],
-            metrics: [
-              { type: 'VIDEO_THUMBNAIL_IMPRESSIONS' },
-              { type: 'VIDEO_THUMBNAIL_IMPRESSIONS_VTR' },
-              { type: 'EXTERNAL_VIEWS' },
-              { type: 'EXTERNAL_WATCH_TIME' },
-              { type: 'AVERAGE_WATCH_PERCENTAGE' },
-            ],
+            metrics: metricSet.map((type) => ({ type })),
             restricts: [{ dimension: { type: 'USER' }, inValues: [channelId] }],
             orders: [{ metric: { type: 'EXTERNAL_VIEWS' }, direction: 'ANALYTICS_ORDER_DIRECTION_DESC' }],
             timeRange: { dateIdRange: { inclusiveStart: 20080101, exclusiveEnd } },
@@ -451,9 +464,11 @@ async function fetchLifetimeAnalytics(channelId) {
           },
         },
       }],
-    };
+    });
 
     let resp;
+    let body = buildBody(EXTENDED);
+    let usedExtended = true;
     try {
       resp = await fetch(ENDPOINT, {
         method: 'POST',
@@ -472,6 +487,31 @@ async function fetchLifetimeAnalytics(channelId) {
       });
     } catch (netErr) {
       return fail('NETWORK', `Network error: ${netErr?.message || String(netErr)}`);
+    }
+
+    // One unsupported metric name 400s the whole query — retry with the proven set.
+    if (resp.status === 400 && usedExtended) {
+      usedExtended = false;
+      body = buildBody(CORE);
+      try {
+        resp = await fetch(ENDPOINT, {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: authorization,
+            'X-Origin': ORIGIN,
+            'X-Goog-AuthUser': authUser,
+            'X-YouTube-Delegation-Context': delegation,
+            'X-YouTube-Client-Name': '62',
+            'X-YouTube-Client-Version': clientVersion,
+            ...(visitorData ? { 'X-Goog-Visitor-Id': visitorData } : {}),
+          },
+          body: JSON.stringify(body),
+        });
+      } catch (netErr) {
+        return fail('NETWORK', `Network error: ${netErr?.message || String(netErr)}`);
+      }
     }
 
     if (resp.status === 401 || resp.status === 403) return fail('HTTP_AUTH', `Analytics rejected (HTTP ${resp.status}).`);
@@ -501,6 +541,12 @@ async function fetchLifetimeAnalytics(channelId) {
       return null;
     };
 
+    const avgViewDurMs = seriesOf('AVERAGE_WATCH_TIME', ['milliseconds', 'doubles', 'counts']);
+    const subsNet = seriesOf('SUBSCRIBERS_NET_CHANGE', ['counts', 'doubles']);
+    const likes = seriesOf('RATINGS_LIKES', ['counts']);
+    const dislikes = seriesOf('RATINGS_DISLIKES', ['counts']);
+    const comments = seriesOf('COMMENTS', ['counts']);
+    const shares = seriesOf('SHARINGS', ['counts']);
     const impressions = seriesOf('VIDEO_THUMBNAIL_IMPRESSIONS', ['counts']);
     const ctr = seriesOf('VIDEO_THUMBNAIL_IMPRESSIONS_VTR', ['percentages']);
     const views = seriesOf('EXTERNAL_VIEWS', ['counts']);
@@ -527,13 +573,19 @@ async function fetchLifetimeAnalytics(channelId) {
         // EXTERNAL_WATCH_TIME is milliseconds, not seconds — verified live.
         watchHours: ms === null ? null : ms / 3600000,
         avgPctViewed: avgPct ? toNum(avgPct[i]) : null,
+        avgViewDurationSec: avgViewDurMs && toNum(avgViewDurMs[i]) !== null ? toNum(avgViewDurMs[i]) / 1000 : null,
+        subscribersNet: subsNet ? toNum(subsNet[i]) : null,
+        likes: likes ? toNum(likes[i]) : null,
+        dislikes: dislikes ? toNum(dislikes[i]) : null,
+        comments: comments ? toNum(comments[i]) : null,
+        shares: shares ? toNum(shares[i]) : null,
       });
     }
 
     // Offset paging is unsupported, so a completely full page means the catalogue may
     // exceed one request. Say so rather than silently dropping the overflow.
     const truncated = rowCount >= PAGE;
-    return { ok: true, rows, truncated };
+    return { ok: true, rows, truncated, extended: usedExtended };
   } catch (err) {
     return fail('EXCEPTION', `Unexpected error: ${err?.message || String(err)}`);
   }
@@ -870,6 +922,15 @@ async function run(sourceTabId, opts) {
       watchHours:
         a?.watchHours === null || a?.watchHours === undefined ? '' : a.watchHours.toFixed(2),
       avgPctViewed: a?.avgPctViewed ?? '',
+      avgViewDurationSec:
+        a?.avgViewDurationSec === null || a?.avgViewDurationSec === undefined
+          ? ''
+          : a.avgViewDurationSec.toFixed(1),
+      subscribersNet: a?.subscribersNet ?? '',
+      likes: a?.likes ?? '',
+      dislikes: a?.dislikes ?? '',
+      comments: a?.comments ?? '',
+      shares: a?.shares ?? '',
     };
   };
 
@@ -1006,6 +1067,51 @@ async function run(sourceTabId, opts) {
   await finishRun('Scan complete');
 }
 
+
+/**
+ * Terminal housekeeping: persist, save the CSV automatically, and make the result visible
+ * even if every window is closed.
+ *
+ * The CSV is written WITHOUT a save dialog on purpose — the point is to start a scan and
+ * walk away, and a modal waiting for a click would defeat that.
+ */
+async function finishRun(headline) {
+  await persist();
+  // NB: the keepalive is deliberately NOT cleared here — with a multi-channel queue this
+  // runs between channels, and dropping the alarm mid-queue would leave the worker
+  // unprotected during the next one. It is cleared once, when the whole run ends.
+
+  if (state.rows.length === 0) {
+    setBadge('!', '#b3261e');
+    return;
+  }
+
+  let savedAs = null;
+  try {
+    savedAs = await downloadCsv(false);
+  } catch (err) {
+    console.error('[exporter] auto-save failed', err);
+  }
+
+  setBadge(String(state.rows.length > 999 ? '999+' : state.rows.length));
+
+  try {
+    await chrome.notifications.create(`ab-export-${Date.now()}`, {
+      type: 'basic',
+      iconUrl: 'icon128.png',
+      title: headline,
+      message:
+        `${state.rows.length} rows` +
+        (savedAs
+          ? ` saved to your Downloads folder as ${savedAs}`
+          : ' ready — open the extension to download'),
+      priority: 2,
+    });
+  } catch (err) {
+    console.error('[exporter] notification failed', err);
+  }
+}
+
 // ---------------------------------------------------------------- CSV
 
 const CSV_COLUMNS = [
@@ -1023,6 +1129,12 @@ const CSV_COLUMNS = [
   'views',
   'watchHours',
   'avgPctViewed',
+  'avgViewDurationSec',
+  'subscribersNet',
+  'likes',
+  'dislikes',
+  'comments',
+  'shares',
   // --- A/B title test; blank for untested videos ---
   'testState',
   'testOutcome',

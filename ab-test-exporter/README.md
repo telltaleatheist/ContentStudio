@@ -137,6 +137,9 @@ single self-contained table.
 | `impressions` | lifetime thumbnail impressions |
 | `impressionsCtrPct` | lifetime impressions CTR, e.g. `10.2` |
 | `views`, `watchHours`, `avgPctViewed` | lifetime view metrics |
+| `avgViewDurationSec` | average view duration |
+| `subscribersNet` | net subscribers gained |
+| `likes`, `dislikes`, `comments`, `shares` | lifetime engagement |
 | `testState` | `FINISHED`, `INITIALIZED`, or blank |
 | `testOutcome` | `winner`, `no-clear-winner`, `running`, `no-test` |
 | `testFinishedReason` | YouTube's own reason code |
