@@ -254,19 +254,11 @@ async function fetchCreatorVideos(channelId, maxPages) {
           client: { clientName: 62, clientVersion },
           user: { serializedDelegationContext: delegation },
         },
-        // Shorts are excluded deliberately. They cannot be A/B tested at all, and their
-        // titles are a different genre (lowercase, hashtags) that would only add noise to
-        // anything trained on long-form titles. Filtering on contentType rather than
-        // duration matters: on this channel 343 Shorts are removed while 33 genuinely
-        // short long-form videos are kept, which a duration cut-off would have discarded.
-        filter: {
-          and: {
-            operands: [
-              { channelIdIs: { value: channelId } },
-              { not: { operand: { contentTypeIs: { value: 'CREATOR_CONTENT_TYPE_SHORTS' } } } },
-            ],
-          },
-        },
+        // Everything on the channel, Shorts included. Shorts run on a different algorithm
+        // and cannot be A/B tested, but they are still trainable data in their own right —
+        // so they are LABELLED (see the contentType column) rather than discarded. Removing
+        // data to solve a labelling problem loses information you cannot get back.
+        filter: { and: { operands: [{ channelIdIs: { value: channelId } }] } },
         order: 'VIDEO_ORDER_DISPLAY_TIME_DESC',
         pageSize: PAGE_SIZE,
         mask: {
@@ -326,6 +318,13 @@ async function fetchCreatorVideos(channelId, maxPages) {
           description: typeof v.description === 'string' ? v.description : '',
           privacy: v.privacy || '',
           durationSec: v.lengthSeconds ? Number(v.lengthSeconds) : null,
+          // From YouTube's own contentType, not a duration guess: this channel has 33
+          // long-form videos under 3 minutes that a length cut-off would mislabel.
+          contentType: v.livestream
+            ? 'live'
+            : String(v.contentType || '').includes('SHORTS')
+              ? 'short'
+              : 'video',
           // A 0 timestamp means "not published", not 1970 — leave it blank so date
           // filters downstream don't silently include 44 phantom 1970 videos.
           publishedAt:
@@ -780,6 +779,7 @@ async function run(sourceTabId) {
       publishedAt: v.publishedAt,
       durationSec: v.durationSec ?? '',
       privacy: String(v.privacy || '').replace('VIDEO_PRIVACY_', '').toLowerCase(),
+      contentType: v.contentType,
       impressions: a?.impressions ?? '',
       impressionsCtrPct: a?.impressionsCtrPct ?? '',
       views: a?.views ?? '',
@@ -985,6 +985,8 @@ const CSV_COLUMNS = [
   'publishedAt',
   'durationSec',
   'privacy',
+  'contentType',       // video | short | live — Shorts run a different algorithm
+
   // --- lifetime analytics (whole channel, one request) ---
   'impressions',
   'impressionsCtrPct',

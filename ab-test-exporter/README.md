@@ -94,16 +94,14 @@ Timestamps in the filename are your **local** time.
 
 ## What gets included
 
-**Public, long-form videos only.**
-
-Private and unlisted are skipped: no organic impressions, so their metrics are not
+**Public videos only.** Private and unlisted are skipped: no organic impressions, so their metrics are not
 comparable, and they are usually drafts rather than published work.
 
-**Shorts are skipped too.** They cannot be A/B tested at all, and their titles are a
-different genre — mixing them in would only add noise to anything trained on long-form
-titles. The filter uses YouTube's own content type rather than video length, which matters:
-on one real channel that removed 343 Shorts while keeping 33 genuinely short long-form
-videos that a duration cut-off would have thrown away.
+**Shorts are included and labelled.** The `contentType` column is `video`, `short`, or
+`live`, so you can train on them separately — the Shorts algorithm behaves differently, and
+Shorts cannot be A/B tested at all, but they are still perfectly good training data in their
+own right. Filter on the column rather than on duration: on one real channel there are 33
+long-form videos under three minutes that a length cut-off would mislabel as Shorts.
 
 ## It fails loudly
 
@@ -161,6 +159,7 @@ single self-contained table.
 | `publishedAt` | release date (ISO) |
 | `durationSec` | length in seconds |
 | `privacy` | public / unlisted / private |
+| `contentType` | `video`, `short`, or `live` — Shorts run a different algorithm and cannot be A/B tested |
 | `impressions` | lifetime thumbnail impressions |
 | `impressionsCtrPct` | lifetime impressions CTR, e.g. `10.2` |
 | `views`, `watchHours`, `avgPctViewed` | lifetime view metrics |
