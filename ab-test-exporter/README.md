@@ -153,7 +153,8 @@ single self-contained table.
 | `testFinishedReason` | YouTube's own reason code |
 | `variantIndex` | 1, 2, 3 |
 | `variantTitle` | that variant's title text |
-| `watchTimeSharePct` | share, e.g. `42.1` — only if the deep pass was enabled |
+| `testStartedAt`, `testFinishedAt` | when the test ran |
+| `watchTimeSharePct` | that variant's watch-time share, e.g. `42.15` |
 | `isWinner` | `yes` / `no` |
 
 Note the winning metric is **watch-time share, not CTR** — that is what YouTube itself
@@ -169,14 +170,17 @@ part of why this tool exists.
 
 ### How fast it is
 
-Titles, full descriptions, release dates, durations, impressions, CTR, views, watch time,
-and which A/B variant won all come from **two requests** — no video pages are opened at
-all. A whole channel takes seconds.
+Everything comes from YouTube Studio's own endpoints — **no video pages are opened at
+all**, so a whole channel takes seconds rather than hours:
 
-The one exception is each test's **watch-time share percentages**, which exist only inside
-the report dialog. Getting those means loading one page per finished test, so they are
-behind the optional "Also fetch watch-time share %" tick-box. Everything else is there
-without it.
+| what | where from |
+|---|---|
+| titles, full descriptions, release dates, durations, A/B variants and state | `creator/list_creator_videos`, 100 per request |
+| impressions, CTR, views, watch time, engagement, subscribers | `yta_web/join`, one request for the channel |
+| watch-time share per variant, and the verdict | `creator/get_creator_videos`, 50 per request |
+
+The share percentages are the same figures Studio's own report dialog shows — verified
+against it — but obtained without loading the page they appear on.
 
 ## What it does and doesn't do
 

@@ -200,7 +200,6 @@ async function onStart() {
     type: 'start',
     jobs,
     tabId: jobs[0].tabId,
-    deepShares: $('deepShares').checked,
     resumeRows,
   });
   if (res?.rejected) $('error').textContent = res.rejected;
