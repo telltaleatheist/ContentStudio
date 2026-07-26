@@ -933,6 +933,12 @@ async function run(tabIdInitial, emptyPageStreakLimit) {
     return;
   }
 
+  // A handful of failures is normal; a long unbroken run of them means something
+  // systemic (dead tab, sign-out, Studio redesign) and continuing just fills the CSV
+  // with noise.
+  let consecutiveFailures = 0;
+  const MAX_CONSECUTIVE_FAILURES = 8;
+
   // Every emitted row carries the video's lifetime analytics, so the CSV is a single
   // joined table rather than two that have to be reconciled later.
   const withAnalytics = (base) => {
@@ -956,12 +962,36 @@ async function run(tabIdInitial, emptyPageStreakLimit) {
 
     setState({ message: `Reading “${video.title || video.videoId}”…` });
 
+    // The working tab can vanish mid-run — closed by the user, or crashed. Without this
+    // check every subsequent navigation throws, each one caught by the handler below,
+    // silently manufacturing an error row per video and grinding through the whole
+    // channel producing nothing. Recreate it once; give up loudly if that fails.
+    try {
+      await chrome.tabs.get(tabId);
+    } catch {
+      setState({ message: 'Working tab was closed — reopening…' });
+      try {
+        const fresh = await chrome.tabs.create({ url: 'about:blank', active: false });
+        tabId = fresh.id;
+        state.workingTabId = tabId;
+        await waitForTabLoad(tabId, 15000).catch(() => {});
+      } catch (err) {
+        setState({
+          phase: 'error',
+          error: 'The working tab was closed and could not be reopened. Partial results kept.',
+        });
+        await finishRun('Scan stopped');
+        return;
+      }
+    }
+
     try {
       await chrome.tabs.update(tabId, { url: EDIT_URL(video.videoId, sourceUrl) });
       await waitForTabLoad(tabId);
       const report = await inject(tabId, scrapeReport);
 
       if (report?.status === 'ok') {
+        consecutiveFailures = 0;
         for (const variant of report.variants) {
           state.rows.push(withAnalytics({
             videoId: video.videoId,
@@ -1000,6 +1030,7 @@ async function run(tabIdInitial, emptyPageStreakLimit) {
         }));
       }
     } catch (error) {
+      consecutiveFailures++;
       // Record and continue — one bad video must not lose the whole run.
       state.rows.push(withAnalytics({
         videoId: video.videoId,
@@ -1015,6 +1046,17 @@ async function run(tabIdInitial, emptyPageStreakLimit) {
         ranFrom: '',
         ranTo: '',
       }));
+    }
+
+    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      setState({
+        phase: 'error',
+        error:
+          `Stopped after ${consecutiveFailures} videos in a row failed to produce a report. ` +
+          'Something systemic is wrong — check you are still signed in to Studio. Partial results kept.',
+      });
+      await finishRun('Scan stopped early');
+      return;
     }
 
     setState({ scanned: state.scanned + 1 });
