@@ -74,6 +74,8 @@ const state = {
   /** Tab being driven, so the on-page overlay can be addressed directly. */
   workingTabId: null,
   channelId: null,
+  queueIndex: 0,
+  queueTotal: 0,
   cancelled: false,
   phase: 'idle',
   message: '',
@@ -98,7 +100,11 @@ function setState(patch) {
 
 function publicState() {
   const { rows, ...rest } = state;
-  return { ...rest, rowCount: rows.length };
+  return {
+    ...rest,
+    rowCount: rows.length,
+    queueLabel: state.queueTotal > 1 ? `Channel ${state.queueIndex} of ${state.queueTotal}` : '',
+  };
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1047,7 +1053,9 @@ async function run(tabId, emptyPageStreakLimit) {
  */
 async function finishRun(headline) {
   await persist();
-  setKeepalive(false);
+  // NB: the keepalive is deliberately NOT cleared here — with a multi-channel queue this
+  // runs between channels, and dropping the alarm mid-queue would leave the worker
+  // unprotected during the next one. It is cleared once, when the whole run ends.
 
   if (state.rows.length === 0) {
     setBadge('!', '#b3261e');
@@ -1216,6 +1224,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return publicState();
       }
 
+      case 'find-studio-tabs': {
+        // One entry per DISTINCT channel across all open Studio tabs. Scanning uses each
+        // channel's own tab, so its account context (authuser/pageId) comes along for
+        // free — no channel-id entry and no way to get the account wrong.
+        const tabs = await chrome.tabs.query({ url: 'https://studio.youtube.com/*' });
+        const byChannel = new Map();
+        for (const tab of tabs) {
+          const channelId = channelIdFromUrl(tab.url);
+          if (!channelId || byChannel.has(channelId)) continue;
+          byChannel.set(channelId, { tabId: tab.id, channelId, title: tab.title || channelId });
+        }
+        return [...byChannel.values()];
+      }
+
       case 'find-studio-tab': {
         // Prefer the active tab if it's already a Studio channel page.
         const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -1230,7 +1252,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
 
       case 'start': {
-        if (state.running) return publicState();
+        // Concurrent runs are impossible (single shared state) AND undesirable — the
+        // request rate is what triggers Studio throttling. Say so instead of silently
+        // ignoring the click.
+        if (state.running) {
+          return { ...publicState(), rejected: 'A scan is already running. Stop it first, or wait for it to finish.' };
+        }
         if (!message.tabId) {
           setState({ phase: 'error', error: 'No Studio tab selected.' });
           return publicState();
@@ -1250,8 +1277,35 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         setBadge('');
         setKeepalive(true);
         try {
-          // Reuse the user's own Studio tab — see accountParams() for why.
-          await run(message.tabId, Number.isInteger(message.emptyPageStreakLimit) ? message.emptyPageStreakLimit : 3);
+          // Sequential by design. Channels are scanned one at a time, each saving its own
+          // CSV before the next begins, so a long unattended run covers every channel
+          // without ever multiplying the load on Studio.
+          const jobs = Array.isArray(message.jobs) && message.jobs.length
+            ? message.jobs
+            : [{ tabId: message.tabId }];
+
+          for (let i = 0; i < jobs.length; i++) {
+            if (state.cancelled) break;
+            state.queueIndex = i + 1;
+            state.queueTotal = jobs.length;
+
+            if (i > 0) {
+              // Fresh row set per channel: each gets its own file, and merging channels
+              // into one table would make the export ambiguous.
+              state.rows = [];
+              state.scanned = 0;
+              state.total = 0;
+              state.found = 0;
+              state.channelId = null;
+            }
+            state.workingTabId = jobs[i].tabId;
+            setBadge('');
+
+            await run(jobs[i].tabId, Number.isInteger(message.emptyPageStreakLimit) ? message.emptyPageStreakLimit : 3);
+
+            // finishRun() has already saved this channel's CSV and notified.
+            if (i < jobs.length - 1) await sleep(3000);
+          }
         } catch (error) {
           setState({ phase: 'error', error: error?.message || String(error) });
           await finishRun('Scan failed');

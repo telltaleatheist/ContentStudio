@@ -98,12 +98,18 @@
       <h1>A/B Title Test Exporter</h1>
 
       <p class="muted">
-        Open <b>YouTube Studio → Content</b> for the channel you want to export, then come
-        back here. The scan runs in that tab, so it always uses the account you are
-        already signed in as.
+        Open <b>YouTube Studio → Content</b> for each channel you want to export — one tab
+        each — then come back here. Each scan runs in that channel's own tab, so it always
+        uses the account you are already signed in as.
+      </p>
+      <p class="muted">
+        Multiple channels are scanned <b>one after another</b>, each saving its own CSV.
+        They are never run in parallel: the request rate is what makes YouTube start
+        throttling.
       </p>
 
       <div id="detected" class="muted"></div>
+      <div id="channels"></div>
 
       <label class="check">
         <input id="stopEarly" type="checkbox" checked />
@@ -126,7 +132,7 @@
       <input id="resumeFile" type="file" accept=".csv,text/csv" />
       <div id="resumeInfo" class="muted"></div>
 
-      <button id="start" class="primary">Scan this channel</button>
+      <button id="start" class="primary">Scan selected channels</button>
       <button id="cancel" class="hidden">Stop</button>
 
       <div class="status">

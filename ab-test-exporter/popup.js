@@ -58,8 +58,8 @@ function parseCsv(text) {
   );
 }
 
-/** The Studio tab we'll drive, resolved on open. */
-let studioTab = null;
+/** Distinct channels found across open Studio tabs. */
+let channels = [];
 
 async function init() {
   const stored = await chrome.storage.local.get([CONSENT_KEY]);
@@ -131,36 +131,76 @@ function send(message) {
 }
 
 async function detectTab() {
-  studioTab = await send({ type: 'find-studio-tab' });
+  channels = (await send({ type: 'find-studio-tabs' })) || [];
 
-  if (studioTab?.channelId) {
-    $('detected').textContent = `Found Studio tab for channel ${studioTab.channelId}`;
-    $('detected').className = 'ok';
-    $('start').disabled = false;
-  } else {
+  const box = $('channels');
+  box.innerHTML = '';
+
+  if (!Array.isArray(channels) || channels.length === 0) {
     $('detected').textContent =
       'No YouTube Studio channel tab open. Open Studio → Content, then reopen this popup.';
     $('detected').className = 'err';
     $('start').disabled = true;
+    return;
   }
+
+  // One tab per channel: open each channel's Content page in its own tab and they all
+  // appear here. Scanning uses each channel's own tab, so the account context is right
+  // for every one of them without any extra input.
+  $('detected').textContent =
+    channels.length === 1
+      ? '1 channel detected.'
+      : `${channels.length} channels detected — they will be scanned one after another.`;
+  $('detected').className = 'ok';
+
+  for (const ch of channels) {
+    const label = document.createElement('label');
+    label.className = 'check';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = true;
+    cb.dataset.channelId = ch.channelId;
+    const name = (ch.title || '').replace(/\s*-\s*YouTube Studio\s*$/i, '').trim();
+    label.append(cb, document.createTextNode(` ${name || ch.channelId}`));
+    box.appendChild(label);
+  }
+
+  $('start').disabled = false;
+}
+
+function selectedJobs() {
+  const checked = [...$('channels').querySelectorAll('input[type=checkbox]')]
+    .filter((cb) => cb.checked)
+    .map((cb) => cb.dataset.channelId);
+  return channels.filter((c) => checked.includes(c.channelId)).map((c) => ({
+    tabId: c.tabId,
+    channelId: c.channelId,
+  }));
 }
 
 async function onStart() {
   $('error').textContent = '';
-  if (!studioTab?.tabId) {
-    $('error').textContent = 'Open YouTube Studio → Content first.';
+  const jobs = selectedJobs();
+  if (!jobs.length) {
+    $('error').textContent = 'Tick at least one channel.';
     return;
   }
+  if (jobs.length > 1 && resumeRows) {
+    $('error').textContent = 'Resuming works on one channel at a time. Untick the others.';
+    return;
+  }
+
   // 0 disables the early exit entirely and walks every page.
   const limit = $('stopEarly').checked ? 3 : 0;
-  render(
-    await send({
-      type: 'start',
-      tabId: studioTab.tabId,
-      emptyPageStreakLimit: limit,
-      resumeRows,
-    }),
-  );
+  const res = await send({
+    type: 'start',
+    jobs,
+    tabId: jobs[0].tabId,
+    emptyPageStreakLimit: limit,
+    resumeRows,
+  });
+  if (res?.rejected) $('error').textContent = res.rejected;
+  render(res);
 }
 
 function render(state) {
@@ -169,9 +209,10 @@ function render(state) {
   const running = !!state.running;
   $('start').classList.toggle('hidden', running);
   $('cancel').classList.toggle('hidden', !running);
-  if (!running && studioTab?.channelId) $('start').disabled = false;
+  if (!running && channels.length) $('start').disabled = false;
 
-  $('message').textContent = state.message || 'Ready.';
+  $('message').textContent =
+    (state.queueLabel ? `${state.queueLabel} — ` : '') + (state.message || 'Ready.');
   $('message').className = state.phase === 'done' ? 'ok' : 'muted';
   $('error').textContent = state.error || '';
 

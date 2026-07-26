@@ -49,6 +49,18 @@ stopped early, so a short scan is never mistaken for a complete one.
 It pauses a random 2–5 seconds between videos and stops immediately if Studio starts
 rate-limiting, rather than pushing through.
 
+## Several channels at once
+
+Open **Studio → Content** for each channel in its own tab. The popup lists every channel
+it finds; tick the ones you want and they are scanned **one after another**, each saving
+its own CSV named after its channel.
+
+They are never scanned in parallel, and that is deliberate: the request rate is what makes
+YouTube start throttling, so three at once would be slower in practice as well as riskier.
+Sequential costs nothing extra — the pacing between videos dominates either way.
+
+Resuming from a CSV applies to a single channel, so untick the others when you do that.
+
 ## It runs unattended
 
 Start it and walk away. When the scan finishes the CSV **saves itself to your Downloads
