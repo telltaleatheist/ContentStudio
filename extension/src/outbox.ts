@@ -6,11 +6,13 @@
 // successful POST.
 
 import type { Snapshot, VideoRecord } from './types';
-import { IngestError, pushSnapshots, pushVideos, type IngestFailureKind } from './ingest-client';
+import type { AbTestRecord } from './catalogue';
+import { IngestError, pushAbTests, pushSnapshots, pushVideos, type IngestFailureKind } from './ingest-client';
 
 export type OutboxEntry =
   | { id: string; queuedAt: string; kind: 'videos'; videos: VideoRecord[] }
-  | { id: string; queuedAt: string; kind: 'snapshots'; snapshots: Snapshot[] };
+  | { id: string; queuedAt: string; kind: 'snapshots'; snapshots: Snapshot[] }
+  | { id: string; queuedAt: string; kind: 'ab-tests'; tests: AbTestRecord[] };
 
 const OUTBOX_KEY = 'outbox';
 
@@ -31,6 +33,14 @@ export async function outboxDepth(): Promise<number> {
 export async function enqueueVideos(videos: VideoRecord[]): Promise<void> {
   const entries = await getOutbox();
   entries.push({ id: crypto.randomUUID(), queuedAt: new Date().toISOString(), kind: 'videos', videos });
+  await setOutbox(entries);
+}
+
+/** Decided A/B test results. Queued like everything else so a ContentStudio that is
+ *  closed at collection time still receives them on the next flush. */
+export async function enqueueAbTests(tests: AbTestRecord[]): Promise<void> {
+  const entries = await getOutbox();
+  entries.push({ id: crypto.randomUUID(), queuedAt: new Date().toISOString(), kind: 'ab-tests', tests });
   await setOutbox(entries);
 }
 
@@ -59,7 +69,9 @@ export interface FlushResult {
 }
 
 async function sendEntry(entry: OutboxEntry): Promise<void> {
-  if (entry.kind === 'videos') {
+  if (entry.kind === 'ab-tests') {
+    await pushAbTests(entry.tests);
+  } else if (entry.kind === 'videos') {
     await pushVideos(entry.videos);
   } else {
     await pushSnapshots(entry.snapshots);

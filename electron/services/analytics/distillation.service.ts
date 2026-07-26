@@ -96,6 +96,15 @@ export class DistillationService {
     const previousVerdicts = new Map(
       this.store.loadVerdicts(channelId).map((v) => [v.videoId, v])
     );
+    // A/B results are permanent and stored separately from verdicts, which are rebuilt
+    // from scratch on every run. Reading them here is what feeds real test winners into
+    // ChannelInsights.abLearnings and from there into the generation prompt.
+    const abTestByVideo = new Map(
+      this.store.loadAbTests(channelId).map((t) => [
+        t.videoId,
+        { variants: t.variants, winner: t.winner, method: t.method, liftPct: t.liftPct },
+      ])
+    );
 
     // Bucket snapshots by videoId in one pass over the monthly files.
     const snapshotsByVideo = new Map<string, Snapshot[]>();
@@ -227,8 +236,10 @@ export class DistillationService {
         retentionPercentile,
         packagingScore,
         outcome,
-        // Carry through A/B results written by the (future) A/B engine.
-        abTest: previous?.abTest ?? null,
+        // A/B results come from the PERMANENT ab-tests.json, not from the previous
+        // verdict. Verdicts are regenerated every run, so carrying them through a verdict
+        // meant one distillation with a missing prior wiped the history for good.
+        abTest: abTestByVideo.get(draft.video.videoId) ?? null,
         topSearchTerms: draft.topSearchTerms,
       };
     });

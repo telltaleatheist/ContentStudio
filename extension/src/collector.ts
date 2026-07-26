@@ -55,6 +55,13 @@
 // ============================================================================
 
 import type { Snapshot, VideoRecord } from './types';
+import {
+  fetchCatalogueInPage,
+  fetchExperimentsInPage,
+  toVideoRecords,
+  type AbTestRecord,
+  type CatalogueVideo,
+} from './catalogue';
 import { getChannelVideoState, recordSnapshotTimes } from './collection-state';
 
 /**
@@ -78,6 +85,8 @@ export class CollectorNotImplementedError extends Error {
 export interface ChannelCollectionResult {
   videos: VideoRecord[];
   snapshots: Snapshot[];
+  /** Decided A/B title tests — these become ChannelInsights.abLearnings. */
+  abTests: AbTestRecord[];
 }
 
 // ============================================================================
@@ -153,6 +162,25 @@ export async function collectChannel(channelId: string): Promise<ChannelCollecti
   const injected = await runInjectedCollection(tabId, channelId);
   if (!injected.ok) throw mapInjectedError(injected, channelId);
 
+  // Catalogue: real publishedAt/title/duration for every video. This is what resolves
+  // TODO(v1-metadata) — the analytics query returns only videoIds, and a VideoRecord
+  // needs a parseable publishedAt, so before list_creator_videos was reconnoitred we
+  // correctly emitted none. Ages now become real, which makes the cadence tiering below
+  // and the age-matched percentiles in distillation actually work.
+  const catalogueResult = await runInjectedCatalogue(tabId, channelId);
+  if (!catalogueResult.ok) throw mapCatalogueError(catalogueResult, channelId);
+  const catalogue: CatalogueVideo[] = catalogueResult.videos;
+
+  // Decided A/B tests for the same channel — the winners that feed abLearnings and,
+  // through it, the metadata-generation prompt.
+  const experimentResult = await runInjectedExperiments(
+    tabId,
+    channelId,
+    catalogue.map((v) => v.videoId),
+  );
+  if (!experimentResult.ok) throw mapCatalogueError(experimentResult, channelId);
+  const abTests: AbTestRecord[] = experimentResult.tests;
+
   // Cadence tiering (SW-side, where the last-capture state lives): keep only the
   // snapshots whose video is due this cycle. First-ever run per channel = every
   // video is due (backfill). See tierIntervalMs/isDue.
@@ -160,15 +188,64 @@ export async function collectChannel(channelId: string): Promise<ChannelCollecti
   const prior = await getChannelVideoState(channelId);
   const dueSnapshots = injected.snapshots.filter((s) => isDue(s.videoAgeHours, prior[s.videoId], nowMs));
 
-  // Emit VideoRecords only for videos we have not seen before (upsert-new). In
-  // v1 injected.videos is [] (see TODO(v1-metadata)), so this is [] too.
+  // Emit VideoRecords only for videos we have not seen before (upsert-new). These now
+  // come from the catalogue rather than the analytics response, so they carry real
+  // publish dates; anything still unpublished is dropped by toVideoRecords rather than
+  // being given an invented date.
   const known = new Set(Object.keys(prior));
-  const newVideos = injected.videos.filter((v) => !known.has(v.videoId));
+  const newVideos = toVideoRecords(catalogue, channelId).filter((v) => !known.has(v.videoId));
 
   // Mark the emitted snapshots' capture time so cadence can skip them next cycle.
   await recordSnapshotTimes(channelId, dueSnapshots.map((s) => ({ videoId: s.videoId, capturedAt: s.capturedAt })));
 
-  return { videos: newVideos, snapshots: dueSnapshots };
+  return { videos: newVideos, snapshots: dueSnapshots, abTests };
+}
+
+/** Injected catalogue fetch — MAIN world, same as the analytics collector. */
+async function runInjectedCatalogue(tabId: number, channelId: string): Promise<any> {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: fetchCatalogueInPage,
+    args: [channelId],
+  });
+  return results[0]?.result;
+}
+
+/** Injected A/B results fetch — MAIN world. */
+async function runInjectedExperiments(
+  tabId: number,
+  channelId: string,
+  videoIds: string[],
+): Promise<any> {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    func: fetchExperimentsInPage,
+    args: [channelId, videoIds],
+  });
+  return results[0]?.result;
+}
+
+/** Map a catalogue/experiment failure onto the same named errors the collector uses. */
+function mapCatalogueError(failure: any, channelId: string): Error {
+  const message = failure?.message || 'Studio catalogue call failed';
+  const code = String(failure?.kind || 'unknown').toUpperCase().replace(/-/g, '_');
+  switch (failure?.kind) {
+    case 'no-sapisid':
+    case 'ytcfg-missing':
+      return new StudioAuthError(channelId, code, message);
+    case 'channel-mismatch':
+      return new StudioChannelUnavailableError(channelId, message);
+    case 'http':
+      return failure.status === 429
+        ? new StudioRateLimitError(channelId, code, message)
+        : new StudioHttpError(channelId, code, message);
+    case 'shape':
+      return new StudioShapeError(channelId, code, message);
+    default:
+      return new StudioHttpError(channelId, code, message);
+  }
 }
 
 // ============================================================================

@@ -711,3 +711,110 @@
     }
   }
 }
+
+/* ==================== A/B title selection ====================
+   Picking titles for YouTube's native A/B test. Click order IS variant order —
+   variant 1 becomes the video's main title and is what YouTube keeps when a test
+   comes back inconclusive, so the number is the important affordance here. */
+
+.ab-progress {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+
+  &.complete {
+    color: var(--primary-orange);
+  }
+}
+
+.ab-hint {
+  margin: 0;
+  padding: 0.75rem 1.25rem 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.ab-error {
+  margin: 0.75rem 1.25rem 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  background: rgba(229, 57, 53, 0.12);
+  border: 1px solid rgba(229, 57, 53, 0.4);
+  color: #ff8a80;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.list-item.ab-selectable {
+  /* The whole row toggles selection; copy is the small secondary affordance. */
+  .copy-hint {
+    padding: 0 0.25rem;
+    border-radius: 6px;
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+  }
+
+  &.ab-chosen {
+    border-color: var(--primary-orange);
+    background: rgba(255, 107, 53, 0.10);
+  }
+
+  /* Cap reached and this one isn't picked — still readable, clearly not available. */
+  &.ab-blocked {
+    opacity: 0.45;
+
+    &:hover {
+      border-color: var(--border-color);
+    }
+  }
+}
+
+/* The big variant number. Replaces the plain index once a title is picked. */
+.ab-variant-badge {
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--primary-orange);
+  color: white;
+  border-radius: 50%;
+  font-size: 1.25rem;
+  font-weight: 800;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.25);
+}
+
+.ab-reorder {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-shrink: 0;
+
+  .ab-arrow {
+    width: 22px;
+    height: 16px;
+    line-height: 1;
+    padding: 0;
+    font-size: 9px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      border-color: var(--primary-orange);
+      color: var(--primary-orange);
+    }
+
+    &:disabled {
+      opacity: 0.3;
+      cursor: default;
+    }
+  }
+}

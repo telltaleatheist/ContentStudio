@@ -15,6 +15,7 @@
 //   Every failure is a DISTINCT typed state that must reach the UI unchanged.
 //   Nothing in this module retries, degrades, or swallows errors.
 
+import type { AbTestRecord } from './catalogue';
 import type { Snapshot, VideoRecord } from './types';
 import { getSettings, type ChannelConfig } from './settings';
 
@@ -195,6 +196,17 @@ async function post(path: string, body: unknown): Promise<void> {
 /** POST /analytics/videos — upsert video metadata records. Throws IngestError on any failure. */
 export async function pushVideos(videos: VideoRecord[]): Promise<void> {
   await post('/analytics/videos', { videos });
+}
+
+/**
+ * POST /analytics/ab-tests — upsert decided A/B title-test results.
+ *
+ * These are what populate ChannelInsights.abLearnings, which is injected into the
+ * metadata-generation prompt — so this is the step that closes the feedback loop from
+ * real test outcomes back into the titles the AI proposes.
+ */
+export async function pushAbTests(tests: AbTestRecord[]): Promise<void> {
+  await post('/analytics/ab-tests', { tests });
 }
 
 /** POST /analytics/ingest — append metric snapshots. Throws IngestError on any failure. */

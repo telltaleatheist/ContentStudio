@@ -1,0 +1,155 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        width: 380px; margin: 0; padding: 14px;
+        font: 13px/1.5 Roboto, system-ui, -apple-system, sans-serif;
+        background: #212121; color: #f1f1f1;
+      }
+      h1 { font-size: 14px; margin: 0 0 10px; color: #ff6b35; letter-spacing: .03em; }
+      h2 { font-size: 13px; margin: 14px 0 6px; }
+      p { margin: 0 0 8px; color: #ccc; }
+      ul { margin: 0 0 10px; padding-left: 18px; color: #ccc; }
+      li { margin-bottom: 4px; }
+      .warn {
+        background: rgba(255,207,107,.10); border: 1px solid rgba(255,207,107,.35);
+        color: #ffcf6b; border-radius: 8px; padding: 8px 10px; margin: 10px 0;
+      }
+      label { display: block; margin: 10px 0 4px; color: #aaa; font-size: 12px; }
+      input[type=text] {
+        width: 100%; box-sizing: border-box; padding: 7px 9px; border-radius: 8px;
+        border: 1px solid #454545; background: #2c2c2c; color: #f1f1f1; font-size: 12px;
+      }
+      button {
+        width: 100%; padding: 9px; margin-top: 8px; border-radius: 8px; cursor: pointer;
+        border: 1px solid #454545; background: #303030; color: #f1f1f1; font-size: 13px;
+      }
+      button.primary { background: #ff6b35; border-color: #ff6b35; color: #fff; font-weight: 600; }
+      button:disabled { opacity: .45; cursor: default; }
+      .status { margin-top: 10px; padding-top: 10px; border-top: 1px solid #383838; }
+      .bar { height: 6px; background: #333; border-radius: 999px; overflow: hidden; margin: 6px 0; }
+      .bar > i { display: block; height: 100%; background: #ff6b35; width: 0; }
+      .muted { color: #999; font-size: 12px; }
+      .err { color: #ff8a80; }
+      .ok { color: #7ddc7d; }
+      .hidden { display: none; }
+      label.check { display: flex; align-items: center; gap: 7px; margin: 12px 0 4px;
+                    color: #f1f1f1; font-size: 12px; cursor: pointer; }
+      label.check input { accent-color: #ff6b35; }
+      input[type=file] { width: 100%; font-size: 11px; color: #aaa; margin-bottom: 4px; }
+      code { background: #2c2c2c; padding: 1px 4px; border-radius: 4px; font-size: 11px; }
+    </style>
+  </head>
+  <body>
+    <!-- Consent gate: shown once, before anything runs. -->
+    <section id="consent">
+      <h1>A/B Title Test Exporter</h1>
+      <p>Before this runs, here is exactly what it does.</p>
+
+      <h2>What it reads</h2>
+      <ul>
+        <li>Your video list in YouTube Studio, to find videos with A/B title tests.</li>
+        <li>For each of those, the test report: the title variants, each one's
+            watch-time share, and which won.</li>
+      </ul>
+
+      <h2>How it does it</h2>
+      <ul>
+        <li>It opens a tab and steps through those pages in your own signed-in Studio
+            session, reading what is on screen. It does <strong>not</strong> use an
+            official YouTube export, because YouTube provides no API for A/B tests.</li>
+        <li>It only reads. It never edits titles, changes settings, or starts or stops
+            a test.</li>
+      </ul>
+
+      <h2>What it does NOT collect</h2>
+      <ul>
+        <li><strong>No earnings data. Ever.</strong> No revenue, RPM, CPM, ad performance
+            or payment information is requested — the code refuses monetary metrics
+            outright, so it cannot be added by accident later.</li>
+      </ul>
+
+      <h2>Where the data goes</h2>
+      <ul>
+        <li><strong>Nowhere.</strong> It builds a CSV and saves it to your Downloads
+            folder. Nothing is uploaded, and this extension has no server.</li>
+        <li>Results are also kept in the extension's own local storage so a long scan
+            survives Chrome putting it to sleep. They stay on your machine and are
+            replaced by your next scan.</li>
+        <li>Sharing that file with anyone is a separate, deliberate act by you.</li>
+      </ul>
+
+      <h2>Permissions it asks for</h2>
+      <ul>
+        <li><b>studio.youtube.com</b> — the only site it can touch.</li>
+        <li><b>Tabs / scripting</b> — to open and read those Studio pages.</li>
+        <li><b>Downloads</b> — to save the CSV when the scan finishes.</li>
+        <li><b>Storage</b> — to keep results safe mid-scan.</li>
+        <li><b>Notifications</b> — to tell you when it's done.</li>
+      </ul>
+
+      <div class="warn">
+        Automating YouTube Studio is a grey area under YouTube's Terms of Service, which
+        restrict automated access. This tool only reads your own data from your own
+        account, but the risk — however small — is yours to accept.
+      </div>
+
+      <button id="agree" class="primary">I understand — continue</button>
+    </section>
+
+    <!-- Main UI -->
+    <section id="main" class="hidden">
+      <h1>A/B Title Test Exporter</h1>
+
+      <p class="muted">
+        Open <b>YouTube Studio → Content</b> for each channel you want to export — one tab
+        each — then come back here. Each scan runs in that channel's own tab, so it always
+        uses the account you are already signed in as.
+      </p>
+      <p class="muted">
+        Multiple channels are scanned <b>one after another</b>, each saving its own CSV.
+        They are never run in parallel: the request rate is what makes YouTube start
+        throttling.
+      </p>
+
+      <div id="detected" class="muted"></div>
+      <div id="channels"></div>
+
+      <p class="muted">
+        Everything comes from YouTube's own endpoints &mdash; titles, full descriptions,
+        release dates, impressions, CTR, engagement, and each A/B test's variants,
+        watch-time shares and winner. No video pages are opened, so a whole channel takes
+        seconds.
+      </p>
+      <p class="muted">
+        The CSV saves itself to Downloads when a scan finishes, so you can start it and
+        walk away. Results are kept on disk until the next scan — download or note them
+        before scanning a second channel.
+      </p>
+
+      <label class="check" for="resumeFile" style="display:block">
+        Resume from a previous CSV (optional)
+      </label>
+      <input id="resumeFile" type="file" accept=".csv,text/csv" />
+      <div id="resumeInfo" class="muted"></div>
+
+      <button id="start" class="primary">Scan selected channels</button>
+      <button id="cancel" class="hidden">Stop</button>
+
+      <div class="status">
+        <div id="message" class="muted">Ready.</div>
+        <div class="bar"><i id="bar"></i></div>
+        <div id="counts" class="muted"></div>
+        <div id="error" class="err"></div>
+        <div id="caps" class="muted"></div>
+        <button id="download" class="hidden">Download CSV</button>
+        <button id="clear" class="hidden">Clear saved results</button>
+      </div>
+    </section>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,4 +1,4 @@
-import { Component, OnInit, signal } from '@angular/core';
+import { Component, OnInit, inject, signal } from '@angular/core';
 import { MatCardModule } from '@angular/material/card';
 import { MatListModule } from '@angular/material/list';
 import { MatIconModule } from '@angular/material/icon';
@@ -8,6 +8,8 @@ import { MatChipsModule } from '@angular/material/chips';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { ElectronService } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
+import { PublishState } from '../../features/publish/publish-state';
+import { MAX_AB_VARIANTS } from '../../features/publish/publish.types';
 
 interface MetadataReport {
   name: string;
@@ -62,10 +64,46 @@ export class MetadataReports implements OnInit {
   copiedItem = signal<string | null>(null);
   private copiedTimeout: any = null;
 
+  // Publish feature: the operator's chosen A/B titles for the open item. Held in a
+  // shared service rather than local state so features/publish/ owns the selection —
+  // this component only renders it. That's the single seam between the generator UI
+  // and the publish feature.
+  readonly publish = inject(PublishState);
+  readonly MAX_AB_VARIANTS = MAX_AB_VARIANTS;
+
   constructor(
     private electron: ElectronService,
     private notificationService: NotificationService
   ) {}
+
+  /**
+   * Toggle a title into/out of the A/B set. Click order becomes variant order —
+   * variant 1 is YouTube's fallback when a test is inconclusive, so it's a real choice.
+   */
+  async toggleChosenTitle(title: any, event: MouseEvent) {
+    // The row's own click handler copies to clipboard; picking shouldn't also copy.
+    event.stopPropagation();
+    await this.publish.toggleTitle(this.getTitleText(title));
+  }
+
+  async moveChosenTitle(title: any, direction: -1 | 1, event: MouseEvent) {
+    event.stopPropagation();
+    await this.publish.reorder(this.getTitleText(title), direction);
+  }
+
+  isTitleChosen(title: any): boolean {
+    return this.publish.isChosen(this.getTitleText(title));
+  }
+
+  /** 1-based variant number, or null when the title isn't picked. */
+  titleVariantNumber(title: any): number | null {
+    return this.publish.variantNumber(this.getTitleText(title));
+  }
+
+  /** True when the 3-variant cap blocks picking this one. */
+  isTitleBlocked(title: any): boolean {
+    return this.publish.isBlocked(this.getTitleText(title));
+  }
 
   async ngOnInit() {
     await this.loadReports();
@@ -291,6 +329,10 @@ export class MetadataReports implements OnInit {
 
       this.metadata.set(selectedItem);
       console.log('[MetadataReports] Final metadata signal value:', this.metadata());
+
+      // Load any previously chosen A/B titles for this item. Deliberately not awaited
+      // with the metadata read above — a failure here must not blank the report.
+      void this.publish.load(report.jobId, report.itemIndex);
     } catch (error) {
       console.error('[MetadataReports] Error loading report:', error);
       this.notificationService.error('Read Error', 'Failed to read report: ' + (error as Error).message);

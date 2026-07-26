@@ -9,6 +9,7 @@ import { DistillationService } from './services/analytics/distillation.service';
 import { YouTubeAuthService } from './services/youtube/youtube-auth.service';
 import { YouTubeApiService } from './services/youtube/youtube-api.service';
 import { ApiCollectorService } from './services/youtube/api-collector.service';
+import { PublishStoreService } from './services/publish/publish-store.service';
 
 /**
  * ContentStudio - Main Electron Process
@@ -157,8 +158,12 @@ app.whenReady().then(async () => {
       analyticsStore.getBaseDir()
     );
 
+    // Publish / title-A-B store. Kept under its own userData subtree (publish/) rather
+    // than inside analytics/ so the whole feature can be lifted out cleanly.
+    const publishStore = new PublishStoreService(path.join(userDataPath, 'publish'));
+
     // Set up IPC handlers
-    setupIpcHandlers(store, { analyticsStore, ingestServer, youtubeAuth, apiCollector });
+    setupIpcHandlers(store, { analyticsStore, ingestServer, youtubeAuth, youtubeApi, apiCollector, publishStore });
 
     // Collection is manual (user clicks "Refresh data" on the Analytics page).
     // At startup we only clear stale per-channel errors from a prior session.

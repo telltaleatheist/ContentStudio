@@ -113,7 +113,24 @@ const api = {
   youtubeDisconnectChannel: (channelId: string) => ipcRenderer.invoke('youtube-disconnect-channel', channelId),
   youtubeListConnections: () => ipcRenderer.invoke('youtube-list-connections'),
   youtubeCollectNow: (channelId?: string) => ipcRenderer.invoke('youtube-collect-now', channelId),
-  youtubeGetCollectorState: () => ipcRenderer.invoke('youtube-get-collector-state')
+  youtubeGetCollectorState: () => ipcRenderer.invoke('youtube-get-collector-state'),
+
+  // Publish (chosen titles / A-B test setup)
+  publishGetSelections: (jobId: string) => ipcRenderer.invoke('publish-get-selections', jobId),
+  // titles order is meaningful: index 0 becomes the main title AND A/B variant 1
+  publishSetTitles: (jobId: string, itemIndex: number, titles: string[]) =>
+    ipcRenderer.invoke('publish-set-titles', jobId, itemIndex, titles),
+  // pass null for a field to clear the override and fall back to the generated value
+  publishSetFields: (
+    jobId: string,
+    itemIndex: number,
+    fields: { descriptionOverride?: string | null; tagsOverride?: string | null; channelId?: string | null }
+  ) => ipcRenderer.invoke('publish-set-fields', jobId, itemIndex, fields),
+  publishGetResolved: (jobId: string, itemIndex: number) =>
+    ipcRenderer.invoke('publish-get-resolved', jobId, itemIndex),
+  publishListActionable: () => ipcRenderer.invoke('publish-list-actionable'),
+  publishClear: (jobId: string, itemIndex: number) =>
+    ipcRenderer.invoke('publish-clear', jobId, itemIndex)
 };
 
 // Expose the API to the renderer process

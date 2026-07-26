@@ -71,3 +71,4 @@ prompt-harness/out/
 # starting point; your working copies stay local.
 prompt-harness/fixtures/transcript.txt
 prompt-harness/fixtures/insights.txt
+ab-title-test-exporter.zip

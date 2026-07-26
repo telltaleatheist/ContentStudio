@@ -54,6 +54,26 @@ export interface Snapshot {
   shares: number | null;
 }
 
+/**
+ * A finished, DECIDED A/B title test.
+ *
+ * Permanent: stored outside verdicts (which are regenerated every distillation) because a
+ * concluded experiment is a fact, not a derived value. Undecided tests are never recorded
+ * — "the titles performed the same" is not a win, and storing it as one would teach the
+ * generator that a coin-flip was a success.
+ */
+export interface AbTestResult {
+  videoId: string;
+  channelId: string;
+  variants: string[];
+  winner: string;
+  /** Winner's watch-time share minus the nearest rival's, in percentage points. */
+  liftPct: number;
+  method: 'test-compare' | 'rotation';
+  decidedAt: string;        // ISO
+  shares: number[];         // watch-time share per variant, percent
+}
+
 export interface VideoVerdict {
   videoId: string;
   channelId: string;

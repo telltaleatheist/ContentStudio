@@ -76,6 +76,25 @@ export interface VideoCatalogEntry {
   isLive: boolean;           // liveStreamingDetails present
 }
 
+/**
+ * A recent upload with its status fields, used for draft matching.
+ *
+ * `publishAt` is the load-bearing field: a private video WITH publishAt is scheduled
+ * (finished work), a private video WITHOUT one is a true draft.
+ */
+export interface UploadStatusEntry {
+  videoId: string;
+  title: string;
+  publishedAt: string;
+  durationSec: number;
+  privacyStatus: string;
+  uploadStatus: string;
+  publishAt: string | null;
+  descriptionLength: number;
+  tagCount: number;
+  categoryId: string | null;
+}
+
 /** Core lifetime metrics for a video (Analytics API). */
 export interface CoreMetrics {
   views: number;
@@ -275,6 +294,70 @@ export class YouTubeApiService {
           durationSec,
           isLive,
           format: classifyFormat(durationSec, isLive),
+        });
+      }
+    }
+    return entries;
+  }
+
+  /**
+   * The most recent uploads WITH their status fields — what draft matching needs.
+   *
+   * Deliberately separate from listUploads():
+   *  - listUploads pages the entire catalog (thousands of videos per channel); drafts
+   *    are always recent, so we stop after `maxVideos`.
+   *  - it doesn't request part=status, which is where privacyStatus/publishAt live.
+   *
+   * Cost is ~1 + 2 + 2 quota units at the default cap.
+   *
+   * NOTE: `fileDetails.fileName` is NOT requested because YouTube does not populate it
+   * (verified live 2026-07-25 — fileName/fileSize come back undefined even when
+   * fileDetailsAvailability is 'available'). The original filename is only readable
+   * from the Studio DOM, which is the extension's job.
+   */
+  async listRecentUploads(channelId: string, maxVideos = 100): Promise<UploadStatusEntry[]> {
+    const uploadsPlaylist = await this.getUploadsPlaylistId(channelId);
+
+    // playlistItems returns newest-first, so the first pages are the recent uploads.
+    const videoIds: string[] = [];
+    let pageToken: string | undefined;
+    do {
+      const params: Record<string, string> = {
+        part: 'contentDetails',
+        playlistId: uploadsPlaylist,
+        maxResults: '50',
+      };
+      if (pageToken) params.pageToken = pageToken;
+      const page = await this.dataGet<any>(channelId, 'playlistItems', params);
+      for (const item of page.items || []) {
+        const id = item?.contentDetails?.videoId;
+        if (id) videoIds.push(id);
+      }
+      pageToken = page.nextPageToken;
+    } while (pageToken && videoIds.length < maxVideos);
+
+    const wanted = videoIds.slice(0, maxVideos);
+
+    const entries: UploadStatusEntry[] = [];
+    for (let i = 0; i < wanted.length; i += 50) {
+      const chunk = wanted.slice(i, i + 50);
+      const data = await this.dataGet<any>(channelId, 'videos', {
+        part: 'snippet,status,contentDetails',
+        id: chunk.join(','),
+      });
+      for (const item of data.items || []) {
+        entries.push({
+          videoId: item.id,
+          title: item.snippet?.title || '',
+          publishedAt: item.snippet?.publishedAt || '',
+          durationSec: parseIsoDuration(item.contentDetails?.duration),
+          privacyStatus: item.status?.privacyStatus || 'private',
+          uploadStatus: item.status?.uploadStatus || '',
+          // Present => the video is SCHEDULED, not a draft. Load-bearing safety signal.
+          publishAt: item.status?.publishAt || null,
+          descriptionLength: (item.snippet?.description || '').length,
+          tagCount: (item.snippet?.tags || []).length,
+          categoryId: item.snippet?.categoryId || null,
         });
       }
     }
