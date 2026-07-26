@@ -88,8 +88,6 @@ const state = {
   /** Tab being driven, so the on-page overlay can be addressed directly. */
   workingTabId: null,
   channelId: null,
-  /** The tab WE created and are responsible for closing. Never the user's own tab. */
-  ownedTabId: null,
   queueIndex: 0,
   queueTotal: 0,
   cancelled: false,
@@ -812,29 +810,21 @@ async function waitForTabLoad(tabId, timeoutMs = 45000) {
 }
 
 /**
- * Replace the working tab with a fresh one, releasing the old renderer process.
+ * Release the accumulated renderer heap WITHOUT creating or closing any tabs.
  *
- * Returns the new tab id, or the original if recycling failed — a failure here should
- * cost memory, never the run.
+ * Chrome reuses one renderer process across successive same-origin navigations, so
+ * driving hundreds of Studio pages through a tab grows that process the whole way.
+ * Navigating to about:blank leaves the studio.youtube.com origin, which lets Chrome swap
+ * process and reclaim the old one — the same benefit as closing the tab, without
+ * disturbing the tab the operator chose.
  */
-async function recycleTab(oldTabId) {
+async function flushTabMemory(tabId) {
   try {
-    const fresh = await chrome.tabs.create({ url: 'about:blank', active: true });
-    await chrome.tabs.remove(oldTabId).catch(() => {});
-    await waitForTabLoad(fresh.id, 15000).catch(() => {});
-    return fresh.id;
+    await chrome.tabs.update(tabId, { url: 'about:blank' });
+    await waitForTabLoad(tabId, 10000).catch(() => {});
+    await sleep(400);
   } catch (err) {
-    console.warn('[exporter] tab recycle failed, continuing on the existing tab', err);
-    return oldTabId;
-  }
-}
-
-/** Close the dedicated working tab, freeing its renderer entirely. */
-async function closeTab(tabId) {
-  try {
-    await chrome.tabs.remove(tabId);
-  } catch {
-    /* already gone */
+    console.warn('[exporter] memory flush skipped', err);
   }
 }
 
@@ -846,13 +836,13 @@ async function inject(tabId, func, args = [], world = 'ISOLATED') {
 async function run(sourceTabId, emptyPageStreakLimit) {
   setState({ phase: 'listing', message: 'Loading your video list…', scanned: 0, total: 0, found: 0 });
 
-  // Read the channel and account context from the tab the user pointed us at, but do NOT
-  // drive that tab. Two reasons:
-  //   1. Hijacking a tab the user is using is rude, and they lose their place.
-  //   2. chrome.tabs.update does not focus a tab, so driving a BACKGROUND Studio tab made
-  //      the scan invisible — no visible navigation, no overlay — and looked broken while
-  //      working perfectly. Anyone with two Studio tabs open could hit this.
-  // Instead we open one dedicated, visible working tab and drive that.
+  // Drive the tab the user pointed us at — no extra tabs are created.
+  //
+  // The original "it isn't moving and there's no overlay" bug was NOT caused by using the
+  // user's tab; it was caused by driving a tab without focusing it. chrome.tabs.update
+  // does not raise a tab, so a background Studio tab was driven invisibly. Every
+  // navigation below therefore passes active:true, which makes the scan self-evidently
+  // visible wherever it is running.
   const startTab = await chrome.tabs.get(sourceTabId);
   const sourceUrl = startTab.url || '';
   const channelId = channelIdFromUrl(sourceUrl);
@@ -864,16 +854,12 @@ async function run(sourceTabId, emptyPageStreakLimit) {
 
   state.channelId = channelId;
 
-  // Dedicated working tab, opened ACTIVE so the operator can always see what is happening.
-  const workTab = await chrome.tabs.create({
-    url: LIST_URL(channelId, sourceUrl),
-    active: true,
-    index: startTab.index + 1,
-    windowId: startTab.windowId,
-  });
-  let tabId = workTab.id;
+  let tabId = sourceTabId;  // reassigned only if the tab is closed mid-run
   state.workingTabId = tabId;
-  state.ownedTabId = tabId;
+
+  // Focus it so the operator can see the scan working. Also raise its window.
+  await chrome.tabs.update(tabId, { url: LIST_URL(channelId, sourceUrl), active: true });
+  await chrome.windows.update(startTab.windowId, { focused: true }).catch(() => {});
   await waitForTabLoad(tabId);
   await sleep(3000);
 
@@ -991,7 +977,6 @@ async function run(sourceTabId, emptyPageStreakLimit) {
         const fresh = await chrome.tabs.create({ url: 'about:blank', active: true });
         tabId = fresh.id;
         state.workingTabId = tabId;
-        state.ownedTabId = tabId;
         await waitForTabLoad(tabId, 15000).catch(() => {});
       } catch (err) {
         setState({
@@ -1004,7 +989,7 @@ async function run(sourceTabId, emptyPageStreakLimit) {
     }
 
     try {
-      await chrome.tabs.update(tabId, { url: EDIT_URL(video.videoId, sourceUrl) });
+      await chrome.tabs.update(tabId, { url: EDIT_URL(video.videoId, sourceUrl), active: true });
       await waitForTabLoad(tabId);
       const report = await inject(tabId, scrapeReport);
 
@@ -1082,11 +1067,9 @@ async function run(sourceTabId, emptyPageStreakLimit) {
     // than a handful of videos to a crash is worse.
     if (state.scanned % 5 === 0) void persist();
 
-    // Hand the accumulated renderer heap back to the OS. See RECYCLE_EVERY_N_VIDEOS.
+    // Hand the accumulated renderer heap back. See RECYCLE_EVERY_N_VIDEOS.
     if (state.scanned % RECYCLE_EVERY_N_VIDEOS === 0) {
-      tabId = await recycleTab(tabId);
-      state.workingTabId = tabId;
-      state.ownedTabId = tabId;
+      await flushTabMemory(tabId);
     }
 
     // Stop immediately if Studio starts pushing back. Continuing into a throttle turns a
@@ -1163,10 +1146,9 @@ async function run(sourceTabId, emptyPageStreakLimit) {
       `Done. ${state.found} test report(s) read` +
       (analyticsOnly ? `, plus lifetime analytics for ${analyticsOnly} other video(s).` : '.'),
   });
-  // Close the dedicated working tab: it is ours, nobody wants it left behind, and a
-  // 2,900-row Studio list is the heaviest thing on the page.
-  await closeTab(tabId);
-  state.ownedTabId = null;
+  // Hand the tab back where the operator started, rather than leaving it on some random
+  // video's edit page. It is their tab; we borrowed it.
+  await chrome.tabs.update(tabId, { url: LIST_URL(channelId, sourceUrl) }).catch(() => {});
   await finishRun('Scan complete');
 }
 
@@ -1456,12 +1438,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           setState({ phase: 'error', error: error?.message || String(error) });
           await finishRun('Scan failed');
         } finally {
-          // Our tab, our responsibility — a stopped or failed run must not leave a
-          // half-driven Studio tab sitting there consuming a renderer.
-          if (state.ownedTabId) {
-            await closeTab(state.ownedTabId);
-            state.ownedTabId = null;
-          }
           state.running = false;
           setKeepalive(false);
           await persist();
