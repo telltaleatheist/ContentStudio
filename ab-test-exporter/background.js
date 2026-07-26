@@ -197,6 +197,192 @@ async function scrapeVideoList(emptyPageStreakLimit) {
 }
 
 /**
+ * Lifetime per-video analytics for the whole channel, in ONE request.
+ *
+ * Uses Studio's own internal analytics endpoint rather than scraping the analytics UI —
+ * impressions and impressions-CTR are not available in the public YouTube Analytics API
+ * at all, and this returns every video on the channel in a single call instead of one
+ * page load each.
+ *
+ * MUST run in the MAIN world: it needs window.ytcfg and the SAPISID cookie, neither of
+ * which an isolated content script can reach.
+ *
+ * Hard-won details, all verified live — do not "simplify" these away:
+ *  - Auth is SAPISIDHASH: sha1(`${ts} ${SAPISID} ${origin}`), plus credentials:'include'.
+ *  - Brand (non-primary) channels 403 unless the delegation context is sent as the
+ *    X-YouTube-Delegation-Context HEADER *and* X-Goog-AuthUser — not just in the body.
+ *    The primary channel works without them, which makes this fail confusingly.
+ *  - Metric columns must be matched by `.metric.type`, NEVER by index.
+ *  - EXTERNAL_WATCH_TIME arrives under a `milliseconds` holder, not `counts`.
+ *  - pageOffset > 0 returns HTTP 400 — offset paging is unsupported. One big pageSize is
+ *    the only option, so a full page means the catalogue may exceed one request and we
+ *    fail loudly rather than silently truncating.
+ */
+async function fetchLifetimeAnalytics(channelId) {
+  const ORIGIN = 'https://studio.youtube.com';
+  const ENDPOINT = 'https://studio.youtube.com/youtubei/v1/yta_web/join?alt=json';
+  const PAGE = 10000;
+
+  const fail = (code, message) => ({ ok: false, code, message });
+
+  try {
+    const readCookie = (name) => {
+      for (const pair of (document.cookie ? document.cookie.split('; ') : [])) {
+        const eq = pair.indexOf('=');
+        const key = eq === -1 ? pair : pair.slice(0, eq);
+        if (key === name) return eq === -1 ? '' : decodeURIComponent(pair.slice(eq + 1));
+      }
+      return null;
+    };
+    const sapisid = readCookie('SAPISID') || readCookie('__Secure-3PAPISID');
+    if (!sapisid) return fail('NO_SAPISID', 'Not signed in to YouTube Studio (no SAPISID cookie).');
+
+    const sha1Hex = async (input) => {
+      const bytes = new Uint8Array(await crypto.subtle.digest('SHA-1', new TextEncoder().encode(input)));
+      let hex = '';
+      for (const b of bytes) hex += b.toString(16).padStart(2, '0');
+      return hex;
+    };
+    const ts = Math.floor(Date.now() / 1000);
+    const authorization = `SAPISIDHASH ${ts}_${await sha1Hex(`${ts} ${sapisid} ${ORIGIN}`)}`;
+
+    const cfg = window.ytcfg;
+    if (!cfg || typeof cfg.get !== 'function') return fail('YTCFG_MISSING', 'Studio page not fully loaded.');
+    const innertube = cfg.get('INNERTUBE_CONTEXT');
+    const clientVersion = innertube?.client?.clientVersion;
+    if (!clientVersion) return fail('YTCFG_MISSING', 'Studio client version unavailable.');
+
+    const activeChannel = cfg.get('CHANNEL_ID');
+    if (activeChannel !== channelId) {
+      return fail('CHANNEL_MISMATCH', `Studio is on channel ${activeChannel}, not ${channelId}.`);
+    }
+    const delegation = cfg.get('INNERTUBE_CONTEXT_SERIALIZED_DELEGATION_CONTEXT');
+    if (!delegation) return fail('NO_DELEGATION', 'Studio delegation context missing — reload the page.');
+    const authUser = cfg.get('SESSION_INDEX') != null ? String(cfg.get('SESSION_INDEX')) : '0';
+    const visitorData = innertube?.client?.visitorData || null;
+
+    // All-time window: 2008-01-01 .. tomorrow (exclusive), in the page's local timezone.
+    const now = new Date();
+    const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const exclusiveEnd =
+      tomorrow.getFullYear() * 10000 + (tomorrow.getMonth() + 1) * 100 + tomorrow.getDate();
+
+    const body = {
+      context: {
+        client: { clientName: 62, clientVersion },
+        user: { serializedDelegationContext: delegation },
+      },
+      nodes: [{
+        key: 'TABLE_QUERY',
+        value: {
+          query: {
+            dimensions: [{ type: 'VIDEO' }],
+            metrics: [
+              { type: 'VIDEO_THUMBNAIL_IMPRESSIONS' },
+              { type: 'VIDEO_THUMBNAIL_IMPRESSIONS_VTR' },
+              { type: 'EXTERNAL_VIEWS' },
+              { type: 'EXTERNAL_WATCH_TIME' },
+              { type: 'AVERAGE_WATCH_PERCENTAGE' },
+            ],
+            restricts: [{ dimension: { type: 'USER' }, inValues: [channelId] }],
+            orders: [{ metric: { type: 'EXTERNAL_VIEWS' }, direction: 'ANALYTICS_ORDER_DIRECTION_DESC' }],
+            timeRange: { dateIdRange: { inclusiveStart: 20080101, exclusiveEnd } },
+            limit: { pageSize: PAGE, pageOffset: 0 },
+            currency: 'USD',
+            returnDataInNewFormat: true,
+            limitedToBatchedData: false,
+          },
+        },
+      }],
+    };
+
+    let resp;
+    try {
+      resp = await fetch(ENDPOINT, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: authorization,
+          'X-Origin': ORIGIN,
+          'X-Goog-AuthUser': authUser,
+          'X-YouTube-Delegation-Context': delegation,
+          'X-YouTube-Client-Name': '62',
+          'X-YouTube-Client-Version': clientVersion,
+          ...(visitorData ? { 'X-Goog-Visitor-Id': visitorData } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (netErr) {
+      return fail('NETWORK', `Network error: ${netErr?.message || String(netErr)}`);
+    }
+
+    if (resp.status === 401 || resp.status === 403) return fail('HTTP_AUTH', `Analytics rejected (HTTP ${resp.status}).`);
+    if (resp.status === 429) return fail('HTTP_RATELIMIT', 'Analytics rate limited (HTTP 429).');
+    if (!resp.ok) return fail('HTTP_ERROR', `Analytics returned HTTP ${resp.status}.`);
+
+    let data;
+    try { data = await resp.json(); } catch { return fail('BAD_JSON', 'Analytics response was not JSON.'); }
+
+    const node = Array.isArray(data?.results) && data.results.find((r) => r?.value?.resultTable);
+    if (!node) return fail('NO_RESULT_TABLE', 'Analytics response had no result table.');
+    const table = node.value.resultTable;
+
+    const ids = table?.dimensionColumns?.[0]?.strings?.values;
+    if (!Array.isArray(ids)) return fail('MISSING_COLUMN', 'Analytics response had no videoId column.');
+    const rowCount = ids.length;
+    const metricCols = Array.isArray(table.metricColumns) ? table.metricColumns : [];
+
+    // Match by metric type, never by index — column order is not guaranteed.
+    const seriesOf = (metricType, kinds) => {
+      const column = metricCols.find((c) => c?.metric?.type === metricType);
+      if (!column) return null;
+      for (const kind of kinds) {
+        const arr = column[kind]?.values;
+        if (Array.isArray(arr) && arr.length === rowCount) return arr;
+      }
+      return null;
+    };
+
+    const impressions = seriesOf('VIDEO_THUMBNAIL_IMPRESSIONS', ['counts']);
+    const ctr = seriesOf('VIDEO_THUMBNAIL_IMPRESSIONS_VTR', ['percentages']);
+    const views = seriesOf('EXTERNAL_VIEWS', ['counts']);
+    const watchMs = seriesOf('EXTERNAL_WATCH_TIME', ['milliseconds']);
+    const avgPct = seriesOf('AVERAGE_WATCH_PERCENTAGE', ['percentages']);
+    if (!views || !watchMs) return fail('MISSING_COLUMN', 'Analytics response was missing views or watch time.');
+
+    const toNum = (v) => {
+      if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+      if (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v))) return Number(v);
+      return null;
+    };
+
+    const rows = [];
+    for (let i = 0; i < rowCount; i++) {
+      const videoId = ids[i];
+      if (typeof videoId !== 'string' || !videoId) continue;
+      const ms = toNum(watchMs[i]);
+      rows.push({
+        videoId,
+        impressions: impressions ? toNum(impressions[i]) : null,
+        impressionsCtrPct: ctr ? toNum(ctr[i]) : null,
+        views: toNum(views[i]),
+        // EXTERNAL_WATCH_TIME is milliseconds, not seconds — verified live.
+        watchHours: ms === null ? null : ms / 3600000,
+        avgPctViewed: avgPct ? toNum(avgPct[i]) : null,
+      });
+    }
+
+    // Offset paging is unsupported, so a completely full page means the catalogue may
+    // exceed one request. Say so rather than silently dropping the overflow.
+    const truncated = rowCount >= PAGE;
+    return { ok: true, rows, truncated };
+  } catch (err) {
+    return fail('EXCEPTION', `Unexpected error: ${err?.message || String(err)}`);
+  }
+}
+
+/**
  * Open the A/B test report on a video details page and parse it.
  *
  * Returns { status, variants[], ranFrom, ranTo } or { status: 'none' } when the video
@@ -325,8 +511,8 @@ async function waitForTabLoad(tabId, timeoutMs = 45000) {
   }
 }
 
-async function inject(tabId, func, args = []) {
-  const [result] = await chrome.scripting.executeScript({ target: { tabId }, func, args });
+async function inject(tabId, func, args = [], world = 'ISOLATED') {
+  const [result] = await chrome.scripting.executeScript({ target: { tabId }, func, args, world });
   return result?.result;
 }
 
@@ -358,6 +544,26 @@ async function run(tabId, emptyPageStreakLimit) {
     );
   }
 
+  // Lifetime analytics first: one request covers the entire channel, so it is both the
+  // cheapest step and the one that defines the row set the A/B results are merged into.
+  const analyticsById = new Map();
+  setState({ message: 'Fetching lifetime analytics for the whole channel…' });
+  const analytics = await inject(tabId, fetchLifetimeAnalytics, [channelId], 'MAIN');
+
+  if (analytics?.ok) {
+    for (const row of analytics.rows) analyticsById.set(row.videoId, row);
+    setState({
+      message:
+        `Lifetime analytics for ${analytics.rows.length} videos.` +
+        (analytics.truncated ? ' NOTE: hit the single-request cap — some videos may be missing.' : ''),
+    });
+  } else {
+    // Not fatal: the A/B export is still worth producing without analytics columns.
+    setState({
+      message: `Analytics unavailable (${analytics?.code || 'unknown'}) — continuing with A/B results only.`,
+    });
+  }
+
   setState({ message: 'Reading your video list (this walks every page)…' });
   const listing = await inject(tabId, scrapeVideoList, [emptyPageStreakLimit]);
   const videos = listing?.videos;
@@ -384,6 +590,20 @@ async function run(tabId, emptyPageStreakLimit) {
     return;
   }
 
+  // Every emitted row carries the video's lifetime analytics, so the CSV is a single
+  // joined table rather than two that have to be reconciled later.
+  const withAnalytics = (base) => {
+    const a = analyticsById.get(base.videoId);
+    return {
+      ...base,
+      impressions: a?.impressions ?? '',
+      impressionsCtrPct: a?.impressionsCtrPct ?? '',
+      views: a?.views ?? '',
+      watchHours: a?.watchHours === null || a?.watchHours === undefined ? '' : a.watchHours.toFixed(2),
+      avgPctViewed: a?.avgPctViewed ?? '',
+    };
+  };
+
   for (const video of tested) {
     if (state.cancelled) {
       setState({ phase: 'cancelled', message: 'Stopped. Partial results kept.' });
@@ -399,7 +619,7 @@ async function run(tabId, emptyPageStreakLimit) {
 
       if (report?.status === 'ok') {
         for (const variant of report.variants) {
-          state.rows.push({
+          state.rows.push(withAnalytics({
             videoId: video.videoId,
             videoUrl: `https://youtu.be/${video.videoId}`,
             currentTitle: video.title ?? '',
@@ -412,12 +632,12 @@ async function run(tabId, emptyPageStreakLimit) {
             isCurrentlyLive: variant.isLive ? 'yes' : 'no',
             ranFrom: report.ranFrom ?? '',
             ranTo: report.ranTo ?? '',
-          });
+          }));
         }
         setState({ found: state.found + 1 });
       } else {
         // Running tests have no report yet — expected, not an error.
-        state.rows.push({
+        state.rows.push(withAnalytics({
           videoId: video.videoId,
           videoUrl: `https://youtu.be/${video.videoId}`,
           currentTitle: video.title ?? '',
@@ -430,11 +650,11 @@ async function run(tabId, emptyPageStreakLimit) {
           isCurrentlyLive: '',
           ranFrom: '',
           ranTo: '',
-        });
+        }));
       }
     } catch (error) {
       // Record and continue — one bad video must not lose the whole run.
-      state.rows.push({
+      state.rows.push(withAnalytics({
         videoId: video.videoId,
         videoUrl: `https://youtu.be/${video.videoId}`,
         currentTitle: video.title ?? '',
@@ -447,7 +667,7 @@ async function run(tabId, emptyPageStreakLimit) {
         isCurrentlyLive: '',
         ranFrom: '',
         ranTo: '',
-      });
+      }));
     }
 
     setState({ scanned: state.scanned + 1 });
@@ -476,7 +696,43 @@ async function run(tabId, emptyPageStreakLimit) {
     await sleep(jitteredDelay());
   }
 
-  setState({ phase: 'done', message: `Done. ${state.found} test report(s) read.` });
+  // Videos with no A/B test still belong in the export — lifetime analytics for the whole
+  // catalogue is the larger half of the training signal. Titles come from the list walk,
+  // so they are blank for videos on pages the early-exit skipped.
+  const emitted = new Set(state.rows.map((r) => r.videoId));
+  const titleById = new Map(videos.map((v) => [v.videoId, v.title ?? '']));
+  let analyticsOnly = 0;
+
+  for (const [videoId, a] of analyticsById) {
+    if (emitted.has(videoId)) continue;
+    analyticsOnly++;
+    state.rows.push({
+      videoId,
+      videoUrl: `https://youtu.be/${videoId}`,
+      currentTitle: titleById.get(videoId) ?? '',
+      testStatus: '',
+      testOutcome: 'no-test',
+      variantIndex: '',
+      variantTitle: '',
+      watchTimeSharePct: '',
+      isWinner: '',
+      isCurrentlyLive: '',
+      ranFrom: '',
+      ranTo: '',
+      impressions: a.impressions ?? '',
+      impressionsCtrPct: a.impressionsCtrPct ?? '',
+      views: a.views ?? '',
+      watchHours: a.watchHours === null ? '' : a.watchHours.toFixed(2),
+      avgPctViewed: a.avgPctViewed ?? '',
+    });
+  }
+
+  setState({
+    phase: 'done',
+    message:
+      `Done. ${state.found} test report(s) read` +
+      (analyticsOnly ? `, plus lifetime analytics for ${analyticsOnly} other video(s).` : '.'),
+  });
 }
 
 // ---------------------------------------------------------------- CSV
@@ -485,6 +741,14 @@ const CSV_COLUMNS = [
   'videoId',
   'videoUrl',
   'currentTitle',
+  // Lifetime, whole-channel analytics — repeated on every variant row of a video so the
+  // file is one self-contained table.
+  'impressions',
+  'impressionsCtrPct',
+  'views',
+  'watchHours',
+  'avgPctViewed',
+  // A/B test result; blank for videos that were never tested.
   'testStatus',
   'testOutcome',
   'variantIndex',

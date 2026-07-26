@@ -51,13 +51,21 @@ rate-limiting, rather than pushing through.
 
 ## What you get
 
-One row per **variant** (long format, which is what you want for training or analysis):
+One CSV covering the whole channel. Every video gets **lifetime analytics**; videos that
+were A/B tested additionally get **one row per title variant** (long format, which is what
+you want for training or analysis), with the analytics repeated on each so the file is a
+single self-contained table.
 
 | column | meaning |
 |---|---|
 | `videoId` | YouTube video id |
 | `videoUrl` | `https://youtu.be/<id>` |
 | `currentTitle` | the video's title as it appears in your list now |
+| `impressions` | lifetime thumbnail impressions |
+| `impressionsCtrPct` | lifetime impressions click-through rate, e.g. `10.2` |
+| `views` | lifetime views |
+| `watchHours` | lifetime watch time in hours |
+| `avgPctViewed` | average percentage of the video watched |
 | `testStatus` | `A/B Test running` or `A/B Test completed` |
 | `testOutcome` | `winner`, `performed-same`, `inconclusive`, or a reason it couldn't be read |
 | `variantIndex` | 1, 2, 3 — the order YouTube showed them in |
@@ -72,6 +80,25 @@ uses to decide a title test.
 
 Videos with a test still *running* are included with `testOutcome = no-report-yet` and no
 variant rows, so you can see they exist without mistaking them for finished results.
+Videos that were never tested appear once with `testOutcome = no-test` and analytics only.
+
+Analytics come from a single request covering the entire channel — impressions and
+impressions-CTR are not available in the public YouTube Analytics API at all, which is
+part of why this tool exists.
+
+### Descriptions
+
+Not included, on purpose. Descriptions are public data, so `yt-dlp` gets them far more
+cheaply than driving Studio thousands of times. Join on `videoId`:
+
+```bash
+yt-dlp "https://www.youtube.com/channel/<UC…>/videos" \
+  --skip-download --ignore-errors \
+  --print-to-file "%(id)s\t%(title)j\t%(description)j" descriptions.tsv
+```
+
+The `j` conversion JSON-encodes each field so newlines inside descriptions don't break
+the file.
 
 ## What it does and doesn't do
 
