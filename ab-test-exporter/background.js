@@ -435,13 +435,28 @@ async function fetchLifetimeAnalytics(channelId) {
       'AVERAGE_WATCH_PERCENTAGE',
     ];
     const EXTENDED = CORE.concat([
-      'AVERAGE_WATCH_TIME',        // average view duration
-      'SUBSCRIBERS_NET_CHANGE',    // net subs gained
+      'AVERAGE_WATCH_TIME',        // average view duration (ms)
+      'SUBSCRIBERS_NET_CHANGE',
+      'SUBSCRIBERS_GAINED',
+      'SUBSCRIBERS_LOST',
       'RATINGS_LIKES',
       'RATINGS_DISLIKES',
       'COMMENTS',
       'SHARINGS',                  // shares
+      'NEW_VIEWERS',
+      'RETURNING_VIEWERS',
     ]);
+
+    // NO EARNINGS DATA — EVER.
+    //
+    // This tool is shared with other creators on the explicit promise that it does not
+    // collect income. That promise is enforced here rather than left to reviewer
+    // diligence: any metric whose name looks monetary is dropped before the request is
+    // built, so adding one later cannot quietly break the commitment.
+    // Precise on purpose: a loose pattern (e.g. a bare "ad_") would silently strip a
+    // legitimate metric and quietly lose a column.
+    const MONETARY = /revenue|earning|monetiz|\brpm\b|\bcpm\b|payment|income|estimated_partner|ad_impressions|playback_based_cpm/i;
+    const stripMonetary = (list) => list.filter((m) => !MONETARY.test(m));
 
     const buildBody = (metricSet) => ({
       context: {
@@ -453,7 +468,7 @@ async function fetchLifetimeAnalytics(channelId) {
         value: {
           query: {
             dimensions: [{ type: 'VIDEO' }],
-            metrics: metricSet.map((type) => ({ type })),
+            metrics: stripMonetary(metricSet).map((type) => ({ type })),
             restricts: [{ dimension: { type: 'USER' }, inValues: [channelId] }],
             orders: [{ metric: { type: 'EXTERNAL_VIEWS' }, direction: 'ANALYTICS_ORDER_DIRECTION_DESC' }],
             timeRange: { dateIdRange: { inclusiveStart: 20080101, exclusiveEnd } },
@@ -543,6 +558,10 @@ async function fetchLifetimeAnalytics(channelId) {
 
     const avgViewDurMs = seriesOf('AVERAGE_WATCH_TIME', ['milliseconds', 'doubles', 'counts']);
     const subsNet = seriesOf('SUBSCRIBERS_NET_CHANGE', ['counts', 'doubles']);
+    const subsGained = seriesOf('SUBSCRIBERS_GAINED', ['counts']);
+    const subsLost = seriesOf('SUBSCRIBERS_LOST', ['counts']);
+    const newViewers = seriesOf('NEW_VIEWERS', ['counts']);
+    const returningViewers = seriesOf('RETURNING_VIEWERS', ['counts']);
     const likes = seriesOf('RATINGS_LIKES', ['counts']);
     const dislikes = seriesOf('RATINGS_DISLIKES', ['counts']);
     const comments = seriesOf('COMMENTS', ['counts']);
@@ -575,6 +594,10 @@ async function fetchLifetimeAnalytics(channelId) {
         avgPctViewed: avgPct ? toNum(avgPct[i]) : null,
         avgViewDurationSec: avgViewDurMs && toNum(avgViewDurMs[i]) !== null ? toNum(avgViewDurMs[i]) / 1000 : null,
         subscribersNet: subsNet ? toNum(subsNet[i]) : null,
+        subscribersGained: subsGained ? toNum(subsGained[i]) : null,
+        subscribersLost: subsLost ? toNum(subsLost[i]) : null,
+        newViewers: newViewers ? toNum(newViewers[i]) : null,
+        returningViewers: returningViewers ? toNum(returningViewers[i]) : null,
         likes: likes ? toNum(likes[i]) : null,
         dislikes: dislikes ? toNum(dislikes[i]) : null,
         comments: comments ? toNum(comments[i]) : null,
@@ -927,6 +950,10 @@ async function run(sourceTabId, opts) {
           ? ''
           : a.avgViewDurationSec.toFixed(1),
       subscribersNet: a?.subscribersNet ?? '',
+      subscribersGained: a?.subscribersGained ?? '',
+      subscribersLost: a?.subscribersLost ?? '',
+      newViewers: a?.newViewers ?? '',
+      returningViewers: a?.returningViewers ?? '',
       likes: a?.likes ?? '',
       dislikes: a?.dislikes ?? '',
       comments: a?.comments ?? '',
@@ -1131,6 +1158,10 @@ const CSV_COLUMNS = [
   'avgPctViewed',
   'avgViewDurationSec',
   'subscribersNet',
+  'subscribersGained',
+  'subscribersLost',
+  'newViewers',
+  'returningViewers',
   'likes',
   'dislikes',
   'comments',

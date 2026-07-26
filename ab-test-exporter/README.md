@@ -92,6 +92,13 @@ and dots — no colons — so they are valid on Windows as well.
 
 Timestamps in the filename are your **local** time.
 
+## What it does not collect
+
+**No earnings data, ever.** No revenue, RPM, CPM, ad performance or payment metrics are
+requested. This is enforced in code — monetary metric names are filtered out before the
+request is built — so it cannot be reintroduced by accident. Everything collected is
+audience and performance data about your videos.
+
 ## Permissions, and why
 
 | permission | why |
@@ -138,7 +145,8 @@ single self-contained table.
 | `impressionsCtrPct` | lifetime impressions CTR, e.g. `10.2` |
 | `views`, `watchHours`, `avgPctViewed` | lifetime view metrics |
 | `avgViewDurationSec` | average view duration |
-| `subscribersNet` | net subscribers gained |
+| `subscribersNet`, `subscribersGained`, `subscribersLost` | subscriber movement |
+| `newViewers`, `returningViewers` | audience split |
 | `likes`, `dislikes`, `comments`, `shares` | lifetime engagement |
 | `testState` | `FINISHED`, `INITIALIZED`, or blank |
 | `testOutcome` | `winner`, `no-clear-winner`, `running`, `no-test` |
