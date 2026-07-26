@@ -150,7 +150,8 @@ async function detectTab() {
   $('detected').textContent =
     channels.length === 1
       ? '1 channel detected.'
-      : `${channels.length} channels detected — they will be scanned one after another.`;
+      : `${channels.length} channels detected. The one you are viewing is ticked; ` +
+        'tick others to scan them one after another.';
   $('detected').className = 'ok';
 
   for (const ch of channels) {
@@ -158,10 +159,15 @@ async function detectTab() {
     label.className = 'check';
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-    cb.checked = true;
+    // Only the channel you are actually looking at is ticked by default. Others are
+    // listed but opt-in, so a scan never starts somewhere you did not intend.
+    cb.checked = channels.length === 1 ? true : !!ch.isActive;
     cb.dataset.channelId = ch.channelId;
     const name = (ch.title || '').replace(/\s*-\s*YouTube Studio\s*$/i, '').trim();
-    label.append(cb, document.createTextNode(` ${name || ch.channelId}`));
+    label.append(
+      cb,
+      document.createTextNode(` ${name || ch.channelId}${ch.isActive ? '  (current tab)' : ''}`),
+    );
     box.appendChild(label);
   }
 

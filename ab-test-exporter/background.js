@@ -88,6 +88,8 @@ const state = {
   /** Tab being driven, so the on-page overlay can be addressed directly. */
   workingTabId: null,
   channelId: null,
+  /** The tab WE created and are responsible for closing. Never the user's own tab. */
+  ownedTabId: null,
   queueIndex: 0,
   queueTotal: 0,
   cancelled: false,
@@ -817,7 +819,7 @@ async function waitForTabLoad(tabId, timeoutMs = 45000) {
  */
 async function recycleTab(oldTabId) {
   try {
-    const fresh = await chrome.tabs.create({ url: 'about:blank', active: false });
+    const fresh = await chrome.tabs.create({ url: 'about:blank', active: true });
     await chrome.tabs.remove(oldTabId).catch(() => {});
     await waitForTabLoad(fresh.id, 15000).catch(() => {});
     return fresh.id;
@@ -827,12 +829,12 @@ async function recycleTab(oldTabId) {
   }
 }
 
-/** Park the tab on a blank page so a heavy Studio document isn't left resident. */
-async function releaseTab(tabId) {
+/** Close the dedicated working tab, freeing its renderer entirely. */
+async function closeTab(tabId) {
   try {
-    await chrome.tabs.update(tabId, { url: 'about:blank' });
+    await chrome.tabs.remove(tabId);
   } catch {
-    /* tab already gone */
+    /* already gone */
   }
 }
 
@@ -841,12 +843,17 @@ async function inject(tabId, func, args = [], world = 'ISOLATED') {
   return result?.result;
 }
 
-async function run(tabIdInitial, emptyPageStreakLimit) {
-  let tabId = tabIdInitial;
+async function run(sourceTabId, emptyPageStreakLimit) {
   setState({ phase: 'listing', message: 'Loading your video list…', scanned: 0, total: 0, found: 0 });
 
-  // Anchor everything to the tab's CURRENT url so the account context is preserved.
-  const startTab = await chrome.tabs.get(tabId);
+  // Read the channel and account context from the tab the user pointed us at, but do NOT
+  // drive that tab. Two reasons:
+  //   1. Hijacking a tab the user is using is rude, and they lose their place.
+  //   2. chrome.tabs.update does not focus a tab, so driving a BACKGROUND Studio tab made
+  //      the scan invisible — no visible navigation, no overlay — and looked broken while
+  //      working perfectly. Anyone with two Studio tabs open could hit this.
+  // Instead we open one dedicated, visible working tab and drive that.
+  const startTab = await chrome.tabs.get(sourceTabId);
   const sourceUrl = startTab.url || '';
   const channelId = channelIdFromUrl(sourceUrl);
   if (!channelId) {
@@ -856,7 +863,17 @@ async function run(tabIdInitial, emptyPageStreakLimit) {
   }
 
   state.channelId = channelId;
-  await chrome.tabs.update(tabId, { url: LIST_URL(channelId, sourceUrl) });
+
+  // Dedicated working tab, opened ACTIVE so the operator can always see what is happening.
+  const workTab = await chrome.tabs.create({
+    url: LIST_URL(channelId, sourceUrl),
+    active: true,
+    index: startTab.index + 1,
+    windowId: startTab.windowId,
+  });
+  let tabId = workTab.id;
+  state.workingTabId = tabId;
+  state.ownedTabId = tabId;
   await waitForTabLoad(tabId);
   await sleep(3000);
 
@@ -971,9 +988,10 @@ async function run(tabIdInitial, emptyPageStreakLimit) {
     } catch {
       setState({ message: 'Working tab was closed — reopening…' });
       try {
-        const fresh = await chrome.tabs.create({ url: 'about:blank', active: false });
+        const fresh = await chrome.tabs.create({ url: 'about:blank', active: true });
         tabId = fresh.id;
         state.workingTabId = tabId;
+        state.ownedTabId = tabId;
         await waitForTabLoad(tabId, 15000).catch(() => {});
       } catch (err) {
         setState({
@@ -1068,6 +1086,7 @@ async function run(tabIdInitial, emptyPageStreakLimit) {
     if (state.scanned % RECYCLE_EVERY_N_VIDEOS === 0) {
       tabId = await recycleTab(tabId);
       state.workingTabId = tabId;
+      state.ownedTabId = tabId;
     }
 
     // Stop immediately if Studio starts pushing back. Continuing into a throttle turns a
@@ -1144,8 +1163,10 @@ async function run(tabIdInitial, emptyPageStreakLimit) {
       `Done. ${state.found} test report(s) read` +
       (analyticsOnly ? `, plus lifetime analytics for ${analyticsOnly} other video(s).` : '.'),
   });
-  // A 2,900-row Studio list left resident is the single heaviest thing on the page.
-  await releaseTab(tabId);
+  // Close the dedicated working tab: it is ours, nobody wants it left behind, and a
+  // 2,900-row Studio list is the heaviest thing on the page.
+  await closeTab(tabId);
+  state.ownedTabId = null;
   await finishRun('Scan complete');
 }
 
@@ -1343,14 +1364,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         // One entry per DISTINCT channel across all open Studio tabs. Scanning uses each
         // channel's own tab, so its account context (authuser/pageId) comes along for
         // free — no channel-id entry and no way to get the account wrong.
+        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const activeChannel = channelIdFromUrl(activeTab?.url);
+
         const tabs = await chrome.tabs.query({ url: 'https://studio.youtube.com/*' });
         const byChannel = new Map();
         for (const tab of tabs) {
           const channelId = channelIdFromUrl(tab.url);
           if (!channelId || byChannel.has(channelId)) continue;
-          byChannel.set(channelId, { tabId: tab.id, channelId, title: tab.title || channelId });
+          byChannel.set(channelId, {
+            tabId: tab.id,
+            channelId,
+            title: tab.title || channelId,
+            isActive: channelId === activeChannel,
+          });
         }
-        return [...byChannel.values()];
+        // The tab the user is actually looking at comes first and is the default, so the
+        // obvious choice is never ambiguous.
+        return [...byChannel.values()].sort((a, b) => Number(b.isActive) - Number(a.isActive));
       }
 
       case 'find-studio-tab': {
@@ -1425,6 +1456,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           setState({ phase: 'error', error: error?.message || String(error) });
           await finishRun('Scan failed');
         } finally {
+          // Our tab, our responsibility — a stopped or failed run must not leave a
+          // half-driven Studio tab sitting there consuming a renderer.
+          if (state.ownedTabId) {
+            await closeTab(state.ownedTabId);
+            state.ownedTabId = null;
+          }
           state.running = false;
           setKeepalive(false);
           await persist();
