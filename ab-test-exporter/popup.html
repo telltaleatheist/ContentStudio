@@ -39,6 +39,7 @@
       label.check { display: flex; align-items: center; gap: 7px; margin: 12px 0 4px;
                     color: #f1f1f1; font-size: 12px; cursor: pointer; }
       label.check input { accent-color: #ff6b35; }
+      input[type=file] { width: 100%; font-size: 11px; color: #aaa; margin-bottom: 4px; }
       code { background: #2c2c2c; padding: 1px 4px; border-radius: 4px; font-size: 11px; }
     </style>
   </head>
@@ -101,6 +102,12 @@
         list. This stops after 3 straight pages with none, instead of paging through your
         whole back catalogue. Untick it to scan everything.
       </p>
+
+      <label class="check" for="resumeFile" style="display:block">
+        Resume from a previous CSV (optional)
+      </label>
+      <input id="resumeFile" type="file" accept=".csv,text/csv" />
+      <div id="resumeInfo" class="muted"></div>
 
       <button id="start" class="primary">Scan this channel</button>
       <button id="cancel" class="hidden">Stop</button>

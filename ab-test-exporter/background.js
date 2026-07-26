@@ -71,6 +71,8 @@ const jitteredDelay = () =>
 
 const state = {
   running: false,
+  /** Tab being driven, so the on-page overlay can be addressed directly. */
+  workingTabId: null,
   cancelled: false,
   phase: 'idle',
   message: '',
@@ -83,8 +85,14 @@ const state = {
 
 function setState(patch) {
   Object.assign(state, patch);
+  const payload = { type: 'progress', state: publicState() };
   // Popup may be closed; ignore the "no receiver" rejection.
-  chrome.runtime.sendMessage({ type: 'progress', state: publicState() }).catch(() => {});
+  chrome.runtime.sendMessage(payload).catch(() => {});
+  // The on-page overlay lives in the tab being driven, and runtime.sendMessage does not
+  // reach content scripts — it needs an explicit tabs.sendMessage.
+  if (state.workingTabId) {
+    chrome.tabs.sendMessage(state.workingTabId, payload).catch(() => {});
+  }
 }
 
 function publicState() {
@@ -571,14 +579,25 @@ async function run(tabId, emptyPageStreakLimit) {
     throw new Error('Could not read the video list. Make sure you are signed in to YouTube Studio.');
   }
 
+  // Resume: anything already exported successfully is skipped. Rows whose outcome was an
+  // error are NOT treated as done, so a retry picks them up.
+  const alreadyDone = new Set(
+    state.rows
+      .filter((r) => r.testOutcome && !String(r.testOutcome).startsWith('error'))
+      .map((r) => r.videoId),
+  );
+
   // Only videos the list marks as tested are worth opening.
-  const tested = videos.filter((v) => v.abLabel);
+  const allTested = videos.filter((v) => v.abLabel);
+  const tested = allTested.filter((v) => !alreadyDone.has(v.videoId));
+  const skipped = allTested.length - tested.length;
   setState({
     phase: 'scraping',
     total: tested.length,
     message:
       `${videos.length} videos across ${listing.pagesWalked} page(s), ` +
-      `${tested.length} with A/B tests.` +
+      `${tested.length} with A/B tests to read` +
+      (skipped ? ` (${skipped} already in the resumed CSV).` : '.') +
       // Never let an early stop look like a complete scan.
       (listing.stoppedEarly
         ? ` Stopped early: ${emptyPageStreakLimit} consecutive pages had no tests. Untick "stop early" to scan everything.`
@@ -699,6 +718,18 @@ async function run(tabId, emptyPageStreakLimit) {
   // Videos with no A/B test still belong in the export — lifetime analytics for the whole
   // catalogue is the larger half of the training signal. Titles come from the list walk,
   // so they are blank for videos on pages the early-exit skipped.
+  // Resumed rows carry analytics from whenever they were exported. Refresh them from
+  // this run's figures so the whole file is internally consistent.
+  for (const row of state.rows) {
+    const a = analyticsById.get(row.videoId);
+    if (!a) continue;
+    row.impressions = a.impressions ?? '';
+    row.impressionsCtrPct = a.impressionsCtrPct ?? '';
+    row.views = a.views ?? '';
+    row.watchHours = a.watchHours === null ? '' : a.watchHours.toFixed(2);
+    row.avgPctViewed = a.avgPctViewed ?? '';
+  }
+
   const emitted = new Set(state.rows.map((r) => r.videoId));
   const titleById = new Map(videos.map((v) => [v.videoId, v.title ?? '']));
   let analyticsOnly = 0;
@@ -831,11 +862,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         Object.assign(state, {
           running: true,
           cancelled: false,
-          rows: [],
+          // Seed from a resumed CSV when one was supplied.
+          rows: Array.isArray(message.resumeRows) ? message.resumeRows : [],
           scanned: 0,
           total: 0,
           found: 0,
           error: null,
+          workingTabId: message.tabId,
         });
         try {
           // Reuse the user's own Studio tab — see accountParams() for why.

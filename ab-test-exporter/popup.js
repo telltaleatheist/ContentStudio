@@ -12,6 +12,52 @@ const $ = (id) => document.getElementById(id);
 
 const CONSENT_KEY = 'consentAcceptedV1';
 
+/** Rows parsed from a resume CSV, or null. */
+let resumeRows = null;
+
+/**
+ * Minimal RFC4180 CSV parser.
+ *
+ * Hand-rolled because the fields we write routinely contain commas, double quotes and —
+ * in descriptions — newlines, so a naive split(',') would silently corrupt a resume and
+ * cause videos to be re-scanned or dropped.
+ */
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let field = '';
+  let inQuotes = false;
+
+  // Normalise line endings so CRLF and LF files behave identically.
+  const src = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (src[i + 1] === '"') { field += '"'; i++; }   // escaped quote
+        else inQuotes = false;
+      } else field += c;
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ',') {
+      row.push(field); field = '';
+    } else if (c === '\n') {
+      row.push(field); field = '';
+      if (row.some((v) => v !== '')) rows.push(row);
+      row = [];
+    } else field += c;
+  }
+  row.push(field);
+  if (row.some((v) => v !== '')) rows.push(row);
+
+  if (rows.length < 2) return [];
+  const header = rows[0].map((h) => h.trim());
+  return rows.slice(1).map((cells) =>
+    Object.fromEntries(header.map((h, i) => [h, cells[i] ?? ''])),
+  );
+}
+
 /** The Studio tab we'll drive, resolved on open. */
 let studioTab = null;
 
@@ -23,6 +69,28 @@ async function init() {
     await chrome.storage.local.set({ [CONSENT_KEY]: true });
     showMain();
     await detectTab();
+  });
+
+  $('resumeFile').addEventListener('change', async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const parsed = parseCsv(await file.text());
+      if (!parsed.length || !('videoId' in parsed[0])) {
+        throw new Error('That file does not look like an export from this extension.');
+      }
+      resumeRows = parsed;
+      const done = new Set(
+        parsed.filter((r) => r.testOutcome && !r.testOutcome.startsWith('error')).map((r) => r.videoId),
+      );
+      $('resumeInfo').textContent =
+        `Resuming: ${parsed.length} rows loaded, ${done.size} videos already done.`;
+      $('resumeInfo').className = 'ok';
+    } catch (err) {
+      resumeRows = null;
+      $('resumeInfo').textContent = err?.message || String(err);
+      $('resumeInfo').className = 'err';
+    }
   });
 
   $('start').addEventListener('click', onStart);
@@ -68,7 +136,14 @@ async function onStart() {
   }
   // 0 disables the early exit entirely and walks every page.
   const limit = $('stopEarly').checked ? 3 : 0;
-  render(await send({ type: 'start', tabId: studioTab.tabId, emptyPageStreakLimit: limit }));
+  render(
+    await send({
+      type: 'start',
+      tabId: studioTab.tabId,
+      emptyPageStreakLimit: limit,
+      resumeRows,
+    }),
+  );
 }
 
 function render(state) {

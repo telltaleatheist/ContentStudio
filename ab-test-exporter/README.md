@@ -49,6 +49,19 @@ stopped early, so a short scan is never mistaken for a complete one.
 It pauses a random 2–5 seconds between videos and stops immediately if Studio starts
 rate-limiting, rather than pushing through.
 
+## Stopping and resuming
+
+A full channel takes a while, so you don't have to do it in one sitting.
+
+While a scan runs, a small panel sits in the bottom-right of the Studio page with live
+progress, a **Stop** button, and **Download CSV**. Stop halts after the current video and
+keeps everything gathered so far — download it and you have a valid, partial export.
+
+To carry on later: open the popup, pick that CSV under **Resume from a previous CSV**, and
+scan again. Videos already exported are skipped; only what's left gets read. Rows that
+failed with an error are retried rather than treated as done, and lifetime analytics are
+refreshed for every row so the whole file stays internally consistent.
+
 ## What you get
 
 One CSV covering the whole channel. Every video gets **lifetime analytics**; videos that
