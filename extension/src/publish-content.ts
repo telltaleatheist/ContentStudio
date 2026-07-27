@@ -1,8 +1,12 @@
-// Content script for YouTube Studio video details pages.
+// Content script for YouTube Studio.
 //
-// Flow: detect the details form -> read the videoId (URL) and the original filename
-// (sidebar) -> ask ContentStudio which generated item that is -> show the confirm panel
-// -> fill on click.
+// Owns the ContentStudio shelf: mounts it ONCE per tab and keeps it mounted. The shelf is
+// not a per-video prompt — it is also how the operator browses reports and picks titles —
+// so closing a video or navigating away must not take it down.
+//
+// Flow when a video is open: read the videoId (URL) and the original filename (sidebar) ->
+// ask ContentStudio which generated item that is -> show it -> fill on click. When no
+// video is open, the shelf stays up on its Reports tab.
 //
 // Runs in the extension's ISOLATED world, which is sufficient: everything it does is DOM
 // work (querySelector, execCommand, dispatched events, the native input setter) and DOM
@@ -13,37 +17,56 @@
 // instead of relying on document_idle firing once.
 
 import { fillerById, type FillContext, type FillId } from './publish/fillers';
-import { PublishPanel } from './publish/panel';
-import type { PendingFillItem } from './publish/publish-client';
+import { PublishShelf, type PageContext } from './publish/shelf';
+import type { ItemDetail } from './publish/publish-client';
 // All localhost traffic goes through the service worker — see publish-messages.ts for
 // why a content-script fetch cannot talk to ContentStudio directly.
 import {
   PublishBridgeError,
   requestFilled,
-  requestPending,
+  requestItem,
+  requestReports,
   requestResolve,
+  requestSaveTitles,
 } from './publish/publish-messages';
-import { detailsFormReady, isDetailsPage, readFilename, videoIdFromUrl } from './publish/page';
+import { detailsFormReady, isDetailsPage, looksLikeDraft, readFilename, videoIdFromUrl } from './publish/page';
 import { waitFor } from './publish/dom';
 
-let panel: PublishPanel | null = null;
-/** videoId we've already set up for, so navigation churn doesn't rebuild constantly. */
-let activeVideoId: string | null = null;
-/** Videos the operator explicitly dismissed — don't nag on the same page. */
-const dismissed = new Set<string>();
+let shelf: PublishShelf | null = null;
 
-function teardown(): void {
-  panel?.destroy();
-  panel = null;
-  activeVideoId = null;
+/** The report currently loaded in the shelf. */
+let item: ItemDetail | null = null;
+/** videoId the shelf last resolved against, so navigation churn doesn't re-resolve. */
+let resolvedFor: string | null = null;
+/**
+ * True while the operator picked a report by hand. Their choice outranks a filename
+ * match, so an SPA navigation within the same video must not silently replace it.
+ */
+let manualPick = false;
+
+function pageContext(): PageContext {
+  return {
+    videoId: videoIdFromUrl(),
+    filename: readFilename(),
+    isDraft: looksLikeDraft(),
+    formReady: detailsFormReady(),
+  };
 }
 
-function contextOf(item: PendingFillItem): FillContext {
-  return { titles: item.titles, description: item.description, tags: item.tags };
+function fillContextOf(detail: ItemDetail): FillContext {
+  return {
+    // The chosen set is what gets tested. With nothing picked, fall back to the
+    // generator's top 3, which the prompts already order as the intended variants.
+    titles: detail.chosenTitles.length
+      ? detail.chosenTitles
+      : detail.generatedTitles.slice(0, detail.maxVariants),
+    description: detail.description,
+    tags: detail.tags,
+  };
 }
 
-async function runFillers(item: PendingFillItem, videoId: string, ids: FillId[]): Promise<void> {
-  const ctx = contextOf(item);
+async function runFillers(detail: ItemDetail, videoId: string, ids: FillId[]): Promise<void> {
+  const ctx = fillContextOf(detail);
   let anySucceeded = false;
 
   for (const id of ids) {
@@ -54,25 +77,25 @@ async function runFillers(item: PendingFillItem, videoId: string, ids: FillId[])
     if (!detected.available) {
       // Skipping is only reported when the operator asked for this action specifically;
       // during "fill everything" an unavailable action isn't an error worth shouting about.
-      if (ids.length === 1) panel?.log(false, filler, detected.reason);
+      if (ids.length === 1) shelf?.log(false, filler, detected.reason);
       continue;
     }
 
     const outcome = await filler.fill(ctx);
     if (outcome.ok) {
       anySucceeded = true;
-      panel?.log(true, filler, outcome.detail);
+      shelf?.log(true, filler, outcome.detail);
     } else {
       // FAIL LOUD: a selector miss must be visible, never a silent no-op.
-      panel?.log(false, filler, outcome.reason);
+      shelf?.log(false, filler, outcome.reason);
     }
   }
 
   if (anySucceeded) {
     try {
-      await requestFilled(item.jobId, item.itemIndex, videoId);
+      await requestFilled(detail.jobId, detail.itemIndex, videoId);
     } catch (error) {
-      panel?.log(
+      shelf?.log(
         false,
         null,
         `Filled the form but could not tell ContentStudio: ${
@@ -83,81 +106,128 @@ async function runFillers(item: PendingFillItem, videoId: string, ids: FillId[])
   }
 }
 
-async function setupFor(videoId: string): Promise<void> {
-  // Wait for the SPA to actually render the form before reading anything off it.
-  try {
-    await waitFor(() => detailsFormReady(), 'the Studio details form', 15000);
-  } catch {
-    return; // not a details page after all, or Studio is still loading — try again on next nav
-  }
+/**
+ * Work out which report belongs to the video currently open, and load it.
+ *
+ * Not called at all when the operator has picked a report by hand — see manualPick.
+ */
+async function resolveCurrentVideo(): Promise<void> {
+  const ctx = pageContext();
+  shelf?.setPageContext(ctx);
 
-  const filename = readFilename();
-
-  let resolved;
-  let pending: PendingFillItem[] = [];
-  try {
-    resolved = await requestResolve(videoId, filename);
-    if (!resolved.item) pending = await requestPending();
-  } catch (error) {
-    // ContentStudio simply not running is not worth a panel on every Studio page.
-    // Anything else (503 stale app, bad response, worker disconnected) IS surfaced.
-    if (error instanceof PublishBridgeError && error.kind === 'unreachable') return;
-    panel = new PublishPanel(makeCallbacks(videoId, null));
-    panel.renderError(error instanceof Error ? error.message : String(error));
+  if (!ctx.videoId || !isDetailsPage()) {
+    item = null;
+    resolvedFor = null;
+    shelf?.setStatus('No video open. Use Reports to load one.');
     return;
   }
 
-  // Nothing pending at all and no match: stay silent rather than nagging.
-  if (!resolved.item && pending.length === 0) return;
+  // Wait for the SPA to actually render the form before reading the sidebar off it.
+  try {
+    await waitFor(() => detailsFormReady(), 'the Studio details form', 15000);
+  } catch {
+    shelf?.setStatus('Studio has not finished loading this video.');
+    return;
+  }
 
-  panel = new PublishPanel(makeCallbacks(videoId, resolved.item));
+  const withForm = pageContext();
+  shelf?.setPageContext(withForm);
 
-  if (resolved.item) {
-    panel.renderMatch(resolved.item, resolved.reason, contextOf(resolved.item));
-  } else {
-    panel.renderNoMatch(resolved.reason, pending);
+  try {
+    const resolved = await requestResolve(withForm.videoId!, withForm.filename);
+    if (!resolved.item) {
+      item = null;
+      shelf?.setStatus(resolved.reason);
+      return;
+    }
+
+    // resolveForPage returns the fill-ready shape; the shelf needs the full picker data.
+    const detail = await requestItem(resolved.item.jobId, resolved.item.itemIndex);
+    item = detail;
+    // A match with nothing picked is the one case worth interrupting for: there is a
+    // decision to make before this video can be filled.
+    shelf?.setItem(
+      detail,
+      resolved.needsTitles ? `${resolved.reason} Pick up to ${detail.maxVariants}.` : resolved.reason,
+      resolved.needsTitles,
+    );
+  } catch (error) {
+    if (error instanceof PublishBridgeError && error.kind === 'unreachable') {
+      // The app being closed is a normal state, not a fault — say it plainly and quietly.
+      item = null;
+      shelf?.setStatus('ContentStudio is not running.');
+      return;
+    }
+    shelf?.setError(error instanceof Error ? error.message : String(error));
   }
 }
 
-function makeCallbacks(videoId: string, item: PendingFillItem | null) {
+function callbacks() {
   return {
     onFill: async (ids: FillId[]) => {
-      if (!item) return;
+      const videoId = videoIdFromUrl();
+      if (!item) {
+        shelf?.log(false, null, 'No report loaded.');
+        return;
+      }
+      if (!videoId) {
+        shelf?.log(false, null, 'No video open to fill.');
+        return;
+      }
       await runFillers(item, videoId, ids);
     },
-    onPickOther: async (jobId: string, itemIndex: number) => {
-      // Manual override: pull the chosen item and re-render against it.
+
+    onRefresh: async () => {
+      // An explicit refresh re-reads the page too: the operator may have switched videos
+      // inside the wizard without the URL changing.
+      manualPick = false;
+      resolvedFor = videoIdFromUrl();
+      await resolveCurrentVideo();
+    },
+
+    onOpenReport: async (jobId: string, itemIndex: number) => {
       try {
-        const all = await requestPending();
-        const picked = all.find((p) => p.jobId === jobId && p.itemIndex === itemIndex);
-        if (!picked) return;
-        panel?.destroy();
-        panel = new PublishPanel(makeCallbacks(videoId, picked));
-        panel.renderMatch(picked, 'Picked manually.', contextOf(picked));
+        const detail = await requestItem(jobId, itemIndex);
+        item = detail;
+        manualPick = true;
+        shelf?.setItem(detail, 'Picked by hand.');
       } catch (error) {
-        panel?.renderError(error instanceof Error ? error.message : String(error));
+        shelf?.setError(error instanceof Error ? error.message : String(error));
       }
     },
-    onDismiss: () => {
-      dismissed.add(videoId);
-      panel = null;
+
+    onSaveTitles: async (titles: string[]) => {
+      if (!item) return;
+      try {
+        const result = await requestSaveTitles(item.jobId, item.itemIndex, titles);
+        if (!result.ok) {
+          // Validation failures carry ContentStudio's own wording — show it verbatim
+          // rather than inventing a second set of rules here.
+          shelf?.setError(result.errors.join(' '));
+          return;
+        }
+        item = result.item;
+        shelf?.setItem(result.item, manualPick ? 'Picked by hand.' : 'Saved.');
+      } catch (error) {
+        shelf?.setError(error instanceof Error ? error.message : String(error));
+      }
     },
+
+    onFetchReports: (offset: number, limit: number, query: string) =>
+      requestReports(offset, limit, query),
   };
 }
 
 async function onNavigation(): Promise<void> {
   const videoId = videoIdFromUrl();
+  shelf?.setPageContext(pageContext());
 
-  if (!videoId || !isDetailsPage()) {
-    teardown();
-    return;
-  }
-  if (videoId === activeVideoId) return; // already set up
-  if (dismissed.has(videoId)) return;
+  // The operator's own pick outranks anything we'd infer from the page.
+  if (manualPick) return;
+  if (videoId && videoId === resolvedFor) return;
 
-  teardown();
-  activeVideoId = videoId;
-  await setupFor(videoId);
+  resolvedFor = videoId;
+  await resolveCurrentVideo();
 }
 
 /**
@@ -177,5 +247,51 @@ function watchNavigation(): void {
   }, 600);
 }
 
-void onNavigation();
-watchNavigation();
+/**
+ * Toolbar button -> show the shelf.
+ *
+ * The popup asks the active Studio tab to reveal itself. Answering with `mounted` lets the
+ * popup distinguish "shelf is there, now expanded" from "this tab has no content script",
+ * which is what happens on a tab that was already open when the extension was reloaded —
+ * the single most common reason the shelf appears to be missing.
+ */
+function listenForReveal(): void {
+  chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+    if (typeof message !== 'object' || message === null) return false;
+    if ((message as { type?: unknown }).type !== 'shelf-reveal') return false;
+
+    if (!shelf) {
+      sendResponse({ mounted: false, error: mountError ?? 'The shelf is not mounted on this page.' });
+      return false;
+    }
+    void shelf.reveal();
+    sendResponse({ mounted: true });
+    return false;
+  });
+}
+
+/** Why the shelf failed to mount, if it did. Reported to the popup rather than swallowed. */
+let mountError: string | null = null;
+
+async function start(): Promise<void> {
+  // The reveal listener is registered FIRST and unconditionally, so that a shelf which
+  // failed to mount can still explain itself when the operator clicks the toolbar button.
+  listenForReveal();
+
+  try {
+    const created = new PublishShelf(callbacks());
+    await created.mount();
+    shelf = created;
+  } catch (error) {
+    // A shelf that silently fails to appear is indistinguishable from one that was never
+    // built. Record it for the popup and put it in the console.
+    mountError = error instanceof Error ? error.message : String(error);
+    console.error('[ContentStudio] the shelf could not mount:', error);
+    return;
+  }
+
+  await onNavigation();
+  watchNavigation();
+}
+
+void start();

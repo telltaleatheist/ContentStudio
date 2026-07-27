@@ -84,7 +84,15 @@ export function hasUnsavedChanges(): boolean {
  *
  * Studio is an SPA: the content script fires long before the form exists, and again the
  * URL can change without a reload.
+ *
+ * Two checks because the title box's aria-label is a placeholder-style string that is not
+ * guaranteed on a video that already HAS a title (published and scheduled videos, which
+ * are valid fill targets — only YouTube's A/B test needs a non-draft). The metadata editor
+ * element is the structural fact; the title box is the fast path.
  */
 export function detailsFormReady(): boolean {
-  return !!visible('div#textbox[aria-label^="Add a title"]');
+  return (
+    !!visible('div#textbox[aria-label^="Add a title"]') ||
+    !!visible('ytcp-video-metadata-editor')
+  );
 }

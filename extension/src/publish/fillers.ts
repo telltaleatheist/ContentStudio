@@ -29,6 +29,7 @@ import {
 
 export type FillId =
   | 'title'
+  | 'ab-test'
   | 'description'
   | 'tags'
   | 'altered-content'
@@ -168,9 +169,17 @@ async function openAbDialog(): Promise<HTMLElement[]> {
 
 // ---------------------------------------------------------------- fillers
 
+/**
+ * The main title field on the page.
+ *
+ * SEPARATE from the A/B action on purpose. A test is not a one-shot setup: cancelling a
+ * running test, changing the titles and setting a new one is normal, and that has to be
+ * possible without also rewriting the page's title field. Both still run under "Fill
+ * everything", in this order.
+ */
 const titleFiller: Filler = {
   id: 'title',
-  label: 'Title + A/B variants',
+  label: 'Main title',
   detect(ctx) {
     if (!ctx.titles.length) return { available: false, reason: 'No titles chosen for this item' };
     if (!visible(SEL.mainTitle)) return { available: false, reason: 'Title field not on this page' };
@@ -184,15 +193,50 @@ const titleFiller: Filler = {
       const primary = ctx.titles[0];
       if (!primary) throw new FillError('No titles to fill');
 
-      // Variant 1 is the main title. Always set it, even in the single-title case.
+      // Variant 1 is the main title.
       setContentEditable(main, primary);
       await sleep(250);
+      return { ok: true, detail: 'Set the main title.' };
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+    }
+  },
+};
 
+/**
+ * The A/B variant dialog, on its own so a test can be re-set at any time.
+ *
+ * Deliberately does NOT check whether a test is already running: Studio's own dialog is
+ * the authority on that, and guessing from the page would either block a legitimate
+ * re-fill or claim a test exists when it doesn't. If a test IS live, opening the dialog
+ * shows it and the fill reports what it actually found.
+ */
+const abTestFiller: Filler = {
+  id: 'ab-test',
+  label: 'A/B variants',
+  detect(ctx) {
+    if (ctx.titles.length < 2) {
+      return {
+        available: false,
+        reason: `Pick at least 2 titles (${ctx.titles.length} chosen)`,
+      };
+    }
+    // Drafts are ineligible for A/B testing, so the control simply isn't rendered — say
+    // that rather than opening a dialog that will never appear.
+    const hasControl =
+      !!visible(SEL.abTestButton) ||
+      visibleAll<HTMLElement>('ytcp-button, button, tp-yt-paper-button').some((b) =>
+        /a\/b\s*testing/i.test((b.textContent || '').trim()),
+      );
+    if (!hasControl) {
+      return { available: false, reason: 'No A/B control here — drafts cannot be tested' };
+    }
+    return { available: true };
+  },
+  async fill(ctx) {
+    try {
       if (ctx.titles.length < 2) {
-        return {
-          ok: true,
-          detail: 'Set the main title. Only one title chosen, so no A/B test was set up.',
-        };
+        return { ok: false, reason: 'A/B testing needs at least 2 titles' };
       }
 
       const slots = await openAbDialog();
@@ -225,7 +269,7 @@ const titleFiller: Filler = {
 
       return {
         ok: true,
-        detail: `Filled ${ctx.titles.length} A/B variants. Press "Set test" to start the test.`,
+        detail: `Filled ${ctx.titles.length} variants. Press "Set test" to start it.`,
       };
     } catch (error) {
       return { ok: false, reason: error instanceof Error ? error.message : String(error) };
@@ -434,9 +478,10 @@ const paidPromotionFiller: Filler = {
 /**
  * Registry order IS the execution order for "Fill everything".
  *
- * Title is LAST on purpose: it opens the A/B modal, which covers the rest of the form.
- * Filling the page fields first means the operator ends up looking at the A/B dialog
- * with everything else already done behind it.
+ * The A/B action is LAST on purpose: it opens a modal that covers the rest of the form.
+ * Filling the page fields first means the operator ends up looking at the A/B dialog with
+ * everything else already done behind it. The main title comes immediately before it, so
+ * the page field is set while the form is still reachable.
  */
 export const FILLERS: Filler[] = [
   tagsFiller,
@@ -444,6 +489,7 @@ export const FILLERS: Filler[] = [
   alteredContentFiller,
   paidPromotionFiller,
   titleFiller,
+  abTestFiller,
 ];
 
 export function fillerById(id: FillId): Filler | undefined {

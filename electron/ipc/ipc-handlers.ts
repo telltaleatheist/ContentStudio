@@ -18,7 +18,16 @@ import type { ChannelRegistryEntry } from '../services/analytics/analytics-types
 import { YouTubeAuthService } from '../services/youtube/youtube-auth.service';
 import { YouTubeApiService } from '../services/youtube/youtube-api.service';
 import { ApiCollectorService } from '../services/youtube/api-collector.service';
-import { PublishStoreService, GeneratedFallback } from '../services/publish/publish-store.service';
+import {
+  PublishStoreService,
+  GeneratedFallback,
+  GeneratedIndex,
+} from '../services/publish/publish-store.service';
+import {
+  createGeneratedIndexReader,
+  sourceFilenameOf,
+} from '../services/metadata/generated-index';
+import { composeDescription, composeTags } from '../services/metadata/description-composer';
 import { setupPublishIpc } from '../services/publish/publish-ipc';
 import { PublishBridge } from '../services/publish/publish-bridge';
 
@@ -1826,49 +1835,58 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
 
   // ==================== PUBLISH (title A/B) ====================
 
+  /** Where the generator writes its per-job reports. Throws rather than guessing. */
+  const metadataReportsDir = (): string => {
+    const outputDirectory = (store as any).store?.outputDirectory;
+    if (!outputDirectory) {
+      throw new Error('No output directory configured — cannot locate metadata reports.');
+    }
+    return path.join(outputDirectory, '.contentstudio', 'metadata');
+  };
+
+  // The report index the shelf's browser pages through. Format knowledge lives in
+  // services/metadata; publish/ only ever receives the result.
+  const readGeneratedIndex = createGeneratedIndexReader(metadataReportsDir);
+
+  const listGeneratedForPublish = (): GeneratedIndex => {
+    const result = readGeneratedIndex();
+    // The COUNT travels to the shelf; the detail goes to the log, so an unreadable report
+    // is both visible to the operator and diagnosable.
+    for (const problem of result.problems) {
+      log.error(`[Publish] cannot read report ${problem.file}: ${problem.message}`);
+    }
+    return { items: result.items, unreadable: result.unreadable };
+  };
+
   // Registered as a single seam. `readGenerated` is injected so the publish module
   // never imports from services/metadata — see electron/services/publish/README notes
   // in publish-types.ts. It reads the same <jobId>.json that get-job-history reads.
   const readGeneratedForPublish = (jobId: string, itemIndex: number): GeneratedFallback | null => {
-    {
-      try {
-        const outputDirectory = (store as any).store?.outputDirectory;
-        if (!outputDirectory) return null;
+    try {
+      const jsonPath = path.join(metadataReportsDir(), `${jobId}.json`);
+      if (!fs.existsSync(jsonPath)) return null;
 
-        const jsonPath = path.join(outputDirectory, '.contentstudio', 'metadata', `${jobId}.json`);
-        if (!fs.existsSync(jsonPath)) return null;
+      const job = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+      const item = job?.items?.[itemIndex];
+      if (!item) return null;
 
-        const job = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
-        const item = job?.items?.[itemIndex];
-        if (!item) return null;
-
-        // Source filename drives draft matching. In 'individual' mode items line up
-        // 1:1 with original_inputs; in compilation mode one item is built from many
-        // inputs, so there is no single source file and matching falls back to a
-        // manual pick. Only treat it as a filename when it looks like a real path.
-        let sourceFilename: string | null = null;
-        const inputs = Array.isArray(job.original_inputs) ? job.original_inputs : [];
-        if (inputs.length === job.items.length) {
-          const raw = inputs[itemIndex];
-          if (typeof raw === 'string' && /\.[A-Za-z0-9]{2,5}$/.test(raw)) {
-            sourceFilename = path.basename(raw);
-          }
-        }
-
-        return {
-          titles: Array.isArray(item.titles) ? item.titles : [],
-          description: typeof item.description === 'string' ? item.description : '',
-          tags: typeof item.tags === 'string' ? item.tags : '',
-          sourceFilename,
-          // TODO: probe the source with ffprobe so the duration guard can verify the
-          // match. Null is handled — it downgrades the match to 'filename' (unverified)
-          // rather than failing.
-          sourceDurationSec: null,
-        };
-      } catch (error) {
-        log.error(`[Publish] readGenerated failed for ${jobId}[${itemIndex}]:`, error);
-        return null;
-      }
+      return {
+        titles: Array.isArray(item.titles) ? item.titles : [],
+        // COMPOSED, not raw: chapters at the top and hashtags before the link block, which
+        // is what the reports page shows and therefore what has to reach YouTube. Sending
+        // item.description alone silently dropped both.
+        description: composeDescription(item),
+        tags: composeTags(item),
+        // Source filename drives draft matching.
+        sourceFilename: sourceFilenameOf(job, itemIndex),
+        // TODO: probe the source with ffprobe so the duration guard can verify the
+        // match. Null is handled — it downgrades the match to 'filename' (unverified)
+        // rather than failing.
+        sourceDurationSec: null,
+      };
+    } catch (error) {
+      log.error(`[Publish] readGenerated failed for ${jobId}[${itemIndex}]:`, error);
+      return null;
     }
   };
 
@@ -1882,7 +1900,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   // extension has one port to talk to. The server only knows a structural interface, so
   // analytics/ and publish/ remain independent.
   analytics.ingestServer.setPublishRoutes(
-    new PublishBridge(analytics.publishStore, readGeneratedForPublish)
+    new PublishBridge(analytics.publishStore, readGeneratedForPublish, listGeneratedForPublish)
   );
 
   // ==================== END PUBLISH ====================

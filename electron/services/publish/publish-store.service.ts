@@ -40,6 +40,36 @@ export interface GeneratedFallback {
   sourceDurationSec?: number | null;
 }
 
+/**
+ * One entry in the host's index of generated items -- enough to list and search without
+ * loading the full metadata for every report. Cheap fields only.
+ */
+export interface GeneratedItemSummary {
+  jobId: string;
+  itemIndex: number;
+  /** What the operator recognises it by: source filename, else job name, else title. */
+  label: string;
+  /** ISO. The job's creation time, so the index can be sorted newest-first. */
+  createdAt: string;
+  promptSet: string | null;
+  /** Basename of the analyzed source file, used for filename matching. */
+  sourceFilename: string | null;
+  /** How many titles the generator produced. */
+  titleCount: number;
+}
+
+/**
+ * The full index, newest first.
+ *
+ * `unreadable` is a COUNT, not a silent omission: a browse list that is quietly short
+ * looks exactly like a complete one, so the number of reports that failed to parse
+ * travels with the data and gets shown.
+ */
+export interface GeneratedIndex {
+  items: GeneratedItemSummary[];
+  unreadable: number;
+}
+
 export class PublishStoreService {
   private readonly baseDir: string;
   private readonly selectionsDir: string;

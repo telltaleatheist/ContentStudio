@@ -13,7 +13,7 @@
 import { ipcMain } from 'electron';
 import type { UploadStatusEntry } from '../youtube/youtube-api.service';
 import { PublishStoreService, GeneratedFallback, resolveChosenMetadata } from './publish-store.service';
-import { matchDraft, toDraftCandidates } from './video-matcher';
+import { matchDraft, toFillCandidates } from './video-matcher';
 import {
   ChosenMetadata,
   MAX_AB_VARIANTS,
@@ -173,14 +173,18 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       const resolved = resolveChosenMetadata(chosen, generated);
 
       const uploads = await listRecentUploads(channel);
-      const drafts = toDraftCandidates(uploads, channel);
+      const candidates = toFillCandidates(uploads, channel);
 
       const outcome = matchDraft(
         { sourceFilename: resolved.sourceFilename, sourceDurationSec: resolved.sourceDurationSec },
-        drafts
+        candidates
       );
 
-      return ok({ ...outcome, sourceFilename: resolved.sourceFilename, draftCount: drafts.length });
+      return ok({
+        ...outcome,
+        sourceFilename: resolved.sourceFilename,
+        candidateCount: candidates.length,
+      });
     } catch (err: any) {
       return fail(err?.message || String(err));
     }

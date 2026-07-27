@@ -17,7 +17,15 @@
 // against a stale/cached list.
 
 import { CollectorNotImplementedError, collectChannel } from './collector';
-import { PublishClientError, fetchPending, reportFilled, resolveForPage } from './publish/publish-client';
+import {
+  PublishClientError,
+  fetchItem,
+  fetchPending,
+  fetchReports,
+  reportFilled,
+  resolveForPage,
+  saveTitles,
+} from './publish/publish-client';
 import { isPublishMessage, type PublishMessage } from './publish/publish-messages';
 import { enqueueAbTests, enqueueSnapshots, enqueueVideos, flushOutbox, outboxDepth, type FlushResult } from './outbox';
 import { fetchChannels } from './ingest-client';
@@ -202,5 +210,11 @@ async function handlePublishMessage(message: PublishMessage): Promise<unknown> {
     case 'publish-filled':
       await reportFilled(message.jobId, message.itemIndex, message.videoId);
       return null;
+    case 'publish-reports':
+      return fetchReports(message.offset, message.limit, message.query);
+    case 'publish-item':
+      return fetchItem(message.jobId, message.itemIndex);
+    case 'publish-titles':
+      return saveTitles(message.jobId, message.itemIndex, message.titles);
   }
 }

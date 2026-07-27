@@ -1,4 +1,4 @@
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { Component, ElementRef, OnInit, ViewChild, inject, signal } from '@angular/core';
 import { MatCardModule } from '@angular/material/card';
 import { MatListModule } from '@angular/material/list';
 import { MatIconModule } from '@angular/material/icon';
@@ -86,11 +86,6 @@ export class MetadataReports implements OnInit {
     await this.publish.toggleTitle(this.getTitleText(title));
   }
 
-  async moveChosenTitle(title: any, direction: -1 | 1, event: MouseEvent) {
-    event.stopPropagation();
-    await this.publish.reorder(this.getTitleText(title), direction);
-  }
-
   isTitleChosen(title: any): boolean {
     return this.publish.isChosen(this.getTitleText(title));
   }
@@ -103,6 +98,143 @@ export class MetadataReports implements OnInit {
   /** True when the 3-variant cap blocks picking this one. */
   isTitleBlocked(title: any): boolean {
     return this.publish.isBlocked(this.getTitleText(title));
+  }
+
+  // ------------------------------------------------------------------- editing
+  //
+  // Titles, description and tags are all editable, but they are NOT written back into the
+  // job's report — that file stays the pristine generator output so an item can be
+  // regenerated. Edits live in the selection store as overrides, and the extension reads
+  // the resolved value. A cleared override means "use the generated value again", which is
+  // why revert is a first-class action rather than retyping.
+
+  /**
+   * Which ROW is being edited, indexed into the generated title list; null when none.
+   *
+   * Keyed by row rather than by variant number so any title can be edited, not just the
+   * ones already picked — an over-long generated title is otherwise unusable, since it
+   * can't be selected until it's shortened.
+   */
+  readonly editingTitleIndex = signal<number | null>(null);
+  readonly titleDraft = signal('');
+
+  /**
+   * The inline editor's input, focused explicitly after the row switches to edit mode.
+   *
+   * The `autofocus` attribute is unreliable on an element the framework creates after
+   * first paint, and an editor you have to click twice to use reads as broken.
+   */
+  @ViewChild('titleInput') private titleInput?: ElementRef<HTMLInputElement>;
+
+  readonly editingDescription = signal(false);
+  readonly descriptionDraft = signal('');
+
+  readonly editingTags = signal(false);
+  readonly tagsDraft = signal('');
+
+  startEditTitle(title: any, rowIndex: number, event: MouseEvent) {
+    event.stopPropagation();
+    this.editingTitleIndex.set(rowIndex);
+    this.titleDraft.set(this.getTitleText(title));
+
+    // After the row re-renders as an editor. Cursor at the end rather than select-all:
+    // these are long titles being tweaked, not replaced wholesale.
+    setTimeout(() => {
+      const input = this.titleInput?.nativeElement;
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+  }
+
+  isEditingTitle(rowIndex: number): boolean {
+    return this.editingTitleIndex() === rowIndex;
+  }
+
+  cancelEditTitle(event?: MouseEvent) {
+    event?.stopPropagation();
+    this.editingTitleIndex.set(null);
+    this.titleDraft.set('');
+  }
+
+  async saveEditTitle(original: any, event?: Event) {
+    event?.stopPropagation();
+    if (this.editingTitleIndex() === null) return;
+
+    await this.publish.saveTitleEdit(this.getTitleText(original), this.titleDraft());
+    // A rejected edit leaves the error banner up and the editor open, so the operator can
+    // fix it rather than losing what they typed.
+    if (this.publish.error()) return;
+    this.cancelEditTitle();
+  }
+
+  /**
+   * What the extension will actually put in the description field.
+   *
+   * Comes from the main process, which is the ONLY place a description is composed
+   * (chapters at the top, hashtags before the link block) and the only place overrides are
+   * applied. Composing a second copy here is what made the app show one description while
+   * YouTube received another.
+   */
+  descriptionValue(): string {
+    return this.publish.resolvedDescription();
+  }
+
+  tagsValue(): string {
+    return this.publish.resolvedTags();
+  }
+
+  startEditDescription() {
+    this.descriptionDraft.set(this.descriptionValue());
+    this.editingDescription.set(true);
+  }
+
+  cancelEditDescription() {
+    this.editingDescription.set(false);
+    this.descriptionDraft.set('');
+  }
+
+  async saveDescription() {
+    await this.publish.setFields({ descriptionOverride: this.descriptionDraft() });
+    if (this.publish.error()) return;
+    this.editingDescription.set(false);
+  }
+
+  /** Drop the override so the generated description flows through again. */
+  async revertDescription() {
+    await this.publish.setFields({ descriptionOverride: null });
+    if (this.publish.error()) return;
+    this.cancelEditDescription();
+  }
+
+  startEditTags() {
+    this.tagsDraft.set(this.tagsValue());
+    this.editingTags.set(true);
+  }
+
+  cancelEditTags() {
+    this.editingTags.set(false);
+    this.tagsDraft.set('');
+  }
+
+  async saveTags() {
+    await this.publish.setFields({ tagsOverride: this.tagsDraft() });
+    if (this.publish.error()) return;
+    this.editingTags.set(false);
+  }
+
+  async revertTags() {
+    await this.publish.setFields({ tagsOverride: null });
+    if (this.publish.error()) return;
+    this.cancelEditTags();
+  }
+
+  /** Tags as the extension will type them, split for chip display. */
+  editedTagsArray(): string[] {
+    return this.tagsValue()
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean);
   }
 
   async ngOnInit() {
@@ -330,6 +462,12 @@ export class MetadataReports implements OnInit {
       this.metadata.set(selectedItem);
       console.log('[MetadataReports] Final metadata signal value:', this.metadata());
 
+      // Any half-finished edit belongs to the PREVIOUS item — drop it before the new
+      // selection loads, or a save would write it onto the wrong report.
+      this.cancelEditTitle();
+      this.cancelEditDescription();
+      this.cancelEditTags();
+
       // Load any previously chosen A/B titles for this item. Deliberately not awaited
       // with the metadata read above — a failure here must not blank the report.
       void this.publish.load(report.jobId, report.itemIndex);
@@ -496,55 +634,6 @@ export class MetadataReports implements OnInit {
     }).catch(err => {
       this.notificationService.error('Copy Failed', 'Failed to copy chapters: ' + err.message);
     });
-  }
-
-  getDescriptionWithHashtags(): string {
-    const meta = this.metadata();
-    if (!meta) return '';
-
-    let result = '';
-
-    // Add chapters at the VERY TOP if present (YouTube requirement)
-    if (meta.chapters && meta.chapters.length > 0) {
-      const chaptersText = meta.chapters
-        .map((chapter: any) => `${this.getChapterTimestamp(chapter)} - ${this.getChapterTitle(chapter)}`)
-        .join('\n');
-      result = chaptersText + '\n\n';
-    }
-
-    // Add the main description (handle both string and object formats)
-    result += this.getDescriptionText(meta.description);
-
-    // If description already contains hashtags (they're embedded), return as-is
-    if (meta.hashtags && result.includes(meta.hashtags)) {
-      return result;
-    }
-
-    // Otherwise, we need to insert hashtags
-    // Find where description links start (they usually start with emoji or "Support")
-    const linksMarkers = ['🔥', '📖', '🎥', 'Support the Channel', 'Become a YouTube Member'];
-    let insertPosition = -1;
-
-    for (const marker of linksMarkers) {
-      const pos = result.indexOf(marker);
-      if (pos !== -1) {
-        insertPosition = pos;
-        break;
-      }
-    }
-
-    if (insertPosition !== -1 && meta.hashtags) {
-      // Insert hashtags before description links
-      // Trim trailing whitespace before the links to avoid extra newlines
-      const beforeLinks = result.substring(0, insertPosition).trimEnd();
-      const linksSection = result.substring(insertPosition);
-      result = beforeLinks + '\n\n' + meta.hashtags + '\n\n' + linksSection;
-    } else if (meta.hashtags) {
-      // Just append hashtags at the end
-      result = result.trimEnd() + '\n\n' + meta.hashtags;
-    }
-
-    return result;
   }
 
   getTagsArray(): string[] {

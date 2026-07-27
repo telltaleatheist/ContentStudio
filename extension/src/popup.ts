@@ -188,7 +188,67 @@ async function syncNow(): Promise<void> {
   }
 }
 
+const STUDIO_PREFIX = 'https://studio.youtube.com/';
+
+/**
+ * Reveal the on-page shelf from the toolbar button.
+ *
+ * The shelf lives in a content script, so it only exists on Studio tabs — and NOT on a
+ * Studio tab that was already open when the extension was last reloaded, because Chrome
+ * does not retro-inject content scripts. That case is indistinguishable from a bug unless
+ * it's named, so it is.
+ */
+async function showShelf(): Promise<void> {
+  const button = el<HTMLButtonElement>('show-shelf');
+  const feedback = el<HTMLDivElement>('shelf-feedback');
+  button.disabled = true;
+  feedback.textContent = '';
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || typeof tab.id !== 'number') {
+      feedback.textContent = 'No active tab.';
+      return;
+    }
+
+    const url = tab.url ?? '';
+    if (!url.startsWith(STUDIO_PREFIX)) {
+      feedback.textContent = 'The shelf lives on YouTube Studio. Opening it…';
+      await chrome.tabs.create({ url: `${STUDIO_PREFIX}` });
+      window.close();
+      return;
+    }
+
+    let response: { mounted: boolean; error?: string } | undefined;
+    try {
+      response = await chrome.tabs.sendMessage(tab.id, { type: 'shelf-reveal' });
+    } catch (err) {
+      // "Receiving end does not exist" is THE expected miss here: the tab predates the
+      // current extension build. Match that specifically and let anything else through.
+      const message = err instanceof Error ? err.message : String(err);
+      if (/receiving end does not exist|could not establish connection/i.test(message)) {
+        feedback.textContent = 'Reload this Studio tab — it was open before the extension was updated.';
+        return;
+      }
+      throw err;
+    }
+
+    if (!response) {
+      feedback.textContent = 'The page did not answer. Reload the Studio tab.';
+    } else if (response.mounted) {
+      window.close();
+    } else {
+      feedback.textContent = response.error ?? 'The shelf could not mount on this page.';
+    }
+  } catch (err) {
+    feedback.textContent = `Could not show the shelf: ${err instanceof Error ? err.message : String(err)}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  el<HTMLButtonElement>('show-shelf').addEventListener('click', () => void showShelf());
   el<HTMLButtonElement>('sync-now').addEventListener('click', () => void syncNow());
   el<HTMLAnchorElement>('open-options').addEventListener('click', (event) => {
     event.preventDefault();

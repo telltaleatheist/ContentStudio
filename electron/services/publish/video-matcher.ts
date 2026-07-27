@@ -13,16 +13,22 @@
  * matching the old job. Filename agrees, duration doesn't, so we flag instead of
  * silently writing the wrong titles onto a new cut.
  *
- * SAFETY: only true drafts are ever offered. A private video WITH publishAt is
- * scheduled, finished work -- see isDraftCandidate().
+ * SCOPE: every recent upload is a candidate, not just drafts. Scheduled and public videos
+ * are legitimate targets -- a draft cannot be A/B tested at all, so the published case is
+ * the one that matters most. What used to be a filter is now a LABEL: each candidate
+ * carries its state, a true draft wins any tie, and the reason text names what the
+ * operator is about to edit. Filling still only proposes text; they press Save.
  */
 
 import type { UploadStatusEntry } from '../youtube/youtube-api.service';
 import {
   DraftCandidate,
   MatchConfidence,
+  VideoState,
   isDraftCandidate,
   normalizeForMatch,
+  stateCaution,
+  videoStateOf,
 } from './publish-types';
 
 /** Durations within this tolerance count as the same cut. */
@@ -39,30 +45,35 @@ export interface MatchOutcome {
   candidate: DraftCandidate | null;
   confidence: MatchConfidence;
   reason: string;
-  /** Other drafts on the channel, so the operator can override the pick. */
+  /** What the matched video currently is, so the UI can warn before overwriting it. */
+  state: VideoState | null;
+  /** Other candidates on the channel, so the operator can override the pick. */
   alternatives: DraftCandidate[];
 }
 
-/** Map the YouTube API shape onto the matcher's own, then keep only true drafts. */
-export function toDraftCandidates(
+/**
+ * Map the YouTube API shape onto the matcher's own.
+ *
+ * No filtering: a scheduled or public video is a valid fill target. `videoStateOf` labels
+ * each one so the caller can show what it is.
+ */
+export function toFillCandidates(
   entries: UploadStatusEntry[],
   channelId: string
 ): DraftCandidate[] {
-  return entries
-    .map((e): DraftCandidate => ({
-      videoId: e.videoId,
-      channelId,
-      title: e.title,
-      privacyStatus:
-        e.privacyStatus === 'public' || e.privacyStatus === 'unlisted'
-          ? e.privacyStatus
-          : 'private',
-      publishAt: e.publishAt,
-      durationSec: e.durationSec || null,
-      descriptionLength: e.descriptionLength,
-      tagCount: e.tagCount,
-    }))
-    .filter(isDraftCandidate);
+  return entries.map((e): DraftCandidate => ({
+    videoId: e.videoId,
+    channelId,
+    title: e.title,
+    privacyStatus:
+      e.privacyStatus === 'public' || e.privacyStatus === 'unlisted'
+        ? e.privacyStatus
+        : 'private',
+    publishAt: e.publishAt,
+    durationSec: e.durationSec || null,
+    descriptionLength: e.descriptionLength,
+    tagCount: e.tagCount,
+  }));
 }
 
 function durationsAgree(a: number | null, b: number | null): boolean {
@@ -77,18 +88,26 @@ function describeDuration(sec: number | null): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+/** Append the state caution to a reason, so a non-draft target always announces itself. */
+function withState(candidate: DraftCandidate, reason: string): Pick<MatchOutcome, 'reason' | 'state'> {
+  const state = videoStateOf(candidate);
+  const caution = stateCaution(state);
+  return { reason: caution ? `${reason} This video is ${caution}.` : reason, state };
+}
+
 /**
- * Pick the best draft for one item.
+ * Pick the best video for one item.
  *
  * Never guesses when it can't tell: an ambiguous or absent filename match returns the
- * full draft list for the operator to choose from rather than picking one arbitrarily.
+ * full candidate list for the operator to choose from rather than picking one arbitrarily.
  */
-export function matchDraft(input: MatchInput, drafts: DraftCandidate[]): MatchOutcome {
-  if (drafts.length === 0) {
+export function matchDraft(input: MatchInput, candidates: DraftCandidate[]): MatchOutcome {
+  if (candidates.length === 0) {
     return {
       candidate: null,
       confidence: 'none',
-      reason: 'No unconfigured drafts on this channel.',
+      reason: 'No recent uploads on this channel.',
+      state: null,
       alternatives: [],
     };
   }
@@ -97,15 +116,16 @@ export function matchDraft(input: MatchInput, drafts: DraftCandidate[]): MatchOu
     return {
       candidate: null,
       confidence: 'none',
-      reason: 'No source filename recorded for this item — pick the draft manually.',
-      alternatives: drafts,
+      reason: 'No source filename recorded for this item — pick the video manually.',
+      state: null,
+      alternatives: candidates,
     };
   }
 
   const wanted = normalizeForMatch(input.sourceFilename);
-  const byFilename = drafts.filter((d) => normalizeForMatch(d.title) === wanted);
+  const byFilename = candidates.filter((d) => normalizeForMatch(d.title) === wanted);
 
-  // More than one draft normalizes to the same name: refuse to guess.
+  // More than one video normalizes to the same name: refuse to guess.
   if (byFilename.length > 1) {
     const durationHits = byFilename.filter((d) =>
       durationsAgree(d.durationSec, input.sourceDurationSec)
@@ -114,28 +134,49 @@ export function matchDraft(input: MatchInput, drafts: DraftCandidate[]): MatchOu
       return {
         candidate: durationHits[0],
         confidence: 'exact',
-        reason: `Several drafts share this name; matched on duration (${describeDuration(durationHits[0].durationSec)}).`,
+        ...withState(
+          durationHits[0],
+          `Several videos share this name; matched on duration (${describeDuration(durationHits[0].durationSec)}).`
+        ),
         alternatives: byFilename.filter((d) => d.videoId !== durationHits[0].videoId),
       };
     }
+
+    // A still-unconfigured draft keeps its filename as its title, so if exactly one
+    // candidate is a draft it is far and away the likeliest — an already-published video
+    // matching the filename usually means this job was filled once before.
+    const drafts = byFilename.filter(isDraftCandidate);
+    if (drafts.length === 1) {
+      return {
+        candidate: drafts[0],
+        confidence: 'filename',
+        ...withState(
+          drafts[0],
+          `${byFilename.length} videos share the name "${input.sourceFilename}"; only one is still a draft.`
+        ),
+        alternatives: byFilename.filter((d) => d.videoId !== drafts[0].videoId),
+      };
+    }
+
     return {
       candidate: null,
       confidence: 'none',
-      reason: `${byFilename.length} drafts share the name "${input.sourceFilename}" — pick one.`,
+      reason: `${byFilename.length} videos share the name "${input.sourceFilename}" — pick one.`,
+      state: null,
       alternatives: byFilename,
     };
   }
 
   if (byFilename.length === 1) {
     const hit = byFilename[0];
-    const others = drafts.filter((d) => d.videoId !== hit.videoId);
+    const others = candidates.filter((d) => d.videoId !== hit.videoId);
 
     // No duration on one side: filename alone is still a strong signal, just unverified.
     if (input.sourceDurationSec === null || hit.durationSec === null) {
       return {
         candidate: hit,
         confidence: 'filename',
-        reason: 'Filename matches. Duration unavailable, so this is unverified.',
+        ...withState(hit, 'Filename matches. Duration unavailable, so this is unverified.'),
         alternatives: others,
       };
     }
@@ -144,7 +185,7 @@ export function matchDraft(input: MatchInput, drafts: DraftCandidate[]): MatchOu
       return {
         candidate: hit,
         confidence: 'exact',
-        reason: `Filename and duration both match (${describeDuration(hit.durationSec)}).`,
+        ...withState(hit, `Filename and duration both match (${describeDuration(hit.durationSec)}).`),
         alternatives: others,
       };
     }
@@ -152,30 +193,37 @@ export function matchDraft(input: MatchInput, drafts: DraftCandidate[]): MatchOu
     return {
       candidate: hit,
       confidence: 'filename',
-      reason:
-        `Filename matches, but this draft is ${describeDuration(hit.durationSec)} ` +
-        `and the analyzed file was ${describeDuration(input.sourceDurationSec)} — different cut?`,
+      ...withState(
+        hit,
+        `Filename matches, but this video is ${describeDuration(hit.durationSec)} ` +
+          `and the analyzed file was ${describeDuration(input.sourceDurationSec)} — different cut?`
+      ),
       alternatives: others,
     };
   }
 
-  // No filename hit. Fall back to a unique duration match before giving up.
-  const byDuration = drafts.filter((d) => durationsAgree(d.durationSec, input.sourceDurationSec));
+  // No filename hit. A unique duration match is the last signal worth reporting.
+  const byDuration = candidates.filter((d) =>
+    durationsAgree(d.durationSec, input.sourceDurationSec)
+  );
   if (byDuration.length === 1) {
     return {
       candidate: byDuration[0],
       confidence: 'duration',
-      reason:
-        `No filename match, but exactly one draft is ${describeDuration(byDuration[0].durationSec)}. ` +
-        `Was it renamed before upload?`,
-      alternatives: drafts.filter((d) => d.videoId !== byDuration[0].videoId),
+      ...withState(
+        byDuration[0],
+        `No filename match, but exactly one video is ${describeDuration(byDuration[0].durationSec)}. ` +
+          `Was it renamed before upload?`
+      ),
+      alternatives: candidates.filter((d) => d.videoId !== byDuration[0].videoId),
     };
   }
 
   return {
     candidate: null,
     confidence: 'none',
-    reason: `No draft matches "${input.sourceFilename}" — pick one manually.`,
-    alternatives: drafts,
+    reason: `No video matches "${input.sourceFilename}" — pick one manually.`,
+    state: null,
+    alternatives: candidates,
   };
 }
