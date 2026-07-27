@@ -281,7 +281,18 @@ function isDue(ageHours: number, lastIso: string | undefined, nowMs: number): bo
 // Managed tab: create/reuse ONE background tab, navigate it per channel
 // ============================================================================
 
-interface StudioContext { ready: boolean; channelId: string | null; hasDelegation: boolean }
+interface StudioContext {
+  ready: boolean;
+  channelId: string | null;
+  hasDelegation: boolean;
+  /**
+   * Whether window.ytcfg existed at all. Load-bearing for diagnosis: no ytcfg means the
+   * tab is not on a Studio app page (a sign-in or account-chooser interstitial, say),
+   * which is a completely different fault from Studio loading the WRONG channel. Without
+   * this both reported the same "CHANNEL_ID=none".
+   */
+  ytcfgPresent: boolean;
+}
 
 async function getStoredTabId(): Promise<number | null> {
   try {
@@ -332,9 +343,21 @@ async function ensureStudioTabForChannel(channelId: string): Promise<number> {
   return tabId;
 }
 
+/**
+ * Poll the managed tab until Studio has loaded the requested channel's context.
+ *
+ * On timeout this reports WHICH of several very different faults occurred. It previously
+ * collapsed all of them into "CHANNEL_ID=none, delegation absent — is the user signed
+ * into that channel?", which is unactionable and often simply wrong: the same text
+ * appeared whether the tab was sitting on a Google sign-in page, had been discarded by
+ * Chrome under memory pressure, was still loading, or had loaded a DIFFERENT channel.
+ * The 'window.ytcfg never became available' branch was unreachable — readStudioContext
+ * always returns an object, so `last` was never null once a single poll completed.
+ */
 async function waitForChannelContext(tabId: number, channelId: string): Promise<void> {
   const deadline = Date.now() + CONTEXT_TIMEOUT_MS;
   let last: StudioContext | null = null;
+  let injectionError: string | null = null;
 
   while (Date.now() < deadline) {
     await sleep(CONTEXT_POLL_MS);
@@ -343,8 +366,13 @@ async function waitForChannelContext(tabId: number, channelId: string): Promise<
       const results = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: readStudioContext });
       const first = results[0];
       ctx = first && first.result ? (first.result as StudioContext) : null;
-    } catch {
-      ctx = null; // frame mid-navigation / not yet injectable — keep polling
+      injectionError = null;
+    } catch (err) {
+      // Frame mid-navigation / not yet injectable — keep polling, but REMEMBER why, so a
+      // tab that was never injectable at all can say so instead of looking like Studio
+      // loaded without a channel.
+      ctx = null;
+      injectionError = msg(err);
     }
     if (ctx) {
       last = ctx;
@@ -352,10 +380,57 @@ async function waitForChannelContext(tabId: number, channelId: string): Promise<
     }
   }
 
-  throw new StudioChannelUnavailableError(
-    channelId,
-    last ? `loaded context CHANNEL_ID=${last.channelId ?? 'none'}, delegation ${last.hasDelegation ? 'present' : 'absent'}` : 'window.ytcfg never became available',
-  );
+  throw new StudioChannelUnavailableError(channelId, await describeStuckTab(tabId, last, injectionError));
+}
+
+/**
+ * Explain, in the operator's terms, why the tab never reached the wanted channel.
+ *
+ * Reads the tab's real URL and state at failure time — that single fact separates "not
+ * signed in" from "Chrome killed the tab" from "Studio is just slow", which is the whole
+ * difference between an actionable error and a shrug.
+ */
+async function describeStuckTab(
+  tabId: number,
+  last: StudioContext | null,
+  injectionError: string | null,
+): Promise<string> {
+  let tab: chrome.tabs.Tab | null = null;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch {
+    return 'the collector tab disappeared while loading';
+  }
+
+  const url = tab.url || tab.pendingUrl || '';
+  const where = url ? url.split('?')[0] : 'an unknown page';
+  const seconds = Math.round(CONTEXT_TIMEOUT_MS / 1000);
+
+  // Chrome evicts background tabs under memory pressure; the tab survives as a shell that
+  // cannot be scripted. Naming this is the difference between a real diagnosis and a
+  // mystery, and it has bitten this extension before.
+  if (tab.discarded) {
+    return `Chrome discarded the collector tab under memory pressure (was at ${where})`;
+  }
+
+  if (!url.startsWith('https://studio.youtube.com/')) {
+    return `the tab was redirected to ${where} instead of Studio — sign in to this channel, or it may not be on this Google account`;
+  }
+
+  if (last?.ytcfgPresent && last.channelId && last.channelId !== '') {
+    return last.hasDelegation
+      ? `Studio loaded a different channel (${last.channelId}) — this account may not have access to the requested one`
+      : `Studio loaded channel ${last.channelId} but no delegation context, so its API calls would be rejected`;
+  }
+
+  if (!last?.ytcfgPresent) {
+    const why = injectionError
+      ? `the page could not be scripted (${injectionError})`
+      : `window.ytcfg never appeared`;
+    return `Studio did not initialize at ${where} within ${seconds}s — ${why}; tab status ${tab.status ?? 'unknown'}`;
+  }
+
+  return `Studio loaded at ${where} but never published a channel id within ${seconds}s (tab status ${tab.status ?? 'unknown'})`;
 }
 
 // ============================================================================
@@ -431,15 +506,23 @@ function msg(err: unknown): string {
 // ============================================================================
 
 /** Probe: what channel context is currently loaded in this tab? */
-function readStudioContext(): { ready: boolean; channelId: string | null; hasDelegation: boolean } {
+function readStudioContext(): {
+  ready: boolean;
+  channelId: string | null;
+  hasDelegation: boolean;
+  ytcfgPresent: boolean;
+} {
   try {
     const cfg = (window as any).ytcfg;
-    if (!cfg || typeof cfg.get !== 'function') return { ready: false, channelId: null, hasDelegation: false };
+    if (!cfg || typeof cfg.get !== 'function') {
+      return { ready: false, channelId: null, hasDelegation: false, ytcfgPresent: false };
+    }
     const channelId = cfg.get('CHANNEL_ID') || null;
     const delegation = cfg.get('INNERTUBE_CONTEXT_SERIALIZED_DELEGATION_CONTEXT') || null;
-    return { ready: !!channelId, channelId, hasDelegation: !!delegation };
+    return { ready: !!channelId, channelId, hasDelegation: !!delegation, ytcfgPresent: true };
   } catch {
-    return { ready: false, channelId: null, hasDelegation: false };
+    // ytcfg existed but threw — record that, so this isn't mistaken for "not on Studio".
+    return { ready: false, channelId: null, hasDelegation: false, ytcfgPresent: true };
   }
 }
 
