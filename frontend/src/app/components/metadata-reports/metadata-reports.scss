@@ -534,6 +534,18 @@
     resize: vertical;
     outline: none;
     padding: 0;
+
+    /* Editable state has to LOOK editable — the readonly view is the same element. */
+    &:not([readonly]) {
+      padding: 0.5rem 0.625rem;
+      background: var(--bg-primary);
+      border: 1px solid var(--primary-orange);
+      border-radius: 6px;
+
+      &:focus {
+        box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.25);
+      }
+    }
   }
 
   // Tags - creamsicle style (simpler hover)
@@ -748,15 +760,8 @@
 }
 
 .list-item.ab-selectable {
-  /* The whole row toggles selection; copy is the small secondary affordance. */
-  .copy-hint {
-    padding: 0 0.25rem;
-    border-radius: 6px;
-
-    &:hover {
-      background: rgba(255, 255, 255, 0.08);
-    }
-  }
+  /* The whole row toggles selection; edit and copy are the secondary affordances and
+     stop propagation so neither of them also picks the title. */
 
   &.ab-chosen {
     border-color: var(--primary-orange);
@@ -789,32 +794,123 @@
   box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.25);
 }
 
-.ab-reorder {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+/* Row buttons: edit and copy, side by side at the end of every title row, and the same
+   two slots become save/cancel while editing so nothing moves under the cursor.
+   Reorder arrows are deliberately gone — variant order is click order, and deselecting
+   back down to what you want is fewer controls for the same result. */
+.row-action {
   flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 
-  .ab-arrow {
-    width: 22px;
-    height: 16px;
-    line-height: 1;
-    padding: 0;
-    font-size: 9px;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    background: var(--bg-tertiary);
-    color: var(--text-secondary);
-    cursor: pointer;
+  &:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: var(--border-color);
+    color: var(--text-primary);
+  }
 
-    &:hover:not(:disabled) {
-      border-color: var(--primary-orange);
-      color: var(--primary-orange);
-    }
+  &.save:hover {
+    border-color: #7ddc7d;
+    color: #7ddc7d;
+  }
 
-    &:disabled {
-      opacity: 0.3;
-      cursor: default;
-    }
+  &.cancel:hover {
+    border-color: #ff8a80;
+    color: #ff8a80;
+  }
+}
+
+/* ---------------------------------------------------------------- editing ----
+   Edits are stored as OVERRIDES in the selection store, never written back into
+   the job's report — that file stays the pristine generator output. The "edited"
+   badge exists so an override is never invisible: without it, a stale edit looks
+   exactly like freshly generated text. */
+
+.list-item.ab-editing {
+  border-color: var(--primary-orange);
+  background: rgba(255, 107, 53, 0.10);
+  gap: 0.5rem;
+}
+
+.ab-title-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.5rem 0.625rem;
+  font-size: 0.9375rem;
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--primary-orange);
+  border-radius: 6px;
+
+  &:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.25);
+  }
+}
+
+.ab-charcount {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+
+  /* Over YouTube's hard limit — the save will be refused, so say so before the click. */
+  &.over {
+    color: #ff8a80;
+    font-weight: 700;
+  }
+}
+
+/* Shown while the composed description/tags are being read from the main process. An empty
+   textarea would read as "this item has no description", which is a different claim. */
+.resolving {
+  padding: 0.75rem 1.25rem;
+  font-size: 0.875rem;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+.edited-badge {
+  padding: 0.0625rem 0.375rem;
+  border-radius: 10px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--primary-orange);
+  background: rgba(255, 107, 53, 0.14);
+  border: 1px solid rgba(255, 107, 53, 0.4);
+}
+
+.tags-textarea {
+  width: 100%;
+  min-height: 90px;
+  margin: 0 1.25rem 1rem;
+  padding: 0.625rem 0.75rem;
+  font-size: 0.875rem;
+  font-family: inherit;
+  line-height: 1.5;
+  resize: vertical;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--primary-orange);
+  border-radius: 6px;
+
+  &:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.25);
   }
 }

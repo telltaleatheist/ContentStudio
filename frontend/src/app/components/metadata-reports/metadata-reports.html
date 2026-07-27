@@ -117,6 +117,12 @@
 
         @if (!isLoading() && selectedReport() && metadata()) {
           <div class="metadata-content">
+            <!-- One banner for every publish action (picking, reordering, editing), so a
+                 rejected save is never silent and never reported in the wrong section. -->
+            @if (publish.error(); as err) {
+              <div class="ab-error" (click)="publish.dismissError()">{{ err }}</div>
+            }
+
             <!-- Titles Section -->
             @if (metadata()!.titles && metadata()!.titles.length > 0) {
               <div class="metadata-section">
@@ -140,48 +146,68 @@
                   main title and is what YouTube keeps if the test is inconclusive.
                 </p>
 
-                @if (publish.error(); as err) {
-                  <div class="ab-error" (click)="publish.dismissError()">{{ err }}</div>
-                }
-
                 <div class="list-container">
                   @for (title of metadata()!.titles; track $index; let i = $index) {
-                    <div class="list-item ab-selectable"
-                         [class.copied]="isCopied('title-' + i)"
-                         [class.ab-chosen]="isTitleChosen(title)"
-                         [class.ab-blocked]="isTitleBlocked(title)"
-                         (click)="toggleChosenTitle(title, $event)"
-                         [title]="isTitleChosen(title)
-                                    ? 'Click to remove from the A/B test'
-                                    : (isTitleBlocked(title)
-                                        ? 'Deselect one first — YouTube allows 3 variants'
-                                        : 'Click to add to the A/B test')">
+                    @if (isEditingTitle(i)) {
+                      <!-- Enter saves, Escape cancels, and the pencil/copy pair becomes
+                           ✓/✕ in the same place so nothing shifts under the cursor. The
+                           edit is stored as an A/B variant; the generated report is never
+                           rewritten. -->
+                      <div class="list-item ab-editing">
+                        @if (titleVariantNumber(title); as variant) {
+                          <span class="ab-variant-badge">{{ variant }}</span>
+                        } @else {
+                          <span class="item-number">{{ i + 1 }}</span>
+                        }
 
-                      @if (titleVariantNumber(title); as variant) {
-                        <span class="ab-variant-badge">{{ variant }}</span>
-                      } @else {
-                        <span class="item-number">{{ i + 1 }}</span>
-                      }
+                        <input #titleInput
+                               class="ab-title-input"
+                               [value]="titleDraft()"
+                               (input)="titleDraft.set($any($event.target).value)"
+                               (keydown.enter)="saveEditTitle(title, $event)"
+                               (keydown.escape)="cancelEditTitle()" />
 
-                      <span class="list-item-text">{{ getTitleText(title) }}</span>
-
-                      @if (isTitleChosen(title)) {
-                        <span class="ab-reorder">
-                          <button class="ab-arrow"
-                                  [disabled]="titleVariantNumber(title) === 1"
-                                  (click)="moveChosenTitle(title, -1, $event)"
-                                  title="Move earlier">▲</button>
-                          <button class="ab-arrow"
-                                  [disabled]="titleVariantNumber(title) === publish.chosenCount()"
-                                  (click)="moveChosenTitle(title, 1, $event)"
-                                  title="Move later">▼</button>
+                        <span class="ab-charcount"
+                              [class.over]="titleDraft().trim().length > 100">
+                          {{ titleDraft().trim().length }}/100
                         </span>
-                      }
 
-                      <span class="copy-hint"
-                            (click)="copyToClipboard(getTitleText(title), 'title-' + i); $event.stopPropagation()"
-                            title="Copy to clipboard">{{ isCopied('title-' + i) ? '✓' : '📋' }}</span>
-                    </div>
+                        <button class="row-action save"
+                                (click)="saveEditTitle(title, $event)"
+                                title="Save (Enter)">✓</button>
+                        <button class="row-action cancel"
+                                (click)="cancelEditTitle($event)"
+                                title="Cancel (Esc)">✕</button>
+                      </div>
+                    } @else {
+                      <div class="list-item ab-selectable"
+                           [class.copied]="isCopied('title-' + i)"
+                           [class.ab-chosen]="isTitleChosen(title)"
+                           [class.ab-blocked]="isTitleBlocked(title)"
+                           (click)="toggleChosenTitle(title, $event)"
+                           [title]="isTitleChosen(title)
+                                      ? 'Click to remove from the A/B test'
+                                      : (isTitleBlocked(title)
+                                          ? 'Deselect one first — YouTube allows 3 variants'
+                                          : 'Click to add to the A/B test')">
+
+                        @if (titleVariantNumber(title); as variant) {
+                          <span class="ab-variant-badge">{{ variant }}</span>
+                        } @else {
+                          <span class="item-number">{{ i + 1 }}</span>
+                        }
+
+                        <span class="list-item-text">{{ getTitleText(title) }}</span>
+
+                        <button class="row-action"
+                                (click)="startEditTitle(title, i, $event)"
+                                title="Edit this title">✎</button>
+
+                        <button class="row-action"
+                                (click)="copyToClipboard(getTitleText(title), 'title-' + i); $event.stopPropagation()"
+                                title="Copy to clipboard">{{ isCopied('title-' + i) ? '✓' : '📋' }}</button>
+                      </div>
+                    }
                   }
                 </div>
               </div>
@@ -193,17 +219,42 @@
                 <div class="section-title-row">
                   <mat-icon>description</mat-icon>
                   <h3>Description</h3>
+                  @if (publish.descriptionOverride() !== null) {
+                    <span class="edited-badge" title="You edited this. The generated text is kept and can be restored.">edited</span>
+                  }
                 </div>
-                <span class="char-count">{{ getDescriptionWithHashtags().length }} chars</span>
-                <button class="copy-btn"
-                        [class.copied]="isCopied('description')"
-                        (click)="copyToClipboard(getDescriptionWithHashtags(), 'description')">
-                  {{ isCopied('description') ? '✓ Copied!' : 'Copy' }}
-                </button>
+                <span class="char-count">
+                  {{ publish.hasResolved() ? descriptionValue().length + ' chars' : 'loading…' }}
+                </span>
+                @if (editingDescription()) {
+                  <button class="copy-btn" (click)="saveDescription()">Save</button>
+                  <button class="copy-btn" (click)="cancelEditDescription()">Cancel</button>
+                } @else if (publish.hasResolved()) {
+                  <button class="copy-btn" (click)="startEditDescription()">Edit</button>
+                  @if (publish.descriptionOverride() !== null) {
+                    <button class="copy-btn"
+                            (click)="revertDescription()"
+                            title="Discard your edit and use the generated description">Revert</button>
+                  }
+                  <button class="copy-btn"
+                          [class.copied]="isCopied('description')"
+                          (click)="copyToClipboard(descriptionValue(), 'description')">
+                    {{ isCopied('description') ? '✓ Copied!' : 'Copy' }}
+                  </button>
+                }
               </div>
               <div class="description-box">
                 <div class="description-card">
-                  <textarea class="description-textarea" readonly [value]="getDescriptionWithHashtags()"></textarea>
+                  @if (editingDescription()) {
+                    <textarea class="description-textarea"
+                              [value]="descriptionDraft()"
+                              (input)="descriptionDraft.set($any($event.target).value)"></textarea>
+                  } @else if (publish.hasResolved()) {
+                    <textarea class="description-textarea" readonly [value]="descriptionValue()"></textarea>
+                  } @else {
+                    <!-- Never render an empty box here: blank reads as "no description". -->
+                    <div class="resolving">Reading the composed description…</div>
+                  }
                 </div>
               </div>
             </div>
@@ -214,23 +265,47 @@
                 <div class="section-title-row">
                   <mat-icon>local_offer</mat-icon>
                   <h3>Tags</h3>
-                  <span class="count-badge">{{ getTagsArray().length }}</span>
+                  <span class="count-badge">{{ editedTagsArray().length }}</span>
+                  @if (publish.tagsOverride() !== null) {
+                    <span class="edited-badge" title="You edited these. The generated tags are kept and can be restored.">edited</span>
+                  }
                 </div>
-                <button class="copy-btn"
-                        [class.copied]="isCopied('tags-all')"
-                        (click)="copyToClipboard(getTagsString(), 'tags-all')">
-                  {{ isCopied('tags-all') ? '✓ Copied!' : 'Copy All' }}
-                </button>
-              </div>
-              <div class="tags-container">
-                @for (tag of getTagsArray(); track $index; let i = $index) {
-                  <mat-chip class="tag-chip"
-                            [class.copied]="isCopied('tag-' + i)"
-                            (click)="copyToClipboard(tag, 'tag-' + i)">
-                    {{ isCopied('tag-' + i) ? '✓ Copied!' : tag }}
-                  </mat-chip>
+                @if (editingTags()) {
+                  <button class="copy-btn" (click)="saveTags()">Save</button>
+                  <button class="copy-btn" (click)="cancelEditTags()">Cancel</button>
+                } @else if (publish.hasResolved()) {
+                  <button class="copy-btn" (click)="startEditTags()">Edit</button>
+                  @if (publish.tagsOverride() !== null) {
+                    <button class="copy-btn"
+                            (click)="revertTags()"
+                            title="Discard your edit and use the generated tags">Revert</button>
+                  }
+                  <button class="copy-btn"
+                          [class.copied]="isCopied('tags-all')"
+                          (click)="copyToClipboard(tagsValue(), 'tags-all')">
+                    {{ isCopied('tags-all') ? '✓ Copied!' : 'Copy All' }}
+                  </button>
                 }
               </div>
+              @if (editingTags()) {
+                <!-- Comma-separated, exactly as the extension types them into Studio. -->
+                <textarea class="tags-textarea"
+                          [value]="tagsDraft()"
+                          (input)="tagsDraft.set($any($event.target).value)"
+                          placeholder="tag one, tag two, tag three"></textarea>
+              } @else if (publish.hasResolved()) {
+                <div class="tags-container">
+                  @for (tag of editedTagsArray(); track $index; let i = $index) {
+                    <mat-chip class="tag-chip"
+                              [class.copied]="isCopied('tag-' + i)"
+                              (click)="copyToClipboard(tag, 'tag-' + i)">
+                      {{ isCopied('tag-' + i) ? '✓ Copied!' : tag }}
+                    </mat-chip>
+                  }
+                </div>
+              } @else {
+                <div class="resolving">Reading the tags…</div>
+              }
             </div>
 
             <!-- Thumbnail Text Section -->
