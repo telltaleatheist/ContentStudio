@@ -65,6 +65,12 @@ export interface PublishRoutes {
   listPending(): Promise<unknown[]>;
   resolveForPage(videoId: string, filename: string | null): Promise<unknown>;
   markFilled(jobId: string, itemIndex: number, videoId: string): Promise<void>;
+  /** A page of the full report index, so the shelf can reach any generated item. */
+  listReports(offset: number, limit: number, query: string): Promise<unknown>;
+  /** Full detail for one item, including every generated title (the shelf's picker). */
+  getItem(jobId: string, itemIndex: number): Promise<unknown>;
+  /** The shelf writing back the chosen A/B variant set. */
+  setTitles(jobId: string, itemIndex: number, titles: string[]): Promise<unknown>;
 }
 
 export class IngestServerService {
@@ -257,6 +263,14 @@ export class IngestServerService {
     return true; // any other Origin (http/https/null/…) -> reject as cross-origin web
   }
 
+  /**
+   * Query parameters for the current request. Parsed against a dummy origin because
+   * req.url is path-relative; the host is irrelevant, only the search string is read.
+   */
+  private queryOf(req: http.IncomingMessage): URLSearchParams {
+    return new URL(req.url || '/', 'http://127.0.0.1').searchParams;
+  }
+
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = (req.url || '').split('?')[0];
 
@@ -323,6 +337,67 @@ export class IngestServerService {
           }
           await this.publishRoutes.markFilled(body.jobId, body.itemIndex, body.videoId);
           this.sendJson(res, 200, { ok: true });
+          return;
+        }
+
+        // The shelf's report browser: a page of EVERY generated item, newest first.
+        // Paginated because the operator scrolls back through months of reports.
+        if (req.method === 'GET' && url === '/publish/reports') {
+          const params = this.queryOf(req);
+          const offset = Number(params.get('offset') ?? '0');
+          const limit = Number(params.get('limit') ?? '50');
+          if (!Number.isFinite(offset) || !Number.isFinite(limit)) {
+            this.sendJson(res, 400, { error: 'offset and limit must be numbers' });
+            return;
+          }
+          this.sendJson(
+            res,
+            200,
+            await this.publishRoutes.listReports(offset, limit, params.get('q') ?? '')
+          );
+          return;
+        }
+
+        // One item in full, including every generated title — what the picker renders.
+        if (req.method === 'GET' && url === '/publish/item') {
+          const params = this.queryOf(req);
+          const jobId = params.get('jobId');
+          const itemIndex = Number(params.get('itemIndex'));
+          if (!jobId || !Number.isInteger(itemIndex) || itemIndex < 0) {
+            this.sendJson(res, 400, { error: 'jobId and a non-negative itemIndex are required' });
+            return;
+          }
+          const item = await this.publishRoutes.getItem(jobId, itemIndex);
+          if (!item) {
+            this.sendJson(res, 404, { error: `No generated item ${jobId}[${itemIndex}]` });
+            return;
+          }
+          this.sendJson(res, 200, { item });
+          return;
+        }
+
+        // The shelf picking titles. Order is meaningful and stored exactly as sent.
+        if (req.method === 'POST' && url === '/publish/titles') {
+          const body = JSON.parse(await this.readBody(req));
+          if (
+            !body ||
+            typeof body.jobId !== 'string' ||
+            typeof body.itemIndex !== 'number' ||
+            !Array.isArray(body.titles) ||
+            body.titles.some((t: unknown) => typeof t !== 'string')
+          ) {
+            this.sendJson(res, 400, {
+              error: 'Body must be {jobId: string, itemIndex: number, titles: string[]}',
+            });
+            return;
+          }
+          // Validation failures come back as {ok:false, errors} with a 200 — they are an
+          // expected outcome of a click, and the shelf shows the reason verbatim.
+          this.sendJson(
+            res,
+            200,
+            await this.publishRoutes.setTitles(body.jobId, body.itemIndex, body.titles)
+          );
           return;
         }
       } catch (error) {

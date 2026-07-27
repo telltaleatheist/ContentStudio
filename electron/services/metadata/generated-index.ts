@@ -1,0 +1,152 @@
+/**
+ * Generated Report Index
+ *
+ * Reads the generator's own `<outputDir>/.contentstudio/metadata/<jobId>.json` reports and
+ * produces a flat, newest-first index of every generated ITEM (a job can produce many).
+ *
+ * Lives in services/metadata because it encodes the report file FORMAT — job_id,
+ * original_inputs, items[] — which is this module's business. The publish feature consumes
+ * it as an injected function and never imports from here, so publish/ stays liftable into
+ * another host (the planned AutoCutStudio merge): that host supplies its own reader.
+ *
+ * The shelf's report browser re-queries this on every search keystroke and the directory
+ * runs to tens of megabytes, so results are CACHED PER FILE AND KEYED BY MTIME. A changed
+ * mtime re-parses that one file; a deleted file drops out. There is no TTL, which means
+ * there is no window in which a stale report can be served.
+ */
+
+import * as fs from 'fs';
+import * as path from 'path';
+import type { GeneratedIndex, GeneratedItemSummary } from '../publish/publish-store.service';
+
+/** Reasons a report file did not make it into the index. Counted, never silently dropped. */
+export interface IndexProblem {
+  file: string;
+  message: string;
+}
+
+export interface GeneratedIndexResult extends GeneratedIndex {
+  /** Detail behind GeneratedIndex.unreadable, for logging. */
+  problems: IndexProblem[];
+}
+
+/**
+ * Basename of the source file for one item, or null when there isn't a single one.
+ *
+ * In 'individual' mode items line up 1:1 with original_inputs; in compilation mode one
+ * item is built from many inputs, so there is no single source file and matching has to
+ * fall back to a manual pick. Only a value that looks like a real filename counts.
+ */
+export function sourceFilenameOf(job: any, itemIndex: number): string | null {
+  const inputs = Array.isArray(job?.original_inputs) ? job.original_inputs : [];
+  if (!Array.isArray(job?.items) || inputs.length !== job.items.length) return null;
+  const raw = inputs[itemIndex];
+  if (typeof raw !== 'string' || !/\.[A-Za-z0-9]{2,5}$/.test(raw)) return null;
+  return path.basename(raw);
+}
+
+/** Summaries for every item in one already-parsed report. */
+export function summarizeJob(job: any, fallbackJobId: string): GeneratedItemSummary[] {
+  const jobId = typeof job?.job_id === 'string' && job.job_id ? job.job_id : fallbackJobId;
+  const createdAt = typeof job?.created_at === 'string' ? job.created_at : '';
+  const promptSet = typeof job?.prompt_set === 'string' ? job.prompt_set : null;
+  const jobName = typeof job?.job_name === 'string' ? job.job_name : null;
+  const items = Array.isArray(job?.items) ? job.items : [];
+
+  return items.map((item: any, itemIndex: number): GeneratedItemSummary => {
+    const titles: string[] = Array.isArray(item?.titles) ? item.titles : [];
+    const sourceFilename = sourceFilenameOf(job, itemIndex);
+    return {
+      jobId,
+      itemIndex,
+      // Whatever the operator recognises it by, best first.
+      label:
+        sourceFilename ||
+        jobName ||
+        (typeof item?._title === 'string' ? item._title : '') ||
+        titles[0] ||
+        `${jobId} item ${itemIndex}`,
+      createdAt,
+      promptSet,
+      sourceFilename,
+      titleCount: titles.length,
+    };
+  });
+}
+
+/**
+ * Build a cached index reader.
+ *
+ * @param metadataDir  Resolves the reports directory. A function, not a string, because
+ *                     the output directory is a setting the operator can change at runtime.
+ */
+export function createGeneratedIndexReader(
+  metadataDir: () => string
+): () => GeneratedIndexResult {
+  const cache = new Map<string, { mtimeMs: number; items: GeneratedItemSummary[] }>();
+
+  return function readGeneratedIndex(): GeneratedIndexResult {
+    const dir = metadataDir();
+
+    // A missing directory means nothing has been generated yet — an empty index, not a
+    // failure. Every OTHER error (permissions, an unmounted volume) must surface, because
+    // "no reports" and "cannot see the reports" are very different facts.
+    let files: string[];
+    try {
+      files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+    } catch (error: any) {
+      if (error?.code === 'ENOENT') return { items: [], unreadable: 0, problems: [] };
+      throw error;
+    }
+
+    const items: GeneratedItemSummary[] = [];
+    const problems: IndexProblem[] = [];
+    const live = new Set<string>();
+
+    for (const file of files) {
+      const full = path.join(dir, file);
+      live.add(full);
+
+      let mtimeMs: number;
+      try {
+        mtimeMs = fs.statSync(full).mtimeMs;
+      } catch (error) {
+        problems.push({ file, message: `cannot stat: ${describe(error)}` });
+        continue;
+      }
+
+      const cached = cache.get(full);
+      if (cached && cached.mtimeMs === mtimeMs) {
+        items.push(...cached.items);
+        continue;
+      }
+
+      let parsed: GeneratedItemSummary[];
+      try {
+        const job = JSON.parse(fs.readFileSync(full, 'utf8'));
+        parsed = summarizeJob(job, file.replace(/\.json$/, ''));
+      } catch (error) {
+        // One corrupt report must not blank the browser, but it must be COUNTED —
+        // a quietly shorter list is indistinguishable from a complete one.
+        problems.push({ file, message: describe(error) });
+        continue;
+      }
+
+      cache.set(full, { mtimeMs, items: parsed });
+      items.push(...parsed);
+    }
+
+    // Forget reports that no longer exist, so a deleted job doesn't stay listed.
+    for (const key of [...cache.keys()]) {
+      if (!live.has(key)) cache.delete(key);
+    }
+
+    // Newest first: the operator is nearly always after something recent.
+    items.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+    return { items, unreadable: problems.length, problems };
+  };
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

@@ -138,12 +138,40 @@ export function normalizeForMatch(nameOrTitle: string): string {
 /**
  * A true draft is private AND never scheduled.
  *
- * SAFETY: this is the most important guard in the feature. `private` on its own also
- * covers finished videos awaiting a scheduled publish (which carry a real title, a
- * full description, and a publishAt). Filling those would destroy finished work.
+ * `private` on its own also covers finished videos awaiting a scheduled publish (which
+ * carry a real title, a full description, and a publishAt).
+ *
+ * This is no longer a filter -- scheduled and public videos are valid fill targets, and
+ * in fact the only ones YouTube will A/B test, since a draft is ineligible. It is now a
+ * CLASSIFIER: what it decides gets shown to the operator (see videoStateOf) and used to
+ * break ties, so nobody rewrites finished work without seeing that that is what they are
+ * doing.
  */
 export function isDraftCandidate(c: DraftCandidate): boolean {
   return c.privacyStatus === 'private' && !c.publishAt;
+}
+
+/** What the operator is actually about to edit. */
+export type VideoState = 'draft' | 'scheduled' | 'unlisted' | 'public';
+
+export function videoStateOf(c: DraftCandidate): VideoState {
+  if (isDraftCandidate(c)) return 'draft';
+  if (c.privacyStatus === 'private') return 'scheduled';
+  return c.privacyStatus;
+}
+
+/** Plain-language warning for a non-draft target, or null when it's a fresh draft. */
+export function stateCaution(state: VideoState): string | null {
+  switch (state) {
+    case 'draft':
+      return null;
+    case 'scheduled':
+      return 'scheduled — it already has finished metadata';
+    case 'unlisted':
+      return 'unlisted — already published';
+    case 'public':
+      return 'PUBLIC — live right now';
+  }
 }
 
 /** Validation for a chosen-title set, surfaced in the UI before anything is filled. */
