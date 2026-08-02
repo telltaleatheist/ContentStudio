@@ -19,6 +19,7 @@
 import { FILLERS, type FillContext, type FillId, type Filler } from './fillers';
 import type { BrowsePage, BrowseRow, ItemDetail } from './publish-client';
 import { DEFAULT_SHELF_PREFS, loadShelfPrefs, saveShelfPrefs, type ShelfPrefs } from './shelf-prefs';
+import { STALE_CONTEXT_MESSAGE, extensionContextAlive } from './publish-messages';
 
 const HOST_ID = 'contentstudio-publish-shelf';
 
@@ -835,13 +836,35 @@ export class PublishShelf {
   private async setSide(side: ShelfPrefs['side']): Promise<void> {
     this.prefs = { ...this.prefs, side };
     this.render();
-    await saveShelfPrefs(this.prefs);
+    await this.persistPrefs();
   }
 
   private async setCollapsed(collapsed: boolean): Promise<void> {
     this.prefs = { ...this.prefs, collapsed };
     this.render();
-    await saveShelfPrefs(this.prefs);
+    await this.persistPrefs();
+  }
+
+  /**
+   * Write the prefs, and say so when the write fails.
+   *
+   * Every caller of setSide/setCollapsed is a click handler that can only fire-and-forget,
+   * so an unhandled rejection here surfaced as a bare "Uncaught (in promise) Error:
+   * Extension context invalidated." in the page console and nothing at all in the UI. The
+   * usual cause is the extension having been reloaded out from under this tab, which also
+   * means every other shelf action is already broken — worth saying out loud, since the
+   * move (reload the tab) is not guessable from a silently unsticky preference.
+   */
+  private async persistPrefs(): Promise<void> {
+    try {
+      await saveShelfPrefs(this.prefs);
+    } catch (error) {
+      this.setError(
+        extensionContextAlive()
+          ? `Could not save the shelf position: ${error instanceof Error ? error.message : String(error)}`
+          : STALE_CONTEXT_MESSAGE,
+      );
+    }
   }
 
   private errorBox(text: string): HTMLElement {

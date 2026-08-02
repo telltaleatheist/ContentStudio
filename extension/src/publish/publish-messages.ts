@@ -69,16 +69,47 @@ export class PublishBridgeError extends Error {
   }
 }
 
+/**
+ * What to tell the operator once this tab's extension context is gone.
+ *
+ * Reloading the TAB is the only fix — reloading the extension again does not re-inject
+ * into pages that were already open, which is the trap that makes this look like the
+ * shelf is simply broken.
+ */
+export const STALE_CONTEXT_MESSAGE =
+  'This tab is running a copy of the extension that has since been reloaded. Reload the Studio tab to reconnect.';
+
+/**
+ * Is this content script still attached to a live extension?
+ *
+ * `chrome.runtime.id` becomes undefined the moment the extension is reloaded, updated or
+ * disabled, and from then on EVERY chrome.* call from this page throws "Extension context
+ * invalidated." It is a terminal state for the tab, so knowing it lets the shelf say
+ * "reload the tab" once instead of throwing on a 600ms timer.
+ */
+export function extensionContextAlive(): boolean {
+  return typeof chrome !== 'undefined' && !!chrome.runtime && chrome.runtime.id !== undefined;
+}
+
 async function send<T>(message: PublishMessage): Promise<T> {
   let response: PublishResponse<T> | undefined;
+
+  // Distinguish the two ways sendMessage fails. A dead context is permanent and needs a
+  // tab reload; a worker that failed to wake is transient and worth trying again.
+  if (!extensionContextAlive()) {
+    throw new PublishBridgeError(STALE_CONTEXT_MESSAGE, 'stale-context');
+  }
+
   try {
     response = await chrome.runtime.sendMessage(message);
   } catch {
     // The worker failed to wake, or the extension was reloaded out from under this page.
     // A stale content script can't recover — say so plainly instead of retrying.
     throw new PublishBridgeError(
-      'Lost contact with the ContentStudio extension. Reload the Studio tab.',
-      'disconnected',
+      extensionContextAlive()
+        ? 'Lost contact with the ContentStudio extension. Reload the Studio tab.'
+        : STALE_CONTEXT_MESSAGE,
+      extensionContextAlive() ? 'disconnected' : 'stale-context',
     );
   }
   if (!response) {
