@@ -16,7 +16,7 @@
 // cycle records that as its channelSourceError and stops — it never collects
 // against a stale/cached list.
 
-import { CollectorNotImplementedError, collectChannel } from './collector';
+import { CollectorNotImplementedError, closeCollectorTab, collectChannel } from './collector';
 import {
   PublishClientError,
   fetchItem,
@@ -105,6 +105,49 @@ async function doRunCollectionCycle(trigger: CycleSummary['trigger']): Promise<C
     return summary;
   }
 
+  try {
+    await collectAllChannels(channels);
+  } finally {
+    // The collector tab is scoped to the cycle, so it closes here even if a channel threw.
+    // A failure to close is NOT a collection failure — everything is already enqueued — but
+    // it does mean a Studio tab stays open forever, so it is said out loud rather than
+    // swallowed.
+    try {
+      await closeCollectorTab();
+    } catch (err) {
+      console.error('[background] could not close the collector tab (it will stay open):', err);
+    }
+  }
+
+  // Flush anything queued — from this cycle or left over from earlier
+  // failures. flushOutbox never swallows: failures come back in the result.
+  const flush: FlushResult = await flushOutbox();
+  if (flush.stopped) {
+    console.warn(`[background] outbox flush stopped (${flush.stopped.kind}): ${flush.stopped.message}`);
+  }
+  for (const entryError of flush.entryErrors) {
+    console.error(`[background] outbox entry ${entryError.id} rejected (${entryError.kind}): ${entryError.message}`);
+  }
+
+  const summary: CycleSummary = {
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    trigger,
+    channelsAttempted: channels.length,
+    channelSourceError: null,
+    flush,
+  };
+  await setLastCycle(summary);
+  return summary;
+}
+
+/**
+ * Collect every channel through the one shared collector tab.
+ *
+ * Split out of the cycle so the tab's lifetime is a single try/finally around exactly the
+ * work that needs it, instead of the whole cycle including the outbox flush.
+ */
+async function collectAllChannels(channels: Awaited<ReturnType<typeof fetchChannels>>): Promise<void> {
   for (const channel of channels) {
     const attemptAt = new Date().toISOString();
     try {
@@ -136,27 +179,6 @@ async function doRunCollectionCycle(trigger: CycleSummary['trigger']): Promise<C
       }
     }
   }
-
-  // Flush anything queued — from this cycle or left over from earlier
-  // failures. flushOutbox never swallows: failures come back in the result.
-  const flush: FlushResult = await flushOutbox();
-  if (flush.stopped) {
-    console.warn(`[background] outbox flush stopped (${flush.stopped.kind}): ${flush.stopped.message}`);
-  }
-  for (const entryError of flush.entryErrors) {
-    console.error(`[background] outbox entry ${entryError.id} rejected (${entryError.kind}): ${entryError.message}`);
-  }
-
-  const summary: CycleSummary = {
-    startedAt,
-    finishedAt: new Date().toISOString(),
-    trigger,
-    channelsAttempted: channels.length,
-    channelSourceError: null,
-    flush,
-  };
-  await setLastCycle(summary);
-  return summary;
 }
 
 // The popup triggers manual syncs via messaging so all storage writes happen

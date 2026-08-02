@@ -278,7 +278,8 @@ function isDue(ageHours: number, lastIso: string | undefined, nowMs: number): bo
 }
 
 // ============================================================================
-// Managed tab: create/reuse ONE background tab, navigate it per channel
+// Managed tab: create/reuse ONE background tab, navigate it per channel, and
+// CLOSE it when the cycle ends — see closeCollectorTab for why that matters.
 // ============================================================================
 
 interface StudioContext {
@@ -292,6 +293,24 @@ interface StudioContext {
    * this both reported the same "CHANNEL_ID=none".
    */
   ytcfgPresent: boolean;
+  /**
+   * The document the probe actually ran in. executeScript targets the tab's CURRENT top
+   * frame, which is not necessarily the one chrome.tabs.get reports — if those two
+   * disagree we were reading a document we never asked for, and the whole "Studio didn't
+   * load" reading is wrong.
+   */
+  href: string;
+  readyState: string;
+}
+
+/** What the tab's DOM looks like from the ISOLATED world, captured only on failure. */
+interface TabDom {
+  readyState: string;
+  href: string;
+  title: string;
+  /** Studio's Angular root element. Present <=> the Studio app itself booted. */
+  studioApp: boolean;
+  scripts: number;
 }
 
 async function getStoredTabId(): Promise<number | null> {
@@ -344,6 +363,36 @@ async function ensureStudioTabForChannel(channelId: string): Promise<number> {
 }
 
 /**
+ * Close the collector's tab. Called once at the end of every cycle.
+ *
+ * The tab exists ONLY to host the injected fetches — it is never shown, never interacted
+ * with, and is dead weight the moment the last channel is done. Leaving it open (which is
+ * what happened before) leaked one visible YouTube Studio tab per cycle, because the id
+ * that makes the tab reusable lives in chrome.storage.session and Chrome wipes that on
+ * every extension reload, update and browser restart. The next cycle then found no id,
+ * opened a fresh tab, and the previous one stayed open forever with nothing to reclaim it.
+ *
+ * Scoping the tab to the cycle removes that class of leak entirely rather than papering
+ * over it: there is no cross-cycle state left to go stale. It also rules out the tempting
+ * alternative of persisting the id in storage.local, which would be actively unsafe —
+ * Chrome reissues tab ids from zero after a browser restart, so a remembered id could
+ * name one of the operator's own tabs, and we would navigate or close it.
+ */
+export async function closeCollectorTab(): Promise<void> {
+  const tabId = await getStoredTabId();
+  if (tabId === null) return;
+
+  // Forget it FIRST. Whatever happens below, the next cycle must not try to drive a tab
+  // we have already decided we are done with.
+  await setStoredTabId(null);
+
+  // Already gone is a normal end state — the operator can close it by hand mid-cycle —
+  // so check rather than treating the resulting remove() rejection as a fault.
+  if (!(await tabExists(tabId))) return;
+  await chrome.tabs.remove(tabId);
+}
+
+/**
  * Poll the managed tab until Studio has loaded the requested channel's context.
  *
  * On timeout this reports WHICH of several very different faults occurred. It previously
@@ -358,9 +407,13 @@ async function waitForChannelContext(tabId: number, channelId: string): Promise<
   const deadline = Date.now() + CONTEXT_TIMEOUT_MS;
   let last: StudioContext | null = null;
   let injectionError: string | null = null;
+  let probes = 0;
+  let answers = 0;
+  let sawYtcfg = false;
 
   while (Date.now() < deadline) {
     await sleep(CONTEXT_POLL_MS);
+    probes++;
     let ctx: StudioContext | null = null;
     try {
       const results = await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', func: readStudioContext });
@@ -375,12 +428,31 @@ async function waitForChannelContext(tabId: number, channelId: string): Promise<
       injectionError = msg(err);
     }
     if (ctx) {
+      answers++;
+      if (ctx.ytcfgPresent) sawYtcfg = true;
       last = ctx;
       if (ctx.channelId === channelId && ctx.hasDelegation) return;
     }
   }
 
-  throw new StudioChannelUnavailableError(channelId, await describeStuckTab(tabId, last, injectionError));
+  throw new StudioChannelUnavailableError(
+    channelId,
+    await describeStuckTab(tabId, { last, probes, answers, sawYtcfg, injectionError }),
+  );
+}
+
+interface WaitEvidence {
+  /** The FINAL reading — i.e. the tab's state at the moment we gave up. */
+  last: StudioContext | null;
+  probes: number;
+  answers: number;
+  /**
+   * Whether ytcfg was seen in ANY probe, not just the last one. Kept separately because
+   * "never appeared" is a claim about the whole window: a tab that loaded Studio and then
+   * navigated away would otherwise be reported as one that never loaded it.
+   */
+  sawYtcfg: boolean;
+  injectionError: string | null;
 }
 
 /**
@@ -390,11 +462,9 @@ async function waitForChannelContext(tabId: number, channelId: string): Promise<
  * signed in" from "Chrome killed the tab" from "Studio is just slow", which is the whole
  * difference between an actionable error and a shrug.
  */
-async function describeStuckTab(
-  tabId: number,
-  last: StudioContext | null,
-  injectionError: string | null,
-): Promise<string> {
+async function describeStuckTab(tabId: number, evidence: WaitEvidence): Promise<string> {
+  const { last, probes, answers, sawYtcfg, injectionError } = evidence;
+
   let tab: chrome.tabs.Tab | null = null;
   try {
     tab = await chrome.tabs.get(tabId);
@@ -405,6 +475,7 @@ async function describeStuckTab(
   const url = tab.url || tab.pendingUrl || '';
   const where = url ? url.split('?')[0] : 'an unknown page';
   const seconds = Math.round(CONTEXT_TIMEOUT_MS / 1000);
+  const status = tab.status ?? 'unknown';
 
   // Chrome evicts background tabs under memory pressure; the tab survives as a shell that
   // cannot be scripted. Naming this is the difference between a real diagnosis and a
@@ -417,20 +488,58 @@ async function describeStuckTab(
     return `the tab was redirected to ${where} instead of Studio — sign in to this channel, or it may not be on this Google account`;
   }
 
-  if (last?.ytcfgPresent && last.channelId && last.channelId !== '') {
+  // Studio answered, with a channel — the useful cases, reported first.
+  if (last?.ytcfgPresent && last.channelId) {
     return last.hasDelegation
       ? `Studio loaded a different channel (${last.channelId}) — this account may not have access to the requested one`
       : `Studio loaded channel ${last.channelId} but no delegation context, so its API calls would be rejected`;
   }
 
-  if (!last?.ytcfgPresent) {
+  // ANSWERS = 0 is its own fault, and used to be misreported as "window.ytcfg never
+  // appeared". It is not the same claim: we never got a reading at all, so we know nothing
+  // about ytcfg. executeScript resolving with no result (an empty results[], or a result
+  // of undefined because the injected probe threw) produces exactly this and is invisible
+  // otherwise — no exception is raised for the catch above to record.
+  if (answers === 0) {
     const why = injectionError
       ? `the page could not be scripted (${injectionError})`
-      : `window.ytcfg never appeared`;
-    return `Studio did not initialize at ${where} within ${seconds}s — ${why}; tab status ${tab.status ?? 'unknown'}`;
+      : 'the injected probe returned no value';
+    return `the collector could not read ${where} — ${probes} probes, none answered: ${why}; tab status ${status}${await domSuffix(tabId)}`;
   }
 
-  return `Studio loaded at ${where} but never published a channel id within ${seconds}s (tab status ${tab.status ?? 'unknown'})`;
+  if (!sawYtcfg) {
+    return `Studio did not initialize at ${where} within ${seconds}s — window.ytcfg never appeared in any of ${answers} readings; tab status ${status}${await domSuffix(tabId)}`;
+  }
+
+  // ytcfg was there at some point but is not now: the tab moved under us mid-wait.
+  if (!last?.ytcfgPresent) {
+    return `the tab left Studio while loading — window.ytcfg was present earlier but gone by ${last?.href ?? where} (tab status ${status})`;
+  }
+
+  // ytcfg present but no CHANNEL_ID: the app is up and simply has not published a channel.
+  return `Studio loaded at ${where} but never published a channel id within ${seconds}s (tab status ${status}, document ${last.readyState})`;
+}
+
+/**
+ * A one-line DOM reading for the failure message, from the ISOLATED world.
+ *
+ * Worth the extra call precisely when the MAIN-world probe came back empty, because the
+ * two worlds fail independently: `studioApp` says whether the Studio application actually
+ * rendered, which separates "Studio is up but ytcfg moved/renamed" (our bug, and a silent
+ * data-loss risk) from "this page is not Studio at all" (an interstitial, an error page,
+ * or a renderer that never ran the page's scripts). Best-effort — a failure to read the
+ * DOM is itself reported rather than hidden.
+ */
+async function domSuffix(tabId: number): Promise<string> {
+  let dom: TabDom | null = null;
+  try {
+    const results = await chrome.scripting.executeScript({ target: { tabId }, func: readTabDom });
+    dom = (results[0]?.result as TabDom | undefined) ?? null;
+  } catch (err) {
+    return `; DOM unreadable (${msg(err)})`;
+  }
+  if (!dom) return '; DOM probe returned nothing';
+  return `; document ${dom.readyState}, ${dom.scripts} scripts, Studio app ${dom.studioApp ? 'rendered' : 'ABSENT'}, title ${JSON.stringify(dom.title)}`;
 }
 
 // ============================================================================
@@ -511,19 +620,45 @@ function readStudioContext(): {
   channelId: string | null;
   hasDelegation: boolean;
   ytcfgPresent: boolean;
+  href: string;
+  readyState: string;
 } {
+  // Read outside the try: if THESE throw there is nothing sensible to report, and a probe
+  // that cannot describe where it ran is worse than no probe.
+  const href = location.href;
+  const readyState = document.readyState;
   try {
     const cfg = (window as any).ytcfg;
     if (!cfg || typeof cfg.get !== 'function') {
-      return { ready: false, channelId: null, hasDelegation: false, ytcfgPresent: false };
+      return { ready: false, channelId: null, hasDelegation: false, ytcfgPresent: false, href, readyState };
     }
     const channelId = cfg.get('CHANNEL_ID') || null;
     const delegation = cfg.get('INNERTUBE_CONTEXT_SERIALIZED_DELEGATION_CONTEXT') || null;
-    return { ready: !!channelId, channelId, hasDelegation: !!delegation, ytcfgPresent: true };
+    return { ready: !!channelId, channelId, hasDelegation: !!delegation, ytcfgPresent: true, href, readyState };
   } catch {
     // ytcfg existed but threw — record that, so this isn't mistaken for "not on Studio".
-    return { ready: false, channelId: null, hasDelegation: false, ytcfgPresent: true };
+    return { ready: false, channelId: null, hasDelegation: false, ytcfgPresent: true, href, readyState };
   }
+}
+
+/**
+ * Probe: what does the tab's DOM look like? Runs in the ISOLATED world so it still
+ * answers in situations where the MAIN world does not.
+ */
+function readTabDom(): {
+  readyState: string;
+  href: string;
+  title: string;
+  studioApp: boolean;
+  scripts: number;
+} {
+  return {
+    readyState: document.readyState,
+    href: location.href,
+    title: document.title,
+    studioApp: !!document.querySelector('ytcp-app'),
+    scripts: document.scripts.length,
+  };
 }
 
 /**
