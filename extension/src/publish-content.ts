@@ -23,6 +23,8 @@ import type { ItemDetail } from './publish/publish-client';
 // why a content-script fetch cannot talk to ContentStudio directly.
 import {
   PublishBridgeError,
+  STALE_CONTEXT_MESSAGE,
+  extensionContextAlive,
   requestFilled,
   requestItem,
   requestReports,
@@ -239,7 +241,16 @@ async function onNavigation(): Promise<void> {
  */
 function watchNavigation(): void {
   let lastUrl = location.href;
-  setInterval(() => {
+  const timer = setInterval(() => {
+    // Once the extension is reloaded this tab's context is dead for good. Stop polling and
+    // say so ONCE — otherwise every tick fires another chrome.* call that throws, which is
+    // where the "Uncaught (in promise) Error: Extension context invalidated." spam came
+    // from, with nothing on screen to explain that the tab needs reloading.
+    if (!extensionContextAlive()) {
+      clearInterval(timer);
+      shelf?.setError(STALE_CONTEXT_MESSAGE);
+      return;
+    }
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       void onNavigation();
