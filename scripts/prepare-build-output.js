@@ -1,25 +1,23 @@
 #!/usr/bin/env node
 
 /**
- * Keep Electron's ASAR/app/signing staging tree on a native macOS filesystem.
- * The source project may live on exFAT, but exFAT stores extended attributes in
- * AppleDouble `._*` files which corrupt ASAR integrity and macOS code signing.
+ * Ensure the electron-builder output dir (`dist-build`) is a real directory
+ * inside the project.
+ *
+ * It used to be a symlink to an APFS scratch dir under $HOME: the project volume
+ * was exFAT, which stores extended attributes in AppleDouble `._*` files and so
+ * corrupts ASAR integrity and macOS code signing. The volume is APFS as of
+ * Aug 2026, so builds stay in the project — and a leftover off-project symlink
+ * is replaced here (the link only, never the artifacts it pointed at).
  */
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 
 if (process.platform !== 'darwin') process.exit(0);
 
 const projectRoot = path.resolve(__dirname, '..');
 const projectOutput = path.join(projectRoot, 'dist-build');
-const nativeOutput = path.resolve(
-  process.env.CONTENTSTUDIO_BUILD_DIR ||
-  path.join(os.homedir(), 'Projects', 'ContentStudio-builds', 'dist-build')
-);
-
-fs.mkdirSync(nativeOutput, { recursive: true });
 
 let current;
 try {
@@ -29,23 +27,15 @@ try {
 }
 
 if (current?.isSymbolicLink()) {
-  const resolved = fs.realpathSync(projectOutput);
-  if (resolved !== fs.realpathSync(nativeOutput)) {
-    throw new Error(
-      `dist-build points to ${resolved}; expected ${nativeOutput}. ` +
-      'Set CONTENTSTUDIO_BUILD_DIR if the existing target is intentional.'
-    );
-  }
-  console.log(`[build-output] Using native build output: ${nativeOutput}`);
-  process.exit(0);
+  const target = fs.readlinkSync(projectOutput);
+  fs.unlinkSync(projectOutput);
+  console.log(`[build-output] Removed legacy dist-build symlink -> ${target} (artifacts there were left in place)`);
+  current = undefined;
 }
 
-if (current) {
-  throw new Error(
-    `${projectOutput} is a real directory. Migrate it once, then replace it with ` +
-    `a symlink to ${nativeOutput}. Existing artifacts were left untouched.`
-  );
+if (current && !current.isDirectory()) {
+  throw new Error(`${projectOutput} exists and is not a directory — remove it and re-run.`);
 }
 
-fs.symlinkSync(nativeOutput, projectOutput, 'dir');
-console.log(`[build-output] Linked ${projectOutput} -> ${nativeOutput}`);
+fs.mkdirSync(projectOutput, { recursive: true });
+console.log(`[build-output] Using in-project build output: ${projectOutput}`);
