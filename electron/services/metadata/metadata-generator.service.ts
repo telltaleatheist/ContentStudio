@@ -7,9 +7,23 @@
 import { AIManagerService, AIConfig, MetadataResult } from './ai-manager.service';
 import { WhisperService } from './whisper.service';
 import { InputHandlerService, ContentItem } from './input-handler.service';
-import { ChapterMapper, AIChapter, buildTimestampedTranscript, sampleSegmentsToBudget } from './chapter-generator.service';
-import { OutputHandlerService, SaveJobResult } from './output-handler.service';
-import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
+import { Chapter } from './chapter-generator.service';
+import { ChapterPipelineService, ChapterStage, ChapterPipelineResult } from './chapter-pipeline.service';
+import { OutputHandlerService } from './output-handler.service';
+import {
+  MetadataTaskRun,
+  buildTaskPromptsForDisplay,
+  planMetadataUnits,
+  runMetadataTasks,
+} from './metadata-tasks';
+import {
+  MetadataRoutingSelections,
+  ResolvedMetadataRouting,
+  resolveMetadataRouting,
+  routingOption,
+} from './metadata-routing';
+import { excludePromoChapters } from './promo-chapters';
+import { queueAITask } from '../queue-manager.service';
 import * as log from 'electron-log';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -22,6 +36,11 @@ export interface GenerationParams {
   summarizationModel?: string; // Model for fast summarization
   metadataModel?: string; // Model for final metadata generation
   aiApiKey?: string;
+  /**
+   * Keys for the cloud providers the ROUTING may reach, which is not necessarily the
+   * provider `aiApiKey` belongs to (see AIConfig.cloudApiKeys).
+   */
+  cloudApiKeys?: { claude?: string; openai?: string };
   aiHost?: string;
   outputPath?: string;
   promptSet?: string;
@@ -32,10 +51,30 @@ export interface GenerationParams {
   // loop (appended to the metadata prompt); undefined = omit (expected state).
   insightsBlock?: string;
   chapterFlags?: { [key: string]: boolean };
+  /**
+   * Per-task model routing, as stored in the `metadataRouting` setting (taskId ->
+   * optionId, see metadata-routing.ts). Resolved against the registry here, so an absent
+   * key means "the shipped defaults" and a bad one fails the job naming the task.
+   *
+   * This is the ONLY input that decides which model writes which field, including the
+   * chapter pipeline's.
+   */
+  metadataRouting?: MetadataRoutingSelections;
+  /** Optional per-stage overrides, e.g. running stages 2/4/5 on a different rater. */
+  chapterStageModels?: Partial<Record<ChapterStage, string>>;
+  /** Chapter-pipeline context window. One value for the whole run (Ollama reloads on change). */
+  chapterNumCtx?: number;
+  /**
+   * Chapters already produced for these sources (keyed by source label), so a run
+   * doesn't repeat the pipeline. This is what makes "Show prompt" honest: that flow
+   * has to run the chapters to assemble the real prompt, and "Send to AI" then reuses
+   * the SAME chapters rather than re-deriving a possibly different set.
+   */
+  preComputedChapters?: { [sourceLabel: string]: ChapterPipelineResult };
   inputNotes?: { [key: string]: string };
   preTranscribedContent?: ContentItem[]; // Pre-transcribed content from pipeline (skips transcription phase)
   inputWarnings?: string[]; // Input-stage failures from the pipeline (surfaced in result.warnings)
-  showPrompt?: boolean; // "Show prompt" flow: assemble the prompt(s) and STOP — no AI call, chapters, job, or output
+  showPrompt?: boolean; // "Show prompt" flow: assemble the prompt(s) and STOP — no metadata AI call, job, or output
   progressCallback?: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => void;
   cancelCallback?: () => boolean; // Returns true if job should be cancelled
 }
@@ -51,6 +90,8 @@ export interface GenerationResult {
   error?: string;
   warnings?: string[]; // Per-item / partial-failure messages surfaced to the user
   prompts?: string[]; // "Show prompt" flow: the assembled prompt(s), one per item (compilation = single)
+  /** "Show prompt" flow: chapters computed while assembling, to be handed back on send. */
+  computedChapters?: { [sourceLabel: string]: ChapterPipelineResult };
 }
 
 export class MetadataGeneratorService {
@@ -82,6 +123,7 @@ export class MetadataGeneratorService {
         summarizationModel: params.summarizationModel,
         metadataModel: params.metadataModel,
         apiKey: params.aiApiKey,
+        cloudApiKeys: params.cloudApiKeys,
         host: params.aiHost,
         promptSet: params.promptSet,
         promptSetsDir: params.promptSetsDir,
@@ -181,10 +223,23 @@ export class MetadataGeneratorService {
       const outputHandler = new OutputHandlerService(outputPath);
       const jobName = params.jobName || this.generateJobName(contentItems);
 
-      // "Show prompt" flow: assemble the exact prompt(s) that would be sent to the
-      // AI and return them WITHOUT initializing a job, calling the AI, generating
-      // chapters, or writing any output. The IPC layer holds the transcript so
-      // "Send to AI" can later run the real generation via preTranscribedContent.
+      // Partial failures / dropped-content notices, seeded with input-stage skips.
+      // Declared here rather than after job init because the show-prompt flow below
+      // runs the chapter stage too and can raise the same warnings.
+      const warnings: string[] = [...inputFailures];
+      // Chapters produced this run, keyed by source label — handed back to the caller
+      // in show-prompt mode so "Send to AI" reuses them.
+      const computedChapters: { [sourceLabel: string]: ChapterPipelineResult } = {};
+
+      // "Show prompt" flow: assemble the exact prompt(s) that would be sent to the AI
+      // and return them WITHOUT initializing a job, making the metadata call, or
+      // writing any output. The IPC layer holds the transcript so "Send to AI" can
+      // later run the real generation via preTranscribedContent.
+      //
+      // Chapters ARE generated here, unlike before. They now feed the metadata prompt,
+      // so skipping them would make this flow display a prompt that is not the prompt
+      // that gets sent — which is the one thing this flow exists to rule out. The
+      // chapters come back with the prompts and are reused on send.
       if (params.showPrompt) {
         const mode = params.mode || 'individual';
         console.log(`[MetadataGenerator] Show-prompt mode: assembling prompt(s) only (${mode})`);
@@ -222,12 +277,30 @@ export class MetadataGeneratorService {
               return { success: false, error: 'Job cancelled by user' };
             }
             const item = contentItems[i];
-            params.progressCallback?.('generating', 'Assembling prompt...', 50, undefined, i);
-            const summary = await aiManager.summarizeTranscript(
-              item.content,
-              item.source || `item_${i + 1}`
+            const sourceLabel = item.source || `item_${i + 1}`;
+
+            const { subjects, details } = await this.resolveChapters(
+              item,
+              params,
+              i,
+              contentItems.length,
+              params.chapterFlags?.[item.source || ''] || false,
+              warnings,
+              computedChapters
             );
-            prompts.push(aiManager.buildMetadataPrompt(summary, item.source || `item_${i + 1}`));
+
+            params.progressCallback?.('generating', 'Assembling prompt...', 80, undefined, i);
+            const summary = await aiManager.summarizeTranscript(item.content, sourceLabel);
+
+            // Same mode decision the real run makes, so the user reads the prompts that
+            // will actually be sent — three labelled task prompts when chapters exist,
+            // the one whole-metadata prompt when they don't.
+            const taskRun = this.resolveTaskRun(aiManager, params, sourceLabel, summary, subjects, details);
+            if (taskRun) {
+              prompts.push(...buildTaskPromptsForDisplay(taskRun));
+            } else {
+              prompts.push(aiManager.buildMetadataPrompt(summary, sourceLabel, undefined, subjects, details));
+            }
           }
         }
 
@@ -238,6 +311,8 @@ export class MetadataGeneratorService {
           success: true,
           prompts,
           job_id: params.jobId,
+          computedChapters,
+          warnings: warnings.length > 0 ? warnings : undefined,
         };
       }
 
@@ -256,10 +331,9 @@ export class MetadataGeneratorService {
 
       console.log(`[MetadataGenerator] Job initialized: ${jobInfo.jobId}`);
 
-      // Generate metadata based on mode
+      // Generate metadata based on mode (`warnings` was seeded above, before the
+      // show-prompt branch, because that branch raises the same chapter warnings)
       const metadataItems: MetadataResult[] = [];
-      // Partial failures / dropped-content notices, seeded with input-stage skips
-      const warnings: string[] = [...inputFailures];
       const mode = params.mode || 'individual';
       console.log(`[MetadataGenerator] Processing mode: ${mode}`);
 
@@ -350,61 +424,50 @@ export class MetadataGeneratorService {
         console.log(`[MetadataGenerator] Generating metadata ${i + 1}/${contentItems.length}`);
 
         try {
-          // Summarize transcript and generate metadata - both under 'generating' phase
-          console.log(`[MetadataGenerator] Sending generating phase: Analyzing content for item ${i}`);
-          params.progressCallback?.('generating', `Analyzing content ${i + 1}/${contentItems.length}...`, 0, undefined, i);
-          const summary = await aiManager.summarizeTranscript(
-            item.content,
-            item.source || `item_${i + 1}`
-          );
-
-          console.log(`[MetadataGenerator] Sending generating phase: Generating metadata for item ${i}`);
-          params.progressCallback?.('generating', `Generating metadata ${i + 1}/${contentItems.length}...`, 50, undefined, i);
-
-          // Check if chapters should be generated
+          const sourceLabel = item.source || `item_${i + 1}`;
           const shouldGenerateChapters = params.chapterFlags?.[item.source || ''] || false;
 
-          const metadata = await aiManager.generateMetadata(summary, item.source || `item_${i + 1}`);
+          // ---- Chapters FIRST -------------------------------------------------
+          // Chapters are not a trailing decoration any more. Their subject list is
+          // what the title, description and tag stages condition on, so it has to
+          // exist before the metadata call is assembled (see CHAPTERING.md).
+          const { chapters, excludedChapters, subjects: chapterSubjects, details: chapterDetails } = await this.resolveChapters(
+            item,
+            params,
+            i,
+            contentItems.length,
+            shouldGenerateChapters,
+            warnings,
+            computedChapters
+          );
+
+          // ---- Everything else, conditioned on those chapters -----------------
+          console.log(`[MetadataGenerator] Sending generating phase: Analyzing content for item ${i}`);
+          params.progressCallback?.('generating', `Analyzing content ${i + 1}/${contentItems.length}...`, 60, undefined, i);
+          const summary = await aiManager.summarizeTranscript(item.content, sourceLabel);
+
+          console.log(`[MetadataGenerator] Sending generating phase: Generating metadata for item ${i}`);
+          params.progressCallback?.('generating', `Generating metadata ${i + 1}/${contentItems.length}...`, 80, undefined, i);
+
+          // Chapters decide the SHAPE of this call, not just its contents: with a chapter
+          // list the fields are generated as separate task units (metadata-tasks.ts),
+          // without one they come back from the single legacy call.
+          const taskRun = this.resolveTaskRun(aiManager, params, sourceLabel, summary, chapterSubjects, chapterDetails);
+          const metadata = taskRun
+            ? await runMetadataTasks(aiManager, taskRun)
+            : await aiManager.generateMetadata(summary, sourceLabel, undefined, chapterSubjects, chapterDetails);
 
           // Add title and source info
           (metadata as any)._title = this.getCleanTitle(item);
           (metadata as any)._prompt_set = params.promptSet;
 
-          if (shouldGenerateChapters) {
-            const chapterLabel = item.source || `item_${i + 1}`;
-
-            if (item.srtSegments && item.srtSegments.length > 0) {
-              console.log('[MetadataGenerator] Generating chapters...');
-              console.log(`[MetadataGenerator] Sending generating phase: Generating chapters for item ${i}`);
-              params.progressCallback?.('generating', 'Generating chapters...', 75, undefined, i);
-
-              try {
-                const chapters = await this.generateChapters(item, aiManager);
-                if (chapters && chapters.length >= 3) {
-                  metadata.chapters = chapters;
-                  console.log(`[MetadataGenerator] Generated ${chapters.length} chapters`);
-                } else {
-                  // <3 chapters are dropped (YouTube requires at least 3). Don't let
-                  // that vanish silently when the user explicitly asked for chapters.
-                  const found = chapters ? chapters.length : 0;
-                  const msg = `${chapterLabel}: chapters were requested but only ${found} chapter(s) were found (YouTube requires at least 3), so none were added`;
-                  console.warn(`[MetadataGenerator] ${msg}`);
-                  warnings.push(msg);
-                }
-              } catch (error) {
-                const errMsg = error instanceof Error ? error.message : String(error);
-                const msg = `${chapterLabel}: chapter generation failed: ${errMsg}`;
-                console.error(`[MetadataGenerator] ${msg}`);
-                warnings.push(msg);
-                // Continue without chapters
-              }
-            } else {
-              // Chapters need a timestamped transcript (SRT segments); a subject or
-              // plain transcript file has none, so report why they were skipped.
-              const msg = `${chapterLabel}: chapters were requested but no timestamped transcript was available to generate them`;
-              console.warn(`[MetadataGenerator] ${msg}`);
-              warnings.push(msg);
-            }
+          if (chapters) {
+            metadata.chapters = chapters;
+          }
+          // Carried even when no chapters publish (a video that was all promo): the job
+          // JSON is where the user finds out what was taken out and why.
+          if (excludedChapters) {
+            metadata.excludedChapters = excludedChapters;
           }
 
           // Save this item to the job immediately
@@ -497,101 +560,283 @@ export class MetadataGeneratorService {
   }
 
   /**
-   * Generate chapters for a content item using phrase-based timestamp mapping
+   * Decide whether this item's metadata is generated as separate task units, and set up
+   * the run if it is. Returns undefined for the legacy single call.
+   *
+   * The condition is chapters, and only chapters. The description and tags units are
+   * conditioned on the chapter subject list INSTEAD of the transcript — the conditioning
+   * their local adapters will get — so without a chapter list they would have nothing to
+   * work from. Compilations, podcast prompt sets, shorts and any run whose chapter
+   * pipeline came back short all land here with no subjects and take the single call.
+   *
+   * This is a mode decision made and logged from what the run actually has, not a
+   * recovery: an item never silently splits without chapters, and never silently merges
+   * back with them.
    */
-  private static async generateChapters(
-    item: ContentItem,
-    aiManager: AIManagerService
-  ): Promise<any[]> {
-    if (!item.srtSegments || item.srtSegments.length === 0) {
-      return [];
+  private static resolveTaskRun(
+    aiManager: AIManagerService,
+    params: GenerationParams,
+    sourceLabel: string,
+    summary: string,
+    chapterSubjects?: string[],
+    chapterDetails?: string[]
+  ): MetadataTaskRun | undefined {
+    if (!chapterSubjects || chapterSubjects.length === 0) {
+      console.log(`[MetadataGenerator] ${sourceLabel}: no chapter subjects — one call generates every field (legacy path)`);
+      return undefined;
     }
 
-    // Sample the transcript to the provider's budget instead of chunking:
-    // the model keeps a global view of the WHOLE video in one request, and
-    // because sampling keeps whole segments verbatim, every quoted start_phrase
-    // still maps back to the full SRT.
-    const budget = aiManager.getChapterTranscriptBudgetChars();
-    const sampledSegments = sampleSegmentsToBudget(item.srtSegments, budget);
-
-    if (sampledSegments.length < item.srtSegments.length) {
-      log.info(
-        `[MetadataGenerator] Sampled transcript for chapters: ${item.srtSegments.length} -> ${sampledSegments.length} segments (budget ${budget} chars)`
+    const plan = planMetadataUnits(
+      this.routing(params),
+      params.aiHost || 'http://localhost:11434',
+      aiManager,
+      Boolean(params.insightsBlock)
+    );
+    console.log(
+      `[MetadataGenerator] ${sourceLabel}: ${chapterSubjects.length} chapter subjects — ` +
+        `${plan.units.length} unit(s): ${plan.summary}`
+    );
+    if (plan.hashtagsOwnedByDescription) {
+      console.log(
+        `[MetadataGenerator] ${sourceLabel}: hashtags come from the description adapter; ` +
+          `no cloud group will request them`
       );
     }
 
-    // Build timestamped transcript for AI
-    const transcript = buildTimestampedTranscript(sampledSegments);
-
-    if (!transcript || transcript.length === 0) {
-      return [];
-    }
-
-    const allAiChapters = await this.processTranscriptChunk(transcript, aiManager);
-
-    if (allAiChapters.length === 0) {
-      return [];
-    }
-
-    // Map phrases to timestamps against the FULL segment list
-    const mapper = new ChapterMapper(item.srtSegments);
-    return mapper.mapChapters(allAiChapters);
+    return {
+      plan,
+      ctx: {
+        content: summary,
+        sourceLabel,
+        chapterSubjects,
+        chapterDetails: chapterDetails || [],
+      },
+    };
   }
 
   /**
-   * Process a single transcript chunk for chapter detection
+   * This run's routing, resolved once against the registry.
+   *
+   * Read from the params (which the IPC layer fills from the store at job time), so a
+   * selection changed in the modal takes effect on the next job with no coupling between
+   * the modal and the queue.
    */
-  private static async processTranscriptChunk(
-    transcript: string,
-    aiManager: AIManagerService
-  ): Promise<AIChapter[]> {
-    const prompt = formatPrompt(SYSTEM_PROMPTS.CHAPTER_DETECTION_PROMPT, {
-      transcript: transcript,
+  private static routing(params: GenerationParams): ResolvedMetadataRouting {
+    return resolveMetadataRouting(params.metadataRouting);
+  }
+
+  /**
+   * The chapter step, as both the real run and the "Show prompt" assembly see it.
+   *
+   * Chapters that could not be produced are reported as warnings rather than failing
+   * the item — but the warning always says the rest of the metadata was written
+   * WITHOUT the chapter subjects, because that is a materially different generation
+   * and the user has to know which one they got.
+   *
+   * Results are recorded in `sink` so "Show prompt" can hand the SAME chapters to
+   * "Send to AI" instead of paying for the pipeline twice and possibly getting a
+   * different answer the second time.
+   *
+   * The pipeline's own `warnings` are copied into the run's warnings verbatim. They
+   * are the only account the user gets of a chapter list that came out degraded —
+   * approximate starts, dropped boundaries, chapters the model would not name — and a
+   * degraded list looks exactly like a good one.
+   */
+  private static async resolveChapters(
+    item: ContentItem,
+    params: GenerationParams,
+    itemIndex: number,
+    itemCount: number,
+    requested: boolean,
+    warnings: string[],
+    sink?: { [sourceLabel: string]: ChapterPipelineResult }
+  ): Promise<{ chapters?: Chapter[]; excludedChapters?: Chapter[]; subjects?: string[]; details?: string[] }> {
+    const sourceLabel = item.source || `item_${itemIndex + 1}`;
+    if (!requested) {
+      return {};
+    }
+
+    const reuse = params.preComputedChapters?.[sourceLabel];
+    if (reuse) {
+      console.log(`[MetadataGenerator] Reusing ${reuse.chapters.length} already-computed chapters for ${sourceLabel}`);
+      // Warnings are NOT re-raised here: these chapters came back from the show-prompt
+      // pass, which already reported them, and repeating them would read as a second
+      // set of failures. The promo split is re-run rather than carried across, because it
+      // is a pure function of the chapters and re-deriving it cannot disagree with them.
+      return this.splitOutPromos(reuse, sourceLabel, []);
+    }
+
+    if (!item.srtSegments || item.srtSegments.length === 0) {
+      // Chapters need a timestamped transcript (SRT segments); a subject or plain
+      // transcript file has none, so report why they were skipped.
+      const msg = `${sourceLabel}: chapters were requested but no timestamped transcript was available to generate them, so the rest of the metadata was generated WITHOUT chapter subjects`;
+      console.warn(`[MetadataGenerator] ${msg}`);
+      warnings.push(msg);
+      return {};
+    }
+
+    console.log(`[MetadataGenerator] Generating chapters for item ${itemIndex} (before metadata)...`);
+    params.progressCallback?.('generating', `Finding chapters ${itemIndex + 1}/${itemCount}...`, 0, undefined, itemIndex);
+
+    try {
+      const result = await this.generateChapters(item, params, itemIndex, itemCount);
+
+      // Degradations the pipeline recovered from rather than threw on. Surfaced even
+      // when the chapters below are then dropped for being too few — the user asked
+      // for chapters and is entitled to know what happened to them.
+      for (const warning of result.warnings || []) {
+        console.warn(`[MetadataGenerator] ${sourceLabel}: ${warning}`);
+        warnings.push(`${sourceLabel}: ${warning}`);
+      }
+
+      if (result.chapters.length < 3) {
+        // <3 chapters are dropped (YouTube requires at least 3). Don't let that vanish
+        // silently when the user explicitly asked for chapters.
+        const msg = `${sourceLabel}: chapters were requested but only ${result.chapters.length} chapter(s) were found (YouTube requires at least 3), so none were added and the rest of the metadata was generated WITHOUT chapter subjects`;
+        console.warn(`[MetadataGenerator] ${msg}`);
+        warnings.push(msg);
+        return {};
+      }
+
+      console.log(
+        `[MetadataGenerator] Generated ${result.chapters.length} chapters in ${result.stats.calls} model calls ` +
+          `(stage 4 ${result.stats.speakerTagged ? 'speaker-tagged' : 'untagged'}, ` +
+          `${result.stats.approxStarts} approximate start(s))`
+      );
+      // The sink holds the PIPELINE's result, promos included: it is what "Send to AI"
+      // reuses, and it must be the same list this pass started from, not the filtered one.
+      if (sink) sink[sourceLabel] = result;
+      return this.splitOutPromos(result, sourceLabel, warnings);
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      const msg = `${sourceLabel}: chapter generation failed, so the rest of the metadata was generated WITHOUT chapter subjects: ${errMsg}`;
+      console.error(`[MetadataGenerator] ${msg}`);
+      warnings.push(msg);
+      return {};
+    }
+  }
+
+  /**
+   * Take the ads out of a finished chapter list.
+   *
+   * Applied to EVERY path that produces chapters, including the reuse path, because the
+   * split is a pure function of the chapters and the published list, the TXT block, the
+   * description's chapter lines and every task's conditioning all have to see the same
+   * one. The pipeline's own result is left untouched — what is excluded travels on to the
+   * job JSON as `excludedChapters` rather than disappearing.
+   */
+  private static splitOutPromos(
+    result: ChapterPipelineResult,
+    sourceLabel: string,
+    warnings: string[]
+  ): { chapters?: Chapter[]; excludedChapters?: Chapter[]; subjects?: string[]; details?: string[] } {
+    const partition = excludePromoChapters(
+      result.chapters,
+      result.subjects,
+      result.subjectDetails.map((s) => s.detail),
+      sourceLabel
+    );
+
+    for (const warning of partition.warnings) {
+      console.warn(`[MetadataGenerator] ${sourceLabel}: ${warning}`);
+      warnings.push(`${sourceLabel}: ${warning}`);
+    }
+
+    const excludedChapters = partition.excluded.length > 0 ? partition.excluded : undefined;
+
+    // Nothing but ads. There is no chapter list to publish and no subject list to
+    // condition on, so this item takes the legacy single call — stated by returning no
+    // subjects, exactly as a run whose pipeline came back short does.
+    if (partition.content.length === 0) {
+      return { excludedChapters };
+    }
+
+    return {
+      chapters: partition.content,
+      excludedChapters,
+      subjects: partition.contentSubjects,
+      details: partition.contentDetails,
+    };
+  }
+
+  /**
+   * Generate chapters with the sealed 14B pipeline (CHAPTERING.md).
+   *
+   * This replaced a single "here is the whole video, give me the chapters" call. That
+   * shape cannot work on a 14B: asked to pick K boundaries out of N candidates it
+   * returns the first few and stops, which produces mega-chapters and lost stories.
+   * The pipeline asks one local question at a time and does the selection in code.
+   *
+   * The WHOLE run holds the single AI queue slot rather than queueing each of its
+   * hundreds of calls separately: the method requires one model resident at a time,
+   * and that is exactly what the 1-slot AI pool exists to guarantee.
+   */
+  private static async generateChapters(
+    item: ContentItem,
+    params: GenerationParams,
+    itemIndex: number,
+    itemCount: number
+  ) {
+    if (!item.srtSegments || item.srtSegments.length === 0) {
+      throw new Error('Chapter generation needs a timestamped transcript');
+    }
+
+    // The chapter pipeline's model comes from the same routing table as every other
+    // field's. It is local by construction — the 'chapters' task offers local options
+    // only, because the sealed method makes hundreds of one-question calls per video.
+    const routing = this.routing(params);
+    const option = routingOption('chapters', routing.chapters);
+    const model = option.model;
+
+    const host = option.host || params.aiHost || 'http://localhost:11434';
+    const label = item.source || `item_${itemIndex + 1}`;
+
+    // Chapter work is 0-60% of this item's "generating" phase; the metadata call that
+    // follows takes it from there. Weighted by the real call counts: labelling and
+    // rating are ~2 x (duration/45s) calls, the rest are ~3 x chapter_count.
+    const stageWeights: Record<ChapterStage, [number, number]> = {
+      label: [0, 22],
+      rate: [22, 44],
+      place: [44, 50],
+      summarize: [50, 55],
+      consolidate: [55, 60],
+    };
+
+    const pipeline = new ChapterPipelineService({
+      host,
+      model,
+      stageModels: params.chapterStageModels,
+      numCtx: params.chapterNumCtx,
+      cancelCallback: params.cancelCallback,
+      onProgress: (stage, done, total) => {
+        const [from, to] = stageWeights[stage];
+        const percent = Math.round(from + ((to - from) * done) / Math.max(1, total));
+        params.progressCallback?.(
+          'generating',
+          `Chapters (${stage} ${done}/${total}) ${itemIndex + 1}/${itemCount}...`,
+          percent,
+          undefined,
+          itemIndex
+        );
+      },
     });
 
-    const response = await (aiManager as any).makeRequest(prompt, (aiManager as any).metadataModel);
+    log.info(`[MetadataGenerator] Chapter pipeline starting for ${label} on ${model} @ ${host}`);
 
-    if (!response) {
-      return [];
-    }
+    // The AI pool's default 30-minute watchdog is sized for ONE stalled request. This
+    // task is hundreds of short requests in a row: CHAPTERING.md clocks a 2h10m
+    // livestream at ~390 calls / ~25 minutes on a 24GB-class GPU, so the default would
+    // force-fail legitimate long-form runs on anything slower. 4 hours still backstops
+    // a genuinely wedged run.
+    const CHAPTER_TASK_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 
-    return this.parseChaptersFromAI(response);
-  }
-
-  /**
-   * Parse chapters from AI response (expects {chapters: [...]} format)
-   */
-  private static parseChaptersFromAI(response: string): AIChapter[] {
-    try {
-      // Clean up response - remove markdown code blocks if present
-      let cleanResponse = response.trim();
-      if (cleanResponse.startsWith('```')) {
-        const lines = cleanResponse.split('\n');
-        cleanResponse = lines
-          .filter((l) => !l.startsWith('```'))
-          .join('\n');
-      }
-
-      // Try to extract JSON object from response
-      const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        if (parsed.chapters && Array.isArray(parsed.chapters)) {
-          return parsed.chapters;
-        }
-      }
-
-      // Fallback: try to extract JSON array directly
-      const arrayMatch = cleanResponse.match(/\[[\s\S]*\]/);
-      if (arrayMatch) {
-        return JSON.parse(arrayMatch[0]);
-      }
-
-      return [];
-    } catch (error) {
-      console.error('[MetadataGenerator] Failed to parse AI chapters:', error);
-      return [];
-    }
+    return queueAITask(
+      `chapters-${params.jobId || 'job'}-${itemIndex}`,
+      `Chapters: ${label}`,
+      () => pipeline.generate(item.srtSegments!),
+      undefined,
+      CHAPTER_TASK_TIMEOUT_MS
+    );
   }
 
   /**

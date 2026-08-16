@@ -88,39 +88,75 @@ TAGS (replaces the rules above):
 `,
 
   /**
-   * Chapter detection prompt - uses phrase-based timestamp mapping
-   * Placeholder: {transcript}
+   * Chapter subjects, prepended to the metadata prompt's subject block.
+   *
+   * Chapters are generated FIRST now, by the local pipeline in
+   * chapter-pipeline.service.ts, and each subject was written from that chapter's own
+   * transcript span. So this block is not a hint — it is a measured table of contents,
+   * and it is the most reliable statement of what the video actually contains that the
+   * metadata model gets. Kept deliberately general: it says what the list IS and what
+   * to do with it, and leaves the editorial judgement to the prompt set.
+   *
+   * Each entry may carry a second, indented line — the chapter's `detail`, written by
+   * the same pipeline call as its name (see chapter-pipeline.service.ts). The names
+   * alone say which subjects exist; the details say what happened in them, which is
+   * what stops a description from being a list of topics.
+   *
+   * Placeholder: {chapterList}
    */
-  CHAPTER_DETECTION_PROMPT: `Identify chapter boundaries based on MAJOR topic/subject changes in this transcript.
+  CHAPTER_SUBJECTS_CONTEXT: `
+=== WHAT THIS VIDEO ACTUALLY COVERS ===
+The chapters below were already worked out from the transcript, in order, each one
+described from its own section of the video. This is the video's real contents, and it
+is what viewers will see listed under it. Where a chapter has an indented second line,
+that is what happens in it, in more detail.
 
-Rules:
-- First chapter MUST start at the very beginning of the transcript
-- Create a new chapter ONLY when there is a SIGNIFICANT topic shift (not minor tangents)
-- Very short videos (under 5 minutes) may have just 1-2 chapters
-- Typical videos (30-60 minutes) should have 4-8 chapters - prefer fewer, longer chapters
-- Multi-hour videos scale up: roughly one chapter per 10-20 minutes (use the [H:MM:SS] timestamps to judge total duration, and spread chapters across the ENTIRE runtime - do not stop partway)
-- Minimum chapter length: 3-4 minutes of content (be conservative - don't over-segment)
-- If unsure whether something is a new chapter, keep it as part of the current one
+{chapterList}
 
-Title requirements:
-- Titles should be 50-80 characters - concise but descriptive
-- Explain specifically what happens in this section
-- Include key details: names, topics, actions
-- Avoid generic labels like "Introduction", "Overview", "Conclusion"
-- Write as complete thoughts, not fragments
+Let this list decide what the video is ABOUT. Weight it by how much of the video each
+subject takes up, and stay inside it - if something is not in this list, the video did
+not spend real time on it.
+===
+`,
 
-Return JSON:
-{"chapters": [{"start_phrase": "exact quote from transcript", "title": "Concise description"}]}
+  /**
+   * OUTPUT FORMAT for a single task unit (metadata-tasks.ts).
+   *
+   * The prompt set's own OUTPUT FORMAT names every field at once, which is right for the
+   * legacy single call and wrong for a call that owns one field: a model told to return
+   * seven keys will return seven, and six of them would be thrown away or, worse, merged
+   * over another unit's real answer. This block is built per task from the sections that
+   * unit actually carries.
+   *
+   * Placeholder: {keyLines}
+   */
+  TASK_OUTPUT_FORMAT: `
+## OUTPUT FORMAT
 
-Important:
-- start_phrase MUST be verbatim text copied from the transcript (3-8 words)
-- The transcript may be an evenly-sampled excerpt of the full video (some sentences omitted between lines) - quote start_phrase EXACTLY as it appears in the text provided, never bridge or paraphrase across gaps
-- The first chapter's start_phrase should be from the very beginning
-- Each subsequent chapter's start_phrase marks where a new topic begins
-- Chapters are sequential - each one ends where the next begins
+Return ONE JSON object with EXACTLY these keys and nothing else (follow the per-field rules above for content):
+{
+{keyLines}
+}
+`,
 
-Transcript:
-{transcript}`,
+  /**
+   * Fills the editorial prompt's {subject} content slot for the description and tags
+   * tasks, which are conditioned on the chapter list INSTEAD of the transcript.
+   *
+   * Without this the prompt sets' own "detect whether you got a transcript or a one-line
+   * description" instruction resolves the wrong way: the chapter block is short, so the
+   * model treats it as a bare topic and refuses to be specific. It is the opposite —
+   * every line was measured against its own span of the video.
+   */
+  TASK_CHAPTERS_ONLY_INPUT: `
+=== WHAT YOU ARE WORKING FROM ===
+The chapter list above IS the content for this task. It was worked out from the full
+transcript, chapter by chapter, so treat it as transcript-grade evidence and be as
+specific as it lets you be - the indented lines are there to be used.
+Stay inside it: write nothing the list does not support, and invent no quote, moment or
+event that is not in it.
+===
+`,
 
   /**
    * Episode split prompt - for finding episode boundaries in multi-hour streams

@@ -28,6 +28,12 @@ import {
   sourceFilenameOf,
 } from '../services/metadata/generated-index';
 import { composeDescription, composeTags } from '../services/metadata/description-composer';
+import {
+  buildRoutingView,
+  describeRouting,
+  resolveMetadataRouting,
+  validateRoutingSelections,
+} from '../services/metadata/metadata-routing';
 import { setupPublishIpc } from '../services/publish/publish-ipc';
 import { PublishBridge } from '../services/publish/publish-bridge';
 
@@ -184,7 +190,14 @@ let isAiGenerationRunning = false;
 // Lifecycle: entries are removed on send (success), discard, or job cancel/removal.
 // There is no timer — the frontend MUST send or discard, and cancel/removal is a
 // safety net. Practically bounded by the number of pending queue items.
-const heldTranscripts = new Map<string, { contentItems: ContentItem[]; metadataParams: any }>();
+const heldTranscripts = new Map<string, {
+  contentItems: ContentItem[];
+  metadataParams: any;
+  // Chapters the show-prompt assembly already paid for. They are part of the
+  // prompt the user is looking at, so "Send to AI" must send THOSE chapters,
+  // not a fresh pipeline run that could land its boundaries somewhere else.
+  computedChapters?: { [sourceLabel: string]: any };
+}>();
 
 function enqueuePipelineJob(job: PipelineJob): void {
   const queuePosition = transcriptionQueue.length + activeTranscriptions;
@@ -300,16 +313,26 @@ async function runTranscription(job: PipelineJob): Promise<void> {
       const jobResult = await MetadataGeneratorService.generate(paramsWithCallback);
 
       // "Show prompt" flow: the transcript is done and the prompt is assembled, but
-      // NO AI call happened. Hold the transcript so "Send to AI" can reuse it, and do
-      // NOT emit a terminal 'complete' — the frontend keys off the RESOLVED value here,
-      // not a progress event. On failure we still surface a terminal 'error' as usual.
+      // NO metadata call happened. Hold the transcript so "Send to AI" can reuse it,
+      // and do NOT emit a terminal 'complete' — the frontend keys off the RESOLVED
+      // value here, not a progress event. On failure we still surface a terminal
+      // 'error' as usual. Warnings are forwarded because chapters DO run in this flow
+      // now, so "chapters failed, the prompt you are reading has no chapter subjects"
+      // has to reach the user while they are still deciding whether to send it.
       if (job.metadataParams.showPrompt) {
         if (jobResult.success) {
           heldTranscripts.set(job.jobId, {
             contentItems: job.contentItems!,
             metadataParams: job.metadataParams,
+            computedChapters: jobResult.computedChapters,
           });
-          return { success: true, prompts: jobResult.prompts, jobId: job.jobId, held: true };
+          return {
+            success: true,
+            prompts: jobResult.prompts,
+            jobId: job.jobId,
+            held: true,
+            warnings: jobResult.warnings,
+          };
         }
         sendToRenderer('generation-progress', {
           phase: 'error',
@@ -528,6 +551,33 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       log.error('Error updating settings:', error);
       throw error;
     }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Per-task model routing (metadata-routing.ts)
+  //
+  // The registry is the single source of truth and it lives in code; these two handlers
+  // are the only way the renderer sees or changes it. The payload shape is FROZEN — the
+  // settings modal is written against exactly this — so a new task or option changes the
+  // contents and never the shape.
+  // ---------------------------------------------------------------------------
+
+  ipcMain.handle('metadata-routing:get', async () => {
+    // Not wrapped in a try/catch that returns a shape: a stored selection this build
+    // cannot honour must reach the user as an error, because it is the same error their
+    // next generation would fail with.
+    const stored = (store as any).get('metadataRouting');
+    return buildRoutingView(stored);
+  });
+
+  ipcMain.handle('metadata-routing:set', async (_event, selections) => {
+    // Validated against the registry BEFORE it is written. A store holding an option this
+    // build does not know would fail every subsequent job, far from the click that caused
+    // it.
+    const validated = validateRoutingSelections(selections);
+    (store as any).set('metadataRouting', validated);
+    log.info(`[IPC] Metadata routing saved: ${describeRouting(resolveMetadataRouting(validated))}`);
+    return { success: true };
   });
 
   // Select files or directories
@@ -794,6 +844,20 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         jobId: params.jobId,
         jobName: params.jobName,
         chapterFlags: params.chapterFlags || {},
+        chapterStageModels: settings.chapterStageModels || undefined,
+        chapterNumCtx: settings.chapterNumCtx || undefined,
+        // Per-task model routing, read from the store AT JOB TIME. The registry supplies
+        // the defaults at the read site (metadata-routing.ts), never the store's
+        // `defaults` block: a seeded default freezes the shipped routing into every
+        // existing install, so a task whose default changes would never reach the users
+        // who already have a store. An absent key means "the shipped routing"; a present
+        // one means the user chose something, and a bad one fails the job by name.
+        //
+        // This is also what decides the chapter pipeline's model — the 'chapters' task.
+        metadataRouting: resolveMetadataRouting(settings.metadataRouting),
+        // Keys for whatever providers the routing reaches, which need not be the provider
+        // `aiApiKey` belongs to.
+        cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
         inputNotes: params.inputNotes || {},
         insightsBlock: insightsBlock || undefined,
         // "Show prompt": transcribe + assemble the prompt, then STOP (no AI call).
@@ -808,6 +872,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         insightsBlock: insightsBlock ? `<CHANNEL PERFORMANCE DATA, ${insightsBlock.length} chars>` : undefined
       };
       log.info('Prepared metadata params:', JSON.stringify(safeMetadataParams, null, 2));
+      log.info(`[IPC] Metadata routing for this job: ${describeRouting(metadataParams.metadataRouting)}`);
 
       // Send progress update
       sendToRenderer('generation-progress', {
@@ -907,6 +972,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
           ...held.metadataParams,
           showPrompt: false,
           preTranscribedContent: held.contentItems,
+          preComputedChapters: held.computedChapters,
           progressCallback,
         });
 

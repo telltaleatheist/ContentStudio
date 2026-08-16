@@ -196,10 +196,7 @@ instructions_prompt: |-
 
   ## CHAPTERS
 
-  - ONLY generate chapter markers if the input contains actual timestamps or timecoded transcript data
-  - Every timestamp must come directly from the source material — NEVER fabricate or estimate timestamps
-  - Chapter titles should be specific and search-worthy (they can rank as Google "key moments"): name the person, claim, or event covered in that section — never "Intro" or "Part 1"
-  - If no timestamp data is available in the input, do not generate chapters
+  - Do not write chapters and never return a "chapters" key. Chapters are worked out from the transcript separately; one written here would replace measured timestamps with guesses.
 
   ## OUTPUT FORMAT
 
@@ -213,7 +210,6 @@ instructions_prompt: |-
     "pinned_comment": ["3 strings"],
     "clip_suggestions": ["3-5 strings; [] for short-description inputs"]
   }
-  Include a "chapters" key ONLY if real timestamps exist in the input: "chapters": [{"timestamp": "MM:SS", "title": "string", "sequence": 1}]
 
   ## FINAL SELF-CHECK (fix violations silently before answering; never mention this check)
 
@@ -224,6 +220,10 @@ instructions_prompt: |-
   - Thumbnail options don't repeat core words from the top 3 titles
   - Swap test: no two titles interchangeable
   - Output is one valid JSON object with exactly the keys specified, ASCII characters only
+# Channel and creator tags, appended to every generated tag list by code.
+# The tags adapter is trained to leave these out ("those are appended separately"),
+# so without this key a locally generated tag list never names the channel.
+channel_tags: ["Telltale Fireside Chat", "Owen Morgan"]
 description_links: |-
   🔥 Support the Show:
   Become a Patreon Member: https://owenmorgan.com/patreon

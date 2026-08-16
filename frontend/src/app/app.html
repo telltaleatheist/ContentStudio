@@ -45,6 +45,10 @@
           </a>
         </mat-nav-list>
         <div class="theme-toggle-container">
+          <button mat-icon-button (click)="openModelRouting()" class="theme-toggle-button" matTooltip="Model routing" matTooltipPosition="right">
+            <mat-icon>alt_route</mat-icon>
+            <span class="theme-label">Model Routing</span>
+          </button>
           <button mat-icon-button (click)="toggleTheme()" class="theme-toggle-button">
             <mat-icon>{{ isDarkMode() ? 'light_mode' : 'dark_mode' }}</mat-icon>
             <span class="theme-label">{{ isDarkMode() ? 'Light Mode' : 'Dark Mode' }}</span>

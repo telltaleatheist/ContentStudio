@@ -179,10 +179,7 @@ instructions_prompt: |-
 
   ## CHAPTERS
 
-  - ONLY generate chapter markers if the input contains actual timestamps or timecoded transcript data
-  - Every timestamp must come directly from the source material — NEVER fabricate or estimate timestamps
-  - Chapter titles should name the specific claim, person, or argument covered in that segment
-  - If no timestamp data is available in the input, do not generate chapters
+  - Do not write chapters and never return a "chapters" key. Chapters are worked out from the transcript separately; one written here would replace measured timestamps with guesses.
 
   ## OUTPUT FORMAT
 
@@ -192,7 +189,6 @@ instructions_prompt: |-
     "description": "one string, formatted per the DESCRIPTION rules above",
     "tags": "comma-separated string"
   }
-  Include a "chapters" key ONLY if real timestamps exist in the input: "chapters": [{"timestamp": "MM:SS", "title": "string", "sequence": 1}]
 
   ## FINAL SELF-CHECK (fix violations silently before answering; never mention this check)
 

@@ -14,6 +14,15 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import { METADATA_FIELDS } from './metadata-fields';
+import {
+  InstructionSection,
+  MetadataGroupSpec,
+  MetadataRunContext,
+  buildGroupInstructions,
+  groupNeedsTranscript,
+  parseInstructionSections,
+} from './metadata-tasks';
+import { Chapter } from './chapter-generator.service';
 import { queueAITask } from '../queue-manager.service';
 
 export interface AIConfig {
@@ -28,6 +37,16 @@ export interface AIConfig {
   // "CHANNEL PERFORMANCE DATA" block from the analytics feedback loop, appended
   // to the metadata prompt when present (resolved by the caller; optional).
   insightsBlock?: string;
+  /**
+   * Keys for the cloud providers a per-task ROUTING may reach, independent of the
+   * provider `apiKey` above.
+   *
+   * Routing (metadata-routing.ts) lets a single run send one group to Claude while the
+   * legacy `metadataModel` points somewhere else entirely, so the key for a group's
+   * provider cannot be inferred from `provider`. Absent key for a routed provider is a
+   * loud failure at request time, never a silent switch to a provider that is configured.
+   */
+  cloudApiKeys?: { claude?: string; openai?: string };
 }
 
 export interface MetadataResult {
@@ -39,11 +58,19 @@ export interface MetadataResult {
   pinned_comment?: string[];
   spoken_keywords?: string[];
   clip_suggestions?: string[];
-  chapters?: Array<{
-    timestamp: string;
-    title: string;
-    sequence: number;
-  }>;
+  // The chapter pipeline's own shape, not a local copy of it: chapters now carry a
+  // `detail` sentence, an approximate-start flag and their pre-consolidation
+  // sub-chapters, and every one of those has to survive the trip to the output files.
+  chapters?: Chapter[];
+  /**
+   * Chapters the promo classifier took out of the published list (promo-chapters.ts),
+   * each carrying `isPromo: true`.
+   *
+   * They are kept in the job JSON so nothing the pipeline measured and named is silently
+   * lost — the user can see exactly which spans were treated as ads. Nothing downstream
+   * publishes or conditions on them.
+   */
+  excludedChapters?: Chapter[];
 }
 
 export interface PromptSet {
@@ -51,6 +78,15 @@ export interface PromptSet {
   editorial_prompt: string;
   instructions_prompt: string;
   description_links: string;
+  /**
+   * Channel and creator tags appended to every generated tag list for this prompt set.
+   *
+   * OPTIONAL, and absent means absent — no append, no default, no guess at what the
+   * channel is called. It exists because the tags adapter is TRAINED to leave channel and
+   * creator names out ("those are appended separately"), so the names are a property of
+   * the prompt set, which is the thing that knows which channel it publishes to.
+   */
+  channel_tags?: string[];
 }
 
 export class AIManagerService {
@@ -72,6 +108,9 @@ export class AIManagerService {
   private anthropicClient?: Anthropic;
   private summarizationPrompts: any;
   private currentPromptSet?: PromptSet;
+  // instructions_prompt split on its `## ` headers. Parsed once per loaded prompt set —
+  // every task unit asks for it, and the file cannot change mid-run.
+  private instructionSectionsCache?: InstructionSection[];
   private summaryModel: string = '';
   private metadataModel: string = '';
   private promptsDir: string;
@@ -215,16 +254,6 @@ export class AIManagerService {
   // prompt overhead, better per-chunk context than the old 8k chunks).
   private static readonly CLOUD_SUMMARIZE_CHUNK_CHARS = 60000;
   private static readonly OLLAMA_SUMMARIZE_CHUNK_CHARS = 8000;
-
-  /**
-   * Char budget for the chapter-detection transcript. Transcripts over this are
-   * evenly SAMPLED (whole segments kept verbatim) rather than chunked, so the
-   * model keeps a global view of the whole video in one request and every
-   * quoted start_phrase still maps back to the full SRT.
-   */
-  getChapterTranscriptBudgetChars(): number {
-    return this.config.provider === 'ollama' ? 30000 : 60000;
-  }
 
   /**
    * Get the prompts directory path
@@ -472,7 +501,33 @@ export class AIManagerService {
       );
     }
 
+    // channel_tags is optional, but a MALFORMED one is not tolerated: the whole point of
+    // the key is that the channel's own name reaches the tag list, and a silently ignored
+    // "channel_tags: Telltale" (a string, not a list) would publish tags that quietly
+    // never name the channel.
+    if (promptSet.channel_tags !== undefined) {
+      const valid =
+        Array.isArray(promptSet.channel_tags) &&
+        promptSet.channel_tags.every((t) => typeof t === 'string' && t.trim().length > 0);
+      if (!valid) {
+        throw new Error(
+          `Prompt set "${promptSetName}" (${promptSetPath}) has a channel_tags key that is not a list of non-empty ` +
+            `strings (got: ${JSON.stringify(promptSet.channel_tags)}). Write it as a YAML list, e.g. ` +
+            `channel_tags: ["Telltale", "Owen Morgan"]`
+        );
+      }
+      log.info(
+        `[AIManager] Prompt set "${promptSetName}" appends ${promptSet.channel_tags.length} channel tag(s): ` +
+          promptSet.channel_tags.join(', ')
+      );
+    } else {
+      log.info(
+        `[AIManager] Prompt set "${promptSetName}" has no channel_tags key, so no channel or creator tags are appended`
+      );
+    }
+
     this.currentPromptSet = promptSet;
+    this.instructionSectionsCache = undefined;
     console.log(`[AIManager] Loaded prompt set: ${promptSet.name}`);
   }
 
@@ -612,9 +667,11 @@ export class AIManagerService {
   buildMetadataPrompt(
     content: string,
     sourceName?: string,
-    compilationInfo?: { sourceCount: number; contentTypes: string[] }
+    compilationInfo?: { sourceCount: number; contentTypes: string[] },
+    chapterSubjects?: string[],
+    chapterDetails?: string[]
   ): string {
-    return this.createMetadataPrompt(content, sourceName, compilationInfo);
+    return this.createMetadataPrompt(content, sourceName, compilationInfo, chapterSubjects, chapterDetails);
   }
 
   /**
@@ -623,39 +680,12 @@ export class AIManagerService {
    * up front and later send this exact prompt when the user confirms.
    */
   async generateMetadataFromAssembledPrompt(prompt: string): Promise<MetadataResult> {
-    const maxAttempts = 2;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const response = await this.makeRequest(prompt, this.metadataModel, 300);
+    const { metadata } = await this.runMetadataRequest(prompt);
 
-      if (!response) {
-        log.error('[AIManager] === METADATA GENERATION FAILED ===');
-        log.error('[AIManager]     No response from AI');
-        if (attempt < maxAttempts) {
-          log.info(`[AIManager] Retrying metadata generation (attempt ${attempt + 1}/${maxAttempts})...`);
-          continue;
-        }
-        throw new Error('No response from AI');
-      }
+    console.log(`[AIManager] === METADATA GENERATION COMPLETE ===`);
+    console.log(`[AIManager]     Generated ${Object.keys(metadata).length} fields`);
 
-      try {
-        // Parse the response
-        const metadata = this.parseMetadataResponse(response);
-
-        console.log(`[AIManager] === METADATA GENERATION COMPLETE ===`);
-        console.log(`[AIManager]     Generated ${Object.keys(metadata).length} fields`);
-
-        return this.addDescriptionLinks(metadata);
-      } catch (parseError) {
-        if (attempt < maxAttempts) {
-          log.warn(`[AIManager] Metadata parse failed on attempt ${attempt}, retrying...`);
-          continue;
-        }
-        throw parseError;
-      }
-    }
-
-    // Should not reach here, but satisfy TypeScript
-    throw new Error('Failed to generate metadata after retries');
+    return this.finalizeMetadata(metadata);
   }
 
   /**
@@ -664,7 +694,9 @@ export class AIManagerService {
   async generateMetadata(
     content: string,
     sourceName?: string,
-    compilationInfo?: { sourceCount: number; contentTypes: string[] }
+    compilationInfo?: { sourceCount: number; contentTypes: string[] },
+    chapterSubjects?: string[],
+    chapterDetails?: string[]
   ): Promise<MetadataResult> {
     if (!this.currentPromptSet) {
       throw new Error('No prompt set loaded');
@@ -674,18 +706,32 @@ export class AIManagerService {
     console.log(`[AIManager]     Content length: ${content.length} chars`);
     console.log(`[AIManager]     Using model: ${this.metadataModel}`);
     console.log(`[AIManager]     Compilation: ${compilationInfo ? `yes (${compilationInfo.sourceCount} items)` : 'no'}`);
+    console.log(`[AIManager]     Chapter subjects: ${chapterSubjects ? chapterSubjects.length : 'none'}`);
 
-    const prompt = this.createMetadataPrompt(content, sourceName, compilationInfo);
+    const prompt = this.createMetadataPrompt(content, sourceName, compilationInfo, chapterSubjects, chapterDetails);
     return this.generateMetadataFromAssembledPrompt(prompt);
   }
 
   /**
    * Create metadata generation prompt
+   *
+   * chapterSubjects, when present, are the chapter names the local chapter pipeline
+   * already derived from this transcript. They go in FIRST, ahead of the transcript
+   * itself, because they are the most reliable account of what the video contains —
+   * measured span by span rather than inferred from a summary.
+   *
+   * chapterDetails is the same list's description-grade prose (index-aligned, stage 4's
+   * `detail` field). A 4-8 word marker says which subjects exist; the detail sentence
+   * says what actually happened in them, which is what a description or a tag list has
+   * to be specific about. Blank entries are simply omitted — a chapter the summarizer
+   * could not describe still contributes its name.
    */
   private createMetadataPrompt(
     content: string,
     sourceName?: string,
-    compilationInfo?: { sourceCount: number; contentTypes: string[] }
+    compilationInfo?: { sourceCount: number; contentTypes: string[] },
+    chapterSubjects?: string[],
+    chapterDetails?: string[]
   ): string {
     if (!this.currentPromptSet) {
       throw new Error('No prompt set loaded');
@@ -694,22 +740,8 @@ export class AIManagerService {
     // Use centralized system prompt
     const systemPrompt = SYSTEM_PROMPTS.JSON_SYSTEM;
 
-    // Hardcoded compilation instructions (works with any prompt set)
-    let compilationContext = '';
-    if (compilationInfo) {
-      const contentTypeStr = compilationInfo.contentTypes.join(', ');
-      compilationContext = formatPrompt(SYSTEM_PROMPTS.COMPILATION_CONTEXT, {
-        sourceCount: compilationInfo.sourceCount,
-        contentTypes: contentTypeStr,
-      });
-    }
-
-    // Replace {subject} placeholder with actual content
-    // Add source filename context if available
-    const sourceContext = sourceName ? `\n\nSource: ${sourceName}\n(Use the source filename for context about names, topics, and proper nouns - it may contain correctly spelled names or important keywords)` : '';
-    const subject = `${compilationContext}${sourceContext}\n\n${content}`;
-
-    const editorialPrompt = this.currentPromptSet.editorial_prompt.replace('{subject}', subject);
+    const subject = this.buildSubjectBlock(content, sourceName, compilationInfo, chapterSubjects, chapterDetails);
+    const editorialPrompt = this.fillSubject(subject);
 
     // Instructions prompt defines what to generate
     let instructionsPrompt = this.currentPromptSet.instructions_prompt;
@@ -732,9 +764,335 @@ export class AIManagerService {
   }
 
   /**
-   * Parse metadata response from AI
+   * The `{subject}` payload: compilation framing, source filename, the chapter table of
+   * contents, then the content slot. Shared by the legacy single call and the per-task
+   * calls so a task differs from the whole-metadata call only in what it puts in that
+   * content slot — the transcript for packaging, a short "the chapters are the content"
+   * note for description and tags.
    */
-  private parseMetadataResponse(response: string): MetadataResult {
+  private buildSubjectBlock(
+    content: string,
+    sourceName?: string,
+    compilationInfo?: { sourceCount: number; contentTypes: string[] },
+    chapterSubjects?: string[],
+    chapterDetails?: string[]
+  ): string {
+    // Hardcoded compilation instructions (works with any prompt set)
+    let compilationContext = '';
+    if (compilationInfo) {
+      const contentTypeStr = compilationInfo.contentTypes.join(', ');
+      compilationContext = formatPrompt(SYSTEM_PROMPTS.COMPILATION_CONTEXT, {
+        sourceCount: compilationInfo.sourceCount,
+        contentTypes: contentTypeStr,
+      });
+    }
+
+    // Add source filename context if available
+    const sourceContext = sourceName ? `\n\nSource: ${sourceName}\n(Use the source filename for context about names, topics, and proper nouns - it may contain correctly spelled names or important keywords)` : '';
+
+    const chapterContext = chapterSubjects && chapterSubjects.length > 0
+      ? formatPrompt(SYSTEM_PROMPTS.CHAPTER_SUBJECTS_CONTEXT, {
+          chapterList: chapterSubjects
+            .map((s, i) => {
+              const detail = (chapterDetails?.[i] || '').trim();
+              // Indented under its own subject, one line each: the block stays a
+              // scannable table of contents rather than becoming a second transcript.
+              return detail ? `${i + 1}. ${s}\n   ${detail}` : `${i + 1}. ${s}`;
+            })
+            .join('\n'),
+        })
+      : '';
+
+    return `${compilationContext}${sourceContext}\n${chapterContext}\n${content}`;
+  }
+
+  /** Replace the prompt set's {subject} placeholder. */
+  private fillSubject(subject: string): string {
+    if (!this.currentPromptSet) {
+      throw new Error('No prompt set loaded');
+    }
+    // Function replacer: transcript text routinely contains $-patterns ($&, $', $`),
+    // which a plain string replacement would expand and corrupt the prompt with.
+    return this.currentPromptSet.editorial_prompt.replace('{subject}', () => subject);
+  }
+
+  /**
+   * The canonical section keys the loaded prompt set actually defines.
+   *
+   * A prompt set is the statement of WHICH FIELDS this channel publishes: the Spreaker
+   * podcast set has no thumbnail text and no clip suggestions, and never did. Planning a
+   * run reads this so it can leave those fields out and say so, rather than routing a
+   * field the prompt set never asked for and failing on a section that was never missing
+   * by accident.
+   */
+  promptSetSectionKeys(): Set<string> {
+    return new Set(this.instructionSections().map((s) => s.key));
+  }
+
+  /** instructions_prompt split on its `## ` headers, parsed once per loaded prompt set. */
+  private instructionSections(): InstructionSection[] {
+    if (!this.currentPromptSet) {
+      throw new Error('No prompt set loaded');
+    }
+    if (!this.instructionSectionsCache) {
+      this.instructionSectionsCache = parseInstructionSections(this.currentPromptSet.instructions_prompt);
+    }
+    return this.instructionSectionsCache;
+  }
+
+  /**
+   * Assemble ONE cloud group's prompt (metadata-tasks.ts).
+   *
+   * Same three blocks as the whole-metadata prompt — JSON system, editorial prompt with
+   * the subject filled in, instructions — but the instructions are only this group's
+   * sections and an OUTPUT FORMAT naming only its keys.
+   *
+   * The transcript reaches a group only if one of its fields needs it: description, tags
+   * and hashtags condition on the chapter list alone, which is the conditioning their
+   * local adapters get, so a Sonnet group holding only those two reads exactly what the
+   * adapters would have read.
+   */
+  buildMetadataGroupPrompt(spec: MetadataGroupSpec, ctx: MetadataRunContext): string {
+    if (!this.currentPromptSet) {
+      throw new Error('No prompt set loaded');
+    }
+
+    const promptSetName = this.config.promptSet || this.currentPromptSet.name || 'unknown';
+    const contentSlot = groupNeedsTranscript(spec.fields) ? ctx.content : SYSTEM_PROMPTS.TASK_CHAPTERS_ONLY_INPUT;
+    const subject = this.buildSubjectBlock(contentSlot, ctx.sourceLabel, undefined, ctx.chapterSubjects, ctx.chapterDetails);
+    const instructions = buildGroupInstructions(spec, this.instructionSections(), promptSetName);
+
+    // Channel performance data speaks to titles, thumbnails and packaging — the fields it
+    // was distilled from. Which group carries it is decided when the run is planned, not
+    // here (see planMetadataUnits).
+    const insightsSuffix = spec.insights && this.config.insightsBlock ? `\n\n${this.config.insightsBlock}` : '';
+
+    return `${SYSTEM_PROMPTS.JSON_SYSTEM}\n\n${this.fillSubject(subject)}\n\n${instructions.text}${insightsSuffix}`;
+  }
+
+  /**
+   * The metadata keys a cloud group is responsible for returning, per the loaded prompt
+   * set AND per this run's field ownership — a group returns no `hashtags` key in a run
+   * where the description adapter writes them, so it must not be asked for one either.
+   */
+  metadataGroupKeys(spec: MetadataGroupSpec): string[] {
+    if (!this.currentPromptSet) {
+      throw new Error('No prompt set loaded');
+    }
+    const promptSetName = this.config.promptSet || this.currentPromptSet.name || 'unknown';
+    return buildGroupInstructions(spec, this.instructionSections(), promptSetName).metadataKeys;
+  }
+
+  /**
+   * Make sure the provider behind `model` has a client, for models this instance was not
+   * constructed around.
+   *
+   * Per-task routing can send one group to a model whose provider initialize() never
+   * touched. Creating the client here is not a fallback — the model was explicitly
+   * requested and this is the first time it is needed. A MISSING KEY is the failure, and
+   * it throws naming the provider and the model rather than quietly sending the request
+   * somewhere that is configured.
+   */
+  private async ensureProviderReady(model: string): Promise<void> {
+    if (model.startsWith('claude:')) {
+      if (this.anthropicClient) return;
+      const key = this.config.cloudApiKeys?.claude
+        || (this.metadataModel.startsWith('claude:') ? this.config.apiKey : undefined);
+      if (!key) {
+        throw new Error(
+          `Metadata is routed to "${model}", but no Anthropic API key is configured. Add it in AI Setup — ` +
+            `no other provider was substituted.`
+        );
+      }
+      this.anthropicClient = new Anthropic({ apiKey: key });
+      log.info(`[AIManager] Initialized Claude client on demand for routed model ${model}`);
+      return;
+    }
+
+    if (model.startsWith('openai:')) {
+      if (this.openaiClient) return;
+      const key = this.config.cloudApiKeys?.openai
+        || (this.metadataModel.startsWith('openai:') ? this.config.apiKey : undefined);
+      if (!key) {
+        throw new Error(
+          `Metadata is routed to "${model}", but no OpenAI API key is configured. Add it in AI Setup — ` +
+            `no other provider was substituted.`
+        );
+      }
+      this.openaiClient = new OpenAI({ apiKey: key });
+      log.info(`[AIManager] Initialized OpenAI client on demand for routed model ${model}`);
+      return;
+    }
+
+    if (model.startsWith('ollama:') && !this.ollamaClient) {
+      const host = this.config.host || 'http://localhost:11434';
+      this.ollamaClient = axios.create({
+        baseURL: host,
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 300000,
+      });
+      log.info(`[AIManager] Initialized Ollama client on demand for routed model ${model} @ ${host}`);
+    }
+  }
+
+  /**
+   * Request + parse + repair, WITHOUT the description-links post-processing.
+   *
+   * Task units share this because those links have to be appended once, to the merged
+   * result: the description they attach to and the hashtags they are normalized
+   * alongside come back from two different calls.
+   *
+   * `model` overrides the configured metadata model — that is how one run sends its
+   * titles group to one model and its thumbnail group to another.
+   */
+  async runMetadataRequest(
+    prompt: string,
+    model?: string
+  ): Promise<{ metadata: MetadataResult; presentKeys: Set<string> }> {
+    const requestModel = model || this.metadataModel;
+    await this.ensureProviderReady(requestModel);
+
+    const maxAttempts = 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const response = await this.makeRequest(prompt, requestModel, 300);
+
+      if (!response) {
+        log.error('[AIManager] === METADATA GENERATION FAILED ===');
+        log.error('[AIManager]     No response from AI');
+        if (attempt < maxAttempts) {
+          log.info(`[AIManager] Retrying metadata generation (attempt ${attempt + 1}/${maxAttempts})...`);
+          continue;
+        }
+        throw new Error('No response from AI');
+      }
+
+      try {
+        return this.parseMetadataResponse(response);
+      } catch (parseError) {
+        if (attempt < maxAttempts) {
+          log.warn(`[AIManager] Metadata parse failed on attempt ${attempt}, retrying...`);
+          continue;
+        }
+        throw parseError;
+      }
+    }
+
+    // Should not reach here, but satisfy TypeScript
+    throw new Error('Failed to generate metadata after retries');
+  }
+
+  /**
+   * Public entry to the post-processing every generated item gets, whichever path it came
+   * from: the prompt set's channel tags, its description links, hashtag spacing.
+   *
+   * Both paths run it — the single legacy call through generateMetadataFromAssembledPrompt
+   * and the per-unit path through runMetadataTasks — because the channel tags belong to
+   * the prompt set, not to whichever model happened to write the tags.
+   */
+  finalizeMetadata(metadata: MetadataResult): MetadataResult {
+    this.appendChannelTags(metadata);
+    return this.addDescriptionLinks(metadata);
+  }
+
+  /**
+   * YouTube's tag budget: 500 characters over the whole list.
+   *
+   * A tag containing a space costs two more than it looks, because YouTube quotes
+   * multi-word tags when it counts them. Separators count too, so the cost is measured
+   * against the joined string rather than the sum of the parts.
+   */
+  private static readonly TAG_BUDGET_CHARS = 500;
+
+  private static tagBudgetCost(tags: string[]): number {
+    return tags.join(',').length + tags.filter((t) => /\s/.test(t)).length * 2;
+  }
+
+  /**
+   * Append the prompt set's channel_tags to the generated tag list.
+   *
+   * This is not decoration — it closes a hole the tags adapter opens deliberately. Its
+   * trained system prompt says "No channel names and no creator names - those are appended
+   * separately", so without this step a locally generated tag list never names the
+   * channel at all.
+   *
+   * The channel tags are the ones that survive: if the merged list breaks the 500-character
+   * budget, generated tags are dropped from the END (the tail is where the adapter puts
+   * its broad category terms, the least specific and most replaceable) until it fits, and
+   * the log names every one dropped. A prompt set whose channel_tags alone exceed the
+   * budget is a configuration error and throws — there is nothing left to drop that would
+   * not be the thing the user asked to protect.
+   */
+  private appendChannelTags(metadata: MetadataResult): void {
+    const channelTags = (this.currentPromptSet?.channel_tags || [])
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+    if (channelTags.length === 0) return;
+
+    const promptSetName = this.config.promptSet || this.currentPromptSet?.name || 'unknown';
+
+    if (typeof metadata.tags !== 'string' || metadata.tags.trim().length === 0) {
+      log.warn(
+        `[AIManager] Prompt set "${promptSetName}" defines channel_tags but this item has no tags field to append ` +
+          `them to; the channel tags were NOT written as a tag list of their own`
+      );
+      return;
+    }
+
+    const generated = metadata.tags
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+
+    const seen = new Set(generated.map((t) => t.toLowerCase()));
+    const toAppend = channelTags.filter((t) => !seen.has(t.toLowerCase()));
+    const alreadyPresent = channelTags.filter((t) => seen.has(t.toLowerCase()));
+    if (alreadyPresent.length > 0) {
+      log.info(
+        `[AIManager] Channel tag(s) already present in the generated list, not duplicated: ${alreadyPresent.join(', ')}`
+      );
+    }
+
+    const channelCost = AIManagerService.tagBudgetCost(toAppend);
+    if (channelCost > AIManagerService.TAG_BUDGET_CHARS) {
+      throw new Error(
+        `Prompt set "${promptSetName}" defines channel_tags costing ${channelCost} characters, which alone exceeds ` +
+          `YouTube's ${AIManagerService.TAG_BUDGET_CHARS}-character tag budget (a tag with a space costs 2 extra). ` +
+          `Shorten channel_tags.`
+      );
+    }
+
+    const kept = [...generated];
+    const dropped: string[] = [];
+    while (AIManagerService.tagBudgetCost([...kept, ...toAppend]) > AIManagerService.TAG_BUDGET_CHARS && kept.length > 0) {
+      dropped.push(kept.pop()!);
+    }
+
+    if (dropped.length > 0) {
+      log.warn(
+        `[AIManager] Tag budget: appending the channel tags (${toAppend.join(', ')}) would exceed ` +
+          `${AIManagerService.TAG_BUDGET_CHARS} characters, so ${dropped.length} generated tag(s) were dropped from ` +
+          `the end of the list: ${dropped.reverse().join(', ')}`
+      );
+    }
+
+    const merged = [...kept, ...toAppend];
+    metadata.tags = merged.join(',');
+    log.info(
+      `[AIManager] Tags: ${merged.length} tag(s), ${AIManagerService.tagBudgetCost(merged)}/` +
+        `${AIManagerService.TAG_BUDGET_CHARS} characters after appending ${toAppend.length} channel tag(s)`
+    );
+  }
+
+  /**
+   * Parse metadata response from AI.
+   *
+   * `presentKeys` records which registry fields the model ACTUALLY returned (under their
+   * canonical name or an alias), as opposed to the ones normalizeMetadataKeys fills in
+   * empty. Per-task callers need that distinction: a task that was asked for one field
+   * and returned nothing has failed, and an empty array is not the same answer as a
+   * missing key.
+   */
+  private parseMetadataResponse(response: string): { metadata: MetadataResult; presentKeys: Set<string> } {
     try {
       // Step 1: Remove markdown code blocks if present
       let cleaned = response.trim();
@@ -811,8 +1169,9 @@ export class AIManagerService {
    * Normalize AI response keys to match MetadataResult interface.
    * Different models return varying key names (e.g. "titleOptions" vs "titles").
    */
-  private normalizeMetadataKeys(raw: any): MetadataResult {
+  private normalizeMetadataKeys(raw: any): { metadata: MetadataResult; presentKeys: Set<string> } {
     const result: MetadataResult = {};
+    const presentKeys = new Set<string>();
 
     // Helper: extract string from any value (handles objects AI models might return)
     const toStr = (val: any): string => {
@@ -845,17 +1204,24 @@ export class AIManagerService {
     for (const def of METADATA_FIELDS) {
       const target = result as any;
 
+      // Presence is recorded BEFORE normalization, from the raw response: an empty
+      // array normalizes to undefined for some fields, and "the model returned []" and
+      // "the model never mentioned this field" are different answers to a task unit.
+      const rawValue = pick([def.key, ...def.aliases]);
+      if (rawValue !== undefined && rawValue !== null && rawValue !== '') {
+        presentKeys.add(def.key);
+      }
+
       switch (def.kind) {
         case 'string': {
           // Stringify when the model returns an object for a string field —
           // otherwise a raw object is assigned and downstream .replace() throws,
           // getting misdiagnosed as a parse error.
-          const val = pick([def.key, ...def.aliases]);
-          target[def.key] = val == null ? val : toStr(val);
+          target[def.key] = rawValue == null ? rawValue : toStr(rawValue);
           break;
         }
         case 'stringArray': {
-          const arr = toStrArray(pick([def.key, ...def.aliases]));
+          const arr = toStrArray(rawValue);
           if (def.emptyToUndefined && arr.length === 0) {
             target[def.key] = undefined;
           } else {
@@ -883,7 +1249,7 @@ export class AIManagerService {
       }
     }
 
-    return result;
+    return { metadata: result, presentKeys };
   }
 
   /**

@@ -6,12 +6,15 @@ import { MatListModule } from '@angular/material/list';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatTooltipModule } from '@angular/material/tooltip';
+import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { NotificationBellComponent } from './components/notification-bell/notification-bell';
 import { NotificationModalComponent } from './components/notification-modal/notification-modal';
 import { ElectronService } from './services/electron';
 import { EnvironmentSetupService } from './services/environment-setup';
 import { EnvironmentSetupDialog } from './components/environment-setup-dialog/environment-setup-dialog';
 import { EnvironmentDownloadDock } from './components/environment-download-dock/environment-download-dock';
+import { ModelRoutingDialog, ModelRoutingDialogResult } from './components/model-routing-dialog/model-routing-dialog';
+import { NotificationService } from './services/notification';
 
 // Console log buffer
 const consoleLogBuffer: Array<{ timestamp: string; level: string; message: string }> = [];
@@ -55,6 +58,7 @@ const originalConsole = {
     MatIconModule,
     MatButtonModule,
     MatTooltipModule,
+    MatDialogModule,
     NotificationBellComponent,
     NotificationModalComponent,
     EnvironmentSetupDialog,
@@ -68,7 +72,12 @@ export class App implements OnInit {
   protected readonly isDarkMode = signal(true);
   protected readonly sidenavOpened = signal(true);
 
-  constructor(private electron: ElectronService, private environmentSetup: EnvironmentSetupService) {
+  constructor(
+    private electron: ElectronService,
+    private environmentSetup: EnvironmentSetupService,
+    private dialog: MatDialog,
+    private notificationService: NotificationService
+  ) {
     // Set dark theme as default on init
     document.body.setAttribute('data-theme', 'dark');
   }
@@ -84,6 +93,21 @@ export class App implements OnInit {
   toggleTheme() {
     this.isDarkMode.update(dark => !dark);
     document.body.setAttribute('data-theme', this.isDarkMode() ? 'dark' : 'light');
+  }
+
+  // Per-task model routing. The dialog loads fresh state on every open and persists
+  // it itself; it closes with `true` only after setMetadataRouting resolved.
+  openModelRouting() {
+    const dialogRef = this.dialog.open(ModelRoutingDialog, {
+      width: '640px',
+      autoFocus: 'dialog'
+    });
+
+    dialogRef.afterClosed().subscribe((saved: ModelRoutingDialogResult) => {
+      if (saved) {
+        this.notificationService.success('Model routing', 'Model routing saved');
+      }
+    });
   }
 
   toggleSidenav() {
