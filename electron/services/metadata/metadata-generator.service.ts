@@ -10,6 +10,15 @@ import { InputHandlerService, ContentItem } from './input-handler.service';
 import { Chapter } from './chapter-generator.service';
 import { ChapterPipelineService, ChapterStage, ChapterPipelineResult } from './chapter-pipeline.service';
 import { OutputHandlerService } from './output-handler.service';
+import {
+  MetadataTaskBackend,
+  MetadataTaskBackendConfig,
+  MetadataTaskId,
+  MetadataTaskRun,
+  buildTaskPromptsForDisplay,
+  resolveTaskBackends,
+  runMetadataTasks,
+} from './metadata-tasks';
 import { queueAITask } from '../queue-manager.service';
 import * as log from 'electron-log';
 import * as fs from 'fs';
@@ -51,6 +60,12 @@ export interface GenerationParams {
    * the SAME chapters rather than re-deriving a possibly different set.
    */
   preComputedChapters?: { [sourceLabel: string]: ChapterPipelineResult };
+  /**
+   * Which backend generates each metadata task ('cloud' | 'local'), from the
+   * `metadataTaskBackends` setting. Only consulted when the run splits — i.e. when
+   * chapters exist. Absent tasks run on the cloud.
+   */
+  metadataTaskBackends?: MetadataTaskBackendConfig;
   inputNotes?: { [key: string]: string };
   preTranscribedContent?: ContentItem[]; // Pre-transcribed content from pipeline (skips transcription phase)
   inputWarnings?: string[]; // Input-stage failures from the pipeline (surfaced in result.warnings)
@@ -270,7 +285,16 @@ export class MetadataGeneratorService {
 
             params.progressCallback?.('generating', 'Assembling prompt...', 80, undefined, i);
             const summary = await aiManager.summarizeTranscript(item.content, sourceLabel);
-            prompts.push(aiManager.buildMetadataPrompt(summary, sourceLabel, undefined, subjects, details));
+
+            // Same mode decision the real run makes, so the user reads the prompts that
+            // will actually be sent — three labelled task prompts when chapters exist,
+            // the one whole-metadata prompt when they don't.
+            const taskRun = this.resolveTaskRun(aiManager, params, sourceLabel, summary, subjects, details);
+            if (taskRun) {
+              prompts.push(...buildTaskPromptsForDisplay(taskRun));
+            } else {
+              prompts.push(aiManager.buildMetadataPrompt(summary, sourceLabel, undefined, subjects, details));
+            }
           }
         }
 
@@ -419,7 +443,13 @@ export class MetadataGeneratorService {
           console.log(`[MetadataGenerator] Sending generating phase: Generating metadata for item ${i}`);
           params.progressCallback?.('generating', `Generating metadata ${i + 1}/${contentItems.length}...`, 80, undefined, i);
 
-          const metadata = await aiManager.generateMetadata(summary, sourceLabel, undefined, chapterSubjects, chapterDetails);
+          // Chapters decide the SHAPE of this call, not just its contents: with a chapter
+          // list the fields are generated as separate task units (metadata-tasks.ts),
+          // without one they come back from the single legacy call.
+          const taskRun = this.resolveTaskRun(aiManager, params, sourceLabel, summary, chapterSubjects, chapterDetails);
+          const metadata = taskRun
+            ? await runMetadataTasks(aiManager, taskRun)
+            : await aiManager.generateMetadata(summary, sourceLabel, undefined, chapterSubjects, chapterDetails);
 
           // Add title and source info
           (metadata as any)._title = this.getCleanTitle(item);
@@ -516,6 +546,50 @@ export class MetadataGeneratorService {
         error: errorMessage,
       };
     }
+  }
+
+  /**
+   * Decide whether this item's metadata is generated as separate task units, and set up
+   * the run if it is. Returns undefined for the legacy single call.
+   *
+   * The condition is chapters, and only chapters. The description and tags units are
+   * conditioned on the chapter subject list INSTEAD of the transcript — the conditioning
+   * their local adapters will get — so without a chapter list they would have nothing to
+   * work from. Compilations, podcast prompt sets, shorts and any run whose chapter
+   * pipeline came back short all land here with no subjects and take the single call.
+   *
+   * This is a mode decision made and logged from what the run actually has, not a
+   * recovery: an item never silently splits without chapters, and never silently merges
+   * back with them.
+   */
+  private static resolveTaskRun(
+    aiManager: AIManagerService,
+    params: GenerationParams,
+    sourceLabel: string,
+    summary: string,
+    chapterSubjects?: string[],
+    chapterDetails?: string[]
+  ): MetadataTaskRun | undefined {
+    if (!chapterSubjects || chapterSubjects.length === 0) {
+      console.log(`[MetadataGenerator] ${sourceLabel}: no chapter subjects — one call generates every field (legacy path)`);
+      return undefined;
+    }
+
+    const backends = resolveTaskBackends(params.metadataTaskBackends, aiManager);
+    const routing = (Object.entries(backends) as [MetadataTaskId, MetadataTaskBackend][])
+      .map(([task, backend]) => `${task}=${backend.id}`)
+      .join(', ');
+    console.log(
+      `[MetadataGenerator] ${sourceLabel}: ${chapterSubjects.length} chapter subjects — generating per task (${routing})`
+    );
+
+    return {
+      backends,
+      content: summary,
+      sourceLabel,
+      chapterSubjects,
+      chapterDetails: chapterDetails || [],
+    };
   }
 
   /**

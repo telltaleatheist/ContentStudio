@@ -133,6 +133,13 @@ app.whenReady().then(async () => {
         // Floor for summarizing a ~18-minute consolidated chapter. One value for the
         // whole run: Ollama reloads the model whenever num_ctx changes.
         chapterNumCtx: 16384,
+        // Which backend generates each metadata task once a run splits (it splits when
+        // chapters exist — see metadata-tasks.ts). Fields are migrating to local
+        // fine-tuned adapters one at a time, and this is the switch that moves one: set
+        // a task to 'local' and it runs on its adapter instead of the cloud. Only
+        // 'cloud' works today; 'local' throws until the adapter is trained and wired,
+        // deliberately, so a half-done migration cannot look finished.
+        metadataTaskBackends: { description: 'cloud', tags: 'cloud' },
         openaiApiKey: '',
         claudeApiKey: '',
         defaultPlatform: 'youtube',

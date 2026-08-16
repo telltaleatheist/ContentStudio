@@ -817,6 +817,10 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         chapterModel: settings.chapterModel || 'cogito:14b',
         chapterStageModels: settings.chapterStageModels || undefined,
         chapterNumCtx: settings.chapterNumCtx || undefined,
+        // Per-task backend routing, consulted only when the run splits (chapters exist).
+        // Store-only, like chapterModel — there is no UI for it until a local adapter
+        // actually exists to point a task at.
+        metadataTaskBackends: settings.metadataTaskBackends || undefined,
         inputNotes: params.inputNotes || {},
         insightsBlock: insightsBlock || undefined,
         // "Show prompt": transcribe + assemble the prompt, then STOP (no AI call).

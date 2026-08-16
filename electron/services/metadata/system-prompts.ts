@@ -120,6 +120,45 @@ not spend real time on it.
 `,
 
   /**
+   * OUTPUT FORMAT for a single task unit (metadata-tasks.ts).
+   *
+   * The prompt set's own OUTPUT FORMAT names every field at once, which is right for the
+   * legacy single call and wrong for a call that owns one field: a model told to return
+   * seven keys will return seven, and six of them would be thrown away or, worse, merged
+   * over another unit's real answer. This block is built per task from the sections that
+   * unit actually carries.
+   *
+   * Placeholder: {keyLines}
+   */
+  TASK_OUTPUT_FORMAT: `
+## OUTPUT FORMAT
+
+Return ONE JSON object with EXACTLY these keys and nothing else (follow the per-field rules above for content):
+{
+{keyLines}
+}
+`,
+
+  /**
+   * Fills the editorial prompt's {subject} content slot for the description and tags
+   * tasks, which are conditioned on the chapter list INSTEAD of the transcript.
+   *
+   * Without this the prompt sets' own "detect whether you got a transcript or a one-line
+   * description" instruction resolves the wrong way: the chapter block is short, so the
+   * model treats it as a bare topic and refuses to be specific. It is the opposite —
+   * every line was measured against its own span of the video.
+   */
+  TASK_CHAPTERS_ONLY_INPUT: `
+=== WHAT YOU ARE WORKING FROM ===
+The chapter list above IS the content for this task. It was worked out from the full
+transcript, chapter by chapter, so treat it as transcript-grade evidence and be as
+specific as it lets you be - the indented lines are there to be used.
+Stay inside it: write nothing the list does not support, and invent no quote, moment or
+event that is not in it.
+===
+`,
+
+  /**
    * Episode split prompt - for finding episode boundaries in multi-hour streams
    * The transcript comes from multiple sequential audio files concatenated with global timestamps
    * Placeholders: {transcript}, {duration}, {episodeCount}

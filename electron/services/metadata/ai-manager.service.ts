@@ -14,6 +14,13 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import { METADATA_FIELDS } from './metadata-fields';
+import {
+  InstructionSection,
+  MetadataTaskId,
+  MetadataTaskInput,
+  buildTaskInstructions,
+  parseInstructionSections,
+} from './metadata-tasks';
 import { Chapter } from './chapter-generator.service';
 import { queueAITask } from '../queue-manager.service';
 
@@ -72,6 +79,9 @@ export class AIManagerService {
   private anthropicClient?: Anthropic;
   private summarizationPrompts: any;
   private currentPromptSet?: PromptSet;
+  // instructions_prompt split on its `## ` headers. Parsed once per loaded prompt set —
+  // every task unit asks for it, and the file cannot change mid-run.
+  private instructionSectionsCache?: InstructionSection[];
   private summaryModel: string = '';
   private metadataModel: string = '';
   private promptsDir: string;
@@ -463,6 +473,7 @@ export class AIManagerService {
     }
 
     this.currentPromptSet = promptSet;
+    this.instructionSectionsCache = undefined;
     console.log(`[AIManager] Loaded prompt set: ${promptSet.name}`);
   }
 
@@ -615,39 +626,12 @@ export class AIManagerService {
    * up front and later send this exact prompt when the user confirms.
    */
   async generateMetadataFromAssembledPrompt(prompt: string): Promise<MetadataResult> {
-    const maxAttempts = 2;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const response = await this.makeRequest(prompt, this.metadataModel, 300);
+    const { metadata } = await this.runMetadataRequest(prompt);
 
-      if (!response) {
-        log.error('[AIManager] === METADATA GENERATION FAILED ===');
-        log.error('[AIManager]     No response from AI');
-        if (attempt < maxAttempts) {
-          log.info(`[AIManager] Retrying metadata generation (attempt ${attempt + 1}/${maxAttempts})...`);
-          continue;
-        }
-        throw new Error('No response from AI');
-      }
+    console.log(`[AIManager] === METADATA GENERATION COMPLETE ===`);
+    console.log(`[AIManager]     Generated ${Object.keys(metadata).length} fields`);
 
-      try {
-        // Parse the response
-        const metadata = this.parseMetadataResponse(response);
-
-        console.log(`[AIManager] === METADATA GENERATION COMPLETE ===`);
-        console.log(`[AIManager]     Generated ${Object.keys(metadata).length} fields`);
-
-        return this.addDescriptionLinks(metadata);
-      } catch (parseError) {
-        if (attempt < maxAttempts) {
-          log.warn(`[AIManager] Metadata parse failed on attempt ${attempt}, retrying...`);
-          continue;
-        }
-        throw parseError;
-      }
-    }
-
-    // Should not reach here, but satisfy TypeScript
-    throw new Error('Failed to generate metadata after retries');
+    return this.addDescriptionLinks(metadata);
   }
 
   /**
@@ -702,36 +686,8 @@ export class AIManagerService {
     // Use centralized system prompt
     const systemPrompt = SYSTEM_PROMPTS.JSON_SYSTEM;
 
-    // Hardcoded compilation instructions (works with any prompt set)
-    let compilationContext = '';
-    if (compilationInfo) {
-      const contentTypeStr = compilationInfo.contentTypes.join(', ');
-      compilationContext = formatPrompt(SYSTEM_PROMPTS.COMPILATION_CONTEXT, {
-        sourceCount: compilationInfo.sourceCount,
-        contentTypes: contentTypeStr,
-      });
-    }
-
-    // Replace {subject} placeholder with actual content
-    // Add source filename context if available
-    const sourceContext = sourceName ? `\n\nSource: ${sourceName}\n(Use the source filename for context about names, topics, and proper nouns - it may contain correctly spelled names or important keywords)` : '';
-
-    const chapterContext = chapterSubjects && chapterSubjects.length > 0
-      ? formatPrompt(SYSTEM_PROMPTS.CHAPTER_SUBJECTS_CONTEXT, {
-          chapterList: chapterSubjects
-            .map((s, i) => {
-              const detail = (chapterDetails?.[i] || '').trim();
-              // Indented under its own subject, one line each: the block stays a
-              // scannable table of contents rather than becoming a second transcript.
-              return detail ? `${i + 1}. ${s}\n   ${detail}` : `${i + 1}. ${s}`;
-            })
-            .join('\n'),
-        })
-      : '';
-
-    const subject = `${compilationContext}${sourceContext}\n${chapterContext}\n${content}`;
-
-    const editorialPrompt = this.currentPromptSet.editorial_prompt.replace('{subject}', subject);
+    const subject = this.buildSubjectBlock(content, sourceName, compilationInfo, chapterSubjects, chapterDetails);
+    const editorialPrompt = this.fillSubject(subject);
 
     // Instructions prompt defines what to generate
     let instructionsPrompt = this.currentPromptSet.instructions_prompt;
@@ -754,9 +710,161 @@ export class AIManagerService {
   }
 
   /**
-   * Parse metadata response from AI
+   * The `{subject}` payload: compilation framing, source filename, the chapter table of
+   * contents, then the content slot. Shared by the legacy single call and the per-task
+   * calls so a task differs from the whole-metadata call only in what it puts in that
+   * content slot — the transcript for packaging, a short "the chapters are the content"
+   * note for description and tags.
    */
-  private parseMetadataResponse(response: string): MetadataResult {
+  private buildSubjectBlock(
+    content: string,
+    sourceName?: string,
+    compilationInfo?: { sourceCount: number; contentTypes: string[] },
+    chapterSubjects?: string[],
+    chapterDetails?: string[]
+  ): string {
+    // Hardcoded compilation instructions (works with any prompt set)
+    let compilationContext = '';
+    if (compilationInfo) {
+      const contentTypeStr = compilationInfo.contentTypes.join(', ');
+      compilationContext = formatPrompt(SYSTEM_PROMPTS.COMPILATION_CONTEXT, {
+        sourceCount: compilationInfo.sourceCount,
+        contentTypes: contentTypeStr,
+      });
+    }
+
+    // Add source filename context if available
+    const sourceContext = sourceName ? `\n\nSource: ${sourceName}\n(Use the source filename for context about names, topics, and proper nouns - it may contain correctly spelled names or important keywords)` : '';
+
+    const chapterContext = chapterSubjects && chapterSubjects.length > 0
+      ? formatPrompt(SYSTEM_PROMPTS.CHAPTER_SUBJECTS_CONTEXT, {
+          chapterList: chapterSubjects
+            .map((s, i) => {
+              const detail = (chapterDetails?.[i] || '').trim();
+              // Indented under its own subject, one line each: the block stays a
+              // scannable table of contents rather than becoming a second transcript.
+              return detail ? `${i + 1}. ${s}\n   ${detail}` : `${i + 1}. ${s}`;
+            })
+            .join('\n'),
+        })
+      : '';
+
+    return `${compilationContext}${sourceContext}\n${chapterContext}\n${content}`;
+  }
+
+  /** Replace the prompt set's {subject} placeholder. */
+  private fillSubject(subject: string): string {
+    if (!this.currentPromptSet) {
+      throw new Error('No prompt set loaded');
+    }
+    // Function replacer: transcript text routinely contains $-patterns ($&, $', $`),
+    // which a plain string replacement would expand and corrupt the prompt with.
+    return this.currentPromptSet.editorial_prompt.replace('{subject}', () => subject);
+  }
+
+  /** instructions_prompt split on its `## ` headers, parsed once per loaded prompt set. */
+  private instructionSections(): InstructionSection[] {
+    if (!this.currentPromptSet) {
+      throw new Error('No prompt set loaded');
+    }
+    if (!this.instructionSectionsCache) {
+      this.instructionSectionsCache = parseInstructionSections(this.currentPromptSet.instructions_prompt);
+    }
+    return this.instructionSectionsCache;
+  }
+
+  /**
+   * Assemble ONE task unit's prompt (metadata-tasks.ts).
+   *
+   * Same three blocks as the whole-metadata prompt — JSON system, editorial prompt with
+   * the subject filled in, instructions — but the instructions are only this task's
+   * sections and its own OUTPUT FORMAT. The transcript reaches the packaging task only:
+   * description and tags condition on the chapter list alone, which is the conditioning
+   * their future local adapters will get.
+   */
+  buildMetadataTaskPrompt(input: MetadataTaskInput): string {
+    if (!this.currentPromptSet) {
+      throw new Error('No prompt set loaded');
+    }
+
+    const promptSetName = this.config.promptSet || this.currentPromptSet.name || 'unknown';
+    const contentSlot = input.task === 'packaging' ? input.content : SYSTEM_PROMPTS.TASK_CHAPTERS_ONLY_INPUT;
+    const subject = this.buildSubjectBlock(contentSlot, input.sourceLabel, undefined, input.chapterSubjects, input.chapterDetails);
+    const instructions = buildTaskInstructions(input.task, this.instructionSections(), promptSetName);
+
+    // Channel performance data speaks to titles, thumbnails and packaging — the fields
+    // it was distilled from. It is not sent with description or tags.
+    const insightsSuffix = input.task === 'packaging' && this.config.insightsBlock
+      ? `\n\n${this.config.insightsBlock}`
+      : '';
+
+    return `${SYSTEM_PROMPTS.JSON_SYSTEM}\n\n${this.fillSubject(subject)}\n\n${instructions.text}${insightsSuffix}`;
+  }
+
+  /** The metadata keys a task unit is responsible for returning, per the loaded prompt set. */
+  metadataTaskKeys(task: MetadataTaskId): string[] {
+    if (!this.currentPromptSet) {
+      throw new Error('No prompt set loaded');
+    }
+    const promptSetName = this.config.promptSet || this.currentPromptSet.name || 'unknown';
+    return buildTaskInstructions(task, this.instructionSections(), promptSetName).metadataKeys;
+  }
+
+  /**
+   * Request + parse + repair, WITHOUT the description-links post-processing.
+   *
+   * Task units share this because those links have to be appended once, to the merged
+   * result: the description they attach to and the hashtags they are normalized
+   * alongside come back from two different calls.
+   */
+  async runMetadataRequest(prompt: string): Promise<{ metadata: MetadataResult; presentKeys: Set<string> }> {
+    const maxAttempts = 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const response = await this.makeRequest(prompt, this.metadataModel, 300);
+
+      if (!response) {
+        log.error('[AIManager] === METADATA GENERATION FAILED ===');
+        log.error('[AIManager]     No response from AI');
+        if (attempt < maxAttempts) {
+          log.info(`[AIManager] Retrying metadata generation (attempt ${attempt + 1}/${maxAttempts})...`);
+          continue;
+        }
+        throw new Error('No response from AI');
+      }
+
+      try {
+        return this.parseMetadataResponse(response);
+      } catch (parseError) {
+        if (attempt < maxAttempts) {
+          log.warn(`[AIManager] Metadata parse failed on attempt ${attempt}, retrying...`);
+          continue;
+        }
+        throw parseError;
+      }
+    }
+
+    // Should not reach here, but satisfy TypeScript
+    throw new Error('Failed to generate metadata after retries');
+  }
+
+  /**
+   * Public entry to the description-links / hashtag-spacing post-processing, for callers
+   * that assembled a MetadataResult from more than one request.
+   */
+  finalizeMetadata(metadata: MetadataResult): MetadataResult {
+    return this.addDescriptionLinks(metadata);
+  }
+
+  /**
+   * Parse metadata response from AI.
+   *
+   * `presentKeys` records which registry fields the model ACTUALLY returned (under their
+   * canonical name or an alias), as opposed to the ones normalizeMetadataKeys fills in
+   * empty. Per-task callers need that distinction: a task that was asked for one field
+   * and returned nothing has failed, and an empty array is not the same answer as a
+   * missing key.
+   */
+  private parseMetadataResponse(response: string): { metadata: MetadataResult; presentKeys: Set<string> } {
     try {
       // Step 1: Remove markdown code blocks if present
       let cleaned = response.trim();
@@ -833,8 +941,9 @@ export class AIManagerService {
    * Normalize AI response keys to match MetadataResult interface.
    * Different models return varying key names (e.g. "titleOptions" vs "titles").
    */
-  private normalizeMetadataKeys(raw: any): MetadataResult {
+  private normalizeMetadataKeys(raw: any): { metadata: MetadataResult; presentKeys: Set<string> } {
     const result: MetadataResult = {};
+    const presentKeys = new Set<string>();
 
     // Helper: extract string from any value (handles objects AI models might return)
     const toStr = (val: any): string => {
@@ -867,17 +976,24 @@ export class AIManagerService {
     for (const def of METADATA_FIELDS) {
       const target = result as any;
 
+      // Presence is recorded BEFORE normalization, from the raw response: an empty
+      // array normalizes to undefined for some fields, and "the model returned []" and
+      // "the model never mentioned this field" are different answers to a task unit.
+      const rawValue = pick([def.key, ...def.aliases]);
+      if (rawValue !== undefined && rawValue !== null && rawValue !== '') {
+        presentKeys.add(def.key);
+      }
+
       switch (def.kind) {
         case 'string': {
           // Stringify when the model returns an object for a string field —
           // otherwise a raw object is assigned and downstream .replace() throws,
           // getting misdiagnosed as a parse error.
-          const val = pick([def.key, ...def.aliases]);
-          target[def.key] = val == null ? val : toStr(val);
+          target[def.key] = rawValue == null ? rawValue : toStr(rawValue);
           break;
         }
         case 'stringArray': {
-          const arr = toStrArray(pick([def.key, ...def.aliases]));
+          const arr = toStrArray(rawValue);
           if (def.emptyToUndefined && arr.length === 0) {
             target[def.key] = undefined;
           } else {
@@ -905,7 +1021,7 @@ export class AIManagerService {
       }
     }
 
-    return result;
+    return { metadata: result, presentKeys };
   }
 
   /**
