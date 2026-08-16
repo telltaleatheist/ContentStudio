@@ -10,6 +10,10 @@ import { YouTubeAuthService } from './services/youtube/youtube-auth.service';
 import { YouTubeApiService } from './services/youtube/youtube-api.service';
 import { ApiCollectorService } from './services/youtube/api-collector.service';
 import { PublishStoreService } from './services/publish/publish-store.service';
+import {
+  DEFAULT_METADATA_TASK_BACKENDS,
+  DEFAULT_METADATA_TASK_MODELS,
+} from './services/metadata/metadata-tasks';
 
 /**
  * ContentStudio - Main Electron Process
@@ -134,12 +138,15 @@ app.whenReady().then(async () => {
         // whole run: Ollama reloads the model whenever num_ctx changes.
         chapterNumCtx: 16384,
         // Which backend generates each metadata task once a run splits (it splits when
-        // chapters exist — see metadata-tasks.ts). Fields are migrating to local
-        // fine-tuned adapters one at a time, and this is the switch that moves one: set
-        // a task to 'local' and it runs on its adapter instead of the cloud. Only
-        // 'cloud' works today; 'local' throws until the adapter is trained and wired,
-        // deliberately, so a half-done migration cannot look finished.
-        metadataTaskBackends: { description: 'cloud', tags: 'cloud' },
+        // chapters exist — see metadata-tasks.ts). Fields migrated to local fine-tuned
+        // adapters one at a time; description and tags have arrived, so they ship
+        // pointing at their adapters — running them in the cloud is now the override,
+        // not the default. Packaging has no adapter and stays cloud.
+        metadataTaskBackends: DEFAULT_METADATA_TASK_BACKENDS,
+        // The Ollama model behind each locally-routed task. Named explicitly rather than
+        // derived from the task, because retraining an adapter produces a NEW model name
+        // and swapping it must not require a code change.
+        metadataTaskModels: DEFAULT_METADATA_TASK_MODELS,
         openaiApiKey: '',
         claudeApiKey: '',
         defaultPlatform: 'youtube',

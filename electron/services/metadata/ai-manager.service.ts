@@ -790,7 +790,9 @@ export class AIManagerService {
     const promptSetName = this.config.promptSet || this.currentPromptSet.name || 'unknown';
     const contentSlot = input.task === 'packaging' ? input.content : SYSTEM_PROMPTS.TASK_CHAPTERS_ONLY_INPUT;
     const subject = this.buildSubjectBlock(contentSlot, input.sourceLabel, undefined, input.chapterSubjects, input.chapterDetails);
-    const instructions = buildTaskInstructions(input.task, this.instructionSections(), promptSetName);
+    const instructions = buildTaskInstructions(input.task, this.instructionSections(), promptSetName, {
+      hashtagsOwnedByDescription: input.hashtagsOwnedByDescription,
+    });
 
     // Channel performance data speaks to titles, thumbnails and packaging — the fields
     // it was distilled from. It is not sent with description or tags.
@@ -801,13 +803,19 @@ export class AIManagerService {
     return `${SYSTEM_PROMPTS.JSON_SYSTEM}\n\n${this.fillSubject(subject)}\n\n${instructions.text}${insightsSuffix}`;
   }
 
-  /** The metadata keys a task unit is responsible for returning, per the loaded prompt set. */
-  metadataTaskKeys(task: MetadataTaskId): string[] {
+  /**
+   * The metadata keys a task unit is responsible for returning, per the loaded prompt set
+   * AND per this run's field ownership — packaging returns no `hashtags` key in a run
+   * where the description adapter writes them, so it must not be asked for one either.
+   */
+  metadataTaskKeys(input: MetadataTaskInput): string[] {
     if (!this.currentPromptSet) {
       throw new Error('No prompt set loaded');
     }
     const promptSetName = this.config.promptSet || this.currentPromptSet.name || 'unknown';
-    return buildTaskInstructions(task, this.instructionSections(), promptSetName).metadataKeys;
+    return buildTaskInstructions(input.task, this.instructionSections(), promptSetName, {
+      hashtagsOwnedByDescription: input.hashtagsOwnedByDescription,
+    }).metadataKeys;
   }
 
   /**

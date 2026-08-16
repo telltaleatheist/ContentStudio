@@ -14,8 +14,10 @@ import {
   MetadataTaskBackend,
   MetadataTaskBackendConfig,
   MetadataTaskId,
+  MetadataTaskModelConfig,
   MetadataTaskRun,
   buildTaskPromptsForDisplay,
+  hashtagsComeFromDescription,
   resolveTaskBackends,
   runMetadataTasks,
 } from './metadata-tasks';
@@ -66,6 +68,13 @@ export interface GenerationParams {
    * chapters exist. Absent tasks run on the cloud.
    */
   metadataTaskBackends?: MetadataTaskBackendConfig;
+  /**
+   * The Ollama model behind each locally-routed task, from the `metadataTaskModels`
+   * setting. Only read for tasks routed 'local'; a local task with no model name here
+   * fails rather than picking one, because a fine-tuned adapter is not interchangeable
+   * with its own base model — qwen3:14b would answer this prompt fluently and wrongly.
+   */
+  metadataTaskModels?: MetadataTaskModelConfig;
   inputNotes?: { [key: string]: string };
   preTranscribedContent?: ContentItem[]; // Pre-transcribed content from pipeline (skips transcription phase)
   inputWarnings?: string[]; // Input-stage failures from the pipeline (surfaced in result.warnings)
@@ -575,7 +584,12 @@ export class MetadataGeneratorService {
       return undefined;
     }
 
-    const backends = resolveTaskBackends(params.metadataTaskBackends, aiManager);
+    const backends = resolveTaskBackends(
+      params.metadataTaskBackends,
+      params.metadataTaskModels,
+      params.aiHost || 'http://localhost:11434',
+      aiManager
+    );
     const routing = (Object.entries(backends) as [MetadataTaskId, MetadataTaskBackend][])
       .map(([task, backend]) => `${task}=${backend.id}`)
       .join(', ');
@@ -583,12 +597,25 @@ export class MetadataGeneratorService {
       `[MetadataGenerator] ${sourceLabel}: ${chapterSubjects.length} chapter subjects — generating per task (${routing})`
     );
 
+    // Which unit owns `hashtags` moves with the description backend, so it is stated
+    // here rather than left implicit: the description adapter writes its own hashtag
+    // line, and two units writing one field would make the merge order decide the
+    // answer.
+    const hashtagsOwnedByDescription = hashtagsComeFromDescription(backends);
+    if (hashtagsOwnedByDescription) {
+      console.log(
+        `[MetadataGenerator] ${sourceLabel}: hashtags come from the description adapter; ` +
+          `the packaging call will not request them`
+      );
+    }
+
     return {
       backends,
       content: summary,
       sourceLabel,
       chapterSubjects,
       chapterDetails: chapterDetails || [],
+      hashtagsOwnedByDescription,
     };
   }
 

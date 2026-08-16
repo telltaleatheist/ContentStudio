@@ -28,6 +28,10 @@ import {
   sourceFilenameOf,
 } from '../services/metadata/generated-index';
 import { composeDescription, composeTags } from '../services/metadata/description-composer';
+import {
+  DEFAULT_METADATA_TASK_BACKENDS,
+  DEFAULT_METADATA_TASK_MODELS,
+} from '../services/metadata/metadata-tasks';
 import { setupPublishIpc } from '../services/publish/publish-ipc';
 import { PublishBridge } from '../services/publish/publish-bridge';
 
@@ -817,10 +821,17 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         chapterModel: settings.chapterModel || 'cogito:14b',
         chapterStageModels: settings.chapterStageModels || undefined,
         chapterNumCtx: settings.chapterNumCtx || undefined,
-        // Per-task backend routing, consulted only when the run splits (chapters exist).
-        // Store-only, like chapterModel — there is no UI for it until a local adapter
-        // actually exists to point a task at.
-        metadataTaskBackends: settings.metadataTaskBackends || undefined,
+        // Per-task backend routing and the adapter model behind each locally-routed
+        // task, consulted only when the run splits (chapters exist). Store-only, like
+        // chapterModel — there is no UI for either yet.
+        //
+        // The default is applied HERE, not only in the store's `defaults`: store
+        // defaults seed a FRESH store, so an install that predates the description and
+        // tags adapters already has metadataTaskBackends written as all-cloud and would
+        // never see the flip. Reading with the default means an absent key means the
+        // shipped routing, and a present key means the user chose something.
+        metadataTaskBackends: settings.metadataTaskBackends || DEFAULT_METADATA_TASK_BACKENDS,
+        metadataTaskModels: settings.metadataTaskModels || DEFAULT_METADATA_TASK_MODELS,
         inputNotes: params.inputNotes || {},
         insightsBlock: insightsBlock || undefined,
         // "Show prompt": transcribe + assemble the prompt, then STOP (no AI call).
