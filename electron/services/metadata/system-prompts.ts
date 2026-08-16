@@ -97,13 +97,19 @@ TAGS (replaces the rules above):
    * metadata model gets. Kept deliberately general: it says what the list IS and what
    * to do with it, and leaves the editorial judgement to the prompt set.
    *
+   * Each entry may carry a second, indented line — the chapter's `detail`, written by
+   * the same pipeline call as its name (see chapter-pipeline.service.ts). The names
+   * alone say which subjects exist; the details say what happened in them, which is
+   * what stops a description from being a list of topics.
+   *
    * Placeholder: {chapterList}
    */
   CHAPTER_SUBJECTS_CONTEXT: `
 === WHAT THIS VIDEO ACTUALLY COVERS ===
 The chapters below were already worked out from the transcript, in order, each one
 described from its own section of the video. This is the video's real contents, and it
-is what viewers will see listed under it.
+is what viewers will see listed under it. Where a chapter has an indented second line,
+that is what happens in it, in more detail.
 
 {chapterList}
 

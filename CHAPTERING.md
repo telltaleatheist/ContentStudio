@@ -8,6 +8,16 @@ implementation: `chapter_harness.py` + `chapter_prompts/` in the `orpheus-finetu
 (telltaleatheist/orpheus-voice-finetune). The prompts in this document are copied from
 there verbatim — treat them as tested artifacts, not suggestions.
 
+> **2026-08-16 — the shipped prompts are now variant B.** The sibling AutoCutStudio
+> implementation kept running this method and evolved it; those changes have been ported
+> into `chapter-prompts.ts` / `chapter-pipeline.service.ts` verbatim: **de-leaked worked
+> examples**, a **speaker-tagged stage 4 that also returns a `detail` field**, and
+> **soft-failure placement** that marks a fallback start `startApprox` instead of
+> throwing the run away. The prompt bodies quoted below are the 2026-08-02 originals and
+> are kept as the record of what was sealed; where they differ from the code, the code is
+> variant B and the newer validation data is in
+> `AutoCutStudioApp/docs/chaptering-method.md`.
+
 Where this sits in Headline: chapters are the FIRST stage. The user curates the chapter
 list (marks which chapters belong to a video, joins any strays), and the curated subject
 list — timestamps stripped — is what the title, description, and tags adapters condition
@@ -66,6 +76,11 @@ Cut the transcript into 45 s stretches. For each, one call describes what is bei
 discussed in 3–6 words. These labels are scaffolding for stage 2 — they are NOT the
 chapter names (a later stage that summarized labels instead of transcript produced
 summary-of-summary mush; that design is dead).
+
+*2026-08-16: the shipped prompt's examples are de-leaked — "Mayor Ellison on the bridge
+contract" / "Halvorsen Trust fundraising" in place of the real names below. The
+`opening_phrase` this stage returns is also retained now instead of ignored: it is the
+middle link of stage 3b's fallback chain.*
 
 ```
 Below is one short stretch of a YouTube commentary video's transcript. You are not writing
@@ -160,6 +175,12 @@ transcript window around it and quotes the sentence where the host TURNS to the 
 subject. Code maps the quote to a timestamp. Validated placement: 64% within 5 s, 77%
 within 10 s of human marks, mean bias +0.8 s.
 
+*2026-08-16: an unmappable quote no longer fails the run. The chain is mapped placement
+quote → the stretch's own stage-1 `opening_phrase` (still a mapped quote, still ~5 s) →
+the raw ±45 s junction, which is flagged `startApprox` on the chapter, warned about, and
+rendered as such in the output. Out-of-order placements prefer the raw junction and are
+dropped only if even that collides. See `AutoCutStudioApp/docs/chaptering-method.md`.*
+
 ```
 Below is one stretch of a YouTube commentary video's transcript. Somewhere inside it the
 video moves from one subject to the next.
@@ -208,6 +229,18 @@ per-line rule `text == previous or previous.endswith(text)` before flattening.
 With boundaries fixed, each chapter's ACTUAL transcript span is summarized in 4–8 words.
 These are the real chapter names, and the subject list handed to the title stage.
 
+*2026-08-16: the shipped stage 4 is variant B's (auditions A–H, 2026-08-03). It exists in
+two forms and the transcript decides which runs: when the segments carry speaker
+attribution the span is rendered `HOST:`/`CLIP:` line by line and the prompt gains the
+verdict / attribution / host-only bullets, because untagged the summarizer inverts who
+did what; with no attribution the untagged body runs unchanged. Stage 4 only — stages 1–3
+and 5 still read bare text. Both forms now also return a **`detail`** field (20–45 words
+of description-grade prose), which flows into the chapter-subjects block the metadata
+prompt injects. Context is sized `words × 1.4 + 900` (the extra 300 pays for the bullets
+and the detail field), bucketed to 4096, refusing above 32768. The examples are de-leaked
+and a code-side check re-asks once when the invented example name — or, in tagged mode,
+the banned word "host" — comes back in the answer.*
+
 ```
 Below is one chapter of a YouTube commentary video - the stretch from {start} to {end}. It
 is one subject; the boundaries have already been decided.
@@ -245,6 +278,12 @@ for ~7 real stories. Walk the chapters left to right; for each adjacent pair, on
 judges "one story or two?" on the genuine summaries. Merges apply immediately (so a
 story split three ways collapses in one sweep), and every merged span is re-summarized
 from its full transcript afterwards.
+
+*2026-08-16: a merged chapter now KEEPS the pre-consolidation chapters it was built from
+(`subChapters` — already computed, already named), and the stage can be skipped entirely
+via the pipeline's `consolidate: false` option when the caller already knows the span is
+one story. A pair the model will not judge is left separate, which is the direction the
+user can undo.*
 
 ```
 Two consecutive chapters of one video:

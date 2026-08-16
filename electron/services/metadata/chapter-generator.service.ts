@@ -13,11 +13,46 @@
 
 import { SRTSegment } from './whisper.service';
 
+/**
+ * One PRE-consolidation chapter — the fine tier, as stage 4 named it from its own
+ * transcript span, before stage 5 merged spans into stories.
+ *
+ * Retained rather than discarded because every one of these was already computed and
+ * named before consolidation ran, and because it is exactly what a description's
+ * chapter markers can use when a merged story is long. Only present on a chapter that
+ * actually absorbed a neighbour.
+ */
+export interface SubChapter {
+  timestamp: string;
+  title: string;
+  /** See Chapter.startApprox — carried per sub-chapter for the same reason. */
+  startApprox?: boolean;
+}
+
 export interface Chapter {
   timestamp: string;
   title: string;
   sequence: number;
   endTimestamp?: string;
+  /**
+   * Description-grade prose for this chapter (20-45 words), written by the same
+   * stage-4 call as `title`. The 4-8 word title is a marker; this is what the
+   * description and tag stages actually have enough specifics to condition on.
+   * Absent when the chapter came from a path that does not produce one.
+   */
+  detail?: string;
+  /**
+   * This start is a raw ±45s junction, not a mapped quote: no quote for it could be
+   * located in the caption word stream.
+   *
+   * Carried on the chapter rather than left in a log because the failure is invisible
+   * in the output — a chapter list built from these reads exactly like one built from
+   * mapped quotes, and the only symptom is a viewer clicking a marker and landing half
+   * a minute off. Absent = placed from a quote.
+   */
+  startApprox?: boolean;
+  /** The chapters this one was consolidated from, in time order. Absent if never merged. */
+  subChapters?: SubChapter[];
 }
 
 /**

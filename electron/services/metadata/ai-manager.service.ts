@@ -14,6 +14,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import { METADATA_FIELDS } from './metadata-fields';
+import { Chapter } from './chapter-generator.service';
 import { queueAITask } from '../queue-manager.service';
 
 export interface AIConfig {
@@ -39,11 +40,10 @@ export interface MetadataResult {
   pinned_comment?: string[];
   spoken_keywords?: string[];
   clip_suggestions?: string[];
-  chapters?: Array<{
-    timestamp: string;
-    title: string;
-    sequence: number;
-  }>;
+  // The chapter pipeline's own shape, not a local copy of it: chapters now carry a
+  // `detail` sentence, an approximate-start flag and their pre-consolidation
+  // sub-chapters, and every one of those has to survive the trip to the output files.
+  chapters?: Chapter[];
 }
 
 export interface PromptSet {
@@ -603,9 +603,10 @@ export class AIManagerService {
     content: string,
     sourceName?: string,
     compilationInfo?: { sourceCount: number; contentTypes: string[] },
-    chapterSubjects?: string[]
+    chapterSubjects?: string[],
+    chapterDetails?: string[]
   ): string {
-    return this.createMetadataPrompt(content, sourceName, compilationInfo, chapterSubjects);
+    return this.createMetadataPrompt(content, sourceName, compilationInfo, chapterSubjects, chapterDetails);
   }
 
   /**
@@ -656,7 +657,8 @@ export class AIManagerService {
     content: string,
     sourceName?: string,
     compilationInfo?: { sourceCount: number; contentTypes: string[] },
-    chapterSubjects?: string[]
+    chapterSubjects?: string[],
+    chapterDetails?: string[]
   ): Promise<MetadataResult> {
     if (!this.currentPromptSet) {
       throw new Error('No prompt set loaded');
@@ -668,7 +670,7 @@ export class AIManagerService {
     console.log(`[AIManager]     Compilation: ${compilationInfo ? `yes (${compilationInfo.sourceCount} items)` : 'no'}`);
     console.log(`[AIManager]     Chapter subjects: ${chapterSubjects ? chapterSubjects.length : 'none'}`);
 
-    const prompt = this.createMetadataPrompt(content, sourceName, compilationInfo, chapterSubjects);
+    const prompt = this.createMetadataPrompt(content, sourceName, compilationInfo, chapterSubjects, chapterDetails);
     return this.generateMetadataFromAssembledPrompt(prompt);
   }
 
@@ -679,12 +681,19 @@ export class AIManagerService {
    * already derived from this transcript. They go in FIRST, ahead of the transcript
    * itself, because they are the most reliable account of what the video contains —
    * measured span by span rather than inferred from a summary.
+   *
+   * chapterDetails is the same list's description-grade prose (index-aligned, stage 4's
+   * `detail` field). A 4-8 word marker says which subjects exist; the detail sentence
+   * says what actually happened in them, which is what a description or a tag list has
+   * to be specific about. Blank entries are simply omitted — a chapter the summarizer
+   * could not describe still contributes its name.
    */
   private createMetadataPrompt(
     content: string,
     sourceName?: string,
     compilationInfo?: { sourceCount: number; contentTypes: string[] },
-    chapterSubjects?: string[]
+    chapterSubjects?: string[],
+    chapterDetails?: string[]
   ): string {
     if (!this.currentPromptSet) {
       throw new Error('No prompt set loaded');
@@ -709,7 +718,14 @@ export class AIManagerService {
 
     const chapterContext = chapterSubjects && chapterSubjects.length > 0
       ? formatPrompt(SYSTEM_PROMPTS.CHAPTER_SUBJECTS_CONTEXT, {
-          chapterList: chapterSubjects.map((s, i) => `${i + 1}. ${s}`).join('\n'),
+          chapterList: chapterSubjects
+            .map((s, i) => {
+              const detail = (chapterDetails?.[i] || '').trim();
+              // Indented under its own subject, one line each: the block stays a
+              // scannable table of contents rather than becoming a second transcript.
+              return detail ? `${i + 1}. ${s}\n   ${detail}` : `${i + 1}. ${s}`;
+            })
+            .join('\n'),
         })
       : '';
 

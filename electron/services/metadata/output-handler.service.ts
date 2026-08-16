@@ -330,7 +330,7 @@ export class OutputHandlerService {
 
         // Chapters section - injected in its current position (after thumbnail_text)
         if (def.key === 'thumbnail_text' && metadata.chapters && metadata.chapters.length > 0) {
-          emitSection('CHAPTERS', metadata.chapters.map((chapter) => `${chapter.timestamp} - ${chapter.title}`));
+          emitSection('CHAPTERS', this.renderChapters(metadata.chapters));
         }
       }
 
@@ -340,6 +340,30 @@ export class OutputHandlerService {
     } catch (error) {
       throw new Error(`Failed to save readable text: ${error}`);
     }
+  }
+
+  /**
+   * The CHAPTERS block: one line per chapter, in the paste-into-YouTube shape.
+   *
+   * Two additions ride along with the chapter now, and both have to be visible here
+   * because this file is what the user actually reads:
+   *
+   * - An approximate start is marked. It came from a ±45s junction rather than a
+   *   mapped quote, and nothing else about the line would ever tell you — the symptom
+   *   is a viewer clicking the marker and landing half a minute off.
+   * - A chapter that consolidation built out of several is followed by the chapters it
+   *   swallowed, indented. They are already named and already timed, and they are what
+   *   a long merged story needs if the description wants finer markers.
+   */
+  private renderChapters(chapters: Chapter[]): string[] {
+    const lines: string[] = [];
+    for (const chapter of chapters) {
+      lines.push(`${chapter.timestamp} - ${chapter.title}${chapter.startApprox ? '   [start approximate ±45s]' : ''}`);
+      for (const sub of chapter.subChapters || []) {
+        lines.push(`    ${sub.timestamp} - ${sub.title}${sub.startApprox ? '   [start approximate ±45s]' : ''}`);
+      }
+    }
+    return lines;
   }
 
   /**

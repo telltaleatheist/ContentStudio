@@ -258,7 +258,7 @@ export class MetadataGeneratorService {
             const item = contentItems[i];
             const sourceLabel = item.source || `item_${i + 1}`;
 
-            const { subjects } = await this.resolveChapters(
+            const { subjects, details } = await this.resolveChapters(
               item,
               params,
               i,
@@ -270,7 +270,7 @@ export class MetadataGeneratorService {
 
             params.progressCallback?.('generating', 'Assembling prompt...', 80, undefined, i);
             const summary = await aiManager.summarizeTranscript(item.content, sourceLabel);
-            prompts.push(aiManager.buildMetadataPrompt(summary, sourceLabel, undefined, subjects));
+            prompts.push(aiManager.buildMetadataPrompt(summary, sourceLabel, undefined, subjects, details));
           }
         }
 
@@ -401,7 +401,7 @@ export class MetadataGeneratorService {
           // Chapters are not a trailing decoration any more. Their subject list is
           // what the title, description and tag stages condition on, so it has to
           // exist before the metadata call is assembled (see CHAPTERING.md).
-          const { chapters, subjects: chapterSubjects } = await this.resolveChapters(
+          const { chapters, subjects: chapterSubjects, details: chapterDetails } = await this.resolveChapters(
             item,
             params,
             i,
@@ -419,7 +419,7 @@ export class MetadataGeneratorService {
           console.log(`[MetadataGenerator] Sending generating phase: Generating metadata for item ${i}`);
           params.progressCallback?.('generating', `Generating metadata ${i + 1}/${contentItems.length}...`, 80, undefined, i);
 
-          const metadata = await aiManager.generateMetadata(summary, sourceLabel, undefined, chapterSubjects);
+          const metadata = await aiManager.generateMetadata(summary, sourceLabel, undefined, chapterSubjects, chapterDetails);
 
           // Add title and source info
           (metadata as any)._title = this.getCleanTitle(item);
@@ -529,6 +529,11 @@ export class MetadataGeneratorService {
    * Results are recorded in `sink` so "Show prompt" can hand the SAME chapters to
    * "Send to AI" instead of paying for the pipeline twice and possibly getting a
    * different answer the second time.
+   *
+   * The pipeline's own `warnings` are copied into the run's warnings verbatim. They
+   * are the only account the user gets of a chapter list that came out degraded —
+   * approximate starts, dropped boundaries, chapters the model would not name — and a
+   * degraded list looks exactly like a good one.
    */
   private static async resolveChapters(
     item: ContentItem,
@@ -538,7 +543,7 @@ export class MetadataGeneratorService {
     requested: boolean,
     warnings: string[],
     sink?: { [sourceLabel: string]: ChapterPipelineResult }
-  ): Promise<{ chapters?: Chapter[]; subjects?: string[] }> {
+  ): Promise<{ chapters?: Chapter[]; subjects?: string[]; details?: string[] }> {
     const sourceLabel = item.source || `item_${itemIndex + 1}`;
     if (!requested) {
       return {};
@@ -547,7 +552,14 @@ export class MetadataGeneratorService {
     const reuse = params.preComputedChapters?.[sourceLabel];
     if (reuse) {
       console.log(`[MetadataGenerator] Reusing ${reuse.chapters.length} already-computed chapters for ${sourceLabel}`);
-      return { chapters: reuse.chapters, subjects: reuse.subjects };
+      // Warnings are NOT re-raised here: these chapters came back from the show-prompt
+      // pass, which already reported them, and repeating them would read as a second
+      // set of failures.
+      return {
+        chapters: reuse.chapters,
+        subjects: reuse.subjects,
+        details: reuse.subjectDetails?.map((s) => s.detail),
+      };
     }
 
     if (!item.srtSegments || item.srtSegments.length === 0) {
@@ -565,6 +577,14 @@ export class MetadataGeneratorService {
     try {
       const result = await this.generateChapters(item, params, itemIndex, itemCount);
 
+      // Degradations the pipeline recovered from rather than threw on. Surfaced even
+      // when the chapters below are then dropped for being too few — the user asked
+      // for chapters and is entitled to know what happened to them.
+      for (const warning of result.warnings || []) {
+        console.warn(`[MetadataGenerator] ${sourceLabel}: ${warning}`);
+        warnings.push(`${sourceLabel}: ${warning}`);
+      }
+
       if (result.chapters.length < 3) {
         // <3 chapters are dropped (YouTube requires at least 3). Don't let that vanish
         // silently when the user explicitly asked for chapters.
@@ -574,9 +594,17 @@ export class MetadataGeneratorService {
         return {};
       }
 
-      console.log(`[MetadataGenerator] Generated ${result.chapters.length} chapters in ${result.stats.calls} model calls`);
+      console.log(
+        `[MetadataGenerator] Generated ${result.chapters.length} chapters in ${result.stats.calls} model calls ` +
+          `(stage 4 ${result.stats.speakerTagged ? 'speaker-tagged' : 'untagged'}, ` +
+          `${result.stats.approxStarts} approximate start(s))`
+      );
       if (sink) sink[sourceLabel] = result;
-      return { chapters: result.chapters, subjects: result.subjects };
+      return {
+        chapters: result.chapters,
+        subjects: result.subjects,
+        details: result.subjectDetails.map((s) => s.detail),
+      };
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       const msg = `${sourceLabel}: chapter generation failed, so the rest of the metadata was generated WITHOUT chapter subjects: ${errMsg}`;
