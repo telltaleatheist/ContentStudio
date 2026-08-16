@@ -184,7 +184,14 @@ let isAiGenerationRunning = false;
 // Lifecycle: entries are removed on send (success), discard, or job cancel/removal.
 // There is no timer — the frontend MUST send or discard, and cancel/removal is a
 // safety net. Practically bounded by the number of pending queue items.
-const heldTranscripts = new Map<string, { contentItems: ContentItem[]; metadataParams: any }>();
+const heldTranscripts = new Map<string, {
+  contentItems: ContentItem[];
+  metadataParams: any;
+  // Chapters the show-prompt assembly already paid for. They are part of the
+  // prompt the user is looking at, so "Send to AI" must send THOSE chapters,
+  // not a fresh pipeline run that could land its boundaries somewhere else.
+  computedChapters?: { [sourceLabel: string]: any };
+}>();
 
 function enqueuePipelineJob(job: PipelineJob): void {
   const queuePosition = transcriptionQueue.length + activeTranscriptions;
@@ -300,16 +307,26 @@ async function runTranscription(job: PipelineJob): Promise<void> {
       const jobResult = await MetadataGeneratorService.generate(paramsWithCallback);
 
       // "Show prompt" flow: the transcript is done and the prompt is assembled, but
-      // NO AI call happened. Hold the transcript so "Send to AI" can reuse it, and do
-      // NOT emit a terminal 'complete' — the frontend keys off the RESOLVED value here,
-      // not a progress event. On failure we still surface a terminal 'error' as usual.
+      // NO metadata call happened. Hold the transcript so "Send to AI" can reuse it,
+      // and do NOT emit a terminal 'complete' — the frontend keys off the RESOLVED
+      // value here, not a progress event. On failure we still surface a terminal
+      // 'error' as usual. Warnings are forwarded because chapters DO run in this flow
+      // now, so "chapters failed, the prompt you are reading has no chapter subjects"
+      // has to reach the user while they are still deciding whether to send it.
       if (job.metadataParams.showPrompt) {
         if (jobResult.success) {
           heldTranscripts.set(job.jobId, {
             contentItems: job.contentItems!,
             metadataParams: job.metadataParams,
+            computedChapters: jobResult.computedChapters,
           });
-          return { success: true, prompts: jobResult.prompts, jobId: job.jobId, held: true };
+          return {
+            success: true,
+            prompts: jobResult.prompts,
+            jobId: job.jobId,
+            held: true,
+            warnings: jobResult.warnings,
+          };
         }
         sendToRenderer('generation-progress', {
           phase: 'error',
@@ -794,6 +811,12 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         jobId: params.jobId,
         jobName: params.jobName,
         chapterFlags: params.chapterFlags || {},
+        // Chapters are generated first, locally, and their subjects condition the
+        // title/description/tag call — so this is deliberately independent of the
+        // metadata provider above. It is always an Ollama model name.
+        chapterModel: settings.chapterModel || 'cogito:14b',
+        chapterStageModels: settings.chapterStageModels || undefined,
+        chapterNumCtx: settings.chapterNumCtx || undefined,
         inputNotes: params.inputNotes || {},
         insightsBlock: insightsBlock || undefined,
         // "Show prompt": transcribe + assemble the prompt, then STOP (no AI call).
@@ -907,6 +930,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
           ...held.metadataParams,
           showPrompt: false,
           preTranscribedContent: held.contentItems,
+          preComputedChapters: held.computedChapters,
           progressCallback,
         });
 

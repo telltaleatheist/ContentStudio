@@ -88,39 +88,30 @@ TAGS (replaces the rules above):
 `,
 
   /**
-   * Chapter detection prompt - uses phrase-based timestamp mapping
-   * Placeholder: {transcript}
+   * Chapter subjects, prepended to the metadata prompt's subject block.
+   *
+   * Chapters are generated FIRST now, by the local pipeline in
+   * chapter-pipeline.service.ts, and each subject was written from that chapter's own
+   * transcript span. So this block is not a hint — it is a measured table of contents,
+   * and it is the most reliable statement of what the video actually contains that the
+   * metadata model gets. Kept deliberately general: it says what the list IS and what
+   * to do with it, and leaves the editorial judgement to the prompt set.
+   *
+   * Placeholder: {chapterList}
    */
-  CHAPTER_DETECTION_PROMPT: `Identify chapter boundaries based on MAJOR topic/subject changes in this transcript.
+  CHAPTER_SUBJECTS_CONTEXT: `
+=== WHAT THIS VIDEO ACTUALLY COVERS ===
+The chapters below were already worked out from the transcript, in order, each one
+described from its own section of the video. This is the video's real contents, and it
+is what viewers will see listed under it.
 
-Rules:
-- First chapter MUST start at the very beginning of the transcript
-- Create a new chapter ONLY when there is a SIGNIFICANT topic shift (not minor tangents)
-- Very short videos (under 5 minutes) may have just 1-2 chapters
-- Typical videos (30-60 minutes) should have 4-8 chapters - prefer fewer, longer chapters
-- Multi-hour videos scale up: roughly one chapter per 10-20 minutes (use the [H:MM:SS] timestamps to judge total duration, and spread chapters across the ENTIRE runtime - do not stop partway)
-- Minimum chapter length: 3-4 minutes of content (be conservative - don't over-segment)
-- If unsure whether something is a new chapter, keep it as part of the current one
+{chapterList}
 
-Title requirements:
-- Titles should be 50-80 characters - concise but descriptive
-- Explain specifically what happens in this section
-- Include key details: names, topics, actions
-- Avoid generic labels like "Introduction", "Overview", "Conclusion"
-- Write as complete thoughts, not fragments
-
-Return JSON:
-{"chapters": [{"start_phrase": "exact quote from transcript", "title": "Concise description"}]}
-
-Important:
-- start_phrase MUST be verbatim text copied from the transcript (3-8 words)
-- The transcript may be an evenly-sampled excerpt of the full video (some sentences omitted between lines) - quote start_phrase EXACTLY as it appears in the text provided, never bridge or paraphrase across gaps
-- The first chapter's start_phrase should be from the very beginning
-- Each subsequent chapter's start_phrase marks where a new topic begins
-- Chapters are sequential - each one ends where the next begins
-
-Transcript:
-{transcript}`,
+Let this list decide what the video is ABOUT. Weight it by how much of the video each
+subject takes up, and stay inside it - if something is not in this list, the video did
+not spend real time on it.
+===
+`,
 
   /**
    * Episode split prompt - for finding episode boundaries in multi-hour streams

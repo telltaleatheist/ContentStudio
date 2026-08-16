@@ -960,6 +960,14 @@ export class Inputs implements OnInit, OnDestroy {
       if (result?.held === true) {
         if (unsubscribe) { unsubscribe(); unsubscribe = undefined; }
         if (elapsedInterval) { clearInterval(elapsedInterval); elapsedInterval = undefined; }
+        // Chapters run during prompt assembly (they condition the prompt), so this
+        // path can carry warnings too — surface them BEFORE the user decides whether
+        // to send a prompt that may have been assembled without chapter subjects.
+        if (result.warnings?.length) {
+          result.warnings.forEach((warning: string) => {
+            this.notificationService.warning('Generation Warning', warning);
+          });
+        }
         const prompt = (result.prompts || []).join('\n\n' + '─'.repeat(60) + '\n\n');
         // Mark the job transcribed & waiting. The backend holds the transcript; the
         // assembled prompt is captured for the view-only "Show prompt" modal; the job

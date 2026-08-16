@@ -22,6 +22,13 @@ export interface QueueTask {
   error?: string;
   startTime?: number;
   endTime?: number;
+  /**
+   * Overrides the pool's watchdog limit for this task. Needed for work that is one
+   * long task rather than one long request — the chapter pipeline makes hundreds of
+   * short model calls back to back, so it legitimately outlives a limit sized for a
+   * single stalled connection.
+   */
+  timeoutMs?: number;
 }
 
 interface ActiveTask {
@@ -279,8 +286,9 @@ export class QueueManagerService extends EventEmitter {
       // Check main pool tasks
       for (const [taskId, activeTask] of this.mainPool) {
         const runtime = now - activeTask.startTime;
+        const limit = activeTask.task.timeoutMs ?? this.MAIN_TASK_TIMEOUT_MS;
 
-        if (runtime > this.MAIN_TASK_TIMEOUT_MS) {
+        if (runtime > limit) {
           const errorMessage = `Task timed out after ${Math.round(runtime / 1000)}s`;
           log.warn(`[QueueManager] Main task timeout: ${activeTask.task.name} (${taskId}) - ${Math.round(runtime / 1000)}s`);
           this.emit('taskTimeout', { taskId, type: 'main', runtime });
@@ -291,8 +299,9 @@ export class QueueManagerService extends EventEmitter {
       // Check AI pool task
       if (this.aiPool) {
         const runtime = now - this.aiPool.startTime;
+        const limit = this.aiPool.task.timeoutMs ?? this.AI_TASK_TIMEOUT_MS;
 
-        if (runtime > this.AI_TASK_TIMEOUT_MS) {
+        if (runtime > limit) {
           const timedOut = this.aiPool;
           const errorMessage = `Task timed out after ${Math.round(runtime / 1000)}s`;
           log.warn(`[QueueManager] AI task timeout: ${timedOut.task.name} (${timedOut.task.id}) - ${Math.round(runtime / 1000)}s`);
@@ -398,7 +407,8 @@ export function createAITask(
   id: string,
   name: string,
   execute: () => Promise<any>,
-  onProgress?: (percent: number, message: string) => void
+  onProgress?: (percent: number, message: string) => void,
+  timeoutMs?: number
 ): QueueTask {
   return {
     id,
@@ -406,7 +416,8 @@ export function createAITask(
     name,
     execute,
     onProgress,
-    status: 'pending'
+    status: 'pending',
+    timeoutMs
   };
 }
 
@@ -451,10 +462,11 @@ export function queueAITask<T>(
   id: string,
   name: string,
   execute: () => Promise<T>,
-  onProgress?: (percent: number, message: string) => void
+  onProgress?: (percent: number, message: string) => void,
+  timeoutMs?: number
 ): Promise<T> {
   return new Promise((resolve, reject) => {
-    const task = createAITask(id, name, execute, onProgress);
+    const task = createAITask(id, name, execute, onProgress, timeoutMs);
 
     const onComplete = (event: { taskId: string; result: T }) => {
       if (event.taskId === id) {

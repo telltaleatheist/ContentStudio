@@ -217,16 +217,6 @@ export class AIManagerService {
   private static readonly OLLAMA_SUMMARIZE_CHUNK_CHARS = 8000;
 
   /**
-   * Char budget for the chapter-detection transcript. Transcripts over this are
-   * evenly SAMPLED (whole segments kept verbatim) rather than chunked, so the
-   * model keeps a global view of the whole video in one request and every
-   * quoted start_phrase still maps back to the full SRT.
-   */
-  getChapterTranscriptBudgetChars(): number {
-    return this.config.provider === 'ollama' ? 30000 : 60000;
-  }
-
-  /**
    * Get the prompts directory path
    * Note: Legacy prompts are no longer used - we use system-prompts.ts and promptSetsDir instead
    */
@@ -612,9 +602,10 @@ export class AIManagerService {
   buildMetadataPrompt(
     content: string,
     sourceName?: string,
-    compilationInfo?: { sourceCount: number; contentTypes: string[] }
+    compilationInfo?: { sourceCount: number; contentTypes: string[] },
+    chapterSubjects?: string[]
   ): string {
-    return this.createMetadataPrompt(content, sourceName, compilationInfo);
+    return this.createMetadataPrompt(content, sourceName, compilationInfo, chapterSubjects);
   }
 
   /**
@@ -664,7 +655,8 @@ export class AIManagerService {
   async generateMetadata(
     content: string,
     sourceName?: string,
-    compilationInfo?: { sourceCount: number; contentTypes: string[] }
+    compilationInfo?: { sourceCount: number; contentTypes: string[] },
+    chapterSubjects?: string[]
   ): Promise<MetadataResult> {
     if (!this.currentPromptSet) {
       throw new Error('No prompt set loaded');
@@ -674,18 +666,25 @@ export class AIManagerService {
     console.log(`[AIManager]     Content length: ${content.length} chars`);
     console.log(`[AIManager]     Using model: ${this.metadataModel}`);
     console.log(`[AIManager]     Compilation: ${compilationInfo ? `yes (${compilationInfo.sourceCount} items)` : 'no'}`);
+    console.log(`[AIManager]     Chapter subjects: ${chapterSubjects ? chapterSubjects.length : 'none'}`);
 
-    const prompt = this.createMetadataPrompt(content, sourceName, compilationInfo);
+    const prompt = this.createMetadataPrompt(content, sourceName, compilationInfo, chapterSubjects);
     return this.generateMetadataFromAssembledPrompt(prompt);
   }
 
   /**
    * Create metadata generation prompt
+   *
+   * chapterSubjects, when present, are the chapter names the local chapter pipeline
+   * already derived from this transcript. They go in FIRST, ahead of the transcript
+   * itself, because they are the most reliable account of what the video contains —
+   * measured span by span rather than inferred from a summary.
    */
   private createMetadataPrompt(
     content: string,
     sourceName?: string,
-    compilationInfo?: { sourceCount: number; contentTypes: string[] }
+    compilationInfo?: { sourceCount: number; contentTypes: string[] },
+    chapterSubjects?: string[]
   ): string {
     if (!this.currentPromptSet) {
       throw new Error('No prompt set loaded');
@@ -707,7 +706,14 @@ export class AIManagerService {
     // Replace {subject} placeholder with actual content
     // Add source filename context if available
     const sourceContext = sourceName ? `\n\nSource: ${sourceName}\n(Use the source filename for context about names, topics, and proper nouns - it may contain correctly spelled names or important keywords)` : '';
-    const subject = `${compilationContext}${sourceContext}\n\n${content}`;
+
+    const chapterContext = chapterSubjects && chapterSubjects.length > 0
+      ? formatPrompt(SYSTEM_PROMPTS.CHAPTER_SUBJECTS_CONTEXT, {
+          chapterList: chapterSubjects.map((s, i) => `${i + 1}. ${s}`).join('\n'),
+        })
+      : '';
+
+    const subject = `${compilationContext}${sourceContext}\n${chapterContext}\n${content}`;
 
     const editorialPrompt = this.currentPromptSet.editorial_prompt.replace('{subject}', subject);
 

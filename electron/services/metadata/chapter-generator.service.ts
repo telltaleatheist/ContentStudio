@@ -1,6 +1,14 @@
 /**
- * Chapter Generator Service
- * Handles chapter generation using phrase-based timestamp mapping
+ * Chapter Generator Service — shared transcript/timestamp utilities
+ *
+ * Chapters themselves are no longer built here. The single "read the whole video and
+ * return its chapters" call this file used to serve was replaced by the staged local
+ * pipeline in chapter-pipeline.service.ts (see CHAPTERING.md), which does its own
+ * word-stream quote mapping against the full caption stream.
+ *
+ * What remains is what the EPISODE SPLITTER still needs — SRT time conversion, budget
+ * sampling, sparse-timestamp transcripts and the phrase matcher — plus the `Chapter`
+ * shape both paths emit.
  */
 
 import { SRTSegment } from './whisper.service';
@@ -10,11 +18,6 @@ export interface Chapter {
   title: string;
   sequence: number;
   endTimestamp?: string;
-}
-
-export interface AIChapter {
-  start_phrase: string;
-  title: string;
 }
 
 /**
@@ -62,31 +65,6 @@ export class TimeUtils {
       return parts[0];
     }
   }
-}
-
-/**
- * Build timestamped transcript for AI consumption
- * Adds minute markers for context
- */
-export function buildTimestampedTranscript(srtSegments: SRTSegment[]): string {
-  const lines: string[] = [];
-  let currentMinute = -1;
-
-  for (const segment of srtSegments) {
-    const seconds = TimeUtils.srtTimeToSeconds(segment.start);
-    const minute = Math.floor(seconds / 60);
-
-    // Add minute marker when entering a new minute
-    if (minute > currentMinute) {
-      currentMinute = minute;
-      const timeStr = TimeUtils.secondsToYoutubeTime(seconds);
-      lines.push(`\n[${timeStr}]`);
-    }
-
-    lines.push(segment.text.trim());
-  }
-
-  return lines.join(' ').trim();
 }
 
 /**
@@ -404,144 +382,4 @@ export function findPhraseTimestamp(
   }
 
   return null;
-}
-
-/**
- * Maps AI-identified chapters to timestamps using phrase matching
- */
-export class ChapterMapper {
-  private srtSegments: SRTSegment[];
-  private videoDuration: number;
-
-  constructor(srtSegments: SRTSegment[]) {
-    this.srtSegments = srtSegments;
-
-    // Calculate video duration from last segment
-    if (srtSegments.length > 0) {
-      const lastSegment = srtSegments[srtSegments.length - 1];
-      this.videoDuration = TimeUtils.srtTimeToSeconds(lastSegment.end);
-    } else {
-      this.videoDuration = 0;
-    }
-  }
-
-  /**
-   * Map AI-identified chapters to timestamps
-   */
-  mapChapters(aiChapters: AIChapter[]): Chapter[] {
-    const mappedChapters: Chapter[] = [];
-    let lastTimestamp = 0; // Enforce chronological order across successive lookups
-
-    for (let i = 0; i < aiChapters.length; i++) {
-      const chapter = aiChapters[i];
-      const startPhrase = chapter.start_phrase || '';
-      const title = chapter.title?.trim();
-
-      if (!title) {
-        continue;
-      }
-
-      // Find timestamp for start phrase at or after the previous chapter's start.
-      // Without the lower bound a phrase that also occurs earlier maps to the
-      // FIRST occurrence, shuffling chapter order.
-      const startSeconds = findPhraseTimestamp(startPhrase, this.srtSegments, 0.5, lastTimestamp);
-
-      if (startSeconds === null) {
-        console.warn(`[ChapterMapper] Dropping chapter "${title}" — could not map start_phrase at/after ${TimeUtils.secondsToYoutubeTime(lastTimestamp)}: "${startPhrase}"`);
-        continue;
-      }
-
-      // Advance the lower bound so later chapters map strictly after this one
-      lastTimestamp = startSeconds + 1;
-
-      mappedChapters.push({
-        timestamp: TimeUtils.secondsToYoutubeTime(startSeconds),
-        title,
-        sequence: mappedChapters.length,
-        endTimestamp: '', // Computed below, once the ordered list is final
-      });
-    }
-
-    // The list is inherently ordered (each match is >= the previous + 1), so no
-    // sort is needed. Compute each chapter's end from its successor's start.
-    for (let i = 0; i < mappedChapters.length; i++) {
-      const endSeconds = i < mappedChapters.length - 1
-        ? TimeUtils.youtubeTimeToSeconds(mappedChapters[i + 1].timestamp)
-        : this.videoDuration;
-      mappedChapters[i].endTimestamp = TimeUtils.secondsToYoutubeTime(endSeconds);
-    }
-
-    // Validate YouTube chapter requirements
-    return this.validateYoutubeChapters(mappedChapters);
-  }
-
-  /**
-   * Validate YouTube chapter requirements
-   */
-  private validateYoutubeChapters(chapters: Chapter[]): Chapter[] {
-    if (chapters.length === 0) {
-      return [];
-    }
-
-    // Filter out chapters that are too short (< 10 seconds) FIRST, before we
-    // anchor the 0:00 chapter below. Running it afterwards could delete the
-    // freshly-inserted 0:00 chapter and recreate the "first chapter not at
-    // 0:00" violation this method is supposed to fix.
-    const validChapters: Chapter[] = [];
-
-    for (let i = 0; i < chapters.length; i++) {
-      const currentSeconds = TimeUtils.youtubeTimeToSeconds(chapters[i].timestamp);
-
-      // Check if chapter is long enough
-      if (i < chapters.length - 1) {
-        const nextSeconds = TimeUtils.youtubeTimeToSeconds(chapters[i + 1].timestamp);
-        const duration = nextSeconds - currentSeconds;
-
-        if (duration < 10) {
-          // Chapter too short, skip it
-          continue;
-        }
-      }
-
-      validChapters.push(chapters[i]);
-    }
-
-    if (validChapters.length === 0) {
-      return [];
-    }
-
-    // Ensure first chapter starts at 0:00 (YouTube requirement)
-    const firstTimestamp = TimeUtils.youtubeTimeToSeconds(validChapters[0].timestamp);
-    if (firstTimestamp > 0) {
-      if (firstTimestamp <= 15) {
-        // First chapter is essentially at the start — snap it to 0:00 rather
-        // than inserting a near-zero-length synthetic chapter.
-        validChapters[0].timestamp = '0:00';
-      } else {
-        // Meaningful pre-roll before the first mapped phrase — insert a 0:00
-        // chapter to cover the intro. Reuse the first chapter's title (more
-        // descriptive than a generic "Introduction") with a " (start)" suffix
-        // so the two adjacent chapters aren't identically named. The gap here
-        // is > 15s, so the too-short filter (already run above) won't remove it.
-        validChapters.unshift({
-          timestamp: '0:00',
-          title: `${validChapters[0].title} (start)`,
-          sequence: 0,
-          endTimestamp: validChapters[0].timestamp,
-        });
-      }
-    }
-
-    // Update sequence numbers
-    validChapters.forEach((chapter, i) => {
-      chapter.sequence = i;
-    });
-
-    // YouTube requires at least 3 chapters
-    if (validChapters.length < 3) {
-      return [];
-    }
-
-    return validChapters;
-  }
 }

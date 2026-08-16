@@ -120,6 +120,19 @@ app.whenReady().then(async () => {
         aiProvider: 'openai',
         ollamaModel: 'gpt-4o', // Used for all providers (OpenAI, Claude, and Ollama)
         ollamaHost: 'http://localhost:11434',
+        // Chapters run on a LOCAL 14B regardless of which provider generates the
+        // metadata: the sealed method (CHAPTERING.md) makes hundreds of one-question
+        // calls per video, which only makes sense locally. 14B is the floor — smaller
+        // models produce mega-chapters and swallow whole stories, and a missed
+        // boundary is the one error the user cannot fix by hand.
+        chapterModel: 'cogito:14b',
+        // Per-stage overrides, e.g. {"rate": "qwen2.5:14b"}. Empty = one model runs
+        // every stage. CHAPTERING.md validates qwen2.5:14b as the rater and suggests
+        // it for stages 2, 4 and 5 when a corpus rates with little variance.
+        chapterStageModels: {},
+        // Floor for summarizing a ~18-minute consolidated chapter. One value for the
+        // whole run: Ollama reloads the model whenever num_ctx changes.
+        chapterNumCtx: 16384,
         openaiApiKey: '',
         claudeApiKey: '',
         defaultPlatform: 'youtube',
