@@ -1,0 +1,270 @@
+/**
+ * Per-task routing: which model writes which field
+ *
+ * Metadata used to be one call to one model. It is now one call per TASK, and the tasks
+ * are migrating to local fine-tuned adapters one at a time, so "which model" stopped
+ * being a single setting and became a table. This module is that table, and it is the
+ * only place it exists: the settings modal renders it, the store persists selections
+ * against it, and generation resolves selections through it. Nothing downstream may
+ * invent a model name or a default.
+ *
+ * The setting is ONE key, `metadataRouting: Record<taskId, optionId>`. It replaces the
+ * short-lived `metadataTaskBackends` / `metadataTaskModels` pair outright — those two
+ * never shipped, so there is no migration and stale copies of them in an existing store
+ * are simply ignored.
+ *
+ * Absent key, or absent entry for a task: the registry's default runs. A PRESENT entry
+ * naming an option this table does not know, or an option that is not offered for that
+ * task, throws — the user asked for something specific and must not silently get
+ * something else.
+ */
+
+import * as log from 'electron-log';
+
+export type MetadataRoutingTaskId =
+  | 'chapters'
+  | 'titles'
+  | 'description'
+  | 'tags'
+  | 'thumbnail_text'
+  | 'pinned_comment'
+  | 'clip_suggestions';
+
+export interface MetadataRoutingOption {
+  /** 'cloud' goes through AIManagerService's provider clients; 'local' through the adapters. */
+  kind: 'cloud' | 'local';
+  /** What the modal shows. */
+  label: string;
+  /**
+   * Cloud: the provider-prefixed model AIManagerService.makeRequest routes on.
+   * Local: the bare Ollama model name, as `ollama list` prints it.
+   */
+  model: string;
+  /**
+   * Non-default local host. Only the 32B titles model has one: it is served by an
+   * Ollama-SHAPED MLX shim on 11435, not by Ollama itself.
+   */
+  host?: string;
+  /**
+   * How to start `host` when nothing answers on it. Carried on the option because the
+   * backend that hits the connection refusal has no idea what is supposed to be
+   * listening there, and "connection refused" on a port the user has never heard of is
+   * not an actionable error.
+   */
+  startHint?: string;
+}
+
+/** The shim behind headline-32b-titles. It is not Ollama and it is not always running. */
+export const HEADLINE_32B_HOST = 'http://localhost:11435';
+const HEADLINE_32B_START_HINT =
+  'that host is the Ollama-shaped MLX shim for the 32B titles model, not Ollama itself — start it with ' +
+  '`python AutoCutStudioApp/tools/headline32b-server/serve.py`';
+
+export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
+  sonnet5: { kind: 'cloud', label: 'Claude Sonnet 5', model: 'claude:claude-sonnet-5' },
+  opus5: { kind: 'cloud', label: 'Claude Opus 5', model: 'claude:claude-opus-5' },
+  'cogito-14b': { kind: 'local', label: 'Cogito 14B', model: 'cogito:14b' },
+  'qwen25-14b': { kind: 'local', label: 'Qwen2.5 14B', model: 'qwen2.5:14b' },
+  'qwen3-14b': { kind: 'local', label: 'Qwen3 14B', model: 'qwen3:14b' },
+  'headline-desc-14b': { kind: 'local', label: 'Headline 14B (descriptions)', model: 'headline-14b-descriptions' },
+  'headline-tags-14b': { kind: 'local', label: 'Headline 14B (tags)', model: 'headline-14b-tags' },
+  'headline-titles-14b': { kind: 'local', label: 'Headline 14B (titles)', model: 'headline-14b-titles' },
+  'headline-titles-32b': {
+    kind: 'local',
+    label: 'Headline 32B (titles)',
+    model: 'headline-32b-titles',
+    host: HEADLINE_32B_HOST,
+    startHint: HEADLINE_32B_START_HINT,
+  },
+};
+
+export interface MetadataRoutingTask {
+  id: MetadataRoutingTaskId;
+  label: string;
+  /** Option ids offered for this task, in the order the modal should list them. */
+  options: string[];
+  /** Runs when the stored setting has no entry for this task. Must be in `options`. */
+  defaultOptionId: string;
+}
+
+/**
+ * The table. Order is the modal's order.
+ *
+ * `chapters` is local-only because the sealed pipeline (CHAPTERING.md) makes hundreds of
+ * one-question calls per video — a shape that only makes sense on a local model, and one
+ * a cloud bill would not survive. thumbnail_text, pinned_comment and clip_suggestions are
+ * cloud-only for the opposite reason: no adapter has been trained for them yet, and
+ * pointing them at a base model would answer the brief fluently and wrongly.
+ */
+export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
+  {
+    id: 'chapters',
+    label: 'Chapters',
+    options: ['cogito-14b', 'qwen25-14b', 'qwen3-14b'],
+    defaultOptionId: 'cogito-14b',
+  },
+  {
+    id: 'titles',
+    label: 'Titles',
+    options: ['sonnet5', 'opus5', 'headline-titles-14b', 'headline-titles-32b'],
+    defaultOptionId: 'sonnet5',
+  },
+  {
+    id: 'description',
+    label: 'Description',
+    options: ['headline-desc-14b', 'sonnet5', 'opus5'],
+    defaultOptionId: 'headline-desc-14b',
+  },
+  {
+    id: 'tags',
+    label: 'Tags',
+    options: ['headline-tags-14b', 'sonnet5', 'opus5'],
+    defaultOptionId: 'headline-tags-14b',
+  },
+  {
+    id: 'thumbnail_text',
+    label: 'Thumbnail text',
+    options: ['sonnet5', 'opus5'],
+    defaultOptionId: 'sonnet5',
+  },
+  {
+    id: 'pinned_comment',
+    label: 'Pinned comment',
+    options: ['sonnet5', 'opus5'],
+    defaultOptionId: 'sonnet5',
+  },
+  {
+    id: 'clip_suggestions',
+    label: 'Clip suggestions',
+    options: ['sonnet5', 'opus5'],
+    defaultOptionId: 'sonnet5',
+  },
+];
+
+/** Stored shape: taskId -> optionId. Partial by design; absent entries take the default. */
+export type MetadataRoutingSelections = Partial<Record<MetadataRoutingTaskId, string>>;
+
+/** Every task resolved to an option id — what generation actually runs. */
+export type ResolvedMetadataRouting = Record<MetadataRoutingTaskId, string>;
+
+function taskDef(taskId: string): MetadataRoutingTask | undefined {
+  return METADATA_ROUTING_TASKS.find((t) => t.id === taskId);
+}
+
+/**
+ * One selection, validated against the table.
+ *
+ * Two distinct failures, named distinctly, because they have different fixes: an option
+ * this build has never heard of (stale setting, typo, an option removed by an upgrade)
+ * and an option that exists but is not offered for this task (cloud model on the chapter
+ * pipeline, adapter on a field it was not trained for).
+ */
+export function validateRoutingSelection(taskId: string, optionId: string): void {
+  const task = taskDef(taskId);
+  if (!task) {
+    throw new Error(
+      `metadataRouting names task "${taskId}", which is not a metadata task ` +
+        `(known tasks: ${METADATA_ROUTING_TASKS.map((t) => t.id).join(', ')})`
+    );
+  }
+  if (!METADATA_ROUTING_OPTIONS[optionId]) {
+    throw new Error(
+      `metadataRouting.${taskId} is set to "${optionId}", which is not a known model option ` +
+        `(known options: ${Object.keys(METADATA_ROUTING_OPTIONS).join(', ')})`
+    );
+  }
+  if (!task.options.includes(optionId)) {
+    throw new Error(
+      `metadataRouting.${taskId} is set to "${optionId}", which is not offered for the "${task.label}" task ` +
+        `(offered: ${task.options.join(', ')})`
+    );
+  }
+}
+
+/** Validate a whole selections object, e.g. one arriving over IPC from the modal. */
+export function validateRoutingSelections(selections: unknown): MetadataRoutingSelections {
+  if (!selections || typeof selections !== 'object' || Array.isArray(selections)) {
+    throw new Error(`metadataRouting must be an object of taskId -> optionId (got ${JSON.stringify(selections)})`);
+  }
+  const validated: MetadataRoutingSelections = {};
+  for (const [taskId, optionId] of Object.entries(selections as Record<string, unknown>)) {
+    if (typeof optionId !== 'string' || optionId.trim().length === 0) {
+      throw new Error(`metadataRouting.${taskId} must be an option id string (got ${JSON.stringify(optionId)})`);
+    }
+    validateRoutingSelection(taskId, optionId);
+    validated[taskId as MetadataRoutingTaskId] = optionId;
+  }
+  return validated;
+}
+
+/**
+ * Fill in the defaults and validate what the user chose.
+ *
+ * Called at job time from the store, so a setting edited between runs takes effect on the
+ * next run without any coupling between the modal and the queue.
+ */
+export function resolveMetadataRouting(stored: unknown): ResolvedMetadataRouting {
+  const selections = stored === undefined || stored === null ? {} : validateRoutingSelections(stored);
+  const resolved = {} as ResolvedMetadataRouting;
+  for (const task of METADATA_ROUTING_TASKS) {
+    resolved[task.id] = selections[task.id] || task.defaultOptionId;
+  }
+  return resolved;
+}
+
+export function routingOption(taskId: MetadataRoutingTaskId, optionId: string): MetadataRoutingOption {
+  validateRoutingSelection(taskId, optionId);
+  return METADATA_ROUTING_OPTIONS[optionId];
+}
+
+/** One line naming what this run will use, for the job log. */
+export function describeRouting(routing: ResolvedMetadataRouting): string {
+  return METADATA_ROUTING_TASKS.map((t) => `${t.id}=${METADATA_ROUTING_OPTIONS[routing[t.id]].model}`).join(', ');
+}
+
+// ---------------------------------------------------------------------------
+// The IPC payload
+// ---------------------------------------------------------------------------
+
+export interface MetadataRoutingOptionView {
+  id: string;
+  label: string;
+}
+
+export interface MetadataRoutingTaskView {
+  id: string;
+  label: string;
+  options: MetadataRoutingOptionView[];
+  selectedOptionId: string;
+}
+
+export interface MetadataRoutingView {
+  tasks: MetadataRoutingTaskView[];
+}
+
+/**
+ * The whole table plus this store's selections, in the shape the modal consumes.
+ *
+ * FROZEN contract (metadata-routing:get). The frontend is written against exactly this,
+ * so the registry may gain tasks and options without the payload changing shape.
+ *
+ * A stored selection that fails validation is not quietly replaced by the default here
+ * either — resolveMetadataRouting throws, the IPC call fails, and the modal shows the
+ * user the same error a generation would have failed with.
+ */
+export function buildRoutingView(stored: unknown): MetadataRoutingView {
+  const resolved = resolveMetadataRouting(stored);
+  return {
+    tasks: METADATA_ROUTING_TASKS.map((task) => ({
+      id: task.id,
+      label: task.label,
+      options: task.options.map((id) => ({ id, label: METADATA_ROUTING_OPTIONS[id].label })),
+      selectedOptionId: resolved[task.id],
+    })),
+  };
+}
+
+/** Log the routing once per resolve, so a job's log says which models wrote its fields. */
+export function logRouting(context: string, routing: ResolvedMetadataRouting): void {
+  log.info(`[MetadataRouting] ${context}: ${describeRouting(routing)}`);
+}

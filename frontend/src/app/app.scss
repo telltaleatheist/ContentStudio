@@ -92,6 +92,9 @@
   .theme-toggle-container {
     padding: 16px;
     border-top: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
 
     .theme-toggle-button {
       width: 100%;

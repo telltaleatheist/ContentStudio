@@ -4,20 +4,26 @@
  * The metadata call used to be one request that returned every field at once. It is
  * being taken apart field by field, because the fields are migrating to local
  * fine-tuned adapters one at a time (headline-14b-titles, headline-14b-descriptions and
- * headline-14b-tags exist; packaging has no adapter). A single call cannot migrate by
- * halves, so generation is split into TASK UNITS with a backend behind each one:
+ * headline-14b-tags exist; thumbnail text, pinned comments and clips have no adapter).
+ * A single call cannot migrate by halves, so generation is split into UNITS, and
+ * metadata-routing.ts says which model each field's unit runs on.
  *
- *   description — conditioned on the chapter subject list + details, NOT the transcript
- *   tags        — same conditioning as description
- *   packaging   — everything else (titles, thumbnail text, hashtags, pinned comment,
- *                 clip suggestions, spoken keywords), still conditioned on the
- *                 transcript/summary plus the chapters and the insights block
+ * A run's units come out of the routing in two kinds:
  *
- * description and tags drop the transcript deliberately. Per CHAPTERING.md the future
- * adapters condition on the curated subject list, so conditioning the cloud calls on the
- * SAME inputs means flipping a task to its adapter changes the backend and nothing else.
- * The chapter `detail` prose exists precisely to carry the description-grade specifics
- * the transcript would otherwise have to supply.
+ *   local  — one adapter call per field (description, tags, titles). Plain text in,
+ *            plain text out, no JSON anywhere.
+ *   cloud  — the cloud-routed fields GROUPED BY MODEL: one call per distinct model,
+ *            carrying exactly that group's prompt-set sections and an OUTPUT FORMAT
+ *            naming exactly that group's keys. Two fields on Sonnet and one on Opus is
+ *            two calls, not three — a model asked for three fields at once writes them
+ *            as one coherent package, which is the whole reason packaging used to be a
+ *            single call.
+ *
+ * description and tags drop the transcript deliberately. Per CHAPTERING.md the adapters
+ * condition on the curated subject list, so conditioning the cloud calls on the SAME
+ * inputs means flipping a field to its adapter changes the model and nothing else. The
+ * chapter `detail` prose exists precisely to carry the description-grade specifics the
+ * transcript would otherwise have to supply.
  *
  * This only applies when chapters exist. Without them the legacy single call runs
  * unchanged — that is a mode decision based on what data is available, made and logged
@@ -28,57 +34,75 @@ import axios, { AxiosInstance } from 'axios';
 import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import { queueAITask } from '../queue-manager.service';
-// Type-only: the backends receive an AIManagerService instance, they never construct
-// one. A value import here would close an import cycle (ai-manager imports this module
-// for its section parser) and break at require() time.
+import {
+  METADATA_ROUTING_OPTIONS,
+  MetadataRoutingOption,
+  MetadataRoutingTaskId,
+  ResolvedMetadataRouting,
+} from './metadata-routing';
+// Type-only: the units receive an AIManagerService instance, they never construct one.
+// A value import here would close an import cycle (ai-manager imports this module for
+// its section parser) and break at require() time.
 import type { AIManagerService, MetadataResult } from './ai-manager.service';
 
-export type MetadataTaskId = 'description' | 'tags' | 'packaging';
+/**
+ * A metadata field a unit can be responsible for.
+ *
+ * `hashtags` and `spoken_keywords` are not routable tasks — see METADATA_ROUTING_TASKS.
+ * Hashtags follow the description (the description adapter writes its own hashtag line);
+ * spoken keywords exist only in the shorts prompt set and ride with whichever group
+ * absorbs the sections no unit claimed.
+ */
+export type MetadataFieldId =
+  | 'titles'
+  | 'description'
+  | 'tags'
+  | 'thumbnail_text'
+  | 'pinned_comment'
+  | 'clip_suggestions'
+  | 'hashtags'
+  | 'spoken_keywords';
 
-/** Order matters: description and tags are cheap and their failures should surface first. */
-export const METADATA_TASK_ORDER: MetadataTaskId[] = ['description', 'tags', 'packaging'];
+/** The routable tasks that produce a metadata field, in the order units run. */
+const FIELD_TASKS: Array<{ task: MetadataRoutingTaskId; field: MetadataFieldId }> = [
+  { task: 'description', field: 'description' },
+  { task: 'tags', field: 'tags' },
+  { task: 'titles', field: 'titles' },
+  { task: 'thumbnail_text', field: 'thumbnail_text' },
+  { task: 'pinned_comment', field: 'pinned_comment' },
+  { task: 'clip_suggestions', field: 'clip_suggestions' },
+];
 
 /**
- * Everything a task needs to state WHAT to generate, with no statement of how. A local
- * adapter and a cloud prompt read the same fields — the adapter would take
- * chapterSubjects/chapterDetails and ignore `content`, which is exactly the point of
- * conditioning the cloud calls on the same inputs today.
+ * Everything a unit needs about the ITEM. Which model, which fields and which sections
+ * are properties of the unit itself, decided once when the run is planned.
  */
-export interface MetadataTaskInput {
-  task: MetadataTaskId;
-  /** Transcript or summary. Used by the packaging task only. */
+export interface MetadataRunContext {
+  /** Transcript or summary. Reaches only the units whose fields need it. */
   content: string;
   sourceLabel: string;
   chapterSubjects: string[];
   /** Index-aligned with chapterSubjects; entries may be blank. */
   chapterDetails: string[];
-  /**
-   * True when the DESCRIPTION task owns the `hashtags` field for this run.
-   *
-   * The description adapter was trained to end every description with its own hashtag
-   * line, so when description runs locally that line IS the hashtags field. Packaging
-   * must then not generate hashtags as well: two calls writing one field means the
-   * merge order silently decides which one the user gets. Whichever unit does not own
-   * the field is told so here, and drops it from both its instructions and its keys.
-   */
-  hashtagsOwnedByDescription: boolean;
 }
 
-export interface MetadataTaskBackend {
-  /** Matches the routing config value ('cloud' | 'local'). */
-  readonly id: string;
+export interface MetadataUnit {
+  /** For logs and the "Show prompt" banner, e.g. `description (local headline-14b-descriptions)`. */
+  readonly label: string;
+  /** The metadata keys this unit is responsible for returning. */
+  readonly fields: MetadataFieldId[];
   /**
-   * The exact text this backend would send. The "Show prompt" flow exists to let the
-   * user read what will actually be sent, so a backend that cannot show its request
-   * must refuse here for the same reason it would refuse to run.
+   * The exact text this unit would send. The "Show prompt" flow exists to let the user
+   * read what will actually be sent, so a unit that cannot show its request must refuse
+   * here for the same reason it would refuse to run.
    */
-  describePrompt(input: MetadataTaskInput): string;
-  /** Resolves to only the fields this task owns. */
-  generate(input: MetadataTaskInput): Promise<Record<string, unknown>>;
+  describePrompt(ctx: MetadataRunContext): string;
+  /** Resolves to only the fields this unit owns. */
+  generate(ctx: MetadataRunContext): Promise<Record<string, unknown>>;
   /**
-   * Release whatever this backend is holding after the last task of a run. Only a
-   * backend with resident state implements it — a cloud request has nothing to let go
-   * of, and pretending otherwise would put an empty method on the seam.
+   * Release whatever this unit is holding after the last unit of a run. Only a unit with
+   * resident state implements it — a cloud request has nothing to let go of, and
+   * pretending otherwise would put an empty method on the seam.
    */
   unload?(): Promise<void>;
 }
@@ -132,103 +156,161 @@ function canonicalSectionKey(header: string): string {
 }
 
 /**
- * Sections the packaging task owns, and the JSON shape hint each contributes to the
- * per-task OUTPUT FORMAT. The metadata keys are the ones parseMetadataResponse /
- * normalizeMetadataKeys already expect (see metadata-fields.ts) — a task that named a
- * key outside that registry would produce a field nothing downstream reads.
+ * Each field's prompt-set section, the JSON shape hint it contributes to a group's
+ * OUTPUT FORMAT, and whether it needs the transcript.
+ *
+ * The metadata keys are the ones parseMetadataResponse / normalizeMetadataKeys already
+ * expect (see metadata-fields.ts) — a unit that named a key outside that registry would
+ * produce a field nothing downstream reads.
+ *
+ * `needsTranscript` is the conditioning rule from CHAPTERING.md, stated per field rather
+ * than per call: description, tags and hashtags are written from the chapter subject
+ * list alone (that is what their adapters get, so that is what the cloud gets), while
+ * titles, thumbnails, pinned comments and clips are written from the video.
  */
-const PACKAGING_SECTIONS: Record<string, { metadataKey: string; shape: string }> = {
-  TITLES: { metadataKey: 'titles', shape: '["string", ...]' },
-  THUMBNAIL_TEXT: { metadataKey: 'thumbnail_text', shape: '["string", ...]' },
-  HASHTAGS: { metadataKey: 'hashtags', shape: '"#One #Two #Three"' },
-  PINNED_COMMENT: { metadataKey: 'pinned_comment', shape: '["string", ...]' },
-  CLIP_SUGGESTIONS: { metadataKey: 'clip_suggestions', shape: '["string", ...]' },
-  SPOKEN_KEYWORDS: { metadataKey: 'spoken_keywords', shape: '["string", ...]' },
+interface MetadataFieldSpec {
+  section: string;
+  shape: string;
+  needsTranscript: boolean;
+}
+
+export const METADATA_FIELD_SECTIONS: Record<MetadataFieldId, MetadataFieldSpec> = {
+  titles: { section: 'TITLES', shape: '["string", ...]', needsTranscript: true },
+  description: { section: 'DESCRIPTION', shape: '"one string"', needsTranscript: false },
+  tags: { section: 'TAGS', shape: '"comma-separated string"', needsTranscript: false },
+  thumbnail_text: { section: 'THUMBNAIL_TEXT', shape: '["string", ...]', needsTranscript: true },
+  pinned_comment: { section: 'PINNED_COMMENT', shape: '["string", ...]', needsTranscript: true },
+  clip_suggestions: { section: 'CLIP_SUGGESTIONS', shape: '["string", ...]', needsTranscript: true },
+  hashtags: { section: 'HASHTAGS', shape: '"#One #Two #Three"', needsTranscript: false },
+  spoken_keywords: { section: 'SPOKEN_KEYWORDS', shape: '["string", ...]', needsTranscript: true },
 };
 
-/** Sections the packaging task must NOT carry: two moved to their own units, one is code-owned. */
-const PACKAGING_EXCLUDED = new Set(['DESCRIPTION', 'TAGS', 'CHAPTERS']);
+/** Canonical section key -> field, for reading a prompt set back the other way. */
+const SECTION_TO_FIELD: Record<string, MetadataFieldId> = Object.fromEntries(
+  (Object.entries(METADATA_FIELD_SECTIONS) as Array<[MetadataFieldId, MetadataFieldSpec]>).map(
+    ([field, spec]) => [spec.section, field]
+  )
+);
 
-const SINGLE_FIELD_TASKS: Record<'description' | 'tags', { section: string; metadataKey: string; shape: string }> = {
-  description: { section: 'DESCRIPTION', metadataKey: 'description', shape: '"one string"' },
-  tags: { section: 'TAGS', metadataKey: 'tags', shape: '"comma-separated string"' },
-};
+/**
+ * Sections no unit may carry as instructions: chapters are code-owned (the pipeline
+ * measures them), and these two are rebuilt or placed per group.
+ */
+const CODE_OWNED_SECTIONS = new Set(['CHAPTERS', 'OUTPUT_FORMAT', 'FINAL_SELF-CHECK']);
 
-function buildOutputFormat(keys: Array<{ metadataKey: string; shape: string }>): string {
-  const keyLines = keys.map((k) => `  "${k.metadataKey}": ${k.shape}`).join(',\n');
+function buildOutputFormat(fields: MetadataFieldId[]): string {
+  const keyLines = fields.map((f) => `  "${f}": ${METADATA_FIELD_SECTIONS[f].shape}`).join(',\n');
   return formatPrompt(SYSTEM_PROMPTS.TASK_OUTPUT_FORMAT, { keyLines });
 }
 
+/** Does this group's call need the transcript, or does the chapter list stand in for it? */
+export function groupNeedsTranscript(fields: MetadataFieldId[]): boolean {
+  return fields.some((f) => METADATA_FIELD_SECTIONS[f].needsTranscript);
+}
+
 export interface TaskInstructions {
-  /** The instruction block for this task, ending in its own OUTPUT FORMAT. */
+  /** The instruction block for this group, ending in its own OUTPUT FORMAT. */
   text: string;
-  /** Metadata keys this task is responsible for returning. */
-  metadataKeys: string[];
+  /** Metadata keys this group is responsible for returning. */
+  metadataKeys: MetadataFieldId[];
 }
 
 /**
- * Assemble one task's instructions out of the prompt set's own sections.
+ * What a cloud group is, as both the prompt builder and the key checker read it.
  *
- * STRICT by design: a task whose section is missing throws naming the prompt set and the
- * section. The alternative — sending the call anyway with no field rules — produces
+ * Declared once and passed to both so a group cannot be ASKED for one set of keys and
+ * CHECKED for another — the two are derived from the same call to buildGroupInstructions.
+ */
+export interface MetadataGroupSpec {
+  /** Provider-prefixed model this group's single call runs on. */
+  model: string;
+  /** The fields routed to this model, in prompt-set order. */
+  fields: MetadataFieldId[];
+  /** Canonical section keys other units own. Never absorbed, never sent here. */
+  ownedElsewhere: Set<string>;
+  /** This group carries the sections no unit claimed (see below). Exactly one group does. */
+  absorbUnownedSections: boolean;
+  /** This group carries the prompt set's FINAL SELF-CHECK. Exactly one group does. */
+  selfCheck: boolean;
+  /** This group carries the CHANNEL PERFORMANCE DATA block. At most one group does. */
+  insights: boolean;
+}
+
+/**
+ * Assemble one group's instructions out of the prompt set's own sections.
+ *
+ * Sections are emitted in the PROMPT SET's order, not the group's, because a prompt set
+ * is written to be read top to bottom and its own ordering is editorial. The set's
+ * "## OUTPUT FORMAT" is replaced in place by one naming exactly this group's keys — a
+ * model told to return seven keys returns seven, and the six that belong to other units
+ * would be thrown away or, worse, merged over another unit's real answer.
+ *
+ * STRICT by design: a group whose field has no section throws naming the prompt set and
+ * the section. The alternative — sending the call anyway with no field rules — produces
  * metadata that looks generated but was written to no brief at all, and nothing
  * downstream can tell the difference.
+ *
+ * `absorbUnownedSections` is how a user-extended prompt set survives the split. A section
+ * no unit claimed is either a known field nobody routed (SPOKEN KEYWORDS, which only the
+ * shorts set has and which no task in the registry routes) or something the user added
+ * themselves. Both ride with the absorbing group: the known one contributes its output
+ * key, the unknown one contributes instructions and a warning saying it produced no
+ * field. Note that absorbing does NOT change the group's content slot — an absorbed
+ * transcript-hungry section rides in whatever slot its host group already had.
  */
-export function buildTaskInstructions(
-  task: MetadataTaskId,
+export function buildGroupInstructions(
+  spec: MetadataGroupSpec,
   sections: InstructionSection[],
-  promptSetName: string,
-  options?: { hashtagsOwnedByDescription?: boolean }
+  promptSetName: string
 ): TaskInstructions {
-  if (task === 'description' || task === 'tags') {
-    const spec = SINGLE_FIELD_TASKS[task];
-    const section = sections.find((s) => s.key === spec.section);
-    if (!section) {
+  const wanted = new Map<string, MetadataFieldId>();
+  for (const field of spec.fields) {
+    const sectionKey = METADATA_FIELD_SECTIONS[field].section;
+    if (!sections.some((s) => s.key === sectionKey)) {
       throw new Error(
-        `Prompt set "${promptSetName}" has no "## ${spec.section}" section, so the "${task}" task has no instructions ` +
+        `Prompt set "${promptSetName}" has no "## ${sectionKey}" section, so the "${field}" field has no instructions ` +
           `(sections found: ${sections.map((s) => s.header).join(', ') || 'none'})`
       );
     }
-    return {
-      text: `${section.text}\n${buildOutputFormat([spec])}`,
-      metadataKeys: [spec.metadataKey],
-    };
+    wanted.set(sectionKey, field);
   }
 
-  // Packaging: everything the other two units did not take, with the prompt set's own
-  // OUTPUT FORMAT swapped for one naming only the keys this call is responsible for.
-  // The self-check section rides along untouched — it is the prompt set's last word on
-  // titles and thumbnails, which is precisely what this call generates.
   const kept: string[] = [];
-  const keys: Array<{ metadataKey: string; shape: string }> = [];
+  const keys: MetadataFieldId[] = [];
   let outputFormatPlaced = false;
 
-  // HASHTAGS leaves packaging entirely when the description adapter owns them — the
-  // section text goes too, not just the output key. Leaving the rules in while removing
-  // the key would ask this call to follow instructions for a field it may not return.
-  const excluded = options?.hashtagsOwnedByDescription
-    ? new Set([...PACKAGING_EXCLUDED, 'HASHTAGS'])
-    : PACKAGING_EXCLUDED;
-
   for (const section of sections) {
-    if (excluded.has(section.key)) continue;
-
     if (section.key === 'OUTPUT_FORMAT') {
+      // Placeholder, so the rebuilt block lands exactly where the prompt set put it.
       kept.push('__OUTPUT_FORMAT__');
       outputFormatPlaced = true;
       continue;
     }
+    if (section.key === 'FINAL_SELF-CHECK') {
+      if (spec.selfCheck) kept.push(section.text);
+      continue;
+    }
+    if (section.key === 'CHAPTERS') continue;
 
-    const packaging = PACKAGING_SECTIONS[section.key];
-    if (packaging) {
-      keys.push(packaging);
-    } else if (section.key !== 'FINAL_SELF-CHECK') {
+    const mine = wanted.get(section.key);
+    if (mine) {
+      keys.push(mine);
+      kept.push(section.text);
+      continue;
+    }
+
+    if (spec.ownedElsewhere.has(section.key) || !spec.absorbUnownedSections) continue;
+
+    const orphanField = SECTION_TO_FIELD[section.key];
+    if (orphanField) {
+      keys.push(orphanField);
+    } else {
       // A section this code has no output key for still reaches the model — the YAMLs
       // are the user's to extend — but it contributes nothing to the JSON, and a user
       // who added it expecting a field back needs to see why they never got one.
       log.warn(
         `[MetadataTasks] Prompt set "${promptSetName}" section "## ${section.header}" has no known output key; ` +
-          `its instructions are sent with the packaging task but it contributes no JSON field`
+          `its instructions are sent with the ${spec.model} group but it contributes no JSON field`
       );
     }
     kept.push(section.text);
@@ -236,8 +318,8 @@ export function buildTaskInstructions(
 
   if (keys.length === 0) {
     throw new Error(
-      `Prompt set "${promptSetName}" has no packaging sections (${Object.keys(PACKAGING_SECTIONS).join(', ')}), ` +
-        `so the "packaging" task has nothing to generate`
+      `Prompt set "${promptSetName}" produced no output keys for the ${spec.model} group ` +
+        `(fields routed to it: ${spec.fields.join(', ') || 'none'})`
     );
   }
 
@@ -252,42 +334,57 @@ export function buildTaskInstructions(
 
   return {
     text: kept.map((part) => (part === '__OUTPUT_FORMAT__' ? outputFormat.trim() : part)).join('\n\n'),
-    metadataKeys: keys.map((k) => k.metadataKey),
+    metadataKeys: keys,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Backends
+// The cloud groups
 // ---------------------------------------------------------------------------
 
 /**
- * The seam's first implementation: the same Claude/OpenAI/Ollama request, JSON parse and
- * repair machinery the single-call path has always used, pointed at one task's prompt.
- * Still the only backend that can generate packaging, and the way back for description
- * and tags when a run should not touch the local adapters.
+ * The seam's first implementation: the same Claude/OpenAI request, JSON parse and repair
+ * machinery the single-call path has always used, pointed at ONE MODEL'S share of the
+ * fields.
+ *
+ * One instance per distinct cloud model in the routing. The fields it carries are the
+ * ones the user pointed at that model, so a run with everything on Sonnet is a single
+ * call that looks very like the old whole-metadata call, and a run that moves thumbnails
+ * to Opus becomes two calls — never one call per field, which would cost more and lose
+ * the coherence between a title and the thumbnail text written to sit beside it.
  */
-export class CloudTaskBackend implements MetadataTaskBackend {
-  readonly id = 'cloud';
+export class CloudGroupUnit implements MetadataUnit {
+  readonly label: string;
+  readonly fields: MetadataFieldId[];
 
-  constructor(private readonly aiManager: AIManagerService) {}
-
-  describePrompt(input: MetadataTaskInput): string {
-    return this.aiManager.buildMetadataTaskPrompt(input);
+  constructor(
+    private readonly aiManager: AIManagerService,
+    private readonly spec: MetadataGroupSpec
+  ) {
+    this.fields = spec.fields;
+    this.label = `${spec.fields.join(' + ')} (cloud ${spec.model})`;
   }
 
-  async generate(input: MetadataTaskInput): Promise<Record<string, unknown>> {
-    const expected = this.aiManager.metadataTaskKeys(input);
-    const { metadata, presentKeys } = await this.aiManager.runMetadataRequest(this.describePrompt(input));
+  describePrompt(ctx: MetadataRunContext): string {
+    return this.aiManager.buildMetadataGroupPrompt(this.spec, ctx);
+  }
 
-    // Take ONLY this task's keys. A response also carries the registry's other keys as
+  async generate(ctx: MetadataRunContext): Promise<Record<string, unknown>> {
+    const expected = this.aiManager.metadataGroupKeys(this.spec);
+    const { metadata, presentKeys } = await this.aiManager.runMetadataRequest(
+      this.describePrompt(ctx),
+      this.spec.model
+    );
+
+    // Take ONLY this group's keys. A response also carries the registry's other keys as
     // empty arrays / undefined (normalizeMetadataKeys fills the whole registry), and
-    // merging those over another task's real answer would blank it.
+    // merging those over another unit's real answer would blank it.
     const picked: Record<string, unknown> = {};
     for (const key of expected) {
       if (!presentKeys.has(key)) {
         throw new Error(
-          `Metadata task "${input.task}" for ${input.sourceLabel} returned no "${key}" — the response must contain ` +
-            `every key named in that task's OUTPUT FORMAT (got: ${Array.from(presentKeys).join(', ') || 'nothing'})`
+          `Metadata group ${this.spec.model} for ${ctx.sourceLabel} returned no "${key}" — the response must contain ` +
+            `every key named in that group's OUTPUT FORMAT (got: ${Array.from(presentKeys).join(', ') || 'nothing'})`
         );
       }
       picked[key] = (metadata as Record<string, unknown>)[key];
@@ -314,7 +411,22 @@ export class CloudTaskBackend implements MetadataTaskBackend {
  * (parsed out here into the `hashtags` field), and the tags adapter deliberately omits
  * channel and creator names because those are appended downstream.
  */
-const ADAPTER_SYSTEM_PROMPTS: Record<'description' | 'tags', string> = {
+export type AdapterTask = 'description' | 'tags' | 'titles';
+
+/**
+ * The wire name for `task:` in the user turn.
+ *
+ * `titles` is the ContentStudio field; `title` is what the training set wrote, because
+ * the adapter writes ONE title per call. The field name and the trained token are not the
+ * same string and must not be conflated — the mapping is here, once.
+ */
+const ADAPTER_WIRE_TASK: Record<AdapterTask, string> = {
+  description: 'description',
+  tags: 'tags',
+  titles: 'title',
+};
+
+const ADAPTER_SYSTEM_PROMPTS: Record<AdapterTask, string> = {
   description:
     'You write YouTube descriptions for independent commentary channels covering religion, politics ' +
     'and the far right. Given the list of subjects a video covers, write its description in three parts: ' +
@@ -328,6 +440,13 @@ const ADAPTER_SYSTEM_PROMPTS: Record<'description' | 'tags', string> = {
     'two-to-four-word phrase for the main subject first, then the named people, organizations and events it ' +
     'covers, then the broad category terms it belongs to. Accurate and boring beats clever - tags are a ' +
     'labelling job, not a hook. No channel names and no creator names - those are appended separately.',
+  titles:
+    'You write YouTube titles for independent commentary channels covering religion, politics and the far ' +
+    'right - the atheist, ex-religious, skeptic and left-of-centre corner of YouTube. Given a description of ' +
+    'a video, write one title. Name names; plain concrete language, no corporate phrasing; be the prosecutor, ' +
+    'not the journalist - state what happened and why it matters, don\'t hedge. Specificity plus an open loop ' +
+    'beats vague drama. This is a standard upload: the hook lands inside the first 45 characters and the whole ' +
+    'title runs 45-70 characters, covering one story.',
 };
 
 /**
@@ -342,7 +461,7 @@ const ADAPTER_SYSTEM_PROMPTS: Record<'description' | 'tags', string> = {
  * ContentStudio has no flag that distinguishes the two, and guessing which one a video
  * is would be inventing an input.
  */
-function buildAdapterUserTurn(task: 'description' | 'tags', subjects: string[]): string {
+function buildAdapterUserTurn(task: AdapterTask, subjects: string[]): string {
   const lines = subjects.map((s) => s.trim()).filter((s) => s.length > 0);
   if (lines.length === 0) {
     throw new Error(
@@ -350,7 +469,7 @@ function buildAdapterUserTurn(task: 'description' | 'tags', subjects: string[]):
         `the adapter conditions on that list and has nothing else to work from`
     );
   }
-  return `task: ${task}\nformat: normal\n\nVideo:\n${lines.map((s) => `- ${s}`).join('\n')}`;
+  return `task: ${ADAPTER_WIRE_TASK[task]}\nformat: normal\n\nVideo:\n${lines.map((s) => `- ${s}`).join('\n')}`;
 }
 
 interface ChatMessage {
@@ -363,65 +482,103 @@ const ADAPTER_KEEP_ALIVE = '10m';
 /** A 14B writing three sentences is seconds of work; five minutes is a wedged server. */
 const ADAPTER_TIMEOUT_MS = 300_000;
 
+/** How many titles the titles adapter is sampled for. One call per candidate. */
+const TITLE_CANDIDATES = 6;
+/** A title is one line; 64 tokens is generous for 70 characters and cheap to sample. */
+const TITLE_NUM_PREDICT = 64;
+/** The titles adapter's evaluated sampling settings. Not greedy — see the class comment. */
+const TITLE_SAMPLING = { temperature: 0.7, top_p: 0.9, num_predict: TITLE_NUM_PREDICT };
+
 /**
- * The seam's second implementation: the fine-tuned adapters, on this machine's Ollama.
+ * The seam's second implementation: one fine-tuned adapter, on a local Ollama-shaped host.
  *
- * Two tasks, two LoRAs over qwen3:14b, one contract each (ADAPTER_SYSTEM_PROMPTS). They
- * are chat models run greedily — `think: false`, temperature 0 — because a metadata run
- * that returns a different description each time it is re-run cannot be reviewed, and
- * because greedy decoding is what the adapters were evaluated at.
+ * Three tasks have a LoRA over qwen3:14b, one contract each (ADAPTER_SYSTEM_PROMPTS), and
+ * ONE instance of this class serves ONE task — the models differ, the hosts can differ
+ * (the 32B titles model is an MLX shim on its own port), and a run releases each one it
+ * made resident.
+ *
+ * Decoding differs by task, and deliberately:
+ *   description, tags — greedy (`temperature 0`), because a metadata run that returns a
+ *     different description each time it is re-run cannot be reviewed, and greedy is what
+ *     those adapters were evaluated at.
+ *   titles — SAMPLED (temperature 0.7 / top_p 0.9), because the field is a LIST of
+ *     alternatives. Greedy decoding would return the same title six times; the point of
+ *     six candidates is six different bets.
  *
  * They answer in PLAIN TEXT, not JSON. That is the whole shape difference from the cloud
- * backend: no JSON parse, no key registry, no repair loop — a description is a
- * description, and the mapping from text to fields happens here.
+ * unit: no JSON parse, no key registry, no repair loop — a description is a description,
+ * and the mapping from text to fields happens here.
  *
- * There is NO adapter for packaging, and this class refuses that task rather than
- * pretending. There is also no local->cloud rescue anywhere in it: a task the user
- * routed to an adapter either runs on that adapter or fails saying why.
+ * There is no local->cloud rescue anywhere in this class: a task the user routed to an
+ * adapter either runs on that adapter or fails saying why.
  */
-export class LocalAdapterTaskBackend implements MetadataTaskBackend {
-  readonly id = 'local';
+export class LocalAdapterUnit implements MetadataUnit {
+  readonly label: string;
+  readonly fields: MetadataFieldId[];
 
   private readonly client: AxiosInstance;
+  private readonly host: string;
+  private readonly model: string;
+  private readonly startHint?: string;
   /** Models this run actually made resident — the exact set unload() releases. */
   private readonly loaded = new Set<string>();
 
   constructor(
-    private readonly host: string,
-    private readonly models: MetadataTaskModelConfig
+    private readonly task: AdapterTask,
+    option: MetadataRoutingOption,
+    defaultHost: string,
+    /** True when this run's `hashtags` come from the description adapter's last line. */
+    private readonly ownsHashtags: boolean
   ) {
+    if (option.kind !== 'local') {
+      throw new Error(
+        `Metadata task "${task}" was planned as a local adapter but option "${option.label}" is a ${option.kind} model`
+      );
+    }
+    this.host = option.host || defaultHost;
+    this.model = option.model;
+    this.startHint = option.startHint;
+    // The description adapter's trained output ENDS with a hashtag line, so this unit
+    // returns `hashtags` whether or not the prompt set has a "## HASHTAGS" section —
+    // there is no way to ask the adapter for a description without one, and dropping the
+    // line it wrote would be discarding output the model actually produced.
+    this.fields = task === 'description' && ownsHashtags ? ['description', 'hashtags'] : [task];
+    this.label = `${task} (local ${this.model} @ ${this.host})`;
     this.client = axios.create({
-      baseURL: host,
+      baseURL: this.host,
       headers: { 'Content-Type': 'application/json' },
     });
   }
 
-  describePrompt(input: MetadataTaskInput): string {
-    const task = this.adapterTask(input.task);
-    const model = this.modelFor(task);
-    const messages = this.buildConversation(task, input);
+  describePrompt(ctx: MetadataRunContext): string {
+    const messages = this.buildConversation(ctx);
+    const decoding = this.task === 'titles'
+      ? `temperature ${TITLE_SAMPLING.temperature}, top_p ${TITLE_SAMPLING.top_p}, ${TITLE_CANDIDATES} candidates`
+      : 'temperature 0';
     return (
-      `# LOCAL ADAPTER: ${model} @ ${this.host} (ollama /api/chat, think:false, temperature 0)\n\n` +
+      `# LOCAL ADAPTER: ${this.model} @ ${this.host} (ollama /api/chat, think:false, ${decoding})\n\n` +
       messages.map((m) => `--- ${m.role.toUpperCase()} ---\n${m.content}`).join('\n\n')
     );
   }
 
-  async generate(input: MetadataTaskInput): Promise<Record<string, unknown>> {
-    const task = this.adapterTask(input.task);
-    const model = this.modelFor(task);
-    const messages = this.buildConversation(task, input);
+  async generate(ctx: MetadataRunContext): Promise<Record<string, unknown>> {
+    const messages = this.buildConversation(ctx);
 
-    const answer = await this.chat(model, messages, task, input.sourceLabel);
-    const checked = await this.guardAgainstInventedNames(model, messages, answer, task, input);
+    if (this.task === 'titles') {
+      return { titles: await this.generateTitles(messages, ctx) };
+    }
 
-    return task === 'description'
-      ? splitDescriptionAndHashtags(checked, task, model, input.sourceLabel)
-      : { tags: normalizeAdapterTags(checked, task, model, input.sourceLabel) };
+    const answer = await this.chat(messages, ctx.sourceLabel, { temperature: 0 });
+    const checked = await this.guardAgainstInventedNames(messages, answer, ctx);
+
+    return this.task === 'description'
+      ? splitDescriptionAndHashtags(checked, this.task, this.model, ctx.sourceLabel)
+      : { tags: normalizeAdapterTags(checked, this.task, this.model, ctx.sourceLabel) };
   }
 
   /**
-   * Let the resident adapters go. Housekeeping only: a failure here costs VRAM until
-   * Ollama's own keep-alive timer fires, which is not worth failing a finished run over
+   * Let the resident adapter go. Housekeeping only: a failure here costs VRAM until the
+   * server's own keep-alive timer fires, which is not worth failing a finished run over
    * — the same call the chapter pipeline makes for the same reason.
    */
   async unload(): Promise<void> {
@@ -437,32 +594,102 @@ export class LocalAdapterTaskBackend implements MetadataTaskBackend {
 
   // ------------------------------------------------------------------ conversation
 
-  private adapterTask(task: MetadataTaskId): 'description' | 'tags' {
-    if (task === 'description' || task === 'tags') return task;
-    throw new Error(
-      `Metadata task "${task}" is routed to backend 'local', but there is no local adapter for it — ` +
-        `only "description" (headline-14b-descriptions) and "tags" (headline-14b-tags) have one. ` +
-        `Set metadataTaskBackends.${task} to "cloud".`
-    );
+  private buildConversation(ctx: MetadataRunContext): ChatMessage[] {
+    return [
+      { role: 'system', content: ADAPTER_SYSTEM_PROMPTS[this.task] },
+      { role: 'user', content: buildAdapterUserTurn(this.task, ctx.chapterSubjects) },
+    ];
   }
 
-  private modelFor(task: 'description' | 'tags'): string {
-    const model = (this.models[task] || '').trim();
-    if (!model) {
+  // ------------------------------------------------------------------------- titles
+
+  /**
+   * Six samples of one title, deduped into the `titles` list.
+   *
+   * Six SEQUENTIAL calls, not six parallel ones: the adapter is resident on one GPU
+   * behind a one-slot queue, so parallel requests would only queue anyway.
+   *
+   * The name guard runs PER CANDIDATE and drops rather than retries. A sampled candidate
+   * costs one short call, so re-asking the model to fix one is more expensive than
+   * throwing it away and keeping the other five — the opposite of the description case,
+   * where the answer being repaired is the only answer there is.
+   */
+  private async generateTitles(messages: ChatMessage[], ctx: MetadataRunContext): Promise<string[]> {
+    const raw: string[] = [];
+    for (let i = 0; i < TITLE_CANDIDATES; i++) {
+      raw.push(await this.chat(messages, ctx.sourceLabel, TITLE_SAMPLING));
+    }
+
+    const seen = new Set<string>();
+    const distinct: string[] = [];
+    for (const candidate of raw) {
+      const title = candidate.trim();
+      if (title.includes('\n')) {
+        // The adapter writes ONE title per call. More than one line is a departure from
+        // the trained output shape, and what else departed is unknown.
+        log.warn(
+          `[MetadataTasks] ${ctx.sourceLabel}: dropped a titles candidate that came back as more than one line ` +
+            `("${title.replace(/\n/g, ' / ').slice(0, 120)}")`
+        );
+        continue;
+      }
+      const key = title.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      distinct.push(title);
+    }
+
+    if (distinct.length < 3) {
       throw new Error(
-        `Metadata task "${task}" is routed to backend 'local' but metadataTaskModels.${task} names no model — ` +
-          `set it to that adapter's Ollama model name (the shipped default is ` +
-          `"${DEFAULT_METADATA_TASK_MODELS[task]}")`
+        `Metadata task "titles" for ${ctx.sourceLabel} on model "${this.model}" produced only ${distinct.length} ` +
+          `distinct title(s) from ${TITLE_CANDIDATES} samples — a title list the user cannot choose from is not a ` +
+          `title list (got: ${distinct.map((t) => `"${t}"`).join(', ') || 'nothing'})`
       );
     }
-    return model;
-  }
 
-  private buildConversation(task: 'description' | 'tags', input: MetadataTaskInput): ChatMessage[] {
-    return [
-      { role: 'system', content: ADAPTER_SYSTEM_PROMPTS[task] },
-      { role: 'user', content: buildAdapterUserTurn(task, input.chapterSubjects) },
-    ];
+    // The titles guard gets MORE evidence than the titles model does, and it has to.
+    //
+    // findUnsupportedNames reads capitalization as a name claim, which is true of prose
+    // and false of a title: Title Case capitalizes every content word, so "Is VERY
+    // Defensive About His Private Jet" arrives looking like a seven-word proper noun. Run
+    // against the subject lines alone, the guard drops most valid titles for using
+    // ordinary English ("Defensive", "Good", "Look") that the 4-8 word subject lines
+    // happen not to contain — measured: 5 of 6 candidates dropped on a clean run.
+    //
+    // So the transcript joins the conditioning HERE, in the check, while the model still
+    // sees only the subject list it was trained on. The question the guard asks is not
+    // "did the model stay inside its prompt" but "did it invent something the video never
+    // says", and the transcript is the best available answer to that: an ordinary word is
+    // in it, and a fabricated name is not.
+    const conditioning = [...ctx.chapterSubjects, ctx.sourceLabel, ctx.content].filter(
+      (line) => line.trim().length > 0
+    );
+    const kept: string[] = [];
+    for (const title of distinct) {
+      const check = findUnsupportedNames(title, conditioning);
+      if (check.unsupported.length > 0) {
+        log.warn(
+          `[MetadataTasks] ${ctx.sourceLabel}: dropped title "${title}" — it names ` +
+            `${check.unsupported.map((n) => `"${n}"`).join(' and ')}, which this video's chapter subjects do not`
+        );
+        continue;
+      }
+      kept.push(title);
+    }
+
+    if (kept.length === 0) {
+      throw new Error(
+        `Metadata task "titles" for ${ctx.sourceLabel} on model "${this.model}" had every one of its ` +
+          `${distinct.length} candidate titles dropped for naming people or organizations this video's chapter ` +
+          `subjects never mention. Refusing rather than publishing a name the video never says.`
+      );
+    }
+
+    log.info(
+      `[MetadataTasks] ${ctx.sourceLabel}: titles adapter kept ${kept.length} of ${TITLE_CANDIDATES} sampled ` +
+        `candidate(s) (${distinct.length} distinct) on "${this.model}"`
+    );
+    return kept;
   }
 
   // -------------------------------------------------------------------- the request
@@ -477,12 +704,13 @@ export class LocalAdapterTaskBackend implements MetadataTaskBackend {
    * local adds no concurrency — it swaps what happens inside one slot.
    */
   private async chat(
-    model: string,
     messages: ChatMessage[],
-    task: 'description' | 'tags',
-    sourceLabel: string
+    sourceLabel: string,
+    options: Record<string, number>
   ): Promise<string> {
     const requestId = Math.random().toString(36).substring(7);
+    const model = this.model;
+    const task = this.task;
 
     const text = await queueAITask<string>(
       `local-${task}-${requestId}`,
@@ -498,7 +726,7 @@ export class LocalAdapterTaskBackend implements MetadataTaskBackend {
               stream: false,
               think: false,
               keep_alive: ADAPTER_KEEP_ALIVE,
-              options: { temperature: 0 },
+              options,
             },
             { timeout: ADAPTER_TIMEOUT_MS }
           );
@@ -508,8 +736,19 @@ export class LocalAdapterTaskBackend implements MetadataTaskBackend {
           const detail = error?.response?.data?.error || error?.message || 'unknown error';
           if (status === 404) {
             throw new Error(
-              `Metadata task "${task}" needs Ollama model "${model}", which is not installed on ${this.host}. ` +
+              `Metadata task "${task}" needs model "${model}", which is not installed on ${this.host}. ` +
                 `Install it with: ollama pull ${model}  (or, for a local adapter build, ollama create ${model} -f Modelfile)`
+            );
+          }
+          // Nothing is listening on that port. For the shim-hosted models this is the
+          // expected first failure — the shim is a separate process the user starts —
+          // so the error says what the port is and how to bring it up, instead of
+          // leaving them to work out what ECONNREFUSED on 11435 means.
+          if (error?.code === 'ECONNREFUSED' || error?.code === 'ENOTFOUND') {
+            throw new Error(
+              `Metadata task "${task}" is routed to "${model}" at ${this.host}, and nothing is listening there` +
+                (this.startHint ? ` — ${this.startHint}` : '') +
+                `. No cloud model was substituted: the task runs where it was routed or not at all.`
             );
           }
           if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT') {
@@ -518,7 +757,7 @@ export class LocalAdapterTaskBackend implements MetadataTaskBackend {
             );
           }
           throw new Error(
-            `Metadata task "${task}" for ${sourceLabel} failed on model "${model}": ${detail}`
+            `Metadata task "${task}" for ${sourceLabel} failed on model "${model}" @ ${this.host}: ${detail}`
           );
         }
 
@@ -549,26 +788,28 @@ export class LocalAdapterTaskBackend implements MetadataTaskBackend {
    * own answer, then a user correction), and if it names something unmatched a second
    * time the run stops. There is no third try and no scrubbing of the offending name:
    * an answer that has to be edited to be safe was not written from the subjects.
+   *
+   * (Titles do not come through here — see generateTitles: a sampled candidate is dropped,
+   * not repaired.)
    */
   private async guardAgainstInventedNames(
-    model: string,
     messages: ChatMessage[],
     answer: string,
-    task: 'description' | 'tags',
-    input: MetadataTaskInput
+    ctx: MetadataRunContext
   ): Promise<string> {
-    const conditioning = [...input.chapterSubjects, input.sourceLabel];
+    const conditioning = [...ctx.chapterSubjects, ctx.sourceLabel];
+    const task = this.task;
 
     const first = findUnsupportedNames(answer, conditioning);
     log.info(
-      `[MetadataTasks] ${input.sourceLabel}: "${task}" name guard checked ${first.candidates} candidate name(s) ` +
-        `against ${input.chapterSubjects.length} subject line(s) — ${first.unsupported.length === 0 ? 'clean' : `unsupported: ${first.unsupported.join(', ')}`}`
+      `[MetadataTasks] ${ctx.sourceLabel}: "${task}" name guard checked ${first.candidates} candidate name(s) ` +
+        `against ${ctx.chapterSubjects.length} subject line(s) — ${first.unsupported.length === 0 ? 'clean' : `unsupported: ${first.unsupported.join(', ')}`}`
     );
     if (first.unsupported.length === 0) return answer;
 
     const quoted = first.unsupported.map((n) => `"${n}"`).join(' and ');
     log.warn(
-      `[MetadataTasks] ${input.sourceLabel}: "${task}" named ${quoted}, which the subjects do not — re-asking once`
+      `[MetadataTasks] ${ctx.sourceLabel}: "${task}" named ${quoted}, which the subjects do not — re-asking once`
     );
 
     const retryMessages: ChatMessage[] = [
@@ -582,16 +823,16 @@ export class LocalAdapterTaskBackend implements MetadataTaskBackend {
       },
     ];
 
-    const retried = await this.chat(model, retryMessages, task, input.sourceLabel);
+    const retried = await this.chat(retryMessages, ctx.sourceLabel, { temperature: 0 });
     const second = findUnsupportedNames(retried, conditioning);
     log.info(
-      `[MetadataTasks] ${input.sourceLabel}: "${task}" name guard re-checked ${second.candidates} candidate name(s) ` +
+      `[MetadataTasks] ${ctx.sourceLabel}: "${task}" name guard re-checked ${second.candidates} candidate name(s) ` +
         `after the corrective retry — ${second.unsupported.length === 0 ? 'clean' : `still unsupported: ${second.unsupported.join(', ')}`}`
     );
 
     if (second.unsupported.length > 0) {
       throw new Error(
-        `Metadata task "${task}" for ${input.sourceLabel} on model "${model}" named ` +
+        `Metadata task "${task}" for ${ctx.sourceLabel} on model "${this.model}" named ` +
           `${second.unsupported.map((n) => `"${n}"`).join(' and ')}, which does not appear in this video's chapter ` +
           `subjects. The adapter invented it, and it did so again after one corrective retry. Refusing rather ` +
           `than publishing a name the video never says.`
@@ -959,78 +1200,172 @@ export function findUnsupportedNames(text: string, conditioning: string[]): Name
 }
 
 // ---------------------------------------------------------------------------
-// Routing
+// Planning a run
 // ---------------------------------------------------------------------------
 
-export type MetadataTaskBackendConfig = Partial<Record<MetadataTaskId, string>>;
-/** Ollama model name per locally-routed task, from the `metadataTaskModels` setting. */
-export type MetadataTaskModelConfig = Partial<Record<MetadataTaskId, string>>;
-
-/**
- * Shipped routing: the description and tags adapters are trained, deployed and are the
- * point of the split, so they are what a fresh install runs. Packaging stays on the
- * cloud because it has no adapter.
- */
-export const DEFAULT_METADATA_TASK_BACKENDS: MetadataTaskBackendConfig = {
-  description: 'local',
-  tags: 'local',
+/** Fields with a trained adapter. Everything else is cloud-only until one exists. */
+const ADAPTER_FIELDS: Record<string, AdapterTask> = {
+  description: 'description',
+  tags: 'tags',
+  titles: 'titles',
 };
 
-/** Shipped adapter model names — LoRAs over qwen3:14b, on the local Ollama. */
-export const DEFAULT_METADATA_TASK_MODELS: MetadataTaskModelConfig = {
-  description: 'headline-14b-descriptions',
-  tags: 'headline-14b-tags',
-};
+export interface MetadataRunPlan {
+  /** The units this run executes, in order: local adapters first, then cloud groups. */
+  units: MetadataUnit[];
+  /**
+   * Which unit writes the `hashtags` field, decided from the routing alone.
+   *
+   * The description ADAPTER always ends with a hashtag line; the description CLOUD prompt
+   * never does (the prompt set's own `## HASHTAGS` section is a separate section). So the
+   * field follows the description task's model: locally it is parsed out of the
+   * description adapter's own last line, and in the cloud the HASHTAGS section simply
+   * joins whichever group already carries DESCRIPTION. Two units writing one field would
+   * let the merge order decide the answer.
+   */
+  hashtagsOwnedByDescription: boolean;
+  /** One line for the job log: which model writes what, and how many calls that is. */
+  summary: string;
+}
 
 /**
- * Resolve the settings keys `metadataTaskBackends` / `metadataTaskModels` into backend
- * instances. A task the config does not mention runs on the cloud — that is the
- * documented default for a task with no adapter, not a recovery. A backend NAME the
- * config does mention but this code does not know is a different thing entirely and
- * throws, as does a local task whose model name is missing: both mean the user asked for
- * something specific and would otherwise silently get something else.
+ * Turn a resolved routing into the units that will run.
  *
- * ONE LocalAdapterTaskBackend serves every locally-routed task, so both adapters are
- * loaded and released by the same object and the run has exactly one unload to make.
+ * The grouping rule is BY MODEL, not by field: every cloud-routed field that points at
+ * the same model is written by one call. Splitting them would cost one request per field
+ * and, worse, lose the coherence the prompt sets are written for — the self-check tells
+ * the model its thumbnail text must not repeat words from its own titles, which is only
+ * a rule it can follow if it wrote both.
+ *
+ * Three things ride with exactly one group each, and this is where that is decided:
+ *   FINAL SELF-CHECK — the group with titles, else the largest group. It is mostly a
+ *     statement about titles and thumbnails, and it cannot check fields its group did not
+ *     write.
+ *   the insights block — the group with titles; if titles are local, the first cloud
+ *     group; if nothing is in the cloud, nowhere, and the log says so. Channel performance
+ *     data speaks to packaging, and the local adapters were never trained to read it.
+ *   unowned sections — the same group as the insights block. See buildGroupInstructions.
  */
-export function resolveTaskBackends(
-  config: MetadataTaskBackendConfig | undefined,
-  models: MetadataTaskModelConfig | undefined,
-  host: string,
-  aiManager: AIManagerService
-): Record<MetadataTaskId, MetadataTaskBackend> {
-  const cloud = new CloudTaskBackend(aiManager);
-  const resolved = {} as Record<MetadataTaskId, MetadataTaskBackend>;
-  let local: LocalAdapterTaskBackend | undefined;
+export function planMetadataUnits(
+  routing: ResolvedMetadataRouting,
+  defaultHost: string,
+  aiManager: AIManagerService,
+  hasInsights: boolean
+): MetadataRunPlan {
+  const localPlans: Array<{ task: AdapterTask; option: MetadataRoutingOption }> = [];
+  /** model -> fields, in first-appearance order (Map preserves insertion order). */
+  const groupFields = new Map<string, MetadataFieldId[]>();
 
-  for (const task of METADATA_TASK_ORDER) {
-    const choice = config?.[task] || 'cloud';
-    if (choice === 'cloud') {
-      resolved[task] = cloud;
-    } else if (choice === 'local') {
-      if (task === 'packaging') {
+  // A field the PROMPT SET does not define is not generated at all, whatever the routing
+  // says. The Spreaker podcast set has no "## THUMBNAIL_TEXT" and never did — that is the
+  // set saying this channel has no thumbnails, not a section gone missing. Decided and
+  // logged up front, per run, exactly like the chapters-or-not mode decision.
+  const available = aiManager.promptSetSectionKeys();
+  const skipped: string[] = [];
+
+  for (const { task, field } of FIELD_TASKS) {
+    if (!available.has(METADATA_FIELD_SECTIONS[field].section)) {
+      skipped.push(field);
+      continue;
+    }
+    const optionId = routing[task];
+    const option = METADATA_ROUTING_OPTIONS[optionId];
+    if (!option) {
+      throw new Error(`Metadata task "${task}" is routed to unknown option "${optionId}"`);
+    }
+    if (option.kind === 'local') {
+      const adapterTask = ADAPTER_FIELDS[field];
+      if (!adapterTask) {
         throw new Error(
-          `metadataTaskBackends.packaging is set to "local", but no local adapter generates packaging ` +
-            `(titles, thumbnail text, pinned comments, clips, spoken keywords). Only "description" and ` +
-            `"tags" have adapters.`
+          `Metadata task "${task}" is routed to the local model "${option.model}", but no local adapter writes ` +
+            `"${field}" — only description, tags and titles have one`
         );
       }
-      if (!(models?.[task] || '').trim()) {
-        throw new Error(
-          `metadataTaskBackends.${task} is set to "local" but metadataTaskModels.${task} names no model — ` +
-            `set it to that adapter's Ollama model name (the shipped default is "${DEFAULT_METADATA_TASK_MODELS[task]}")`
-        );
+      localPlans.push({ task: adapterTask, option });
+      continue;
+    }
+    const existing = groupFields.get(option.model);
+    if (existing) existing.push(field);
+    else groupFields.set(option.model, [field]);
+  }
+
+  if (skipped.length > 0) {
+    log.info(
+      `[MetadataTasks] the loaded prompt set defines no section for ${skipped.join(', ')}, so ` +
+        `${skipped.length === 1 ? 'that field is' : 'those fields are'} not generated this run`
+    );
+  }
+  if (localPlans.length === 0 && groupFields.size === 0) {
+    throw new Error(
+      `The loaded prompt set defines none of the metadata fields this app generates ` +
+        `(${FIELD_TASKS.map((f) => f.field).join(', ')}), so there is nothing to run`
+    );
+  }
+
+  const hashtagsOwnedByDescription = localPlans.some((p) => p.task === 'description');
+  if (!hashtagsOwnedByDescription && available.has(METADATA_FIELD_SECTIONS.hashtags.section)) {
+    // Cloud description: the HASHTAGS section joins the group that already has DESCRIPTION.
+    for (const fields of groupFields.values()) {
+      if (fields.includes('description')) {
+        fields.push('hashtags');
+        break;
       }
-      local = local || new LocalAdapterTaskBackend(host, models || {});
-      resolved[task] = local;
-    } else {
-      throw new Error(
-        `metadataTaskBackends.${task} is set to "${choice}", which is not a known backend (expected "cloud" or "local")`
-      );
     }
   }
 
-  return resolved;
+  const models = Array.from(groupFields.keys());
+  const titlesModel = models.find((m) => groupFields.get(m)!.includes('titles'));
+  const largestModel = models
+    .slice()
+    .sort((a, b) => groupFields.get(b)!.length - groupFields.get(a)!.length)[0];
+  const selfCheckModel = titlesModel || largestModel;
+  const primaryModel = titlesModel || models[0];
+
+  if (models.length === 0) {
+    log.info(
+      '[MetadataTasks] every metadata field is routed to a local adapter: no cloud call runs, so the prompt set\'s ' +
+        'self-check and the CHANNEL PERFORMANCE DATA block are unused this run (the adapters carry their own ' +
+        'trained instructions and were not trained to read either)'
+    );
+  } else if (hasInsights && !titlesModel) {
+    log.info(
+      `[MetadataTasks] titles are not in the cloud this run, so the CHANNEL PERFORMANCE DATA block rides with the ` +
+        `first cloud group (${primaryModel}) instead of the titles group`
+    );
+  }
+
+  // Every field some OTHER unit owns, as canonical section keys, so a group never carries
+  // instructions for a field it will not return.
+  const ownerOf = new Map<string, string>();
+  for (const plan of localPlans) ownerOf.set(METADATA_FIELD_SECTIONS[plan.task].section, `local:${plan.task}`);
+  if (hashtagsOwnedByDescription) ownerOf.set(METADATA_FIELD_SECTIONS.hashtags.section, 'local:description');
+  for (const [model, fields] of groupFields) {
+    for (const field of fields) ownerOf.set(METADATA_FIELD_SECTIONS[field].section, `cloud:${model}`);
+  }
+
+  const units: MetadataUnit[] = localPlans.map(
+    (plan) => new LocalAdapterUnit(plan.task, plan.option, defaultHost, hashtagsOwnedByDescription)
+  );
+
+  for (const [model, fields] of groupFields) {
+    const ownedElsewhere = new Set<string>();
+    for (const [section, owner] of ownerOf) {
+      if (owner !== `cloud:${model}`) ownedElsewhere.add(section);
+    }
+    units.push(
+      new CloudGroupUnit(aiManager, {
+        model,
+        fields,
+        ownedElsewhere,
+        absorbUnownedSections: model === primaryModel,
+        selfCheck: model === selfCheckModel,
+        insights: hasInsights && model === primaryModel,
+      })
+    );
+  }
+
+  const summary = units.map((u) => u.label).join(' | ');
+  return { units, hashtagsOwnedByDescription, summary };
 }
 
 // ---------------------------------------------------------------------------
@@ -1038,44 +1373,16 @@ export function resolveTaskBackends(
 // ---------------------------------------------------------------------------
 
 export interface MetadataTaskRun {
-  backends: Record<MetadataTaskId, MetadataTaskBackend>;
-  content: string;
-  sourceLabel: string;
-  chapterSubjects: string[];
-  chapterDetails: string[];
-  /** See MetadataTaskInput.hashtagsOwnedByDescription — decided once, for the whole run. */
-  hashtagsOwnedByDescription: boolean;
+  plan: MetadataRunPlan;
+  ctx: MetadataRunContext;
 }
 
 /**
- * Which unit writes the `hashtags` field, decided from the routing alone.
+ * Run the units in order and merge them into the one MetadataResult the rest of the app
+ * expects.
  *
- * The description ADAPTER always ends with a hashtag line; the description CLOUD prompt
- * never does (the prompt set's own `## HASHTAGS` section belongs to packaging). So the
- * field follows the description task's backend, and packaging is told which run it is in
- * rather than discovering it from what came back.
- */
-export function hashtagsComeFromDescription(backends: Record<MetadataTaskId, MetadataTaskBackend>): boolean {
-  return backends.description.id === 'local';
-}
-
-function taskInput(run: MetadataTaskRun, task: MetadataTaskId): MetadataTaskInput {
-  return {
-    task,
-    content: run.content,
-    sourceLabel: run.sourceLabel,
-    chapterSubjects: run.chapterSubjects,
-    chapterDetails: run.chapterDetails,
-    hashtagsOwnedByDescription: run.hashtagsOwnedByDescription,
-  };
-}
-
-/**
- * Run the three units in order and merge them into the one MetadataResult the rest of
- * the app expects.
- *
- * Nothing is caught here. A half-generated item — a description with no titles, tags
- * from one model and packaging from another run — is worse than no item, because it is
+ * Nothing is caught here. A half-generated item — a description with no titles, tags from
+ * one model and thumbnails from another run — is worse than no item, because it is
  * indistinguishable from a complete one once it is written to disk.
  */
 export async function runMetadataTasks(
@@ -1083,42 +1390,38 @@ export async function runMetadataTasks(
   run: MetadataTaskRun
 ): Promise<MetadataResult> {
   const merged: Record<string, unknown> = {};
-  // De-duplicated because one LocalAdapterTaskBackend instance serves every locally
-  // routed task — unloading it twice would be two calls saying the same thing.
-  const resident = new Set(Object.values(run.backends).filter((b) => typeof b.unload === 'function'));
+  const resident = run.plan.units.filter((u) => typeof u.unload === 'function');
 
   try {
-    for (const task of METADATA_TASK_ORDER) {
-      const backend = run.backends[task];
-      console.log(`[MetadataTasks] ${run.sourceLabel}: running "${task}" on backend "${backend.id}"`);
-      const fields = await backend.generate(taskInput(run, task));
+    for (const unit of run.plan.units) {
+      console.log(`[MetadataTasks] ${run.ctx.sourceLabel}: running unit ${unit.label}`);
+      const fields = await unit.generate(run.ctx);
       Object.assign(merged, fields);
     }
 
-    // Description links and hashtag spacing are applied ONCE, to the merged object. Per
-    // unit they could not be: the links append to a description the description unit
-    // returns, while the hashtags they sit beside come back from the packaging unit —
-    // or, when the description adapter runs, from the description unit's own last line.
+    // Description links, the channel tag append and hashtag spacing are applied ONCE, to
+    // the merged object. Per unit they could not be: the links append to a description one
+    // unit returns, while the hashtags they sit beside come back from another — or, when
+    // the description adapter runs, from that unit's own last line.
     return aiManager.finalizeMetadata(merged as MetadataResult);
   } finally {
-    // A failed run leaves a 9.5GB adapter resident just as surely as a successful one,
-    // so the release is in a finally. It only releases models that were actually loaded.
-    for (const backend of resident) {
-      await backend.unload!();
+    // A failed run leaves a 9.5GB adapter resident just as surely as a successful one, so
+    // the release is in a finally. It only releases models that were actually loaded.
+    for (const unit of resident) {
+      await unit.unload!();
     }
   }
 }
 
 /**
- * The same three prompts, assembled but not sent, for the "Show prompt" flow.
+ * The same prompts, assembled but not sent, for the "Show prompt" flow.
  *
- * Each one is banner-labelled with its task because the frontend renders a job's prompts
- * as a single scrollable string; unlabelled, three prompts sharing an editorial preamble
+ * Each one is banner-labelled with its unit because the frontend renders a job's prompts
+ * as a single scrollable string; unlabelled, several prompts sharing an editorial preamble
  * read as one repetitive prompt. The text under each banner is the literal request.
  */
 export function buildTaskPromptsForDisplay(run: MetadataTaskRun): string[] {
-  return METADATA_TASK_ORDER.map((task) => {
-    const body = run.backends[task].describePrompt(taskInput(run, task));
-    return `=== TASK: ${task.toUpperCase()} (${run.sourceLabel}) ===\n\n${body}`;
-  });
+  return run.plan.units.map(
+    (unit) => `=== UNIT: ${unit.label} (${run.ctx.sourceLabel}) ===\n\n${unit.describePrompt(run.ctx)}`
+  );
 }

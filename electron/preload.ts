@@ -23,6 +23,11 @@ const api = {
     return () => ipcRenderer.removeListener('component-progress', listener);
   },
 
+  // Per-task model routing (the settings modal's whole contract)
+  getMetadataRouting: () => ipcRenderer.invoke('metadata-routing:get'),
+  setMetadataRouting: (selections: Record<string, string>) =>
+    ipcRenderer.invoke('metadata-routing:set', selections),
+
   // Prompt Sets (Metadata)
   getPromptSetsPath: () => ipcRenderer.invoke('get-prompt-sets-path'),
   listPromptSets: () => ipcRenderer.invoke('list-prompt-sets'),

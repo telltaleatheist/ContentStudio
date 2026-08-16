@@ -29,9 +29,11 @@ import {
 } from '../services/metadata/generated-index';
 import { composeDescription, composeTags } from '../services/metadata/description-composer';
 import {
-  DEFAULT_METADATA_TASK_BACKENDS,
-  DEFAULT_METADATA_TASK_MODELS,
-} from '../services/metadata/metadata-tasks';
+  buildRoutingView,
+  describeRouting,
+  resolveMetadataRouting,
+  validateRoutingSelections,
+} from '../services/metadata/metadata-routing';
 import { setupPublishIpc } from '../services/publish/publish-ipc';
 import { PublishBridge } from '../services/publish/publish-bridge';
 
@@ -551,6 +553,33 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     }
   });
 
+  // ---------------------------------------------------------------------------
+  // Per-task model routing (metadata-routing.ts)
+  //
+  // The registry is the single source of truth and it lives in code; these two handlers
+  // are the only way the renderer sees or changes it. The payload shape is FROZEN — the
+  // settings modal is written against exactly this — so a new task or option changes the
+  // contents and never the shape.
+  // ---------------------------------------------------------------------------
+
+  ipcMain.handle('metadata-routing:get', async () => {
+    // Not wrapped in a try/catch that returns a shape: a stored selection this build
+    // cannot honour must reach the user as an error, because it is the same error their
+    // next generation would fail with.
+    const stored = (store as any).get('metadataRouting');
+    return buildRoutingView(stored);
+  });
+
+  ipcMain.handle('metadata-routing:set', async (_event, selections) => {
+    // Validated against the registry BEFORE it is written. A store holding an option this
+    // build does not know would fail every subsequent job, far from the click that caused
+    // it.
+    const validated = validateRoutingSelections(selections);
+    (store as any).set('metadataRouting', validated);
+    log.info(`[IPC] Metadata routing saved: ${describeRouting(resolveMetadataRouting(validated))}`);
+    return { success: true };
+  });
+
   // Select files or directories
   ipcMain.handle('select-files', async () => {
     try {
@@ -815,23 +844,20 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         jobId: params.jobId,
         jobName: params.jobName,
         chapterFlags: params.chapterFlags || {},
-        // Chapters are generated first, locally, and their subjects condition the
-        // title/description/tag call — so this is deliberately independent of the
-        // metadata provider above. It is always an Ollama model name.
-        chapterModel: settings.chapterModel || 'cogito:14b',
         chapterStageModels: settings.chapterStageModels || undefined,
         chapterNumCtx: settings.chapterNumCtx || undefined,
-        // Per-task backend routing and the adapter model behind each locally-routed
-        // task, consulted only when the run splits (chapters exist). Store-only, like
-        // chapterModel — there is no UI for either yet.
+        // Per-task model routing, read from the store AT JOB TIME. The registry supplies
+        // the defaults at the read site (metadata-routing.ts), never the store's
+        // `defaults` block: a seeded default freezes the shipped routing into every
+        // existing install, so a task whose default changes would never reach the users
+        // who already have a store. An absent key means "the shipped routing"; a present
+        // one means the user chose something, and a bad one fails the job by name.
         //
-        // The default is applied HERE, not only in the store's `defaults`: store
-        // defaults seed a FRESH store, so an install that predates the description and
-        // tags adapters already has metadataTaskBackends written as all-cloud and would
-        // never see the flip. Reading with the default means an absent key means the
-        // shipped routing, and a present key means the user chose something.
-        metadataTaskBackends: settings.metadataTaskBackends || DEFAULT_METADATA_TASK_BACKENDS,
-        metadataTaskModels: settings.metadataTaskModels || DEFAULT_METADATA_TASK_MODELS,
+        // This is also what decides the chapter pipeline's model — the 'chapters' task.
+        metadataRouting: resolveMetadataRouting(settings.metadataRouting),
+        // Keys for whatever providers the routing reaches, which need not be the provider
+        // `aiApiKey` belongs to.
+        cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
         inputNotes: params.inputNotes || {},
         insightsBlock: insightsBlock || undefined,
         // "Show prompt": transcribe + assemble the prompt, then STOP (no AI call).
@@ -846,6 +872,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         insightsBlock: insightsBlock ? `<CHANNEL PERFORMANCE DATA, ${insightsBlock.length} chars>` : undefined
       };
       log.info('Prepared metadata params:', JSON.stringify(safeMetadataParams, null, 2));
+      log.info(`[IPC] Metadata routing for this job: ${describeRouting(metadataParams.metadataRouting)}`);
 
       // Send progress update
       sendToRenderer('generation-progress', {

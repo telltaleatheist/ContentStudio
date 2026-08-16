@@ -11,16 +11,18 @@ import { Chapter } from './chapter-generator.service';
 import { ChapterPipelineService, ChapterStage, ChapterPipelineResult } from './chapter-pipeline.service';
 import { OutputHandlerService } from './output-handler.service';
 import {
-  MetadataTaskBackend,
-  MetadataTaskBackendConfig,
-  MetadataTaskId,
-  MetadataTaskModelConfig,
   MetadataTaskRun,
   buildTaskPromptsForDisplay,
-  hashtagsComeFromDescription,
-  resolveTaskBackends,
+  planMetadataUnits,
   runMetadataTasks,
 } from './metadata-tasks';
+import {
+  MetadataRoutingSelections,
+  ResolvedMetadataRouting,
+  resolveMetadataRouting,
+  routingOption,
+} from './metadata-routing';
+import { excludePromoChapters } from './promo-chapters';
 import { queueAITask } from '../queue-manager.service';
 import * as log from 'electron-log';
 import * as fs from 'fs';
@@ -34,6 +36,11 @@ export interface GenerationParams {
   summarizationModel?: string; // Model for fast summarization
   metadataModel?: string; // Model for final metadata generation
   aiApiKey?: string;
+  /**
+   * Keys for the cloud providers the ROUTING may reach, which is not necessarily the
+   * provider `aiApiKey` belongs to (see AIConfig.cloudApiKeys).
+   */
+  cloudApiKeys?: { claude?: string; openai?: string };
   aiHost?: string;
   outputPath?: string;
   promptSet?: string;
@@ -45,12 +52,14 @@ export interface GenerationParams {
   insightsBlock?: string;
   chapterFlags?: { [key: string]: boolean };
   /**
-   * Local Ollama model that runs the chapter pipeline (no provider prefix — the
-   * pipeline is Ollama-only by design; see CHAPTERING.md). Chapters are generated
-   * BEFORE the metadata call and their subjects condition every other field, so this
-   * model choice shapes the titles and description too, not just the chapter bar.
+   * Per-task model routing, as stored in the `metadataRouting` setting (taskId ->
+   * optionId, see metadata-routing.ts). Resolved against the registry here, so an absent
+   * key means "the shipped defaults" and a bad one fails the job naming the task.
+   *
+   * This is the ONLY input that decides which model writes which field, including the
+   * chapter pipeline's.
    */
-  chapterModel?: string;
+  metadataRouting?: MetadataRoutingSelections;
   /** Optional per-stage overrides, e.g. running stages 2/4/5 on a different rater. */
   chapterStageModels?: Partial<Record<ChapterStage, string>>;
   /** Chapter-pipeline context window. One value for the whole run (Ollama reloads on change). */
@@ -62,19 +71,6 @@ export interface GenerationParams {
    * the SAME chapters rather than re-deriving a possibly different set.
    */
   preComputedChapters?: { [sourceLabel: string]: ChapterPipelineResult };
-  /**
-   * Which backend generates each metadata task ('cloud' | 'local'), from the
-   * `metadataTaskBackends` setting. Only consulted when the run splits — i.e. when
-   * chapters exist. Absent tasks run on the cloud.
-   */
-  metadataTaskBackends?: MetadataTaskBackendConfig;
-  /**
-   * The Ollama model behind each locally-routed task, from the `metadataTaskModels`
-   * setting. Only read for tasks routed 'local'; a local task with no model name here
-   * fails rather than picking one, because a fine-tuned adapter is not interchangeable
-   * with its own base model — qwen3:14b would answer this prompt fluently and wrongly.
-   */
-  metadataTaskModels?: MetadataTaskModelConfig;
   inputNotes?: { [key: string]: string };
   preTranscribedContent?: ContentItem[]; // Pre-transcribed content from pipeline (skips transcription phase)
   inputWarnings?: string[]; // Input-stage failures from the pipeline (surfaced in result.warnings)
@@ -127,6 +123,7 @@ export class MetadataGeneratorService {
         summarizationModel: params.summarizationModel,
         metadataModel: params.metadataModel,
         apiKey: params.aiApiKey,
+        cloudApiKeys: params.cloudApiKeys,
         host: params.aiHost,
         promptSet: params.promptSet,
         promptSetsDir: params.promptSetsDir,
@@ -434,7 +431,7 @@ export class MetadataGeneratorService {
           // Chapters are not a trailing decoration any more. Their subject list is
           // what the title, description and tag stages condition on, so it has to
           // exist before the metadata call is assembled (see CHAPTERING.md).
-          const { chapters, subjects: chapterSubjects, details: chapterDetails } = await this.resolveChapters(
+          const { chapters, excludedChapters, subjects: chapterSubjects, details: chapterDetails } = await this.resolveChapters(
             item,
             params,
             i,
@@ -466,6 +463,11 @@ export class MetadataGeneratorService {
 
           if (chapters) {
             metadata.chapters = chapters;
+          }
+          // Carried even when no chapters publish (a video that was all promo): the job
+          // JSON is where the user finds out what was taken out and why.
+          if (excludedChapters) {
+            metadata.excludedChapters = excludedChapters;
           }
 
           // Save this item to the job immediately
@@ -584,39 +586,43 @@ export class MetadataGeneratorService {
       return undefined;
     }
 
-    const backends = resolveTaskBackends(
-      params.metadataTaskBackends,
-      params.metadataTaskModels,
+    const plan = planMetadataUnits(
+      this.routing(params),
       params.aiHost || 'http://localhost:11434',
-      aiManager
+      aiManager,
+      Boolean(params.insightsBlock)
     );
-    const routing = (Object.entries(backends) as [MetadataTaskId, MetadataTaskBackend][])
-      .map(([task, backend]) => `${task}=${backend.id}`)
-      .join(', ');
     console.log(
-      `[MetadataGenerator] ${sourceLabel}: ${chapterSubjects.length} chapter subjects — generating per task (${routing})`
+      `[MetadataGenerator] ${sourceLabel}: ${chapterSubjects.length} chapter subjects — ` +
+        `${plan.units.length} unit(s): ${plan.summary}`
     );
-
-    // Which unit owns `hashtags` moves with the description backend, so it is stated
-    // here rather than left implicit: the description adapter writes its own hashtag
-    // line, and two units writing one field would make the merge order decide the
-    // answer.
-    const hashtagsOwnedByDescription = hashtagsComeFromDescription(backends);
-    if (hashtagsOwnedByDescription) {
+    if (plan.hashtagsOwnedByDescription) {
       console.log(
         `[MetadataGenerator] ${sourceLabel}: hashtags come from the description adapter; ` +
-          `the packaging call will not request them`
+          `no cloud group will request them`
       );
     }
 
     return {
-      backends,
-      content: summary,
-      sourceLabel,
-      chapterSubjects,
-      chapterDetails: chapterDetails || [],
-      hashtagsOwnedByDescription,
+      plan,
+      ctx: {
+        content: summary,
+        sourceLabel,
+        chapterSubjects,
+        chapterDetails: chapterDetails || [],
+      },
     };
+  }
+
+  /**
+   * This run's routing, resolved once against the registry.
+   *
+   * Read from the params (which the IPC layer fills from the store at job time), so a
+   * selection changed in the modal takes effect on the next job with no coupling between
+   * the modal and the queue.
+   */
+  private static routing(params: GenerationParams): ResolvedMetadataRouting {
+    return resolveMetadataRouting(params.metadataRouting);
   }
 
   /**
@@ -644,7 +650,7 @@ export class MetadataGeneratorService {
     requested: boolean,
     warnings: string[],
     sink?: { [sourceLabel: string]: ChapterPipelineResult }
-  ): Promise<{ chapters?: Chapter[]; subjects?: string[]; details?: string[] }> {
+  ): Promise<{ chapters?: Chapter[]; excludedChapters?: Chapter[]; subjects?: string[]; details?: string[] }> {
     const sourceLabel = item.source || `item_${itemIndex + 1}`;
     if (!requested) {
       return {};
@@ -655,12 +661,9 @@ export class MetadataGeneratorService {
       console.log(`[MetadataGenerator] Reusing ${reuse.chapters.length} already-computed chapters for ${sourceLabel}`);
       // Warnings are NOT re-raised here: these chapters came back from the show-prompt
       // pass, which already reported them, and repeating them would read as a second
-      // set of failures.
-      return {
-        chapters: reuse.chapters,
-        subjects: reuse.subjects,
-        details: reuse.subjectDetails?.map((s) => s.detail),
-      };
+      // set of failures. The promo split is re-run rather than carried across, because it
+      // is a pure function of the chapters and re-deriving it cannot disagree with them.
+      return this.splitOutPromos(reuse, sourceLabel, []);
     }
 
     if (!item.srtSegments || item.srtSegments.length === 0) {
@@ -700,12 +703,10 @@ export class MetadataGeneratorService {
           `(stage 4 ${result.stats.speakerTagged ? 'speaker-tagged' : 'untagged'}, ` +
           `${result.stats.approxStarts} approximate start(s))`
       );
+      // The sink holds the PIPELINE's result, promos included: it is what "Send to AI"
+      // reuses, and it must be the same list this pass started from, not the filtered one.
       if (sink) sink[sourceLabel] = result;
-      return {
-        chapters: result.chapters,
-        subjects: result.subjects,
-        details: result.subjectDetails.map((s) => s.detail),
-      };
+      return this.splitOutPromos(result, sourceLabel, warnings);
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       const msg = `${sourceLabel}: chapter generation failed, so the rest of the metadata was generated WITHOUT chapter subjects: ${errMsg}`;
@@ -713,6 +714,49 @@ export class MetadataGeneratorService {
       warnings.push(msg);
       return {};
     }
+  }
+
+  /**
+   * Take the ads out of a finished chapter list.
+   *
+   * Applied to EVERY path that produces chapters, including the reuse path, because the
+   * split is a pure function of the chapters and the published list, the TXT block, the
+   * description's chapter lines and every task's conditioning all have to see the same
+   * one. The pipeline's own result is left untouched — what is excluded travels on to the
+   * job JSON as `excludedChapters` rather than disappearing.
+   */
+  private static splitOutPromos(
+    result: ChapterPipelineResult,
+    sourceLabel: string,
+    warnings: string[]
+  ): { chapters?: Chapter[]; excludedChapters?: Chapter[]; subjects?: string[]; details?: string[] } {
+    const partition = excludePromoChapters(
+      result.chapters,
+      result.subjects,
+      result.subjectDetails.map((s) => s.detail),
+      sourceLabel
+    );
+
+    for (const warning of partition.warnings) {
+      console.warn(`[MetadataGenerator] ${sourceLabel}: ${warning}`);
+      warnings.push(`${sourceLabel}: ${warning}`);
+    }
+
+    const excludedChapters = partition.excluded.length > 0 ? partition.excluded : undefined;
+
+    // Nothing but ads. There is no chapter list to publish and no subject list to
+    // condition on, so this item takes the legacy single call — stated by returning no
+    // subjects, exactly as a run whose pipeline came back short does.
+    if (partition.content.length === 0) {
+      return { excludedChapters };
+    }
+
+    return {
+      chapters: partition.content,
+      excludedChapters,
+      subjects: partition.contentSubjects,
+      details: partition.contentDetails,
+    };
   }
 
   /**
@@ -737,12 +781,14 @@ export class MetadataGeneratorService {
       throw new Error('Chapter generation needs a timestamped transcript');
     }
 
-    const model = params.chapterModel;
-    if (!model) {
-      throw new Error('No chapter model configured (expected a local Ollama model such as cogito:14b)');
-    }
+    // The chapter pipeline's model comes from the same routing table as every other
+    // field's. It is local by construction — the 'chapters' task offers local options
+    // only, because the sealed method makes hundreds of one-question calls per video.
+    const routing = this.routing(params);
+    const option = routingOption('chapters', routing.chapters);
+    const model = option.model;
 
-    const host = params.aiHost || 'http://localhost:11434';
+    const host = option.host || params.aiHost || 'http://localhost:11434';
     const label = item.source || `item_${itemIndex + 1}`;
 
     // Chapter work is 0-60% of this item's "generating" phase; the metadata call that

@@ -170,6 +170,24 @@ export interface YouTubeCollectorState {
   channels: Record<string, { lastRunAt: string | null; lastResult: YouTubeChannelCollectResult | null }>;
 }
 
+// Metadata model routing (which model generates which metadata task)
+export interface MetadataRoutingOption {
+  id: string;
+  label: string;
+}
+
+export interface MetadataRoutingTask {
+  id: string;
+  label: string;
+  /** Already filtered by the main process to the models valid for this task. */
+  options: MetadataRoutingOption[];
+  selectedOptionId: string;
+}
+
+export interface MetadataRouting {
+  tasks: MetadataRoutingTask[];
+}
+
 // Declare window.launchpad interface for TypeScript
 declare global {
   interface Window {
@@ -212,6 +230,10 @@ declare global {
       sendHeldPrompt: (jobId: string) => Promise<any>;
       discardHeldPrompt: (jobId: string) => Promise<any>;
       cancelJob: (jobId: string) => Promise<{ success: boolean; error?: string }>;
+
+      // Metadata model routing (rejects with a descriptive error)
+      getMetadataRouting: () => Promise<MetadataRouting>;
+      setMetadataRouting: (selections: Record<string, string>) => Promise<{ success: true }>;
 
       // Progress updates
       onProgress: (callback: (progress: any) => void) => () => void;
@@ -465,6 +487,18 @@ export class ElectronService {
   async cancelJob(jobId: string): Promise<{ success: boolean; error?: string }> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.cancelJob(jobId);
+  }
+
+  // Metadata model routing — these reject rather than return a placeholder, so the
+  // caller shows the real reason instead of an empty routing table.
+  async getMetadataRouting(): Promise<MetadataRouting> {
+    if (!this.ipcRenderer) throw new Error('Model routing needs the Electron bridge, which is not available in this window.');
+    return await this.ipcRenderer.getMetadataRouting();
+  }
+
+  async setMetadataRouting(selections: Record<string, string>): Promise<{ success: true }> {
+    if (!this.ipcRenderer) throw new Error('Model routing needs the Electron bridge, which is not available in this window.');
+    return await this.ipcRenderer.setMetadataRouting(selections);
   }
 
   // Progress updates

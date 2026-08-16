@@ -53,6 +53,17 @@ export interface Chapter {
   startApprox?: boolean;
   /** The chapters this one was consolidated from, in time order. Absent if never merged. */
   subChapters?: SubChapter[];
+  /**
+   * This chapter is a sponsor read, a Patreon plug, a sign-off or another ad break —
+   * classified in code from its own name and detail (see promo-chapters.ts), never by
+   * the chapter pipeline itself.
+   *
+   * Ads are not content: a promo chapter is kept out of the published chapter list and
+   * out of everything the metadata tasks condition on, but it is LABELLED here and
+   * carried in `metadata.excludedChapters` rather than deleted, because a chapter the
+   * pipeline measured and named should never vanish without a trace.
+   */
+  isPromo?: boolean;
 }
 
 /**

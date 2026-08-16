@@ -220,6 +220,10 @@ instructions_prompt: |-
   - Thumbnail options don't repeat core words from the top 3 titles
   - Swap test: no two titles interchangeable
   - Output is one valid JSON object with exactly the keys specified, ASCII characters only
+# Channel and creator tags, appended to every generated tag list by code.
+# The tags adapter is trained to leave these out ("those are appended separately"),
+# so without this key a locally generated tag list never names the channel.
+channel_tags: ["Telltale Fireside Chat", "Owen Morgan"]
 description_links: |-
   🔥 Support the Show:
   Become a Patreon Member: https://owenmorgan.com/patreon

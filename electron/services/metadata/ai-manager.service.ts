@@ -16,9 +16,10 @@ import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import { METADATA_FIELDS } from './metadata-fields';
 import {
   InstructionSection,
-  MetadataTaskId,
-  MetadataTaskInput,
-  buildTaskInstructions,
+  MetadataGroupSpec,
+  MetadataRunContext,
+  buildGroupInstructions,
+  groupNeedsTranscript,
   parseInstructionSections,
 } from './metadata-tasks';
 import { Chapter } from './chapter-generator.service';
@@ -36,6 +37,16 @@ export interface AIConfig {
   // "CHANNEL PERFORMANCE DATA" block from the analytics feedback loop, appended
   // to the metadata prompt when present (resolved by the caller; optional).
   insightsBlock?: string;
+  /**
+   * Keys for the cloud providers a per-task ROUTING may reach, independent of the
+   * provider `apiKey` above.
+   *
+   * Routing (metadata-routing.ts) lets a single run send one group to Claude while the
+   * legacy `metadataModel` points somewhere else entirely, so the key for a group's
+   * provider cannot be inferred from `provider`. Absent key for a routed provider is a
+   * loud failure at request time, never a silent switch to a provider that is configured.
+   */
+  cloudApiKeys?: { claude?: string; openai?: string };
 }
 
 export interface MetadataResult {
@@ -51,6 +62,15 @@ export interface MetadataResult {
   // `detail` sentence, an approximate-start flag and their pre-consolidation
   // sub-chapters, and every one of those has to survive the trip to the output files.
   chapters?: Chapter[];
+  /**
+   * Chapters the promo classifier took out of the published list (promo-chapters.ts),
+   * each carrying `isPromo: true`.
+   *
+   * They are kept in the job JSON so nothing the pipeline measured and named is silently
+   * lost — the user can see exactly which spans were treated as ads. Nothing downstream
+   * publishes or conditions on them.
+   */
+  excludedChapters?: Chapter[];
 }
 
 export interface PromptSet {
@@ -58,6 +78,15 @@ export interface PromptSet {
   editorial_prompt: string;
   instructions_prompt: string;
   description_links: string;
+  /**
+   * Channel and creator tags appended to every generated tag list for this prompt set.
+   *
+   * OPTIONAL, and absent means absent — no append, no default, no guess at what the
+   * channel is called. It exists because the tags adapter is TRAINED to leave channel and
+   * creator names out ("those are appended separately"), so the names are a property of
+   * the prompt set, which is the thing that knows which channel it publishes to.
+   */
+  channel_tags?: string[];
 }
 
 export class AIManagerService {
@@ -472,6 +501,31 @@ export class AIManagerService {
       );
     }
 
+    // channel_tags is optional, but a MALFORMED one is not tolerated: the whole point of
+    // the key is that the channel's own name reaches the tag list, and a silently ignored
+    // "channel_tags: Telltale" (a string, not a list) would publish tags that quietly
+    // never name the channel.
+    if (promptSet.channel_tags !== undefined) {
+      const valid =
+        Array.isArray(promptSet.channel_tags) &&
+        promptSet.channel_tags.every((t) => typeof t === 'string' && t.trim().length > 0);
+      if (!valid) {
+        throw new Error(
+          `Prompt set "${promptSetName}" (${promptSetPath}) has a channel_tags key that is not a list of non-empty ` +
+            `strings (got: ${JSON.stringify(promptSet.channel_tags)}). Write it as a YAML list, e.g. ` +
+            `channel_tags: ["Telltale", "Owen Morgan"]`
+        );
+      }
+      log.info(
+        `[AIManager] Prompt set "${promptSetName}" appends ${promptSet.channel_tags.length} channel tag(s): ` +
+          promptSet.channel_tags.join(', ')
+      );
+    } else {
+      log.info(
+        `[AIManager] Prompt set "${promptSetName}" has no channel_tags key, so no channel or creator tags are appended`
+      );
+    }
+
     this.currentPromptSet = promptSet;
     this.instructionSectionsCache = undefined;
     console.log(`[AIManager] Loaded prompt set: ${promptSet.name}`);
@@ -631,7 +685,7 @@ export class AIManagerService {
     console.log(`[AIManager] === METADATA GENERATION COMPLETE ===`);
     console.log(`[AIManager]     Generated ${Object.keys(metadata).length} fields`);
 
-    return this.addDescriptionLinks(metadata);
+    return this.finalizeMetadata(metadata);
   }
 
   /**
@@ -762,6 +816,19 @@ export class AIManagerService {
     return this.currentPromptSet.editorial_prompt.replace('{subject}', () => subject);
   }
 
+  /**
+   * The canonical section keys the loaded prompt set actually defines.
+   *
+   * A prompt set is the statement of WHICH FIELDS this channel publishes: the Spreaker
+   * podcast set has no thumbnail text and no clip suggestions, and never did. Planning a
+   * run reads this so it can leave those fields out and say so, rather than routing a
+   * field the prompt set never asked for and failing on a section that was never missing
+   * by accident.
+   */
+  promptSetSectionKeys(): Set<string> {
+    return new Set(this.instructionSections().map((s) => s.key));
+  }
+
   /** instructions_prompt split on its `## ` headers, parsed once per loaded prompt set. */
   private instructionSections(): InstructionSection[] {
     if (!this.currentPromptSet) {
@@ -774,48 +841,98 @@ export class AIManagerService {
   }
 
   /**
-   * Assemble ONE task unit's prompt (metadata-tasks.ts).
+   * Assemble ONE cloud group's prompt (metadata-tasks.ts).
    *
    * Same three blocks as the whole-metadata prompt — JSON system, editorial prompt with
-   * the subject filled in, instructions — but the instructions are only this task's
-   * sections and its own OUTPUT FORMAT. The transcript reaches the packaging task only:
-   * description and tags condition on the chapter list alone, which is the conditioning
-   * their future local adapters will get.
+   * the subject filled in, instructions — but the instructions are only this group's
+   * sections and an OUTPUT FORMAT naming only its keys.
+   *
+   * The transcript reaches a group only if one of its fields needs it: description, tags
+   * and hashtags condition on the chapter list alone, which is the conditioning their
+   * local adapters get, so a Sonnet group holding only those two reads exactly what the
+   * adapters would have read.
    */
-  buildMetadataTaskPrompt(input: MetadataTaskInput): string {
+  buildMetadataGroupPrompt(spec: MetadataGroupSpec, ctx: MetadataRunContext): string {
     if (!this.currentPromptSet) {
       throw new Error('No prompt set loaded');
     }
 
     const promptSetName = this.config.promptSet || this.currentPromptSet.name || 'unknown';
-    const contentSlot = input.task === 'packaging' ? input.content : SYSTEM_PROMPTS.TASK_CHAPTERS_ONLY_INPUT;
-    const subject = this.buildSubjectBlock(contentSlot, input.sourceLabel, undefined, input.chapterSubjects, input.chapterDetails);
-    const instructions = buildTaskInstructions(input.task, this.instructionSections(), promptSetName, {
-      hashtagsOwnedByDescription: input.hashtagsOwnedByDescription,
-    });
+    const contentSlot = groupNeedsTranscript(spec.fields) ? ctx.content : SYSTEM_PROMPTS.TASK_CHAPTERS_ONLY_INPUT;
+    const subject = this.buildSubjectBlock(contentSlot, ctx.sourceLabel, undefined, ctx.chapterSubjects, ctx.chapterDetails);
+    const instructions = buildGroupInstructions(spec, this.instructionSections(), promptSetName);
 
-    // Channel performance data speaks to titles, thumbnails and packaging — the fields
-    // it was distilled from. It is not sent with description or tags.
-    const insightsSuffix = input.task === 'packaging' && this.config.insightsBlock
-      ? `\n\n${this.config.insightsBlock}`
-      : '';
+    // Channel performance data speaks to titles, thumbnails and packaging — the fields it
+    // was distilled from. Which group carries it is decided when the run is planned, not
+    // here (see planMetadataUnits).
+    const insightsSuffix = spec.insights && this.config.insightsBlock ? `\n\n${this.config.insightsBlock}` : '';
 
     return `${SYSTEM_PROMPTS.JSON_SYSTEM}\n\n${this.fillSubject(subject)}\n\n${instructions.text}${insightsSuffix}`;
   }
 
   /**
-   * The metadata keys a task unit is responsible for returning, per the loaded prompt set
-   * AND per this run's field ownership — packaging returns no `hashtags` key in a run
+   * The metadata keys a cloud group is responsible for returning, per the loaded prompt
+   * set AND per this run's field ownership — a group returns no `hashtags` key in a run
    * where the description adapter writes them, so it must not be asked for one either.
    */
-  metadataTaskKeys(input: MetadataTaskInput): string[] {
+  metadataGroupKeys(spec: MetadataGroupSpec): string[] {
     if (!this.currentPromptSet) {
       throw new Error('No prompt set loaded');
     }
     const promptSetName = this.config.promptSet || this.currentPromptSet.name || 'unknown';
-    return buildTaskInstructions(input.task, this.instructionSections(), promptSetName, {
-      hashtagsOwnedByDescription: input.hashtagsOwnedByDescription,
-    }).metadataKeys;
+    return buildGroupInstructions(spec, this.instructionSections(), promptSetName).metadataKeys;
+  }
+
+  /**
+   * Make sure the provider behind `model` has a client, for models this instance was not
+   * constructed around.
+   *
+   * Per-task routing can send one group to a model whose provider initialize() never
+   * touched. Creating the client here is not a fallback — the model was explicitly
+   * requested and this is the first time it is needed. A MISSING KEY is the failure, and
+   * it throws naming the provider and the model rather than quietly sending the request
+   * somewhere that is configured.
+   */
+  private async ensureProviderReady(model: string): Promise<void> {
+    if (model.startsWith('claude:')) {
+      if (this.anthropicClient) return;
+      const key = this.config.cloudApiKeys?.claude
+        || (this.metadataModel.startsWith('claude:') ? this.config.apiKey : undefined);
+      if (!key) {
+        throw new Error(
+          `Metadata is routed to "${model}", but no Anthropic API key is configured. Add it in AI Setup — ` +
+            `no other provider was substituted.`
+        );
+      }
+      this.anthropicClient = new Anthropic({ apiKey: key });
+      log.info(`[AIManager] Initialized Claude client on demand for routed model ${model}`);
+      return;
+    }
+
+    if (model.startsWith('openai:')) {
+      if (this.openaiClient) return;
+      const key = this.config.cloudApiKeys?.openai
+        || (this.metadataModel.startsWith('openai:') ? this.config.apiKey : undefined);
+      if (!key) {
+        throw new Error(
+          `Metadata is routed to "${model}", but no OpenAI API key is configured. Add it in AI Setup — ` +
+            `no other provider was substituted.`
+        );
+      }
+      this.openaiClient = new OpenAI({ apiKey: key });
+      log.info(`[AIManager] Initialized OpenAI client on demand for routed model ${model}`);
+      return;
+    }
+
+    if (model.startsWith('ollama:') && !this.ollamaClient) {
+      const host = this.config.host || 'http://localhost:11434';
+      this.ollamaClient = axios.create({
+        baseURL: host,
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 300000,
+      });
+      log.info(`[AIManager] Initialized Ollama client on demand for routed model ${model} @ ${host}`);
+    }
   }
 
   /**
@@ -824,11 +941,20 @@ export class AIManagerService {
    * Task units share this because those links have to be appended once, to the merged
    * result: the description they attach to and the hashtags they are normalized
    * alongside come back from two different calls.
+   *
+   * `model` overrides the configured metadata model — that is how one run sends its
+   * titles group to one model and its thumbnail group to another.
    */
-  async runMetadataRequest(prompt: string): Promise<{ metadata: MetadataResult; presentKeys: Set<string> }> {
+  async runMetadataRequest(
+    prompt: string,
+    model?: string
+  ): Promise<{ metadata: MetadataResult; presentKeys: Set<string> }> {
+    const requestModel = model || this.metadataModel;
+    await this.ensureProviderReady(requestModel);
+
     const maxAttempts = 2;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const response = await this.makeRequest(prompt, this.metadataModel, 300);
+      const response = await this.makeRequest(prompt, requestModel, 300);
 
       if (!response) {
         log.error('[AIManager] === METADATA GENERATION FAILED ===');
@@ -856,11 +982,105 @@ export class AIManagerService {
   }
 
   /**
-   * Public entry to the description-links / hashtag-spacing post-processing, for callers
-   * that assembled a MetadataResult from more than one request.
+   * Public entry to the post-processing every generated item gets, whichever path it came
+   * from: the prompt set's channel tags, its description links, hashtag spacing.
+   *
+   * Both paths run it — the single legacy call through generateMetadataFromAssembledPrompt
+   * and the per-unit path through runMetadataTasks — because the channel tags belong to
+   * the prompt set, not to whichever model happened to write the tags.
    */
   finalizeMetadata(metadata: MetadataResult): MetadataResult {
+    this.appendChannelTags(metadata);
     return this.addDescriptionLinks(metadata);
+  }
+
+  /**
+   * YouTube's tag budget: 500 characters over the whole list.
+   *
+   * A tag containing a space costs two more than it looks, because YouTube quotes
+   * multi-word tags when it counts them. Separators count too, so the cost is measured
+   * against the joined string rather than the sum of the parts.
+   */
+  private static readonly TAG_BUDGET_CHARS = 500;
+
+  private static tagBudgetCost(tags: string[]): number {
+    return tags.join(',').length + tags.filter((t) => /\s/.test(t)).length * 2;
+  }
+
+  /**
+   * Append the prompt set's channel_tags to the generated tag list.
+   *
+   * This is not decoration — it closes a hole the tags adapter opens deliberately. Its
+   * trained system prompt says "No channel names and no creator names - those are appended
+   * separately", so without this step a locally generated tag list never names the
+   * channel at all.
+   *
+   * The channel tags are the ones that survive: if the merged list breaks the 500-character
+   * budget, generated tags are dropped from the END (the tail is where the adapter puts
+   * its broad category terms, the least specific and most replaceable) until it fits, and
+   * the log names every one dropped. A prompt set whose channel_tags alone exceed the
+   * budget is a configuration error and throws — there is nothing left to drop that would
+   * not be the thing the user asked to protect.
+   */
+  private appendChannelTags(metadata: MetadataResult): void {
+    const channelTags = (this.currentPromptSet?.channel_tags || [])
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+    if (channelTags.length === 0) return;
+
+    const promptSetName = this.config.promptSet || this.currentPromptSet?.name || 'unknown';
+
+    if (typeof metadata.tags !== 'string' || metadata.tags.trim().length === 0) {
+      log.warn(
+        `[AIManager] Prompt set "${promptSetName}" defines channel_tags but this item has no tags field to append ` +
+          `them to; the channel tags were NOT written as a tag list of their own`
+      );
+      return;
+    }
+
+    const generated = metadata.tags
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+
+    const seen = new Set(generated.map((t) => t.toLowerCase()));
+    const toAppend = channelTags.filter((t) => !seen.has(t.toLowerCase()));
+    const alreadyPresent = channelTags.filter((t) => seen.has(t.toLowerCase()));
+    if (alreadyPresent.length > 0) {
+      log.info(
+        `[AIManager] Channel tag(s) already present in the generated list, not duplicated: ${alreadyPresent.join(', ')}`
+      );
+    }
+
+    const channelCost = AIManagerService.tagBudgetCost(toAppend);
+    if (channelCost > AIManagerService.TAG_BUDGET_CHARS) {
+      throw new Error(
+        `Prompt set "${promptSetName}" defines channel_tags costing ${channelCost} characters, which alone exceeds ` +
+          `YouTube's ${AIManagerService.TAG_BUDGET_CHARS}-character tag budget (a tag with a space costs 2 extra). ` +
+          `Shorten channel_tags.`
+      );
+    }
+
+    const kept = [...generated];
+    const dropped: string[] = [];
+    while (AIManagerService.tagBudgetCost([...kept, ...toAppend]) > AIManagerService.TAG_BUDGET_CHARS && kept.length > 0) {
+      dropped.push(kept.pop()!);
+    }
+
+    if (dropped.length > 0) {
+      log.warn(
+        `[AIManager] Tag budget: appending the channel tags (${toAppend.join(', ')}) would exceed ` +
+          `${AIManagerService.TAG_BUDGET_CHARS} characters, so ${dropped.length} generated tag(s) were dropped from ` +
+          `the end of the list: ${dropped.reverse().join(', ')}`
+      );
+    }
+
+    const merged = [...kept, ...toAppend];
+    metadata.tags = merged.join(',');
+    log.info(
+      `[AIManager] Tags: ${merged.length} tag(s), ${AIManagerService.tagBudgetCost(merged)}/` +
+        `${AIManagerService.TAG_BUDGET_CHARS} characters after appending ${toAppend.length} channel tag(s)`
+    );
   }
 
   /**
