@@ -27,6 +27,13 @@ export interface WeekGroup {
 }
 
 /**
+ * A week folder is named EXACTLY as a date (2026-08-16) — that is the FCPX library layout the
+ * whole pipeline is built on. Used to recognise the second, `files`-less project layout
+ * (see `weekOf`).
+ */
+const WEEK_FOLDER_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
  * The editor's far-left FCPX-libraries column, rendered INSIDE the editor's existing
  * `.project-pane` (the pane container, its splitter and the width binding stay in the editor).
  *
@@ -271,12 +278,13 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * Split the flat registry into weeks. A project at `<week>/files/<day>` belongs to `<week>`;
-   * anything else falls into a single trailing group with no week path.
+   * Split the flat registry into weeks (see `weekOf` for the two accepted layouts); anything
+   * else falls into a single trailing group with no week path.
    *
-   * The rule is the literal `files` parent directory, not a date-shaped name, because that is
-   * what actually decides the archive destination. Guessing from a name would let a folder be
-   * grouped under a week it would never be uploaded into.
+   * Grouping tracks the ARCHIVE DESTINATION exactly — `weekOf` accepts precisely the two
+   * layouts `destinationFor` (electron/services/editor/archive-sync.ts) can map, so a folder
+   * is never grouped under a week it would not be uploaded into. Any looser name-guessing
+   * would break that correspondence.
    */
   private groupByWeek(list: ProjectEntry[]): WeekGroup[] {
     const byWeek = new Map<string, WeekGroup>();
@@ -306,13 +314,31 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
     return groups;
   }
 
-  /** The `<week>` folder above a `<week>/files/<day>` project, or null for any other layout. */
+  /**
+   * The `<week>` folder a project groups under, or null when its layout names no week.
+   *
+   * Two accepted shapes, checked in this order:
+   *   1. `<week>/files/<day>` — the layout every recorded session uses.
+   *   2. `<week>/<day>` where `<week>` is a bare date (2026-08-16) — a MASTER-ONLY recovery
+   *      project. Those folders hold nothing but a downloaded broadcast master and are
+   *      dropped straight onto the week root, with no `files/` layer to sit under. The week
+   *      folder returned is the same string shape as (1) produces, so a recovery project and
+   *      the real sessions of that week land in ONE group.
+   *
+   * Shape 2 requires the parent to be exactly date-named on purpose: without that, EVERY
+   * two-deep path on disk would claim its parent as a week and the grouping would be noise.
+   */
   private weekOf(projectPath: string): string | null {
     const clean = projectPath.replace(/[\\/]+$/, '');
     const parts = clean.split(/[\\/]/);
     if (parts.length < 3) return null;
-    if (parts[parts.length - 2] !== 'files') return null;
-    return parts.slice(0, parts.length - 2).join('/');
+    if (parts[parts.length - 2] === 'files') {
+      return parts.slice(0, parts.length - 2).join('/');
+    }
+    if (WEEK_FOLDER_RE.test(parts[parts.length - 2])) {
+      return parts.slice(0, parts.length - 1).join('/');
+    }
+    return null;
   }
 
   // ── Row state ───────────────────────────────────────────────────────────────
@@ -403,7 +429,8 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
 
   /**
    * Is this path a WEEK divider's folder? Weeks are keyed by group path, days by entry path,
-   * and a day always sits at `<week>/files/<day>`, so the two can never collide.
+   * and a day always sits strictly BELOW its week (`<week>/files/<day>` or `<week>/<day>`),
+   * so the two can never collide.
    */
   private isWeekPath(path: string): boolean {
     return this.groups.some(g => g.path === path);
@@ -479,8 +506,8 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
 
   syncTitle(path: string | null, kind: 'week' | 'day'): string {
     if (!path) {
-      return 'This project is not inside a <week>/files/<day> folder, so there is no ' +
-             'archive destination to derive. Move it into a week folder to sync it.';
+      return 'This project is not inside a <week>/files/<day> or <week>/<day> folder, so ' +
+             'there is no archive destination to derive. Move it into a week folder to sync it.';
     }
     const row = this.archiveRows[path] || this.archive.rowOf(path);
     const what = kind === 'week' ? 'this whole week' : 'this day';

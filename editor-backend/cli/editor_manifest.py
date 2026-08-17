@@ -479,9 +479,56 @@ class ManifestBuilder:
             audio_by_file[l['file']].append(l)
 
         if not audio_files:
-            raise ManifestError(
-                "no per-source audio files found in the flattened timeline: a session "
-                "with no non-master audio leaves cannot populate the editor's audio lanes")
+            # MASTER-ONLY SESSION (explicit mode, not a fallback). A normal session always
+            # has at least one non-master audio leaf — the per-source mic/screen lanes are
+            # what the compound generators wire in. ZERO of them across the WHOLE flattened
+            # timeline is the precise signature of a recovery project built from nothing but
+            # the downloaded broadcast master (electron_workflow's master-only mode: the
+            # compound generators set enable_master_audio because audio_sources is empty).
+            # In that case the master's own audio IS the session audio, so it gets its own
+            # lane rather than the editor being handed a timeline with no audio at all.
+            master_audio = [l for l in self.leaves
+                            if l['kind'] == 'audio' and l['file'] == master_file]
+            if not master_audio:
+                raise ManifestError(
+                    "master-only session with no audio at all: the flattened timeline has "
+                    "no non-master audio leaves AND the master recording "
+                    f"{Path(master_file).name} contributes no audio leaves either, so there "
+                    "is nothing to put on an audio lane")
+
+            # Every master-only compound (CAM/GS/SSB/hybrid …) references the SAME master
+            # audio over the same kept segments, so the flattened timeline carries the exact
+            # same (timelineStart, sourceStart, duration) triple many times over. Those are
+            # byte-identical duplicates, not simultaneous layers — collapse them, exactly as
+            # the video side above collapses the identical quadrant references of the master.
+            seen_keys = set()
+            deduped = []
+            for l in sorted(master_audio,
+                            key=lambda l: (l['timeline_start'], l['timeline_end'],
+                                           l['source_start'])):
+                key = (l['timeline_start'], l['timeline_end'], l['source_start'])
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                deduped.append(l)
+            print(f"[editor_manifest] MASTER-ONLY SESSION: using the master's own audio "
+                  f"track ({Path(master_file).name}); {len(master_audio)} master audio "
+                  f"references collapsed to {len(deduped)} segments", file=sys.stderr)
+
+            # Overlap AFTER dedup is not a duplicate reference — it is the master playing
+            # two different places at once, which is malformed however it got there.
+            for prev, cur in zip(deduped, deduped[1:]):
+                if cur['timeline_start'] < prev['timeline_end']:
+                    raise ManifestError(
+                        f"overlapping master audio segments at "
+                        f"{float(cur['timeline_start'])}s — the master's audio is "
+                        "referenced by multiple simultaneous audio layers with different "
+                        "source positions")
+
+            tracks.append({'id': 'audio-0', 'label': 'master', 'kind': 'audio'})
+            for l in deduped:
+                segments.append(self._segment('audio-0', l))
+            return tracks, segments
 
         def _is_screen(f):
             return 'screen' in Path(f).stem.lower()

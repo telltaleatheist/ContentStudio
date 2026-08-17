@@ -261,28 +261,48 @@ function findRsync(): string | null {
 }
 
 /**
+ * A week folder is named EXACTLY as a date (2026-08-16). Recognising that shape is what makes
+ * the `files`-less recovery layout below safe to accept.
+ */
+const WEEK_FOLDER_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
  * Where a local project folder lands under the archive root.
  *
- *   week  /…/FCPX/2026-07-26              ->  <root>/2026-07-26
- *   day   /…/FCPX/2026-07-26/files/07-30  ->  <root>/2026-07-26/files/07-30
+ *   week  /…/FCPX/2026-07-26                 ->  <root>/2026-07-26
+ *   day   /…/FCPX/2026-07-26/files/07-30     ->  <root>/2026-07-26/files/07-30
+ *   day   /…/FCPX/2026-08-16/2026-07-02      ->  <root>/2026-08-16/2026-07-02
  *
- * A day is recognised by its parent being literally `files`, which is the layout every
- * project on disk uses. A folder that is not in that shape THROWS rather than being pushed
- * to a guessed destination — writing 140 GB to the wrong place is not a recoverable mistake.
+ * The first day shape — parent literally `files` — is the layout every recorded session uses.
+ * The second is a MASTER-ONLY recovery project: a folder holding nothing but a downloaded
+ * broadcast master, dropped straight onto the week root with no `files/` layer. It is
+ * recognised ONLY when the parent is exactly date-named, i.e. is unmistakably a week folder;
+ * the archive mirrors the local shape verbatim, inserting no `files` layer of its own.
+ *
+ * Anything else THROWS rather than being pushed to a guessed destination — writing 140 GB to
+ * the wrong place is not a recoverable mistake.
  */
 export function destinationFor(localPath: string, kind: ArchiveKind, root: string): string {
   const clean = localPath.replace(/[/\\]+$/, '');
   if (kind === 'week') {
     return path.join(root, path.basename(clean));
   }
-  const filesDir = path.dirname(clean);
-  const weekDir = path.dirname(filesDir);
-  if (path.basename(filesDir) !== 'files') {
+  const parentDir = path.dirname(clean);
+  const parentName = path.basename(parentDir);
+
+  // Shape 2 first-class check: <week>/<day> under a date-named week.
+  if (parentName !== 'files') {
+    if (WEEK_FOLDER_RE.test(parentName)) {
+      return path.join(root, parentName, path.basename(clean));
+    }
     throw new Error(
-      `${clean} is not a day project: its parent is "${path.basename(filesDir)}", expected "files". ` +
-      `The archive destination is derived from the <week>/files/<day> layout and cannot be guessed.`
+      `${clean} is not a day project: its parent is "${parentName}", expected "files" or a ` +
+      `date-named week folder (YYYY-MM-DD). The archive destination is derived from the ` +
+      `<week>/files/<day> or <week>/<day> layout and cannot be guessed.`
     );
   }
+
+  const weekDir = path.dirname(parentDir);
   if (!path.basename(weekDir)) {
     throw new Error(`${clean} has no week folder above its files/ directory.`);
   }

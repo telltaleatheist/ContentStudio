@@ -251,12 +251,36 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
     for (const path of assigned.values()) this.ensureCandidate(path);
 
     this.slots = this.buildSlots(assigned);
-    // Nothing matched, but there ARE files to match against: the naming convention did not fit
-    // this folder. Say so — a list of empty dropdowns is otherwise a silent failure.
-    this.detectNote = (assigned.size === 0 && this.candidates.length > 0)
-      ? `Nothing matched the naming convention for “${this.basename(master)}”. ` +
-        `Pick the files by hand below.`
-      : null;
+
+    // MASTER-ONLY PROJECT. The predicate is exact and deliberately narrow: the folder holds
+    // NO assignable media at all beside the master (`candidates.length === 0`) AND the
+    // detector matched nothing (`assigned.size === 0`). That is a recovery folder containing
+    // only a downloaded broadcast stream — the safety net for a lost or corrupt recording.
+    //
+    // Such a run has to be told it is one: every compound generator crops the camera views out
+    // of the stream's quadrant layout, and the STREAM crop constants differ from the local
+    // recording ones. Enabling the toggle here is not a fallback — it is the mode the folder's
+    // contents unambiguously name, said out loud in the note and still un-tickable by hand.
+    //
+    // Deliberately NOT triggered when candidates exist but matched nothing: that is a naming
+    // problem with real companion files present, and quietly rewriting it into stream recovery
+    // would silently discard those files.
+    const masterOnly = assigned.size === 0 && this.candidates.length === 0;
+    if (masterOnly) {
+      this.useDownloadedStream = true;
+      this.detectNote =
+        `Master-only project: no companion recordings found. Video will be cropped from the ` +
+        `stream master's quadrants and audio taken from the master itself. ` +
+        `“Use downloaded stream as master” has been enabled.`;
+    } else if (assigned.size === 0 && this.candidates.length > 0) {
+      // Nothing matched, but there ARE files to match against: the naming convention did not
+      // fit this folder. Say so — a list of empty dropdowns is otherwise a silent failure.
+      this.detectNote =
+        `Nothing matched the naming convention for “${this.basename(master)}”. ` +
+        `Pick the files by hand below.`;
+    } else {
+      this.detectNote = null;
+    }
     this.state = 'ready';
     this.cdr.detectChanges();
   }

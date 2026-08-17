@@ -161,8 +161,10 @@ def _model_name(model_path):
 def discover_tracks(zip_path):
     """Return (session, frame_seconds, tracks) where tracks is an ordered list of dicts:
        {id, label, file, segments}. segments is that file's audio leaf segments sorted
-       (timeline order) with their group index. Master recording excluded. Loud errors
-       for: no non-master audio, missing files."""
+       (timeline order) with their group index. The master recording is excluded from the
+       per-source tracks — EXCEPT in a master-only session, where there are no per-source
+       tracks at all and the master's own audio is the thing to transcribe (see
+       _master_only_tracks). Loud errors for: no audio anywhere, missing files."""
     zp = Path(zip_path)
     if not zp.is_file():
         raise TranscribeError(f"zip not found: {zip_path}")
@@ -196,10 +198,13 @@ def discover_tracks(zip_path):
             order.append(f)
 
     if not order:
-        raise TranscribeError(
-            "no non-master audio tracks to transcribe: every flattened audio leaf "
-            f"references the master recording {master_file}. The per-source tracks "
-            "(mic/screen audio) are the point of transcription.")
+        # MASTER-ONLY SESSION (explicit mode, not a fallback). A normal session always has
+        # at least one non-master audio leaf; ZERO of them across the whole flattened
+        # timeline is the precise signature of a recovery project built from nothing but
+        # the downloaded broadcast master. Its audio IS the session audio, so transcribe
+        # THAT rather than refusing — mirrors editor_manifest.build_tracks' master-only
+        # audio lane, so the transcript and the editor's lane describe the same audio.
+        return _master_only_tracks(zip_path, builder, master_file, frame_seconds)
 
     missing = [f for f in order if not Path(f).exists()]
     if missing:
@@ -225,6 +230,57 @@ def discover_tracks(zip_path):
         label = stem[len(prefix):] if stem.startswith(prefix) else stem
         tracks.append({'id': f"t{idx}", 'label': label, 'file': f, 'segments': segments})
 
+    return session, float(frame_seconds), tracks
+
+
+def _master_only_tracks(zip_path, builder, master_file, frame_seconds):
+    """The single 'master' track of a MASTER-ONLY session (see discover_tracks).
+
+    Returns the same (session, frame_seconds, tracks) triple as discover_tracks, with one
+    track whose segments come from the MASTER's own audio leaves. Loud error when the
+    master contributes no audio leaves at all — that is a zip with no audio anywhere, which
+    is the state the old blanket error existed to catch and is still not transcribable."""
+    master_audio = [l for l in builder.leaves
+                    if l['kind'] == 'audio' and l['file'] == master_file]
+    if not master_audio:
+        raise TranscribeError(
+            "nothing to transcribe: the flattened timeline has no non-master audio leaves "
+            f"AND the master recording {master_file} contributes no audio leaves either, "
+            "so this zip carries no audio at all.")
+
+    if not Path(master_file).exists():
+        raise TranscribeError(f"master recording not found on disk:\n  {master_file}")
+
+    # Every master-only compound (CAM/GS/SSB/hybrid …) references the SAME master audio
+    # over the same kept segments, so the flattened timeline carries each
+    # (timeline_start, timeline_end, source_start) triple many times over. Those are
+    # byte-identical duplicates, not distinct speech — transcribing them repeatedly would
+    # emit the same words N times. Collapse them, exactly as editor_manifest does.
+    seen_keys = set()
+    deduped = []
+    for l in sorted(master_audio,
+                    key=lambda l: (l['timeline_start'], l['timeline_end'], l['source_start'])):
+        key = (l['timeline_start'], l['timeline_end'], l['source_start'])
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append(l)
+
+    print(f"[transcribe] MASTER-ONLY SESSION: transcribing the master's own audio "
+          f"({Path(master_file).name}); {len(master_audio)} master audio references "
+          f"collapsed to {len(deduped)} segments", file=sys.stderr)
+
+    segments = []
+    for g, l in enumerate(deduped):
+        segments.append({
+            'group': g,
+            'source_start': float(l['source_start']),
+            'source_end': float(l['source_start'] + (l['timeline_end'] - l['timeline_start'])),
+            'timeline_start': float(l['timeline_start']),
+        })
+
+    session = _session_name(zip_path)
+    tracks = [{'id': 't0', 'label': 'master', 'file': master_file, 'segments': segments}]
     return session, float(frame_seconds), tracks
 
 
