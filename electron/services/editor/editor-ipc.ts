@@ -131,9 +131,14 @@ let deletionInFlight: string | null = null;
  * is this app's own leftover (see archive-sync.ts); `#recycle` and `@eaDir` are Synology's
  * trash and thumbnail sidecars, which appear beside real folders on this NAS. Matched
  * case-insensitively, and everything beginning with a dot is skipped separately.
+ *
+ * `2026 fcpxtemplate` is excluded by name at the user's request: it is week-SHAPED (it has
+ * a files/ directory, so the structural filter passes it) but it is a template, not a week —
+ * it must never appear in the sidebar with a delete button beside it.
  */
 const NON_WEEK_ENTRIES: ReadonlySet<string> = new Set([
-  '.rsync-partial', '#recycle', '@eadir', 'lost+found'
+  '.rsync-partial', '#recycle', '@eadir', 'lost+found',
+  '2026 fcpxtemplate'
 ]);
 
 /** Where the projects registry lives — beside drift_corrections.json and the other user config. */
@@ -1782,7 +1787,7 @@ function setupArchiveHandlers(store: Store<any>): void {
 
       const name = path.basename(realTarget);
       if (name.startsWith('.') || NON_WEEK_ENTRIES.has(name.toLowerCase())) {
-        throw new Error(`${name} is a system entry on the archive, not a week — refusing to delete it.`);
+        throw new Error(`${name} is a system or excluded entry on the archive, not a deletable week — refusing to delete it.`);
       }
       const filesDir = fs.statSync(path.join(realTarget, 'files'), { throwIfNoEntry: false });
       if (!filesDir || !filesDir.isDirectory()) {
