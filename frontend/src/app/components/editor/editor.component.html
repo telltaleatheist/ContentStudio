@@ -22,6 +22,9 @@
         <button class="menu-item" (click)="onRelinkFromMenu()">
           <span class="menu-item-label">Relink…</span>
         </button>
+        <button class="menu-item" (click)="onEnvironmentFromMenu()">
+          <span class="menu-item-label">Environment…</span>
+        </button>
       </div>
     </div>
     <span class="session-name">{{ sessionName }}</span>
@@ -86,12 +89,22 @@
     [attachRunning]="setupAttachRunning"
     (started)="onProjectSetupStarted()"
     (closed)="onProjectSetupClosed()"
+    (openEnvironment)="onEnvironmentFromSetup()"
     (completed)="onProjectSetupCompleted($event)"></app-project-setup-modal>
 
   <!-- File ▸ Relink…: repoint the overlay PNGs the compound generators composite with. Host
        state, not session state — it is reachable with no project open. -->
   <app-editor-relink-modal *ngIf="relinkOpen"
     (closed)="onRelinkClosed()"></app-editor-relink-modal>
+
+  <!-- File ▸ Environment…: the downloadable backend (ffmpeg, Python, Whisper, voice isolation).
+       Opens itself on startup when a REQUIRED component is missing, with the reason as its
+       banner and the install already running — never a silent background download. Declared
+       AFTER the setup modal so it stacks above the one that can open it (the Denoise gate). -->
+  <app-editor-environment-modal *ngIf="environmentOpen"
+    [banner]="environmentBanner"
+    [autoEnsure]="environmentAutoEnsure"
+    (closed)="onEnvironmentClosed()"></app-editor-environment-modal>
 
   <!-- Background activity HUD (FCPX-style). A floating, draggable dock: opened from the button
        in the Edit/Stories tab row and auto-opened when transcription starts; drag it by the

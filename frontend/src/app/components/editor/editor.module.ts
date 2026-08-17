@@ -14,6 +14,7 @@ import { ActivityDockComponent } from './activity-dock/activity-dock.component';
 import { ExportModalsComponent } from './export-modals/export-modals.component';
 import { TranscriptPaneComponent } from './transcript-pane/transcript-pane.component';
 import { RelinkModalComponent } from './relink-modal/relink-modal.component';
+import { EnvironmentModalComponent } from './environment-modal/environment-modal.component';
 import { ProjectsService } from './services/projects.service';
 import { ArchiveService } from './services/archive.service';
 
@@ -25,7 +26,8 @@ import { ArchiveService } from './services/archive.service';
     ActivityDockComponent,
     ExportModalsComponent,
     TranscriptPaneComponent,
-    RelinkModalComponent
+    RelinkModalComponent,
+    EnvironmentModalComponent
   ],
   imports: [
     CommonModule,
@@ -38,7 +40,8 @@ import { ArchiveService } from './services/archive.service';
     ActivityDockComponent,
     ExportModalsComponent,
     TranscriptPaneComponent,
-    RelinkModalComponent
+    RelinkModalComponent,
+    EnvironmentModalComponent
   ],
   // Module-scoped, not providedIn: 'root' — same reason as ProjectsService. These belong to
   // the editor and have to travel with it; a root provider would keep resolving through the

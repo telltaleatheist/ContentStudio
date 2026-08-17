@@ -3,6 +3,7 @@ import { Observable, Subject } from 'rxjs';
 import type { ChosenMetadata, PublishResult, ResolvedMetadata } from '../features/publish/publish.types';
 import type {
   ArchiveCheck, ArchiveProgress, ArchiveQueue, ArchiveResult, ArchiveStatus,
+  AssetComponentStatus, AssetInstallProgress, AssetInstallResult,
   AssetPaths, DeleteLocalWeekResult, DeleteRemoteWeekResult, ProjectScanResult,
   ProjectsRegistry, RemoteWeekListing, TitleHandoff
 } from '../components/editor/editor-host';
@@ -415,7 +416,18 @@ declare global {
         videoFiles?: { [key: string]: string };
         error?: string;
       }>;
-      listAssets: () => Promise<{ success: boolean; components?: any[]; error?: string }>;
+      /**
+       * The downloadable environment. `listAssets` backs both the Denoise gate and the
+       * environment modal; the other five are the install surface behind File ▸ Environment…
+       * Progress is sent to THIS window on 'asset-progress' by whichever install is running.
+       */
+      listAssets: () => Promise<{ success: boolean; components?: AssetComponentStatus[]; error?: string }>;
+      installAsset: (id: string) => Promise<AssetInstallResult>;
+      cancelAsset: (id: string) => Promise<{ success: boolean }>;
+      ensureRequiredAssets: () =>
+        Promise<{ success: boolean; ok?: boolean; failed?: string[]; error?: string }>;
+      onAssetProgress: (callback: (p: AssetInstallProgress) => void) => void;
+      removeAssetProgressListener: () => void;
       executeWorkflow: (options: any) => Promise<any>;
       /** Prefixed: ContentStudio's `cancelJob` above cancels a METADATA job, by id. */
       editorCancelJob: (jobId: string) => Promise<any>;
@@ -1096,9 +1108,40 @@ export class ElectronService {
     return this.editorBridge.autoDetectAudio(masterVideoPath);
   }
 
-  /** Install state of the editor backend's optional components (the Denoise gate reads it). */
-  async listAssets(): Promise<{ success: boolean; components?: any[]; error?: string }> {
+  /**
+   * Install state of the editor backend's downloadable components. Read by the Denoise gate
+   * (one component) and by the environment modal (all of them).
+   */
+  async listAssets(): Promise<{ success: boolean; components?: AssetComponentStatus[]; error?: string }> {
     return this.editorBridge.listAssets();
+  }
+
+  /**
+   * Install one component. Resolves with the outcome rather than rejecting on a failed
+   * install — `ok:false` carries the main process's verbatim reason, which the environment
+   * modal prints. A missing bridge still THROWS, like every other editor method here.
+   */
+  async installAsset(id: string): Promise<AssetInstallResult> {
+    return this.editorBridge.installAsset(id);
+  }
+
+  /** Abort an install in flight. A no-op when that component is not installing. */
+  async cancelAsset(id: string): Promise<{ success: boolean }> {
+    return this.editorBridge.cancelAsset(id);
+  }
+
+  /** Install every REQUIRED component that is missing. Empty `failed` is the only success. */
+  async ensureRequiredAssets(): Promise<{ success: boolean; ok?: boolean; failed?: string[]; error?: string }> {
+    return this.editorBridge.ensureRequiredAssets();
+  }
+
+  /** Progress ticks for whichever install is running, in this window. */
+  onAssetProgress(callback: (p: AssetInstallProgress) => void): void {
+    this.editorBridge.onAssetProgress((p) => this.ngZone.run(() => callback(p)));
+  }
+
+  removeAssetProgressListener(): void {
+    this.editorBridge.removeAssetProgressListener();
   }
 
   async executeWorkflow(options: any): Promise<any> {

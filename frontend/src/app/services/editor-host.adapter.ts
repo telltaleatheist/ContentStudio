@@ -20,7 +20,8 @@ import { ElectronService } from './electron';
 import { EditorProcessingService } from './editor-processing.service';
 import type { EditorManifest } from '../components/editor/host-data/editor-manifest';
 import type {
-  ArchiveCheck, ArchiveProgress, ArchiveQueue, ArchiveResult, ArchiveStatus, AssetPaths,
+  ArchiveCheck, ArchiveProgress, ArchiveQueue, ArchiveResult, ArchiveStatus,
+  AssetComponentStatus, AssetInstallProgress, AssetInstallResult, AssetPaths,
   DeleteLocalWeekResult, DeleteRemoteWeekResult, EditorHost, ProcessingJob,
   ProjectScanResult, ProjectsRegistry, RemoteWeekListing, TitleHandoff
 } from '../components/editor/editor-host';
@@ -219,8 +220,33 @@ export class EditorHostAdapter implements EditorHost {
     return this.electron.autoDetectAudio(masterVideoPath);
   }
 
-  listAssets(): Promise<{ success: boolean; components?: any[]; error?: string }> {
+  listAssets(): Promise<{ success: boolean; components?: AssetComponentStatus[]; error?: string }> {
     return this.electron.listAssets();
+  }
+
+  // ── Installing the environment ──────────────────────────────────────────────
+  //
+  // ContentStudio downloads the editor's toolchain into the shared OwenMorgan location, so the
+  // whole optional group is implemented. Names are the port's, which are also the bridge's.
+
+  installAsset(id: string): Promise<AssetInstallResult> {
+    return this.electron.installAsset(id);
+  }
+
+  cancelAsset(id: string): Promise<{ success: boolean }> {
+    return this.electron.cancelAsset(id);
+  }
+
+  ensureRequiredAssets(): Promise<{ success: boolean; ok?: boolean; failed?: string[]; error?: string }> {
+    return this.electron.ensureRequiredAssets();
+  }
+
+  onAssetProgress(callback: (p: AssetInstallProgress) => void): void {
+    this.electron.onAssetProgress(callback);
+  }
+
+  removeAssetProgressListener(): void {
+    this.electron.removeAssetProgressListener();
   }
 
   startWorkflow(options: any): Promise<void> {

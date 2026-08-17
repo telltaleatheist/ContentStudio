@@ -264,9 +264,21 @@ const api = {
 
   // Processing: turning a raw project folder into an editable one.
   autoDetectAudio: (masterVideoPath: string) => ipcRenderer.invoke('auto-detect-audio', masterVideoPath),
-  // The editor reads exactly one component from this list (`voice-separator-env`) to decide
-  // whether the Denoise toggle can be offered.
+  // The downloadable environment: ffmpeg/ffprobe, the Python runtime and the Whisper model
+  // (required — the editor cannot open a project without them), plus voice isolation
+  // (optional, the Denoise toggle's gate). Channels are AutoCutStudio's verbatim; nothing here
+  // collides with ContentStudio's own component system, which lives on `components:*`.
+  // Progress arrives on 'asset-progress', sent to THIS window (the one that asked to install).
   listAssets: () => ipcRenderer.invoke('assets:list'),
+  installAsset: (id: string) => ipcRenderer.invoke('assets:install', id),
+  cancelAsset: (id: string) => ipcRenderer.invoke('assets:cancel', id),
+  ensureRequiredAssets: () => ipcRenderer.invoke('assets:ensure-required'),
+  onAssetProgress: (callback: (progress: any) => void) => {
+    ipcRenderer.on('asset-progress', (_event, progress) => callback(progress));
+  },
+  removeAssetProgressListener: () => {
+    ipcRenderer.removeAllListeners('asset-progress');
+  },
   executeWorkflow: (options: any) => ipcRenderer.invoke('execute-workflow', options),
   editorCancelJob: (jobId: string) => ipcRenderer.invoke('editor:cancel-job', jobId),
   sendSkipSignal: () => ipcRenderer.invoke('send-skip-signal'),

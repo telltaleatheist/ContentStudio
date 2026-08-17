@@ -1145,6 +1145,25 @@ function setupEditorFileHandlers(): void {
 
 function setupProcessingHandlers(): void {
   /**
+   * The downloadable environment: ffmpeg/ffprobe, the Python runtime, the Whisper model
+   * (all three REQUIRED) and voice isolation (optional, the Denoise toggle's gate). These four
+   * channels are AutoCutStudio's, verbatim in name and in handler body — `assets:list`,
+   * `assets:install`, `assets:cancel`, `assets:ensure-required` — because ContentStudio's own
+   * component system is registered under `components:*` with the event `component-progress`, so
+   * there is nothing here to collide with and nothing to rename.
+   *
+   * ONE deviation from ACS, and it is forced: ACS emitted progress to `windowService
+   * .getMainWindow()`, because ACS had one window and the installer lived in it. Here the
+   * installer lives in the EDITOR window, so progress goes to `event.sender` — the window that
+   * asked. The event name (`asset-progress`) and payload (InstallProgress) are unchanged.
+   */
+
+  /** Progress ticks for one install, sent to the window that requested it. */
+  const emitProgressTo = (event: Electron.IpcMainInvokeEvent) => (p: any) => {
+    if (!event.sender.isDestroyed()) event.sender.send('asset-progress', p);
+  };
+
+  /**
    * Asset listing — the install state of the shared OwenMorgan components. The editor reads
    * exactly one of these (`voice-separator-env`) to decide whether the Denoise toggle can be
    * offered, but the whole list is returned because that is ACS's shape.
@@ -1154,6 +1173,35 @@ function setupProcessingHandlers(): void {
       return { success: true, components: assetManager.listStatus() };
     } catch (error: any) {
       log.error('assets:list failed:', error);
+      return { success: false, error: error?.message || String(error) };
+    }
+  });
+
+  /** Install ONE component by id. Resolves with the InstallResult — `ok:false` carries the
+   *  verbatim reason, which the environment modal prints as its own error line. */
+  ipcMain.handle('assets:install', async (event, id: string) => {
+    try {
+      const result = await assetManager.install(id, emitProgressTo(event));
+      return result;
+    } catch (error: any) {
+      log.error(`assets:install(${id}) failed:`, error);
+      return { id, ok: false, error: error?.message || String(error) };
+    }
+  });
+
+  /** Abort an in-flight install. A no-op when nothing is running for that id. */
+  ipcMain.handle('assets:cancel', async (_event, id: string) => {
+    assetManager.cancel(id);
+    return { success: true };
+  });
+
+  /** Install every REQUIRED component that is missing. `failed` names the ones that did not
+   *  land — an empty array is the only success. */
+  ipcMain.handle('assets:ensure-required', async (event) => {
+    try {
+      return { success: true, ...(await assetManager.ensureRequired(emitProgressTo(event))) };
+    } catch (error: any) {
+      log.error('assets:ensure-required failed:', error);
       return { success: false, error: error?.message || String(error) };
     }
   });

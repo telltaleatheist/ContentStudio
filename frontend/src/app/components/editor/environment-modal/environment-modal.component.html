@@ -1,0 +1,110 @@
+<!-- File ▸ Environment…: the editor's downloadable backend, and whether it is on this machine.
+     Every outcome is a line inside this card — nothing here opens a native dialog. -->
+<div class="modal-backdrop" (click)="onBackdropClick()">
+  <div class="evm" (click)="$event.stopPropagation()">
+
+    <header class="evm-header">
+      <div class="evm-heading">
+        <div class="evm-title">Environment</div>
+        <div class="evm-sub">The components the editor's backend runs on, downloaded once and shared with the other OwenMorgan apps</div>
+      </div>
+      <button class="evm-close" (click)="onClose()" title="Close" aria-label="Close">✕</button>
+    </header>
+
+    <div class="evm-body">
+
+      <!-- Why the dialog opened, when it opened itself. -->
+      <div class="evm-banner" *ngIf="banner">
+        <span class="evm-banner-icon">⚠</span>
+        <span class="evm-banner-text">{{ banner }}</span>
+      </div>
+
+      <!-- A host with no installer at all. Said once, here, rather than on every dead button. -->
+      <div class="evm-banner" *ngIf="!supported && !loading">
+        <span class="evm-banner-icon">⚠</span>
+        <span class="evm-banner-text">
+          This window's host cannot install components — it lists them but implements no install
+          surface. Install them from the app that manages them.
+        </span>
+      </div>
+
+      <!-- The host's own words, kept apart from the banner: the banner is why this is open,
+           these are the outcome of the last thing that ran. -->
+      <div class="evm-error" *ngIf="error">{{ error }}</div>
+      <div class="evm-status" *ngIf="status">{{ status }}</div>
+
+      <div class="evm-loading" *ngIf="loading">
+        <span class="evm-spinner"></span>
+        <span>Reading the environment…</span>
+      </div>
+
+      <div class="evm-rows" *ngIf="!loading">
+        <div *ngFor="let row of rows"
+             class="evm-row"
+             [class.installed]="isInstalled(row)"
+             [class.busy]="isInstalling(row)">
+
+          <div class="evm-row-text">
+            <div class="evm-row-name">
+              {{ row.name }}
+              <span class="evm-tag" *ngIf="row.required">Required</span>
+              <span class="evm-tag optional" *ngIf="!row.required">Optional</span>
+            </div>
+            <div class="evm-row-desc">{{ row.description }}</div>
+
+            <!-- Installing: the phase, then exactly how many megabytes have landed. -->
+            <div class="evm-progress" *ngIf="isInstalling(row)">
+              <div class="evm-bar">
+                <div class="evm-bar-fill" [style.width.%]="progress[row.id]?.pct || 0"></div>
+              </div>
+              <div class="evm-progress-text">
+                <span>{{ progress[row.id]?.message || phaseLabel(progress[row.id]?.phase) }}</span>
+                <span class="evm-bytes" *ngIf="bytesLabel(row)">{{ bytesLabel(row) }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="evm-row-state">
+            <span class="evm-state"
+                  [class.ok]="isInstalled(row)"
+                  [class.running]="isInstalling(row)">{{ stateLabel(row) }}</span>
+            <span class="evm-size" *ngIf="!isInstalled(row) && !isInstalling(row) && sizeLabel(row)">
+              {{ sizeLabel(row) }}
+            </span>
+          </div>
+
+          <div class="evm-row-action">
+            <button class="evm-btn small" *ngIf="isInstalling(row)" (click)="cancel(row)">Cancel</button>
+            <button class="evm-btn small primary"
+                    *ngIf="!isInstalling(row) && !isInstalled(row)"
+                    [disabled]="!supported || !row.installable || ensuring"
+                    [title]="row.installable ? '' : 'No published download exists for this platform yet'"
+                    (click)="install(row)">Install</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="evm-empty" *ngIf="!loading && !rows.length && !error">
+        The host reported no components at all.
+      </div>
+
+    </div>
+
+    <footer class="evm-actions">
+      <span class="evm-footnote" *ngIf="missingRequired.length && !ensuring">
+        {{ missingRequired.length }} required
+        {{ missingRequired.length === 1 ? 'component is' : 'components are' }} missing — the editor
+        cannot open a project until they are installed.
+      </span>
+      <span class="evm-footnote" *ngIf="ensuring">Installing the required components…</span>
+
+      <button class="evm-btn primary"
+              *ngIf="missingRequired.length"
+              [disabled]="!supported || ensuring"
+              (click)="ensureRequired()">Install required</button>
+      <button class="evm-btn" [disabled]="loading" (click)="load()">Refresh</button>
+      <button class="evm-btn" (click)="onClose()">Close</button>
+    </footer>
+
+  </div>
+</div>

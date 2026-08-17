@@ -197,6 +197,65 @@ export interface AssetPaths {
   };
 }
 
+/**
+ * The host's downloadable environment, as the environment modal renders it.
+ *
+ * These four shapes mirror the host's own asset contract exactly (AutoCutStudio's
+ * electron/services/editor/asset-types.ts). They are restated here rather than imported for the
+ * usual reason: a port that imports the host's types is not a port. Any host that can install
+ * components answers in these shapes; a host that cannot omits the whole group below.
+ */
+
+/** What one component is doing right now. 'available' means installable but not installed. */
+export type AssetComponentState = 'installed' | 'available' | 'installing' | 'error';
+
+/** Where an install got to. The modal turns these into the words a user reads. */
+export type AssetInstallPhase =
+  | 'resolve' | 'download' | 'verify' | 'extract' | 'postinstall' | 'done' | 'error';
+
+/** What the host recorded when a component landed. Rendered only as its version, if any. */
+export interface AssetInstalledRecord {
+  id: string;
+  version?: string;
+  installedAt: string;
+}
+
+/** One row of the environment list. */
+export interface AssetComponentStatus {
+  id: string;
+  name: string;
+  description: string;
+  /** The editor cannot open a project without this one. Comes from the host's catalog. */
+  required: boolean;
+  state: AssetComponentState;
+  /**
+   * False when the host has no artifact it could actually fetch for this machine. The modal
+   * says so instead of offering an Install button that would only fail.
+   */
+  installable: boolean;
+  /** Download size in bytes, 0 when the host does not know it. */
+  sizeBytes: number;
+  version?: string;
+  installed?: AssetInstalledRecord;
+}
+
+/** A tick from a running install. `pct` is 0–100 WITHIN the current phase, not overall. */
+export interface AssetInstallProgress {
+  id: string;
+  phase: AssetInstallPhase;
+  pct: number;
+  receivedBytes?: number;
+  totalBytes?: number;
+  message?: string;
+}
+
+/** The end of one install. `ok:false` always carries the host's verbatim reason. */
+export interface AssetInstallResult {
+  id: string;
+  ok: boolean;
+  error?: string;
+}
+
 /** A batch of subjects handed to the host's titling surface. One entry per upload. */
 export interface TitleHandoff {
   subjects: string[];
@@ -437,10 +496,13 @@ export interface EditorHost {
   }>;
 
   /**
-   * Install state of the host's optional components. The editor reads exactly one of these
-   * (`voice-separator-env`) to decide whether the Denoise toggle can be offered.
+   * Install state of the host's downloadable components. REQUIRED member, because two things
+   * read it: the Denoise toggle (which needs `voice-separator-env` alone) and the environment
+   * modal (which lists all of them). A host with no components answers with an empty list;
+   * a host that cannot answer at all reports `success:false` and its reason, which the modal
+   * prints verbatim rather than showing an empty list that would read as "nothing to install".
    */
-  listAssets(): Promise<{ success: boolean; components?: any[]; error?: string }>;
+  listAssets(): Promise<{ success: boolean; components?: AssetComponentStatus[]; error?: string }>;
 
   /** Start a processing run with the payload the shared workflow builder produced. */
   startWorkflow(options: any): Promise<void>;
@@ -453,6 +515,43 @@ export interface EditorHost {
 
   /** Tell a running job to skip the operation it is on (when the job says it may be skipped). */
   sendSkipSignal(): Promise<void>;
+
+  // ── Installing the environment (OPTIONAL as a GROUP) ────────────────────────
+  //
+  // `listAssets` above is required — every host can at least SAY what it has. Installing what
+  // is missing is not: a host may ship its toolchain in the bundle, or manage it somewhere the
+  // editor has no business reaching into. So these five travel together and the editor tests
+  // `installAsset` before it offers any of them, the same way the sidebar tests
+  // `archiveStatus` before it shows a sync control. A host implements all five or none —
+  // an installer with no way to cancel, or one whose progress never arrives, is worse than a
+  // window that tells the user to install the components themselves.
+  //
+  // The editor's use of the group is the environment modal (File ▸ Environment…), which is
+  // also opened automatically when a REQUIRED component is missing at startup. Nothing here
+  // is ever called without that modal on screen: a multi-gigabyte download must be visible.
+
+  /**
+   * Install one component by id. Resolves with the OUTCOME — a failure is `{ ok: false, error }`,
+   * not a rejection, because the modal renders every outcome as a line in its own UI. The
+   * host's `error` text is shown verbatim.
+   */
+  installAsset?(id: string): Promise<AssetInstallResult>;
+
+  /** Abort an install in flight. A no-op when that component is not installing. */
+  cancelAsset?(id: string): Promise<{ success: boolean }>;
+
+  /**
+   * Install every REQUIRED component that is missing, in order. `failed` names the ones that
+   * did not land — an empty `failed` is the only success. `success:false` means the run could
+   * not even be attempted, and `error` says why.
+   */
+  ensureRequiredAssets?(): Promise<{ success: boolean; ok?: boolean; failed?: string[]; error?: string }>;
+
+  /** Progress ticks for whichever install is running. One listener serves all of them. */
+  onAssetProgress?(callback: (p: AssetInstallProgress) => void): void;
+
+  /** Detach the progress listener. Called from the modal's ngOnDestroy. */
+  removeAssetProgressListener?(): void;
 
   // ── Host handoffs (OPTIONAL — a host may not have the surface at all) ───────
 

@@ -13,7 +13,11 @@
 
 import type { AssetComponent, Platform, Arch } from './asset-types';
 
-export const RELEASE_REPO = 'telltaleatheist/autocutstudio';
+// Mirrored verbatim from telltaleatheist/autocutstudio's assets-v1 on 2026-08-17 —
+// that repo is retired; ContentStudio hosts its own copies now. Same artifacts,
+// same sha256s, so machines that already installed from the old release are
+// unaffected (identity is the checksum, not the URL).
+export const RELEASE_REPO = 'telltaleatheist/ContentStudio';
 export const RELEASE_TAG = 'assets-v1';
 const BASE = `https://github.com/${RELEASE_REPO}/releases/download/${RELEASE_TAG}`;
 

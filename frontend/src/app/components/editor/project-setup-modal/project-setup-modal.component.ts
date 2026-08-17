@@ -108,6 +108,12 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
   @Output() started = new EventEmitter<void>();
   /** The run finished and produced a session. The host rescans, stamps and opens it. */
   @Output() completed = new EventEmitter<{ zipPath: string }>();
+  /**
+   * The Denoise row asked for the environment dialog — voice isolation is not installed, and
+   * this is where the user found that out. The host opens it OVER this modal and tells this
+   * component to re-read the component list when it closes (`refreshEnvironment`).
+   */
+  @Output() openEnvironment = new EventEmitter<void>();
 
   state: ProjectSetupState = 'idle';
   /** Inline failure text for the CURRENT state (detection, payload, start, or the job). */
@@ -315,6 +321,15 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
       masterQuadrant: MASTER_QUADRANTS[type as string] || null,
       seamGapSeconds: null
     };
+  }
+
+  /**
+   * Re-read the component list — called by the host after the environment dialog this modal
+   * opened has closed, so a voice-isolation component installed there turns the Denoise toggle
+   * on without closing and reopening the setup.
+   */
+  refreshEnvironment(): Promise<void> {
+    return this.refreshSeparatorStatus();
   }
 
   /** Install state of the optional voice-isolation component (the Denoise toggle's gate). */

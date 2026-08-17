@@ -5,6 +5,7 @@ import { Subscription } from 'rxjs';
 import { EDITOR_HOST, EditorHost, ProcessingJob } from './editor-host';
 import { ProjectsService, ProjectEntry } from './services/projects.service';
 import { ProjectSidebarComponent } from './project-sidebar/project-sidebar.component';
+import { ProjectSetupModalComponent } from './project-setup-modal/project-setup-modal.component';
 import { EditorManifest, EditorSegment } from './host-data/editor-manifest';
 import {
   TranscriptWord, Transcript, TranscriptGroup, TranscriptGroupView,
@@ -396,6 +397,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       through this so a rejected folder reports in the pane, not in a lost promise. */
   @ViewChild(ProjectSidebarComponent) projectSidebar?: ProjectSidebarComponent;
 
+  /** The setup modal while it is open, so a component installed from the environment dialog it
+      opened can be re-read without closing and reopening the setup. */
+  @ViewChild(ProjectSetupModalComponent) setupModal?: ProjectSetupModalComponent;
+
   // ── Project processing (the setup modal + the pane's busy row) ──────────────
   /** The project the setup modal is open on; null = closed. */
   setupEntry: ProjectEntry | null = null;
@@ -406,6 +411,18 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * because the relink dialog is not opened ON anything — it edits host-wide asset paths.
    */
   relinkOpen = false;
+  /**
+   * True while File ▸ Environment… is open. Like `relinkOpen` and for the same reason: the
+   * component list is host-wide state, not something the dialog is opened ON.
+   */
+  environmentOpen = false;
+  /**
+   * The line the environment dialog leads with when it opened ITSELF — a missing required
+   * component, or a check that could not be made. null when the user opened it from the menu.
+   */
+  environmentBanner: string | null = null;
+  /** Start the required installs the moment the dialog is on screen (the startup case only). */
+  environmentAutoEnsure = false;
   /** The project whose job is running, fed to the pane as a spinner + percent. */
   projectBusyPath: string | null = null;
   projectBusyPercent: number | null = null;
@@ -456,6 +473,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // Load the local Ollama model list for the Stories-tab analyzer (non-blocking; the picker
     // shows "is Ollama running?" until it connects).
     void this.refreshOllamaModels();
+    // Is the backend this window runs on actually installed? A missing REQUIRED component opens
+    // the environment dialog and starts the download there, visibly. Non-blocking: the window
+    // still mounts, and everything that needs the backend fails loudly on its own until it lands.
+    void this.checkEnvironment();
     // Per-step progress of a running chapter analysis → the modal bar + activity dock.
     this.host.onStoryAnalyzeProgress((p) => {
       this.aiProgressDone = p.done;
@@ -4028,6 +4049,86 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   /** The relink dialog dismissed itself. Nothing to reload — it owns its own state. */
   onRelinkClosed(): void {
     this.relinkOpen = false;
+  }
+
+  /** File ▸ Environment…: close the menu and open the component list, with no banner and no
+   *  install started — the user opened it to look. */
+  onEnvironmentFromMenu(): void {
+    this.menuOpen = false;
+    this.environmentBanner = null;
+    this.environmentAutoEnsure = false;
+    this.environmentOpen = true;
+  }
+
+  /**
+   * The Denoise toggle's "install it" link, from inside the project setup modal. Opens the same
+   * dialog ON TOP of the setup modal (nothing about the setup is lost), so the component can be
+   * installed where the user discovered it was missing.
+   */
+  onEnvironmentFromSetup(): void {
+    this.environmentBanner = null;
+    this.environmentAutoEnsure = false;
+    this.environmentOpen = true;
+  }
+
+  /**
+   * The environment dialog dismissed itself. The setup modal (if it is open behind this one) is
+   * asked to re-read the voice-isolation component, because installing it is exactly why the
+   * user would have opened this from there and the Denoise toggle would otherwise stay hidden
+   * until the modal was closed and reopened.
+   */
+  onEnvironmentClosed(): void {
+    this.environmentOpen = false;
+    this.environmentAutoEnsure = false;
+    this.environmentBanner = null;
+    void this.setupModal?.refreshEnvironment();
+  }
+
+  /**
+   * Startup check: is the backend the editor runs on actually on this machine?
+   *
+   * Three components are REQUIRED (which one they are comes from the host's catalog, not from a
+   * list repeated here) and without them opening a project fails in the binary resolver with a
+   * path nobody has ever downloaded. So the check runs once, on init, and if anything required
+   * is missing the environment dialog opens by itself, says why, and starts the install in
+   * front of the user. Nothing downloads silently.
+   *
+   * The install surface is an OPTIONAL group on the port — an older host lists components but
+   * cannot install them — so the check is gated on its presence the same way the sidebar gates
+   * the archive controls, and simply does not run there.
+   */
+  private async checkEnvironment(): Promise<void> {
+    if (typeof this.host.installAsset !== 'function'
+      || typeof this.host.ensureRequiredAssets !== 'function') return;
+
+    try {
+      const res = await this.host.listAssets();
+      if (!res.success) {
+        // Could not even ask. Open the dialog with the reason said out loud rather than
+        // assuming the environment is fine — the very next project open would prove it is not.
+        this.environmentBanner =
+          `The editor could not check its environment: ${res.error || 'the host gave no reason'}`;
+        this.environmentAutoEnsure = false;
+        this.environmentOpen = true;
+        this.cdr.detectChanges();
+        return;
+      }
+      const missing = (res.components || []).filter(c => c.required && c.state !== 'installed');
+      if (missing.length === 0) return;
+
+      this.environmentBanner =
+        `The editor needs ${missing.map(c => c.name).join(', ')} before it can open a project. `
+        + `Downloading now — this happens once, and the components are shared with the other apps.`;
+      this.environmentAutoEnsure = true;
+      this.environmentOpen = true;
+      this.cdr.detectChanges();
+    } catch (err: any) {
+      this.environmentBanner =
+        `The editor could not check its environment: ${err?.message || String(err)}`;
+      this.environmentAutoEnsure = false;
+      this.environmentOpen = true;
+      this.cdr.detectChanges();
+    }
   }
 
   /** Friendly DISPLAY name for a track/speaker id — template-callable delegate (see

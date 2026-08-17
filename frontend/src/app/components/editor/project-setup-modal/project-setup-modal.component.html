@@ -160,8 +160,20 @@
             </span>
           </label>
 
-          <!-- Only when the optional voice-isolation component is installed; install it from
-               the workflow page. -->
+          <!-- Not installed: say so where the toggle would have been, and offer the dialog that
+               installs it. The old note pointed at "the workflow page", which is not in this
+               window — a dead end where the answer is one click away. -->
+          <div class="psm-toggle missing" *ngIf="!separatorInstalled && !reuseActive">
+            <span class="psm-toggle-text">
+              <span class="psm-toggle-title">Denoise mics (mic 1 / mic 2)</span>
+              <span class="psm-toggle-desc">
+                Needs the voice-isolation component, which is not installed on this Mac.
+                <button type="button" class="psm-link" (click)="openEnvironment.emit()">Install it…</button>
+              </span>
+            </span>
+          </div>
+
+          <!-- Only when the optional voice-isolation component is installed. -->
           <!-- Hidden while reusing: voice isolation runs BEFORE alignment, so it is already
                baked into (or absent from) the file being adopted. -->
           <label class="psm-toggle" *ngIf="separatorInstalled && !reuseActive">
