@@ -36,6 +36,31 @@ export function isStoryEmpty(story: Story): boolean {
 }
 
 /**
+ * Extra material pulled on EACH side of every story region AT EXPORT TIME (seconds, ORIGINAL
+ * base). Stories on the ribbon are disjoint — the paint/edge gestures push neighbors out of the
+ * way — but the exported material deliberately overlaps: a transition drawn tight against the
+ * next story must not lose its shoulder footage, and too much material beats too little. The
+ * ribbon, the story list, and chapter DERIVATION all stay unpadded (they describe the story the
+ * user drew); only the exported projects/transcripts and the chapter-timestamp rebase (which
+ * must match the exported video) see the padded regions.
+ */
+export const STORY_EXPORT_PAD_SECONDS = 30;
+
+/**
+ * The padded (export-time) regions of a story: each merged region widened by `pad` on both
+ * sides, clamped to [0, timelineDuration], re-merged (regions within 2×pad of each other
+ * coalesce). ORIGINAL seconds in and out. PURE.
+ */
+export function padRegions(
+  regions: { start: number; end: number }[], pad: number, timelineDuration: number
+): { start: number; end: number }[] {
+  return mergeRegions(mergeRegions(regions).map(r => ({
+    start: Math.max(0, r.start - pad),
+    end: Math.min(timelineDuration, r.end + pad),
+  })));
+}
+
+/**
  * Fingerprint of a set of regions — the identity of the SPAN a story's chapters were derived
  * from. Stored on the story as `chaptersFrom`; a mismatch against the story's regions right now
  * is what "stale" means.

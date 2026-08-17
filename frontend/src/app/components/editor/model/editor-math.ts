@@ -42,6 +42,24 @@ export function mergeRegions(regions: { start: number; end: number }[]): { start
   return out;
 }
 
+/**
+ * Subtract [lo,hi] from a region list: regions outside survive untouched, regions straddling
+ * an edge are trimmed to it, a region containing [lo,hi] is split around it. Sub-EPS slivers
+ * are dropped (via mergeRegions). Pure — never mutates the input. This is how one story CLAIMS
+ * a span from the others: painting over a neighbor pushes its boundary back to the paint edge.
+ */
+export function subtractRegion(
+  regions: { start: number; end: number }[], lo: number, hi: number
+): { start: number; end: number }[] {
+  const out: { start: number; end: number }[] = [];
+  for (const r of regions) {
+    if (r.end <= lo + EPS || r.start >= hi - EPS) { out.push({ ...r }); continue; }
+    if (r.start < lo - EPS) out.push({ start: r.start, end: lo });
+    if (r.end > hi + EPS) out.push({ start: hi, end: r.end });
+  }
+  return mergeRegions(out);
+}
+
 /** Merge a cut list into sorted, non-overlapping order (adjacent frame ranges coalesce). */
 export function mergeCuts(list: Cut[]): Cut[] {
   if (list.length === 0) return [];

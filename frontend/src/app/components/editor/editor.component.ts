@@ -14,7 +14,7 @@ import {
 } from './model/editor-types';
 import {
   EPS, mergeRanges, mergeRegions, mergeCuts, nearestBoundary, normalizeSequence, segmentAtIn,
-  isMultiPick, isTypingTarget
+  isMultiPick, isTypingTarget, subtractRegion
 } from './model/editor-math';
 import {
   pad2, formatRulerLabel, formatTimecode, fmtClock, pathToFileUrl,
@@ -22,7 +22,8 @@ import {
 } from './model/editor-format';
 import {
   storyColor, storiesForDisplay, isStoryEmpty, regionFingerprint, storyChapterState,
-  storyApproxChapters, setStoryChapters, toStoryChapters, clipStoryChapters
+  storyApproxChapters, setStoryChapters, toStoryChapters, clipStoryChapters,
+  STORY_EXPORT_PAD_SECONDS, padRegions
 } from './model/story-utils';
 import { TranscriptPaneComponent } from './transcript-pane/transcript-pane.component';
 import { WaveformCache } from './timeline/waveform-cache';
@@ -186,6 +187,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // In-flight story-region edge drag (grabbed an edge in the ribbon). The story's regions are
   // canonicalized (merged) at grab time so regionIndex addresses story.regions directly.
   private draggingStoryEdge: { storyId: string; regionIndex: number; edge: 'start' | 'end' } | null = null;
+  // Frozen regions of every OTHER story (id → merged regions), captured when a story gesture
+  // (edge drag or Story-Mode paint) starts. Each mousemove restores neighbors FROM this baseline
+  // and re-applies the push/claim against the gesture's current extent — which is what makes the
+  // interaction elastic: slide into a neighbor and its boundary retreats, slide back out and it
+  // returns to exactly where it was. Cleared at mouseup (whatever positions stand then commit).
+  private storyPushBaseline: Map<string, { start: number; end: number }[]> | null = null;
   /**
    * In-flight "move this footage somewhere else" drag: grabbed inside an existing highlight with
    * the Select tool. `ranges` is frozen at grab time (the live selection would follow the model
@@ -1257,6 +1264,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         if (story) {
           // Canonicalize so the display-region index addresses story.regions directly.
           story.regions = mergeRegions(story.regions);
+          this.captureStoryPushBaseline(story.id);
           this.draggingStoryEdge = edgeHit;
           window.addEventListener('mousemove', this.onWindowMouseMove);
           window.addEventListener('mouseup', this.onWindowMouseUp);
@@ -1318,6 +1326,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.marqueeActive = true;
       this.marqueeMoved = false;
       this.marqueeForStory = true;
+      // The paint claims its span from every story except the one it lands in (the active
+      // story, or a brand-new one when none is active — then EVERY existing story yields).
+      this.captureStoryPushBaseline(this.activeStoryId);
       this.marqueeStartTime = this.snapEdited(t, false, Infinity);   // whole sections only
       this.marqueeEndTime = this.marqueeStartTime;
       window.addEventListener('mousemove', this.onWindowMouseMove);
@@ -1635,6 +1646,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       if (Math.abs(this.timeToX(this.marqueeEndTime) - this.timeToX(this.marqueeStartTime)) > 3) {
         this.marqueeMoved = true;
       }
+      // A Story-Mode paint pushes neighbors back LIVE (baseline-restore each frame, so
+      // retreating the marquee gives their territory back before drop).
+      if (this.marqueeForStory && this.marqueeMoved) this.applyStoryPaintClaim();
       this.requestRender();
     }
     else if (this.draggingPlayhead) this.setPlayheadFromEvent(ev);
@@ -1653,11 +1667,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (this.draggingSplitH) localStorage.setItem(this.SPLIT_H_KEY, String(this.splitH));
     if (this.draggingSplitP) localStorage.setItem(this.SPLIT_P_KEY, String(Math.round(this.projectWidth)));
     // Dropping a story-edge drag re-merges the story's regions (the dragged edge may have
-    // crossed a sibling region of the same story).
+    // crossed a sibling region of the same story). Pushed neighbors keep the positions they
+    // hold at drop (scheduleEditsSave persists ALL stories); the baseline is only for the
+    // in-flight elasticity and dies with the gesture.
     if (this.draggingStoryEdge) {
       const story = this.stories.find(s => s.id === this.draggingStoryEdge!.storyId);
       if (story) story.regions = mergeRegions(story.regions);
       this.draggingStoryEdge = null;
+      this.storyPushBaseline = null;
       this.scheduleEditsSave();
     }
     // A selection-move drag that actually moved relocates the footage; one that never passed the
@@ -1699,6 +1716,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.marqueeActive = false;
       this.marqueeMoved = false;
       this.marqueeForStory = false;
+      // Neighbors trimmed by a moved paint keep their pushed-back regions (paintStoryRegion's
+      // scheduleEditsSave persists them); an unmoved click never touched them.
+      this.storyPushBaseline = null;
     }
     this.draggingPlayhead = false;
     this.draggingScrollbar = false;
@@ -2389,17 +2409,24 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /**
-   * The SINGLE source of truth for both the ribbon and (later) the export: resolve each
-   * story's EFFECTIVE regions under last-writer-wins nesting. PURE — reads only `stories`,
-   * mutates nothing. For story i (creation order) its regions = its [start,end] MINUS the
-   * union of every LATER story j>i (exact interval subtraction, ORIGINAL float seconds — the
-   * export re-quantizes to frames). A story wholly painted over yields zero regions (still
-   * listed, empty). The returned list is ordered by `number` ascending (export/project order;
-   * ties broken by creation order for stability); each story's regions are sorted ascending.
-   * PUBLIC — the export wiring will call it later.
+   * The story regions AS EXPORTED: each story's merged regions widened by
+   * STORY_EXPORT_PAD_SECONDS on both sides (clamped to the timeline). On the ribbon stories are
+   * disjoint — the paint/edge gestures push neighbors out of the way — but the exported material
+   * deliberately overlaps its neighbors by the pad: a story drawn tight against the next one
+   * must not lose its shoulder footage. Python's validator only checks disjointness WITHIN a
+   * story (satisfied — padRegions re-merges), and cross-story overlap simply duplicates the
+   * shared shoulder into both projects, which is the point. The returned list is ordered by
+   * `number` ascending (export/project order; ties broken by creation order for stability).
+   * Called only by onExport; the ribbon reads storiesForDisplay directly and stays unpadded.
    */
   resolveStoryRegions(): { number: number; title: string; regions: { start: number; end: number }[] }[] {
-    return storiesForDisplay(this.stories).map(({ number, title, regions }) => ({ number, title, regions }));
+    const dur = this.manifest?.timelineDuration;
+    if (!dur) {
+      throw new Error('Cannot resolve story regions for export: no manifest is loaded, so the timeline duration to clamp the story pad against is unknown.');
+    }
+    return storiesForDisplay(this.stories).map(({ number, title, regions }) => ({
+      number, title, regions: padRegions(regions, STORY_EXPORT_PAD_SECONDS, dur),
+    }));
   }
 
   // Template-callable delegates for the pure helpers in model/story-utils.ts. strictTemplates
@@ -3035,10 +3062,17 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     chapters: StoryChapter[]
   ): { timestamp: string; title: string }[] {
     const name = story.title.trim() || `Story ${story.number}`;
+    // The PADDED regions, not the drawn ones: the exported video carries an extra
+    // STORY_EXPORT_PAD_SECONDS of shoulder on each side (resolveStoryRegions), so a chapter
+    // clock built on the drawn regions would run early by the whole lead-in pad.
     // The story's surviving footage in PLAYBACK order: edited time is sequence order by
     // construction (rebuildEditedModel accumulates `es` walking the sequence), so sorting by `lo`
     // is the order the exporter concatenates these pieces in.
-    const pieces = mergeRegions(story.regions)
+    const dur = this.manifest?.timelineDuration;
+    if (!dur) {
+      throw new Error(`Cannot timestamp chapters for “${name}”: no manifest is loaded, so the padded story regions cannot be computed.`);
+    }
+    const pieces = padRegions(story.regions, STORY_EXPORT_PAD_SECONDS, dur)
       .flatMap(r => this.editedRangesForOriginal(r.start, r.end))
       .sort((a, b) => a.lo - b.lo);
     if (!pieces.length) {
@@ -3320,7 +3354,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   /** Live update of a grabbed story-region edge: pointer time HARD-quantized to the nearest
    *  cut boundary (whole sections only), mapped to ORIGINAL seconds, clamped to the timeline
-   *  and to one frame of minimum region width. */
+   *  and to one frame of minimum region width. Sliding into another story's region pushes that
+   *  region's near edge along (down to one frame of it left — the drag stops there rather than
+   *  swallowing a story whole); sliding back out restores it (see storyPushBaseline). */
   private updateStoryEdgeDrag(ev: MouseEvent): void {
     const drag = this.draggingStoryEdge!;
     const story = this.stories.find(s => s.id === drag.storyId);
@@ -3335,7 +3371,83 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     } else {
       region.end = Math.min(durOrig, Math.max(t, region.start + fs));
     }
+    this.pushStoryNeighbors(region, drag.edge, fs);
     this.requestRender();
+  }
+
+  /** Freeze every story's regions EXCEPT `exceptStoryId`'s (merged, deep-copied) as the push
+   *  baseline for the story gesture that is starting. Merging here canonicalizes the neighbors
+   *  the same way the grab canonicalizes the dragged story, so the per-region push math below
+   *  works on disjoint spans. */
+  private captureStoryPushBaseline(exceptStoryId: string | null): void {
+    const baseline = new Map<string, { start: number; end: number }[]>();
+    for (const s of this.stories) {
+      if (s.id === exceptStoryId) continue;
+      s.regions = mergeRegions(s.regions);
+      baseline.set(s.id, s.regions.map(r => ({ ...r })));
+    }
+    this.storyPushBaseline = baseline;
+  }
+
+  /**
+   * The elastic push for an edge drag. Restores every baselined neighbor region and re-derives
+   * its pushed position against the dragged region's CURRENT extent:
+   *   - dragging the END rightward into a neighbor pushes the neighbor's START to the dragged
+   *     end; the drag itself is capped at (neighbor.end − one frame) so a neighbor can shrink
+   *     but never vanish under the drag.
+   *   - dragging the START leftward mirrors that against the neighbor's END.
+   * Neighbors the dragged extent no longer reaches simply get their baseline back — that is the
+   * "moves back to where it was as I slide out" behavior, and it costs nothing extra because
+   * every frame recomputes from the baseline rather than mutating incrementally.
+   */
+  private pushStoryNeighbors(region: { start: number; end: number }, edge: 'start' | 'end', fs: number): void {
+    const baseline = this.storyPushBaseline;
+    if (!baseline) return;
+    const intrudes = (r: { start: number; end: number }): boolean =>
+      r.start < region.end - EPS && r.end > region.start + EPS;
+    // Pass 1: cap the dragged edge at the nearest neighbor it has shrunk to one frame.
+    if (edge === 'end') {
+      let cap = Infinity;
+      for (const regions of baseline.values()) {
+        for (const r of regions) if (intrudes(r)) cap = Math.min(cap, r.end - fs);
+      }
+      if (region.end > cap) region.end = Math.max(cap, region.start + fs);
+    } else {
+      let cap = -Infinity;
+      for (const regions of baseline.values()) {
+        for (const r of regions) if (intrudes(r)) cap = Math.max(cap, r.start + fs);
+      }
+      if (region.start < cap) region.start = Math.min(cap, region.end - fs);
+    }
+    // Pass 2: rebuild every neighbor from its baseline, pushed where the (now capped) dragged
+    // region overlaps it, verbatim where it does not.
+    for (const [id, regions] of baseline) {
+      const s = this.stories.find(st => st.id === id);
+      if (!s) continue;
+      s.regions = regions.map(r => {
+        if (!intrudes(r)) return { ...r };
+        return edge === 'end'
+          ? { start: Math.min(Math.max(r.start, region.end), r.end - fs), end: r.end }
+          : { start: r.start, end: Math.max(Math.min(r.end, region.start), r.start + fs) };
+      });
+    }
+  }
+
+  /** The elastic claim for a Story-Mode paint: restore every baselined neighbor and subtract
+   *  the marquee's CURRENT span from it, so neighbors' boundaries retreat as the paint grows
+   *  and return as it shrinks. Painting clean through the middle of a story splits it around
+   *  the painted span; a story painted over entirely keeps an empty region list (same rule as
+   *  chunk-delete — it stays in the list until the user removes it with ×). */
+  private applyStoryPaintClaim(): void {
+    const baseline = this.storyPushBaseline;
+    if (!baseline) return;
+    const lo = this.editedToOriginal(Math.min(this.marqueeStartTime, this.marqueeEndTime));
+    const hi = this.editedToOriginal(Math.max(this.marqueeStartTime, this.marqueeEndTime));
+    for (const [id, regions] of baseline) {
+      const s = this.stories.find(st => st.id === id);
+      if (!s) continue;
+      s.regions = subtractRegion(regions, lo, hi);
+    }
   }
 
   /** Canvas hover feedback: ew-resize over a grabbable story-region edge in the ribbon
@@ -3926,9 +4038,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /** Story-local clock for a chapter boundary in the open Split modal (relative to the split
-   *  story's own content, excluding between-region gaps — matching the FCP output). */
+   *  story's own content, excluding between-region gaps — matching the FCP output, which is why
+   *  the regions are PADDED here: the exported project leads with the export pad's shoulder). */
   chapterClock(originalSeconds: number): string {
-    const regions = this.splitStory ? mergeRegions(this.splitStory.regions) : [];
+    const dur = this.manifest?.timelineDuration || 0;
+    const regions = this.splitStory && dur
+      ? padRegions(this.splitStory.regions, STORY_EXPORT_PAD_SECONDS, dur) : [];
     return fmtClock(this.storyLocalTime(originalSeconds, regions));
   }
 
