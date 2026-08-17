@@ -5,7 +5,7 @@ import * as log from 'electron-log';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import { spawnSync } from 'child_process';
+import { execFile } from 'child_process';
 
 import { EditorPaths } from './app-config';
 import { PythonService } from './python-service';
@@ -167,15 +167,22 @@ const DEFAULT_ARCHIVE_SSH_HOST = 'titan';
  * cannot go is returned in `leftovers` with the reason, and the CALLER decides to throw.
  * Weeks this app pushed never trip any of this — rsync skips symlinks by design
  * (MATCHING_RULES in archive-sync.ts) — it is foreign, hand-copied folders that do.
+ *
+ * ASYNC throughout, and unlinks run a few at a time: a week is tens of thousands of SMB
+ * round-trips, and the synchronous version of this walk froze every window for the whole
+ * ride (2026-08-17). fs.promises keeps the main process serving events between calls.
  */
-function deleteArchiveTree(root: string): {
+async function deleteArchiveTree(root: string): Promise<{
   filesRemoved: number;
   leftovers: Array<{ path: string; reason: string }>;
-} {
+}> {
   const leftovers: Array<{ path: string; reason: string }> = [];
   let filesRemoved = 0;
 
-  const walk = (dir: string, ancestors: string[]): boolean => {
+  /** How many unlinks are in flight at once. SMB pipelines this happily; rsync does more. */
+  const UNLINK_BATCH = 16;
+
+  const walk = async (dir: string, ancestors: string[]): Promise<boolean> => {
     // true = this directory was fully removed
     //
     // Loop recognition, in order of cheapness. All three exist because macOS smbfs
@@ -189,7 +196,7 @@ function deleteArchiveTree(root: string): {
     // caller finishes leftovers on the NAS itself.
     let key: string;
     try {
-      const st = fs.lstatSync(dir);
+      const st = await fs.promises.lstat(dir);
       key = `${st.dev}:${st.ino}`;
     } catch (err: any) {
       leftovers.push({ path: dir, reason: `the share refused to stat it (${err?.code || err?.message}) — symlink loop suspected` });
@@ -213,31 +220,39 @@ function deleteArchiveTree(root: string): {
 
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
     } catch (err: any) {
       leftovers.push({ path: dir, reason: `the share refused to list it (${err?.code || err?.message}) — symlink loop suspected` });
       return false;
     }
 
     let clean = true;
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (!walk(full, [...ancestors, key])) clean = false;
-      } else {
+
+    // Files first, a batch at a time; directories after, one at a time (recursion).
+    const files = entries.filter(e => !e.isDirectory());
+    for (let i = 0; i < files.length; i += UNLINK_BATCH) {
+      const results = await Promise.all(files.slice(i, i + UNLINK_BATCH).map(async e => {
+        const full = path.join(dir, e.name);
         try {
-          fs.unlinkSync(full);
-          filesRemoved++;
+          await fs.promises.unlink(full);
+          return null;
         } catch (err: any) {
-          leftovers.push({ path: full, reason: err?.code || err?.message || String(err) });
-          clean = false;
+          return { path: full, reason: err?.code || err?.message || String(err) };
         }
+      }));
+      for (const r of results) {
+        if (r) { leftovers.push(r); clean = false; } else { filesRemoved++; }
       }
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (!(await walk(path.join(dir, entry.name), [...ancestors, key]))) clean = false;
     }
 
     if (!clean) return false;
     try {
-      fs.rmdirSync(dir);
+      await fs.promises.rmdir(dir);
       return true;
     } catch (err: any) {
       leftovers.push({
@@ -250,7 +265,7 @@ function deleteArchiveTree(root: string): {
     }
   };
 
-  walk(root, []);
+  await walk(root, []);
   return { filesRemoved, leftovers };
 }
 
@@ -265,20 +280,20 @@ function deleteArchiveTree(root: string): {
  * this invocation can ever ask for is exactly one direct child of the FCPX share.
  *
  * BatchMode and `sudo -n` mean this either works or fails immediately — it can never hang
- * waiting for a password. Returns null on success, or the reason it could not run.
+ * waiting for a password. Async (the sync version blocked every window for up to its
+ * 120 s timeout). Resolves null on success, or the reason it could not run.
  */
-function finishRemoteDeleteOnNas(sshHost: string, weekName: string): string | null {
-  const r = spawnSync('ssh', [
-    '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', sshHost,
-    'sudo', '-n', '/usr/local/bin/fcpx-rm-week', weekName,
-  ], { encoding: 'utf8', timeout: 120_000 });
-
-  if (r.error) return `ssh could not run: ${r.error.message}`;
-  if (r.status !== 0) {
-    const err = (r.stderr || r.stdout || '').trim();
-    return err || `ssh ${sshHost} exited ${r.status}`;
-  }
-  return null;
+function finishRemoteDeleteOnNas(sshHost: string, weekName: string): Promise<string | null> {
+  return new Promise(resolve => {
+    execFile('ssh', [
+      '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', sshHost,
+      'sudo', '-n', '/usr/local/bin/fcpx-rm-week', weekName,
+    ], { encoding: 'utf8', timeout: 120_000 }, (error, stdout, stderr) => {
+      if (!error) return resolve(null);
+      const detail = (stderr || stdout || '').trim();
+      resolve(detail || `ssh could not run: ${error.message}`);
+    });
+  });
 }
 
 /** Where the projects registry lives — beside drift_corrections.json and the other user config. */
@@ -1827,6 +1842,12 @@ function setupArchiveHandlers(store: Store<any>): void {
         throw new Error(`archive:sync item ${i} kind must be 'week' or 'day', got ${JSON.stringify(it.kind)}`);
       }
     });
+    // The deletion handlers check sync.busy before their irreversible step, but they are
+    // async now — this is the other half of that mutual exclusion. An rsync reading (or
+    // writing near) a tree that a deletion is tearing down is never acceptable.
+    if (deletionInFlight) {
+      throw new Error(`A deletion is running (${deletionInFlight}) — wait for it to finish before starting a sync.`);
+    }
     return sync.enqueue(items, archiveRoot(), archiveMountUrl());
   });
 
@@ -1994,19 +2015,19 @@ function setupArchiveHandlers(store: Store<any>): void {
       }
 
       log.warn(`[archive] deleting the ARCHIVE copy of ${name}: ${realTarget}`);
-      const { filesRemoved, leftovers } = deleteArchiveTree(realTarget);
+      const { filesRemoved, leftovers } = await deleteArchiveTree(realTarget);
       if (leftovers.length > 0) {
         // Space is reclaimed (every regular file the share showed us is gone) but a
         // skeleton survives — entries only the server itself can remove. Escalate to the
         // NAS over SSH, where they are ordinary symlinks, and verify through the mount.
         const sshHost = (store as any).get('archiveSshHost') || DEFAULT_ARCHIVE_SSH_HOST;
         log.warn(`[archive] ${leftovers.length} entries survived the SMB delete of ${name} — finishing on ${sshHost}`);
-        const finishError = finishRemoteDeleteOnNas(sshHost, name);
+        const finishError = await finishRemoteDeleteOnNas(sshHost, name);
 
         if (finishError === null) {
           // The SMB attribute cache can report a just-deleted directory for a moment.
           for (let i = 0; i < 10 && fs.existsSync(realTarget); i++) {
-            spawnSync('sleep', ['0.3']);
+            await new Promise(r => setTimeout(r, 300));
           }
           if (!fs.existsSync(realTarget)) {
             log.info(`[archive] deleted ${realTarget} (${filesRemoved} files over SMB, skeleton finished on ${sshHost})`);
@@ -2156,7 +2177,10 @@ function setupArchiveHandlers(store: Store<any>): void {
         );
       }
       log.warn(`[archive] deleting the LOCAL copy of ${name}: ${realWeek} (archived at ${check.destPath})`);
-      fs.rmSync(realWeek, { recursive: true, force: false });
+      // Async so tens of GB of local unlinks don't freeze every window. The sync-vs-delete
+      // race this opens is closed on the other side: archive:sync refuses to enqueue while
+      // deletionInFlight is set.
+      await fs.promises.rm(realWeek, { recursive: true, force: false });
       log.info(`[archive] deleted ${realWeek}; removing ${underWeek.length} project(s) from the registry`);
 
       const removedProjects = underWeek.map(p => p.path);
