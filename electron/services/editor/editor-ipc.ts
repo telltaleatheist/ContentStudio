@@ -177,20 +177,50 @@ function deleteArchiveTree(root: string): {
 
   const walk = (dir: string, ancestors: string[]): boolean => {
     // true = this directory was fully removed
-    const st = fs.lstatSync(dir);
-    const key = `${st.dev}:${st.ino}`;
+    //
+    // Loop recognition, in order of cheapness. All three exist because macOS smbfs
+    // synthesizes a DIFFERENT inode for every nesting level of the same server-side loop
+    // (verified 2026-08-17 on 2026-07-12: .fcpcache, .fcpcache/.fcpcache and one deeper
+    // returned three unrelated inode numbers), so identity matching alone can never fire
+    // on this share — and a loop the walk enters anyway ends in the share throwing EBUSY
+    // from readdir at whatever depth its path limit sits, which is why every syscall
+    // below is caught and recorded rather than allowed to abort the handler. A false
+    // positive costs nothing: whatever is skipped comes back as a leftover, and the
+    // caller finishes leftovers on the NAS itself.
+    let key: string;
+    try {
+      const st = fs.lstatSync(dir);
+      key = `${st.dev}:${st.ino}`;
+    } catch (err: any) {
+      leftovers.push({ path: dir, reason: `the share refused to stat it (${err?.code || err?.message}) — symlink loop suspected` });
+      return false;
+    }
     if (ancestors.includes(key)) {
       leftovers.push({ path: dir, reason: 'symlink loop — the share presents it as a bottomless folder' });
       return false;
     }
-    if (ancestors.length >= 64) {
-      // Backstop for shares whose synthetic inode numbers differ at every level of a loop.
+    const base = path.basename(dir);
+    if (base === path.basename(path.dirname(dir))) {
+      // dir/dir with the same name is how a self-referencing link (.fcpcache -> .)
+      // presents one level in. Real weeks never nest a folder inside its namesake.
+      leftovers.push({ path: dir, reason: 'nested inside a folder of the same name — symlink loop' });
+      return false;
+    }
+    if (ancestors.length >= 32) {
       leftovers.push({ path: dir, reason: 'directory nesting past any real week — treated as a loop' });
       return false;
     }
 
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (err: any) {
+      leftovers.push({ path: dir, reason: `the share refused to list it (${err?.code || err?.message}) — symlink loop suspected` });
+      return false;
+    }
+
     let clean = true;
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    for (const entry of entries) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         if (!walk(full, [...ancestors, key])) clean = false;
