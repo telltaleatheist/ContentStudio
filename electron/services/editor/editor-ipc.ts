@@ -5,6 +5,7 @@ import * as log from 'electron-log';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
+import { spawnSync } from 'child_process';
 
 import { EditorPaths } from './app-config';
 import { PythonService } from './python-service';
@@ -142,6 +143,14 @@ const NON_WEEK_ENTRIES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * SSH alias for the archive server, used only to finish deletions the share cannot
+ * complete (see finishRemoteDeleteOnNas). An alias, not a hostname: ~/.ssh/config decides
+ * the address and key, same as every other machine-to-machine hop on this network.
+ * Store key `archiveSshHost` overrides, resolved at read site per this app's convention.
+ */
+const DEFAULT_ARCHIVE_SSH_HOST = 'titan';
+
+/**
  * Delete a directory tree on the SMB-mounted archive, expecting the share to fight back.
  *
  * `fs.rmSync` is the wrong tool there, learned the hard way (2026-08-17, "whaa audiobook -
@@ -213,6 +222,33 @@ function deleteArchiveTree(root: string): {
 
   walk(root, []);
   return { filesRemoved, leftovers };
+}
+
+/**
+ * Finish a remote-week deletion ON the NAS itself, over SSH.
+ *
+ * The entries `deleteArchiveTree` cannot remove — symlink loops the share presents as
+ * bottomless folders, dangling links it hides entirely — are ordinary symlinks on the
+ * server, so a root helper there (`fcpx-rm-week`, source in editor-backend/nas/, installed
+ * once from the NAS console) removes the surviving skeleton in one call. The helper does
+ * its own validation (bare non-dot week name only, `assets` refused by name), so the worst
+ * this invocation can ever ask for is exactly one direct child of the FCPX share.
+ *
+ * BatchMode and `sudo -n` mean this either works or fails immediately — it can never hang
+ * waiting for a password. Returns null on success, or the reason it could not run.
+ */
+function finishRemoteDeleteOnNas(sshHost: string, weekName: string): string | null {
+  const r = spawnSync('ssh', [
+    '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', sshHost,
+    'sudo', '-n', '/usr/local/bin/fcpx-rm-week', weekName,
+  ], { encoding: 'utf8', timeout: 120_000 });
+
+  if (r.error) return `ssh could not run: ${r.error.message}`;
+  if (r.status !== 0) {
+    const err = (r.stderr || r.stdout || '').trim();
+    return err || `ssh ${sshHost} exited ${r.status}`;
+  }
+  return null;
 }
 
 /** Where the projects registry lives — beside drift_corrections.json and the other user config. */
@@ -1882,17 +1918,33 @@ function setupArchiveHandlers(store: Store<any>): void {
       log.warn(`[archive] deleting the ARCHIVE copy of ${name}: ${realTarget}`);
       const { filesRemoved, leftovers } = deleteArchiveTree(realTarget);
       if (leftovers.length > 0) {
-        // Space is reclaimed (every regular file the share showed us is gone) but the
-        // folder itself survives as a skeleton. Say exactly what and why — the user
-        // finishes it from the NAS console, where these are ordinary symlinks.
+        // Space is reclaimed (every regular file the share showed us is gone) but a
+        // skeleton survives — entries only the server itself can remove. Escalate to the
+        // NAS over SSH, where they are ordinary symlinks, and verify through the mount.
+        const sshHost = (store as any).get('archiveSshHost') || DEFAULT_ARCHIVE_SSH_HOST;
+        log.warn(`[archive] ${leftovers.length} entries survived the SMB delete of ${name} — finishing on ${sshHost}`);
+        const finishError = finishRemoteDeleteOnNas(sshHost, name);
+
+        if (finishError === null) {
+          // The SMB attribute cache can report a just-deleted directory for a moment.
+          for (let i = 0; i < 10 && fs.existsSync(realTarget); i++) {
+            spawnSync('sleep', ['0.3']);
+          }
+          if (!fs.existsSync(realTarget)) {
+            log.info(`[archive] deleted ${realTarget} (${filesRemoved} files over SMB, skeleton finished on ${sshHost})`);
+            return { deleted: realTarget, name, finishedOnNas: true };
+          }
+        }
+
         const detail = leftovers.slice(0, 4).map(l => `${path.relative(root, l.path)} (${l.reason})`).join('; ');
         const more = leftovers.length > 4 ? ` …and ${leftovers.length - 4} more` : '';
         throw new Error(
           `Removed ${filesRemoved} files from ${name}, but ${leftovers.length} ` +
-          `${leftovers.length === 1 ? 'entry' : 'entries'} cannot be deleted over the network share: ${detail}${more}. ` +
-          `These are symlinks on the archive server itself — the share shows a loop as a bottomless folder and hides ` +
-          `dangling links entirely, so no tool on this Mac can remove them. Finish from the NAS console: ` +
-          `sudo rm -rf the folder there. The freed space is already reclaimed.`
+          `${leftovers.length === 1 ? 'entry' : 'entries'} cannot be deleted over the network share (${detail}${more}), ` +
+          `and finishing on the NAS itself failed: ${finishError ?? `the folder still exists after ${sshHost} reported success`}. ` +
+          `These are symlinks on the archive server — install its fcpx-rm-week helper ` +
+          `(source: editor-backend/nas/fcpx-rm-week, install instructions in the file) or remove the folder from the ` +
+          `NAS console by hand. The freed space is already reclaimed.`
         );
       }
       log.info(`[archive] deleted ${realTarget} from the archive (${filesRemoved} files)`);
