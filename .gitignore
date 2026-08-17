@@ -72,3 +72,10 @@ prompt-harness/out/
 prompt-harness/fixtures/transcript.txt
 prompt-harness/fixtures/insights.txt
 ab-title-test-exporter.zip
+
+# Editor backend runtimes (cloned from AutoCutStudio; binaries do not belong in git)
+editor-backend/binaries/
+editor-backend/python/
+editor-backend/utilities/
+editor-backend/**/__pycache__/
+config/projects.json
