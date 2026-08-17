@@ -1,0 +1,1186 @@
+/* The shared modal chrome (.modal-backdrop and the .modal card) lives in styles/_modal.scss:
+   the split modal below still renders a .modal-backdrop, and app-editor-export-modals pulls in
+   the same partial. Drop this @use once step 10 moves the split modal into its own component. */
+@use 'styles/modal' as *;
+
+/* Final Cut Pro visual language — near-black charcoal chrome, pure-black viewer,
+   deliberately NOT Premiere. This window is chromeless (no app sidebar/theme). */
+
+:host {
+  display: block;
+  position: fixed;
+  inset: 0;
+  background: #1e1e1e;
+  color: #e8e8ea;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  user-select: none;
+  overflow: hidden;
+}
+
+/* ── Workspace states ────────────────────────────────────────────────────── */
+/* Loading / failed load / no session all render INSIDE .top-region beside the
+   projects pane — the sidebar and topbar stay mounted through every one of
+   them, so switching projects never tears the shell down. The timeline pane is
+   not rendered in any of these states, so each fills the whole workspace. */
+.loading-workspace,
+.error-workspace,
+.empty-workspace {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+
+.loading-workspace {
+  flex-direction: column;
+  gap: 18px;
+  background: #1e1e1e;
+
+  .spinner {
+    width: 34px;
+    height: 34px;
+    border: 3px solid #3a3a3f;
+    border-top-color: #d8d8dc;
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+  .loading-msg {
+    font-size: 14px;
+    color: #b0b0b6;
+    letter-spacing: 0.02em;
+  }
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.error-workspace {
+  background: #1a1a1c;
+
+  .error-card {
+    max-width: 640px;
+    text-align: center;
+
+    .error-mark { font-size: 40px; margin-bottom: 14px; }
+    .error-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: #f0f0f2;
+      margin-bottom: 12px;
+    }
+    .error-body {
+      font-size: 14px;
+      line-height: 1.5;
+      color: #c86a5a;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: rgba(200, 106, 90, 0.10);
+      border: 1px solid rgba(200, 106, 90, 0.30);
+      border-radius: 6px;
+      padding: 14px 16px;
+    }
+    .error-back {
+      margin-top: 18px;
+      padding: 8px 18px;
+      font-size: 13px;
+      color: #e8e8ea;
+      background: #333338;
+      border: 1px solid #4a4a50;
+      border-radius: 6px;
+      cursor: pointer;
+      &:hover { background: #3d3d43; }
+    }
+  }
+}
+
+.empty-workspace {
+  background: #1b1b1e;
+
+  .empty-card {
+    max-width: 460px;
+    text-align: center;
+
+    .empty-mark { font-size: 40px; margin-bottom: 14px; opacity: 0.75; }
+    .empty-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: #d8d8dc;
+      margin-bottom: 10px;
+    }
+    .empty-body {
+      font-size: 13px;
+      line-height: 1.6;
+      color: #8f8f96;
+      margin-bottom: 20px;
+    }
+    .empty-add {
+      padding: 8px 18px;
+      font-size: 13px;
+      color: #1b1b1e;
+      background: #e8a33d;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 600;
+      &:hover { background: #f0b155; }
+    }
+  }
+}
+
+/* ── Layout ──────────────────────────────────────────────────────────────── */
+.editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.topbar {
+  flex: 0 0 auto;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  background: #28282a;
+  border-bottom: 1px solid #0d0d0e;
+
+  .session-name {
+    font-size: 12px;
+    font-weight: 500;
+    color: #b8b8be;
+    letter-spacing: 0.02em;
+  }
+
+  .edit-indicator {
+    font-size: 11px;
+    font-weight: 500;
+    color: #e0b83a;
+    white-space: nowrap;
+  }
+
+  .topbar-spacer { flex: 1 1 auto; }
+
+  /* Mic-mute master switch, right end of the top bar. Amber = armed (the export will
+     mute), grey = off. Disabled (no transcript yet) inherits the off look, dimmer. */
+  .mic-mute-toggle {
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 10px;
+    border: 1px solid #7a5b22;
+    background: #3a2f18;
+    color: #e8a33d;
+    cursor: pointer;
+    white-space: nowrap;
+
+    &:hover:not(:disabled) { background: #4a3a1c; }
+
+    &.off {
+      border-color: #3a3a40;
+      background: #2a2a2f;
+      color: #9a9aa2;
+      &:hover:not(:disabled) { background: #333338; }
+    }
+
+    &:disabled { opacity: 0.45; cursor: default; }
+  }
+
+  /* File menu button — reused (same class) for "Mark Story" and the "Stories (N)" toggle. */
+  .menu-wrap {
+    flex: 0 0 auto;
+    position: relative;
+  }
+  .menu-btn {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: #d8d8dc;
+    background: #3a3a40;
+    border: 1px solid #0d0d0e;
+    border-radius: 4px;
+    padding: 4px 10px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.12s ease;
+
+    &:hover:not(:disabled) { background: #47474e; }
+    &:disabled { opacity: 0.4; cursor: default; }
+    &.open { background: #2f2f34; }
+  }
+
+  .menu-dropdown {
+    position: absolute;
+    top: calc(100% + 5px);
+    left: 0;
+    z-index: 50;
+    min-width: 200px;
+    background: #2c2c30;
+    border: 1px solid #0d0d0e;
+    border-radius: 6px;
+    padding: 4px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+
+    .menu-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      width: 100%;
+      text-align: left;
+      font-size: 12px;
+      color: #e2e2e6;
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      padding: 6px 10px;
+      cursor: pointer;
+      transition: background 0.1s ease;
+
+      &:hover:not(:disabled) { background: #3a7bd0; color: #fff; }
+      &:disabled { opacity: 0.4; cursor: default; }
+
+      .menu-shortcut {
+        font-size: 11px;
+        color: #8a8a90;
+        font-variant-numeric: tabular-nums;
+      }
+      &:hover:not(:disabled) .menu-shortcut { color: #dce6f5; }
+    }
+  }
+}
+
+/* Story right-click menu. Fixed-positioned at the cursor so one menu serves both the story list
+   and the timeline ribbon, which live in different scroll containers. */
+.story-ctx {
+  position: fixed;
+  z-index: 60;
+  min-width: 170px;
+  background: #2c2c30;
+  border: 1px solid #0d0d0e;
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+
+  button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    font-size: 12px;
+    color: #e2e2e6;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 10px;
+    cursor: pointer;
+    &:hover:not(:disabled) { background: #3a7bd0; color: #fff; }
+    &:disabled { opacity: 0.4; cursor: default; }
+  }
+}
+
+/* Invisible full-window backdrop that captures an outside click to close the File menu. */
+.menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: transparent;
+}
+
+/* Stories pane — fills the left pane under the Edit/Stories tabs (story mode). */
+.stories-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 10px;
+  background: #202023;
+
+  .stories-hint {
+    font-size: 11px;
+    color: #9a9aa2;
+    padding: 2px 4px 6px;
+    line-height: 1.35;
+
+    /* A captured paint target is otherwise invisible until a drag lands in the wrong
+       story — this is the one hint that has to be noticed. */
+    &.active-target {
+      color: #e8c07d;
+      background: rgba(232, 163, 61, 0.10);
+      border: 1px solid rgba(232, 163, 61, 0.28);
+      border-radius: 5px;
+      padding: 5px 7px;
+      margin: 0 2px 6px;
+
+      b { color: #f0b155; font-weight: 600; }
+    }
+  }
+  .stories-empty {
+    font-size: 11px;
+    color: #6f6f77;
+    font-style: italic;
+    padding: 2px 4px 4px;
+  }
+
+  /* Analyze toolbar: local-model picker + refresh + analyze/auto-split. */
+  .stories-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 4px 8px;
+
+    .story-model {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-size: 11px;
+      color: #e2e2e6;
+      background: #1c1c1f;
+      border: 1px solid #3a3a40;
+      border-radius: 4px;
+      padding: 3px 6px;
+      outline: none;
+      &:focus { border-color: #55555c; }
+    }
+    .story-refresh {
+      flex: 0 0 auto;
+      width: 24px;
+      font-size: 13px;
+      line-height: 1;
+      color: #b8b8be;
+      background: #2b2b30;
+      border: 1px solid #3a3a40;
+      border-radius: 4px;
+      padding: 3px 0;
+      cursor: pointer;
+      &:hover { background: #34343a; color: #fff; }
+    }
+    /* Analyze and Merge share a shape; only the emphasis differs — Merge is a repair, not the
+       primary action, so it stays quiet. */
+    .story-analyze, .story-merge {
+      flex: 0 0 auto;
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 4px;
+      padding: 4px 10px;
+      cursor: pointer;
+      &:disabled { opacity: 0.45; cursor: default; }
+    }
+    .story-analyze {
+      color: #fff;
+      background: #3a7bd0;
+      border: 1px solid #2b5ea0;
+      &:hover:not(:disabled) { background: #4589e0; }
+    }
+    .story-merge {
+      color: #c4c4ca;
+      background: #2b2b30;
+      border: 1px solid #3a3a40;
+      &:hover:not(:disabled) { background: #34343a; color: #fff; }
+    }
+    /* Hand-off to the main window's Titles tab — same quiet weight as Merge. */
+    .story-titles {
+      flex: 0 0 auto;
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 4px;
+      padding: 4px 10px;
+      cursor: pointer;
+      color: #c4c4ca;
+      background: #2b2b30;
+      border: 1px solid #3a3a40;
+      &:hover:not(:disabled) { background: #34343a; color: #fff; }
+      &:disabled { opacity: 0.45; cursor: default; }
+    }
+  }
+
+  .story-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 4px;
+    border-radius: 4px;
+    cursor: pointer;
+
+    &:hover { background: #26262a; }
+
+    /* Active paint target: amber left rail + subtle wash. */
+    &.active {
+      background: #2c2618;
+      box-shadow: inset 2px 0 0 #e8a33d;
+    }
+    /* Selected (chunk or whole story): brighter blue rail so it reads as the delete target. */
+    &.selected {
+      background: #1b2740;
+      box-shadow: inset 2px 0 0 #4a9eff;
+    }
+    /* ⌘-picked for merging. An outline, not a box-shadow, so it stacks with the active/selected
+       left rails instead of replacing one — a story can be all three at once. */
+    &.merge-picked {
+      outline: 2px solid #4a9eff;
+      outline-offset: -2px;
+      background: #1b2740;
+    }
+    /* The row being dragged fades so the insertion line is what the eye follows. */
+    &.dragging { opacity: 0.4; }
+
+    /* Color notch — clickable, selects the whole story. */
+    .story-swatch {
+      flex: 0 0 auto;
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      cursor: pointer;
+      &:hover { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25); }
+    }
+
+    /* Sequential number — also the reorder handle, since the number IS the export sequence. */
+    .story-num {
+      flex: 0 0 auto;
+      width: 20px;
+      text-align: right;
+      font-size: 11px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      color: #9a9aa2;
+      cursor: grab;
+      &:active { cursor: grabbing; }
+      &:hover { color: #e2e2e6; }
+    }
+
+    /* Inline-editable title keeps the dark field look. */
+    .story-title {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-size: 12px;
+      color: #e2e2e6;
+      background: #1c1c1f;
+      border: 1px solid #3a3a40;
+      border-radius: 4px;
+      padding: 2px 6px;
+      outline: none;
+      font-family: inherit;
+      &:focus { border-color: #55555c; }
+    }
+
+    .story-tc {
+      flex: 0 0 auto;
+      font-size: 10px;
+      font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+      color: #7a7a80;
+      white-space: nowrap;
+    }
+
+    /* Chapter-marker count. Deliberately understated — it reports state, it does not invite
+       action. Borrows .story-empty's badge shape; only the palette differs. */
+    .story-chapters, .story-empty {
+      flex: 0 0 auto;
+      font-size: 9.5px;
+      font-weight: 600;
+      border-radius: 3px;
+      padding: 1px 5px;
+    }
+    .story-chapters { color: #7f9ec4; background: #24303c; }
+    /* Stale (the story's regions moved, or the markers came from the whole-recording pass) and
+       absent. Both are re-derived on demand, so they drain toward the row's own muted grey rather
+       than warning in a colour that would read as broken. */
+    .story-chapters.stale { color: #8a8a92; background: #2b2b30; }
+    .story-chapters.missing { color: #6d6d75; background: transparent; padding-inline: 2px; }
+    /* Approximate chapter starts. The one badge here that IS a warning — it reports precision the
+       user has already lost and cannot see anywhere else — so it is the only one given a colour. */
+    .story-chapters.approx { color: #d4a24c; background: #3a2f1c; }
+
+
+    /* Split and "→ Titles" (T) share the quiet per-row button shape. */
+    .story-split, .story-titles {
+      flex: 0 0 auto;
+      font-size: 10px;
+      font-weight: 600;
+      color: #c4c4ca;
+      background: #2b2b30;
+      border: 1px solid #3a3a40;
+      border-radius: 3px;
+      padding: 2px 7px;
+      cursor: pointer;
+      &:hover:not(:disabled) { background: #34343a; color: #fff; }
+      &:disabled { opacity: 0.4; cursor: default; }
+    }
+
+    .story-empty {
+      text-transform: uppercase;
+      color: #201800;
+      background: #d8a24a;
+    }
+
+    .story-del {
+      flex: 0 0 auto;
+      width: 18px;
+      font-size: 14px;
+      line-height: 1;
+      color: #8a8a90;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+
+      &:hover { color: #e08a7a; }
+    }
+  }
+
+  /* Insertion indicator while reordering. A separate element between rows rather than a border on
+     one, so it cannot collide with the active/selected/picked rails a row may already carry. */
+  .story-drop-line {
+    height: 2px;
+    margin: 1px 4px;
+    border-radius: 1px;
+    background: #4a9eff;
+  }
+
+  /* Catches a drop below the last row (moving a story to the end). */
+  .story-drop-tail { min-height: 14px; }
+}
+
+/* Top region: project picker | transcript pane | viewer, with two vertical splitters. */
+.top-region {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+/* Project picker — far-left FCPX-libraries column. Width bound via [style.width.px]. The
+   list inside is <app-project-sidebar>, which carries its own .pp-* styles: emulated view
+   encapsulation keeps rules written here from reaching that component's DOM. */
+.project-pane {
+  flex: 0 0 auto;
+  min-width: 0;
+  background: #202023;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Transcript pane — FCP-dark panel, a shade lighter than the viewer's pure black.
+   Four states: Transcribe button / running / read-only preview / verbatim error. */
+.transcript-pane {
+  flex: 0 0 auto;       /* width bound via [style.flexBasis.%] (splitV) */
+  min-width: 0;
+  background: #232326;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+
+  /* Edit / Stories tabs — the Stories tab IS story mode. */
+  .pane-tabs {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: stretch;
+    background: #1b1b1e;
+    border-bottom: 1px solid #0d0d0e;
+
+    .pane-tab {
+      flex: 1 1 0;
+      padding: 8px 0;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      color: #8f8f97;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      transition: color 0.12s ease;
+
+      &:hover { color: #c8c8cd; }
+      &.active { color: #e8a33d; border-bottom-color: #e8a33d; }
+    }
+
+    /* Background-activity button — opens the HUD. Pulses while work is in flight. */
+    .pane-activity-btn {
+      position: relative;
+      flex: 0 0 auto;
+      width: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: #8f8f97;
+      cursor: pointer;
+      transition: color 0.12s ease;
+
+      &:hover { color: #c8c8cd; }
+      &.on { color: #e8a33d; border-bottom-color: #e8a33d; }
+
+      .activity-ico { font-size: 14px; line-height: 1; }
+
+      &.busy .activity-ico {
+        color: #4a9eff;
+        animation: activity-spin 1.6s linear infinite;
+      }
+
+      .activity-dot {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #4a9eff;
+        box-shadow: 0 0 5px rgba(74, 158, 255, 0.8);
+      }
+    }
+  }
+}
+
+/* Splitters: thin hit areas, subtle lighter highlight on hover/drag. */
+.splitter {
+  flex: 0 0 6px;
+  background: #141416;
+  transition: background 0.12s ease;
+
+  &:hover,
+  &.dragging {
+    background: #3d3d44;
+  }
+}
+.splitter-v { cursor: col-resize; }
+.splitter-h { cursor: row-resize; }
+
+/* Viewer region: pure black, video centered + letterboxed, timecode beneath. */
+.viewer-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  padding: 12px 12px 8px;
+  gap: 8px;
+}
+
+.viewer-box {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.viewer-video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+/* Transport row under the viewer: play/pause + timecode, centered together. */
+.transport-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+
+  .play-btn {
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: #2c2c30;
+    border: 1px solid #3a3a40;
+    color: #e6e6ea;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease, transform 0.05s ease;
+
+    &:hover { background: #37373d; border-color: #4a4a52; }
+    &:active { transform: scale(0.94); }
+
+    .play-ico { font-size: 15px; line-height: 1; }
+  }
+}
+
+.timecode {
+  flex: 0 0 auto;
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-weight: 300;
+  font-size: 20px;
+  letter-spacing: 0.08em;
+  color: #e6e6ea;
+
+  .speed-badge {
+    color: #e8a33d;
+    font-weight: 500;
+  }
+}
+
+.transport-error {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: #e08a7a;
+  max-width: 90%;
+  text-align: center;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Timeline pane. Height bound via [style.flexBasis.%] (splitH, 20%–60% of window). */
+.timeline-pane {
+  flex: 0 0 auto;
+  min-height: 150px;
+  display: flex;
+  flex-direction: column;
+  background: #232326;
+  border-top: 1px solid #0d0d0e;
+}
+
+/* Toolbar strip above the ruler: Select / Blade tools live here now (was the footer). */
+.timeline-toolbar {
+  flex: 0 0 auto;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  background: #202022;
+  border-bottom: 1px solid #0d0d0e;
+
+  /* Cursor / Blade tool toggle (A / B). */
+  .tool-toggle {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 2px;
+
+    .tool-btn {
+      width: 30px;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #2c2c30;
+      border: 1px solid #3a3a40;
+      color: #b0b0b6;
+      cursor: pointer;
+      padding: 0;
+      transition: background 0.1s ease, color 0.1s ease, border-color 0.1s ease;
+
+      &:first-child { border-radius: 4px 0 0 4px; }
+      &:last-child { border-radius: 0 4px 4px 0; border-left: none; }
+
+      &:hover { background: #37373d; color: #d8d8dc; }
+      &.active {
+        background: #3fd6e0;
+        border-color: #3fd6e0;
+        color: #04252a;
+      }
+
+      .tool-ico { font-size: 13px; line-height: 1; }
+    }
+  }
+}
+
+.timeline-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.track-gutter {
+  flex: 0 0 auto;
+  background: #28282a;
+  border-right: 1px solid #0d0d0e;
+  display: flex;
+  flex-direction: column;
+
+  .gutter-ruler-spacer {
+    height: 26px; /* == RULER_H */
+    flex: 0 0 auto;
+    background: #2a2a2d;
+    border-bottom: 1px solid #0d0d0e;
+  }
+
+  /* Mirrors the canvas stories-ribbon band (0px with no stories, so it collapses fully and
+     the gutter stays byte-identical) so labels stay aligned. No border: a 1px edge would
+     survive the 0px height and nudge every label out of alignment. */
+  .gutter-ribbon-spacer {
+    flex: 0 0 auto;
+    background: #161618;
+  }
+
+  /* Vertical-center offset: mirrors the canvas track-stack offset so labels line up. */
+  .gutter-offset {
+    flex: 0 0 auto;
+    background: #28282a;
+  }
+
+  .gutter-track {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    border-bottom: 1px solid #000;
+
+    &.video { background: #202024; }
+    &.audio { background: #1d1d20; }
+
+    .gutter-label {
+      font-size: 11px;
+      font-weight: 500;
+      color: #c8c8ce;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  }
+}
+
+.canvas-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  position: relative;
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: default; /* Select tool → regular pointer */
+
+    /* Blade tool → a little razor-blade cursor (tip = hotspot at the cut point),
+       crosshair fallback if the SVG cursor isn't honored. */
+    &.tool-blade {
+      cursor:
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M8 2 h6 v11 l-3 8 -3 -8 z' fill='%23e8e8ea' stroke='%23141414' stroke-width='1.4' stroke-linejoin='round'/%3E%3C/svg%3E") 11 21,
+        crosshair;
+    }
+
+    /* Story Mode → crosshair, signalling drag-to-mark. tool-blade wins if somehow both set. */
+    &.tool-story:not(.tool-blade) { cursor: crosshair; }
+  }
+}
+
+/* Footer: scrollbar left, zoom right. */
+.timeline-footer {
+  flex: 0 0 auto;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  background: #202022;
+  border-top: 1px solid #0d0d0e;
+
+  .scrollbar-track {
+    position: relative;
+    flex: 1 1 auto;
+    height: 8px;
+    background: #303034;
+    border-radius: 4px;
+
+    .scrollbar-thumb {
+      position: absolute;
+      top: 0;
+      height: 8px;
+      min-width: 18px;
+      background: #55555c;
+      border-radius: 4px;
+      cursor: grab;
+
+      &:hover { background: #66666e; }
+      &:active { cursor: grabbing; }
+    }
+  }
+
+  .zoom-control {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+
+    .zoom-icon { font-size: 11px; opacity: 0.7; }
+
+    .zoom-slider {
+      width: 140px;
+      accent-color: #7f8db0;
+      cursor: pointer;
+    }
+  }
+}
+
+/* ── Background-activity HUD (FCPX-style) ─────────────────────────────────────── */
+@keyframes activity-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes split-sweep {
+  0% { margin-left: -40%; }
+  100% { margin-left: 100%; }
+}
+
+/* Split modal — assign AI-detected chapters to stories (any non-contiguous subset). Lives inside
+   the shared .modal-backdrop; its own card because the layout differs from the export modal. */
+.split-modal {
+  width: min(640px, 100%);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  background: #202023;
+  border: 1px solid #0d0d0e;
+  border-radius: 10px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+
+  .split-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 12px 14px;
+    border-bottom: 1px solid #2c2c31;
+
+    .split-title { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; color: #e8e8ec; }
+    .split-model {
+      flex: 0 1 auto;
+      max-width: 180px;
+      font-size: 11px;
+      color: #e2e2e6;
+      background: #1c1c1f;
+      border: 1px solid #3a3a40;
+      border-radius: 4px;
+      padding: 3px 6px;
+      outline: none;
+      &:focus { border-color: #55555c; }
+    }
+    .split-rerun {
+      flex: 0 0 auto;
+      font-size: 11px;
+      font-weight: 600;
+      color: #c4c4ca;
+      background: #2b2b30;
+      border: 1px solid #3a3a40;
+      border-radius: 4px;
+      padding: 4px 10px;
+      cursor: pointer;
+      &:hover:not(:disabled) { background: #34343a; color: #fff; }
+      &:disabled { opacity: 0.45; cursor: default; }
+    }
+    .split-x {
+      flex: 0 0 auto;
+      font-size: 18px;
+      line-height: 1;
+      color: #8a8a90;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      &:hover { color: #fff; }
+    }
+  }
+
+  .split-idle { padding: 30px 16px; font-size: 12px; color: #9a9aa2; text-align: center; line-height: 1.5; b { color: #cfcfd4; } }
+  .split-error { padding: 18px 16px; font-size: 12px; color: #e6a597; line-height: 1.4; }
+
+  .split-loading {
+    padding: 26px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+
+    .split-loading-text { font-size: 12px; color: #cfcfd4; text-align: center; }
+    .split-progress {
+      height: 8px;
+      border-radius: 5px;
+      background: rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+    }
+    .split-progress-fill {
+      height: 100%;
+      width: 0;
+      border-radius: 5px;
+      background: linear-gradient(90deg, #4a9eff, #6bb6ff);
+      transition: width 0.3s ease;
+
+      /* Before any step lands, sweep instead of sitting at a bogus 100%. */
+      &.indeterminate {
+        width: 40% !important;
+        animation: split-sweep 1.1s ease-in-out infinite;
+      }
+    }
+    .split-progress-pct { font-size: 11px; color: #7a7a80; text-align: center; font-variant-numeric: tabular-nums; }
+
+    /* Stop for a chapter detection — spelled out rather than an ×, because this dialog already has
+       an × that means "close". */
+    .split-stop {
+      align-self: center;
+      margin-top: 10px;
+      padding: 4px 14px;
+      border: 1px solid #5a3030;
+      border-radius: 5px;
+      background: #2a1e1e;
+      color: #ff9c9c;
+      font-size: 11.5px;
+      cursor: pointer;
+      &:hover { background: #3a2626; }
+    }
+  }
+
+  .split-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px;
+    overflow: hidden;
+  }
+
+  /* Target stories (buckets). */
+  .split-buckets {
+    flex: 0 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+
+    .split-bucket {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 220px;
+      background: #1c1c1f;
+      border: 1px solid #3a3a40;
+      border-radius: 6px;
+      padding: 3px 6px;
+      cursor: pointer;
+
+      &.active { border-color: #4a9eff; box-shadow: 0 0 0 1px #4a9eff inset; }
+
+      .split-bucket-swatch { flex: 0 0 auto; width: 11px; height: 11px; border-radius: 3px; }
+      .split-bucket-title {
+        flex: 1 1 auto;
+        min-width: 60px;
+        width: 100px;
+        font-size: 11px;
+        color: #e2e2e6;
+        background: transparent;
+        border: none;
+        outline: none;
+        font-family: inherit;
+      }
+      .split-bucket-count {
+        flex: 0 0 auto;
+        font-size: 10px;
+        font-weight: 700;
+        color: #9a9aa2;
+        font-variant-numeric: tabular-nums;
+      }
+      .split-bucket-del {
+        flex: 0 0 auto;
+        font-size: 13px;
+        line-height: 1;
+        color: #8a8a90;
+        &:hover { color: #e08a7a; }
+      }
+    }
+
+    .split-add {
+      font-size: 11px;
+      font-weight: 600;
+      color: #b8b8be;
+      background: #2b2b30;
+      border: 1px dashed #46464d;
+      border-radius: 6px;
+      padding: 3px 10px;
+      cursor: pointer;
+      &:hover { background: #34343a; color: #fff; }
+    }
+  }
+
+  /* Chapters list — click to assign to the active bucket. Tall enough for ~10 rows even when
+     fewer are detected; scrolls beyond that. */
+  .split-chapters {
+    flex: 1 1 auto;
+    min-height: 380px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding-right: 2px;
+
+    .split-chapter {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 8px;
+      background: #1c1c1f;
+      border: 1px solid #2c2c31;
+      border-left: 3px solid transparent;
+      border-radius: 5px;
+      cursor: pointer;
+
+      &:hover { background: #26262a; }
+      &.excluded { opacity: 0.5; }
+
+      .split-chapter-time {
+        flex: 0 0 auto;
+        font-size: 10px;
+        font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+        color: #7a7a80;
+        width: 118px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .split-chapter-label { flex: 1 1 auto; min-width: 0; font-size: 12px; color: #e2e2e6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .split-chapter-badge {
+        flex: 0 0 auto;
+        font-size: 9.5px;
+        font-weight: 700;
+        color: #0d0d0e;
+        border-radius: 3px;
+        padding: 1px 6px;
+        min-width: 16px;
+        text-align: center;
+        &.scrap { background: #46464d; color: #b8b8be; }
+      }
+    }
+  }
+
+  .split-foot {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-top: 1px solid #2c2c31;
+
+    .split-coverage { font-size: 11px; color: #7bc98f; white-space: nowrap; }
+    .split-cached { font-size: 11px; color: #6fa8dc; white-space: nowrap; }
+    .split-scrap-note { font-size: 11px; color: #d8a24a; }
+    .split-hint { flex: 1 1 auto; font-size: 11px; color: #6f6f77; }
+
+    .modal-btn {
+      font-size: 12px;
+      font-weight: 500;
+      color: #e2e2e6;
+      background: #3a3a40;
+      border: 1px solid #0d0d0e;
+      border-radius: 5px;
+      padding: 6px 14px;
+      cursor: pointer;
+      transition: background 0.12s ease;
+      &:hover { background: #47474e; }
+      &.primary {
+        background: #3a7bd0;
+        border-color: #2b5ea0;
+        color: #fff;
+        &:hover:not(:disabled) { background: #4589e0; }
+        &:disabled { opacity: 0.45; cursor: default; }
+      }
+    }
+  }
+}

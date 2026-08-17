@@ -1,5 +1,5 @@
 import { Component, signal, OnInit } from '@angular/core';
-import { RouterOutlet, RouterLink, RouterLinkActive } from '@angular/router';
+import { Router, RouterOutlet, RouterLink, RouterLinkActive } from '@angular/router';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatSidenavModule } from '@angular/material/sidenav';
 import { MatListModule } from '@angular/material/list';
@@ -15,6 +15,8 @@ import { EnvironmentSetupDialog } from './components/environment-setup-dialog/en
 import { EnvironmentDownloadDock } from './components/environment-download-dock/environment-download-dock';
 import { ModelRoutingDialog, ModelRoutingDialogResult } from './components/model-routing-dialog/model-routing-dialog';
 import { NotificationService } from './services/notification';
+import { InputsStateService } from './services/inputs-state';
+import type { TitleHandoff } from './components/editor/editor-host';
 
 // Console log buffer
 const consoleLogBuffer: Array<{ timestamp: string; level: string; message: string }> = [];
@@ -46,6 +48,18 @@ const originalConsole = {
   };
 });
 
+/**
+ * How this window knows it is the EDITOR window rather than the main one.
+ *
+ * Two forms, because the editor window is loaded two different ways: dev loads
+ * `http://localhost:4200/editor` (a path), and the packaged build loads the same index.html
+ * as the main window with `?view=editor` appended (a query), since `loadFile` cannot express
+ * a route. Both mean the same thing; neither can be inferred from the other.
+ */
+function detectEditorWindow(): boolean {
+  return location.pathname.includes('/editor') || location.search.includes('view=editor');
+}
+
 @Component({
   selector: 'app-root',
   imports: [
@@ -72,22 +86,158 @@ export class App implements OnInit {
   protected readonly isDarkMode = signal(true);
   protected readonly sidenavOpened = signal(true);
 
+  /**
+   * True in the editor's BrowserWindow. That window renders a bare router-outlet: no toolbar,
+   * no sidenav, no notification dock. EditorComponent is `position: fixed; inset: 0` and owns
+   * the whole viewport, so any chrome behind it would only be an unreachable strip.
+   */
+  protected readonly isEditorWindow = signal(detectEditorWindow());
+
   constructor(
     private electron: ElectronService,
     private environmentSetup: EnvironmentSetupService,
     private dialog: MatDialog,
-    private notificationService: NotificationService
+    private notificationService: NotificationService,
+    private inputsState: InputsStateService,
+    private router: Router
   ) {
     // Set dark theme as default on init
     document.body.setAttribute('data-theme', 'dark');
   }
 
   async ngOnInit() {
+    if (this.isEditorWindow()) {
+      // Packaged, the URL is index.html?view=editor and the router lands on '' → /inputs.
+      // Push it to the editor route. In dev the path is already /editor and this is a no-op.
+      if (!this.router.url.startsWith('/editor')) {
+        await this.router.navigateByUrl('/editor');
+      }
+      // Nothing below belongs to this window: the readiness check drives the main window's
+      // setup dialog, and the titles queue lives in the main window's Inputs tab.
+      return;
+    }
+
     try {
       await this.environmentSetup.initialize();
     } catch (error) {
       console.error('Startup readiness check failed:', error);
     }
+
+    this.startTitlesIntake();
+  }
+
+  /** Open (or focus) the editor's own window. The nav entry is a button, not a routerLink —
+   *  the editor is a second window, not a tab in this one. */
+  async openEditor() {
+    try {
+      const result = await this.electron.openEditor();
+      if (!result.success) {
+        this.notificationService.error('Editor', result.error || 'The editor window could not be opened.');
+      }
+    } catch (error: any) {
+      this.notificationService.error('Editor', `The editor window could not be opened: ${error?.message || String(error)}`);
+    }
+  }
+
+  // ── Titles handoff intake (main window only) ────────────────────────────────
+  //
+  // The editor pushes one handoff per picked story. Delivery is push+pull: whatever landed
+  // while this window was not listening is parked in the main process and drained once here;
+  // anything sent afterwards arrives on the subscription. Each handoff becomes exactly one
+  // item in the Inputs queue.
+
+  private startTitlesIntake(): void {
+    // isElectron() is the port's own environment probe, not a fallback: outside Electron
+    // there is no editor window to hand anything over, so there is nothing to drain.
+    if (!this.electron.isElectron()) return;
+
+    this.electron.onTitlesSubjects((handoffs) => this.ingestHandoffs(handoffs));
+
+    this.electron.takePendingTitleSubjects()
+      .then((handoffs) => this.ingestHandoffs(handoffs))
+      .catch((error: any) => {
+        this.notificationService.error(
+          'Editor handoff',
+          `Could not read the subjects the editor sent over: ${error?.message || String(error)}`
+        );
+      });
+  }
+
+  private ingestHandoffs(handoffs: TitleHandoff[]): void {
+    if (!handoffs?.length) return;
+
+    let added = 0;
+    for (const handoff of handoffs) {
+      if (this.ingestOneHandoff(handoff)) added++;
+    }
+
+    if (added) {
+      this.notificationService.success(
+        'Editor handoff',
+        added === 1 ? 'One story added to the Inputs queue.' : `${added} stories added to the Inputs queue.`
+      );
+    }
+  }
+
+  /** @returns true when the handoff became a queue item. */
+  private ingestOneHandoff(handoff: TitleHandoff): boolean {
+    const source = handoff.source?.trim() || '';
+    const label = source ? `“${source}”` : 'A story from the editor';
+
+    // FAIL LOUDLY on livestream. ContentStudio's metadata pipeline has exactly one format and
+    // hardcodes it (`format: normal` in electron/services/metadata/metadata-tasks.ts) because
+    // nothing upstream distinguishes the two. Accepting a livestream handoff would generate it
+    // against the normal-format prompt and there would be no symptom anywhere — so it is
+    // refused by name instead. Wire a format flag through the pipeline to lift this.
+    if (handoff.format === 'livestream') {
+      this.notificationService.error(
+        'Editor handoff rejected',
+        `${label} was sent as a LIVESTREAM, and ContentStudio's metadata pipeline has no ` +
+        `livestream format — every generation is run as 'normal'. Nothing was added to the ` +
+        `queue rather than have it silently titled as a normal video.`
+      );
+      console.error('[App] Rejected livestream handoff — no livestream format exists in the metadata pipeline:', handoff);
+      return false;
+    }
+
+    const subjects = (handoff.subjects || []).map(s => String(s ?? '').trim()).filter(s => s.length > 0);
+    if (!subjects.length) {
+      this.notificationService.error(
+        'Editor handoff rejected',
+        `${label} arrived with no subjects, so there is nothing to title.`
+      );
+      return false;
+    }
+
+    // The subject list IS the item's content, one subject per line — the same shape the
+    // Add-text-subject dialog produces, and the only thing the titling model is shown.
+    const content = subjects.join('\n');
+
+    // Chapters ride along for a saved report. ContentStudio has no such slot: `notes` is
+    // wired to the AI as "Additional context" (input-handler.service.ts), and
+    // `masterReportData` is a fixed three-field shape nothing reads. Putting timestamps in
+    // either would break the editor's own contract that the titling model never sees one, so
+    // they are dropped — said out loud rather than dropped quietly.
+    if (handoff.chapters?.length) {
+      console.warn(
+        `[App] Dropped ${handoff.chapters.length} chapter marker(s) from ${label}: ContentStudio ` +
+        `has no saved-report slot on a queue item, and every field that IS carried reaches the ` +
+        `model. Chapters are never model input.`
+      );
+    }
+
+    const displayName = source || (content.length > 50 ? content.substring(0, 50) + '...' : content);
+
+    this.inputsState.addItem({
+      type: 'subject',
+      path: content,
+      displayName,
+      icon: 'text_fields',
+      selected: true,
+      promptSet: this.inputsState.masterPromptSet(),
+      textContent: content
+    });
+    return true;
   }
 
   toggleTheme() {

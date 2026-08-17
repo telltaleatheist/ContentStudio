@@ -36,6 +36,8 @@ import {
 } from '../services/metadata/metadata-routing';
 import { setupPublishIpc } from '../services/publish/publish-ipc';
 import { PublishBridge } from '../services/publish/publish-bridge';
+import { setupEditorIpc } from '../services/editor/editor-ipc';
+import { getMainWindow } from '../main';
 
 /**
  * Analytics services created in main.ts at startup and shared with the IPC layer.
@@ -141,13 +143,19 @@ function ensurePromptSetsDirectory(): void {
 const runningJobs = new Map<string, { cancel: () => void }>();
 
 /**
- * Send an IPC message to the renderer, re-fetching the current window on every call.
+ * Send an IPC message to the MAIN window's renderer, re-fetching it on every call.
  * Guards against "Object has been destroyed" crashes when the window is closed while a
  * long-running job's progress callback is still firing.
+ *
+ * This used to be `BrowserWindow.getAllWindows()[0]`, which was only ever right because the
+ * app had exactly one window. The timeline editor opens a second one, and getAllWindows()
+ * has no defined order — so metadata progress could be delivered to the editor, where
+ * nothing is listening for it. Everything routed through here belongs to the main window;
+ * events that belong to the caller go to `event.sender` instead.
  */
 function sendToRenderer(channel: string, payload: any): void {
-  const win = BrowserWindow.getAllWindows()[0];
-  if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+  const win = getMainWindow();
+  if (win && !win.webContents.isDestroyed()) {
     win.webContents.send(channel, payload);
   }
 }
@@ -1970,6 +1978,14 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   );
 
   // ==================== END PUBLISH ====================
+
+  // ==================== EDITOR ====================
+  // The ported AutoCutStudio timeline editor: its own BrowserWindow, its own Python
+  // backend under editor-backend/, and its own channels. Registered as one seam, the
+  // same way publish/ is. `store` is passed for the archive settings (archiveRoot,
+  // archiveMountUrl), whose defaults are resolved at the read site.
+  setupEditorIpc(store);
+  // ==================== END EDITOR ====================
 
   log.info('IPC handlers registered');
 }
