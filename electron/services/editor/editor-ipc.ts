@@ -141,6 +141,80 @@ const NON_WEEK_ENTRIES: ReadonlySet<string> = new Set([
   '2026 fcpxtemplate'
 ]);
 
+/**
+ * Delete a directory tree on the SMB-mounted archive, expecting the share to fight back.
+ *
+ * `fs.rmSync` is the wrong tool there, learned the hard way (2026-08-17, "whaa audiobook -
+ * draft 5"): the server resolves symlinks before the client ever sees them, so a loop like
+ * Final Cut's `.fcpcache -> .` presents as a bottomless directory that rmSync burrows into
+ * until EBUSY — aborting mid-tree and leaving the week half-deleted — while a DANGLING
+ * symlink is hidden from listings entirely and makes the final rmdir fail ENOTEMPTY on a
+ * directory that looks empty from this side. Neither can be removed over SMB at all:
+ * unlink refuses (it's "a directory" / invisible), rmdir refuses (it's "not empty").
+ *
+ * So: best effort, with a complete account. Every regular file and honest directory is
+ * removed; a directory whose (dev,ino) already appears on the ancestor chain (or that sits
+ * past a depth no real week reaches) is recognized as a loop and NOT entered; whatever
+ * cannot go is returned in `leftovers` with the reason, and the CALLER decides to throw.
+ * Weeks this app pushed never trip any of this — rsync skips symlinks by design
+ * (MATCHING_RULES in archive-sync.ts) — it is foreign, hand-copied folders that do.
+ */
+function deleteArchiveTree(root: string): {
+  filesRemoved: number;
+  leftovers: Array<{ path: string; reason: string }>;
+} {
+  const leftovers: Array<{ path: string; reason: string }> = [];
+  let filesRemoved = 0;
+
+  const walk = (dir: string, ancestors: string[]): boolean => {
+    // true = this directory was fully removed
+    const st = fs.lstatSync(dir);
+    const key = `${st.dev}:${st.ino}`;
+    if (ancestors.includes(key)) {
+      leftovers.push({ path: dir, reason: 'symlink loop — the share presents it as a bottomless folder' });
+      return false;
+    }
+    if (ancestors.length >= 64) {
+      // Backstop for shares whose synthetic inode numbers differ at every level of a loop.
+      leftovers.push({ path: dir, reason: 'directory nesting past any real week — treated as a loop' });
+      return false;
+    }
+
+    let clean = true;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!walk(full, [...ancestors, key])) clean = false;
+      } else {
+        try {
+          fs.unlinkSync(full);
+          filesRemoved++;
+        } catch (err: any) {
+          leftovers.push({ path: full, reason: err?.code || err?.message || String(err) });
+          clean = false;
+        }
+      }
+    }
+
+    if (!clean) return false;
+    try {
+      fs.rmdirSync(dir);
+      return true;
+    } catch (err: any) {
+      leftovers.push({
+        path: dir,
+        reason: err?.code === 'ENOTEMPTY' || err?.code === 'EBUSY'
+          ? 'the share reports it non-empty — it holds entries SMB hides (dangling symlinks)'
+          : (err?.code || err?.message || String(err)),
+      });
+      return false;
+    }
+  };
+
+  walk(root, []);
+  return { filesRemoved, leftovers };
+}
+
 /** Where the projects registry lives — beside drift_corrections.json and the other user config. */
 function projectsRegistryPath(): string {
   return path.join(EditorPaths.configDir, 'projects.json');
@@ -1806,8 +1880,22 @@ function setupArchiveHandlers(store: Store<any>): void {
       }
 
       log.warn(`[archive] deleting the ARCHIVE copy of ${name}: ${realTarget}`);
-      fs.rmSync(realTarget, { recursive: true, force: false });
-      log.info(`[archive] deleted ${realTarget} from the archive`);
+      const { filesRemoved, leftovers } = deleteArchiveTree(realTarget);
+      if (leftovers.length > 0) {
+        // Space is reclaimed (every regular file the share showed us is gone) but the
+        // folder itself survives as a skeleton. Say exactly what and why — the user
+        // finishes it from the NAS console, where these are ordinary symlinks.
+        const detail = leftovers.slice(0, 4).map(l => `${path.relative(root, l.path)} (${l.reason})`).join('; ');
+        const more = leftovers.length > 4 ? ` …and ${leftovers.length - 4} more` : '';
+        throw new Error(
+          `Removed ${filesRemoved} files from ${name}, but ${leftovers.length} ` +
+          `${leftovers.length === 1 ? 'entry' : 'entries'} cannot be deleted over the network share: ${detail}${more}. ` +
+          `These are symlinks on the archive server itself — the share shows a loop as a bottomless folder and hides ` +
+          `dangling links entirely, so no tool on this Mac can remove them. Finish from the NAS console: ` +
+          `sudo rm -rf the folder there. The freed space is already reclaimed.`
+        );
+      }
+      log.info(`[archive] deleted ${realTarget} from the archive (${filesRemoved} files)`);
       return { deleted: realTarget, name };
     } finally {
       deletionInFlight = null;
