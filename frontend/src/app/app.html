@@ -25,11 +25,6 @@
       <mat-sidenav mode="side" [opened]="sidenavOpened()" class="app-sidenav">
         <div class="sidenav-content">
           <mat-nav-list class="nav-list">
-            <!-- Not a routerLink: the editor is a SECOND WINDOW, not a view in this one. -->
-            <a mat-list-item (click)="openEditor()" matTooltip="Open the timeline editor in its own window">
-              <mat-icon matListItemIcon>movie_edit</mat-icon>
-              <span matListItemTitle>Editor</span>
-            </a>
             <a mat-list-item routerLink="/inputs" routerLinkActive="active-link">
               <mat-icon matListItemIcon>input</mat-icon>
               <span matListItemTitle>Inputs</span>
@@ -37,6 +32,11 @@
             <a mat-list-item routerLink="/metadata-reports" routerLinkActive="active-link">
               <mat-icon matListItemIcon>description</mat-icon>
               <span matListItemTitle>Metadata Reports</span>
+            </a>
+            <!-- Not a routerLink: the editor is a SECOND WINDOW, not a view in this one. -->
+            <a mat-list-item (click)="openEditor()" matTooltip="Open the timeline editor in its own window">
+              <mat-icon matListItemIcon>movie_edit</mat-icon>
+              <span matListItemTitle>Editor</span>
             </a>
             <a mat-list-item routerLink="/analytics" routerLinkActive="active-link">
               <mat-icon matListItemIcon>insights</mat-icon>

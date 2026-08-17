@@ -155,7 +155,11 @@ electron/services/editor/               ← ported ACS services:
   asset-manager.ts + asset-catalog.ts + asset-types.ts + downloader.ts (for assets:list)
   shared-paths.ts    app-config.ts (trimmed to what the ported services need)
   editor-ipc.ts      ← ALL editor channel registrations (setupEditorIpc(store))
-editor-backend/{cli,core,binaries,python,utilities}   ← already in place
+editor-backend/{cli,core,binaries,utilities}   ← already in place
+  (2026-08-17 cleanup: non-arm64 platforms and the bundled CPython clone were
+   removed — the managed autocutstudio-env in the OwenMorgan shared dir is the
+   active interpreter; recover a bundled runtime from the ACS repo's
+   python/mac-arm64 or rebuild from editor-backend/environment.yml)
 config/{autostudio_config.yaml,drift_corrections.json,projects.json}
 ```
 
