@@ -113,6 +113,111 @@ export function stopArchiveSyncOnQuit(): void {
   archiveSyncInstance.cancelAll();
 }
 
+/**
+ * One destructive deletion at a time, process-wide — the same single-job rule ArchiveSync
+ * applies to rsync, for the same reason and then some.
+ *
+ * Held as the PATH being deleted rather than a boolean so the refusal can name what is
+ * already running. It covers both deletions (a local week folder and a week on the archive
+ * server) with ONE slot: they are the only two operations in this app that remove a user's
+ * media, and two of them at once — in either combination — is a state nothing here is
+ * written to reason about. Claimed synchronously the moment a request is accepted and
+ * released in a `finally`, so the awaits inside a handler cannot let a second click through.
+ */
+let deletionInFlight: string | null = null;
+
+/**
+ * Entries under the archive root that are bookkeeping rather than content. `.rsync-partial`
+ * is this app's own leftover (see archive-sync.ts); `#recycle` and `@eaDir` are Synology's
+ * trash and thumbnail sidecars, which appear beside real folders on this NAS. Matched
+ * case-insensitively, and everything beginning with a dot is skipped separately.
+ */
+const NON_WEEK_ENTRIES: ReadonlySet<string> = new Set([
+  '.rsync-partial', '#recycle', '@eadir', 'lost+found'
+]);
+
+/** Where the projects registry lives — beside drift_corrections.json and the other user config. */
+function projectsRegistryPath(): string {
+  return path.join(EditorPaths.configDir, 'projects.json');
+}
+
+/**
+ * Read the projects registry, or THROW naming exactly what is wrong with the file.
+ *
+ * Extracted so the delete-a-week handler validates the registry with the same rules
+ * 'projects:read-registry' does, verbatim. A second, laxer reader would be a second opinion
+ * about the only record of where the user's projects live.
+ *
+ * A registry that has never been written is legitimately empty. One that EXISTS but cannot
+ * be read is an error that propagates — it is never reset or overwritten.
+ */
+function readProjectsRegistryFile(): ProjectRegistry {
+  const p = projectsRegistryPath();
+  if (!fs.existsSync(p)) return { version: 1, projects: [] };
+
+  const raw = fs.readFileSync(p, 'utf8');
+  let parsed: any;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e: any) {
+    throw new Error(`projects registry ${p} is not valid JSON: ${e.message} ` +
+      `— fix or delete the file to continue; it will not be overwritten`);
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`projects registry ${p} is not an object (got ${Array.isArray(parsed) ? 'an array' : typeof parsed}) ` +
+      `— fix or delete the file to continue; it will not be overwritten`);
+  }
+  if (parsed.version !== 1) {
+    throw new Error(`projects registry ${p} has version ${JSON.stringify(parsed.version)}, expected 1 ` +
+      `— fix or delete the file to continue; it will not be overwritten`);
+  }
+  if (!Array.isArray(parsed.projects)) {
+    throw new Error(`projects registry ${p} has no projects array (projects is ${typeof parsed.projects}) ` +
+      `— fix or delete the file to continue; it will not be overwritten`);
+  }
+
+  return parsed;
+}
+
+/** Atomic write: tmp + rename, so a crash mid-write can never corrupt the registry. */
+function writeProjectsRegistryFile(registry: ProjectRegistry): void {
+  const dir = EditorPaths.configDir;
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+    log.info('Created config directory for projects registry:', dir);
+  }
+  const p = projectsRegistryPath();
+  const tmp = `${p}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(registry, null, 2), 'utf8');
+  fs.renameSync(tmp, p);
+}
+
+/**
+ * The `<week>` folder above a `<week>/files/<day>` project, or null for any other layout.
+ *
+ * The rule is the literal `files` parent directory, not a date-shaped name — the same rule
+ * `destinationFor` uses to decide where a project is archived to, and the same one the
+ * sidebar groups by. A week derived from a name instead would let a folder be deleted as a
+ * week it was never archived as.
+ */
+function weekFolderOfProject(projectPath: string): string | null {
+  const clean = projectPath.replace(/[\\/]+$/, '');
+  const filesDir = path.dirname(clean);
+  if (path.basename(filesDir) !== 'files') return null;
+  const week = path.dirname(filesDir);
+  return path.basename(week) ? week : null;
+}
+
+/**
+ * Is `child` the same path as `parent`, or inside it? Purely lexical on resolved paths —
+ * callers that need symlinks resolved pass realpaths in.
+ */
+function isAtOrUnder(parent: string, child: string): boolean {
+  const rel = path.relative(path.resolve(parent), path.resolve(child));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
 /** The window that invoked a call, so a dialog opens on it rather than on the main window. */
 function windowOf(event: Electron.IpcMainInvokeEvent): BrowserWindow | null {
   return BrowserWindow.fromWebContents(event.sender);
@@ -1247,9 +1352,10 @@ function setupProcessingHandlers(): void {
  */
 function setupProjectHandlers(): void {
   // The SAME config directory binary-resolver.ts exports as AUTOCUT_CONFIG_DIR, so the
-  // registry sits beside drift_corrections.json and the other user config.
-  const registryPath = (): string => path.join(EditorPaths.configDir, 'projects.json');
-
+  // registry sits beside drift_corrections.json and the other user config. The reader, the
+  // writer and the path itself live at module scope because 'editor:delete-local-week' —
+  // which is registered with the archive handlers, since it needs the ArchiveSync instance
+  // to re-verify before it removes anything — rewrites this same file.
   const MASTER_EXTENSIONS = ['.mp4', '.mov', '.avi', '.mkv'];
   const MASTER_PATTERN = /^(.+?)\s+master$/i;
 
@@ -1270,32 +1376,7 @@ function setupProjectHandlers(): void {
   };
 
   ipcMain.handle('projects:read-registry', async (): Promise<ProjectRegistry> => {
-    const p = registryPath();
-    if (!fs.existsSync(p)) return { version: 1, projects: [] };
-
-    const raw = fs.readFileSync(p, 'utf8');
-    let parsed: any;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (e: any) {
-      throw new Error(`projects registry ${p} is not valid JSON: ${e.message} ` +
-        `— fix or delete the file to continue; it will not be overwritten`);
-    }
-
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error(`projects registry ${p} is not an object (got ${Array.isArray(parsed) ? 'an array' : typeof parsed}) ` +
-        `— fix or delete the file to continue; it will not be overwritten`);
-    }
-    if (parsed.version !== 1) {
-      throw new Error(`projects registry ${p} has version ${JSON.stringify(parsed.version)}, expected 1 ` +
-        `— fix or delete the file to continue; it will not be overwritten`);
-    }
-    if (!Array.isArray(parsed.projects)) {
-      throw new Error(`projects registry ${p} has no projects array (projects is ${typeof parsed.projects}) ` +
-        `— fix or delete the file to continue; it will not be overwritten`);
-    }
-
-    return parsed;
+    return readProjectsRegistryFile();
   });
 
   ipcMain.handle('projects:write-registry', async (_event, registry: ProjectRegistry) => {
@@ -1317,17 +1398,7 @@ function setupProjectHandlers(): void {
       }
     });
 
-    const dir = EditorPaths.configDir;
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-      log.info('Created config directory for projects registry:', dir);
-    }
-
-    const p = registryPath();
-    // Atomic write: tmp + rename, so a crash mid-write can never corrupt the registry.
-    const tmp = `${p}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(registry, null, 2), 'utf8');
-    fs.renameSync(tmp, p);
+    writeProjectsRegistryFile(registry);
     return { success: true };
   });
 
@@ -1600,6 +1671,290 @@ function setupArchiveHandlers(store: Store<any>): void {
       return { ok: true, destPath: destinationFor(payload.localPath, payload.kind, archiveRoot()) };
     } catch (err: any) {
       return { ok: false, error: err?.message || String(err) };
+    }
+  });
+
+  // ── Reclaiming space: deleting a local copy, or a copy on the archive server ──
+  //
+  // These three exist because the local volume runs at 96% full and the archive is the point
+  // of the whole feature: once a week is verifiably on the NAS, the local copy is the
+  // redundant one, and once a week has no local copy the NAS copy is the only thing that
+  // remembers it. Both directions of that trade need a control, and both are irreversible.
+  //
+  // All three REJECT with a message rather than returning an envelope, matching every other
+  // archive handler here (`archive:sync`, `archive:check`) — the sidebar shows the rejection
+  // text verbatim on its inline error line, so the message IS the UI.
+
+  /**
+   * Week folders that exist on the archive server, so the sidebar can show the ones with no
+   * local copy left as faded "ghost" rows.
+   *
+   * A WEEK, not merely a directory: the entry must contain a `files/` directory, which is
+   * exactly what a week push puts there and the same rule `destinationFor` and the sidebar
+   * both use to decide what a week IS. This matters — the archive root on this machine also
+   * holds `assets/` (the shared overlay artwork every Final Cut library symlinks into, and
+   * which nothing backs up), a `testlib.fcpbundle`, and loose documents. Listing those as
+   * weeks would put a delete button beside the one folder here that has no other copy.
+   *
+   * Deliberately does NOT mount the share. An unreachable archive REJECTS, and the sidebar
+   * simply shows no ghost rows — the same documented state as hiding the sync controls
+   * when the host has no archive at all.
+   */
+  ipcMain.handle('archive:list-remote-weeks', async () => {
+    const root = archiveRoot();
+    const status = sync.status(root);
+    if (!status.available) {
+      throw new Error(status.reason || `${root} is not available.`);
+    }
+
+    const weeks: Array<{ name: string; path: string }> = [];
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      // Dot entries are macOS/rsync bookkeeping (.DS_Store sidecars, .rsync-partial, and on
+      // this share a stray .claude); NON_WEEK_ENTRIES covers the NAS's own trash and
+      // thumbnail folders, which are ordinary directories with ordinary names.
+      if (entry.name.startsWith('.')) continue;
+      if (NON_WEEK_ENTRIES.has(entry.name.toLowerCase())) continue;
+
+      const full = path.join(root, entry.name);
+      const filesDir = fs.statSync(path.join(full, 'files'), { throwIfNoEntry: false });
+      if (!filesDir || !filesDir.isDirectory()) continue;
+
+      weeks.push({ name: entry.name, path: full });
+    }
+    weeks.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+    return { root, weeks };
+  });
+
+  /**
+   * Delete one week from the ARCHIVE SERVER. This is the only copy for a week that has no
+   * local folder left, so every rail is checked before anything is removed, in this order:
+   *
+   *   1. a path was given at all;
+   *   2. no other deletion is in flight (module-level guard, claimed synchronously);
+   *   3. the archive is reachable — an unreachable root would make every path test meaningless;
+   *   4. NO sync is running or queued, anywhere. Not "on this path": rsync writes with
+   *      `--inplace` and a delete underneath a running transfer is corruption on a share
+   *      whose only redundancy is the thing being deleted;
+   *   5. the path is an existing directory;
+   *   6. its REALPATH's parent is the archive root's REALPATH — symlinks resolved on both
+   *      sides, so a link planted under the root cannot point the recursive delete elsewhere;
+   *   7. its name is not a dot/system entry;
+   *   8. it contains a `files/` directory, i.e. it is a week this app archived rather than
+   *      `assets/` or a stray folder;
+   *   9. still no sync (re-checked immediately before the irreversible call).
+   */
+  ipcMain.handle('archive:delete-remote-week', async (_event, payload: { path: string }) => {
+    const target = payload?.path;
+    if (typeof target !== 'string' || !target.trim()) {
+      throw new Error('archive:delete-remote-week requires a non-empty path');
+    }
+    if (deletionInFlight) {
+      throw new Error(`A deletion is already running (${deletionInFlight}) — wait for it to finish. Nothing was deleted.`);
+    }
+    deletionInFlight = target;
+    try {
+      const root = archiveRoot();
+      const status = sync.status(root);
+      if (!status.available) {
+        throw new Error(`The archive is not reachable (${status.reason || `${root} is not available`}) — nothing was deleted.`);
+      }
+      if (sync.busy) {
+        throw new Error(
+          `A sync is running or queued (${sync.busyPath || 'a queued folder'}) — nothing is deleted from the ` +
+          `archive while rsync is writing to it. Stop or finish the sync first.`
+        );
+      }
+
+      const stat = fs.statSync(target, { throwIfNoEntry: false });
+      if (!stat || !stat.isDirectory()) {
+        throw new Error(`${target} is not a folder on the archive — nothing was deleted.`);
+      }
+
+      const realTarget = fs.realpathSync(target);
+      const realRoot = fs.realpathSync(root);
+      if (path.dirname(realTarget) !== realRoot) {
+        throw new Error(
+          `${target} resolves to ${realTarget}, whose parent is ${path.dirname(realTarget)} and not the archive ` +
+          `root ${realRoot}. Only a week folder DIRECTLY under the archive root can be deleted.`
+        );
+      }
+
+      const name = path.basename(realTarget);
+      if (name.startsWith('.') || NON_WEEK_ENTRIES.has(name.toLowerCase())) {
+        throw new Error(`${name} is a system entry on the archive, not a week — refusing to delete it.`);
+      }
+      const filesDir = fs.statSync(path.join(realTarget, 'files'), { throwIfNoEntry: false });
+      if (!filesDir || !filesDir.isDirectory()) {
+        throw new Error(
+          `${realTarget} has no files/ directory, so it is not a week this app archived — refusing to delete it. ` +
+          `Remove it by hand if that is really what you want.`
+        );
+      }
+
+      // The last look before the irreversible call. Everything above took time; a sync
+      // starting during it would make this a delete underneath a live rsync.
+      if (sync.busy) {
+        throw new Error(
+          `A sync started while ${name} was being checked — nothing was deleted. Try again once it finishes.`
+        );
+      }
+
+      log.warn(`[archive] deleting the ARCHIVE copy of ${name}: ${realTarget}`);
+      fs.rmSync(realTarget, { recursive: true, force: false });
+      log.info(`[archive] deleted ${realTarget} from the archive`);
+      return { deleted: realTarget, name };
+    } finally {
+      deletionInFlight = null;
+    }
+  });
+
+  /**
+   * Delete the LOCAL copy of a week, and drop every project under it from the registry.
+   *
+   * Registered here rather than with the other `projects:` handlers because the whole point
+   * of it is the re-verification: it needs the ArchiveSync instance to run a fresh dry run,
+   * and that instance lives in this function.
+   *
+   * THE GREEN CHECK IN THE SIDEBAR IS NEVER TRUSTED. It can be minutes or hours old, it can
+   * have been earned before a file was edited, and the archive can have gone away since. The
+   * check is re-run here, immediately before the delete, and its answer — not the mark —
+   * decides. In order:
+   *
+   *   1. a weekPath was given at all;
+   *   2. no other deletion is in flight;
+   *   3. the registry parses (read here so a corrupt file stops this BEFORE anything is
+   *      deleted rather than after — the rewrite is the last step);
+   *   4. at least one registry project lives at `<weekPath>/files/<day>`, i.e. this really is
+   *      the week folder a sidebar row represents and not some other directory;
+   *   5. the path is an existing directory;
+   *   6. it is NOT the archive root or anything under it — deleting "the local copy" must
+   *      never be able to delete the archived one;
+   *   7. nothing is syncing or queued for this week or any day inside it;
+   *   8. the archive is reachable;
+   *   9. a FRESH `archiveCheck` of the week says inSync, with zero pending files and not
+   *      neverArchived (a check also refuses outright while any sync is running);
+   *  10. still nothing syncing (re-checked immediately before the irreversible call).
+   *
+   * Only then is the folder removed and the registry rewritten atomically.
+   */
+  ipcMain.handle('editor:delete-local-week', async (_event, payload: { weekPath: string }) => {
+    const weekPath = payload?.weekPath;
+    if (typeof weekPath !== 'string' || !weekPath.trim()) {
+      throw new Error('editor:delete-local-week requires a non-empty weekPath');
+    }
+    if (deletionInFlight) {
+      throw new Error(`A deletion is already running (${deletionInFlight}) — wait for it to finish. Nothing was deleted.`);
+    }
+    deletionInFlight = weekPath;
+    try {
+      const week = path.resolve(weekPath.replace(/[\\/]+$/, ''));
+      const name = path.basename(week);
+
+      // The registry is read FIRST, and a corrupt one stops everything here. The rewrite is
+      // the last step of this handler, so discovering the file is unreadable afterwards would
+      // mean the folder was already gone with no way to record it.
+      const registry = readProjectsRegistryFile();
+      const underWeek = registry.projects.filter(p => isAtOrUnder(week, p.path));
+      const isRegistryWeek = registry.projects.some(p => {
+        const w = weekFolderOfProject(p.path);
+        return !!w && path.resolve(w) === week;
+      });
+      if (!isRegistryWeek) {
+        throw new Error(
+          `No project in the list lives at ${week}/files/<day>, so ${name} is not a week folder this ` +
+          `sidebar represents. Only a week the list actually groups can be deleted.`
+        );
+      }
+
+      const stat = fs.statSync(week, { throwIfNoEntry: false });
+      if (!stat || !stat.isDirectory()) {
+        throw new Error(`${week} is not a folder — nothing was deleted.`);
+      }
+
+      const root = archiveRoot();
+      if (isAtOrUnder(root, week)) {
+        throw new Error(
+          `${week} is inside the archive root ${root}. This deletes the LOCAL copy; it must never ` +
+          `be pointed at the archived one.`
+        );
+      }
+
+      // Path-specific, unlike the remote delete: another week syncing says nothing about this
+      // one. A day inside this week counts — its rsync writes into the folder about to go.
+      const queue = sync.queueState();
+      const involved = [...(queue.running ? [queue.running] : []), ...queue.pending]
+        .filter(j => isAtOrUnder(week, j.localPath));
+      if (involved.length > 0) {
+        throw new Error(
+          `${name} has a sync running or queued (${involved.map(j => j.localPath).join(', ')}) — ` +
+          `nothing is deleted while it is being uploaded. Stop or finish the sync first.`
+        );
+      }
+
+      const status = sync.status(root);
+      if (!status.available) {
+        throw new Error(
+          `The archive is not reachable (${status.reason || `${root} is not available`}), so there is no way to ` +
+          `confirm ${name} is safely archived — nothing was deleted.`
+        );
+      }
+
+      // The re-verification. `check` itself refuses while ANY sync is running or queued, so a
+      // transfer elsewhere surfaces here as its own message rather than as a silent pass.
+      const check = await sync.check(week, 'week', root);
+      if (check.neverArchived) {
+        throw new Error(
+          `${name} has never been archived — ${check.destPath} does not exist. Nothing was deleted.`
+        );
+      }
+      if (!check.inSync || check.pending.length > 0) {
+        const bytes = check.pendingBytes;
+        throw new Error(
+          `${name} is NOT fully archived: ${check.pending.length} file${check.pending.length === 1 ? '' : 's'} ` +
+          `(${bytes} bytes) would still be uploaded to ${check.destPath}. Nothing was deleted — sync it first.`
+        );
+      }
+
+      // Verified. Anything that could have changed during the dry run gets one last look.
+      if (sync.busy) {
+        throw new Error(
+          `A sync started while ${name} was being verified — nothing was deleted. Try again once it finishes.`
+        );
+      }
+
+      // The archive copy is confirmed identical as of a moment ago. Everything below is
+      // irreversible, and the resolved realpath is used so a symlinked week folder deletes
+      // the folder rather than following the link out of it.
+      const realWeek = fs.realpathSync(week);
+      if (isAtOrUnder(fs.realpathSync(root), realWeek)) {
+        throw new Error(
+          `${week} resolves to ${realWeek}, which is inside the archive root. This deletes the LOCAL copy only.`
+        );
+      }
+      log.warn(`[archive] deleting the LOCAL copy of ${name}: ${realWeek} (archived at ${check.destPath})`);
+      fs.rmSync(realWeek, { recursive: true, force: false });
+      log.info(`[archive] deleted ${realWeek}; removing ${underWeek.length} project(s) from the registry`);
+
+      const removedProjects = underWeek.map(p => p.path);
+      try {
+        writeProjectsRegistryFile({
+          version: 1,
+          projects: registry.projects.filter(p => !isAtOrUnder(week, p.path))
+        });
+      } catch (err: any) {
+        // The folder is gone and the list still names it. Said out loud rather than swallowed:
+        // the next load scans those folders, finds them missing, and prunes them — but the
+        // user is told why the list looks stale until then.
+        throw new Error(
+          `${name} was deleted from ${realWeek}, but the projects list could not be updated: ` +
+          `${err?.message || String(err)}. Its rows disappear on the next reload.`
+        );
+      }
+
+      return { deleted: realWeek, destPath: check.destPath, removedProjects };
+    } finally {
+      deletionInFlight = null;
     }
   });
 }

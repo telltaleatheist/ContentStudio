@@ -3,7 +3,8 @@ import { Observable, Subject } from 'rxjs';
 import type { ChosenMetadata, PublishResult, ResolvedMetadata } from '../features/publish/publish.types';
 import type {
   ArchiveCheck, ArchiveProgress, ArchiveQueue, ArchiveResult, ArchiveStatus,
-  AssetPaths, ProjectScanResult, ProjectsRegistry, TitleHandoff
+  AssetPaths, DeleteLocalWeekResult, DeleteRemoteWeekResult, ProjectScanResult,
+  ProjectsRegistry, RemoteWeekListing, TitleHandoff
 } from '../components/editor/editor-host';
 import type { EditorManifest } from '../components/editor/host-data/editor-manifest';
 
@@ -400,6 +401,12 @@ declare global {
       readProjectsRegistry: () => Promise<ProjectsRegistry>;
       writeProjectsRegistry: (registry: ProjectsRegistry) => Promise<{ success: boolean }>;
       scanProjectFolder: (folderPath: string) => Promise<ProjectScanResult>;
+      /**
+       * Prefixed: its channel is `editor:delete-local-week`, and the port member it backs is
+       * plain `deleteLocalWeek`. Deletes the local week folder and rewrites the registry;
+       * REJECTS naming the reason if its own fresh re-verification says no.
+       */
+      editorDeleteLocalWeek: (payload: { weekPath: string }) => Promise<DeleteLocalWeekResult>;
 
       // Processing (turning a raw project into an editable one)
       autoDetectAudio: (masterVideoPath: string) => Promise<{
@@ -432,6 +439,10 @@ declare global {
         => Promise<{ ids: string[] }>;
       archiveCancel: (payload: { paths: string[] }) => Promise<{ canceled: number }>;
       archiveCheck: (payload: { localPath: string; kind: 'week' | 'day' }) => Promise<ArchiveCheck>;
+      /** Week folders on the NAS. REJECTS when the archive is unreachable; never mounts it. */
+      archiveListRemoteWeeks: () => Promise<RemoteWeekListing>;
+      /** Removes a week from the NAS — the only copy, for a week with no local folder left. */
+      archiveDeleteRemoteWeek: (payload: { path: string }) => Promise<DeleteRemoteWeekResult>;
       onArchiveQueue: (callback: (q: ArchiveQueue) => void) => void;
       onArchiveProgress: (callback: (p: ArchiveProgress) => void) => void;
       onArchiveComplete: (callback: (r: ArchiveResult) => void) => void;
@@ -1062,6 +1073,18 @@ export class ElectronService {
     return this.editorBridge.scanProjectFolder(folderPath);
   }
 
+  /**
+   * Delete the local copy of a week folder and drop every registry row under it.
+   *
+   * Named apart from the port member (`deleteLocalWeek`) for the same reason as
+   * `editorCancelJob`: the channel is `editor:delete-local-week`, and this half of the
+   * service is named after its channels. REJECTS with the main process's verbatim reason —
+   * that message is what the sidebar's confirm row shows.
+   */
+  async editorDeleteLocalWeek(payload: { weekPath: string }): Promise<DeleteLocalWeekResult> {
+    return this.editorBridge.editorDeleteLocalWeek(payload);
+  }
+
   // ── Processing (turning a raw project into an editable one) ─────────────────
 
   async autoDetectAudio(masterVideoPath: string): Promise<{
@@ -1170,6 +1193,16 @@ export class ElectronService {
 
   async archiveCheck(payload: { localPath: string; kind: 'week' | 'day' }): Promise<ArchiveCheck> {
     return this.editorBridge.archiveCheck(payload);
+  }
+
+  /** Week folders on the NAS. REJECTS when it is unreachable — the caller shows no ghosts. */
+  async archiveListRemoteWeeks(): Promise<RemoteWeekListing> {
+    return this.editorBridge.archiveListRemoteWeeks();
+  }
+
+  /** Remove a week from the NAS. REJECTS with the main process's verbatim reason. */
+  async archiveDeleteRemoteWeek(payload: { path: string }): Promise<DeleteRemoteWeekResult> {
+    return this.editorBridge.archiveDeleteRemoteWeek(payload);
   }
 
   onArchiveQueue(callback: (q: ArchiveQueue) => void): void {

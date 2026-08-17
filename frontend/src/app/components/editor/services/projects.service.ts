@@ -190,6 +190,36 @@ export class ProjectsService {
     await this.commit(next);
   }
 
+  /** False when the host cannot delete week folders — the sidebar then offers no red ✕. */
+  get canDeleteLocalWeek(): boolean {
+    return typeof this.host.deleteLocalWeek === 'function';
+  }
+
+  /**
+   * Delete the LOCAL copy of a week folder, once the host has satisfied itself the archive
+   * holds it. Resolves with what went; THROWS the host's verbatim refusal otherwise.
+   *
+   * Nothing is validated here, deliberately. The renderer's opinion about whether a week is
+   * archived is a memory of a check that finished minutes ago; the host re-runs that check
+   * against the actual share immediately before it removes anything, and only its answer can
+   * be the permission. Repeating a weaker version of it here would suggest otherwise.
+   *
+   * The HOST also rewrites the registry — it has to, since it is holding the file open to
+   * decide which entries lived under the folder it just deleted. So this drops the same rows
+   * from its own list rather than committing a write of its own: two writers for one file,
+   * one of them working from a list that predates the other, is how a registry loses entries.
+   */
+  async deleteLocalWeek(weekPath: string): Promise<{ removedProjects: string[]; destPath: string }> {
+    if (!this.host.deleteLocalWeek) {
+      throw new Error('This host cannot delete local project folders.');
+    }
+    const result = await this.host.deleteLocalWeek({ weekPath });
+    const gone = new Set(result.removedProjects);
+    this.entries = this.entries.filter(e => !gone.has(e.path));
+    this.publish();
+    return { removedProjects: result.removedProjects, destPath: result.destPath };
+  }
+
   /** Re-scan one entry (e.g. after a volume mounts, or a job finishes). No registry write. */
   async rescan(path: string): Promise<void> {
     const idx = this.entries.findIndex(e => e.path === path);

@@ -54,13 +54,39 @@
   <ng-container *ngFor="let g of groups; trackBy: trackByGroup">
 
     <!-- The week divider. Its sync button pushes the WHOLE week folder — every day, the
-         .fcpbundle, complete/ and thumbnails/ — not just the days listed beneath it. -->
-    <div class="pp-week" [title]="g.path || 'Projects that are not inside a week folder'"
-         (contextmenu)="onContextMenu($event, g.path, 'week', g.label)">
+         .fcpbundle, complete/ and thumbnails/ — not just the days listed beneath it.
+
+         A GHOST week is the same divider with nothing under it: it lives on the archive
+         server and not on this Mac, so it is faded, it opens nothing, it has no sync button
+         (there is no local folder to push) and no right-click menu, and the only control on
+         it removes the archived copy. -->
+    <div class="pp-week" [class.ghost]="g.ghost" [title]="weekTitle(g)"
+         (contextmenu)="onContextMenu($event, g.ghost ? null : g.path, 'week', g.label)">
       <div class="pp-week-top">
         <span class="pp-week-label">{{ g.label }}</span>
-        <ng-container *ngTemplateOutlet="syncButton;
-          context: { path: g.path, kind: 'week', label: g.label }"></ng-container>
+
+        <!-- Says WHY the row is faded. Without it a dimmed week reads as broken rather than
+             as "safely on the server and no longer taking up space here". -->
+        <span class="pp-week-tag" *ngIf="g.ghost">archive only</span>
+
+        <ng-container *ngIf="!g.ghost">
+          <ng-container *ngTemplateOutlet="syncButton;
+            context: { path: g.path, kind: 'week', label: g.label }"></ng-container>
+        </ng-container>
+
+        <!-- Delete the LOCAL copy. Only on a week whose own folder is verified in the
+             archive — not on one that merely reads green because its days are. -->
+        <button class="pp-week-x" *ngIf="canDeleteLocal(g)"
+                (click)="openDeleteLocal($event, g)"
+                [title]="deleteLocalTitle(g)"
+                [attr.aria-label]="'Delete the local copy of ' + g.label">✕</button>
+
+        <!-- Delete the ARCHIVED copy. For a ghost that is the only copy there is, which is
+             why this one is drawn in the same red and says so at every step. -->
+        <button class="pp-week-x" *ngIf="canDeleteRemote(g)"
+                (click)="openDeleteRemote($event, g)"
+                [title]="deleteRemoteTitle(g)"
+                [attr.aria-label]="'Delete ' + g.label + ' from the archive'">✕</button>
       </div>
 
       <!-- Transfer readout. Lives on the divider only: the week owns the transfer, and the
@@ -76,6 +102,25 @@
           <div class="pp-week-fill" *ngIf="syncPercent(g.path) !== null"
                [style.width.%]="syncPercent(g.path)"></div>
         </div>
+      </div>
+    </div>
+
+    <!-- The delete confirmation, inline and directly under the week it names. No alert(), no
+         confirm(): both paths are spelled out here and stay readable while the choice is
+         made, and a refusal from the backend's re-verification prints in this same box rather
+         than somewhere the user has to go looking for it. -->
+    <div class="pp-confirm" *ngIf="pendingDelete && pendingDelete.target === g.path"
+         [class.remote]="pendingDelete!.scope === 'remote'">
+      <div class="pp-confirm-head">{{ confirmHeadline() }}</div>
+      <div class="pp-confirm-detail">{{ confirmDetail() }}</div>
+      <div class="pp-confirm-error" *ngIf="pendingDelete!.error">{{ pendingDelete!.error }}</div>
+      <div class="pp-confirm-actions">
+        <button class="pp-confirm-cancel" [disabled]="pendingDelete!.busy"
+                (click)="cancelDelete()">Cancel</button>
+        <button class="pp-confirm-go" [disabled]="pendingDelete!.busy"
+                (click)="confirmDelete()">
+          {{ pendingDelete!.busy ? 'Deleting…' : confirmButtonLabel() }}
+        </button>
       </div>
     </div>
 

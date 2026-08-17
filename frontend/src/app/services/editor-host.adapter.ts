@@ -21,7 +21,8 @@ import { EditorProcessingService } from './editor-processing.service';
 import type { EditorManifest } from '../components/editor/host-data/editor-manifest';
 import type {
   ArchiveCheck, ArchiveProgress, ArchiveQueue, ArchiveResult, ArchiveStatus, AssetPaths,
-  EditorHost, ProcessingJob, ProjectScanResult, ProjectsRegistry, TitleHandoff
+  DeleteLocalWeekResult, DeleteRemoteWeekResult, EditorHost, ProcessingJob,
+  ProjectScanResult, ProjectsRegistry, RemoteWeekListing, TitleHandoff
 } from '../components/editor/editor-host';
 
 @Injectable()
@@ -201,6 +202,12 @@ export class EditorHostAdapter implements EditorHost {
     return this.electron.scanProjectFolder(folderPath);
   }
 
+  // ContentStudio can delete folders, so the optional member is implemented. The port name is
+  // `deleteLocalWeek`; the bridge name carries the `editor` prefix its channel does.
+  deleteLocalWeek(payload: { weekPath: string }): Promise<DeleteLocalWeekResult> {
+    return this.electron.editorDeleteLocalWeek(payload);
+  }
+
   // ── Processing ──────────────────────────────────────────────────────────────
 
   autoDetectAudio(masterVideoPath: string): Promise<{
@@ -265,6 +272,14 @@ export class EditorHostAdapter implements EditorHost {
 
   archiveCheck(payload: { localPath: string; kind: 'week' | 'day' }): Promise<ArchiveCheck> {
     return this.electron.archiveCheck(payload);
+  }
+
+  archiveListRemoteWeeks(): Promise<RemoteWeekListing> {
+    return this.electron.archiveListRemoteWeeks();
+  }
+
+  archiveDeleteRemoteWeek(payload: { path: string }): Promise<DeleteRemoteWeekResult> {
+    return this.electron.archiveDeleteRemoteWeek(payload);
   }
 
   onArchiveProgress(callback: (p: ArchiveProgress) => void): void {

@@ -1,6 +1,6 @@
 import { Component, EventEmitter, HostListener, Inject, Input, OnDestroy, OnInit, Output, ChangeDetectorRef } from '@angular/core';
 import { Subscription } from 'rxjs';
-import { EDITOR_HOST, EditorHost } from '../editor-host';
+import { EDITOR_HOST, EditorHost, RemoteWeek } from '../editor-host';
 import { ProjectEntry, ProjectsService } from '../services/projects.service';
 import { ArchiveRow, ArchiveService } from '../services/archive.service';
 
@@ -15,6 +15,15 @@ export interface WeekGroup {
   path: string | null;
   label: string;
   entries: ProjectEntry[];
+  /**
+   * A GHOST: this week exists on the archive server and nowhere on this machine.
+   *
+   * `path` is then its path ON THE ARCHIVE, and `entries` is always empty — there is nothing
+   * here to open, process or sync, and every control that acts on a local folder is left out
+   * rather than shown disabled. The one thing it offers is deleting the archived copy, which
+   * for a week in this state is the only copy in existence.
+   */
+  ghost?: boolean;
 }
 
 /**
@@ -86,6 +95,31 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
   /** A pass over the archive marks is in progress; the refresh button spins and is disabled. */
   refreshing = false;
 
+  /**
+   * The delete confirmation currently open, or null.
+   *
+   * Inline, on the row it was opened from. The editor has no `alert()` and no `confirm()`,
+   * and a destructive action is the worst possible place to introduce one: a native dialog
+   * says "Are you sure?" over a sentence the user can no longer read. This row stays beside
+   * the week it names, spells out both paths, and prints the host's refusal in place if the
+   * re-verification says no.
+   */
+  pendingDelete: {
+    /** 'local' removes the folder on this Mac; 'remote' removes the one on the archive. */
+    scope: 'local' | 'remote';
+    /** The folder that will actually be removed. Also the key the template renders it under. */
+    target: string;
+    label: string;
+    /** Where the surviving copy lives. For 'remote' there is none, and this is the target. */
+    destPath: string;
+    /** How many rows leave the projects list with it. 'local' only. */
+    projectCount: number;
+    /** The delete is running: both buttons are disabled and the action button says so. */
+    busy: boolean;
+    /** The host's verbatim refusal, printed inside this row rather than on the shared line. */
+    error: string | null;
+  } | null = null;
+
   /** Resolves once the archive has been probed. Every check waits on it. */
   private archiveReady: Promise<void> | null = null;
   /**
@@ -100,6 +134,15 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
   private autoCheckTimer: ReturnType<typeof setTimeout> | null = null;
 
   private archiveRows: Record<string, ArchiveRow> = {};
+  /**
+   * Every week the archive server holds, from the last listing. The ones whose name matches
+   * no local week become ghost rows; the rest are simply the remote halves of weeks already
+   * on the list, and are not rendered twice.
+   *
+   * Empty when the archive is unreachable, which is why the ghost rows disappear then rather
+   * than going stale — nothing is claimed about a server nobody can currently see.
+   */
+  private remoteWeeks: RemoteWeek[] = [];
   private subs: Subscription[] = [];
 
   constructor(
@@ -112,7 +155,7 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.subs.push(this.projectsService.projects$.subscribe(list => {
       this.projects = list;
-      this.groups = this.groupByWeek(list);
+      this.composeGroups();
       this.cdr.markForCheck();
       // THE LIST ARRIVING is what starts the startup check, not this component mounting.
       // The registry is loaded by the editor, asynchronously, and it publishes several times
@@ -142,6 +185,10 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
     // the projects list arriving (above); this promise is what they wait on, so they can
     // never run before it is known whether the archive is even reachable.
     this.archiveReady = this.archive.init();
+
+    // Which weeks the server holds. Waits on the probe above (inside), and yields nothing at
+    // all when the archive is unreachable — no ghost rows is the honest answer there.
+    void this.refreshGhostWeeks();
   }
 
   dismissPrunedNotice(): void {
@@ -170,6 +217,58 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
   }
 
   // ── Week grouping ───────────────────────────────────────────────────────────
+
+  /**
+   * The list the template renders: local weeks and ghost weeks in ONE name ordering, with the
+   * catch-all group last.
+   *
+   * Ghosts are woven in rather than gathered under a heading of their own, because they are
+   * the same weeks: one deleted locally yesterday belongs exactly where it has always been in
+   * the list, faded, not exiled to the bottom.
+   *
+   * Matching is by NAME, not by path — the two copies live on different volumes, and the name
+   * is precisely what maps one onto the other (`<archiveRoot>/<week>`, which is what
+   * `destinationFor` does for a week). A week present on both sides is not a ghost and is
+   * never drawn twice.
+   */
+  private composeGroups(): void {
+    const grouped = this.groupByWeek(this.projects);
+    const weeks = grouped.filter(g => !!g.path);
+    const ungrouped = grouped.filter(g => !g.path);
+
+    const localNames = new Set(weeks.map(g => g.label));
+    for (const remote of this.remoteWeeks) {
+      if (localNames.has(remote.name)) continue;
+      weeks.push({ path: remote.path, label: remote.name, entries: [], ghost: true });
+    }
+
+    weeks.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' }));
+    this.groups = [...weeks, ...ungrouped];
+
+    // A confirmation whose week has left the list has nothing left to confirm. Never while it
+    // is running: that one is mid-flight and owns its own ending.
+    if (this.pendingDelete && !this.pendingDelete.busy &&
+        !this.groups.some(g => g.path === this.pendingDelete!.target)) {
+      this.pendingDelete = null;
+    }
+  }
+
+  /**
+   * Re-read which weeks the archive server holds, and rebuild the list around the answer.
+   *
+   * An unreachable archive produces NO ghost rows, and that is a documented state rather than
+   * a swallowed failure — it is the same answer the sidebar already gives by hiding every
+   * sync control on a host with no archive at all. A row claiming "this week survives on the
+   * server" has to be backed by having just looked.
+   */
+  async refreshGhostWeeks(): Promise<void> {
+    if (!this.ghostWeeksSupported) return;
+    // The probe decides whether a listing can say anything, exactly as it does for the checks.
+    if (this.archiveReady) await this.archiveReady;
+    this.remoteWeeks = await this.archive.listRemoteWeeks();
+    this.composeGroups();
+    this.cdr.markForCheck();
+  }
 
   /**
    * Split the flat registry into weeks. A project at `<week>/files/<day>` belongs to `<week>`;
@@ -469,6 +568,9 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
         if (settled) this.autoCheckedWeeks.add(group.path);
         this.cdr.markForCheck();
       }
+      // Same pass, same question asked of the other side: what the server holds that this
+      // machine does not. A week deleted locally in another window shows up here.
+      await this.refreshGhostWeeks();
     } finally {
       this.refreshing = false;
       this.cdr.markForCheck();
@@ -490,6 +592,191 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
 
   dismissArchiveError(): void {
     this.archive.clearError();
+  }
+
+  // ── Deleting copies ─────────────────────────────────────────────────────────
+  //
+  // Two irreversible actions, kept deliberately far apart in what they say and what they
+  // look like. Removing a LOCAL week is routine housekeeping on a volume that runs at 96%
+  // full, and it is only offered where a verified archived copy exists. Removing a REMOTE
+  // week destroys the only copy there is, because a ghost row exists precisely because there
+  // is nothing here any more.
+  //
+  // Neither one trusts the mark next to it. The green check was earned minutes or hours ago;
+  // the host re-runs the whole verification against the actual share before it deletes, and
+  // its refusal — verbatim — is what the confirmation row prints.
+
+  /** False when the host cannot delete week folders: no red ✕ appears anywhere. */
+  get deleteLocalSupported(): boolean {
+    return this.projectsService.canDeleteLocalWeek;
+  }
+
+  /** False when the host cannot list or prune the archive: no ghost rows at all. */
+  get ghostWeeksSupported(): boolean {
+    return this.archive.remoteWeeksSupported;
+  }
+
+  /**
+   * May this week's local copy be deleted?
+   *
+   * `syncState`, NOT `displaySyncState`. A week whose DAYS are all archived reads green while
+   * the week folder itself still owes the archive its Final Cut library, `complete/` and
+   * `thumbnails/` — 13 GB on a real week — and that hollow green check must never double as
+   * permission to erase them. Only the week's OWN verdict counts here.
+   *
+   * A destination the host reported is also required: the confirmation has to name where the
+   * surviving copy lives, and a week nobody has checked this session has no such answer.
+   */
+  canDeleteLocal(g: WeekGroup): boolean {
+    if (g.ghost || !g.path) return false;
+    if (!this.archiveSupported || !this.deleteLocalSupported) return false;
+    if (this.syncState(g.path) !== 'done') return false;
+    return !!this.archive.destinationOf(g.path);
+  }
+
+  /** May this ghost week be deleted from the archive? Only a ghost has an archive-side path. */
+  canDeleteRemote(g: WeekGroup): boolean {
+    return !!g.ghost && !!g.path && this.ghostWeeksSupported;
+  }
+
+  /** Hover text for a week divider. A ghost says what it is and why it does not open. */
+  weekTitle(g: WeekGroup): string {
+    if (g.ghost) {
+      return `${g.path}\nOn the archive server only — there is no copy of this week on this Mac.\n` +
+             `Nothing to open or process. The ✕ deletes it from the archive.`;
+    }
+    return g.path || 'Projects that are not inside a week folder';
+  }
+
+  /** Tooltip for the red ✕ on a green week. */
+  deleteLocalTitle(g: WeekGroup): string {
+    return `Delete the local copy of ${g.label}.\n` +
+           `The archived copy at ${this.archive.destinationOf(g.path!)} stays.\n` +
+           `It is re-checked against the archive before anything is deleted.`;
+  }
+
+  /** Tooltip for the ✕ on a ghost week. */
+  deleteRemoteTitle(g: WeekGroup): string {
+    return `Delete ${g.label} from the archive server (${g.path}).\n` +
+           `There is no local copy — this is the only one.`;
+  }
+
+  openDeleteLocal(ev: Event, g: WeekGroup): void {
+    ev.stopPropagation();
+    ev.preventDefault();
+    this.closeContextMenu();
+    if (!this.canDeleteLocal(g)) return;
+    const destPath = this.archive.destinationOf(g.path!);
+    if (!destPath) {
+      // Unreachable via canDeleteLocal, and said out loud rather than assumed away: an
+      // unnamed destination is exactly the state this must never delete in.
+      this.inlineError = `${g.label} has not been checked against the archive this session, so ` +
+        `there is no archived location to name. Press the refresh button first.`;
+      this.cdr.markForCheck();
+      return;
+    }
+    this.pendingDelete = {
+      scope: 'local', target: g.path!, label: g.label, destPath,
+      projectCount: g.entries.length, busy: false, error: null
+    };
+    this.cdr.markForCheck();
+  }
+
+  openDeleteRemote(ev: Event, g: WeekGroup): void {
+    ev.stopPropagation();
+    ev.preventDefault();
+    this.closeContextMenu();
+    if (!this.canDeleteRemote(g)) return;
+    this.pendingDelete = {
+      scope: 'remote', target: g.path!, label: g.label, destPath: g.path!,
+      projectCount: 0, busy: false, error: null
+    };
+    this.cdr.markForCheck();
+  }
+
+  cancelDelete(): void {
+    if (this.pendingDelete?.busy) return;   // it is already running; there is nothing to undo
+    this.pendingDelete = null;
+    this.cdr.markForCheck();
+  }
+
+  /** The first line of the confirmation: what is about to happen, in one sentence. */
+  confirmHeadline(): string {
+    const p = this.pendingDelete;
+    if (!p) return '';
+    return p.scope === 'local'
+      ? `Delete the local copy of “${p.label}”?`
+      : `Delete “${p.label}” from the archive server?`;
+  }
+
+  /** The paths, spelled out. Both of them, always — this is the whole point of the row. */
+  confirmDetail(): string {
+    const p = this.pendingDelete;
+    if (!p) return '';
+    if (p.scope === 'local') {
+      const n = p.projectCount;
+      return `${p.target}\nis removed from this Mac.\n\n` +
+             `The archived copy stays at\n${p.destPath}\n\n` +
+             `${n} project${n === 1 ? '' : 's'} leave${n === 1 ? 's' : ''} the list. The week is checked ` +
+             `against the archive again before anything is deleted, and this cannot be undone.`;
+    }
+    return `${p.target}\nis removed from the archive server.\n\n` +
+           `There is no copy of this week on this Mac — the archived one is the only one. ` +
+           `Nothing else has it, and this cannot be undone.`;
+  }
+
+  confirmButtonLabel(): string {
+    return this.pendingDelete?.scope === 'local' ? 'Delete local copy' : 'Delete from archive';
+  }
+
+  /**
+   * Do it. A refusal from the host leaves the row open with its verbatim message, because the
+   * reason ("2 files, 4.1 GB would still be uploaded") is what the user needs in order to
+   * decide what to do next — dismissing the row and printing it elsewhere would separate the
+   * two.
+   */
+  async confirmDelete(): Promise<void> {
+    const pending = this.pendingDelete;
+    if (!pending || pending.busy) return;
+    pending.busy = true;
+    pending.error = null;
+    this.cdr.markForCheck();
+
+    try {
+      if (pending.scope === 'local') {
+        await this.deleteLocalWeek(pending.target);
+      } else {
+        await this.archive.deleteRemoteWeek(pending.target);
+        await this.refreshGhostWeeks();
+      }
+      this.pendingDelete = null;
+      this.inlineError = null;
+    } catch (err: any) {
+      pending.busy = false;
+      pending.error = err?.message || String(err);
+    }
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * Delete one local week and put the sidebar back in step, in place — no reload.
+   *
+   * The projects list republishes on its own (the service drops the rows the host removed),
+   * which rebuilds the groups and schedules the next automatic archive pass. What that does
+   * not cover is this component's own memory: the archive marks for the folder that is now
+   * gone, and the record of having already checked that week.
+   */
+  private async deleteLocalWeek(week: string): Promise<void> {
+    const group = this.groups.find(g => g.path === week && !g.ghost);
+    const covered = group ? [week, ...group.entries.map(e => e.path)] : [week];
+
+    await this.projectsService.deleteLocalWeek(week);
+
+    // A checkmark outliving its folder would be a claim about something that is not there.
+    this.archive.forget(covered);
+    this.autoCheckedWeeks.delete(week);
+    // It is on the server and not here any more, which is exactly what a ghost row is.
+    await this.refreshGhostWeeks();
   }
 
   // ── Right-click menu ────────────────────────────────────────────────────────
@@ -581,6 +868,9 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
   @HostListener('document:keydown.escape')
   onEscape(): void {
     this.closeContextMenu();
+    // Escape also backs out of a delete confirmation — but not one already running, which
+    // has no undo to offer.
+    this.cancelDelete();
   }
 
   // ── Actions ─────────────────────────────────────────────────────────────────

@@ -141,6 +141,42 @@ export interface ArchiveCheck {
   neverArchived?: boolean;
 }
 
+/** One week folder that exists on the archive server. `path` is its absolute path there. */
+export interface RemoteWeek {
+  name: string;
+  path: string;
+}
+
+/**
+ * Every week the archive server holds. `root` is echoed back so the UI can name the archive
+ * it is describing without keeping its own copy of the setting.
+ *
+ * A "week" here is a directory DIRECTLY under the archive root that contains a `files/`
+ * directory — the same structural rule that decides where a week is archived to. The archive
+ * root also holds shared assets and loose documents, and those are not weeks.
+ */
+export interface RemoteWeekListing {
+  root: string;
+  weeks: RemoteWeek[];
+}
+
+/** What deleting a week from the archive server removed. */
+export interface DeleteRemoteWeekResult {
+  /** The symlink-resolved path that was actually removed. */
+  deleted: string;
+  name: string;
+}
+
+/** What deleting the local copy of a week removed. */
+export interface DeleteLocalWeekResult {
+  /** The symlink-resolved local week folder that was actually removed. */
+  deleted: string;
+  /** Where the archived copy that made this safe lives — verified moments before the delete. */
+  destPath: string;
+  /** Registry project paths dropped with it. The host has already rewritten the registry. */
+  removedProjects: string[];
+}
+
 /**
  * The overlay artwork the compound generators composite with, as the host persists it.
  *
@@ -370,6 +406,26 @@ export interface EditorHost {
   /** Classify one folder. The single source of truth for a project's state. */
   scanProjectFolder(folderPath: string): Promise<ProjectScanResult>;
 
+  /**
+   * Delete the LOCAL copy of a week folder and drop every registry entry under it.
+   *
+   * It lives with the registry rather than with the archive group below because that is what
+   * it changes: a week folder on this machine and the list of projects that pointed into it.
+   * Nothing about the archive is touched — the archived copy is the reason this is safe, not
+   * its subject.
+   *
+   * OPTIONAL, on its own and not as part of a group: a host that cannot delete folders must
+   * omit it rather than resolve as though it had, and the sidebar hides the control when it
+   * is absent. The sidebar additionally only OFFERS it where the archive group is present and
+   * has verified this week, because a local copy is only redundant if a checked remote one
+   * exists.
+   *
+   * The host MUST re-verify immediately before deleting — a fresh in-sync check, a reachable
+   * archive, no sync running or queued on the folder — and REJECT naming the specific reason
+   * when any of that fails. The caller's green mark is a memory, never a permission.
+   */
+  deleteLocalWeek?(payload: { weekPath: string }): Promise<DeleteLocalWeekResult>;
+
   // ── Processing (turning a raw project into an editable one) ─────────────────
 
   /** Infer every companion source from a master video's filename. Pre-fills the setup modal. */
@@ -411,7 +467,7 @@ export interface EditorHost {
 
   // ── Backup archive (OPTIONAL — a host may have nowhere to push to) ──────────
   //
-  // OPTIONAL as a GROUP: a host either implements all six or none. The sidebar tests
+  // OPTIONAL as a GROUP: a host either implements all of them or none. The sidebar tests
   // `archiveStatus` alone and hides every sync control when it is absent, because a visible
   // button that cannot work is worse than no button.
 
@@ -448,6 +504,26 @@ export interface EditorHost {
 
   /** Terminal event for a sync — success, failure, or cancellation. */
   onArchiveComplete?(callback: (r: ArchiveResult) => void): void;
+
+  /**
+   * Every week the archive server holds, so the sidebar can show the ones with no local copy
+   * left as faded ghost rows.
+   *
+   * REJECTS when the archive is unreachable, and must NOT mount anything to answer. The
+   * sidebar then shows no ghost rows at all — the same documented state as hiding every sync
+   * control on a host with no archive, and for the same reason: a row that claims a remote
+   * copy exists must be backed by having just looked.
+   */
+  archiveListRemoteWeeks?(): Promise<RemoteWeekListing>;
+
+  /**
+   * Delete one week from the ARCHIVE SERVER. For a ghost week this is the only copy there is,
+   * so the host re-checks everything before it acts — reachable archive, an existing directory
+   * directly under the archive root with symlinks resolved, and no sync running or queued
+   * ANYWHERE (a delete underneath a live rsync is corruption, not a race) — and REJECTS naming
+   * the specific reason.
+   */
+  archiveDeleteRemoteWeek?(payload: { path: string }): Promise<DeleteRemoteWeekResult>;
 
   /** Detach both archive listeners. Called from ngOnDestroy. */
   removeArchiveListeners?(): void;

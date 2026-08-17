@@ -309,6 +309,18 @@ const api = {
   archiveCheck: (payload: { localPath: string; kind: 'week' | 'day' }) => ipcRenderer.invoke('archive:check', payload),
   archiveDestination: (payload: { localPath: string; kind: 'week' | 'day' }) =>
     ipcRenderer.invoke('archive:destination', payload),
+
+  // Reclaiming space, in both directions. All three REJECT with the reason — the sidebar
+  // prints it on the confirm row it was clicked from, so the message is the UI.
+  //   archiveListRemoteWeeks  ↔ 'archive:list-remote-weeks'   (week folders on the NAS)
+  //   archiveDeleteRemoteWeek ↔ 'archive:delete-remote-week'  (removes the ARCHIVE copy)
+  //   editorDeleteLocalWeek   ↔ 'editor:delete-local-week'    (removes the LOCAL copy and
+  //                                                            the registry rows under it)
+  archiveListRemoteWeeks: () => ipcRenderer.invoke('archive:list-remote-weeks'),
+  archiveDeleteRemoteWeek: (payload: { path: string }) =>
+    ipcRenderer.invoke('archive:delete-remote-week', payload),
+  editorDeleteLocalWeek: (payload: { weekPath: string }) =>
+    ipcRenderer.invoke('editor:delete-local-week', payload),
   onArchiveQueue: (callback: (q: any) => void) => {
     ipcRenderer.on('archive:queue', (_event, q) => callback(q));
   },

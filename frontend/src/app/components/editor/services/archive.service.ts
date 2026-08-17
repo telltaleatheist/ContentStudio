@@ -1,7 +1,7 @@
 // src/app/components/editor/services/archive.service.ts
 import { Inject, Injectable, OnDestroy } from '@angular/core';
 import { BehaviorSubject, Observable } from 'rxjs';
-import { ArchiveProgress, ArchiveResult, EDITOR_HOST, EditorHost } from '../editor-host';
+import { ArchiveProgress, ArchiveResult, EDITOR_HOST, EditorHost, RemoteWeek } from '../editor-host';
 
 /**
  * What one sync button is showing.
@@ -82,6 +82,13 @@ export class ArchiveService implements OnDestroy {
 
   /** False when the host has no archive at all — the UI hides every sync control. */
   readonly supported: boolean;
+  /**
+   * False when the host cannot list or delete week folders on the archive server. Tested
+   * separately from `supported` because it is a strictly later addition to the same optional
+   * group: a host may push to an archive without offering to prune it, and the ghost rows are
+   * left out entirely there rather than shown as buttons that cannot act.
+   */
+  readonly remoteWeeksSupported: boolean;
 
   private available = false;
   private root = '';
@@ -125,10 +132,24 @@ export class ArchiveService implements OnDestroy {
    * claimed.
    */
   private weekExtras = new Map<string, { bytes: number; files: number; stamp: string }>();
+  /**
+   * Where each folder's archived copy lives, as the HOST reported it — from a check's
+   * `destPath` or a completed transfer's, never derived here.
+   *
+   * It exists so the delete-the-local-copy confirmation can name the exact folder that will
+   * still hold this week afterwards. Deriving it in the renderer would be a second
+   * implementation of `destinationFor`, and the one place it must not be guessed is the
+   * sentence a user reads before erasing 200 GB. A folder with no entry here has not been
+   * checked this session, and the sidebar refuses to offer the delete rather than inventing
+   * a destination.
+   */
+  private destPaths = new Map<string, string>();
 
   constructor(@Inject(EDITOR_HOST) private host: EditorHost) {
     this.supported = typeof this.host.archiveStatus === 'function'
       && typeof this.host.archiveSync === 'function';
+    this.remoteWeeksSupported = typeof this.host.archiveListRemoteWeeks === 'function'
+      && typeof this.host.archiveDeleteRemoteWeek === 'function';
   }
 
   ngOnDestroy(): void {
@@ -346,6 +367,11 @@ export class ArchiveService implements OnDestroy {
 
     const stamp = this.timeOfDay();
 
+    // The week's archived location, exactly as the host computed it. Recorded whether or not
+    // this week's own row was due for a repaint — the delete-the-local-copy confirmation has
+    // to name it, and it must never be a renderer-side guess.
+    this.destPaths.set(week, result.destPath);
+
     // Recorded from the SAME dry run, and outside the `wanted` loop: the scan answers for the
     // whole week whether or not the week's own row was due for a repaint, and the sidebar
     // needs this to tell "the days are up, the library is not" from "nothing is known".
@@ -433,6 +459,79 @@ export class ArchiveService implements OnDestroy {
   /** A successful week sync clears the remainder it just sent. */
   private forgetExtras(localPath: string): void {
     this.weekExtras.delete(localPath);
+  }
+
+  /**
+   * Where the archive holds this folder, as the HOST reported it on the last check or the
+   * last completed transfer. Null when neither has happened this session.
+   *
+   * Null is a refusal, not a blank: the caller must not delete a local copy it cannot name
+   * the surviving one for.
+   */
+  destinationOf(localPath: string): string | null {
+    return this.destPaths.get(localPath) || null;
+  }
+
+  // ── Weeks that live only on the archive ─────────────────────────────────────
+
+  /**
+   * The week folders on the archive server.
+   *
+   * Returns an EMPTY LIST when the archive is unreachable, and that is a documented state
+   * rather than a swallowed failure: the sidebar hides every archive control on a host with
+   * no archive and shows an unreachable one as a grey mark, so "we cannot see the server, so
+   * we claim nothing about what is on it" is the same answer in a different place. A listing
+   * that FAILS while the archive is reachable is unexpected and goes to the error line.
+   */
+  async listRemoteWeeks(): Promise<RemoteWeek[]> {
+    if (!this.remoteWeeksSupported) return [];
+    if (!this.available) return [];
+    try {
+      const listing = await this.host.archiveListRemoteWeeks!();
+      return listing.weeks;
+    } catch (err: any) {
+      const message = err?.message || String(err);
+      // The share disappearing between the probe and the listing is the archive going away,
+      // not a broken listing — it settles every row the same way a failed sync does.
+      if (/not mounted|not available|does not exist|No archive/i.test(message)) {
+        this.adoptStatus(false, this.root, message);
+        return [];
+      }
+      this.errorSubject.next(`Could not list the weeks on ${this.root || 'the archive'}: ${message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Delete one week from the archive server. THROWS with the host's verbatim reason — the
+   * caller is a confirmation the user is looking at, and it prints the refusal in place
+   * rather than dropping it on the pane's shared error line.
+   */
+  async deleteRemoteWeek(remotePath: string): Promise<void> {
+    if (!this.remoteWeeksSupported) {
+      throw new Error('This host cannot delete folders on the archive.');
+    }
+    await this.host.archiveDeleteRemoteWeek!({ path: remotePath });
+  }
+
+  /**
+   * Drop everything this service remembers about some folders — their button state, their
+   * measured sizes, their archived location.
+   *
+   * Called when a local folder is deleted. A checkmark left behind would be a claim about a
+   * folder that no longer exists, and the remembered destination would outlive the only thing
+   * that gave it meaning.
+   */
+  forget(localPaths: string[]): void {
+    if (localPaths.length === 0) return;
+    const rows = { ...this.rowsSubject.value };
+    for (const p of localPaths) {
+      delete rows[p];
+      this.totalBytes.delete(p);
+      this.weekExtras.delete(p);
+      this.destPaths.delete(p);
+    }
+    this.rowsSubject.next(rows);
   }
 
   /** The state for one folder; a folder never seen before reads as whatever the archive is. */
@@ -626,6 +725,9 @@ export class ArchiveService implements OnDestroy {
       // A week folder that just went up owes nothing outside its days any more. Cleared rather
       // than left to go stale, or the divider would keep showing a remainder it has since sent.
       this.forgetExtras(r.localPath);
+      // Where it actually landed, from the transfer itself. Same purpose as the one a check
+      // records: the delete confirmation names this folder, and never one it worked out.
+      this.destPaths.set(r.localPath, r.destPath);
       this.paint(r.localPath, {
         state: 'done', label: null, percent: null, counter: null, speed: null,
         detail: `${moved} → ${r.destPath}${skipped}`
