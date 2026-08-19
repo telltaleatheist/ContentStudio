@@ -1,0 +1,106 @@
+<!-- File ▸ Relink…: repoint the sixteen overlay PNGs the compound generators composite with.
+     Every outcome is a line inside this card — nothing here opens a native dialog. -->
+<div class="modal-backdrop" (click)="onBackdropClick()">
+  <div class="rlm" (click)="$event.stopPropagation()">
+
+    <header class="rlm-header">
+      <div class="rlm-heading">
+        <div class="rlm-title">Relink assets</div>
+        <div class="rlm-sub">Link your asset files to their locations on this computer</div>
+      </div>
+      <button class="rlm-close" (click)="onClose()" title="Close" aria-label="Close">✕</button>
+    </header>
+
+    <div class="rlm-body">
+
+      <!-- Status Banner -->
+      <div class="rlm-banner" [class.warning]="invalidCount > 0" [class.success]="allPathsValid">
+        <span class="rlm-banner-icon">{{ allPathsValid ? '✓' : '⚠' }}</span>
+        <span class="rlm-banner-text">
+          <span *ngIf="allPathsValid">All {{ assets.length }} asset paths are valid</span>
+          <span *ngIf="!allPathsValid">{{ invalidCount }} of {{ assets.length }} assets need to be relinked</span>
+        </span>
+      </div>
+
+      <!-- What alert() used to say. Kept apart from the banner: the banner is the state of the
+           list, these are the outcome of the last thing the user did. -->
+      <div class="rlm-error" *ngIf="error">{{ error }}</div>
+      <div class="rlm-status" *ngIf="status">{{ status }}</div>
+
+      <!-- Folder Auto-Detect Section -->
+      <section class="rlm-section">
+        <div class="rlm-section-head">
+          <div class="rlm-section-title">Auto-detect from folder</div>
+          <div class="rlm-section-note">
+            Select a folder containing your assets to automatically find matching files
+            (searches recursively in subfolders)
+          </div>
+        </div>
+
+        <div class="rlm-folder">
+          <button class="rlm-btn primary" (click)="selectAssetsFolder()" [disabled]="isSearching">
+            {{ isSearching ? 'Searching…' : 'Browse Folder…' }}
+          </button>
+          <div class="rlm-path" *ngIf="assetsFolder">{{ assetsFolder }}</div>
+          <div class="rlm-searching" *ngIf="isSearching">
+            <span class="rlm-spinner"></span>
+            <span>{{ searchProgress }}</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Assets List -->
+      <section class="rlm-section">
+        <div class="rlm-section-head">
+          <div class="rlm-section-title">Asset files</div>
+          <div class="rlm-section-note">Click "Browse" to select each file individually</div>
+        </div>
+
+        <div class="rlm-rows">
+          <div *ngFor="let asset of assets"
+               class="rlm-row"
+               [class.missing]="!asset.isValid && asset.currentPath === ''"
+               [class.invalid]="!asset.isValid && asset.currentPath !== ''">
+
+            <span class="rlm-mark" [class.valid]="asset.isValid" [class.bad]="!asset.isValid">
+              {{ asset.isValid ? '✓' : '✗' }}
+            </span>
+
+            <div class="rlm-row-text">
+              <div class="rlm-row-name">{{ asset.displayName }}</div>
+              <div class="rlm-row-path" [class.empty]="!asset.currentPath">
+                {{ asset.currentPath || 'No file selected' }}
+              </div>
+            </div>
+
+            <button class="rlm-btn small" (click)="selectAssetFile(asset)">Browse</button>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <footer class="rlm-actions">
+      <!-- The one confirm() call, inline. Reset discards everything picked since this dialog
+           opened, so it says so before it happens. -->
+      <div class="rlm-confirm" *ngIf="confirmingReset">
+        <span>Reset every path back to what is stored on disk? Anything picked here is discarded.</span>
+        <button class="rlm-btn small" (click)="confirmingReset = false">Keep changes</button>
+        <button class="rlm-btn small danger" (click)="resetToDefaults()">Reset</button>
+      </div>
+
+      <span class="rlm-blocked" *ngIf="!allPathsValid">
+        Saving is blocked until every asset resolves to a file that exists.
+      </span>
+
+      <button class="rlm-btn" *ngIf="!confirmingReset" (click)="confirmingReset = true">
+        Reset to Defaults
+      </button>
+      <button class="rlm-btn primary" (click)="saveAssetPaths()" [disabled]="!allPathsValid">
+        Save Asset Paths
+      </button>
+      <button class="rlm-btn" (click)="onClose()">Close</button>
+    </footer>
+
+  </div>
+</div>

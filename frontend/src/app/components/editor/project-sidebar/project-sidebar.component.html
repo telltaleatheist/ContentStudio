@@ -1,0 +1,195 @@
+<div class="pp-header">
+  <span class="pp-title">Projects</span>
+  <!-- Re-check every week against the archive. Unlike the pass that runs when the window
+       opens, this one discards existing checkmarks and re-verifies them — re-confirming what
+       is already believed is the whole reason someone presses it. -->
+  <button class="pp-refresh" *ngIf="archiveSupported"
+          [disabled]="refreshing"
+          (click)="refreshArchiveMarks(true)"
+          [title]="refreshing
+            ? 'Checking every project against the archive…'
+            : 'Check every project against the archive again'"
+          aria-label="Re-check the archive">
+    <!-- The glyph spins, NOT the button. Rotating the button turns its border and hit area
+         with it, which reads as the control itself tumbling rather than as work in progress. -->
+    <span class="pp-refresh-glyph" [class.spinning]="refreshing">⟳</span>
+  </button>
+  <button class="pp-add" (click)="onAdd()" [disabled]="!!registryError"
+          [title]="registryError ? 'Fix the projects file before adding' : 'Add a project folder…'"
+          aria-label="Add project">+</button>
+</div>
+
+<!-- Registry could not be read. Nothing is written while this is up: the file on disk is
+     left exactly as it is for the user to repair or delete. -->
+<div class="pp-banner" *ngIf="registryError">
+  <span class="pp-banner-mark">⚠</span>
+  <span class="pp-banner-text">{{ registryError }}</span>
+</div>
+
+<div class="pp-inline-error" *ngIf="inlineError">{{ inlineError }}</div>
+
+<!-- A refused or failed sync. Separate from inlineError so a list problem and a transfer
+     problem cannot overwrite each other. -->
+<div class="pp-inline-error" *ngIf="archiveError">
+  <span class="pp-notice-text">{{ archiveError }}</span>
+  <button class="pp-notice-x" (click)="dismissArchiveError()" title="Dismiss"
+          aria-label="Dismiss">✕</button>
+</div>
+
+<!-- Entries dropped because their folders are gone. The list changing itself is said out
+     loud rather than done quietly; dismissed with the ×. -->
+<div class="pp-notice" *ngIf="prunedNotice">
+  <span class="pp-notice-text">{{ prunedNotice }}</span>
+  <button class="pp-notice-x" (click)="dismissPrunedNotice()" title="Dismiss"
+          aria-label="Dismiss">✕</button>
+</div>
+
+<div class="pp-list" [class.dragover]="dragOver"
+     (dragover)="onDragOver($event)" (dragleave)="onDragLeave($event)" (drop)="onDrop($event)">
+
+  <div class="pp-empty" *ngIf="projects.length === 0 && !registryError">
+    No projects yet — press + or drop a folder here.
+  </div>
+
+  <ng-container *ngFor="let g of groups; trackBy: trackByGroup">
+
+    <!-- The week divider. Its sync button pushes the WHOLE week folder — every day, the
+         .fcpbundle, complete/ and thumbnails/ — not just the days listed beneath it.
+
+         A GHOST week is the same divider with nothing under it: it lives on the archive
+         server and not on this Mac, so it is faded, it opens nothing, it has no sync button
+         (there is no local folder to push) and no right-click menu, and the only control on
+         it removes the archived copy. -->
+    <div class="pp-week" [class.ghost]="g.ghost" [title]="weekTitle(g)"
+         (contextmenu)="onContextMenu($event, g.ghost ? null : g.path, 'week', g.label)">
+      <div class="pp-week-top">
+        <span class="pp-week-label">{{ g.label }}</span>
+
+        <!-- Says WHY the row is faded. Without it a dimmed week reads as broken rather than
+             as "safely on the server and no longer taking up space here". -->
+        <span class="pp-week-tag" *ngIf="g.ghost">archive only</span>
+
+        <ng-container *ngIf="!g.ghost">
+          <ng-container *ngTemplateOutlet="syncButton;
+            context: { path: g.path, kind: 'week', label: g.label }"></ng-container>
+        </ng-container>
+
+        <!-- Delete the LOCAL copy. Only on a week whose own folder is verified in the
+             archive — not on one that merely reads green because its days are. -->
+        <button class="pp-week-x" *ngIf="canDeleteLocal(g)"
+                (click)="openDeleteLocal($event, g)"
+                [title]="deleteLocalTitle(g)"
+                [attr.aria-label]="'Delete the local copy of ' + g.label">✕</button>
+
+        <!-- Delete the ARCHIVED copy. For a ghost that is the only copy there is, which is
+             why this one is drawn in the same red and says so at every step. -->
+        <button class="pp-week-x" *ngIf="canDeleteRemote(g)"
+                (click)="openDeleteRemote($event, g)"
+                [title]="deleteRemoteTitle(g)"
+                [attr.aria-label]="'Delete ' + g.label + ' from the archive'">✕</button>
+      </div>
+
+      <!-- Transfer readout. Lives on the divider only: the week owns the transfer, and the
+           days inside it are part of that same job rather than jobs of their own. -->
+      <div class="pp-week-progress" *ngIf="showSyncBar(g.path)">
+        <div class="pp-week-figures">
+          <span class="pp-week-moved">{{ syncCounter(g.path) }}</span>
+          <span class="pp-week-speed" *ngIf="syncSpeed(g.path)">{{ syncSpeed(g.path) }}</span>
+        </div>
+        <!-- Determinate whenever a total is known; otherwise the track alone, which says
+             "running, size not yet established" rather than implying zero progress. -->
+        <div class="pp-week-track" [class.indeterminate]="syncPercent(g.path) === null">
+          <div class="pp-week-fill" *ngIf="syncPercent(g.path) !== null"
+               [style.width.%]="syncPercent(g.path)"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- The delete confirmation, inline and directly under the week it names. No alert(), no
+         confirm(): both paths are spelled out here and stay readable while the choice is
+         made, and a refusal from the backend's re-verification prints in this same box rather
+         than somewhere the user has to go looking for it. -->
+    <div class="pp-confirm" *ngIf="pendingDelete && pendingDelete.target === g.path"
+         [class.remote]="pendingDelete!.scope === 'remote'">
+      <div class="pp-confirm-head">{{ confirmHeadline() }}</div>
+      <div class="pp-confirm-detail">{{ confirmDetail() }}</div>
+      <div class="pp-confirm-error" *ngIf="pendingDelete!.error">{{ pendingDelete!.error }}</div>
+      <div class="pp-confirm-actions">
+        <button class="pp-confirm-cancel" [disabled]="pendingDelete!.busy"
+                (click)="cancelDelete()">Cancel</button>
+        <button class="pp-confirm-go" [disabled]="pendingDelete!.busy"
+                (click)="confirmDelete()">
+          {{ pendingDelete!.busy ? 'Deleting…' : confirmButtonLabel() }}
+        </button>
+      </div>
+    </div>
+
+    <div class="pp-row" *ngFor="let e of g.entries; trackBy: trackByPath"
+         [class.active]="isActive(e)"
+         [class.dead]="!isActionable(e)"
+         [title]="rowTitle(e)"
+         (contextmenu)="onContextMenu($event, g.path ? e.path : null, 'day', e.name, e)">
+
+      <button class="pp-item" [class.active]="isActive(e)"
+              [disabled]="!isActionable(e)" (click)="onRowClick(e)">
+        <span class="pp-dot" [attr.data-state]="state(e)"></span>
+        <span class="pp-name">{{ e.name }}</span>
+        <span class="pp-busy" *ngIf="isBusy(e)">
+          <span class="pp-spinner"></span>
+          <span class="pp-pct" *ngIf="busyPercent !== null">{{ busyPercent }}%</span>
+        </span>
+        <span class="pp-badge" *ngIf="!isBusy(e)" [attr.data-state]="state(e)">{{ badge(e) }}</span>
+      </button>
+
+      <ng-container *ngTemplateOutlet="syncButton;
+        context: { path: g.path ? e.path : null, kind: 'day', label: e.name }"></ng-container>
+
+      <button class="pp-remove" (click)="onRemove($event, e)"
+              title="Remove from list (nothing on disk is deleted)"
+              aria-label="Remove from list">✕</button>
+    </div>
+
+  </ng-container>
+</div>
+
+<!-- Right-click menu. Items appear only where they can act: the archive item needs an archive
+     and a derivable destination, the process item needs a project (so a week divider has none).
+     Re-process opens the same setup modal a first run uses — it starts nothing by itself. -->
+<div class="pp-menu" *ngIf="contextMenu"
+     [style.left.px]="contextMenu.x" [style.top.px]="contextMenu.y">
+  <button class="pp-menu-item" *ngIf="menuCanProcess"
+          (click)="onContextMenuProcess()">{{ processMenuLabel() }}</button>
+  <div class="pp-menu-sep" *ngIf="menuCanProcess && menuCanSync"></div>
+  <button class="pp-menu-item" *ngIf="menuCanSync"
+          (click)="onContextMenuSync()">{{ contextMenuLabel() }}</button>
+</div>
+
+<!--
+  The sync button, shared by week dividers and day rows.
+
+  Omitted entirely when the host has no archive: a button that is present but can never work
+  is worse than no button at all. A null `path` means the destination cannot be derived from
+  the folder's layout, so it renders disabled with the reason in its tooltip rather than
+  silently doing nothing.
+-->
+<ng-template #syncButton let-path="path" let-kind="kind" let-label="label">
+  <!-- data-state is the DISPLAY state, not the row state: a week whose days are all archived
+       reads green even though the week folder still has bytes to send. The glyph is drawn
+       hollow there, and the tooltip carries both halves. -->
+  <button *ngIf="archiveSupported"
+          class="pp-sync"
+          [attr.data-state]="displaySyncState(path)"
+          [disabled]="!path"
+          [title]="syncTitle(path, kind)"
+          [attr.aria-label]="'Sync ' + label + ' to archive'"
+          (click)="onSyncClick($event, path, kind)">
+    <span class="pp-sync-spinner" *ngIf="syncSpinning(path)"></span>
+    <!-- Same 14px disc as the spinner it becomes, so nothing jumps when a sync starts. -->
+    <span class="pp-sync-glyph" *ngIf="!syncSpinning(path)"
+          [class.filled]="syncFilled(path)">{{ syncGlyph(path) }}</span>
+    <!-- Elapsed time while rsync compares both sides, its percentage once bytes move. The
+         scan phase is silent for minutes on a whole week, so the clock is what distinguishes
+         a working sync from a hung one. -->
+    <span class="pp-sync-pct" *ngIf="syncLabel(path)">{{ syncLabel(path) }}</span>
+  </button>
+</ng-template>

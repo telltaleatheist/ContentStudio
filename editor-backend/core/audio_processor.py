@@ -1,0 +1,675 @@
+# Updated methods for core/audio_processor.py to avoid subprocess calls
+# Note: This assumes you want to keep using subprocess for ffmpeg since Python
+# doesn't have a pure-Python FFmpeg implementation, but we structure it better
+
+import sys
+import subprocess
+import json
+from pathlib import Path
+from typing import Optional, Tuple, Callable
+import tempfile
+import os
+import shutil
+
+class AudioProcessor:
+    """Handle audio extraction, format conversion, and sync adjustments."""
+
+    def __init__(self, config, progress_callback: Optional[Callable] = None):
+        self.config = config
+
+        # Use system temp directory if not configured, avoiding quarantine issues
+        temp_dir_config = config.get('paths.temp_dir', None)
+
+        # Try to use configured temp dir, but fall back to system temp if it fails
+        if temp_dir_config and not temp_dir_config.startswith('./'):
+            # Absolute path specified
+            self.temp_dir = Path(temp_dir_config)
+        else:
+            # Relative path or not specified - use system temp
+            self.temp_dir = Path(tempfile.gettempdir()) / 'autocutstudio'
+
+        # Try to create the directory, fall back to system temp if it fails (e.g., read-only filesystem)
+        try:
+            self.temp_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            print(f"Warning: Could not create temp directory at {self.temp_dir}: {e}")
+            print(f"Falling back to system temp directory")
+            # Fall back to system temp
+            self.temp_dir = Path(tempfile.gettempdir()) / 'autocutstudio'
+            self.temp_dir.mkdir(parents=True, exist_ok=True)
+
+        self.progress_callback = progress_callback
+
+        # Find ffprobe executable
+        self.ffprobe_path = self._find_ffprobe()
+        if not self.ffprobe_path:
+            print("Warning: ffprobe not found in PATH")
+
+    def _find_ffprobe(self) -> Optional[str]:
+        """Find ffprobe executable in system PATH."""
+        # Try common locations
+        ffprobe = shutil.which('ffprobe')
+        if ffprobe:
+            return ffprobe
+
+        # Try homebrew locations on macOS
+        homebrew_paths = [
+            '/opt/homebrew/bin/ffprobe',
+            '/usr/local/bin/ffprobe'
+        ]
+        for path in homebrew_paths:
+            if Path(path).exists():
+                return path
+
+        return None
+
+    @staticmethod
+    def get_processed_path(input_path: str, extension: str = None, output_dir: str = None) -> Path:
+        """Get the _processed output path for a file, avoiding _processed_processed.
+
+        Args:
+            input_path: Original input file path
+            extension: Optional extension override (e.g., '.wav'). If None, keeps original.
+            output_dir: Optional output directory. If None, uses input file's directory.
+
+        Returns:
+            Path to the _processed version of the file
+        """
+        input_path = Path(input_path)
+        stem = input_path.stem
+
+        # Strip existing _processed suffix to avoid _processed_processed
+        if stem.endswith('_processed'):
+            stem = stem[:-10]  # Remove '_processed' (10 chars)
+
+        ext = extension if extension else input_path.suffix
+        out_dir = Path(output_dir) if output_dir else input_path.parent
+        return out_dir / f"{stem}_processed{ext}"
+
+    def _load_drift_config(self) -> dict:
+        """Load drift correction configuration from config file."""
+        from .drift_config import load_drift_config
+        return load_drift_config()
+
+    def apply_drift_correction(self, input_path: str, drift_frames: float, 
+                              video_duration: float, fps: float = 29.97,
+                              output_path: Optional[str] = None) -> str:
+        """Apply clock drift correction to audio file.
+        
+        Args:
+            input_path: Path to input audio file
+            drift_frames: Number of frames of drift (negative = shrink audio, positive = expand audio)
+            video_duration: Duration of the video in seconds
+            fps: Frame rate of the video (default 29.97)
+            output_path: Optional output path
+            
+        Returns:
+            Path to the corrected audio file
+        """
+        input_path = Path(input_path)
+
+        if video_duration <= 0:
+            raise ValueError(
+                f"apply_drift_correction requires a positive video_duration, got {video_duration} "
+                f"for {input_path.name}"
+            )
+
+        # Calculate correction factor
+        # Positive drift = expand audio (slower/longer), Negative drift = shrink audio (faster/shorter)
+        total_frames = video_duration * fps
+        correction_factor = 1 + (drift_frames / total_frames)
+        
+        if output_path is None:
+            output_path = self.get_processed_path(input_path, '.wav')
+
+        output_path = Path(output_path)
+        
+        # Apply drift correction using ffmpeg atempo filter
+        # Note: While this uses subprocess, it's encapsulated in the AudioProcessor
+        # and could be replaced with a Python audio library like pydub or librosa
+        # if you want pure Python processing
+        cmd = [
+            'ffmpeg', '-i', str(input_path),
+            '-filter:a', f'atempo={correction_factor}',
+            '-c:a', 'pcm_s24le',  # 24-bit PCM for high quality
+            '-y',  # Overwrite output
+            str(output_path)
+        ]
+        
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            print(f"Applied drift correction to {input_path.name}")
+            print(f"  Drift: {drift_frames} frames over {video_duration:.1f} seconds")
+            print(f"  Correction factor: {correction_factor:.6f}")
+            print(f"  Output: {output_path.name}")
+            return str(output_path)
+        except subprocess.CalledProcessError as e:
+            print(f"Error applying drift correction to {input_path}: {e}")
+            print(f"stderr: {e.stderr}")
+            raise
+    
+    def get_duration_seconds(self, file_path: str) -> float:
+        """Get duration in seconds from a media file.
+        
+        This is a convenience method that parses the FCPX format
+        returned by get_audio_info into plain seconds.
+        
+        Args:
+            file_path: Path to the media file
+            
+        Returns:
+            Duration in seconds as a float
+        """
+        duration_str, _, _ = self.get_audio_info(file_path)
+        
+        # Parse FCPX duration format "3600000/30000s" to seconds
+        if '/' in duration_str:
+            numerator, denominator = duration_str.rstrip('s').split('/')
+            return float(numerator) / float(denominator)
+        else:
+            # Handle plain seconds format if any
+            return float(duration_str.rstrip('s'))
+    
+    # Keep all existing methods as they are...
+    def extract_audio_from_video(self, video_path: str, output_path: Optional[str] = None) -> str:
+        """Extract audio from video file using ffmpeg."""
+        video_path = Path(video_path)
+
+        if output_path is None:
+            # Use temp dir but still avoid _processed_processed
+            processed_name = self.get_processed_path(video_path, '.wav').name
+            output_path = self.temp_dir / processed_name
+
+        output_path = Path(output_path)
+        
+        # Use ffmpeg to extract audio
+        cmd = [
+            'ffmpeg', '-i', str(video_path),
+            '-vn',  # No video
+            '-acodec', 'pcm_s16le',  # PCM 16-bit
+            '-ar', str(self.config.get('audio.sample_rate', 48000)),  # Sample rate
+            '-ac', '2',  # Stereo
+            '-y',  # Overwrite output
+            str(output_path)
+        ]
+        
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            print(f"Audio extracted from {video_path} to {output_path}")
+            return str(output_path)
+        except subprocess.CalledProcessError as e:
+            print(f"Error extracting audio from {video_path}: {e}")
+            print(f"stderr: {e.stderr}")
+            raise
+    
+    def sync_audio_for_2997fps(self, input_path: str, output_path: Optional[str] = None,
+                              audio_type: Optional[str] = None) -> str:
+        """Apply device-specific clock drift correction using atempo filter.
+
+        Args:
+            input_path: Path to input audio file
+            output_path: Optional output path
+            audio_type: Type of audio source (e.g., 'soundEffects' for soundboard)
+                       Determines which device-specific correction to apply
+        """
+        input_path = Path(input_path)
+
+        if output_path is None:
+            output_path = self.get_processed_path(input_path, '.wav')
+
+        output_path = Path(output_path)
+
+        # Device-specific clock drift corrections (empirically measured)
+        drift_config = self._load_drift_config()
+        if audio_type == 'soundEffects':
+            # Soundboard device: check config for correction
+            sb_config = drift_config.get('soundboard', {})
+            if sb_config.get('enabled', True):
+                sync_factor = sb_config.get('speed_factor', 1.0000158402)
+                print(f"  Applying soundboard drift correction: {sync_factor:.10f}x", file=sys.stderr)
+            else:
+                # Disabled - no correction
+                sync_factor = 1.0
+                print(f"  Soundboard drift correction disabled, using 1.0x", file=sys.stderr)
+        else:
+            # vMix outputs (mic audio, screen audio, cam, master) - no correction needed
+            # These are already converted to 29.97fps by vMix
+            vmix_outputs = drift_config.get('vmix_outputs', {})
+            if vmix_outputs.get('enabled', True):
+                sync_factor = vmix_outputs.get('speed_factor', 1.0)
+                print(f"  Applying vMix outputs drift correction: {sync_factor:.10f}x", file=sys.stderr)
+            else:
+                sync_factor = 1.0
+                print(f"  vMix outputs drift correction disabled, using 1.0x", file=sys.stderr)
+
+        cmd = [
+            'ffmpeg', '-i', str(input_path),
+            '-filter:a', f'atempo={sync_factor}',
+            '-c:a', 'pcm_s16le',
+            '-y',  # Overwrite output
+            str(output_path)
+        ]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            print(f"Audio synced from {input_path} to {output_path}")
+            return str(output_path)
+        except subprocess.CalledProcessError as e:
+            print(f"Error syncing audio {input_path}: {e}")
+            print(f"stderr: {e.stderr}")
+            raise
+    
+    def get_audio_info(self, file_path: str) -> Tuple[str, int, int]:
+        """Get audio duration, sample rate, and channels using ffprobe.
+
+        Raises loudly rather than fabricating defaults: a wrong duration or
+        sample rate silently corrupts every downstream timing calculation.
+        """
+        # File must exist
+        if not Path(file_path).exists():
+            raise FileNotFoundError(f"Audio file does not exist: {file_path}")
+
+        # ffprobe must be available
+        if not self.ffprobe_path:
+            raise RuntimeError(
+                "ffprobe not found. Install ffmpeg/ffprobe and ensure it is on PATH "
+                f"(needed to read audio info for {file_path})."
+            )
+
+        # Probe the file
+        try:
+            result = subprocess.run([
+                self.ffprobe_path, '-v', 'quiet', '-print_format', 'json',
+                '-show_format', '-show_streams', str(file_path)
+            ], capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"ffprobe failed to read audio info from {file_path}: {e.stderr or e}"
+            ) from e
+
+        # Parse JSON
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"Could not parse ffprobe JSON output for {file_path}: {e}"
+            ) from e
+
+        # Find audio stream
+        audio_stream = None
+        for stream in data.get('streams', []):
+            if stream.get('codec_type') == 'audio':
+                audio_stream = stream
+                break
+
+        if not audio_stream:
+            raise ValueError(f"No audio stream found in {file_path}")
+
+        # Require the fields we depend on - never fabricate them
+        duration_raw = data.get('format', {}).get('duration')
+        if duration_raw is None:
+            raise RuntimeError(f"ffprobe output for {file_path} is missing format.duration")
+        sample_rate_raw = audio_stream.get('sample_rate')
+        if sample_rate_raw is None:
+            raise RuntimeError(f"ffprobe output for {file_path} is missing audio stream sample_rate")
+        channels_raw = audio_stream.get('channels')
+        if channels_raw is None:
+            raise RuntimeError(f"ffprobe output for {file_path} is missing audio stream channels")
+
+        duration_seconds = float(duration_raw)
+        sample_rate = int(sample_rate_raw)
+        channels = int(channels_raw)
+
+        # Convert to FCPX time format
+        frame_rate_den = 30000
+        duration_fcpx = f"{int(duration_seconds * frame_rate_den)}/{frame_rate_den}s"
+
+        return duration_fcpx, sample_rate, channels
+    
+    def convert_audio_format(self, input_path: str, output_format: str = 'wav',
+                           output_path: Optional[str] = None) -> str:
+        """Convert audio to specified format."""
+        input_path = Path(input_path)
+        
+        if output_path is None:
+            output_path = input_path.parent / f"{input_path.stem}.{output_format}"
+        
+        output_path = Path(output_path)
+        
+        cmd = [
+            'ffmpeg', '-i', str(input_path),
+            '-acodec', 'pcm_s16le' if output_format == 'wav' else 'aac',
+            '-ar', str(self.config.get('audio.sample_rate', 48000)),
+            '-ac', '2',
+            '-y',
+            str(output_path)
+        ]
+        
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            print(f"Audio converted from {input_path} to {output_path}")
+            return str(output_path)
+        except subprocess.CalledProcessError as e:
+            print(f"Error converting audio {input_path}: {e}")
+            print(f"stderr: {e.stderr}")
+            raise
+    
+    def process_audio_source(self, source_path: str, apply_sync: bool = False,
+                        output_dir: Optional[str] = None, audio_type: Optional[str] = None) -> Tuple[str, str, int, int]:
+        """Process audio source: extract if video, sync if requested, return info.
+
+        Args:
+            source_path: Path to audio/video file
+            apply_sync: Whether to apply device-specific drift correction
+            output_dir: Optional output directory
+            audio_type: Type of audio source (e.g., 'soundEffects' for soundboard)
+        """
+        source_path = Path(source_path)
+
+        # Use the source file's directory as the output directory by default
+        if output_dir is None:
+            output_dir = source_path.parent  # Same directory as the source file
+        output_dir = Path(output_dir)
+
+        # Check if source is video or audio
+        video_extensions = ['.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.mpg', '.mpeg', '.m4v', '.webm']
+        audio_extensions = ['.wav', '.mp3', '.aac', '.flac', '.ogg', '.m4a']
+
+        processed_audio_path = source_path
+
+        # Extract audio if source is video (directly to _processed name)
+        if source_path.suffix.lower() in video_extensions:
+            audio_path = self.get_processed_path(source_path, '.wav', str(output_dir))
+            processed_audio_path = Path(self.extract_audio_from_video(str(source_path), str(audio_path)))
+
+        # Apply sync correction if requested (overwrite the same _processed file)
+        if apply_sync:
+            synced_path = self.get_processed_path(source_path, '.wav', str(output_dir))
+            processed_audio_path = Path(self.sync_audio_for_2997fps(
+                str(processed_audio_path), str(synced_path), audio_type=audio_type
+            ))
+        
+        # Get audio info
+        duration, sample_rate, channels = self.get_audio_info(str(processed_audio_path))
+        
+        return str(processed_audio_path), duration, sample_rate, channels
+    
+    def get_video_framerate(self, file_path: str) -> float:
+        """Get the framerate of a video file.
+
+        Returns:
+            Frame rate as float (e.g., 29.97, 30.0, 60.0)
+
+        Raises:
+            RuntimeError: if ffprobe fails or no positive framerate can be determined.
+        """
+        try:
+            result = subprocess.run([
+                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                '-show_streams', '-select_streams', 'v:0', str(file_path)
+            ], capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"ffprobe failed to read framerate from {file_path}: {e.stderr or e}"
+            ) from e
+
+        try:
+            data = json.loads(result.stdout)
+            video_stream = data['streams'][0]
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            raise RuntimeError(
+                f"Could not parse ffprobe framerate output for {file_path}: {e}"
+            ) from e
+
+        # Try r_frame_rate first (most accurate)
+        r_frame_rate = video_stream.get('r_frame_rate', '0/1')
+        if '/' in r_frame_rate:
+            num, den = r_frame_rate.split('/')
+            if float(den) != 0:
+                fps = float(num) / float(den)
+                if fps > 0:
+                    return fps
+
+        # Fallback to avg_frame_rate
+        avg_frame_rate = video_stream.get('avg_frame_rate', '0/1')
+        if '/' in avg_frame_rate:
+            num, den = avg_frame_rate.split('/')
+            if float(den) != 0:
+                fps = float(num) / float(den)
+                if fps > 0:
+                    return fps
+
+        raise RuntimeError(
+            f"Could not determine a positive framerate for {file_path} "
+            f"(r_frame_rate={r_frame_rate!r}, avg_frame_rate={avg_frame_rate!r})"
+        )
+
+    def get_actual_video_framerate(self, file_path: str) -> float:
+        """Get the ACTUAL framerate by calculating from frame count and duration.
+
+        This is more accurate than metadata framerate for files where the encoding
+        framerate doesn't match the actual frame delivery rate.
+
+        Args:
+            file_path: Path to video file
+
+        Returns:
+            Actual frame rate calculated as frame_count / duration
+        """
+        try:
+            result = subprocess.run([
+                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                '-show_streams', '-select_streams', 'v:0',
+                '-count_frames',  # Actually count frames
+                str(file_path)
+            ], capture_output=True, text=True, check=True)
+
+            data = json.loads(result.stdout)
+            video_stream = data['streams'][0]
+
+            # Get frame count and duration
+            nb_frames = int(video_stream.get('nb_frames', 0))
+            duration = float(video_stream.get('duration', 0))
+
+            if nb_frames > 0 and duration > 0:
+                actual_fps = nb_frames / duration
+                return actual_fps
+
+            # Fallback to metadata framerate
+            return self.get_video_framerate(file_path)
+
+        except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, ValueError) as e:
+            print(f"Warning: Could not calculate actual framerate for {file_path}: {e}")
+            # Fallback to metadata framerate
+            return self.get_video_framerate(file_path)
+
+    def calculate_clock_drift_correction(self, video_path: str, master_duration_seconds: float) -> Optional[float]:
+        """Calculate speed correction factor using Method B (metadata-based).
+
+        DEPRECATED: Use calculate_retime_map with video_duration and audio_duration instead.
+
+        This method is kept for backwards compatibility but will return None.
+        The new approach uses video vs audio duration comparison directly in calculate_retime_map.
+
+        Args:
+            video_path: Path to video file to analyze
+            master_duration_seconds: Duration of master timeline in seconds
+
+        Returns:
+            None (use new drift_seconds or video/audio_duration params instead)
+        """
+        print(f"  Clock drift correction: Using new drift correction methods", file=sys.stderr)
+        return None
+
+    def get_video_duration_seconds(self, file_path: str) -> float:
+        """Get video duration in seconds.
+
+        Args:
+            file_path: Path to video file
+
+        Returns:
+            Duration in seconds
+        """
+        try:
+            result = subprocess.run([
+                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                '-show_format', str(file_path)
+            ], capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"ffprobe failed to read duration from {file_path}: {e.stderr or e}"
+            ) from e
+
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"Could not parse ffprobe duration output for {file_path}: {e}"
+            ) from e
+
+        duration_raw = data.get('format', {}).get('duration')
+        if duration_raw is None:
+            raise RuntimeError(f"ffprobe output for {file_path} is missing format.duration")
+        return float(duration_raw)
+
+    def get_video_frame_count(self, file_path: str) -> int:
+        """Get total frame count from video file.
+
+        Args:
+            file_path: Path to video file
+
+        Returns:
+            Total number of frames
+        """
+        try:
+            result = subprocess.run([
+                'ffprobe', '-v', 'quiet', '-print_format', 'json',
+                '-show_streams', '-select_streams', 'v:0',
+                '-count_frames',
+                str(file_path)
+            ], capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(
+                f"ffprobe failed to count frames in {file_path}: {e.stderr or e}"
+            ) from e
+
+        try:
+            data = json.loads(result.stdout)
+            video_stream = data['streams'][0]
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            raise RuntimeError(
+                f"Could not parse ffprobe frame count output for {file_path}: {e}"
+            ) from e
+
+        nb_frames_raw = video_stream.get('nb_frames')
+        if nb_frames_raw is None:
+            raise RuntimeError(f"ffprobe output for {file_path} is missing nb_frames")
+        return int(nb_frames_raw)
+
+    def sync_video_for_2997fps(self, input_path: str, output_path: Optional[str] = None) -> str:
+        """Convert video to 29.97fps timeline, auto-detecting source framerate.
+
+        This handles screen/game captures recorded at any framerate (30fps, 60fps, 120fps, etc.)
+        and converts them to match the 29.97fps master timeline. The framerate is automatically
+        detected and appropriate conversion is applied.
+
+        For videos already at 29.97fps, no conversion is needed.
+        For higher framerates, frames are dropped to match 29.97fps while maintaining duration.
+
+        Args:
+            input_path: Path to input video file (any fps)
+            output_path: Optional output path
+
+        Returns:
+            Path to the synced video file
+        """
+        input_path = Path(input_path)
+
+        if output_path is None:
+            output_path = self.get_processed_path(input_path)
+
+        output_path = Path(output_path)
+
+        # Detect source framerate
+        source_fps = self.get_video_framerate(str(input_path))
+        target_fps = 29.97
+
+        print(f"Syncing video framerate: {input_path.name}")
+        print(f"  Source framerate: {source_fps:.2f} fps")
+        print(f"  Target framerate: {target_fps} fps")
+
+        # Check if conversion is needed (with small tolerance for rounding)
+        if abs(source_fps - target_fps) < 0.1:
+            print(f"  ✓ Already at {target_fps}fps, no conversion needed")
+            # Just copy the file or return original path
+            import shutil
+            shutil.copy2(str(input_path), str(output_path))
+            return str(output_path)
+
+        print(f"  Converting {source_fps:.2f}fps → {target_fps}fps (dropping frames)")
+
+        # Use fps filter to drop frames to 29.97fps
+        # This keeps the same DURATION but reduces frame count
+        # Works for any source fps (30, 60, 120, etc.) → 29.97
+        cmd = [
+            'ffmpeg', '-i', str(input_path),
+            '-filter:v', 'fps=fps=29.97',  # Convert to 29.97fps by dropping frames
+            '-c:v', 'libx264',  # Re-encode video
+            '-crf', '23',       # Slightly lower quality for speed
+            '-preset', 'faster', # Faster encoding
+            '-c:a', 'aac',      # Re-encode audio (unchanged)
+            '-b:a', '192k',
+            '-y',  # Overwrite output
+            str(output_path)
+        ]
+
+        try:
+            if self.progress_callback:
+                # Use progress tracking if available
+                from core.ffmpeg_progress import FFmpegProgressTracker
+                tracker = FFmpegProgressTracker(self.progress_callback)
+                # Pass skip_check_callback if available (for checking skip signals during encoding)
+                skip_callback = getattr(self, 'skip_check_callback', None)
+                tracker.run_ffmpeg_with_progress(cmd, str(input_path), f"Syncing {input_path.name}", skip_check_callback=skip_callback)
+            else:
+                # Fall back to simple subprocess
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+            print(f"Video synced: {output_path}")
+            return str(output_path)
+        except subprocess.CalledProcessError as e:
+            print(f"Error syncing video {input_path}: {e}")
+            print(f"stderr: {e.stderr}")
+            raise
+        except InterruptedError:
+            print(f"Video sync canceled by user")
+            raise
+
+    def process_video_source(self, source_path: str, apply_sync: bool = True,
+                            output_dir: Optional[str] = None) -> str:
+        """Process video source with optional framerate sync.
+
+        Args:
+            source_path: Path to video file
+            apply_sync: If True, speed up 30fps video to match 29.97fps
+            output_dir: Optional output directory
+
+        Returns:
+            Path to processed video
+        """
+        source_path = Path(source_path)
+
+        if output_dir is None:
+            output_dir = source_path.parent
+        output_dir = Path(output_dir)
+
+        processed_video_path = source_path
+
+        # Apply framerate sync if requested
+        # This assumes the input is 30fps and needs to be synced to 29.97fps
+        if apply_sync:
+            synced_path = self.get_processed_path(source_path, output_dir=str(output_dir))
+            processed_video_path = Path(self.sync_video_for_2997fps(str(source_path), str(synced_path)))
+
+        return str(processed_video_path)
+

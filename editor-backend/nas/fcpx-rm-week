@@ -1,0 +1,37 @@
+#!/bin/sh
+# fcpx-rm-week — delete ONE week folder under the FCPX share, as root, safely.
+#
+# Why this exists: ContentStudio's editor deletes archived weeks over the SMB
+# mount, but the share resolves symlinks server-side — a loop like Final Cut's
+# `.fcpcache -> .` presents as a bottomless directory and a dangling link is
+# hidden from listings entirely, so neither can EVER be removed from a client.
+# Here they are ordinary symlinks. The app invokes this over SSH
+# (`sudo fcpx-rm-week '<week name>'`) to finish what SMB cannot.
+#
+# Install (root, once):
+#   sudo install -m 755 /volume1/System/claude-home/fcpx-rm-week /usr/local/bin/fcpx-rm-week
+#   echo 'owenmorgan ALL=(root) NOPASSWD: /usr/local/bin/fcpx-rm-week' | sudo tee /etc/sudoers.d/fcpx-rm-week
+#
+# Validation is deliberately paranoid: the argument must be a bare folder name
+# (no slash, so it can only ever address a direct child of ROOT), must not be
+# dot-prefixed (system/bookkeeping entries), and `assets` — the shared overlay
+# artwork nothing backs up — is refused by name.
+set -eu
+ROOT=/volume3/iO/FCPX
+
+name=${1-}
+case "$name" in
+  '')      echo "fcpx-rm-week: a week name is required" >&2; exit 2 ;;
+  */*)     echo "fcpx-rm-week: '$name' contains a slash — only a bare week name directly under $ROOT is accepted" >&2; exit 2 ;;
+  .*)      echo "fcpx-rm-week: '$name' is dot-prefixed — system entries are not deletable this way" >&2; exit 2 ;;
+  assets|Assets) echo "fcpx-rm-week: refusing to delete '$name' — the shared overlay artwork has no other copy" >&2; exit 2 ;;
+esac
+
+target="$ROOT/$name"
+if [ ! -d "$target" ]; then
+  echo "fcpx-rm-week: $target is not a directory" >&2
+  exit 3
+fi
+
+rm -rf -- "$target"
+echo "fcpx-rm-week: removed $target"

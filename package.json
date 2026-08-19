@@ -90,13 +90,34 @@
       "!node_modules/@ffmpeg-installer/**",
       "!node_modules/@ffprobe-installer/**"
     ],
+    "extraResources": [
+      {
+        "from": "editor-backend/cli",
+        "to": "editor-backend/cli",
+        "filter": ["**/*", "!**/__pycache__/**"]
+      },
+      {
+        "from": "editor-backend/core",
+        "to": "editor-backend/core",
+        "filter": ["**/*", "!**/__pycache__/**"]
+      },
+      {
+        "from": "editor-backend/utilities/bin",
+        "to": "editor-backend/utilities/bin"
+      },
+      {
+        "from": "config",
+        "to": "config",
+        "filter": ["autostudio_config.yaml", "drift_corrections.json"]
+      }
+    ],
     "mac": {
       "category": "public.app-category.utilities",
       "icon": "assets/icon.png",
       "target": [
         {
           "target": "dmg",
-          "arch": ["x64", "arm64"]
+          "arch": ["arm64"]
         }
       ],
       "hardenedRuntime": true,

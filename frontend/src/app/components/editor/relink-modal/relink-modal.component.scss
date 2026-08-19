@@ -1,0 +1,316 @@
+/* FCPX-dark, matching the editor's own modals (#26262a surface, #e8a33d accent). The palette is
+   hardcoded on purpose — the editor window does not use the app's CSS variables, and the page
+   this was ported from consumed about fifty of them. Every var(--*) it used has been replaced
+   with the literal colour the editor already uses for the same job. */
+@use '../styles/modal' as *;
+
+:host {
+  display: contents;
+}
+
+.rlm {
+  width: 100%;
+  max-width: 720px;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #26262a;
+  border: 1px solid #0d0d0e;
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+  color: #c4c4ca;
+  font-size: 12px;
+}
+
+.rlm-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid #1a1a1d;
+
+  .rlm-heading { flex: 1 1 auto; min-width: 0; }
+
+  .rlm-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #f0f0f2;
+  }
+
+  .rlm-sub {
+    margin-top: 3px;
+    font-size: 12px;
+    color: #9a9aa2;
+  }
+
+  .rlm-close {
+    flex: 0 0 auto;
+    background: transparent;
+    border: none;
+    color: #9a9aa2;
+    font-size: 13px;
+    cursor: pointer;
+    padding: 2px 4px;
+
+    &:hover { color: #e8a33d; }
+  }
+}
+
+.rlm-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 18px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ── The list's own state, always on screen ──────────────────────────────── */
+
+.rlm-banner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  line-height: 1.5;
+  border-radius: 6px;
+  padding: 10px 12px;
+
+  .rlm-banner-icon { flex: 0 0 auto; font-size: 13px; }
+
+  /* Something is unlinked. The accent, not the error red: nothing has gone wrong yet —
+     this is the job the dialog is open to do. */
+  &.warning {
+    color: #e6cfa8;
+    background: rgba(232, 163, 61, 0.09);
+    border: 1px solid rgba(232, 163, 61, 0.28);
+
+    .rlm-banner-icon { color: #e8a33d; }
+  }
+
+  &.success {
+    color: #a8d8b0;
+    background: rgba(120, 190, 140, 0.10);
+    border: 1px solid rgba(120, 190, 140, 0.30);
+  }
+}
+
+/* ── What alert() used to say ────────────────────────────────────────────── */
+
+.rlm-error {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #e08a7a;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(200, 106, 90, 0.10);
+  border: 1px solid rgba(200, 106, 90, 0.30);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.rlm-status {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #a8d8b0;
+  background: rgba(120, 190, 140, 0.10);
+  border: 1px solid rgba(120, 190, 140, 0.30);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+/* ── Sections ────────────────────────────────────────────────────────────── */
+
+.rlm-section {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.rlm-section-head {
+  .rlm-section-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #9a9aa2;
+  }
+
+  .rlm-section-note {
+    margin-top: 3px;
+    font-size: 11px;
+    line-height: 1.45;
+    color: #7c7c84;
+  }
+}
+
+.rlm-folder {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.rlm-path {
+  align-self: stretch;
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 11px;
+  color: #cfe6d5;
+  word-break: break-all;
+  background: #1c1c1f;
+  border: 1px solid #333338;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.rlm-searching {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #9a9aa2;
+}
+
+.rlm-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #3a3a40;
+  border-top-color: #e8a33d;
+  border-radius: 50%;
+  animation: rlm-spin 0.8s linear infinite;
+}
+
+@keyframes rlm-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── The sixteen rows ────────────────────────────────────────────────────── */
+
+.rlm-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rlm-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  background: #2a2a2f;
+  border: 1px solid #3a3a40;
+  border-radius: 6px;
+  padding: 6px 9px;
+
+  /* Never linked. Dashed, in the accent: expected, not broken. */
+  &.missing {
+    border-style: dashed;
+    border-color: #4a4438;
+
+    .rlm-row-path { color: #d9b070; }
+  }
+
+  /* Linked to something that is no longer there. This one IS broken. */
+  &.invalid {
+    background: rgba(200, 106, 90, 0.08);
+    border-color: rgba(200, 106, 90, 0.30);
+
+    .rlm-row-path { color: #e08a7a; }
+  }
+
+  .rlm-mark {
+    flex: 0 0 auto;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 600;
+
+    &.valid { color: #78be8c; }
+    &.bad { color: #c86a5a; }
+  }
+
+  .rlm-row-text { min-width: 0; }
+
+  .rlm-row-name {
+    font-size: 11px;
+    font-weight: 500;
+    color: #e2e2e6;
+  }
+
+  .rlm-row-path {
+    margin-top: 2px;
+    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+    font-size: 10.5px;
+    color: #9a9aa2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+
+    &.empty { font-style: italic; }
+  }
+}
+
+/* ── Footer ──────────────────────────────────────────────────────────────── */
+
+.rlm-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 18px 14px;
+  border-top: 1px solid #1a1a1d;
+}
+
+.rlm-blocked {
+  flex: 1 1 auto;
+  font-size: 11px;
+  color: #d9b070;
+  line-height: 1.4;
+}
+
+.rlm-confirm {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  color: #e2e2e6;
+  background: rgba(200, 106, 90, 0.10);
+  border: 1px solid rgba(200, 106, 90, 0.30);
+  border-radius: 6px;
+  padding: 9px 11px;
+}
+
+.rlm-btn {
+  font-size: 12px;
+  font-weight: 500;
+  color: #e2e2e6;
+  background: #3a3a40;
+  border: 1px solid #0d0d0e;
+  border-radius: 5px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s ease;
+
+  &:hover:not(:disabled) { background: #47474e; }
+  &:disabled { opacity: 0.45; cursor: default; }
+
+  &.small { padding: 4px 10px; font-size: 11px; }
+
+  &.primary {
+    background: #e8a33d;
+    border-color: #b47b23;
+    color: #1c1c1f;
+
+    &:hover:not(:disabled) { background: #f2b355; }
+  }
+
+  &.danger {
+    background: #5a2f2a;
+    border-color: #3a1e1a;
+    color: #f0d6d0;
+
+    &:hover:not(:disabled) { background: #6d3a33; }
+  }
+}

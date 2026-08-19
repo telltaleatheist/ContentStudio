@@ -1,72 +1,84 @@
-<div class="app-container">
-  <!-- Top Toolbar -->
-  <mat-toolbar class="app-toolbar">
-    <button mat-icon-button (click)="toggleSidenav()" class="menu-button">
-      <mat-icon>menu</mat-icon>
-    </button>
-    <span class="app-title">ContentStudio</span>
-    <span class="app-subtitle">AI-Powered Metadata Generator</span>
-    <span class="toolbar-spacer"></span>
-    <button mat-icon-button (click)="exportLogs()" matTooltip="Export Console Logs">
-      <mat-icon>bug_report</mat-icon>
-    </button>
-    <notification-bell></notification-bell>
-  </mat-toolbar>
+<!-- The editor's window renders the route and nothing else. EditorComponent is
+     `position: fixed; inset: 0` — it owns the whole viewport, so a toolbar and a sidenav
+     behind it would be chrome nobody could reach. -->
+@if (isEditorWindow()) {
+  <router-outlet></router-outlet>
+} @else {
+  <div class="app-container">
+    <!-- Top Toolbar -->
+    <mat-toolbar class="app-toolbar">
+      <button mat-icon-button (click)="toggleSidenav()" class="menu-button">
+        <mat-icon>menu</mat-icon>
+      </button>
+      <span class="app-title">ContentStudio</span>
+      <span class="app-subtitle">AI-Powered Metadata Generator</span>
+      <span class="toolbar-spacer"></span>
+      <button mat-icon-button (click)="exportLogs()" matTooltip="Export Console Logs">
+        <mat-icon>bug_report</mat-icon>
+      </button>
+      <notification-bell></notification-bell>
+    </mat-toolbar>
 
-  <!-- Sidebar + Content Layout -->
-  <mat-sidenav-container class="sidenav-container">
-    <!-- Left Sidebar Navigation -->
-    <mat-sidenav mode="side" [opened]="sidenavOpened()" class="app-sidenav">
-      <div class="sidenav-content">
-        <mat-nav-list class="nav-list">
-          <a mat-list-item routerLink="/inputs" routerLinkActive="active-link">
-            <mat-icon matListItemIcon>input</mat-icon>
-            <span matListItemTitle>Inputs</span>
-          </a>
-          <a mat-list-item routerLink="/metadata-reports" routerLinkActive="active-link">
-            <mat-icon matListItemIcon>description</mat-icon>
-            <span matListItemTitle>Metadata Reports</span>
-          </a>
-          <a mat-list-item routerLink="/analytics" routerLinkActive="active-link">
-            <mat-icon matListItemIcon>insights</mat-icon>
-            <span matListItemTitle>Analytics</span>
-          </a>
-          <a mat-list-item routerLink="/prompts" routerLinkActive="active-link">
-            <mat-icon matListItemIcon>edit_note</mat-icon>
-            <span matListItemTitle>Prompts</span>
-          </a>
-          <a mat-list-item routerLink="/history" routerLinkActive="active-link">
-            <mat-icon matListItemIcon>history</mat-icon>
-            <span matListItemTitle>History</span>
-          </a>
-          <a mat-list-item routerLink="/settings" routerLinkActive="active-link">
-            <mat-icon matListItemIcon>settings</mat-icon>
-            <span matListItemTitle>Settings</span>
-          </a>
-        </mat-nav-list>
-        <div class="theme-toggle-container">
-          <button mat-icon-button (click)="openModelRouting()" class="theme-toggle-button" matTooltip="Model routing" matTooltipPosition="right">
-            <mat-icon>alt_route</mat-icon>
-            <span class="theme-label">Model Routing</span>
-          </button>
-          <button mat-icon-button (click)="toggleTheme()" class="theme-toggle-button">
-            <mat-icon>{{ isDarkMode() ? 'light_mode' : 'dark_mode' }}</mat-icon>
-            <span class="theme-label">{{ isDarkMode() ? 'Light Mode' : 'Dark Mode' }}</span>
-          </button>
+    <!-- Sidebar + Content Layout -->
+    <mat-sidenav-container class="sidenav-container">
+      <!-- Left Sidebar Navigation -->
+      <mat-sidenav mode="side" [opened]="sidenavOpened()" class="app-sidenav">
+        <div class="sidenav-content">
+          <mat-nav-list class="nav-list">
+            <a mat-list-item routerLink="/inputs" routerLinkActive="active-link">
+              <mat-icon matListItemIcon>input</mat-icon>
+              <span matListItemTitle>Inputs</span>
+            </a>
+            <a mat-list-item routerLink="/metadata-reports" routerLinkActive="active-link">
+              <mat-icon matListItemIcon>description</mat-icon>
+              <span matListItemTitle>Metadata Reports</span>
+            </a>
+            <!-- Not a routerLink: the editor is a SECOND WINDOW, not a view in this one. -->
+            <a mat-list-item (click)="openEditor()" matTooltip="Open the timeline editor in its own window">
+              <mat-icon matListItemIcon>movie_edit</mat-icon>
+              <span matListItemTitle>Editor</span>
+            </a>
+            <a mat-list-item routerLink="/analytics" routerLinkActive="active-link">
+              <mat-icon matListItemIcon>insights</mat-icon>
+              <span matListItemTitle>Analytics</span>
+            </a>
+            <a mat-list-item routerLink="/prompts" routerLinkActive="active-link">
+              <mat-icon matListItemIcon>edit_note</mat-icon>
+              <span matListItemTitle>Prompts</span>
+            </a>
+            <a mat-list-item routerLink="/history" routerLinkActive="active-link">
+              <mat-icon matListItemIcon>history</mat-icon>
+              <span matListItemTitle>History</span>
+            </a>
+            <a mat-list-item routerLink="/settings" routerLinkActive="active-link">
+              <mat-icon matListItemIcon>settings</mat-icon>
+              <span matListItemTitle>Settings</span>
+            </a>
+          </mat-nav-list>
+          <div class="theme-toggle-container">
+            <button mat-icon-button (click)="openModelRouting()" class="theme-toggle-button" matTooltip="Model routing" matTooltipPosition="right">
+              <mat-icon>alt_route</mat-icon>
+              <span class="theme-label">Model Routing</span>
+            </button>
+            <button mat-icon-button (click)="toggleTheme()" class="theme-toggle-button">
+              <mat-icon>{{ isDarkMode() ? 'light_mode' : 'dark_mode' }}</mat-icon>
+              <span class="theme-label">{{ isDarkMode() ? 'Light Mode' : 'Dark Mode' }}</span>
+            </button>
+          </div>
         </div>
-      </div>
-    </mat-sidenav>
+      </mat-sidenav>
 
-    <!-- Main Content Area -->
-    <mat-sidenav-content>
-      <main class="main-content">
-        <router-outlet></router-outlet>
-      </main>
-    </mat-sidenav-content>
-  </mat-sidenav-container>
+      <!-- Main Content Area -->
+      <mat-sidenav-content>
+        <main class="main-content">
+          <router-outlet></router-outlet>
+        </main>
+      </mat-sidenav-content>
+    </mat-sidenav-container>
 
-  <!-- Notification Modal -->
-  <notification-modal></notification-modal>
-  <environment-setup-dialog></environment-setup-dialog>
-  <environment-download-dock></environment-download-dock>
-</div>
+    <!-- Notification Modal -->
+    <notification-modal></notification-modal>
+    <environment-setup-dialog></environment-setup-dialog>
+    <environment-download-dock></environment-download-dock>
+  </div>
+}

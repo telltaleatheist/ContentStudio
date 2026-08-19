@@ -1,5 +1,17 @@
-import { Injectable } from '@angular/core';
+import { Injectable, NgZone } from '@angular/core';
+import { Observable, Subject } from 'rxjs';
 import type { ChosenMetadata, PublishResult, ResolvedMetadata } from '../features/publish/publish.types';
+import type {
+  ArchiveCheck, ArchiveProgress, ArchiveQueue, ArchiveResult, ArchiveStatus,
+  AssetComponentStatus, AssetInstallProgress, AssetInstallResult,
+  AssetPaths, DeleteLocalWeekResult, DeleteRemoteWeekResult, ProjectScanResult,
+  ProjectsRegistry, RemoteWeekListing, TitleHandoff
+} from '../components/editor/editor-host';
+import type { EditorManifest } from '../components/editor/host-data/editor-manifest';
+
+// Re-exported for host code that talks about handoffs without importing the port directly.
+// `export type` (not a bare re-export) because isolatedModules cannot tell a type from a value.
+export type { TitleHandoff };
 
 export interface StartupReadiness {
   ready: boolean;
@@ -297,8 +309,163 @@ declare global {
       publishGetResolved: (jobId: string, itemIndex: number) => Promise<PublishResult<ResolvedMetadata>>;
       publishListActionable: () => Promise<PublishResult<ChosenMetadata[]>>;
       publishClear: (jobId: string, itemIndex: number) => Promise<PublishResult<boolean>>;
+
+      // ==================== EDITOR ====================
+      //
+      // The timeline editor's whole bridge. Every name here backs one member of the
+      // editor's port (frontend/src/app/components/editor/editor-host.ts) via
+      // EditorHostAdapter, plus the four additions the port itself does not declare
+      // (openEditor, takePendingTitleSubjects, onTitleSubjects, getPathForFile).
+      //
+      // Names match the EditorHost member 1:1 EXCEPT where ContentStudio already owns
+      // the name for something else. Those are prefixed `editor…` and are marked below;
+      // reusing a name for a different channel and a different response shape is the one
+      // thing the port contract forbids outright.
+
+      // Window
+      openEditor: (payload?: { zipPath?: string }) => Promise<{ success: boolean; error?: string }>;
+
+      // Session payload & manifest
+      getEditorPayload: () => Promise<{ zipPath: string } | null>;
+      onEditorPayload: (callback: (payload: { zipPath: string }) => void) => void;
+      removeEditorListeners: () => void;
+      getEditorManifest: (zipPath: string) => Promise<EditorManifest>;
+
+      // Edit state (the _edits.json sidecar)
+      loadEditorEdits: (payload: { zipPath: string }) => Promise<any | null>;
+      saveEditorEdits: (payload: { zipPath: string; edits: any }) => Promise<{ path: string }>;
+      clearEditorSessionState: (payload: { zipPath: string }) => Promise<{ removed: string[] }>;
+
+      // Export — REJECTS with the backend's verbatim message; never an envelope.
+      exportEditorCuts: (payload: {
+        zipPath: string;
+        cuts: Array<{ startFrame: number; endFrame: number }>;
+        sequence?: Array<{ start: number; end: number }>;
+        stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>;
+        output?: 'fcpxml' | 'transcripts';
+        muteMicDuringScreen?: boolean;
+      }) => Promise<any>;
+
+      // Transcription
+      transcribeSession: (payload: { zipPath: string }) => Promise<{ jobId: string }>;
+      cancelTranscription: (payload: { jobId: string }) => Promise<any>;
+      onTranscribeProgress: (callback: (data: { jobId: string; progress: number; message: string }) => void) => void;
+      onTranscribeComplete: (
+        callback: (data: { jobId: string; exitCode: number; result: any; errorMessage?: string }) => void
+      ) => void;
+      removeTranscribeListeners: () => void;
+      loadTranscript: (payload: { zipPath: string }) => Promise<any>;
+
+      // Story analysis (local Ollama)
+      ollamaListModels: (opts?: { host?: string }) =>
+        Promise<{ connected: boolean; models: Array<{ id: string; name: string }> }>;
+      analyzeStoryChapters: (payload: {
+        segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
+        model: string;
+        host?: string;
+        consolidate?: boolean;
+      }) => Promise<{ chapters: any[] }>;
+      suggestStoryTitle: (payload: { text: string | string[]; model: string; host?: string }) =>
+        Promise<{ title: string }>;
+      cancelStoryAnalysis: () => Promise<{ stopped: boolean }>;
+      unloadStoryModel: (payload: { model: string; host?: string }) => Promise<{ ok: boolean }>;
+      onStoryAnalyzeProgress: (callback: (p: { phase: string; done: number; total: number }) => void) => void;
+      removeStoryAnalyzeProgressListener: () => void;
+
+      // Media
+      alignmentExtractPeaks: (opts: { filePath: string; startSec: number; durationSec: number; buckets: number })
+        => Promise<{ success?: boolean; min?: number[]; max?: number[]; error?: any }>;
+
+      // Files & dialogs. All six are the editor's own namespaced channels
+      // (`editor:select-file` and friends). `editorSelectDirectory` / `editorReadDirectory` /
+      // `editorShowInFolder` carry the prefix because ContentStudio's own selectDirectory /
+      // readDirectory / showInFolder already exist above with different channels and,
+      // for selectDirectory, a different response shape.
+      editorSelectFile: (options?: { title?: string; filters?: any[]; properties?: any[] })
+        => Promise<{ canceled: boolean; filePaths: string[] }>;
+      editorSelectDirectory: (options?: { title?: string })
+        => Promise<{ canceled: boolean; filePaths: string[] }>;
+      editorReadDirectory: (dirPath: string)
+        => Promise<{ success: boolean; directories?: any[]; files?: any[] }>;
+      editorCheckFileExists: (filePath: string) => Promise<{ exists: boolean }>;
+      editorShowInFolder: (filePath: string) => Promise<any>;
+      /** Synchronous — preload-side webUtils.getPathForFile, no IPC. */
+      getPathForFile: (file: File) => string;
+
+      // Asset relinking (File ▸ Relink…)
+      editorGetAssetConfig: () => Promise<{ success: boolean; assetPaths?: AssetPaths; error?: string }>;
+      editorSaveAssetConfig: (assetPaths: AssetPaths) => Promise<{ success: boolean; error?: string }>;
+      editorSearchFilesRecursive: (opts: { rootPath: string; filenames: string[]; maxDepth?: number })
+        => Promise<{ success: boolean; foundFiles?: Record<string, string>; error?: string }>;
+
+      // Projects registry
+      readProjectsRegistry: () => Promise<ProjectsRegistry>;
+      writeProjectsRegistry: (registry: ProjectsRegistry) => Promise<{ success: boolean }>;
+      scanProjectFolder: (folderPath: string) => Promise<ProjectScanResult>;
+      /**
+       * Prefixed: its channel is `editor:delete-local-week`, and the port member it backs is
+       * plain `deleteLocalWeek`. Deletes the local week folder and rewrites the registry;
+       * REJECTS naming the reason if its own fresh re-verification says no.
+       */
+      editorDeleteLocalWeek: (payload: { weekPath: string }) => Promise<DeleteLocalWeekResult>;
+
+      // Processing (turning a raw project into an editable one)
+      autoDetectAudio: (masterVideoPath: string) => Promise<{
+        success: boolean;
+        audioFiles?: { [key: string]: string };
+        videoFiles?: { [key: string]: string };
+        error?: string;
+      }>;
+      /**
+       * The downloadable environment. `listAssets` backs both the Denoise gate and the
+       * environment modal; the other five are the install surface behind File ▸ Environment…
+       * Progress is sent to THIS window on 'asset-progress' by whichever install is running.
+       */
+      listAssets: () => Promise<{ success: boolean; components?: AssetComponentStatus[]; error?: string }>;
+      installAsset: (id: string) => Promise<AssetInstallResult>;
+      cancelAsset: (id: string) => Promise<{ success: boolean }>;
+      ensureRequiredAssets: () =>
+        Promise<{ success: boolean; ok?: boolean; failed?: string[]; error?: string }>;
+      onAssetProgress: (callback: (p: AssetInstallProgress) => void) => void;
+      removeAssetProgressListener: () => void;
+      executeWorkflow: (options: any) => Promise<any>;
+      /** Prefixed: ContentStudio's `cancelJob` above cancels a METADATA job, by id. */
+      editorCancelJob: (jobId: string) => Promise<any>;
+      sendSkipSignal: () => Promise<void>;
+      onWorkflowOutput: (callback: (data: { jobId: string; type: string; data: string }) => void) => void;
+      onWorkflowComplete: (
+        callback: (data: { jobId: string; exitCode: number; result?: any; errorMessage?: string }) => void
+      ) => void;
+      removeWorkflowListeners: () => void;
+
+      // Titles handoff (editor → main window)
+      sendSubjectsToTitles: (payload: { handoffs: TitleHandoff[] }) => Promise<{ success: boolean }>;
+      takePendingTitleSubjects: () => Promise<TitleHandoff[]>;
+      onTitlesSubjects: (callback: (handoffs: TitleHandoff[]) => void) => void;
+      removeTitlesSubjectsListener: () => void;
+
+      // Backup archive
+      archiveStatus: () => Promise<ArchiveStatus>;
+      archiveConnect: () => Promise<ArchiveStatus>;
+      archiveSync: (payload: { items: Array<{ localPath: string; kind: 'week' | 'day' }> })
+        => Promise<{ ids: string[] }>;
+      archiveCancel: (payload: { paths: string[] }) => Promise<{ canceled: number }>;
+      archiveCheck: (payload: { localPath: string; kind: 'week' | 'day' }) => Promise<ArchiveCheck>;
+      /** Week folders on the NAS. REJECTS when the archive is unreachable; never mounts it. */
+      archiveListRemoteWeeks: () => Promise<RemoteWeekListing>;
+      /** Removes a week from the NAS — the only copy, for a week with no local folder left. */
+      archiveDeleteRemoteWeek: (payload: { path: string }) => Promise<DeleteRemoteWeekResult>;
+      onArchiveQueue: (callback: (q: ArchiveQueue) => void) => void;
+      onArchiveProgress: (callback: (p: ArchiveProgress) => void) => void;
+      onArchiveComplete: (callback: (r: ArchiveResult) => void) => void;
+      removeArchiveListeners: () => void;
     };
   }
+}
+
+/** The bridge is absent (browser, or a preload that failed to load). Named, never guessed. */
+function noBridge(what: string): Error {
+  return new Error(`${what} needs the Electron bridge (window.launchpad), which is not available in this window.`);
 }
 
 @Injectable({
@@ -307,7 +474,7 @@ declare global {
 export class ElectronService {
   private ipcRenderer: typeof window.launchpad | null = null;
 
-  constructor() {
+  constructor(private ngZone: NgZone) {
     if (this.isElectron()) {
       this.ipcRenderer = window.launchpad;
     }
@@ -704,5 +871,396 @@ export class ElectronService {
   async publishClear(jobId: string, itemIndex: number): Promise<PublishResult<boolean>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.publishClear(jobId, itemIndex);
+  }
+
+  // ==================== EDITOR ====================
+  //
+  // The timeline editor's half of this service. EditorHostAdapter turns these into the
+  // editor's port; nothing under components/editor/ reaches this class directly.
+  //
+  // Doctrine, and it is the opposite of the metadata half above: outside Electron these
+  // THROW, naming the missing bridge. Same rule as getMetadataRouting. An editor method that
+  // quietly resolved `{ success: false }` or an empty array would show the user a session with
+  // no tracks, a projects list with no projects, or an export that "worked" and wrote nothing.
+
+  private get editorBridge(): NonNullable<typeof window.launchpad> {
+    if (!this.ipcRenderer) throw noBridge('The timeline editor');
+    return this.ipcRenderer;
+  }
+
+  // ── Window ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Open (or focus) the editor window. With a zipPath the window loads that session; with
+   * none (the side-nav Editor tab) it opens on its no-session empty state and the user picks
+   * a project in-window.
+   */
+  async openEditor(payload: { zipPath?: string } = {}): Promise<{ success: boolean; error?: string }> {
+    return this.editorBridge.openEditor(payload);
+  }
+
+  // ── Session payload & manifest ──────────────────────────────────────────────
+
+  /** (Editor window) Pull the zip path this window was opened with — null for a blank open. */
+  async getEditorPayload(): Promise<{ zipPath: string } | null> {
+    return this.editorBridge.getEditorPayload();
+  }
+
+  onEditorPayload(callback: (payload: { zipPath: string }) => void): void {
+    this.editorBridge.onEditorPayload((p) => this.ngZone.run(() => callback(p)));
+  }
+
+  removeEditorListeners(): void {
+    this.editorBridge.removeEditorListeners();
+  }
+
+  /** (Editor window) Parse the master hybrid timeline in a compounds zip into a manifest. */
+  async getEditorManifest(zipPath: string): Promise<EditorManifest> {
+    return this.editorBridge.getEditorManifest(zipPath);
+  }
+
+  // ── Edit state (the _edits.json sidecar) ────────────────────────────────────
+
+  async loadEditorEdits(payload: { zipPath: string }): Promise<any | null> {
+    return this.editorBridge.loadEditorEdits(payload);
+  }
+
+  async saveEditorEdits(payload: { zipPath: string; edits: any }): Promise<{ path: string }> {
+    return this.editorBridge.saveEditorEdits(payload);
+  }
+
+  async clearEditorSessionState(payload: { zipPath: string }): Promise<{ removed: string[] }> {
+    return this.editorBridge.clearEditorSessionState(payload);
+  }
+
+  // ── Export ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Export a cut list to a revised master-hybrid FCPXML. Resolves with the backend's
+   * export_result object; REJECTS with the backend's verbatim message, which the editor
+   * shows as-is rather than paraphrasing.
+   */
+  async exportEditorCuts(payload: {
+    zipPath: string;
+    cuts: Array<{ startFrame: number; endFrame: number }>;
+    sequence?: Array<{ start: number; end: number }>;
+    stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>;
+    output?: 'fcpxml' | 'transcripts';
+    muteMicDuringScreen?: boolean;
+  }): Promise<any> {
+    return this.editorBridge.exportEditorCuts(payload);
+  }
+
+  // ── Transcription ───────────────────────────────────────────────────────────
+
+  async transcribeSession(payload: { zipPath: string }): Promise<{ jobId: string }> {
+    return this.editorBridge.transcribeSession(payload);
+  }
+
+  async cancelTranscription(payload: { jobId: string }): Promise<any> {
+    return this.editorBridge.cancelTranscription(payload);
+  }
+
+  onTranscribeProgress(callback: (data: { jobId: string; progress: number; message: string }) => void): void {
+    this.editorBridge.onTranscribeProgress((d) => this.ngZone.run(() => callback(d)));
+  }
+
+  onTranscribeComplete(
+    callback: (data: { jobId: string; exitCode: number; result: any; errorMessage?: string }) => void
+  ): void {
+    this.editorBridge.onTranscribeComplete((d) => this.ngZone.run(() => callback(d)));
+  }
+
+  removeTranscribeListeners(): void {
+    this.editorBridge.removeTranscribeListeners();
+  }
+
+  async loadTranscript(payload: { zipPath: string }): Promise<any> {
+    return this.editorBridge.loadTranscript(payload);
+  }
+
+  // ── Story analysis (local Ollama) ───────────────────────────────────────────
+
+  async ollamaListModels(host?: string): Promise<{ connected: boolean; models: Array<{ id: string; name: string }> }> {
+    return this.editorBridge.ollamaListModels(host ? { host } : undefined);
+  }
+
+  async analyzeStoryChapters(payload: {
+    segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
+    model: string;
+    host?: string;
+    consolidate?: boolean;
+  }): Promise<{ chapters: any[] }> {
+    return this.editorBridge.analyzeStoryChapters(payload);
+  }
+
+  async suggestStoryTitle(payload: { text: string | string[]; model: string; host?: string }): Promise<{ title: string }> {
+    return this.editorBridge.suggestStoryTitle(payload);
+  }
+
+  async cancelStoryAnalysis(): Promise<{ stopped: boolean }> {
+    return this.editorBridge.cancelStoryAnalysis();
+  }
+
+  async unloadStoryModel(payload: { model: string; host?: string }): Promise<{ ok: boolean }> {
+    return this.editorBridge.unloadStoryModel(payload);
+  }
+
+  onStoryAnalyzeProgress(callback: (p: { phase: string; done: number; total: number }) => void): void {
+    this.editorBridge.onStoryAnalyzeProgress((p) => this.ngZone.run(() => callback(p)));
+  }
+
+  removeStoryAnalyzeProgressListener(): void {
+    this.editorBridge.removeStoryAnalyzeProgressListener();
+  }
+
+  // ── Media ───────────────────────────────────────────────────────────────────
+
+  async alignmentExtractPeaks(opts: { filePath: string; startSec: number; durationSec: number; buckets: number }):
+    Promise<{ success?: boolean; min?: number[]; max?: number[]; error?: any }> {
+    return this.editorBridge.alignmentExtractPeaks(opts);
+  }
+
+  // ── Files & dialogs (the editor's own namespaced channels) ──────────────────
+
+  async selectFile(options?: { title?: string; filters?: any[]; properties?: any[] }):
+    Promise<{ canceled: boolean; filePaths: string[] }> {
+    return this.editorBridge.editorSelectFile(options);
+  }
+
+  /** Named apart from `selectDirectory` above, which answers `{ success, directory }`. */
+  async editorSelectDirectory(options?: { title?: string }): Promise<{ canceled: boolean; filePaths: string[] }> {
+    return this.editorBridge.editorSelectDirectory(options);
+  }
+
+  /** Named apart from `readDirectory` above, which rides ContentStudio's own channel. */
+  async editorReadDirectory(dirPath: string): Promise<{ success: boolean; directories?: any[]; files?: any[] }> {
+    return this.editorBridge.editorReadDirectory(dirPath);
+  }
+
+  async checkFileExists(filePath: string): Promise<{ exists: boolean }> {
+    return this.editorBridge.editorCheckFileExists(filePath);
+  }
+
+  /** Named apart from `showInFolder` above, which rides ContentStudio's own channel. */
+  async editorShowInFolder(filePath: string): Promise<any> {
+    return this.editorBridge.editorShowInFolder(filePath);
+  }
+
+  /**
+   * Absolute path behind a dropped File. SYNCHRONOUS — it is preload-side webUtils, not IPC.
+   * Electron 32 removed `File.path`, so reading `(file as any).path` here returns undefined
+   * and a drop zone built on it accepts files and adds nothing, with no error anywhere.
+   */
+  getPathForFile(file: File): string {
+    return this.editorBridge.getPathForFile(file);
+  }
+
+  // ── Asset relinking (File ▸ Relink…) ────────────────────────────────────────
+
+  async getAssetConfig(): Promise<{ success: boolean; assetPaths?: AssetPaths; error?: string }> {
+    return this.editorBridge.editorGetAssetConfig();
+  }
+
+  async saveAssetConfig(assetPaths: AssetPaths): Promise<{ success: boolean; error?: string }> {
+    return this.editorBridge.editorSaveAssetConfig(assetPaths);
+  }
+
+  async searchFilesRecursive(opts: { rootPath: string; filenames: string[]; maxDepth?: number }):
+    Promise<{ success: boolean; foundFiles?: Record<string, string>; error?: string }> {
+    return this.editorBridge.editorSearchFilesRecursive(opts);
+  }
+
+  // ── Projects registry ───────────────────────────────────────────────────────
+
+  async readProjectsRegistry(): Promise<ProjectsRegistry> {
+    return this.editorBridge.readProjectsRegistry();
+  }
+
+  async writeProjectsRegistry(registry: ProjectsRegistry): Promise<{ success: boolean }> {
+    return this.editorBridge.writeProjectsRegistry(registry);
+  }
+
+  async scanProjectFolder(folderPath: string): Promise<ProjectScanResult> {
+    return this.editorBridge.scanProjectFolder(folderPath);
+  }
+
+  /**
+   * Delete the local copy of a week folder and drop every registry row under it.
+   *
+   * Named apart from the port member (`deleteLocalWeek`) for the same reason as
+   * `editorCancelJob`: the channel is `editor:delete-local-week`, and this half of the
+   * service is named after its channels. REJECTS with the main process's verbatim reason —
+   * that message is what the sidebar's confirm row shows.
+   */
+  async editorDeleteLocalWeek(payload: { weekPath: string }): Promise<DeleteLocalWeekResult> {
+    return this.editorBridge.editorDeleteLocalWeek(payload);
+  }
+
+  // ── Processing (turning a raw project into an editable one) ─────────────────
+
+  async autoDetectAudio(masterVideoPath: string): Promise<{
+    success: boolean;
+    audioFiles?: { [key: string]: string };
+    videoFiles?: { [key: string]: string };
+    error?: string;
+  }> {
+    return this.editorBridge.autoDetectAudio(masterVideoPath);
+  }
+
+  /**
+   * Install state of the editor backend's downloadable components. Read by the Denoise gate
+   * (one component) and by the environment modal (all of them).
+   */
+  async listAssets(): Promise<{ success: boolean; components?: AssetComponentStatus[]; error?: string }> {
+    return this.editorBridge.listAssets();
+  }
+
+  /**
+   * Install one component. Resolves with the outcome rather than rejecting on a failed
+   * install — `ok:false` carries the main process's verbatim reason, which the environment
+   * modal prints. A missing bridge still THROWS, like every other editor method here.
+   */
+  async installAsset(id: string): Promise<AssetInstallResult> {
+    return this.editorBridge.installAsset(id);
+  }
+
+  /** Abort an install in flight. A no-op when that component is not installing. */
+  async cancelAsset(id: string): Promise<{ success: boolean }> {
+    return this.editorBridge.cancelAsset(id);
+  }
+
+  /** Install every REQUIRED component that is missing. Empty `failed` is the only success. */
+  async ensureRequiredAssets(): Promise<{ success: boolean; ok?: boolean; failed?: string[]; error?: string }> {
+    return this.editorBridge.ensureRequiredAssets();
+  }
+
+  /** Progress ticks for whichever install is running, in this window. */
+  onAssetProgress(callback: (p: AssetInstallProgress) => void): void {
+    this.editorBridge.onAssetProgress((p) => this.ngZone.run(() => callback(p)));
+  }
+
+  removeAssetProgressListener(): void {
+    this.editorBridge.removeAssetProgressListener();
+  }
+
+  async executeWorkflow(options: any): Promise<any> {
+    return this.editorBridge.executeWorkflow(options);
+  }
+
+  /** Named apart from `cancelJob` above, which cancels a METADATA job on its own channel. */
+  async editorCancelJob(jobId: string): Promise<any> {
+    return this.editorBridge.editorCancelJob(jobId);
+  }
+
+  async sendSkipSignal(): Promise<void> {
+    return this.editorBridge.sendSkipSignal();
+  }
+
+  /**
+   * Workflow event streams, fed by the bridge listeners the first time anything subscribes.
+   * Registered lazily on purpose: the main window never runs a workflow, and attaching editor
+   * listeners in the constructor would make every main-window boot depend on the editor half
+   * of the preload being present.
+   */
+  getWorkflowOutput(): Observable<{ jobId: string; type: string; data: string }> {
+    this.ensureWorkflowListeners();
+    return this.workflowOutput$.asObservable();
+  }
+
+  getWorkflowComplete(): Observable<{ jobId: string; exitCode: number; result?: any }> {
+    this.ensureWorkflowListeners();
+    return this.workflowComplete$.asObservable();
+  }
+
+  private workflowOutput$ = new Subject<{ jobId: string; type: string; data: string }>();
+  private workflowComplete$ = new Subject<{ jobId: string; exitCode: number; result?: any }>();
+  private workflowListenersAttached = false;
+
+  private ensureWorkflowListeners(): void {
+    if (this.workflowListenersAttached) return;
+    const bridge = this.editorBridge;      // throws by name when there is no bridge
+    this.workflowListenersAttached = true;
+    bridge.onWorkflowOutput((d) => this.ngZone.run(() => this.workflowOutput$.next(d)));
+    bridge.onWorkflowComplete((d) => this.ngZone.run(() => this.workflowComplete$.next(d)));
+  }
+
+  // ── Titles handoff (editor → main window) ───────────────────────────────────
+
+  /**
+   * (Editor window) Push each picked story to the main window's Inputs queue as its own item.
+   * `chapters` rides along for the saved report only; it is never joined to `subjects`, which
+   * are the only lines the titling model is shown.
+   */
+  async sendSubjectsToTitles(payload: { handoffs: TitleHandoff[] }): Promise<{ success: boolean }> {
+    return this.editorBridge.sendSubjectsToTitles(payload);
+  }
+
+  /**
+   * (Main window) Drain whatever the editor parked while this window was not listening.
+   * Delivered ONCE — the main process clears the park on read. Empty array = nothing waiting.
+   */
+  async takePendingTitleSubjects(): Promise<TitleHandoff[]> {
+    return this.editorBridge.takePendingTitleSubjects();
+  }
+
+  /** (Main window) Fires when the editor hands subjects over while this window is running. */
+  onTitlesSubjects(callback: (handoffs: TitleHandoff[]) => void): void {
+    this.editorBridge.onTitlesSubjects((h) => this.ngZone.run(() => callback(h)));
+  }
+
+  /** Detach the handoff listener. The main window keeps it for its whole life, so nothing
+   *  calls this today; it exists because a subscription without a teardown is a leak
+   *  waiting for the first caller who does need one. */
+  removeTitlesSubjectsListener(): void {
+    this.editorBridge.removeTitlesSubjectsListener();
+  }
+
+  // ── Backup archive ──────────────────────────────────────────────────────────
+
+  async archiveStatus(): Promise<ArchiveStatus> {
+    return this.editorBridge.archiveStatus();
+  }
+
+  async archiveConnect(): Promise<ArchiveStatus> {
+    return this.editorBridge.archiveConnect();
+  }
+
+  async archiveSync(payload: { items: Array<{ localPath: string; kind: 'week' | 'day' }> }): Promise<{ ids: string[] }> {
+    return this.editorBridge.archiveSync(payload);
+  }
+
+  async archiveCancel(payload: { paths: string[] }): Promise<{ canceled: number }> {
+    return this.editorBridge.archiveCancel(payload);
+  }
+
+  async archiveCheck(payload: { localPath: string; kind: 'week' | 'day' }): Promise<ArchiveCheck> {
+    return this.editorBridge.archiveCheck(payload);
+  }
+
+  /** Week folders on the NAS. REJECTS when it is unreachable — the caller shows no ghosts. */
+  async archiveListRemoteWeeks(): Promise<RemoteWeekListing> {
+    return this.editorBridge.archiveListRemoteWeeks();
+  }
+
+  /** Remove a week from the NAS. REJECTS with the main process's verbatim reason. */
+  async archiveDeleteRemoteWeek(payload: { path: string }): Promise<DeleteRemoteWeekResult> {
+    return this.editorBridge.archiveDeleteRemoteWeek(payload);
+  }
+
+  onArchiveQueue(callback: (q: ArchiveQueue) => void): void {
+    this.editorBridge.onArchiveQueue((q) => this.ngZone.run(() => callback(q)));
+  }
+
+  onArchiveProgress(callback: (p: ArchiveProgress) => void): void {
+    this.editorBridge.onArchiveProgress((p) => this.ngZone.run(() => callback(p)));
+  }
+
+  onArchiveComplete(callback: (r: ArchiveResult) => void): void {
+    this.editorBridge.onArchiveComplete((r) => this.ngZone.run(() => callback(r)));
+  }
+
+  removeArchiveListeners(): void {
+    this.editorBridge.removeArchiveListeners();
   }
 }

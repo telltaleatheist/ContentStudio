@@ -1,0 +1,518 @@
+<!-- The editor shell is ALWAYS mounted. Loading, a failed load, and the no-session
+     state are all WORKSPACE states (see .top-region below): switching projects must not
+     tear down the topbar or the projects pane — only the session panes reload. -->
+<div class="editor">
+  <!-- Top bar. -->
+  <header class="topbar">
+    <div class="menu-wrap">
+      <button class="menu-btn" [class.open]="menuOpen" (click)="toggleMenu()"
+              title="File menu" aria-label="File menu">File ▾</button>
+      <div class="menu-dropdown" *ngIf="menuOpen">
+        <button class="menu-item" [disabled]="!canExport()"
+                (click)="onExportFromMenu()">
+          <span class="menu-item-label">{{ exporting ? 'Exporting…' : 'Export…' }}</span>
+          <span class="menu-shortcut">⌘E</span>
+        </button>
+        <button class="menu-item" (click)="onOpenFromMenu()">
+          <span class="menu-item-label">Open…</span>
+        </button>
+        <button class="menu-item" (click)="onAddProjectFromMenu()">
+          <span class="menu-item-label">Add Project…</span>
+        </button>
+        <button class="menu-item" (click)="onRelinkFromMenu()">
+          <span class="menu-item-label">Relink…</span>
+        </button>
+        <button class="menu-item" (click)="onEnvironmentFromMenu()">
+          <span class="menu-item-label">Environment…</span>
+        </button>
+      </div>
+    </div>
+    <span class="session-name">{{ sessionName }}</span>
+    <span class="edit-indicator" *ngIf="cuts.length > 0">
+      {{ cuts.length }} {{ cuts.length === 1 ? 'cut' : 'cuts' }} · {{ removedLabel }} removed
+    </span>
+    <span class="topbar-spacer"></span>
+    <!-- Mic-mute-under-screen-audio master switch. ON by default; turning it off makes the
+         next export leave every mic clip enabled (nothing is muted). Same state as the
+         checkbox in the export chooser — this is just the always-visible handle on it. -->
+    <button class="mic-mute-toggle" [class.off]="!muteMicDuringScreen"
+            [disabled]="!canMuteMicDuringScreen()"
+            (click)="toggleMuteMicDuringScreen()"
+            [title]="canMuteMicDuringScreen()
+              ? 'On exports: wherever the screen audio speaks and the mic does not, the mic clip is split and the block is disabled (darkened in FCPX — press V to bring one back). Turn off to export with nothing muted.'
+              : 'Transcribe the session first — the mute blocks come from the transcript'">
+      Mic mute: {{ muteMicDuringScreen ? 'On' : 'Off' }}
+    </button>
+  </header>
+
+  <!-- Invisible backdrop: an outside click closes the File menu. -->
+  <div class="menu-backdrop" *ngIf="menuOpen" (click)="menuOpen = false"></div>
+
+  <!-- Story right-click menu (list row or timeline ribbon). Backdrop swallows the next click,
+       including a right-click, so the menu always closes on the first dismissal. -->
+  <div class="menu-backdrop" *ngIf="storyCtxMenu" (click)="closeStoryCtxMenu()"
+       (contextmenu)="$event.preventDefault(); closeStoryCtxMenu()"></div>
+  <div class="story-ctx" *ngIf="storyCtxMenu"
+       [style.left.px]="storyCtxMenu!.x" [style.top.px]="storyCtxMenu!.y">
+    <button (click)="mergeFromCtxMenu()" [disabled]="!canMergeStories">
+      {{ canMergeStories ? 'Merge ' + storyMergeIds.size + ' stories' : 'Merge (pick 2+ with ⌘-click)' }}
+    </button>
+    <button (click)="sendStoryToMetadataFromCtxMenu()" [disabled]="!storyMergeIds.size || analyzing"
+            title="Send every picked story's chapters to the Metadata page, one item each — chapters are derived first for a story that has none, and re-derived if its regions changed since they were. If any picked story can't be sent, none are.">
+      {{ storyMergeIds.size > 1 ? 'Send ' + storyMergeIds.size + ' stories to Metadata' : 'Send to Metadata' }}
+    </button>
+    <button (click)="closeStoryCtxMenu()">Cancel</button>
+  </div>
+
+  <!-- Export dialogs: the chooser (what to export) and the result/error modal. The child is
+       presentational — every flag and the export itself stay here. -->
+  <app-editor-export-modals
+    [chooserOpen]="exportChooserOpen"
+    [resultPath]="exportResultPath"
+    [error]="exportError"
+    [micMuteBlocks]="exportMicMuteBlocks"
+    [cutCount]="cuts.length"
+    [storyCount]="stories.length"
+    [hasStories]="hasStories()"
+    [transcriptReady]="transcriptState === 'ready'"
+    [canMuteMic]="canMuteMicDuringScreen()"
+    [(muteMic)]="muteMicDuringScreen"
+    (chooserClosed)="exportChooserOpen = false"
+    (choice)="onExportChoice($event)"
+    (showInFolder)="onShowExport()"
+    (dismissed)="closeExportModal()"></app-editor-export-modals>
+
+  <!-- Process a raw project without leaving the editor. Closing it does not stop the run —
+       the pane keeps showing the progress, and clicking that project reopens onto it. -->
+  <app-project-setup-modal *ngIf="setupEntry"
+    [entry]="setupEntry"
+    [attachRunning]="setupAttachRunning"
+    (started)="onProjectSetupStarted()"
+    (closed)="onProjectSetupClosed()"
+    (openEnvironment)="onEnvironmentFromSetup()"
+    (completed)="onProjectSetupCompleted($event)"></app-project-setup-modal>
+
+  <!-- File ▸ Relink…: repoint the overlay PNGs the compound generators composite with. Host
+       state, not session state — it is reachable with no project open. -->
+  <app-editor-relink-modal *ngIf="relinkOpen"
+    (closed)="onRelinkClosed()"></app-editor-relink-modal>
+
+  <!-- File ▸ Environment…: the downloadable backend (ffmpeg, Python, Whisper, voice isolation).
+       Opens itself on startup when a REQUIRED component is missing, with the reason as its
+       banner and the install already running — never a silent background download. Declared
+       AFTER the setup modal so it stacks above the one that can open it (the Denoise gate). -->
+  <app-editor-environment-modal *ngIf="environmentOpen"
+    [banner]="environmentBanner"
+    [autoEnsure]="environmentAutoEnsure"
+    (closed)="onEnvironmentClosed()"></app-editor-environment-modal>
+
+  <!-- Background activity HUD (FCPX-style). A floating, draggable dock: opened from the button
+       in the Edit/Stories tab row and auto-opened when transcription starts; drag it by the
+       header to reposition; closed only with its ×. Lists whatever is running: transcription,
+       export, waveform analysis, the story-analysis queue — or nothing. -->
+  <app-editor-activity-dock *ngIf="activityOpen"
+    [x]="activityX" [y]="activityY"
+    [transcribing]="transcriptState === 'running'"
+    [transcribeProgress]="transcribeProgress"
+    [transcribeMessage]="transcribeMessage"
+    [transcribeEtaLabel]="transcribeEtaLabel"
+    [exporting]="exporting"
+    [waveformActive]="waveformActive"
+    [waveformPct]="waveformPct"
+    [peaksBurstDone]="peaksBurstDone"
+    [peaksBurstTotal]="peaksBurstTotal"
+    [analyzing]="analyzing"
+    [analyzeMessage]="analyzeMessage"
+    [analyzeError]="analyzeError"
+    [aiPhase]="aiPhase"
+    [aiProgressTotal]="aiProgressTotal"
+    [aiProgressPct]="aiProgressPct"
+    [queue]="activityQueue"
+    [pending]="activityPending"
+    [pendingMore]="activityPendingMore"
+    [hasBackgroundActivity]="hasBackgroundActivity"
+    (closed)="activityOpen = false"
+    (moved)="activityX = $event.x; activityY = $event.y"
+    (stopRequested)="stopAnalysis()"
+    (skipRunningRequested)="skipRunningActivity()"
+    (cancelPendingRequested)="cancelPendingActivity($event)"></app-editor-activity-dock>
+
+  <!-- Split modal: assign AI-detected chapters to stories (any non-contiguous subset). -->
+  <div class="modal-backdrop" *ngIf="splitModalOpen" (click)="cancelSplit()">
+    <div class="split-modal" (click)="$event.stopPropagation()">
+      <div class="split-head">
+        <span class="split-title">Split “{{ splitStoryTitle }}” into chapters</span>
+        <select class="split-model" [value]="selectedOllamaModel"
+                (change)="onOllamaModelChange($any($event.target).value)"
+                title="Model used for chapter detection — a larger model finds more subject breaks">
+          <option *ngIf="ollamaModels.length === 0" value="">No models — is Ollama running?</option>
+          <option *ngFor="let m of ollamaModels" [value]="m.id">{{ m.name }}</option>
+        </select>
+        <button class="split-rerun" (click)="startSplit()"
+                [disabled]="splitRunning || !selectedOllamaModel" title="Detect chapters with the chosen model">
+          {{ splitRunning ? '…' : (splitChapters.length ? 'Re-run' : 'Start') }}
+        </button>
+        <button class="split-x" (click)="cancelSplit()" title="Close">×</button>
+      </div>
+
+      <!-- Idle: nothing runs until Start is pressed (no model loads on open). -->
+      <div class="split-idle" *ngIf="!splitRunning && !splitError && !splitChapters.length">
+        Pick a model above, then hit <b>Start</b> to detect chapters for this story.
+      </div>
+      <div class="split-loading" *ngIf="splitRunning">
+        <div class="split-loading-text">{{ aiPhase || 'Detecting chapters' }} · {{ selectedOllamaModel }}</div>
+        <div class="split-progress">
+          <div class="split-progress-fill" [class.indeterminate]="aiProgressTotal <= 0"
+               [style.width.%]="aiProgressTotal > 0 ? aiProgressPct : 100"></div>
+        </div>
+        <div class="split-progress-pct" *ngIf="aiProgressTotal > 0">
+          step {{ aiProgressDone }} / {{ aiProgressTotal }} · {{ aiProgressPct }}%
+        </div>
+        <button class="split-stop" (click)="stopAnalysis()" title="Stop detecting chapters">Stop</button>
+      </div>
+      <div class="split-error" *ngIf="splitError && !splitRunning">{{ splitError }}</div>
+
+      <div class="split-body" *ngIf="!splitRunning && !splitError && splitChapters.length">
+        <!-- Target stories (buckets). Click one to make it the assignment target. -->
+        <div class="split-buckets">
+          <div class="split-bucket" *ngFor="let b of splitBuckets; let bi = index"
+               [class.active]="bi === splitActiveBucket"
+               (click)="setSplitActiveBucket(bi)">
+            <span class="split-bucket-swatch" [style.background]="splitBucketColor(bi)"></span>
+            <input class="split-bucket-title" [value]="b.title"
+                   (click)="$event.stopPropagation()"
+                   (input)="onSplitBucketTitle(bi, $any($event.target).value)"
+                   placeholder="Story title" />
+            <span class="split-bucket-count">{{ splitBucketCount(bi) }}</span>
+            <span class="split-bucket-del" *ngIf="bi > 0"
+                  (click)="removeSplitBucket(bi); $event.stopPropagation()" title="Remove story">×</span>
+          </div>
+          <button class="split-add" (click)="addSplitBucket()">+ Add story</button>
+        </div>
+
+        <!-- Chapters: click to assign to the active story (re-click to exclude). -->
+        <div class="split-chapters">
+          <div class="split-chapter" *ngFor="let c of splitChapters; let ci = index"
+               [class.excluded]="splitAssign[ci] < 0"
+               (click)="clickSplitChapter(ci)"
+               [style.borderLeftColor]="splitAssign[ci] >= 0 ? splitBucketColor(splitAssign[ci]) : 'transparent'">
+            <span class="split-chapter-time">{{ chapterClock(c.startSeconds) }}–{{ chapterClock(c.endSeconds) }}</span>
+            <span class="split-chapter-label">{{ c.label }}</span>
+            <span class="split-chapter-badge" *ngIf="splitAssign[ci] >= 0"
+                  [style.background]="splitBucketColor(splitAssign[ci])">{{ splitAssign[ci] + 1 }}</span>
+            <span class="split-chapter-badge scrap" *ngIf="splitAssign[ci] < 0">scrap</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="split-foot" *ngIf="!splitRunning">
+        <span class="split-coverage" *ngIf="splitChapters.length && !splitError">{{ splitCoverage }}</span>
+        <span class="split-cached" *ngIf="splitFromCache && splitChapters.length" title="Showing the saved analysis — Re-run to re-detect with the model">cached · Re-run to refresh</span>
+        <span class="split-scrap-note" *ngIf="splitChapters.length && splitScrapCount > 0">{{ splitScrapCount }} unassigned</span>
+        <span class="split-hint">Pick a story above, then click chapters to add them.</span>
+        <button class="modal-btn" (click)="cancelSplit()">Cancel</button>
+        <button class="modal-btn primary" (click)="confirmSplit()"
+                [disabled]="!splitChapters.length || !!splitError || !splitAnyAssigned"
+                title="Assign at least one chapter to a story">Apply</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Top region: project picker | transcript | viewer, with two vertical splitters. -->
+  <section class="top-region" #topRegion>
+    <!-- Project picker (far-left FCPX-libraries column). The pane, its width and its splitter
+         stay here; the list itself is the projects sidebar, backed by the on-disk registry.
+         Opening loads INTO THIS WINDOW via bootstrap — no second window. -->
+    <aside class="project-pane" [style.width.px]="projectWidth">
+      <app-project-sidebar
+        [activeZipPath]="currentZipPath"
+        [busyPath]="projectBusyPath"
+        [busyPercent]="projectBusyPercent"
+        (openRequested)="onProjectOpen($event)"
+        (processRequested)="onProjectProcess($event)"></app-project-sidebar>
+    </aside>
+
+    <div class="splitter splitter-v splitter-p"
+         [class.dragging]="draggingSplitP"
+         (mousedown)="onSplitPMouseDown($event)"></div>
+
+    <!-- Workspace states, mutually exclusive with the session panes below. The projects
+         pane and topbar above stay mounted through all of them. -->
+
+    <!-- Loading: name what we're doing while Python parses. -->
+    <div class="loading-workspace" *ngIf="loading">
+      <div class="spinner"></div>
+      <div class="loading-msg">{{ loadingMessage }}</div>
+    </div>
+
+    <!-- Failed load: the message verbatim; the sidebar stays live, so another project
+         (or the same one — retrying is allowed while this shows) can be clicked. -->
+    <div class="error-workspace" *ngIf="!loading && errorMessage">
+      <div class="error-card">
+        <div class="error-mark">⚠️</div>
+        <div class="error-title">Could not open this session</div>
+        <div class="error-body">{{ errorMessage }}</div>
+        <button class="error-back" (click)="dismissError()">Dismiss</button>
+      </div>
+    </div>
+
+    <!-- No session loaded (blank open from the side nav, or after dismissing a failed
+         load): the workspace is a hint instead of panes. -->
+    <div class="empty-workspace" *ngIf="!loading && !errorMessage && !manifest">
+      <div class="empty-card">
+        <div class="empty-mark">🎞️</div>
+        <div class="empty-title">No session loaded</div>
+        <div class="empty-body">
+          Pick a project on the left, or add one — drop its folder onto the list,
+          or use File ▸ Add Project…
+        </div>
+        <button class="empty-add" (click)="onAddProjectFromMenu()">Add Project…</button>
+      </div>
+    </div>
+
+    <!-- Left pane: Edit (transcript) / Stories tabs. The Stories tab IS story mode — while
+         it's active, timeline drags mark story regions. -->
+    <div class="transcript-pane" *ngIf="sessionReady" [style.flexBasis.%]="splitV * 100">
+      <div class="pane-tabs">
+        <button class="pane-tab" [class.active]="!storyMode" (click)="setStoryMode(false)">Edit</button>
+        <button class="pane-tab" [class.active]="storyMode" (click)="setStoryMode(true)">
+          Stories<ng-container *ngIf="hasStories()"> ({{ stories.length }})</ng-container>
+        </button>
+        <button class="pane-activity-btn" [class.busy]="hasBackgroundActivity"
+                [class.on]="activityOpen" (click)="toggleActivity()"
+                title="Background activity — transcription, export, waveform analysis">
+          <span class="activity-ico">◴</span>
+          <span class="activity-dot" *ngIf="hasBackgroundActivity"></span>
+        </button>
+      </div>
+
+      <!-- Stories tab: analyze toolbar + story list (color notch / sequential number / editable
+           title / total length / split / delete). Clicking a row makes it the active paint
+           target; clicking the color notch selects the whole story; Split opens the chapter
+           modal. -->
+      <div class="stories-pane" *ngIf="storyMode">
+        <div class="stories-toolbar">
+          <select class="story-model" [value]="selectedOllamaModel"
+                  (change)="onOllamaModelChange($any($event.target).value)"
+                  [title]="ollamaConnected ? 'Local Ollama model used for analysis' : 'Ollama not detected — start it, then refresh'">
+            <option *ngIf="ollamaModels.length === 0" value="">No models — is Ollama running?</option>
+            <option *ngFor="let m of ollamaModels" [value]="m.id">{{ m.name }}</option>
+          </select>
+          <button class="story-refresh" (click)="refreshOllamaModels()" title="Refresh model list">⟳</button>
+          <button class="story-analyze" (click)="analyzeTimeline()"
+                  [disabled]="analyzing || !selectedOllamaModel || transcriptState !== 'ready'"
+                  [title]="hasStories()
+                      ? 'For each story: derive its chapters, then a working title from them. Skips stories whose chapters are already current and titles you typed yourself.'
+                      : 'Split the whole timeline into stories by subject'">
+            {{ analyzing ? 'Analyzing…' : (hasStories() ? 'Chapter + title' : 'Auto-split') }}
+          </button>
+          <button class="story-merge" *ngIf="hasStories()" (click)="mergeSelectedStories()"
+                  [disabled]="!canMergeStories"
+                  [title]="canMergeStories
+                      ? 'Merge the picked stories into the first one'
+                      : '⌘-click two or more stories — in this list or on the timeline ribbon — to merge them'">
+            Merge{{ storyMergeIds.size >= 2 ? ' ' + storyMergeIds.size : '' }}
+          </button>
+          <button class="story-titles" *ngIf="hasStories()" (click)="sendAllStoriesToTitles()"
+                  title="Send every story to the Metadata queue — each becomes its own item carrying its own chapter list. Chapters are derived first where missing or stale.">
+            → Metadata
+          </button>
+        </div>
+        <div class="stories-hint" *ngIf="storyMergeIds.size">
+          {{ storyMergeIds.size }} picked for merging — ⌘-click more, or hit Merge. Any plain click clears the pick.
+        </div>
+        <div class="stories-hint active-target" *ngIf="!storyMergeIds.size && activeStoryId">
+          Drags are going into <b>{{ activeStoryTitle }}</b>. Click it again, click empty
+          timeline, or press Escape to deselect — then the next drag starts a new story.
+        </div>
+        <div class="stories-hint" *ngIf="!storyMergeIds.size && !activeStoryId">
+          Drag on the timeline to start a new story — edges take whole clips. Click a story
+          below (or its block in the strip) to add more regions to that one instead. Need a
+          mid-clip boundary? Cut it with the Blade (B) first.
+        </div>
+        <div class="stories-empty" *ngIf="!hasStories()">No stories yet — drag on the timeline to mark one, or Auto-split.</div>
+        <ng-container *ngFor="let s of stories">
+        <div class="story-drop-line" *ngIf="dragStoryId && dropBeforeId === s.id"></div>
+        <div class="story-row"
+             [class.active]="s.id === activeStoryId"
+             [class.selected]="storySelection?.storyId === s.id"
+             [class.merge-picked]="storyMergeIds.has(s.id)"
+             [class.dragging]="dragStoryId === s.id"
+             (mousedown)="onStoryRowMouseDown(s, $event)"
+             (click)="onStoryRowClick(s, $event)"
+             (contextmenu)="onStoryRowContextMenu(s, $event)"
+             (dragover)="onStoryDragOver(s, $event)"
+             (drop)="onStoryDrop($event)"
+             [title]="s.id === activeStoryId ? 'Active — drags add regions here' : 'Click to make active · ⌘-click to pick for merging'">
+          <span class="story-swatch" [style.background]="storyColor(s.number)"
+                (click)="onStorySwatchClick(s, $event)"
+                title="Select the whole story"></span>
+          <span class="story-num" draggable="true"
+                (dragstart)="onStoryDragStart(s, $event)" (dragend)="onStoryDragEnd()"
+                (click)="onStoryNumClick($event)"
+                title="Drag to reorder — story order is the order of the projects in the exported XML">{{ s.number }}</span>
+          <input class="story-title" id="story-title-{{ s.id }}" [value]="s.title"
+                 (input)="onStoryTitleInput(s, $any($event.target).value)"
+                 (keydown.enter)="blurStoryInput($event)" placeholder="Story title" />
+          <span class="story-tc">{{ storyDuration(s) }}</span>
+          <!-- Chapter state, three ways. Stale/absent are marked because a story is what owns
+               chapters: redraw its boundary and its markers describe a span the upload no longer
+               contains. Sending to Metadata re-derives either, so this reads as "will be done"
+               rather than as an error. -->
+          <ng-container [ngSwitch]="storyChapterState(s)">
+            <span class="story-chapters" *ngSwitchCase="'fresh'"
+                  title="Chapters derived for this story's current regions">
+              {{ s.chapters?.length }} ch
+            </span>
+            <span class="story-chapters stale" *ngSwitchCase="'stale'"
+                  title="These chapters describe a different span — the story's regions have changed since they were derived, or they came from the whole-recording pass. Send to Metadata re-derives them.">
+              {{ s.chapters?.length }} ch ⟳
+            </span>
+            <!-- An empty story is skipped rather than nagged at: it has no regions to chapter,
+                 and it is already flagged "empty" beside this. -->
+            <ng-container *ngSwitchCase="'none'">
+              <span class="story-chapters missing" *ngIf="!isStoryEmpty(s)"
+                    title="No chapters yet — Send to Metadata derives them for this story.">
+                no ch
+              </span>
+            </ng-container>
+          </ng-container>
+          <!-- Chapter starts that fell back to the raw ±45s junction. Nothing else can show this:
+               the description line reads identically to a well-placed one, and the symptom only
+               appears once the video is published and a marker lands half a minute off. -->
+          <span class="story-chapters approx" *ngIf="storyApproxChapters(s) as n"
+                [title]="n + ' of these chapter starts could not be pinned to a quoted sentence, so they sit on the raw ±45s estimate instead of the usual ~5s. Worth checking before publishing.'">
+            ±{{ n }}
+          </span>
+          <span class="story-empty" *ngIf="isStoryEmpty(s)" title="No regions">empty</span>
+          <button class="story-titles" (click)="sendStoryToTitles(s); $event.stopPropagation()"
+                  [disabled]="!canSendStoryToTitles(s)"
+                  title="Send just this story to the Metadata queue. Its chapters are derived first if it has none, and re-derived if its regions changed since they were.">→ M</button>
+          <button class="story-split" (click)="openSplitModal(s); $event.stopPropagation()"
+                  [disabled]="isStoryEmpty(s) || transcriptState !== 'ready'"
+                  title="Split this story into chapters">Split</button>
+          <button class="story-del" (click)="deleteStory(s); $event.stopPropagation()" title="Delete story">×</button>
+        </div>
+        </ng-container>
+        <!-- End-of-list drop target: catches a drop below the last row so a story can be moved
+             to the end, which no row's own hit area covers. -->
+        <div class="story-drop-tail" *ngIf="dragStoryId"
+             (dragover)="onStoryPaneDragOver($event)" (drop)="onStoryDrop($event)">
+          <div class="story-drop-line" *ngIf="dropBeforeId === null"></div>
+        </div>
+      </div>
+
+      <!-- Transcript body: the four lifecycle states. Data, filtering and the karaoke index
+           all stay here; the child renders and reports intent. -->
+      <app-transcript-pane *ngIf="!storyMode"
+        [state]="transcriptState"
+        [error]="transcriptError"
+        [progress]="transcribeProgress"
+        [message]="transcribeMessage"
+        [etaLabel]="transcribeEtaLabel"
+        [tracks]="transcriptTracks"
+        [sourceFilter]="sourceFilter"
+        [searchQuery]="searchQuery"
+        [groups]="visibleGroups"
+        [activeGroupIdx]="activeGroupIdx"
+        [selectedGroupStart]="selectedGroupStart"
+        [selectedGroupEnd]="selectedGroupEnd"
+        (transcribeRequested)="startTranscription()"
+        (cancelRequested)="cancelTranscription()"
+        (sourceFilterChanged)="setSourceFilter($event)"
+        (searchChanged)="onSearchInput($event)"
+        (searchCleared)="clearSearch()"
+        (groupSelected)="selectGroup($event)"></app-transcript-pane>
+    </div>
+
+    <div class="splitter splitter-v" *ngIf="sessionReady"
+         [class.dragging]="draggingSplitV"
+         (mousedown)="onSplitVMouseDown($event)"></div>
+
+    <!-- Viewer on pure black, letterboxed, timecode centered beneath. -->
+    <section class="viewer-wrap" *ngIf="sessionReady">
+      <div class="viewer-box">
+        <video #viewerVideo class="viewer-video" muted playsinline></video>
+      </div>
+      <div class="transport-bar">
+        <button class="play-btn" (click)="togglePlayback()"
+                [title]="isPlaying ? 'Pause (Space)' : 'Play (Space)'"
+                [attr.aria-label]="isPlaying ? 'Pause' : 'Play'">
+          <span class="play-ico">{{ isPlaying ? '⏸' : '▶' }}</span>
+        </button>
+        <div class="timecode">{{ timecode }}<span class="speed-badge" *ngIf="isPlaying && playbackRate !== 1"> · {{ playbackRate }}×</span></div>
+      </div>
+      <div class="transport-error" *ngIf="transportError">{{ transportError }}</div>
+    </section>
+  </section>
+
+  <div class="splitter splitter-h" *ngIf="sessionReady"
+       [class.dragging]="draggingSplitH"
+       (mousedown)="onSplitHMouseDown($event)"></div>
+
+  <!-- Timeline pane. -->
+  <section class="timeline-pane" *ngIf="sessionReady" [style.flexBasis.%]="splitH * 100">
+    <!-- Toolbar strip above the ruler: Select / Blade / Story tools. -->
+    <div class="timeline-toolbar">
+      <div class="tool-toggle">
+        <button class="tool-btn" [class.active]="toolMode === 'select'"
+                (click)="setTool('select')" title="Select (A)" aria-label="Select tool">
+          <span class="tool-ico">⌖</span>
+        </button>
+        <button class="tool-btn" [class.active]="toolMode === 'blade'"
+                (click)="setTool('blade')" title="Blade (B)" aria-label="Blade tool">
+          <span class="tool-ico">▮</span>
+        </button>
+        <button class="tool-btn" [class.active]="toolMode === 'story'"
+                (click)="setTool('story')" title="Story (S)" aria-label="Story tool">
+          <span class="tool-ico">▤</span>
+        </button>
+      </div>
+    </div>
+    <div class="timeline-body">
+      <!-- Track-header gutter. -->
+      <div class="track-gutter" [style.width.px]="GUTTER_W">
+        <div class="gutter-ruler-spacer"></div>
+        <!-- Mirrors the canvas stories-ribbon band (0px with no stories) so the offset below
+             — and every track label — stays aligned with the lanes. -->
+        <div class="gutter-ribbon-spacer" [style.height.px]="ribbonHeight"></div>
+        <!-- Matches the canvas vertical-center offset so gutter labels align with lanes. -->
+        <div class="gutter-offset" [style.height.px]="trackTopOffset"></div>
+        <div class="gutter-track" *ngFor="let row of trackRows"
+             [style.height.px]="row.height"
+             [class.video]="row.track.kind === 'video'"
+             [class.audio]="row.track.kind === 'audio'">
+          <span class="gutter-label">{{ prettyLabel(row.track.label) }}</span>
+        </div>
+      </div>
+
+      <!-- Canvas: ruler + tracks + playhead. -->
+      <div class="canvas-wrap">
+        <canvas #timelineCanvas
+                [class.tool-blade]="toolMode === 'blade'"
+                [class.tool-story]="storyMode"
+                (mousedown)="onCanvasMouseDown($event)"
+                (contextmenu)="onCanvasContextMenu($event)"
+                (mousemove)="onCanvasHover($event)"
+                (wheel)="onWheel($event)"></canvas>
+      </div>
+    </div>
+
+    <!-- Footer: scrollbar + zoom. -->
+    <div class="timeline-footer">
+      <div class="scrollbar-track">
+        <div class="scrollbar-thumb"
+             [style.left.%]="scrollbarThumb.left"
+             [style.width.%]="scrollbarThumb.width"
+             (mousedown)="onScrollbarThumbMouseDown($event)"></div>
+      </div>
+      <div class="zoom-control">
+        <span class="zoom-icon">🔍</span>
+        <input type="range" class="zoom-slider"
+               min="0" max="1000" step="1"
+               [value]="zoomSliderPos"
+               (input)="onZoomSlider($any($event.target).value)" />
+      </div>
+    </div>
+  </section>
+</div>

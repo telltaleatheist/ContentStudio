@@ -10,6 +10,7 @@ import { YouTubeAuthService } from './services/youtube/youtube-auth.service';
 import { YouTubeApiService } from './services/youtube/youtube-api.service';
 import { ApiCollectorService } from './services/youtube/api-collector.service';
 import { PublishStoreService } from './services/publish/publish-store.service';
+import { stopArchiveSyncOnQuit } from './services/editor/editor-ipc';
 
 /**
  * ContentStudio - Main Electron Process
@@ -43,6 +44,22 @@ log.transports.file.archiveLog = (oldLogFile) => {
 let store: Store<any>;
 
 let mainWindow: BrowserWindow | null = null;
+
+/**
+ * The main window, or null when it is closed/destroyed.
+ *
+ * The app is no longer single-window — the timeline editor opens its own BrowserWindow —
+ * so anything that means "the main window" has to say so. `BrowserWindow.getAllWindows()[0]`
+ * used to be that, and stopped being true the moment a second window could exist: with the
+ * editor focused it can hand back the EDITOR's contents, and main-window events (progress,
+ * the titles handoff) would land in the wrong renderer.
+ *
+ * Exported as a FUNCTION, not the binding: importers read it at call time, so they see the
+ * window created after they were loaded and see null again once it closes.
+ */
+export function getMainWindow(): BrowserWindow | null {
+  return mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+}
 
 // Held so the scheduled collector loop can be stopped on quit.
 let apiCollector: ApiCollectorService | null = null;
@@ -215,6 +232,11 @@ app.on('window-all-closed', () => {
 // Cleanup before quitting
 app.on('before-quit', () => {
   log.info('Application is quitting...');
+  // An rsync spawned by the archive sync is NOT killed when this process exits — on POSIX
+  // it survives and is reparented to PID 1, and with --inplace a second rsync started on
+  // the next launch would interleave its writes into the same destination files. Stopping
+  // it here is what keeps "one at a time" true across a restart.
+  stopArchiveSyncOnQuit();
 });
 
 // Handle uncaught exceptions
