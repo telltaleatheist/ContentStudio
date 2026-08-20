@@ -470,7 +470,14 @@ function buildAdapterUserTurn(task: AdapterTask, subjects: string[]): string {
         `the adapter conditions on that list and has nothing else to work from`
     );
   }
-  return `task: ${ADAPTER_WIRE_TASK[task]}\nformat: normal\n\nVideo:\n${lines.map((s) => `- ${s}`).join('\n')}`;
+  // Titles rows in the training set carry a third header line, `target:` — the CTR tier
+  // the title should aim for (top-decile | strong | typical | weak; all 7,497 title rows
+  // have one). AutoCutStudio's reference client (title-generator.ts buildUserPrompt)
+  // sends it; this port originally dropped it, which put every titles call OFF the
+  // trained input distribution. Production asks top-decile per HEADLINE.md. Description
+  // and tags rows have no target line — adding one there would be equally off-brief.
+  const target = task === 'titles' ? '\ntarget: top-decile' : '';
+  return `task: ${ADAPTER_WIRE_TASK[task]}\nformat: normal${target}\n\nVideo:\n${lines.map((s) => `- ${s}`).join('\n')}`;
 }
 
 interface ChatMessage {
