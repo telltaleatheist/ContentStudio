@@ -4,7 +4,7 @@
   <div class="modal export-chooser" (click)="$event.stopPropagation()">
     <div class="modal-title">Export</div>
     <div class="chooser-options">
-      <button class="chooser-opt" [disabled]="cutCount === 0 && !hasStories"
+      <button class="chooser-opt"
               (click)="choice.emit('fcpxml')">
         <span class="chooser-opt-title">Master FCPXML</span>
         <span class="chooser-opt-desc" *ngIf="hasStories">
@@ -14,7 +14,9 @@
         <span class="chooser-opt-desc" *ngIf="!hasStories && cutCount > 0">
           The whole timeline with your {{ cutCount }} {{ cutCount === 1 ? 'cut' : 'cuts' }} applied
         </span>
-        <span class="chooser-opt-desc" *ngIf="!hasStories && cutCount === 0">Place a cut or mark a story first</span>
+        <span class="chooser-opt-desc" *ngIf="!hasStories && cutCount === 0">
+          The whole timeline, no cuts to apply — the mic-mute pass still runs if enabled
+        </span>
       </button>
       <button class="chooser-opt" [disabled]="!hasStories || !transcriptReady"
               (click)="choice.emit('transcripts')">

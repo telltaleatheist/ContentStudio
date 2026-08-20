@@ -298,15 +298,16 @@ def _collect_parts(root, entry_name):
     return parts, frame_seconds, total_declared
 
 
-def _validate_cuts(cuts_raw, frame_seconds, total_declared, allow_empty=False):
+def _validate_cuts(cuts_raw, frame_seconds, total_declared):
     """Validate the STDIN cut list loudly and return frame ranges as
     [(start_frame, end_frame, cut_start_seconds, cut_end_seconds), ...] (Fraction).
 
-    allow_empty is True on the per-story path (a user may mark stories without cutting)."""
+    An EMPTY list is valid on every path: an export with no cuts is still a real
+    export — the mic-mute pass may run, stories may split, and the derived master
+    FCPXML is written either way. (An empty-cuts refusal used to live here; removed
+    2026-08-20 because "nothing to subtract" is not "nothing to do".)"""
     if not isinstance(cuts_raw, list):
         raise ManifestError("cuts must be a JSON array")
-    if not cuts_raw and not allow_empty:
-        raise ManifestError("empty cuts list: nothing to export (a caller must send at least one cut)")
     cuts = []
     for i, c in enumerate(cuts_raw):
         if not isinstance(c, dict):
@@ -1540,7 +1541,7 @@ def apply_stories(tree, entry_name, cuts_raw, stories_raw, sequence_raw=None):
     reorder is a property of the timeline, so it must survive the split into stories."""
     root = tree.getroot()
     parts, frame_seconds, total_declared = _collect_parts(root, entry_name)
-    cuts = _validate_cuts(cuts_raw, frame_seconds, total_declared, allow_empty=True)
+    cuts = _validate_cuts(cuts_raw, frame_seconds, total_declared)
     stories = _validate_stories(stories_raw, frame_seconds, total_declared)
     spans = (None if sequence_raw is None
              else _validate_sequence(sequence_raw, cuts, frame_seconds, total_declared))
@@ -1627,9 +1628,7 @@ def apply_sequence(tree, entry_name, cuts_raw, sequence_raw):
     map."""
     root = tree.getroot()
     parts, frame_seconds, total_declared = _collect_parts(root, entry_name)
-    # A pure reorder with no cuts is a real edit, so the empty-cuts refusal (which exists to
-    # reject a no-op cut export) must not fire here: the sequence itself is the edit.
-    cuts = _validate_cuts(cuts_raw, frame_seconds, total_declared, allow_empty=True)
+    cuts = _validate_cuts(cuts_raw, frame_seconds, total_declared)
     order = _validate_sequence(sequence_raw, cuts, frame_seconds, total_declared)
     check_align = _inputs_frame_aligned(parts, frame_seconds)
     if not check_align:
@@ -1720,7 +1719,7 @@ def export_transcripts(zip_path, cuts_raw, stories_raw, sequence_raw=None):
             "transcribe the session before exporting story transcripts")
     speaker_map = _speaker_map(sidecar['tracks'])
 
-    cuts = _validate_cuts(cuts_raw, frame_seconds, total_declared, allow_empty=True)
+    cuts = _validate_cuts(cuts_raw, frame_seconds, total_declared)
     stories = _validate_stories(stories_raw, frame_seconds, total_declared)
     # The transcript must be rebased by the SAME order the fcpxml uses, or the words would
     # describe a timeline that no longer exists.
