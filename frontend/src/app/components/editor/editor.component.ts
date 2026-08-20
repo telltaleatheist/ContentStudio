@@ -2270,9 +2270,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }, 800);
   }
 
-  /** True when Export has something to do: at least one cut OR at least one marked story. */
+  /**
+   * True whenever a session is loaded and no export is already running. Export is NEVER
+   * gated on having cuts or stories: an export with nothing marked still runs the
+   * mic-mute pass (when enabled) and always writes the derived master FCPXML next to
+   * the zip — "nothing to subtract" is not "nothing to do".
+   */
   canExport(): boolean {
-    return !this.exporting && !!this.currentZipPath && (this.cuts.length > 0 || this.hasStories());
+    return !this.exporting && !!this.currentZipPath;
   }
 
   /** File ▸ Export… / ⌘E: open the chooser modal (Master FCPXML vs Stories). */
@@ -2316,7 +2321,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    */
   async onExport(kind: 'fcpxml' | 'transcripts'): Promise<void> {
     if (this.exporting || !this.currentZipPath) return;
-    if (kind === 'fcpxml' && this.cuts.length === 0 && !this.hasStories()) return;
+    // fcpxml export runs with ZERO cuts and no stories on purpose (mic-mute pass +
+    // the derived master). Transcripts are per-story files, so those still need one.
     if (kind === 'transcripts' && !this.hasStories()) return;
     this.exporting = true;
     this.exportError = null;

@@ -585,9 +585,12 @@ function setupEditorSessionHandlers(): void {
       }
     }
 
+    // An EMPTY cuts array is valid: an export with no cuts still runs the mic-mute
+    // pass and writes the derived master FCPXML. Only a missing/non-array value is
+    // a caller bug.
     const cuts = payload?.cuts;
-    if (!Array.isArray(cuts) || (cuts.length === 0 && !isStoryExport)) {
-      throw new Error('editor:export requires a non-empty cuts array');
+    if (!Array.isArray(cuts)) {
+      throw new Error('editor:export requires a cuts array (empty is allowed)');
     }
     for (let i = 0; i < cuts.length; i++) {
       const cut = cuts[i];
