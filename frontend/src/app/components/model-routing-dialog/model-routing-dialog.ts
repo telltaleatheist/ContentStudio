@@ -51,6 +51,19 @@ export type ModelRoutingDialogResult = boolean | undefined;
         @if (tasks().length === 0) {
           <p class="empty">No routable tasks were returned.</p>
         }
+        @if (applyAllOptions().length > 0) {
+          <div class="apply-all-row">
+            <span class="apply-all-label">Set every field to:</span>
+            @for (option of applyAllOptions(); track option.id) {
+              <button mat-stroked-button class="apply-all-button" (click)="applyToAll(option.id)">
+                {{ option.label }}
+              </button>
+            }
+          </div>
+          <p class="apply-all-note">
+            Fields that don't offer that model (Chapters runs locally) keep their selection. Review below, then Save.
+          </p>
+        }
         @for (task of tasks(); track task.id) {
           <div class="routing-row">
             <span class="task-label">{{ task.label }}</span>
@@ -114,6 +127,26 @@ export type ModelRoutingDialogResult = boolean | undefined;
 
     .empty { color: var(--text-secondary); font-size: 14px; }
 
+    .apply-all-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .apply-all-label {
+      color: var(--text-primary);
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .apply-all-note {
+      color: var(--text-secondary);
+      font-size: 12px;
+      margin: 0 0 12px;
+    }
+
     .routing-row {
       display: flex;
       align-items: center;
@@ -144,6 +177,22 @@ export class ModelRoutingDialog implements OnInit {
 
   /** Selections as they were when the payload loaded — Save stays off until this differs. */
   private initialSelections: Record<string, string> = {};
+
+  /**
+   * The "set every field to X" shortcuts: options offered by every field task.
+   * Chapters is excluded from the requirement — its pipeline is local-only by
+   * design (hundreds of one-question calls per video), so demanding an option be
+   * offered there would leave this list permanently empty. Computed from the
+   * loaded payload, so a new universally-offered model shows up here on its own.
+   */
+  readonly applyAllOptions = computed(() => {
+    const fieldTasks = this.tasks().filter(task => task.id !== 'chapters');
+    if (fieldTasks.length === 0) return [];
+    const [first, ...rest] = fieldTasks;
+    return first.options.filter(option =>
+      rest.every(task => task.options.some(o => o.id === option.id))
+    );
+  });
 
   readonly hasChanges = computed(() => {
     const current = this.selections();
@@ -189,6 +238,19 @@ export class ModelRoutingDialog implements OnInit {
 
   select(taskId: string, optionId: string): void {
     this.selections.update(current => ({ ...current, [taskId]: optionId }));
+  }
+
+  /** Point every task that offers `optionId` at it; tasks that don't offer it keep theirs. */
+  applyToAll(optionId: string): void {
+    this.selections.update(current => {
+      const next = { ...current };
+      for (const task of this.tasks()) {
+        if (task.options.some(o => o.id === optionId)) {
+          next[task.id] = optionId;
+        }
+      }
+      return next;
+    });
   }
 
   async onSave(): Promise<void> {

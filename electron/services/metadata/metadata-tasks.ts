@@ -31,6 +31,7 @@
  */
 
 import axios, { AxiosInstance } from 'axios';
+import { spawn, ChildProcess } from 'child_process';
 import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import { queueAITask } from '../queue-manager.service';
@@ -469,7 +470,14 @@ function buildAdapterUserTurn(task: AdapterTask, subjects: string[]): string {
         `the adapter conditions on that list and has nothing else to work from`
     );
   }
-  return `task: ${ADAPTER_WIRE_TASK[task]}\nformat: normal\n\nVideo:\n${lines.map((s) => `- ${s}`).join('\n')}`;
+  // Titles rows in the training set carry a third header line, `target:` — the CTR tier
+  // the title should aim for (top-decile | strong | typical | weak; all 7,497 title rows
+  // have one). AutoCutStudio's reference client (title-generator.ts buildUserPrompt)
+  // sends it; this port originally dropped it, which put every titles call OFF the
+  // trained input distribution. Production asks top-decile per HEADLINE.md. Description
+  // and tags rows have no target line — adding one there would be equally off-brief.
+  const target = task === 'titles' ? '\ntarget: top-decile' : '';
+  return `task: ${ADAPTER_WIRE_TASK[task]}\nformat: normal${target}\n\nVideo:\n${lines.map((s) => `- ${s}`).join('\n')}`;
 }
 
 interface ChatMessage {
@@ -512,6 +520,9 @@ const TITLE_SAMPLING = { temperature: 0.7, top_p: 0.9, num_predict: TITLE_NUM_PR
  * There is no local->cloud rescue anywhere in this class: a task the user routed to an
  * adapter either runs on that adapter or fails saying why.
  */
+/** Model load + warmup measured at ~16s; the margin covers a cold external volume. */
+const SHIM_READY_TIMEOUT_MS = 120_000;
+
 export class LocalAdapterUnit implements MetadataUnit {
   readonly label: string;
   readonly fields: MetadataFieldId[];
@@ -520,8 +531,13 @@ export class LocalAdapterUnit implements MetadataUnit {
   private readonly host: string;
   private readonly model: string;
   private readonly startHint?: string;
+  private readonly startCommand?: string[];
   /** Models this run actually made resident — the exact set unload() releases. */
   private readonly loaded = new Set<string>();
+  /** The host process THIS UNIT spawned. One found already listening is never owned, never stopped. */
+  private shim?: ChildProcess;
+  /** The spawned host's most recent output lines, for the error when it fails to come up. */
+  private shimOutput: string[] = [];
 
   constructor(
     private readonly task: AdapterTask,
@@ -538,6 +554,7 @@ export class LocalAdapterUnit implements MetadataUnit {
     this.host = option.host || defaultHost;
     this.model = option.model;
     this.startHint = option.startHint;
+    this.startCommand = option.startCommand;
     // The description adapter's trained output ENDS with a hashtag line, so this unit
     // returns `hashtags` whether or not the prompt set has a "## HASHTAGS" section —
     // there is no way to ask the adapter for a description without one, and dropping the
@@ -562,6 +579,7 @@ export class LocalAdapterUnit implements MetadataUnit {
   }
 
   async generate(ctx: MetadataRunContext): Promise<Record<string, unknown>> {
+    await this.ensureHostUp();
     const messages = this.buildConversation(ctx);
 
     if (this.task === 'titles') {
@@ -569,11 +587,10 @@ export class LocalAdapterUnit implements MetadataUnit {
     }
 
     const answer = await this.chat(messages, ctx.sourceLabel, { temperature: 0 });
-    const checked = await this.guardAgainstInventedNames(messages, answer, ctx);
 
     return this.task === 'description'
-      ? splitDescriptionAndHashtags(checked, this.task, this.model, ctx.sourceLabel)
-      : { tags: normalizeAdapterTags(checked, this.task, this.model, ctx.sourceLabel) };
+      ? splitDescriptionAndHashtags(answer, this.task, this.model, ctx.sourceLabel)
+      : { tags: normalizeAdapterTags(answer, this.task, this.model, ctx.sourceLabel) };
   }
 
   /**
@@ -582,6 +599,16 @@ export class LocalAdapterUnit implements MetadataUnit {
    * — the same call the chapter pipeline makes for the same reason.
    */
   async unload(): Promise<void> {
+    // A host this unit spawned is stopped outright: the shim's own contract is that
+    // its memory comes back when the process exits (its keep_alive eviction is a
+    // deliberate no-op). One the user started stays theirs.
+    if (this.shim) {
+      log.info(`[MetadataTasks] stopping the "${this.model}" server this run started (releases its memory)`);
+      this.shim.kill('SIGTERM');
+      this.shim = undefined;
+      this.loaded.clear();
+      return;
+    }
     for (const model of this.loaded) {
       try {
         await this.client.post('/api/generate', { model, prompt: '', keep_alive: 0 }, { timeout: 30_000 });
@@ -590,6 +617,80 @@ export class LocalAdapterUnit implements MetadataUnit {
       }
     }
     this.loaded.clear();
+  }
+
+  // --------------------------------------------------------------- managed host
+
+  /**
+   * App-managed adapter hosts (the 32B MLX shim) are started HERE, before the first
+   * request, as a planned part of running the task — not as recovery from a failed one.
+   * A server found already listening is used and left alone; one this unit spawns is
+   * owned by the unit, tracked in `shim`, and stopped in unload() (which runMetadataTasks
+   * calls in a finally, so a spawned host cannot outlive its run even when it fails).
+   *
+   * Readiness is GET /api/tags answering: the shim only opens its port after the model
+   * is loaded and warmed (~16s measured), so a 200 means ready, not merely started.
+   */
+  private async ensureHostUp(): Promise<void> {
+    if (!this.startCommand || this.shim) return;
+    if (await this.hostAnswers()) return;
+
+    const [command, ...args] = this.startCommand;
+    log.info(
+      `[MetadataTasks] "${this.model}": nothing is listening on ${this.host} — starting it: ${this.startCommand.join(' ')}`
+    );
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    this.shim = child;
+    this.shimOutput = [];
+    const capture = (chunk: Buffer) => {
+      for (const line of chunk.toString().split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed.length === 0) continue;
+        log.info(`[${this.model}] ${trimmed}`);
+        this.shimOutput.push(trimmed);
+        if (this.shimOutput.length > 20) this.shimOutput.shift();
+      }
+    };
+    child.stdout?.on('data', capture);
+    child.stderr?.on('data', capture);
+    let exited = false;
+    child.on('exit', (code) => {
+      exited = true;
+      if (this.shim === child) this.shim = undefined;
+      log.info(`[MetadataTasks] "${this.model}" server exited with code ${code}`);
+    });
+
+    const deadline = Date.now() + SHIM_READY_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (exited) {
+        throw new Error(
+          `Metadata task "${this.task}" started the server for "${this.model}" ` +
+            `(${this.startCommand.join(' ')}) and it exited before answering on ${this.host}. ` +
+            `Its last output:\n${this.shimOutput.join('\n') || '(none)'}`
+        );
+      }
+      if (await this.hostAnswers()) {
+        log.info(
+          `[MetadataTasks] "${this.model}" is up on ${this.host} (started by this run; stopped when the run finishes)`
+        );
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    child.kill('SIGTERM');
+    throw new Error(
+      `Metadata task "${this.task}" started the server for "${this.model}" and it did not become ready on ` +
+        `${this.host} within ${SHIM_READY_TIMEOUT_MS / 1000}s. Its last output:\n${this.shimOutput.join('\n') || '(none)'}`
+    );
+  }
+
+  private async hostAnswers(): Promise<boolean> {
+    try {
+      await this.client.get('/api/tags', { timeout: 2000 });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // ------------------------------------------------------------------ conversation
@@ -609,10 +710,9 @@ export class LocalAdapterUnit implements MetadataUnit {
    * Six SEQUENTIAL calls, not six parallel ones: the adapter is resident on one GPU
    * behind a one-slot queue, so parallel requests would only queue anyway.
    *
-   * The name guard runs PER CANDIDATE and drops rather than retries. A sampled candidate
-   * costs one short call, so re-asking the model to fix one is more expensive than
-   * throwing it away and keeping the other five — the opposite of the description case,
-   * where the answer being repaired is the only answer there is.
+   * Every distinct candidate is returned — the user picks. (An invented-name guard used
+   * to drop candidates here and hard-fail descriptions; removed 2026-08-19 at the user's
+   * direction after it false-positived on real references the subject lines didn't carry.)
    */
   private async generateTitles(messages: ChatMessage[], ctx: MetadataRunContext): Promise<string[]> {
     const raw: string[] = [];
@@ -647,49 +747,11 @@ export class LocalAdapterUnit implements MetadataUnit {
       );
     }
 
-    // The titles guard gets MORE evidence than the titles model does, and it has to.
-    //
-    // findUnsupportedNames reads capitalization as a name claim, which is true of prose
-    // and false of a title: Title Case capitalizes every content word, so "Is VERY
-    // Defensive About His Private Jet" arrives looking like a seven-word proper noun. Run
-    // against the subject lines alone, the guard drops most valid titles for using
-    // ordinary English ("Defensive", "Good", "Look") that the 4-8 word subject lines
-    // happen not to contain — measured: 5 of 6 candidates dropped on a clean run.
-    //
-    // So the transcript joins the conditioning HERE, in the check, while the model still
-    // sees only the subject list it was trained on. The question the guard asks is not
-    // "did the model stay inside its prompt" but "did it invent something the video never
-    // says", and the transcript is the best available answer to that: an ordinary word is
-    // in it, and a fabricated name is not.
-    const conditioning = [...ctx.chapterSubjects, ctx.sourceLabel, ctx.content].filter(
-      (line) => line.trim().length > 0
-    );
-    const kept: string[] = [];
-    for (const title of distinct) {
-      const check = findUnsupportedNames(title, conditioning);
-      if (check.unsupported.length > 0) {
-        log.warn(
-          `[MetadataTasks] ${ctx.sourceLabel}: dropped title "${title}" — it names ` +
-            `${check.unsupported.map((n) => `"${n}"`).join(' and ')}, which this video's chapter subjects do not`
-        );
-        continue;
-      }
-      kept.push(title);
-    }
-
-    if (kept.length === 0) {
-      throw new Error(
-        `Metadata task "titles" for ${ctx.sourceLabel} on model "${this.model}" had every one of its ` +
-          `${distinct.length} candidate titles dropped for naming people or organizations this video's chapter ` +
-          `subjects never mention. Refusing rather than publishing a name the video never says.`
-      );
-    }
-
     log.info(
-      `[MetadataTasks] ${ctx.sourceLabel}: titles adapter kept ${kept.length} of ${TITLE_CANDIDATES} sampled ` +
-        `candidate(s) (${distinct.length} distinct) on "${this.model}"`
+      `[MetadataTasks] ${ctx.sourceLabel}: titles adapter kept ${distinct.length} distinct candidate(s) ` +
+        `from ${TITLE_CANDIDATES} samples on "${this.model}"`
     );
-    return kept;
+    return distinct;
   }
 
   // -------------------------------------------------------------------- the request
@@ -774,72 +836,6 @@ export class LocalAdapterUnit implements MetadataUnit {
     }
     return text.trim();
   }
-
-  // ------------------------------------------------------------- hallucination guard
-
-  /**
-   * These adapters' one known failure mode: given a subject with no name in it ("unnamed
-   * street preacher"), they supply a famous one, and they do it deterministically — so
-   * temperature 0 does not save you and re-running gives the same invented name. A
-   * fabricated name in a published description is the worst outcome this file can
-   * produce, so it is checked in code rather than asked for in the prompt.
-   *
-   * One corrective re-ask, phrased as the next turn of the same conversation (the model's
-   * own answer, then a user correction), and if it names something unmatched a second
-   * time the run stops. There is no third try and no scrubbing of the offending name:
-   * an answer that has to be edited to be safe was not written from the subjects.
-   *
-   * (Titles do not come through here — see generateTitles: a sampled candidate is dropped,
-   * not repaired.)
-   */
-  private async guardAgainstInventedNames(
-    messages: ChatMessage[],
-    answer: string,
-    ctx: MetadataRunContext
-  ): Promise<string> {
-    const conditioning = [...ctx.chapterSubjects, ctx.sourceLabel];
-    const task = this.task;
-
-    const first = findUnsupportedNames(answer, conditioning);
-    log.info(
-      `[MetadataTasks] ${ctx.sourceLabel}: "${task}" name guard checked ${first.candidates} candidate name(s) ` +
-        `against ${ctx.chapterSubjects.length} subject line(s) — ${first.unsupported.length === 0 ? 'clean' : `unsupported: ${first.unsupported.join(', ')}`}`
-    );
-    if (first.unsupported.length === 0) return answer;
-
-    const quoted = first.unsupported.map((n) => `"${n}"`).join(' and ');
-    log.warn(
-      `[MetadataTasks] ${ctx.sourceLabel}: "${task}" named ${quoted}, which the subjects do not — re-asking once`
-    );
-
-    const retryMessages: ChatMessage[] = [
-      ...messages,
-      { role: 'assistant', content: answer },
-      {
-        role: 'user',
-        content:
-          `Your previous answer mentioned ${quoted}, which the subject list does not. ` +
-          `Rewrite using only names the subjects provide.`,
-      },
-    ];
-
-    const retried = await this.chat(retryMessages, ctx.sourceLabel, { temperature: 0 });
-    const second = findUnsupportedNames(retried, conditioning);
-    log.info(
-      `[MetadataTasks] ${ctx.sourceLabel}: "${task}" name guard re-checked ${second.candidates} candidate name(s) ` +
-        `after the corrective retry — ${second.unsupported.length === 0 ? 'clean' : `still unsupported: ${second.unsupported.join(', ')}`}`
-    );
-
-    if (second.unsupported.length > 0) {
-      throw new Error(
-        `Metadata task "${task}" for ${ctx.sourceLabel} on model "${this.model}" named ` +
-          `${second.unsupported.map((n) => `"${n}"`).join(' and ')}, which does not appear in this video's chapter ` +
-          `subjects. The adapter invented it, and it did so again after one corrective retry. Refusing rather ` +
-          `than publishing a name the video never says.`
-      );
-    }
-    return retried;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -914,289 +910,6 @@ export function normalizeAdapterTags(text: string, task: string, model: string, 
     );
   }
   return tags.join(',');
-}
-
-// ---------------------------------------------------------------------------
-// Invented-name detection
-// ---------------------------------------------------------------------------
-
-/**
- * Words that carry a capital in a sentence's first slot for grammatical reasons only.
- *
- * Weighted towards PREPOSITIONS and conjunctions, because those are the ones that do real
- * damage: a preposition opening a sentence gets glued to the name after it ("Across the
- * US", "In Texas"), and the joined phrase then fails the check on a word that was never a
- * name. Determiners, pronouns and the handful of adverbs that open a hook sentence round
- * it out. Nothing here can name a person, an organization or a place.
- */
-const SENTENCE_STARTERS = new Set([
-  // determiners, pronouns, quantifiers
-  'a', 'all', 'an', 'another', 'any', 'anyone', 'both', 'each', 'either', 'every', 'everyone',
-  'few', 'he', 'her', 'here', 'his', 'i', 'it', 'its', 'many', 'more', 'most', 'much',
-  'neither', 'no', 'none', 'one', 'other', 'others', 'our', 'several', 'she', 'some', 'such',
-  'that', 'the', 'their', 'them', 'there', 'these', 'they', 'this', 'those', 'two', 'three',
-  'we', 'what', 'which', 'who', 'whose', 'you', 'your',
-  // prepositions
-  'about', 'above', 'across', 'after', 'against', 'along', 'alongside', 'amid', 'among',
-  'amongst', 'around', 'as', 'at', 'before', 'behind', 'below', 'beneath', 'beside',
-  'between', 'beyond', 'by', 'despite', 'down', 'during', 'following', 'for', 'from', 'in',
-  'inside', 'into', 'near', 'of', 'off', 'on', 'onto', 'outside', 'over', 'per', 'since',
-  'through', 'throughout', 'to', 'toward', 'towards', 'under', 'until', 'up', 'upon', 'via',
-  'with', 'within', 'without',
-  // conjunctions and sentence adverbs
-  'after', 'although', 'and', 'because', 'but', 'even', 'finally', 'first', 'however', 'if',
-  'instead', 'last', 'later', 'meanwhile', 'nor', 'not', 'now', 'once', 'only', 'or', 'out',
-  'so', 'still', 'then', 'though', 'today', 'when', 'where', 'while', 'why', 'yet',
-]);
-
-/**
- * Capitalized words that are CATEGORIES rather than identities, plus the channel and
- * format vocabulary the adapters use about themselves.
- *
- * The tags adapter is instructed to end with "the broad category terms it belongs to",
- * so a guard that demanded every capitalized word appear in the subject list would fail
- * the model for obeying its own brief. None of these names anybody: no person, no
- * organization, no place. That boundary is the whole list — a place name stays checkable
- * precisely because "Texas" IS the kind of specific the adapter invents.
- */
-const CATEGORY_WORDS = new Set([
-  // channel / format / promo vocabulary
-  'youtube', 'patreon', 'twitch', 'tiktok', 'instagram', 'facebook', 'twitter', 'substack',
-  'discord', 'spotify', 'podcast', 'podcasts', 'video', 'videos', 'livestream', 'stream',
-  'episode', 'chapter', 'chapters', 'shorts', 'subscribe', 'channel',
-  // the beat itself
-  'america', 'american', 'americans', 'us', 'usa', 'western', 'christian', 'christians',
-  'christianity', 'christ', 'jesus', 'god', 'bible', 'biblical', 'scripture', 'church',
-  'churches', 'evangelical', 'evangelicals', 'evangelicalism', 'catholic', 'catholics',
-  'protestant', 'protestants', 'baptist', 'baptists', 'atheist', 'atheists', 'atheism',
-  'religion', 'religious', 'politics', 'political', 'conservative', 'conservatives',
-  'liberal', 'liberals', 'republican', 'republicans', 'democrat', 'democrats', 'democratic',
-  'nationalism', 'nationalist', 'nationalists',
-]);
-
-/** Lowercase words that hold a name together: "Church of Christ", "Southern Baptist Convention". */
-const NAME_CONNECTORS = new Set(['of', 'the', 'and', 'for', 'de', 'del', 'da', 'di', 'van', 'von', 'la', 'le']);
-
-export interface NameGuardResult {
-  /** How many proper-noun candidates were extracted and checked. */
-  candidates: number;
-  /** The ones no conditioning line supports, de-duplicated, in order of appearance. */
-  unsupported: string[];
-}
-
-/**
- * Strip surrounding punctuation and any possessive from one whitespace-delimited word.
- * Periods go entirely, interior ones included, so "U.S." arrives as the single token
- * "US" that wordTokens would reduce it to anyway rather than splitting into "u" and "s".
- */
-function bareWord(raw: string): string {
-  return raw
-    .replace(/^[^\p{L}\p{N}#]+/u, '')
-    .replace(/[^\p{L}\p{N}]+$/u, '')
-    .replace(/['’]s$/i, '')
-    .replace(/\./g, '');
-}
-
-/**
- * Hashtags as the guard reads them: '#JoelOsteen' is a name claim and has to be checked,
- * '#megachurch' is a lowercase category word and never becomes a candidate at all. The
- * '#' goes, and CamelCase splits into words so "#BibleCurriculum" can match a subject
- * line that writes it as two.
- */
-function expandHashtag(token: string): string {
-  return token.replace(/^#+/, '').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
-}
-
-function isCapitalized(word: string): boolean {
-  return /^\p{Lu}[\p{L}\p{N}'’.-]*$/u.test(word);
-}
-
-/**
- * Levenshtein distance, capped: the loop stops as soon as every cell in a row exceeds
- * `max`, so a candidate is compared against a whole subject list cheaply.
- */
-function editDistance(a: string, b: string, max: number): number {
-  if (Math.abs(a.length - b.length) > max) return max + 1;
-  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
-  for (let i = 1; i <= a.length; i++) {
-    const current = [i];
-    let rowMin = i;
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      const value = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost);
-      current.push(value);
-      if (value < rowMin) rowMin = value;
-    }
-    if (rowMin > max) return max + 1;
-    previous = current;
-  }
-  return previous[b.length];
-}
-
-/**
- * How far a token may drift and still count as the same word.
- *
- * The tolerance exists for TRANSCRIPTION GARBLE — the subject lines were written from
- * auto-captions, so a name reaches the adapter mis-spelled and comes back spelled right
- * (or the reverse). It scales with length because a flat allowance of 2 on a short word
- * matches everything: at distance 2, "Bush" is "Rush", "push" and "bust", which would
- * wave through exactly the substitution this guard exists to catch.
- */
-function editTolerance(length: number): number {
-  if (length <= 4) return 0;
-  if (length <= 7) return 1;
-  return 2;
-}
-
-/**
- * Same word, different ending: "fabricated"/"fabricating", "harasses"/"harassment",
- * "testimonies"/"testimony".
- *
- * Inflection is not garble and edit distance does not see it — "fabricated" is 3 edits
- * from "fabricating", which no tolerance a short name can survive would cover. So it is
- * matched on the stem instead, with the divergence held to a suffix: six shared leading
- * characters, at most three left over on the shorter word and four on the longer. That
- * ceiling is what keeps it from being a general prefix match — "Christian" does not
- * reach "Christopher", and "Bush" does not reach "Bushnell".
- */
-function sameStem(a: string, b: string): boolean {
-  let shared = 0;
-  while (shared < a.length && shared < b.length && a[shared] === b[shared]) shared++;
-  if (shared < 6) return false;
-  const shorter = Math.min(a.length, b.length);
-  const longer = Math.max(a.length, b.length);
-  return shorter - shared <= 3 && longer - shared <= 4;
-}
-
-function tokenSupported(token: string, conditioningTokens: string[]): boolean {
-  const tolerance = editTolerance(token.length);
-  for (const other of conditioningTokens) {
-    if (other === token) return true;
-    // Plurals, and "megachurch" inside "megachurches". Possessives are already stripped.
-    if (token.length >= 5 && (other.includes(token) || token.includes(other))) return true;
-    if (sameStem(token, other)) return true;
-    if (tolerance > 0 && editDistance(token, other, tolerance) <= tolerance) return true;
-  }
-  return false;
-}
-
-function wordTokens(text: string): string[] {
-  return text
-    .toLowerCase()
-    .replace(/['’]/g, '')
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter((w) => w.length > 0);
-}
-
-/**
- * Every proper-noun-shaped phrase in `text` that the conditioning lines do not support.
- *
- * Extraction is deliberately shallow — runs of capitalized tokens, joined across the
- * small set of lowercase connectors real names contain — because the alternative is a
- * named-entity model, and a guard that needs its own model to run is a guard that fails
- * when the thing it guards fails. Shallow extraction over-collects; the filters below,
- * and matching against the subjects, decide what survives.
- *
- * Exported so the negative path is testable without a model call.
- */
-export function findUnsupportedNames(text: string, conditioning: string[]): NameGuardResult {
-  const conditioningLower = conditioning.join(' \n ').toLowerCase().replace(/['’]/g, '');
-  const conditioningTokens = wordTokens(conditioning.join(' '));
-
-  const candidates: Array<{ phrase: string; first: boolean }> = [];
-  // Sentence boundaries matter only for the first-word rule, so a newline counts as one.
-  for (const sentence of text.split(/(?<=[.!?])\s+|\n+/)) {
-    const words = sentence.trim().split(/\s+/);
-    let phrase: string[] = [];
-    let phraseStartsSentence = false;
-
-    const flush = () => {
-      // A connector can only sit BETWEEN names, never end a phrase ("Church of").
-      while (phrase.length > 0 && NAME_CONNECTORS.has(phrase[phrase.length - 1].toLowerCase())) {
-        phrase.pop();
-      }
-      // A grammar word in the sentence's first slot is not part of the name that follows
-      // it: "Across the US" is one capitalized run to this extractor but one name to a
-      // reader, and left joined it would fail the check on the "Across". The connector
-      // behind it goes too, since nothing is named "the US". Dropping them also moves the
-      // real name out of first position, which is honest — "US" there IS a capital by
-      // choice, so it stays subject to the full check rather than the first-slot exemption.
-      while (phrase.length > 0) {
-        const head = phrase[0].toLowerCase();
-        const grammarFirst = phraseStartsSentence && SENTENCE_STARTERS.has(head);
-        if (!grammarFirst && !NAME_CONNECTORS.has(head)) break;
-        phrase.shift();
-        phraseStartsSentence = false;
-      }
-      if (phrase.length > 0) candidates.push({ phrase: phrase.join(' '), first: phraseStartsSentence });
-      phrase = [];
-    };
-
-    for (let i = 0; i < words.length; i++) {
-      const word = bareWord(words[i].startsWith('#') ? expandHashtag(words[i]) : words[i]);
-      // expandHashtag can turn one token into two ("#BibleCurriculum" -> "Bible Curriculum");
-      // handle the pieces as if they had been written apart.
-      const pieces = word.split(/\s+/).filter((p) => p.length > 0);
-      if (pieces.length === 0) {
-        flush();
-        continue;
-      }
-      for (const piece of pieces) {
-        if (isCapitalized(piece)) {
-          if (phrase.length === 0) phraseStartsSentence = i === 0;
-          phrase.push(piece);
-        } else if (phrase.length > 0 && NAME_CONNECTORS.has(piece.toLowerCase())) {
-          phrase.push(piece);
-        } else {
-          flush();
-        }
-      }
-    }
-    flush();
-  }
-
-  // Words that carry a capital SOMEWHERE other than a sentence's first slot. A word only
-  // ever seen in first position is capitalized by grammar as far as this code can tell;
-  // one seen mid-sentence is capitalized by choice, which is what a name is.
-  const capitalizedMidSentence = new Set<string>();
-  for (const { phrase, first } of candidates) {
-    const tokens = wordTokens(phrase);
-    for (let i = 0; i < tokens.length; i++) {
-      if (!first || i > 0) capitalizedMidSentence.add(tokens[i]);
-    }
-  }
-
-  const seen = new Set<string>();
-  const unsupported: string[] = [];
-  let checked = 0;
-
-  for (const { phrase, first } of candidates) {
-    const tokens = wordTokens(phrase).filter((t) => !NAME_CONNECTORS.has(t));
-    if (tokens.length === 0) continue;
-
-    // Two exemptions for the one shape this extractor cannot read: a lone capital in a
-    // sentence's first slot. The word list catches the obvious grammar words, and the
-    // corroboration rule catches the rest — "Watch" opening a hook sentence and never
-    // appearing again is not a name, while an invented surname is used more than once or
-    // is used mid-sentence. Both only ever apply to a SINGLE token in FIRST position;
-    // "Joel Osteen" opening a sentence is checked like any other name.
-    if (tokens.length === 1 && first && SENTENCE_STARTERS.has(tokens[0])) continue;
-    if (tokens.length === 1 && first && !capitalizedMidSentence.has(tokens[0])) continue;
-    // Category words wherever they appear are not claims about anyone — see CATEGORY_WORDS.
-    if (tokens.every((t) => CATEGORY_WORDS.has(t))) continue;
-
-    checked++;
-    const key = phrase.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    if (conditioningLower.includes(key.replace(/['’]/g, ''))) continue;
-    if (tokens.every((t) => tokenSupported(t, conditioningTokens))) continue;
-
-    unsupported.push(phrase);
-  }
-
-  return { candidates: checked, unsupported };
 }
 
 // ---------------------------------------------------------------------------

@@ -279,7 +279,8 @@
             <mat-card-content>
               <div class="input-row" (click)="toggleJobExpansion(job.id)">
                 <!-- Status Icon -->
-                <mat-icon [style.color]="job.status === 'processing' ? '#ff6b35' : job.status === 'held' ? '#ffb300' : job.status === 'completed' ? '#4caf50' : job.status === 'failed' ? '#f44336' : '#999'">
+                <mat-icon [style.color]="job.status === 'processing' ? '#ff6b35' : job.status === 'held' ? '#ffb300' : job.status === 'completed' ? '#4caf50' : job.status === 'failed' ? '#f44336' : '#999'"
+                  [matTooltip]="job.status === 'failed' && job.error ? job.error : ''">
                   {{ getJobStatusIcon(job.status) }}
                 </mat-icon>
 
@@ -344,6 +345,13 @@
               <!-- Expanded Content -->
               @if (isJobExpanded(job.id)) {
                 <div class="job-details-expanded">
+                  <!-- Why the job failed, in the job's own card -->
+                  @if (job.status === 'failed' && job.error) {
+                    <div class="job-error-message">
+                      <mat-icon>error_outline</mat-icon>
+                      <span class="job-error-text">{{ job.error }}</span>
+                    </div>
+                  }
                   <!-- Input Items as List Items -->
                   <div class="job-inputs-list">
                     <div class="inputs-label">Processing Items:</div>
