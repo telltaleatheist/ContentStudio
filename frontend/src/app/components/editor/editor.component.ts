@@ -349,6 +349,15 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // 'merged'; default (set on ingest) is the FIRST track (the mic). Both reset on re-init
   // and are pure recomputes over recomputeVisibleGroups.
   transcriptTracks: { id: string; label: string }[] = [];
+  /**
+   * True when the mic-mute pass can actually run on this session: every transcript track
+   * classifies to a known audio role AND there is at least one mic and one screen track.
+   * Mirrors editor_export.py's _mic_mute_track_roles vocabulary — Python still owns the
+   * authoritative check and refuses loudly at export; this mirror only decides whether
+   * the checkbox is OFFERED, so a session that cannot take the pass (a master-only
+   * recovery project's single 'master' track) greys it with a reason instead of erroring.
+   */
+  micMuteEligible = false;
   sourceFilter = 'merged';
   searchQuery = '';
 
@@ -668,6 +677,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.transcriptGroups = [];
     this.visibleGroups = [];
     this.transcriptTracks = [];
+    this.micMuteEligible = false;
     this.sourceFilter = 'merged';
     this.searchQuery = '';
     this.transcriptWordCount = 0;
@@ -2288,13 +2298,34 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /**
-   * True when the mic-mute option can be offered at all. The mute blocks are derived from
-   * the Whisper transcript sidecar's word times, so without a ready transcript there is
-   * nothing to derive them FROM — and Python refuses the export rather than exporting
-   * without the muting. Better to grey the checkbox than to hand the user that failure.
+   * True when the mic-mute option can be offered at all. Two requirements, both of which
+   * Python enforces loudly at export time — greying the checkbox beats handing the user
+   * that failure: (1) a ready transcript, because the mute blocks are derived from its
+   * word times; (2) tracks the role classifier can actually work with (≥1 mic, ≥1 screen,
+   * nothing unclassifiable) — a master-only recovery session fails this forever.
    */
   canMuteMicDuringScreen(): boolean {
-    return this.transcriptState === 'ready';
+    return this.transcriptState === 'ready' && this.micMuteEligible;
+  }
+
+  /**
+   * The frontend half of editor_export.py's _mic_mute_track_roles: same keywords over the
+   * same label+filename blob, answering "would Python accept this session's tracks?"
+   * rather than raising. Keep the two keyword vocabularies in sync BY HAND — this one
+   * exists only to grey the checkbox, Python's is the one that decides.
+   */
+  private computeMicMuteEligible(tracks: { id: string; label: string; file: string }[]): boolean {
+    const SCREEN = ['screen'];
+    const MIC = ['mic'];
+    const NON_SPEECH = ['soundeffect', 'sound effect', 'sfx', 'soundboard', 'game', 'bluetooth', 'desktop', 'music'];
+    let hasMic = false, hasScreen = false;
+    for (const t of tracks) {
+      const blob = `${t.label || ''} ${t.file || ''}`.toLowerCase();
+      if (SCREEN.some(k => blob.includes(k))) hasScreen = true;
+      else if (MIC.some(k => blob.includes(k))) hasMic = true;
+      else if (!NON_SPEECH.some(k => blob.includes(k))) return false; // unclassifiable track → Python would refuse
+    }
+    return hasMic && hasScreen;
   }
 
   /**
@@ -4531,6 +4562,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.transcript = t;
     this.transcriptGroups = groups;
     this.transcriptTracks = t.tracks.map(tr => ({ id: tr.id, label: tr.label }));
+    this.micMuteEligible = this.computeMicMuteEligible(t.tracks);
     // Default source = the FIRST track (the mic): the user primarily wants to read their
     // own words, not the merged interleave.
     this.sourceFilter = t.tracks.length > 0 ? t.tracks[0].id : 'merged';
