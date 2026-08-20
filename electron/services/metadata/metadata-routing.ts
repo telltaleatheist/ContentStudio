@@ -52,6 +52,14 @@ export interface MetadataRoutingOption {
    * not an actionable error.
    */
   startHint?: string;
+  /**
+   * The argv that starts `host`, for servers the app manages itself. When present, the
+   * unit probes the host before its first request and SPAWNS this when nothing answers
+   * — a planned part of running the task, not a recovery path — then stops the process
+   * it started when the run finishes. A server found already listening is used as-is
+   * and never stopped: whoever started it owns it.
+   */
+  startCommand?: string[];
 }
 
 /** The shim behind headline-32b-titles. It is not Ollama and it is not always running. */
@@ -75,6 +83,10 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
     model: 'headline-32b-titles',
     host: HEADLINE_32B_HOST,
     startHint: HEADLINE_32B_START_HINT,
+    startCommand: [
+      '/bin/sh',
+      '/Volumes/Callisto/Projects/AutoCutStudioApp/tools/headline32b-server/serve-headline-32b.sh',
+    ],
   },
 };
 

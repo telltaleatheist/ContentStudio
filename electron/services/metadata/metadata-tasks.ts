@@ -31,6 +31,7 @@
  */
 
 import axios, { AxiosInstance } from 'axios';
+import { spawn, ChildProcess } from 'child_process';
 import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import { queueAITask } from '../queue-manager.service';
@@ -512,6 +513,9 @@ const TITLE_SAMPLING = { temperature: 0.7, top_p: 0.9, num_predict: TITLE_NUM_PR
  * There is no local->cloud rescue anywhere in this class: a task the user routed to an
  * adapter either runs on that adapter or fails saying why.
  */
+/** Model load + warmup measured at ~16s; the margin covers a cold external volume. */
+const SHIM_READY_TIMEOUT_MS = 120_000;
+
 export class LocalAdapterUnit implements MetadataUnit {
   readonly label: string;
   readonly fields: MetadataFieldId[];
@@ -520,8 +524,13 @@ export class LocalAdapterUnit implements MetadataUnit {
   private readonly host: string;
   private readonly model: string;
   private readonly startHint?: string;
+  private readonly startCommand?: string[];
   /** Models this run actually made resident — the exact set unload() releases. */
   private readonly loaded = new Set<string>();
+  /** The host process THIS UNIT spawned. One found already listening is never owned, never stopped. */
+  private shim?: ChildProcess;
+  /** The spawned host's most recent output lines, for the error when it fails to come up. */
+  private shimOutput: string[] = [];
 
   constructor(
     private readonly task: AdapterTask,
@@ -538,6 +547,7 @@ export class LocalAdapterUnit implements MetadataUnit {
     this.host = option.host || defaultHost;
     this.model = option.model;
     this.startHint = option.startHint;
+    this.startCommand = option.startCommand;
     // The description adapter's trained output ENDS with a hashtag line, so this unit
     // returns `hashtags` whether or not the prompt set has a "## HASHTAGS" section —
     // there is no way to ask the adapter for a description without one, and dropping the
@@ -562,6 +572,7 @@ export class LocalAdapterUnit implements MetadataUnit {
   }
 
   async generate(ctx: MetadataRunContext): Promise<Record<string, unknown>> {
+    await this.ensureHostUp();
     const messages = this.buildConversation(ctx);
 
     if (this.task === 'titles') {
@@ -581,6 +592,16 @@ export class LocalAdapterUnit implements MetadataUnit {
    * — the same call the chapter pipeline makes for the same reason.
    */
   async unload(): Promise<void> {
+    // A host this unit spawned is stopped outright: the shim's own contract is that
+    // its memory comes back when the process exits (its keep_alive eviction is a
+    // deliberate no-op). One the user started stays theirs.
+    if (this.shim) {
+      log.info(`[MetadataTasks] stopping the "${this.model}" server this run started (releases its memory)`);
+      this.shim.kill('SIGTERM');
+      this.shim = undefined;
+      this.loaded.clear();
+      return;
+    }
     for (const model of this.loaded) {
       try {
         await this.client.post('/api/generate', { model, prompt: '', keep_alive: 0 }, { timeout: 30_000 });
@@ -589,6 +610,80 @@ export class LocalAdapterUnit implements MetadataUnit {
       }
     }
     this.loaded.clear();
+  }
+
+  // --------------------------------------------------------------- managed host
+
+  /**
+   * App-managed adapter hosts (the 32B MLX shim) are started HERE, before the first
+   * request, as a planned part of running the task — not as recovery from a failed one.
+   * A server found already listening is used and left alone; one this unit spawns is
+   * owned by the unit, tracked in `shim`, and stopped in unload() (which runMetadataTasks
+   * calls in a finally, so a spawned host cannot outlive its run even when it fails).
+   *
+   * Readiness is GET /api/tags answering: the shim only opens its port after the model
+   * is loaded and warmed (~16s measured), so a 200 means ready, not merely started.
+   */
+  private async ensureHostUp(): Promise<void> {
+    if (!this.startCommand || this.shim) return;
+    if (await this.hostAnswers()) return;
+
+    const [command, ...args] = this.startCommand;
+    log.info(
+      `[MetadataTasks] "${this.model}": nothing is listening on ${this.host} — starting it: ${this.startCommand.join(' ')}`
+    );
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    this.shim = child;
+    this.shimOutput = [];
+    const capture = (chunk: Buffer) => {
+      for (const line of chunk.toString().split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed.length === 0) continue;
+        log.info(`[${this.model}] ${trimmed}`);
+        this.shimOutput.push(trimmed);
+        if (this.shimOutput.length > 20) this.shimOutput.shift();
+      }
+    };
+    child.stdout?.on('data', capture);
+    child.stderr?.on('data', capture);
+    let exited = false;
+    child.on('exit', (code) => {
+      exited = true;
+      if (this.shim === child) this.shim = undefined;
+      log.info(`[MetadataTasks] "${this.model}" server exited with code ${code}`);
+    });
+
+    const deadline = Date.now() + SHIM_READY_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (exited) {
+        throw new Error(
+          `Metadata task "${this.task}" started the server for "${this.model}" ` +
+            `(${this.startCommand.join(' ')}) and it exited before answering on ${this.host}. ` +
+            `Its last output:\n${this.shimOutput.join('\n') || '(none)'}`
+        );
+      }
+      if (await this.hostAnswers()) {
+        log.info(
+          `[MetadataTasks] "${this.model}" is up on ${this.host} (started by this run; stopped when the run finishes)`
+        );
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    child.kill('SIGTERM');
+    throw new Error(
+      `Metadata task "${this.task}" started the server for "${this.model}" and it did not become ready on ` +
+        `${this.host} within ${SHIM_READY_TIMEOUT_MS / 1000}s. Its last output:\n${this.shimOutput.join('\n') || '(none)'}`
+    );
+  }
+
+  private async hostAnswers(): Promise<boolean> {
+    try {
+      await this.client.get('/api/tags', { timeout: 2000 });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // ------------------------------------------------------------------ conversation
