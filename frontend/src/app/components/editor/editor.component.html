@@ -40,7 +40,9 @@
             (click)="toggleMuteMicDuringScreen()"
             [title]="canMuteMicDuringScreen()
               ? 'On exports: wherever the screen audio speaks and the mic does not, the mic clip is split and the block is disabled (darkened in FCPX — press V to bring one back). Turn off to export with nothing muted.'
-              : 'Transcribe the session first — the mute blocks come from the transcript'">
+              : transcriptState !== 'ready'
+                ? 'Transcribe the session first — the mute blocks come from the transcript'
+                : 'Not available for this session — it has no separate mic and screen audio tracks to work with'">
       Mic mute: {{ muteMicDuringScreen ? 'On' : 'Off' }}
     </button>
   </header>

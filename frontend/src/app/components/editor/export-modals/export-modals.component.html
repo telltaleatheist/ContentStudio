@@ -41,8 +41,12 @@
           Splits the mic lane and disables the blocks where only the screen is talking —
           re-enable any block in FCPX with V
         </span>
-        <span class="chooser-toggle-desc" *ngIf="!canMuteMic">
+        <span class="chooser-toggle-desc" *ngIf="!canMuteMic && !transcriptReady">
           Transcribe the session first — the mute blocks come from the transcript
+        </span>
+        <span class="chooser-toggle-desc" *ngIf="!canMuteMic && transcriptReady">
+          Not available for this session — it has no separate mic and screen audio tracks
+          to work with (a master-only recovery has just the one combined track)
         </span>
       </span>
     </label>
