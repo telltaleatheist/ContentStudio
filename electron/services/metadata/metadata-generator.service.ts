@@ -484,8 +484,10 @@ export class MetadataGeneratorService {
           log.error(`[MetadataGenerator] Failed to generate metadata for item ${i + 1}:`, error);
           console.error(`[MetadataGenerator] Failed to generate metadata for item ${i + 1}:`, error);
           // Record the partial failure so the caller can surface it instead of
-          // silently returning success with a missing item.
-          warnings.push(`${sourceLabel}: ${errMsg}`);
+          // silently returning success with a missing item. Prefix with the bare
+          // filename — the message itself already carries the full path.
+          const shortLabel = sourceLabel.split('/').pop() || sourceLabel;
+          warnings.push(`${shortLabel}: ${errMsg}`);
           // Continue with other items
         }
       }
@@ -496,7 +498,10 @@ export class MetadataGeneratorService {
         outputHandler.updateJobStatus(jobInfo.jobId, 'failed');
         return {
           success: false,
-          error: 'Failed to generate metadata for any items',
+          // The per-item reasons ARE the error: "Failed to generate metadata for
+          // any items" told the user nothing when every item failed for a stated,
+          // logged reason. The UI shows this string on the failed job.
+          error: warnings.length > 0 ? warnings.join('\n') : 'Failed to generate metadata for any items',
           warnings: warnings.length > 0 ? warnings : undefined,
         };
       }
