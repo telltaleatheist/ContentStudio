@@ -64,7 +64,13 @@ export function buildInsightsBlock(
     lines.push('Title A/B test learnings:');
     for (const ab of channelInsights.abLearnings) {
       const losers = ab.variants.filter((v) => v !== ab.winner);
-      lines.push(`- Winner: "${ab.winner}" (+${Math.round(ab.liftPct * 10) / 10}% lift) over ${losers.map((l) => `"${l}"`).join(', ')}`);
+      // "pts", not "%". `liftPct` is the winner's watch-time SHARE minus the best loser's,
+      // in percentage points — see extension/src/catalogue.ts:44 and :298, where it is
+      // computed as `winnerShare - bestLoser`. Rendering it as "%" told the model a variant
+      // won by 8.57 PERCENT when it won by 8.57 POINTS of share, which are different
+      // quantities and differ by roughly 3x at these values. The name keeps the `Pct`
+      // suffix it was born with; the words the model reads must not repeat the mistake.
+      lines.push(`- Winner: "${ab.winner}" (+${Math.round(ab.liftPct * 10) / 10} pts watch-time share) over ${losers.map((l) => `"${l}"`).join(', ')}`);
     }
   }
 
