@@ -227,6 +227,8 @@ export async function fetchExperimentsInPage(channelId: string, videoIds: string
 
   const armIndex = (arm: string): number => Number(String(arm || '').match(/ARM_(\d+)$/)?.[1] || 0);
   const tests: any[] = [];
+  /** Distinct `resultState` values this run did not recognise. Non-empty means we stop. */
+  const unrecognized = new Set<string>();
 
   for (let i = 0; i < videoIds.length; i += BATCH) {
     const chunk = videoIds.slice(i, i + BATCH);
@@ -281,9 +283,38 @@ export async function fetchExperimentsInPage(channelId: string, videoIds: string
         }
       }
 
+      // WHETHER THIS TEST WAS DECIDED IS A FACT THE RESPONSE STATES. Read it, do not infer it.
+      //
+      // This used to be inferred from `winnerArm` alone: an unset arm meant undecided. That
+      // was correct only by coincidence of Studio's behaviour, and the coincidence is not
+      // safe — the A/B exporter, reading the SAME endpoint, sees `winnerArm` populated with
+      // the tie-break arm on tests YouTube declared NO_WINNER. On that reading an undecided
+      // test walks straight past a `winnerArm` check and is stored as a win, with whatever
+      // arm YouTube nominated as the "winner". Those reach the generator through
+      // abLearnings as "Winner: <title>", which is the highest-leverage text in the system:
+      // the loop would be teaching the model that a coin flip won.
+      //
+      // `resultState` is the field that says it outright, and it has been documented in this
+      // file's own header since the day the loop was written (see the endpoint notes above).
+      // It was simply never read.
+      const state = result.resultState;
+      if (state === 'NO_WINNER') continue;
+      if (state !== 'WINNER') {
+        // NOT a skip, and not a guess in either direction. Nobody has yet captured a raw
+        // response, so whether the live value is bare (`WINNER`) or carries the
+        // `CREATOR_EXPERIMENT_RESULT_STATE_` prefix that neighbouring enums do is unknown —
+        // two independent proofs were offered for opposite answers and both turned out to
+        // read an already-normalized copy rather than the wire format.
+        //
+        // Guessing bare and being wrong collects NOTHING, silently, forever. Guessing
+        // prefixed and being wrong does the same. Refusing to guess collects the answer: the
+        // first real response names the actual string in an error the operator can read, and
+        // the one-word fix follows from it.
+        unrecognized.add(String(state));
+        continue;
+      }
       const winnerIdx = armIndex(result.winnerArm);
-      // Only decided tests are a learning. An undecided one means the titles performed
-      // the same, which must not be recorded as a win.
+      // Kept as fail-loud backstops behind the state check, not as the decision itself.
       if (winnerIdx < 1 || !variants[winnerIdx - 1] || shares.length !== variants.length) continue;
 
       const winnerShare = shares[winnerIdx - 1] ?? 0;
@@ -303,6 +334,31 @@ export async function fetchExperimentsInPage(channelId: string, videoIds: string
         shares,
       });
     }
+  }
+
+  // An enum this build does not recognise FAILS THE RUN rather than being skipped quietly.
+  //
+  // This is the deliberate choice and it costs something, so it is written down: failing here
+  // aborts the whole collection pass, not just the A/B half, because the caller treats a
+  // non-ok result as fatal. The alternative — return the tests we did understand and mention
+  // the rest — is worse in the case that actually matters. If the live enum turns out to be
+  // prefixed, EVERY test is unrecognised, `tests` is empty, and "collected 0 A/B tests, all
+  // fine" is indistinguishable from "this channel ran no tests". The loop would go quiet and
+  // nobody would know why, which is the failure this guard exists to prevent, arriving by a
+  // different door.
+  //
+  // Loud and total is recoverable in one Studio visit. Silent and partial is not recoverable
+  // at all, because nothing would ever say it happened.
+  if (unrecognized.size > 0) {
+    return fail(
+      'unrecognized-result-state',
+      `get_creator_videos returned resultState value(s) this build does not recognise: ` +
+      `${[...unrecognized].map((s) => JSON.stringify(s)).join(', ')}. Expected 'WINNER' or ` +
+      `'NO_WINNER'. No A/B results were recorded from this pass. If the value above is a ` +
+      `prefixed form of one of those, extension/src/catalogue.ts needs the prefix stripped ` +
+      `before the comparison — the exact wire format has never been captured, which is why ` +
+      `this refuses to guess.`,
+    );
   }
 
   return { ok: true, tests };

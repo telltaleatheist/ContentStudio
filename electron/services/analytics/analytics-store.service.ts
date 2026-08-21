@@ -476,6 +476,40 @@ export class AnalyticsStoreService {
     });
   }
 
+  /**
+   * Remove A/B test records by videoId. Returns how many actually went.
+   *
+   * The counterpart `upsertAbTests` never had, and its absence was a defect rather than an
+   * omission: the collector cannot retract. When a test stops qualifying — YouTube revises a
+   * verdict, or a guard newly rejects it — the collector simply does not emit it, and silence
+   * reads as "no news" to an insert-or-replace store, not as "withdraw that". So a record
+   * stored once was stored permanently, and a learning the source had taken back kept feeding
+   * the generator.
+   *
+   * Runs on the same serialized write queue as every other mutation, so a purge cannot
+   * interleave with an ingest's read-modify-write.
+   *
+   * Callers are responsible for re-distilling afterwards: insights are computed FROM this
+   * file, so removing a record without recomputing leaves the withdrawn learning alive in
+   * insights.json and therefore still in the prompt — the removal would look done and change
+   * nothing the model sees.
+   */
+  removeAbTests(channelId: string, videoIds: string[]): Promise<number> {
+    return this.enqueue(() => {
+      if (videoIds.length === 0) return 0;
+      const filePath = path.join(this.channelDir(channelId), 'ab-tests.json');
+      const existing = this.readJson<AbTestResult[]>(filePath);
+      if (!existing) return 0;
+      const doomed = new Set(videoIds);
+      const kept = existing.filter((t) => !doomed.has(t.videoId));
+      const removed = existing.length - kept.length;
+      if (removed === 0) return 0;
+      this.writeJson(filePath, kept);
+      console.log(`[AnalyticsStore] Removed ${removed} A/B test result(s) from ${channelId}`);
+      return removed;
+    });
+  }
+
   loadChannelInsights(channelId: string): ChannelInsights | null {
     return this.readJson<ChannelInsights>(path.join(this.channelDir(channelId), 'insights.json'));
   }
