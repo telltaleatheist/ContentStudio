@@ -502,6 +502,12 @@ export class MetadataReports implements OnInit {
   async deleteReport(report: MetadataReport, event: Event) {
     event.stopPropagation();
 
+    // Every partial failure below used to be a console.warn on the way to an unconditional
+    // "Report deleted successfully". The operator was told the delete worked while the txt
+    // file was still on disk, or while the JSON still held the item. Collected instead, and
+    // reported at the end alongside whatever DID happen.
+    const problems: string[] = [];
+
     try {
       // Delete the individual TXT file if it exists
       if (report.txtFilePath) {
@@ -510,6 +516,7 @@ export class MetadataReports implements OnInit {
           console.log('[MetadataReports] Deleted TXT file:', report.txtFilePath);
         } catch (e) {
           console.warn('Could not delete txt file:', report.txtFilePath, e);
+          problems.push(`the text file at ${report.txtFilePath} could not be removed (${(e as Error).message})`);
         }
       }
 
@@ -543,6 +550,10 @@ export class MetadataReports implements OnInit {
           }
         } catch (e) {
           console.warn('Could not update JSON file:', e);
+          // The heaviest of the three: the row disappears from the list below regardless, so
+          // without this the item is gone from view and still in the file, and it returns on
+          // the next load with no explanation.
+          problems.push(`the report file still lists this item (${(e as Error).message})`);
         }
       }
 
@@ -575,7 +586,14 @@ export class MetadataReports implements OnInit {
         this.metadata.set(null);
       }
 
-      this.notificationService.success('Deleted', 'Report deleted successfully');
+      if (problems.length > 0) {
+        this.notificationService.error(
+          'Deleted, but not completely',
+          `The report was removed from the list, but ${problems.join(', and ')}.`,
+        );
+      } else {
+        this.notificationService.success('Deleted', 'Report deleted successfully');
+      }
     } catch (error) {
       this.notificationService.error('Delete Error', 'Failed to delete report: ' + (error as Error).message);
     }

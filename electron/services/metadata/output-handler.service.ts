@@ -22,13 +22,6 @@ export interface JobMetadata {
   input_types?: string[];      // Content types: 'subject' | 'video' | 'transcript_file'
 }
 
-export interface SaveJobResult {
-  json_file: string;
-  txt_folder: string;
-  txt_files: string[];
-  job_id: string;
-}
-
 export class OutputHandlerService {
   private userOutputDir: string;
   private metadataDir: string;
@@ -196,79 +189,6 @@ export class OutputHandlerService {
     }
   }
 
-  /**
-   * Save metadata for a batch job
-   */
-  saveJobMetadata(
-    jobName: string,
-    metadataItems: MetadataResult[],
-    promptSet: string,
-    jobId?: string,
-    sourceItems?: any[]
-  ): SaveJobResult {
-    if (!metadataItems || metadataItems.length === 0) {
-      throw new Error('Metadata items cannot be empty');
-    }
-
-    // Generate job ID if not provided
-    if (!jobId) {
-      const timestamp = Date.now();
-      const randomStr = Math.random().toString(36).substring(7);
-      jobId = `job-${timestamp}-${randomStr}`;
-    }
-
-    // Clean job name for folder
-    const cleanFolderName = this.cleanNameWithSpaces(jobName);
-
-    // Create TXT output folder
-    const txtFolder = path.join(this.userOutputDir, cleanFolderName);
-    if (!fs.existsSync(txtFolder)) {
-      fs.mkdirSync(txtFolder, { recursive: true });
-    }
-
-    // Prepare job metadata
-    const jobMetadata: JobMetadata = {
-      job_id: jobId,
-      job_name: jobName,
-      prompt_set: promptSet,
-      created_at: new Date().toISOString(),
-      txt_folder: txtFolder,
-      items: metadataItems,
-      status: 'completed',
-    };
-
-    if (sourceItems) {
-      jobMetadata.source_items = sourceItems;
-    }
-
-    // Save JSON metadata file
-    const jsonPath = path.join(this.metadataDir, `${jobId}.json`);
-    this.saveJson(jobMetadata, jsonPath);
-    console.log(`[OutputHandler] Job metadata saved to: ${jsonPath}`);
-
-    // Save TXT files
-    const txtFiles: string[] = [];
-
-    for (const item of metadataItems) {
-      // Sanitize the (untrusted) AI title and de-collide so multiple untitled items
-      // don't all resolve to "metadata.txt" and overwrite each other.
-      const rawName = (item as any)._title || 'metadata';
-      const cleanName = this.sanitizeFilename(rawName) || 'metadata';
-      const txtPath = this.resolveUniqueTxtPath(txtFolder, cleanName);
-
-      this.saveReadable(item, txtPath, promptSet);
-      txtFiles.push(txtPath);
-    }
-
-    console.log(`[OutputHandler] TXT files saved to: ${txtFolder}`);
-
-    return {
-      json_file: jsonPath,
-      txt_folder: txtFolder,
-      txt_files: txtFiles,
-      job_id: jobId,
-    };
-  }
 
   /**
    * Save metadata to JSON file

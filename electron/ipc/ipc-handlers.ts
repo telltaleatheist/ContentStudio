@@ -1319,6 +1319,27 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       // Removing a job also drops any held "Show prompt" transcript for it.
       heldTranscripts.delete(jobId);
 
+      // ...AND the operator's publish selections for it. `clearJob` has existed since the
+      // publish store was written and had ZERO call sites: deleting a job left
+      // selections/<jobId>.json behind permanently, holding chosen A/B titles, description
+      // and tag overrides, and a videoId link for a job that no longer exists. Nothing ever
+      // read them again and nothing ever removed them.
+      //
+      // Done BEFORE the report files, deliberately. If the report delete fails partway the
+      // operator still has a job they can see and retry; if it succeeds and this had not run,
+      // the selections are orphaned with no jobId left in any UI to reach them by.
+      //
+      // Failure here does not abort the delete — the selections are a side record, and
+      // refusing to remove a job because its leftovers could not be tidied would be the
+      // tail wagging the dog — but it is reported rather than swallowed.
+      let selectionsWarning: string | null = null;
+      try {
+        await analytics.publishStore.clearJob(jobId);
+      } catch (err: any) {
+        selectionsWarning = err?.message || String(err);
+        log.warn(`[JobHistory] Could not clear publish selections for ${jobId}:`, err);
+      }
+
       const settings = (store as any).store;
       const outputDirectory = settings.outputDirectory;
 
@@ -1357,7 +1378,9 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
               // Delete the JSON metadata file
               fs.unlinkSync(filePath);
               log.info(`Deleted job history entry: ${jobId}`);
-              return { success: true };
+              return selectionsWarning
+                ? { success: true, warning: `The job was deleted, but its publish selections could not be removed: ${selectionsWarning}` }
+                : { success: true };
             }
           } catch (parseError) {
             log.warn(`Could not parse job file ${file}:`, parseError);
@@ -1366,7 +1389,18 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         }
       }
 
-      return { success: false, error: 'Job not found' };
+      // Nothing matched. That is not necessarily a failure: the operator may be deleting a
+      // job whose report file is already gone — deleted from the reports page, pruned by the
+      // four-week sweep in get-job-history, or removed by hand. Reporting `success: false`
+      // for "it is already in the state you asked for" made the History page's clear-all show
+      // an error for work that was, in fact, done.
+      //
+      // The publish selections were cleared above regardless, which is the part that would
+      // otherwise be left behind, so there is genuinely nothing outstanding here.
+      log.info(`[JobHistory] No report file for ${jobId} — already gone; selections cleared.`);
+      return selectionsWarning
+        ? { success: true, warning: `No report file for this job (it was already gone), and its publish selections could not be removed: ${selectionsWarning}` }
+        : { success: true, alreadyGone: true };
     } catch (error) {
       log.error('Error deleting job history:', error);
       return { success: false, error: String(error) };
