@@ -630,7 +630,8 @@ export class ElectronService {
     inputs: string[] | Array<{ path: string; notes?: string }>;
     promptSet: string;
     mode: string;
-    jobId?: string;
+    /** Required: the queue row's own id. The main process refuses a request without it. */
+    jobId: string;
     jobName?: string;
     chapterFlags?: { [path: string]: boolean };
     showPrompt?: boolean;

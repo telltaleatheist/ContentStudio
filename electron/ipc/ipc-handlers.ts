@@ -793,6 +793,14 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
 
   // Generate metadata
   ipcMain.handle('generate-metadata', async (_event, params) => {
+    // A job id is required. It is what the report file is named after, what the publish
+    // selections are keyed by, what cancellation is registered under, and what the renderer's
+    // queue row matches on — so a job without one is unnameable, uncancellable and
+    // undeletable from the moment it starts. The renderer has always sent it; this makes the
+    // absence a loud error rather than a silent default (see the pipelineJob note below).
+    if (!params || typeof params.jobId !== 'string' || !params.jobId.trim()) {
+      throw new Error('generate-metadata requires a non-empty jobId');
+    }
     try {
       log.info('Starting metadata generation with params:', JSON.stringify(params, null, 2));
 
@@ -902,7 +910,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         };
 
         const pipelineJob: PipelineJob = {
-          jobId: params.jobId || 'metadata-job',
+          // No `|| 'metadata-job'`. That default was unreachable — the single renderer caller
+          // always sends nextJob.id — and one new caller away from being reachable, at which
+          // point every such job would share one literal id AND skip the cancellation
+          // registration ten lines below, which is guarded on `params.jobId` being truthy.
+          // An uncancellable job whose id collides with every other uncancellable job is not
+          // a default worth having; the guard above makes the absence impossible instead.
+          jobId: params.jobId,
           metadataParams,
           progressCallback,
           resolve,
@@ -1315,6 +1329,14 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
 
   // Delete job history entry
   ipcMain.handle('delete-job-history', async (_event, jobId: string) => {
+    // A job id is required, and an absent one is a caller bug rather than an empty delete.
+    // Without this, history.ts's `job.job_id || job.id || ''` sends '' for a report file
+    // carrying neither, nothing matches, and the already-gone branch below reports a
+    // completed delete for a job that was never identified.
+    if (typeof jobId !== 'string' || !jobId.trim()) {
+      return { success: false, error: 'delete-job-history requires a non-empty jobId' };
+    }
+
     try {
       // Removing a job also drops any held "Show prompt" transcript for it.
       heldTranscripts.delete(jobId);
@@ -1330,6 +1352,32 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
 
       if (!fs.existsSync(metadataDir)) {
         return { success: false, error: 'Metadata directory not found' };
+      }
+
+      // The operator's publish selections go too. `clearJob` has existed since the publish
+      // store was written and had ZERO call sites: deleting a job left
+      // selections/<jobId>.json behind permanently, holding chosen A/B titles, description
+      // and tag overrides, and a videoId link for a job that no longer exists. Nothing ever
+      // read them again and nothing ever removed them.
+      //
+      // AFTER the pre-flight guards and BEFORE the report files, and both halves of that are
+      // deliberate. Before the files, because if a report delete fails partway the operator
+      // still has a job they can see and retry, whereas the reverse order orphans the
+      // selections with no jobId left in any UI to reach them by. After the guards, because
+      // those return `success: false` — clearing first meant a delete that reported doing
+      // NOTHING had already destroyed the operator's hand-curated A/B choices, and the
+      // likeliest way to reach it is an output directory that has been moved or renamed,
+      // which is exactly when someone is tidying up.
+      //
+      // Failure here does not abort the delete — the selections are a side record, and
+      // refusing to remove a job because its leftovers could not be tidied would be the
+      // tail wagging the dog — but it is reported rather than swallowed.
+      let selectionsWarning: string | null = null;
+      try {
+        await analytics.publishStore.clearJob(jobId);
+      } catch (err: any) {
+        selectionsWarning = err?.message || String(err);
+        log.warn(`[JobHistory] Could not clear publish selections for ${jobId}:`, err);
       }
 
       const files = fs.readdirSync(metadataDir);
@@ -1357,7 +1405,12 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
               // Delete the JSON metadata file
               fs.unlinkSync(filePath);
               log.info(`Deleted job history entry: ${jobId}`);
-              return { success: true };
+              return {
+                success: true,
+                ...(selectionsWarning
+                  ? { warning: `The job was deleted, but its publish selections could not be removed: ${selectionsWarning}` }
+                  : {}),
+              };
             }
           } catch (parseError) {
             log.warn(`Could not parse job file ${file}:`, parseError);
@@ -1366,7 +1419,26 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         }
       }
 
-      return { success: false, error: 'Job not found' };
+      // Nothing matched. That is not necessarily a failure: the operator may be deleting a
+      // job whose report file is already gone — deleted from the reports page, pruned by the
+      // four-week sweep in get-job-history, or removed by hand. Reporting `success: false`
+      // for "it is already in the state you asked for" made the History page's clear-all show
+      // an error for work that was, in fact, done.
+      //
+      // The publish selections were cleared above regardless, which is the part that would
+      // otherwise be left behind, so there is genuinely nothing outstanding here.
+      log.info(`[JobHistory] No report file for ${jobId} — already gone; selections cleared.`);
+      // `alreadyGone` is carried on BOTH shapes. It used to be dropped whenever a warning was
+      // present, so a caller trying to tell "already gone" from "just deleted" got the wrong
+      // answer precisely when something else had also gone wrong. A flag that does not
+      // survive its own error path is worse than no flag.
+      return {
+        success: true,
+        alreadyGone: true,
+        ...(selectionsWarning
+          ? { warning: `No report file for this job (it was already gone), and its publish selections could not be removed: ${selectionsWarning}` }
+          : {}),
+      };
     } catch (error) {
       log.error('Error deleting job history:', error);
       return { success: false, error: String(error) };

@@ -181,18 +181,29 @@ export class Prompts implements OnInit {
 
     try {
       const result = await this.electron.deletePromptSet(id);
-      if (result.success) {
-        await this.loadPromptSets();
-        this.showDeleteDialog.set(false);
-        this.promptSetToDelete.set(null);
+      // `success: false` used to fall out of this `if` and do nothing at all: the dialog
+      // stayed open, no message appeared, and the prompt set was still there. The user's
+      // only evidence that anything had happened was that nothing had. A host that answers
+      // "no, and here is why" is not an error to be swallowed — it is the answer.
+      if (!result.success) {
+        this.notificationService.error(
+          'Delete Failed',
+          result.error || 'The prompt set was not deleted, and the app was not told why.',
+          false,
+        );
+        return;
+      }
 
-        // Select first available prompt set
-        if (this.promptSets().length > 0) {
-          this.selectPromptSet(this.promptSets()[0].id);
-        } else {
-          this.selectedPromptSetId.set(null);
-          this.currentPromptSet.set(null);
-        }
+      await this.loadPromptSets();
+      this.showDeleteDialog.set(false);
+      this.promptSetToDelete.set(null);
+
+      // Select first available prompt set
+      if (this.promptSets().length > 0) {
+        this.selectPromptSet(this.promptSets()[0].id);
+      } else {
+        this.selectedPromptSetId.set(null);
+        this.currentPromptSet.set(null);
       }
     } catch (error) {
       this.notificationService.error('Delete Error', 'Failed to delete prompt set: ' + (error as Error).message, false);

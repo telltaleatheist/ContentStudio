@@ -121,20 +121,36 @@ export class History implements OnInit {
       // Get unique job IDs to delete
       const jobIds = new Set(this.entries().map(e => e.jobId));
       let successCount = 0;
+      const failures: string[] = [];
 
       for (const jobId of jobIds) {
         try {
           const result = await this.electron.deleteJobHistory(jobId);
           if (result.success) successCount++;
+          else failures.push(`${jobId}: ${result.error || 'no reason given'}`);
         } catch (error) {
-          console.error('Error deleting job:', error);
+          failures.push(`${jobId}: ${(error as Error).message}`);
         }
       }
 
       await this.loadHistory();
 
-      if (successCount > 0) {
+      // Every outcome says something. The old shape notified only when successCount > 0, so
+      // a clear-all where EVERY delete returned success:false produced no error, no success
+      // message, and a list that reloaded unchanged — the button did nothing and said
+      // nothing, which a user reports as "the delete button is broken" rather than as the
+      // specific failure it was.
+      if (failures.length > 0) {
+        this.notificationService.error(
+          successCount > 0 ? 'History Partly Cleared' : 'History Not Cleared',
+          `${successCount} of ${jobIds.size} deleted. Failed: ${failures.join('; ')}`,
+        );
+      } else if (successCount > 0) {
         this.notificationService.success('History Cleared', `Deleted ${successCount} entries`);
+      } else {
+        // Nothing to do is not a failure, and saying so is better than silence: the button
+        // was pressed and the user is entitled to know it was heard.
+        this.notificationService.success('History Cleared', 'There was nothing to delete.');
       }
     } catch (error) {
       console.error('Error clearing history:', error);

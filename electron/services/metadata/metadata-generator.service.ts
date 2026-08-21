@@ -45,7 +45,12 @@ export interface GenerationParams {
   outputPath?: string;
   promptSet?: string;
   promptSetsDir?: string;
-  jobId?: string;
+  /**
+   * REQUIRED. The renderer's queue id, threaded end to end: it names the report file, keys
+   * the publish selections, and registers cancellation. Optional here previously, which let
+   * `initializeJob` mint a replacement nobody else could match.
+   */
+  jobId: string;
   jobName?: string;
   // Pre-resolved "CHANNEL PERFORMANCE DATA" block from the analytics feedback
   // loop (appended to the metadata prompt); undefined = omit (expected state).
