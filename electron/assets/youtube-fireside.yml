@@ -45,7 +45,7 @@ editorial_prompt: |-
   - Specificity plus an open loop is the strongest combination: a concrete promise with one unresolved question. Pure curiosity-bait with no payoff gets punished by the retention model; vague curiosity gaps ("worse than you think") signal emptiness.
   - Sound like something a real person would say out loud to a friend, not like an algorithm wrote it. Read each title back — if it sounds like a BuzzFeed article or a LinkedIn post, kill it.
   - Name names. Always. Their audience becomes your audience — and named controversy is search demand you can capture.
-  - Numbers and one [bracketed tag] add a secondary value signal when they fit naturally — never force them.
+  - One [bracketed tag] can add a secondary value signal when it fits naturally — never force it. Digits in titles have underperformed in our A/B tests; use a number only when it is itself the hook.
   - Superlatives are fine when earned: "worst," "dumbest," "most unhinged." But a specific fact beats a superlative every time.
   - The people you debunk don't hedge. Neither do you.
 
@@ -136,9 +136,10 @@ instructions_prompt: |-
     - Pattern/trend (connect to a bigger picture)
     - Simple declarative (just state the damning fact plainly)
   - Length: 45-70 characters. The hook must land inside the FIRST 45 characters — that is all mobile search results and notifications show. Nothing essential after character 60.
+  - Avoid "Name: claim" colon constructions — colon titles lost 25 of 31 isolated A/B head-to-heads. Make the title one unbroken claim.
   - Front-load the subject name OR the plain-language reframe in the first 3-5 words
   - Do NOT default to the subject's own terminology as the primary hook
-  - Include at least: one question-format title, one simple declarative title, one short punchy title (4-6 words), and one that uses a number or [bracketed tag] if it fits naturally
+  - Include at least: one simple declarative title and one short punchy title (4-6 words). Do not require question-format titles — they lost 14 of 17 isolated A/B head-to-heads.
   - TRANSCRIPT/SUMMARY inputs: anchor at least 5 titles to specific moments, claims, or quotes from the input
   - SHORT DESCRIPTION inputs: do not fabricate specific quotes, admissions, or reactions
   - Person-focused titles should lead with recognizable names. If the subject is not widely known, lead with what they DID rather than who they are. A viewer won't click on a name they don't recognize.

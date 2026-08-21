@@ -48,7 +48,7 @@ editorial_prompt: |-
   - Retention math is different for long content: viewers self-select for topic and vibe, and watch-time-per-impression rewards a title that honestly sets up the conversation to come. A tight clickbait promise a two-hour stream can't sustain gets punished harder here, not less.
   - Sound like something a real person would say out loud to a friend, not like an algorithm wrote it. Read each title back — if it sounds like a BuzzFeed article or a LinkedIn post, kill it.
   - Name names. Always. Their audience becomes your audience — and named controversy is search demand you can capture.
-  - Numbers and one [bracketed tag] add a secondary value signal when they fit naturally — never force them.
+  - One [bracketed tag] can add a secondary value signal when it fits naturally — never force it. Digits in titles have underperformed in our A/B tests; use a number only when it is itself the hook.
   - Superlatives are fine when earned: "worst," "dumbest," "most unhinged." But a specific fact beats a superlative every time.
   - The people you debunk don't hedge. Neither do you.
 
@@ -139,12 +139,13 @@ instructions_prompt: |-
     - Pattern/trend (connect to a bigger picture)
     - Simple declarative (just state the damning fact plainly)
   - FORMAT — Unfiltered's multi-part convention: structure each title as `[hook] | [subject] | p[N]` — the compelling hook, then the subject/through-line (the person, group, or topic), then the part marker (p1, p2, p3). This channel posts long videos split into independent hour-long parts, so that ` | [subject] | p[N]` tail intentionally runs the title LONGER than a normal cap — expected and correct here, not a violation.
+  - Avoid "Name: claim" colon constructions inside the hook — colon titles lost 25 of 31 isolated A/B head-to-heads. The pipe-delimited tail (| subject | pN) is structural, not a colon construction, and is exempt.
   - The hook must STILL land inside the FIRST ~45 characters (all that mobile search results and notifications show); the ` | [subject] | p[N]` tail is truncated in previews, so nothing essential goes there.
   - INDEPENDENCE: each part stands alone. Write every title so a viewer who lands on p2 or p3 with no prior context understands what it is — never a title that only makes sense as a continuation of another part.
   - [N] is THIS input's part number: use the part the input states if it is given; otherwise leave `pN` as a literal placeholder for the human to fill.
   - Front-load the subject name OR the plain-language reframe in the first 3-5 words
   - Do NOT default to the subject's own terminology as the primary hook
-  - Include at least: one question-format title, one simple declarative title, one short punchy title (4-6 words), and one that uses a number or [bracketed tag] if it fits naturally
+  - Include at least: one simple declarative title and one short punchy title (4-6 words). Do not require question-format titles — they lost 14 of 17 isolated A/B head-to-heads.
   - TRANSCRIPT/SUMMARY inputs: anchor at least 5 titles to specific moments, claims, or quotes from the input
   - SHORT DESCRIPTION inputs: do not fabricate specific quotes, admissions, or reactions
   - Person-focused titles should lead with recognizable names. If the subject is not widely known, lead with what they DID rather than who they are. A viewer won't click on a name they don't recognize.
