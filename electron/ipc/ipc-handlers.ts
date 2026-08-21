@@ -793,6 +793,14 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
 
   // Generate metadata
   ipcMain.handle('generate-metadata', async (_event, params) => {
+    // A job id is required. It is what the report file is named after, what the publish
+    // selections are keyed by, what cancellation is registered under, and what the renderer's
+    // queue row matches on — so a job without one is unnameable, uncancellable and
+    // undeletable from the moment it starts. The renderer has always sent it; this makes the
+    // absence a loud error rather than a silent default (see the pipelineJob note below).
+    if (!params || typeof params.jobId !== 'string' || !params.jobId.trim()) {
+      throw new Error('generate-metadata requires a non-empty jobId');
+    }
     try {
       log.info('Starting metadata generation with params:', JSON.stringify(params, null, 2));
 
@@ -902,7 +910,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         };
 
         const pipelineJob: PipelineJob = {
-          jobId: params.jobId || 'metadata-job',
+          // No `|| 'metadata-job'`. That default was unreachable — the single renderer caller
+          // always sends nextJob.id — and one new caller away from being reachable, at which
+          // point every such job would share one literal id AND skip the cancellation
+          // registration ten lines below, which is guarded on `params.jobId` being truthy.
+          // An uncancellable job whose id collides with every other uncancellable job is not
+          // a default worth having; the guard above makes the absence impossible instead.
+          jobId: params.jobId,
           metadataParams,
           progressCallback,
           resolve,

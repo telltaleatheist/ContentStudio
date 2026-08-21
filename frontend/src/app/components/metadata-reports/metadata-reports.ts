@@ -263,15 +263,34 @@ export class MetadataReports implements OnInit {
 
       // Check if new structure exists
       let result: any = null;
+      let readError: string | null = null;
       try {
         result = await this.electron.readDirectory(metadataJsonDir);
       } catch (e) {
-        console.warn('No metadata directory found at', metadataJsonDir);
+        readError = (e as Error).message;
+        console.warn('Could not read metadata directory at', metadataJsonDir, e);
       }
 
+      // A missing CURRENT directory and an unreadable one are different things, and this used
+      // to treat them identically: any non-success silently fell through to the legacy layout
+      // and returned. A genuinely broken read — bad permissions, a disconnected volume, an
+      // output directory pointing somewhere that no longer exists — showed the user an empty
+      // or partial list with no indication that anything had gone wrong, and no way to tell
+      // "you have no reports" from "we could not look".
+      //
+      // The legacy path is still tried, because old installs really do have that layout, but
+      // it is now a documented migration step rather than a catch-all, and a failure of BOTH
+      // says so.
       if (!result || !result.success) {
-        // Fallback to old structure for backward compatibility
-        await this.loadReportsLegacy(baseDir);
+        const legacyFound = await this.loadReportsLegacy(baseDir);
+        if (!legacyFound) {
+          this.notificationService.error(
+            'Could not read reports',
+            readError
+              ? `${metadataJsonDir} could not be read (${readError}), and no reports were found in the older layout either.`
+              : `No reports directory at ${metadataJsonDir}, and none in the older layout either. Check the output directory in Settings.`,
+          );
+        }
         return;
       }
 
@@ -279,6 +298,8 @@ export class MetadataReports implements OnInit {
 
       if (result.files) {
         const reports: MetadataReport[] = [];
+        /** Report files that could not be listed. Counted, never silently dropped. */
+        const skipped: string[] = [];
 
         // Read all JSON files
         for (const file of result.files) {
@@ -293,7 +314,18 @@ export class MetadataReports implements OnInit {
               // Get the txt folder path
               const txtFolder = jobData.txt_folder || '';
               const jobDate = new Date(jobData.created_at || file.mtime);
-              const jobId = jobData.job_id || file.name.replace('.json', '');
+              // No `|| file.name` fallback. A report file whose job_id is missing is a
+              // corrupt file, not a file to guess an id for: every delete, every publish
+              // selection and every draft match is keyed by that id, so inventing one from
+              // the filename produces a report the operator can see and nothing can act on.
+              // Skipped loudly instead — the file is named in the console and the run
+              // continues, because one bad file must not hide the rest.
+              const jobId = jobData.job_id;
+              if (typeof jobId !== 'string' || !jobId) {
+                console.warn(`[MetadataReports] ${file.name} has no job_id — skipped.`);
+                skipped.push(file.name);
+                continue;
+              }
 
               // Create a report for EACH item in the job
               if (jobData.items && Array.isArray(jobData.items)) {
@@ -336,7 +368,20 @@ export class MetadataReports implements OnInit {
             }
           } catch (e) {
             console.warn('Could not read metadata file', file.name, e);
+            skipped.push(file.name);
           }
+        }
+
+        // Files that could not be listed are SAID, not just counted into the console. A
+        // reports page silently missing three of forty rows looks exactly like a reports page
+        // that has thirty-seven rows, and the operator has no way to tell.
+        if (skipped.length > 0) {
+          this.notificationService.warning(
+            'Some reports could not be listed',
+            `${skipped.length} file${skipped.length === 1 ? '' : 's'} skipped: ${skipped.slice(0, 5).join(', ')}` +
+              (skipped.length > 5 ? `, and ${skipped.length - 5} more` : '') +
+              '. They are unreadable or missing a job_id; see the console for detail.',
+          );
         }
 
         // Sort by date descending
@@ -350,7 +395,14 @@ export class MetadataReports implements OnInit {
     }
   }
 
-  private async loadReportsLegacy(baseDir: string) {
+  /**
+   * The pre-`.contentstudio/metadata` layout, for installs that predate it.
+   *
+   * Returns whether it FOUND anything, which the caller needs: this used to be a silent
+   * catch-all for any failure of the current path, so "no reports here either" and "we could
+   * not look" both ended as an empty list with nothing said.
+   */
+  private async loadReportsLegacy(baseDir: string): Promise<boolean> {
     // Legacy structure: try the old metadata folder under the output directory
     const possiblePaths = [
       `${baseDir}/metadata`
@@ -376,7 +428,7 @@ export class MetadataReports implements OnInit {
     if (!metadataDir || !result) {
       console.warn('No metadata directory found in any location');
       this.reportsDirectory.set(possiblePaths[0]);
-      return;
+      return false;
     }
 
     this.reportsDirectory.set(metadataDir);
@@ -422,7 +474,11 @@ export class MetadataReports implements OnInit {
 
       reports.sort((a, b) => b.date.getTime() - a.date.getTime());
       this.reports.set(reports);
+      return reports.length > 0;
     }
+    // The directory was readable but held no files worth listing. Found the LOCATION, found
+    // no reports — reported as "nothing here" rather than as a failure to look.
+    return true;
   }
 
   async selectReport(report: MetadataReport) {

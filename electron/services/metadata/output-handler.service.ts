@@ -47,18 +47,22 @@ export class OutputHandlerService {
   }
 
   /**
-   * Initialize a new job (creates job metadata with empty items)
+   * Initialize a new job (creates job metadata with empty items).
+   *
+   * `jobId` is REQUIRED, and minting one here would be worse than failing. The id is the
+   * renderer's — its queue row is keyed by it, and so are the publish selections and the
+   * cancellation registration — so an id invented in the main process names a job file that
+   * the queue cannot match, the operator cannot delete and the publish feature cannot reach.
+   * The mint that used to sit here was unreachable (the single caller always passes one) and
+   * would have produced exactly that orphan the day it was not.
    */
   initializeJob(
     jobName: string,
     promptSet: string,
-    jobId?: string
+    jobId: string
   ): { jobId: string; txtFolder: string; jsonPath: string } {
-    // Generate job ID if not provided
-    if (!jobId) {
-      const timestamp = Date.now();
-      const randomStr = Math.random().toString(36).substring(7);
-      jobId = `job-${timestamp}-${randomStr}`;
+    if (typeof jobId !== 'string' || !jobId.trim()) {
+      throw new Error('initializeJob requires a jobId — the renderer owns it and must supply it.');
     }
 
     // Clean job name for folder
