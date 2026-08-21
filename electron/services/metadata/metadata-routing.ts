@@ -77,6 +77,37 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
   'headline-desc-14b': { kind: 'local', label: 'Headline 14B (descriptions)', model: 'headline-14b-descriptions' },
   'headline-tags-14b': { kind: 'local', label: 'Headline 14B (tags)', model: 'headline-14b-tags' },
   'headline-titles-14b': { kind: 'local', label: 'Headline 14B (titles)', model: 'headline-14b-titles' },
+  /**
+   * A BASE model on the titles field, which is a deliberate exception to this file's own rule.
+   *
+   * Everything else offered for titles is either a cloud model or a trained headline adapter.
+   * The note on METADATA_ROUTING_TASKS warns that pointing a base model at a brief makes it
+   * "answer fluently and wrongly", and that applies here: measured on this machine, this model
+   * given a generic brief writes a colon title 47% of the time, and colons lose head-to-head
+   * 20-to-5 in the operator's own A/B record.
+   *
+   * It is offered anyway because it is not GIVEN a generic brief — it runs the same prompt
+   * pipeline as everything else, which carries the per-channel yml sets and the abLearnings
+   * block, and the same measurement showed the shape collapses to 0% once real head-to-heads
+   * are in the prompt. The caveat is real but it is a property of the prompt, not the model.
+   *
+   * Consequence worth knowing before choosing it: a larger model amplifies whatever the prompt
+   * teaches, in both directions. The yml sets currently REQUIRE one question-format title per
+   * batch of ten, against a shape that loses 15-to-2.
+   *
+   * CHECKED, because it was expected to be a problem and is not: this model reasons by default,
+   * and on Ollama's /api/chat that reasoning lands in `message.thinking` while `message.content`
+   * comes back EMPTY unless the caller sends `think: false`. A title needs ~13 tokens and the
+   * reasoning spends hundreds, so the generation hits its cap mid-thought and returns nothing.
+   * This app does not use /api/chat — ai-manager posts to /api/generate and reads
+   * `data.response`, and that endpoint returns `response` and `thinking` as SEPARATE fields.
+   * Probed with this app's exact options block (temperature 0.7, num_predict 4096,
+   * num_ctx 32768): 74 characters of `response`, 566 of `thinking`, done_reason "stop". The
+   * content arrives and the reasoning is discarded, which is what we want. No think flag needed
+   * — but anyone moving this app to /api/chat must add one, or every local title silently
+   * becomes an empty string.
+   */
+  'qwen38-27b': { kind: 'local', label: 'Qwen 27B (titles)', model: 'qwen3.8:27b' },
   'headline-titles-32b': {
     kind: 'local',
     label: 'Headline 32B (titles)',
@@ -118,7 +149,7 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
   {
     id: 'titles',
     label: 'Titles',
-    options: ['sonnet5', 'opus5', 'headline-titles-14b', 'headline-titles-32b'],
+    options: ['sonnet5', 'opus5', 'headline-titles-14b', 'headline-titles-32b', 'qwen38-27b'],
     defaultOptionId: 'sonnet5',
   },
   {
