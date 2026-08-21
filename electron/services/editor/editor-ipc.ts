@@ -15,7 +15,7 @@ import * as assetManager from './asset-manager';
 import * as ollamaService from './ollama-service';
 import { analyzeChapters, suggestTitle, Segment } from './chapter-splitter';
 import {
-  ArchiveSync, destinationFor, DEFAULT_ARCHIVE_ROOT, DEFAULT_ARCHIVE_MOUNT_URL
+  ArchiveSync, comparablePath, destinationFor, DEFAULT_ARCHIVE_ROOT, DEFAULT_ARCHIVE_MOUNT_URL
 } from './archive-sync';
 import { createEditorWindow, getEditorWindow } from './editor-window';
 import { getMainWindow } from '../../main';
@@ -1902,7 +1902,10 @@ function setupArchiveHandlers(store: Store<any>): void {
     for (const it of items) {
       for (const { target, scope } of deleteTargets.values()) {
         const mine = scope === 'local' ? it.localPath : safeDestination(it.localPath, it.kind, root);
-        if (mine && isAtOrUnder(target, mine)) {
+        // comparablePath() on BOTH sides, the same fold the queue's own guards use. One side
+        // realpathed and the other raw agrees only on a tree with no symlinks and no casing
+        // variants in it, and stops agreeing silently the first day that changes.
+        if (mine && isAtOrUnder(comparablePath(target), comparablePath(mine))) {
           throw new Error(
             `${path.basename(it.localPath)} is inside ${path.basename(target)}, which is being deleted ` +
             `right now — nothing was queued. Syncing it would put back what the delete is removing.`
@@ -2052,6 +2055,8 @@ function setupArchiveHandlers(store: Store<any>): void {
     }
 
     deletionInFlight = target;
+    // Stored RAW. The comparison folds both sides itself, and a folded path kept here would
+    // be lossy for no gain — it is also what the refusal message names.
     deleteTargets.set(target, { target, scope: 'remote' });
     try {
       const status = sync.status(root);
@@ -2164,7 +2169,10 @@ function setupArchiveHandlers(store: Store<any>): void {
    *   8. the archive is reachable;
    *   9. a FRESH `archiveCheck` of the week says inSync, with zero pending files and not
    *      neverArchived (a check also refuses outright while any sync is running);
-   *  10. still nothing syncing (re-checked immediately before the irreversible call).
+   *  10. nothing CAN have started since step 7 — this handler holds the ArchiveSync queue for
+   *      its whole length, so there is no re-check here any more and none is needed. It used to
+   *      re-read `sync.busy` immediately before the irreversible call, which was the best a
+   *      handler outside the queue could do: it narrowed the race rather than closing it.
    *
    * Only then is the folder removed and the registry rewritten atomically.
    */
@@ -2229,6 +2237,14 @@ function setupArchiveHandlers(store: Store<any>): void {
         // Re-checked here as a fail-loud backstop; the primary refusal happened before this was
         // queued. Filtering to 'sync' is what keeps this job from refusing on ITSELF — a queued
         // delete of week X is, quite correctly, a job under week X.
+        //
+        // KEPT even though it is now unreachable, while the remote body's equivalent was
+        // REMOVED — the asymmetry is deliberate, not an oversight. What the remote body
+        // dropped was a TIMING re-check ("did a sync start while we worked?"), which holding
+        // the queue makes impossible to answer wrongly. This is a SEMANTIC check ("is a sync
+        // aimed at this week?"), whose answer does not depend on holding the queue at all, and
+        // it is the last thing between a resurrected week and the operator if the pre-flight
+        // refusal above is ever refactored away.
         //
         // Complete for the targets that exist, and only because of an invariant nothing else
         // states: both delete handlers are week-granular, so every job under consideration is

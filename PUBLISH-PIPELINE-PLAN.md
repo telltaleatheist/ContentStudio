@@ -83,6 +83,15 @@ Correlation ids over events were considered and rejected as worse.
    would never settle, hanging an awaiting IPC handler forever — worse than today's wrapped
    rejection, and invisible. That branch must settle every deferred it drops.
 
+5. *The reentrancy deadlock* (found in implementation, not review). Both delete handlers
+   re-verify with a dry run before removing anything. Once the delete is itself a queued job,
+   a call to the public `check()` waits for a slot the delete is ALREADY HOLDING — a permanent
+   deadlock with no error, no timeout, and nothing in a log: the operator sees a button that
+   never comes back, which is indistinguishable from the bug being fixed. `runExclusive` hands
+   its body a context whose `check` runs the dry run directly, bypassing the queue; the public
+   `check()` is a thin wrapper around the same private routine. Not avoidable by care — it
+   falls out of making a request-response operation reentrant into the queue that serializes it.
+
 **`killCheck` arbitration goes away.** Once `check()` is queued it can no longer overlap a
 transfer, so the "a real transfer always wins" arbitration (`archive-sync.ts:717-719`, :545)
 is dead weight; keep `killCheck` for cancellation only and remove the arbitration path in the

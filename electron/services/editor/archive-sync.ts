@@ -281,6 +281,41 @@ const MATCHING_RULES: string[] = [
  * Same lexical approach as the projects scanner, and for the same reason — it has to answer
  * for a path whose volume is absent, which by definition has no mount-table entry.
  */
+/**
+ * A path reduced to the form it must be in BEFORE it is compared with another path.
+ *
+ * NOT a usable filesystem path — it is deliberately lossy, and every caller passes real paths
+ * around separately for anything the operator reads.
+ *
+ * Three folds, each for a way two spellings of one folder slip past `path.relative`:
+ *
+ *  1. realpath, so a week reached through a symlink matches the same week reached directly.
+ *     Falls back to `path.resolve` when the path does not exist — a folder already deleted,
+ *     or one not created yet.
+ *  2. NFC, because macOS hands back decomposed filenames from readdir while a path built
+ *     anywhere else is usually composed. An accented week name would otherwise compare
+ *     unequal to itself.
+ *  3. lower case. Verified on the operator's disk rather than assumed: /Volumes/Callisto is
+ *     case-INSENSITIVE APFS, and macOS realpath resolves symlinks WITHOUT settling case — it
+ *     returns whatever casing it was handed. So realpath alone closes the symlink half of
+ *     this and leaves the half this volume actually has.
+ *
+ * The fold can only ever produce a FALSE MATCH, never a false miss, and that asymmetry is why
+ * it is acceptable on a case-sensitive volume too. A false match makes a delete REFUSE when it
+ * could have proceeded; a false miss would let it delete a week with a sync queued behind it
+ * and watch the week come back. One is an inconvenience the operator can see and act on. The
+ * other is the bug this whole phase exists to prevent.
+ */
+export function comparablePath(p: string): string {
+  let resolved: string;
+  try {
+    resolved = fs.realpathSync.native(p);
+  } catch {
+    resolved = path.resolve(p);
+  }
+  return resolved.normalize('NFC').toLowerCase();
+}
+
 export function volumeRootOf(p: string): string {
   const win = /^([a-zA-Z]:[\\/])/.exec(p);
   if (win) return win[1];
@@ -433,6 +468,15 @@ export class ArchiveSync {
   }
 
   /**
+   * A transfer is running OR waiting. Narrower than `busy`, which also counts checks and
+   * deletes; this is specifically "is there rsync work in the system", which is the question
+   * a passive status check has to answer before deciding to queue rather than refuse.
+   */
+  get transfersPending(): boolean {
+    return this.transferring || this.queue.some(j => j.op === 'sync');
+  }
+
+  /**
    * Every SYNC — running or waiting — whose DESTINATION is at or under `destTarget`.
    *
    * The mirror of `jobsUnder` for the archive side. A remote delete removes a folder on the
@@ -444,8 +488,9 @@ export class ArchiveSync {
    * not have written anywhere either.
    */
   syncsWritingUnder(destTarget: string): Array<{ id: string; localPath: string; destPath: string }> {
+    const root = comparablePath(destTarget);
     const at = (p: string) => {
-      const rel = path.relative(destTarget, p);
+      const rel = path.relative(root, comparablePath(p));
       return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
     };
     const out: Array<{ id: string; localPath: string; destPath: string }> = [];
@@ -474,12 +519,15 @@ export class ArchiveSync {
    * a queued delete of week X is itself a job under week X, and it must not refuse on itself.
    */
   jobsUnder(target: string, exceptId?: string): Array<{ id: string; localPath: string; op: ArchiveOp }> {
+    const root = comparablePath(target);
     const at = (p: string) => {
-      const rel = path.relative(target, p);
+      const rel = path.relative(root, comparablePath(p));
       return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
     };
     return [...(this.running ? [this.running] : []), ...this.queue]
       .filter(j => j.id !== exceptId && at(j.localPath))
+      // The RAW path is reported back, not the canonical one: this ends up in a message the
+      // operator reads, and the folder they clicked is the one they will recognise.
       .map(j => ({ id: j.id, localPath: j.localPath, op: j.op }));
   }
 
@@ -611,9 +659,7 @@ export class ArchiveSync {
    * deferred, and the queue's only contribution — the whole point — is that nothing else is
    * touching the archive while the body runs.
    *
-   * The job goes AHEAD of pending syncs. It still never interrupts what is running, so a
-   * delete waits for at most one in-flight transfer instead of a whole week batch. See
-   * `insertJob` for why that is safe and `jobsUnder` for the conflict it does NOT solve.
+   * Where the job LANDS is decided by its op, not by the caller — see `insertJob`.
    */
   runExclusive<T>(
     op: Exclude<ArchiveOp, 'sync'>,
@@ -634,18 +680,36 @@ export class ArchiveSync {
   }
 
   /**
-   * Put a non-sync job ahead of the pending syncs, behind any non-sync jobs already waiting.
+   * Place a job by RANK: deletes, then checks, then syncs. FIFO within a rank.
    *
-   * Two orderings are preserved at once: priority work outranks transfers, and priority work
-   * among itself stays FIFO, so two deletes run in the order they were asked for.
+   * The ranking is the whole ordering policy, in one place, and each step of it was paid for:
+   *
+   *  - Deletes outrank everything because an operator is standing at the screen waiting for
+   *    one. Behind a full week batch — one job per day plus the week, each a multi-thousand
+   *    file walk — that wait is hours, and a silent multi-hour wait is a worse answer than the
+   *    loud refusal this phase replaced.
+   *  - Deletes also outrank CHECKS, and that is not a detail. Checks were briefly ranked with
+   *    deletes, which meant an editor opened mid-batch queued one week scan per row and a
+   *    delete asked for afterwards waited behind all of them: "at most one in-flight transfer"
+   *    quietly became "one transfer plus every queued check".
+   *  - Checks outrank syncs so a status mark is not stuck behind the transfers it describes,
+   *    but they never jump a delete.
+   *
+   * SETTLED, so it is not re-litigated: a public `check()` REFUSES while transfers are
+   * pending rather than tail-queueing and waiting. The alternative was argued and dropped —
+   * see `check()` for why a held deferred is worse than an immediate no for a status mark.
+   * Checks still have a rank because one can be queued when no sync is pending, and a delete
+   * arriving afterwards must not wait behind it.
    *
    * This inserts into `queue`, which by construction does NOT contain the running job — that
    * lives in `running`. Index 0 here is genuinely the next thing to run.
    */
   private insertJob(job: QueueJob): void {
-    const firstSync = this.queue.findIndex(j => j.op === 'sync');
-    if (firstSync === -1) this.queue.push(job);
-    else this.queue.splice(firstSync, 0, job);
+    const rank = (op: ArchiveOp) => (op === 'sync' ? 2 : op === 'check' ? 1 : 0);
+    const mine = rank(job.op);
+    const before = this.queue.findIndex(j => rank(j.op) > mine);
+    if (before === -1) this.queue.push(job);
+    else this.queue.splice(before, 0, job);
   }
 
   /**
@@ -736,6 +800,9 @@ export class ArchiveSync {
       job.deferred?.reject(new Error(`${path.basename(job.localPath)} was cancelled before it ran.`));
       return 'ok';
     }
+    // Nothing below re-reads `canceled` for this id — a running exclusive job cannot be
+    // signalled — so drop it rather than leave an entry that outlives the job that owns it.
+    this.canceled.delete(job.id);
     try {
       const value = await job.body!(ctx);
       job.deferred?.resolve(value);
@@ -933,11 +1000,24 @@ export class ArchiveSync {
    * process slot, never data safety, and queueing removes it: a queued check cannot overlap a
    * transfer, so there is nothing left to arbitrate.
    *
-   * Checks jump ahead of pending syncs (see `runExclusive`). Waiting for at most the one
-   * in-flight transfer is the difference between a green mark that refreshes and a green mark
-   * that waits out a fourteen-thousand-file week.
+   * REFUSES LOUDLY while any transfer is running or queued, which is what this call did before
+   * it was a queue job, and deliberately so.
+   *
+   * The alternative — queue it and let the caller wait — reads better and is worse. The sidebar
+   * fires one of these per row when the editor opens; queued behind a week batch, each caller
+   * would sit on an unresolved promise for hours with the row showing "checking…" the whole
+   * time. A status mark is passive: nobody is waiting on it, and "not known right now" is an
+   * answer the sidebar already renders. An immediate refusal is the honest version of a wait
+   * nobody would ever see the end of.
+   *
+   * None of this reaches the DELETE path, which is what the queueing was for: a delete
+   * re-verifies through `ctx.check`, which does not queue at all and cannot be refused here.
+   * The reported bug stays fixed either way.
    */
   check(localPath: string, kind: ArchiveKind, root: string): Promise<ArchiveCheck> {
+    if (this.transfersPending) {
+      throw new Error('A sync is running — status checks wait until it finishes.');
+    }
     return this.runExclusive('check', localPath, kind, root, () => this.runCheck(localPath, kind, root));
   }
 
@@ -1057,11 +1137,25 @@ export class ArchiveSync {
     // The running job is no longer IN the queue, so it needs no filtering out of the loop
     // above — it is handled here, once.
     if (this.running && wanted.has(this.running.localPath)) {
-      this.canceled.add(this.running.id);
-      if (this.runningChild) this.runningChild.kill('SIGTERM');
-      // A running dry run has no entry in `runningChild`; its process is the check handle.
-      if (this.running.op === 'check') this.killCheck();
-      n++;
+      if (this.running.op === 'sync') {
+        this.canceled.add(this.running.id);
+        if (this.runningChild) this.runningChild.kill('SIGTERM');
+        n++;
+      } else if (this.running.op === 'check') {
+        // A running dry run has no `runningChild`; its process is the check handle. Killing it
+        // makes runCheck reject, which rejects the caller's deferred — a real cancellation.
+        this.killCheck();
+        n++;
+      } else {
+        // A RUNNING DELETE IS NOT CANCELLABLE, and is deliberately not counted.
+        //
+        // It has already passed every guard and is partway through removing a tree; there is
+        // no signal that would stop it in a state anyone could reason about, and a half-deleted
+        // week is worse than one that finishes. Counting it would report a cancellation that
+        // did not happen — the exact "said success, did nothing" shape being removed from four
+        // other sites in this codebase, landing in the diff that removes them.
+        log.info(`[archive] cancel ignored for the running delete of ${path.basename(this.running.localPath)} — it is past the point of stopping`);
+      }
     }
 
     this.emitQueue();
