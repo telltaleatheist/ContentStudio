@@ -86,6 +86,18 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    * given a generic brief writes a colon title 47% of the time, and colons lose head-to-head
    * 20-to-5 in the operator's own A/B record.
    *
+   * It is offered for CHAPTERS as well as titles, which is a different argument. Chapters are
+   * not a voice problem — the sealed pipeline asks hundreds of short factual questions about a
+   * transcript, so a base model with no adapter is the normal shape there rather than an
+   * exception. It also matters that it is INSTALLED: of the three options this table offered
+   * for chapters, two name models that are not present on the operator's machine, including
+   * the default, which is why chaptering silently produced nothing until it was diagnosed.
+   *
+   * The label carries no field suffix on purpose. Every other `(titles)` / `(tags)` /
+   * `(descriptions)` label in this table marks a TRAINED ADAPTER, and this is a base model
+   * appearing in two different dropdowns; "Qwen 27B (titles)" inside the Chapters list would
+   * be wrong twice over.
+   *
    * It is offered anyway because it is not GIVEN a generic brief — it runs the same prompt
    * pipeline as everything else, which carries the per-channel yml sets and the abLearnings
    * block, and the same measurement showed the shape collapses to 0% once real head-to-heads
@@ -107,7 +119,7 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    * — but anyone moving this app to /api/chat must add one, or every local title silently
    * becomes an empty string.
    */
-  'qwen38-27b': { kind: 'local', label: 'Qwen 27B (titles)', model: 'qwen3.8:27b' },
+  'qwen38-27b': { kind: 'local', label: 'Qwen 27B', model: 'qwen3.8:27b' },
   'headline-titles-32b': {
     kind: 'local',
     label: 'Headline 32B (titles)',
@@ -143,7 +155,7 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
   {
     id: 'chapters',
     label: 'Chapters',
-    options: ['cogito-14b', 'qwen25-14b', 'qwen3-14b'],
+    options: ['cogito-14b', 'qwen25-14b', 'qwen3-14b', 'qwen38-27b'],
     defaultOptionId: 'cogito-14b',
   },
   {
