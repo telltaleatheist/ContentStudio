@@ -289,31 +289,57 @@ const MATCHING_RULES: string[] = [
  *
  * Three folds, each for a way two spellings of one folder slip past `path.relative`:
  *
- *  1. realpath, so a week reached through a symlink matches the same week reached directly.
- *     Falls back to `path.resolve` when the path does not exist — a folder already deleted,
- *     or one not created yet.
+ *  1. realpath of the DEEPEST EXISTING ANCESTOR, with the non-existent tail re-appended, so a
+ *     week reached through a symlink matches the same week reached directly.
+ *
+ *     Resolving the deepest existing ancestor rather than the whole path — and re-appending
+ *     rather than giving up — is what keeps this SYMMETRIC. The obvious version wraps
+ *     `realpathSync` in a try/catch and falls back to `path.resolve` for the whole path when
+ *     it throws; realpath then succeeds on one side of a comparison and fails on the other,
+ *     one path is symlink-resolved and the other only lexically resolved, and the mismatch is
+ *     a FALSE MISS — the one direction this function must never produce. Not academic: a
+ *     delete target exists, but a queued job's folder is not guaranteed to still be there when
+ *     a guard compares it. It was also a silent fallback, which this project does not do.
+ *
+ *     Paths with no existing part at all still compare, lexically, against each other.
+ *
  *  2. NFC, because macOS hands back decomposed filenames from readdir while a path built
  *     anywhere else is usually composed. An accented week name would otherwise compare
  *     unequal to itself.
  *  3. lower case. Verified on the operator's disk rather than assumed: /Volumes/Callisto is
  *     case-INSENSITIVE APFS, and macOS realpath resolves symlinks WITHOUT settling case — it
- *     returns whatever casing it was handed. So realpath alone closes the symlink half of
+ *     returns whatever casing it was handed. So the symlink step alone closes one half of
  *     this and leaves the half this volume actually has.
  *
- * The fold can only ever produce a FALSE MATCH, never a false miss, and that asymmetry is why
- * it is acceptable on a case-sensitive volume too. A false match makes a delete REFUSE when it
- * could have proceeded; a false miss would let it delete a week with a sync queued behind it
- * and watch the week come back. One is an inconvenience the operator can see and act on. The
- * other is the bug this whole phase exists to prevent.
+ * DIRECTION, which is the property the guards rely on and the reason for the care above: folds
+ * 2 and 3 are many-to-one, so they can merge two distinct paths but can never split two equal
+ * ones — they produce false MATCHES only. Fold 1 is now symmetric, so it does not split equal
+ * paths either. The residue is a symlink inside a path component that does not exist, which no
+ * amount of resolving can settle for anyone.
+ *
+ * That direction matters because the two errors are not comparable. A false match makes a
+ * delete REFUSE when it could have proceeded — visible, and the operator can act on it. A
+ * false miss lets a delete run with a sync queued behind it, and the week comes back, which is
+ * the bug this whole phase exists to prevent.
  */
 export function comparablePath(p: string): string {
-  let resolved: string;
-  try {
-    resolved = fs.realpathSync.native(p);
-  } catch {
-    resolved = path.resolve(p);
+  const abs = path.resolve(p);
+  let head = abs;
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      head = fs.realpathSync.native(head);
+      break;
+    } catch {
+      const parent = path.dirname(head);
+      // Root reached and even it did not resolve: nothing here exists, so the whole path stays
+      // lexical — which is symmetric, because the other side gets the same treatment.
+      if (parent === head) break;
+      tail.unshift(path.basename(head));
+      head = parent;
+    }
   }
-  return resolved.normalize('NFC').toLowerCase();
+  return path.join(head, ...tail).normalize('NFC').toLowerCase();
 }
 
 export function volumeRootOf(p: string): string {
