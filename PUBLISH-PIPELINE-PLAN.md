@@ -104,6 +104,23 @@ A day-level delete added later would make `isAtOrUnder(day, pendingWeek)` false 
 week sync would push the day back. Name the invariant in a comment while Phase 0a is in that
 code.
 
+**Verified live** (2026-08-21, fixture weeks against real rsync and the real SMB share;
+14/14). The two that were unknowable statically: a delete of week X asked for 2.5 s into an
+unrelated 2 GB sync of week Y **waited 23.2 s and then ran** rather than refusing — the
+reported bug — with `sync.transferring` asserted false from inside the body, so the
+serialization is real and not merely apparent; and the delete's re-verification through
+`ctx.check` **completed**, which is the deadlock in trap 5 not happening.
+
+The result worth keeping longest is a NEGATIVE control. With a sync of X queued,
+`syncsWritingUnder(destinationFor(X))` found it (1) while `jobsUnder(destinationFor(X))`
+found nothing (0) — so the source-side guard, which is what a careless reading of "refuse
+same-path syncs" produces, would have been a guard that never fires. A test that only shows
+the code doing what it does is worth much less than one that shows the alternative failing.
+
+Not covered by that run, and still owed: the IPC handlers' own guards, the entire renderer
+half, the remote delete's destructive path (`deleteArchiveTree`, the leftovers case, the SSH
+fallback), and any real contention for the mount.
+
 ## Phase 0b — publish-selection integrity + metadata delete hygiene
 
 The strongest scouting find: **deleting one item from a multi-item report silently corrupts publish state three ways** — `deleteReport` (`metadata-reports.ts:502`) splices `jobData.items`/`txt_files` and renumbers its own rows (:549-570), but:

@@ -2100,6 +2100,12 @@ function setupArchiveHandlers(store: Store<any>): void {
         // old check was the best a handler outside the queue could do — it narrowed the race
         // rather than closing it.
         log.warn(`[archive] deleting the ARCHIVE copy of ${name}: ${realTarget}`);
+        // `path` ECHOES THE CALLER'S OWN STRING (`target`), deliberately, and not the
+        // realpath-resolved `realTarget` used for the safety decisions below. The renderer
+        // correlates these frames by an exact string compare against the path it sent, so an
+        // "improvement" to the resolved form here would silently stop every progress frame
+        // from reaching the row that asked for it — the delete would work and look frozen.
+        // Resolve for safety, echo for correlation.
         broadcast('archive:delete-progress', { path: target, name, phase: 'deleting', filesRemoved: 0 });
         const { filesRemoved, leftovers } = await deleteArchiveTree(realTarget, n => {
           broadcast('archive:delete-progress', { path: target, name, phase: 'deleting', filesRemoved: n });
@@ -2273,6 +2279,9 @@ function setupArchiveHandlers(store: Store<any>): void {
         //
         // This is also the scan the old code could not run at all during a sync, which is what
         // made deleting an unrelated week fail.
+        // `path` ECHOES THE CALLER'S OWN STRING (`weekPath`), deliberately, and not
+        // `weekResolved`. See the note in the remote handler: the renderer correlates by exact
+        // string, so resolving here would leave the delete working and looking frozen.
         broadcast('archive:delete-progress', { path: weekPath, name, phase: 'verifying' });
         const check = await ctx.check(week, 'week', root);
         if (check.neverArchived) {
