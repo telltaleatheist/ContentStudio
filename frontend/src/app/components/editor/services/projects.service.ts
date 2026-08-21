@@ -1,7 +1,9 @@
 // src/app/components/editor/services/projects.service.ts
 import { Inject, Injectable } from '@angular/core';
 import { BehaviorSubject, Observable } from 'rxjs';
-import { EDITOR_HOST, EditorHost, ProjectScanResult, ProjectsRegistry } from '../editor-host';
+import {
+  DeleteLocalWeekResult, EDITOR_HOST, EditorHost, ProjectScanResult, ProjectsRegistry
+} from '../editor-host';
 
 /**
  * One row of the projects list: what the registry persists (`path`/`name`/`lastOpened`)
@@ -209,7 +211,7 @@ export class ProjectsService {
    * from its own list rather than committing a write of its own: two writers for one file,
    * one of them working from a list that predates the other, is how a registry loses entries.
    */
-  async deleteLocalWeek(weekPath: string): Promise<{ removedProjects: string[]; destPath: string }> {
+  async deleteLocalWeek(weekPath: string): Promise<DeleteLocalWeekResult> {
     if (!this.host.deleteLocalWeek) {
       throw new Error('This host cannot delete local project folders.');
     }
@@ -217,7 +219,10 @@ export class ProjectsService {
     const gone = new Set(result.removedProjects);
     this.entries = this.entries.filter(e => !gone.has(e.path));
     this.publish();
-    return { removedProjects: result.removedProjects, destPath: result.destPath };
+    // Passed through whole, including `deleted` — the symlink-RESOLVED path the host actually
+    // removed, which is the only one worth telling the operator when a week folder was a link.
+    // Rebuilding a narrower object here dropped it.
+    return result;
   }
 
   /** Re-scan one entry (e.g. after a volume mounts, or a job finishes). No registry write. */

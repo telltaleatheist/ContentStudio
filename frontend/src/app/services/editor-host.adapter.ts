@@ -20,7 +20,7 @@ import { ElectronService } from './electron';
 import { EditorProcessingService } from './editor-processing.service';
 import type { EditorManifest } from '../components/editor/host-data/editor-manifest';
 import type {
-  ArchiveCheck, ArchiveProgress, ArchiveQueue, ArchiveResult, ArchiveStatus,
+  ArchiveCheck, ArchiveDeleteProgress, ArchiveProgress, ArchiveQueue, ArchiveResult, ArchiveStatus,
   AssetComponentStatus, AssetInstallProgress, AssetInstallResult, AssetPaths,
   DeleteLocalWeekResult, DeleteRemoteWeekResult, EditorHost, ProcessingJob,
   ProjectScanResult, ProjectsRegistry, RemoteWeekListing, TitleHandoff
@@ -32,6 +32,35 @@ export class EditorHostAdapter implements EditorHost {
     private electron: ElectronService,
     private processing: EditorProcessingService
   ) {}
+
+  /**
+   * Strip Electron's IPC wrapper off a rejection, so the port's callers get the message the
+   * main process actually wrote.
+   *
+   * `ipcRenderer.invoke` re-throws a handler's error as
+   * `Error invoking remote method 'editor:delete-local-week': Error: <the real message>`.
+   * The archive handlers put real sentences in there — "2 files (4.1 GB) would still be
+   * uploaded", "cancel the queued sync first" — and the sidebar prints the rejection verbatim
+   * on the confirm row, so the operator has been reading the channel name and two "Error:"
+   * prefixes ahead of the part that tells them what to do.
+   *
+   * This is not the "logic" this file's header rules out; it is the opposite. The port
+   * promises callers a reason, Electron is the one host that wraps it, and translating a
+   * host-specific representation into the port's contract is precisely an adapter's job. A
+   * web-backed host would have nothing to unwrap and would need no equivalent.
+   */
+  private async unwrap<T>(work: Promise<T>): Promise<T> {
+    try {
+      return await work;
+    } catch (err: any) {
+      const raw = err instanceof Error ? err.message : String(err);
+      const inner = raw.match(/Error invoking remote method '[^']*':\s*([\s\S]*)$/);
+      const message = (inner ? inner[1] : raw).replace(/^Error:\s*/, '').trim();
+      // An empty message would leave the confirm row blank, which reads as "nothing
+      // happened" — keep the original rather than show nothing.
+      throw new Error(message || raw || 'The archive operation failed with an empty error.');
+    }
+  }
 
   // ── Environment ─────────────────────────────────────────────────────────────
 
@@ -206,7 +235,7 @@ export class EditorHostAdapter implements EditorHost {
   // ContentStudio can delete folders, so the optional member is implemented. The port name is
   // `deleteLocalWeek`; the bridge name carries the `editor` prefix its channel does.
   deleteLocalWeek(payload: { weekPath: string }): Promise<DeleteLocalWeekResult> {
-    return this.electron.editorDeleteLocalWeek(payload);
+    return this.unwrap(this.electron.editorDeleteLocalWeek(payload));
   }
 
   // ── Processing ──────────────────────────────────────────────────────────────
@@ -285,7 +314,7 @@ export class EditorHostAdapter implements EditorHost {
   }
 
   archiveSync(payload: { items: Array<{ localPath: string; kind: 'week' | 'day' }> }): Promise<{ ids: string[] }> {
-    return this.electron.archiveSync(payload);
+    return this.unwrap(this.electron.archiveSync(payload));
   }
 
   archiveCancel(payload: { paths: string[] }): Promise<{ canceled: number }> {
@@ -297,19 +326,23 @@ export class EditorHostAdapter implements EditorHost {
   }
 
   archiveCheck(payload: { localPath: string; kind: 'week' | 'day' }): Promise<ArchiveCheck> {
-    return this.electron.archiveCheck(payload);
+    return this.unwrap(this.electron.archiveCheck(payload));
   }
 
   archiveListRemoteWeeks(): Promise<RemoteWeekListing> {
-    return this.electron.archiveListRemoteWeeks();
+    return this.unwrap(this.electron.archiveListRemoteWeeks());
   }
 
   archiveDeleteRemoteWeek(payload: { path: string }): Promise<DeleteRemoteWeekResult> {
-    return this.electron.archiveDeleteRemoteWeek(payload);
+    return this.unwrap(this.electron.archiveDeleteRemoteWeek(payload));
   }
 
   onArchiveProgress(callback: (p: ArchiveProgress) => void): void {
     this.electron.onArchiveProgress(callback);
+  }
+
+  onArchiveDeleteProgress(callback: (p: ArchiveDeleteProgress) => void): void {
+    this.electron.onArchiveDeleteProgress(callback);
   }
 
   onArchiveComplete(callback: (r: ArchiveResult) => void): void {

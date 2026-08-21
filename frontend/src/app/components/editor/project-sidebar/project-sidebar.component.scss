@@ -373,10 +373,17 @@
   cursor: pointer;
   transition: background 0.1s ease, border-color 0.1s ease, color 0.1s ease;
 
-  &:hover {
+  &:hover:not(:disabled) {
     background: #3a2222;
     border-color: #b45b5b;
     color: #e79a9a;
+  }
+
+  /* Blocked by a sync of this same week. Still visible, still explains itself on hover —
+     a control that disappeared and came back on its own would teach nobody why. */
+  &:disabled {
+    cursor: not-allowed;
+    color: #5c4444;
   }
 }
 
@@ -420,6 +427,28 @@
     line-height: 1.5;
     color: #e79a9a;
     background: #3a2222;
+    border-radius: 3px;
+    padding: 5px 6px;
+    word-break: break-word;
+  }
+
+  /* What the delete is doing right now. Neutral, not alarming — it is not a failure. */
+  .pp-confirm-progress {
+    font-size: 10px;
+    line-height: 1.5;
+    color: #cfc3a8;
+    background: #2f2a20;
+    border-radius: 3px;
+    padding: 5px 6px;
+    word-break: break-word;
+  }
+
+  /* The outcome. The row stays open on success so there is something to read. */
+  .pp-confirm-done {
+    font-size: 10px;
+    line-height: 1.5;
+    color: #a9d3b0;
+    background: #22321f;
     border-radius: 3px;
     padding: 5px 6px;
     word-break: break-word;

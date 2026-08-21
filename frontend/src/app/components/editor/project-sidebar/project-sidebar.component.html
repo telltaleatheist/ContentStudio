@@ -77,6 +77,7 @@
         <!-- Delete the LOCAL copy. Only on a week whose own folder is verified in the
              archive — not on one that merely reads green because its days are. -->
         <button class="pp-week-x" *ngIf="canDeleteLocal(g)"
+                [disabled]="!!deleteBlockedBySync(g)"
                 (click)="openDeleteLocal($event, g)"
                 [title]="deleteLocalTitle(g)"
                 [attr.aria-label]="'Delete the local copy of ' + g.label">✕</button>
@@ -114,12 +115,15 @@
       <div class="pp-confirm-head">{{ confirmHeadline() }}</div>
       <div class="pp-confirm-detail">{{ confirmDetail() }}</div>
       <div class="pp-confirm-error" *ngIf="pendingDelete!.error">{{ pendingDelete!.error }}</div>
+      <div class="pp-confirm-progress" *ngIf="pendingDelete!.progress">{{ pendingDelete!.progress }}</div>
+      <div class="pp-confirm-done" *ngIf="pendingDelete!.done">{{ pendingDelete!.done }}</div>
       <div class="pp-confirm-actions">
         <button class="pp-confirm-cancel" [disabled]="pendingDelete!.busy"
-                (click)="cancelDelete()">Cancel</button>
-        <button class="pp-confirm-go" [disabled]="pendingDelete!.busy"
+                (click)="cancelDelete()">{{ pendingDelete!.done ? 'Close' : 'Cancel' }}</button>
+        <button class="pp-confirm-go" *ngIf="!pendingDelete!.done"
+                [disabled]="pendingDelete!.busy"
                 (click)="confirmDelete()">
-          {{ pendingDelete!.busy ? 'Deleting…' : confirmButtonLabel() }}
+          {{ pendingDelete!.busy ? 'Working…' : confirmButtonLabel() }}
         </button>
       </div>
     </div>

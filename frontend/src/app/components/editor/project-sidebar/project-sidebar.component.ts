@@ -125,6 +125,17 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
     busy: boolean;
     /** The host's verbatim refusal, printed inside this row rather than on the shared line. */
     error: string | null;
+    /**
+     * What it is doing right now, in the operator's words. Null until the host says.
+     *
+     * A delete takes its turn behind any transfer already running, then re-verifies the whole
+     * week against the archive — thousands of files over SMB, minutes of it — before a single
+     * byte is removed. A static "Deleting…" through all of that is indistinguishable from a
+     * hang, and this is the row that has to say otherwise.
+     */
+    progress: string | null;
+    /** The outcome, once there is one. The row stays open long enough to be read. */
+    done: string | null;
   } | null = null;
 
   /** Resolves once the archive has been probed. Every check waits on it. */
@@ -184,6 +195,13 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
     }));
     this.subs.push(this.archive.error$.subscribe(err => {
       this.archiveError = err;
+      this.cdr.markForCheck();
+    }));
+    this.subs.push(this.archive.deleteProgress$.subscribe(p => {
+      // Only for the row that asked. A broadcast from another window's delete must not
+      // relabel a confirm row sitting here over a different week.
+      if (!p || !this.pendingDelete || p.path !== this.pendingDelete.target) return;
+      this.pendingDelete.progress = this.describeDeletePhase(p);
       this.cdr.markForCheck();
     }));
 
@@ -677,9 +695,36 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
 
   /** Tooltip for the red ✕ on a green week. */
   deleteLocalTitle(g: WeekGroup): string {
-    return `Delete the local copy of ${g.label}.\n` +
-           `The archived copy at ${this.archive.destinationOf(g.path!)} stays.\n` +
-           `It is re-checked against the archive before anything is deleted.`;
+    return this.deleteBlockedBySync(g) ??
+           (`Delete the local copy of ${g.label}.\n` +
+            `The archived copy at ${this.archive.destinationOf(g.path!)} stays.\n` +
+            `It is re-checked against the archive before anything is deleted.`);
+  }
+
+  /**
+   * Why this week's ✕ cannot act right now, or null when it can.
+   *
+   * The one refusal left that the operator cannot see coming. A delete no longer fails just
+   * because SOMETHING is syncing — it takes its turn — but a transfer of this very week, or of
+   * a day inside it, is a different matter: running the delete and then that sync would put
+   * the week straight back. The host refuses it, correctly, and this says so before the click
+   * instead of after.
+   *
+   * Deliberately a DISABLED button rather than a hidden one, unlike `canDeleteLocal`'s "not
+   * archived yet" case. That one is a fact about the week; this one is a fact about the next
+   * few minutes, and a control that vanishes and returns on its own teaches nobody why.
+   */
+  deleteBlockedBySync(g: WeekGroup): string | null {
+    if (!g.path) return null;
+    const busyStates: Array<ArchiveRow['state']> = ['queued', 'connecting', 'scanning', 'uploading'];
+    const group = this.groups.find(x => x.path === g.path && !x.ghost);
+    const paths = group ? [g.path, ...group.entries.map(e => e.path)] : [g.path];
+    const busy = paths.filter(pp => busyStates.includes(this.syncState(pp)));
+    if (busy.length === 0) return null;
+    return `${g.label} cannot be deleted while it is being uploaded — ` +
+           `${busy.length} folder${busy.length === 1 ? '' : 's'} in this week ` +
+           `${busy.length === 1 ? 'is' : 'are'} syncing or queued.\n` +
+           `Cancel the sync, or let it finish, and the ✕ comes back.`;
   }
 
   /** Tooltip for the ✕ on a ghost week. */
@@ -704,7 +749,7 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
     }
     this.pendingDelete = {
       scope: 'local', target: g.path!, label: g.label, destPath,
-      projectCount: g.entries.length, busy: false, error: null
+      projectCount: g.entries.length, busy: false, error: null, progress: null, done: null
     };
     this.cdr.markForCheck();
   }
@@ -716,7 +761,7 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
     if (!this.canDeleteRemote(g)) return;
     this.pendingDelete = {
       scope: 'remote', target: g.path!, label: g.label, destPath: g.path!,
-      projectCount: 0, busy: false, error: null
+      projectCount: 0, busy: false, error: null, progress: null, done: null
     };
     this.cdr.markForCheck();
   }
@@ -724,6 +769,7 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
   cancelDelete(): void {
     if (this.pendingDelete?.busy) return;   // it is already running; there is nothing to undo
     this.pendingDelete = null;
+    this.archive.clearDeleteProgress();
     this.cdr.markForCheck();
   }
 
@@ -767,22 +813,66 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
     if (!pending || pending.busy) return;
     pending.busy = true;
     pending.error = null;
+    pending.done = null;
+    // The host has not spoken yet, and "waiting" is the honest first state: the delete may sit
+    // behind a transfer that is already running before it does anything at all.
+    pending.progress = 'Waiting for the archive…';
+    this.archive.clearDeleteProgress();
     this.cdr.markForCheck();
 
     try {
       if (pending.scope === 'local') {
-        await this.deleteLocalWeek(pending.target);
+        const result = await this.deleteLocalWeek(pending.target);
+        const n = result.removedProjects.length;
+        pending.done =
+          `Deleted ${this.leafOf(result.deleted)}. ` +
+          `${n} project${n === 1 ? '' : 's'} left the list. The archived copy is still at ${result.destPath}.`;
       } else {
-        await this.archive.deleteRemoteWeek(pending.target);
+        const result = await this.archive.deleteRemoteWeek(pending.target);
         await this.refreshGhostWeeks();
+        pending.done = result.finishedOnNas
+          ? `Deleted ${result.name} from the archive. The share could not remove everything, ` +
+            `so the server finished the job itself.`
+          : `Deleted ${result.name} from the archive.`;
       }
-      this.pendingDelete = null;
+      // The row stays, showing what happened. It used to vanish on success, which meant the
+      // only difference between "it worked" and "the click did nothing" was a row that was no
+      // longer there to say either.
+      pending.busy = false;
+      pending.progress = null;
       this.inlineError = null;
     } catch (err: any) {
       pending.busy = false;
+      pending.progress = null;
       pending.error = err?.message || String(err);
     }
+    this.archive.clearDeleteProgress();
     this.cdr.markForCheck();
+  }
+
+  /** Plain words for a delete phase. The host's vocabulary is not the operator's. */
+  private describeDeletePhase(p: { phase: string; filesRemoved?: number }): string {
+    switch (p.phase) {
+      case 'verifying':
+        return 'Checking the archive copy is complete…';
+      case 'deleting':
+        return typeof p.filesRemoved === 'number' && p.filesRemoved > 0
+          ? `Deleting — ${p.filesRemoved.toLocaleString()} files removed…`
+          : 'Deleting…';
+      case 'finishing-on-nas':
+        return 'The share left some entries behind — finishing on the server…';
+      case 'updating-registry':
+        return 'Updating the projects list…';
+      default:
+        // A phase this build does not know about still means work is happening; saying so
+        // beats falling back to a label that claims to know which.
+        return 'Working…';
+    }
+  }
+
+  /** Last path segment, for a message that names a folder without repeating its whole path. */
+  private leafOf(p: string): string {
+    return p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
   }
 
   /**
@@ -793,17 +883,18 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
    * not cover is this component's own memory: the archive marks for the folder that is now
    * gone, and the record of having already checked that week.
    */
-  private async deleteLocalWeek(week: string): Promise<void> {
+  private async deleteLocalWeek(week: string): Promise<{ deleted: string; destPath: string; removedProjects: string[] }> {
     const group = this.groups.find(g => g.path === week && !g.ghost);
     const covered = group ? [week, ...group.entries.map(e => e.path)] : [week];
 
-    await this.projectsService.deleteLocalWeek(week);
+    const result = await this.projectsService.deleteLocalWeek(week);
 
     // A checkmark outliving its folder would be a claim about something that is not there.
     this.archive.forget(covered);
     this.autoCheckedWeeks.delete(week);
     // It is on the server and not here any more, which is exactly what a ghost row is.
     await this.refreshGhostWeeks();
+    return result;
   }
 
   // ── Right-click menu ────────────────────────────────────────────────────────

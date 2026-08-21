@@ -165,6 +165,35 @@ export interface DeleteRemoteWeekResult {
   /** The symlink-resolved path that was actually removed. */
   deleted: string;
   name: string;
+  /**
+   * The share could not remove everything and the host finished the job on the server itself.
+   * Worth surfacing: the week IS gone, but by a different route than the operator asked for,
+   * and that route depends on a helper being installed on the NAS.
+   */
+  finishedOnNas?: boolean;
+}
+
+/**
+ * How a delete is getting on. Deliberately NOT ArchiveProgress.
+ *
+ * A transfer knows its total before it starts, so it can report a percent, a rate and an ETA.
+ * A delete does not: the walk discovers the tree as it goes. Reusing the transfer's shape
+ * would mean inventing three of its four fields, and a progress bar built on invented numbers
+ * is worse than one that says what it actually knows — which phase, and how many files so far.
+ */
+export interface ArchiveDeleteProgress {
+  /** The folder being deleted, as the caller named it. Keys the row this belongs to. */
+  path: string;
+  name: string;
+  /**
+   * 'verifying'         — the dry run that proves the archive copy is complete (local only)
+   * 'deleting'          — files are coming off
+   * 'finishing-on-nas'  — the share left a skeleton and the server is removing it (remote only)
+   * 'updating-registry' — the folder is gone; the projects list is being rewritten (local only)
+   */
+  phase: 'verifying' | 'deleting' | 'finishing-on-nas' | 'updating-registry';
+  /** Files removed so far, when the phase counts them. Rises; there is no total. */
+  filesRemoved?: number;
 }
 
 /** What deleting the local copy of a week removed. */
@@ -601,6 +630,13 @@ export interface EditorHost {
   /** Progress ticks for the running sync. */
   onArchiveProgress?(callback: (p: ArchiveProgress) => void): void;
 
+  /**
+   * Progress for a running DELETE. Optional independently of the sync listeners: a host that
+   * can delete but cannot narrate it simply omits this, and the caller falls back to a plain
+   * "working" state rather than showing nothing.
+   */
+  onArchiveDeleteProgress?(callback: (p: ArchiveDeleteProgress) => void): void;
+
   /** Terminal event for a sync — success, failure, or cancellation. */
   onArchiveComplete?(callback: (r: ArchiveResult) => void): void;
 
@@ -617,10 +653,17 @@ export interface EditorHost {
 
   /**
    * Delete one week from the ARCHIVE SERVER. For a ghost week this is the only copy there is,
-   * so the host re-checks everything before it acts — reachable archive, an existing directory
-   * directly under the archive root with symlinks resolved, and no sync running or queued
-   * ANYWHERE (a delete underneath a live rsync is corruption, not a race) — and REJECTS naming
-   * the specific reason.
+   * so the host re-checks everything before it acts — reachable archive, and an existing
+   * directory directly under the archive root with symlinks resolved — and REJECTS naming the
+   * specific reason.
+   *
+   * MAY TAKE ITS TURN. A delete underneath a live rsync is corruption rather than a race, so
+   * a host that runs transfers is entitled to hold this call until the one in flight finishes;
+   * callers must not assume it starts immediately. What a host may NOT do is wait for a
+   * transfer that has not started yet, or for one aimed somewhere else entirely.
+   *
+   * A sync QUEUED for the same folder is a different matter and is refused rather than
+   * waited out: running the delete and then that sync would put the week straight back.
    */
   archiveDeleteRemoteWeek?(payload: { path: string }): Promise<DeleteRemoteWeekResult>;
 

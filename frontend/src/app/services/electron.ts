@@ -2,7 +2,7 @@ import { Injectable, NgZone } from '@angular/core';
 import { Observable, Subject } from 'rxjs';
 import type { ChosenMetadata, PublishResult, ResolvedMetadata } from '../features/publish/publish.types';
 import type {
-  ArchiveCheck, ArchiveProgress, ArchiveQueue, ArchiveResult, ArchiveStatus,
+  ArchiveCheck, ArchiveDeleteProgress, ArchiveProgress, ArchiveQueue, ArchiveResult, ArchiveStatus,
   AssetComponentStatus, AssetInstallProgress, AssetInstallResult,
   AssetPaths, DeleteLocalWeekResult, DeleteRemoteWeekResult, ProjectScanResult,
   ProjectsRegistry, RemoteWeekListing, TitleHandoff
@@ -457,6 +457,7 @@ declare global {
       archiveDeleteRemoteWeek: (payload: { path: string }) => Promise<DeleteRemoteWeekResult>;
       onArchiveQueue: (callback: (q: ArchiveQueue) => void) => void;
       onArchiveProgress: (callback: (p: ArchiveProgress) => void) => void;
+      onArchiveDeleteProgress: (callback: (p: ArchiveDeleteProgress) => void) => void;
       onArchiveComplete: (callback: (r: ArchiveResult) => void) => void;
       removeArchiveListeners: () => void;
     };
@@ -1254,6 +1255,10 @@ export class ElectronService {
 
   onArchiveProgress(callback: (p: ArchiveProgress) => void): void {
     this.editorBridge.onArchiveProgress((p) => this.ngZone.run(() => callback(p)));
+  }
+
+  onArchiveDeleteProgress(callback: (p: ArchiveDeleteProgress) => void): void {
+    this.editorBridge.onArchiveDeleteProgress((p) => this.ngZone.run(() => callback(p)));
   }
 
   onArchiveComplete(callback: (r: ArchiveResult) => void): void {
