@@ -342,10 +342,23 @@ const api = {
   onArchiveComplete: (callback: (r: any) => void) => {
     ipcRenderer.on('archive:complete', (_event, r) => callback(r));
   },
+  /**
+   * Deletion progress: `{ path, name, phase, filesRemoved? }`.
+   *
+   * Its own channel rather than a reuse of 'archive:progress', which carries rsync's percent,
+   * rate and ETA. A delete has none of those — the walk discovers the tree as it goes, so
+   * there is no total to be a percentage of — and filling those fields with invented numbers
+   * would make a progress bar that lies. Phases plus a rising file count are what is actually
+   * known: 'verifying' | 'deleting' | 'finishing-on-nas' | 'updating-registry'.
+   */
+  onArchiveDeleteProgress: (callback: (p: any) => void) => {
+    ipcRenderer.on('archive:delete-progress', (_event, p) => callback(p));
+  },
   removeArchiveListeners: () => {
     ipcRenderer.removeAllListeners('archive:progress');
     ipcRenderer.removeAllListeners('archive:complete');
     ipcRenderer.removeAllListeners('archive:queue');
+    ipcRenderer.removeAllListeners('archive:delete-progress');
   }
   // ==================== END EDITOR ====================
 };

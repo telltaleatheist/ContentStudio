@@ -1,7 +1,10 @@
 // src/app/components/editor/services/archive.service.ts
 import { Inject, Injectable, OnDestroy } from '@angular/core';
 import { BehaviorSubject, Observable } from 'rxjs';
-import { ArchiveProgress, ArchiveResult, EDITOR_HOST, EditorHost, RemoteWeek } from '../editor-host';
+import {
+  ArchiveDeleteProgress, ArchiveProgress, ArchiveResult, DeleteRemoteWeekResult,
+  EDITOR_HOST, EditorHost, RemoteWeek
+} from '../editor-host';
 
 /**
  * What one sync button is showing.
@@ -74,11 +77,22 @@ export interface ArchiveRow {
 export class ArchiveService implements OnDestroy {
   private readonly rowsSubject = new BehaviorSubject<Record<string, ArchiveRow>>({});
   private readonly errorSubject = new BehaviorSubject<string | null>(null);
+  private readonly deleteProgressSubject = new BehaviorSubject<ArchiveDeleteProgress | null>(null);
 
   /** Per-folder button state, keyed by local folder path. */
   readonly rows$: Observable<Record<string, ArchiveRow>> = this.rowsSubject.asObservable();
   /** The last refused/failed action, for the pane's inline error line. */
   readonly error$: Observable<string | null> = this.errorSubject.asObservable();
+  /**
+   * The running delete's latest phase, or null when none is running.
+   *
+   * Kept apart from the per-folder row state on purpose: a delete's subject can be a week that
+   * has NO row at all (a ghost week exists only on the archive), and its lifetime is the
+   * confirm row's rather than the folder's. The consumer is the row that started it, and that
+   * row clears this as it closes.
+   */
+  readonly deleteProgress$: Observable<ArchiveDeleteProgress | null> =
+    this.deleteProgressSubject.asObservable();
 
   /** False when the host has no archive at all — the UI hides every sync control. */
   readonly supported: boolean;
@@ -507,11 +521,25 @@ export class ArchiveService implements OnDestroy {
    * caller is a confirmation the user is looking at, and it prints the refusal in place
    * rather than dropping it on the pane's shared error line.
    */
-  async deleteRemoteWeek(remotePath: string): Promise<void> {
+  async deleteRemoteWeek(remotePath: string): Promise<DeleteRemoteWeekResult> {
     if (!this.remoteWeeksSupported) {
       throw new Error('This host cannot delete folders on the archive.');
     }
-    await this.host.archiveDeleteRemoteWeek!({ path: remotePath });
+    // RETURNED rather than discarded. The host reports what it actually removed and whether it
+    // had to finish the job on the NAS itself; dropping that left the caller with nothing to
+    // tell the operator beyond "the promise resolved".
+    return await this.host.archiveDeleteRemoteWeek!({ path: remotePath });
+  }
+
+  /**
+   * Forget the last delete's progress. Called by the row that displayed it, as it closes.
+   *
+   * Not cleared here on completion: a delete's terminal state is its RESULT, which goes to the
+   * awaiting caller, and a progress subject racing that promise to null would blank the row's
+   * last line before anyone had read it.
+   */
+  clearDeleteProgress(): void {
+    if (this.deleteProgressSubject.value !== null) this.deleteProgressSubject.next(null);
   }
 
   /**
@@ -550,6 +578,9 @@ export class ArchiveService implements OnDestroy {
     this.host.onArchiveProgress?.(p => this.onProgress(p));
     this.host.onArchiveQueue?.(q => this.adoptQueue(q));
     this.host.onArchiveComplete?.(r => this.onComplete(r));
+    // Optional independently of the three above: a host that can delete but cannot narrate it
+    // leaves this unimplemented, and the confirm row falls back to a plain working state.
+    this.host.onArchiveDeleteProgress?.(p => this.deleteProgressSubject.next(p));
     this.listenersAttached = true;
   }
 

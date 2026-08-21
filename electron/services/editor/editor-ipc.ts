@@ -15,7 +15,7 @@ import * as assetManager from './asset-manager';
 import * as ollamaService from './ollama-service';
 import { analyzeChapters, suggestTitle, Segment } from './chapter-splitter';
 import {
-  ArchiveSync, destinationFor, DEFAULT_ARCHIVE_ROOT, DEFAULT_ARCHIVE_MOUNT_URL
+  ArchiveSync, comparablePath, destinationFor, DEFAULT_ARCHIVE_ROOT, DEFAULT_ARCHIVE_MOUNT_URL
 } from './archive-sync';
 import { createEditorWindow, getEditorWindow } from './editor-window';
 import { getMainWindow } from '../../main';
@@ -128,6 +128,21 @@ export function stopArchiveSyncOnQuit(): void {
 let deletionInFlight: string | null = null;
 
 /**
+ * What the in-flight deletions are aimed at, and which side of the transfer they remove.
+ *
+ * Needed because a deletion now WAITS: it takes its turn in the ArchiveSync queue instead of
+ * refusing outright, so `deletionInFlight` can be set for as long as an in-flight transfer
+ * lasts. Refusing every sync for that whole span — which a blanket check on
+ * `deletionInFlight` does — would rebuild the same over-broad refusal on the other side of
+ * the fence, just pointed the other way.
+ *
+ * So the refusal is path-scoped instead. `scope` says which path to compare against: a
+ * 'local' delete conflicts with a sync whose SOURCE is inside it, a 'remote' delete with a
+ * sync whose DESTINATION is. Comparing the wrong one is a guard that never fires.
+ */
+const deleteTargets = new Map<string, { target: string; scope: 'local' | 'remote' }>();
+
+/**
  * Entries under the archive root that are bookkeeping rather than content. `.rsync-partial`
  * is this app's own leftover (see archive-sync.ts); `#recycle` and `@eaDir` are Synology's
  * trash and thumbnail sidecars, which appear beside real folders on this NAS. Matched
@@ -172,12 +187,25 @@ const DEFAULT_ARCHIVE_SSH_HOST = 'titan';
  * round-trips, and the synchronous version of this walk froze every window for the whole
  * ride (2026-08-17). fs.promises keeps the main process serving events between calls.
  */
-async function deleteArchiveTree(root: string): Promise<{
+async function deleteArchiveTree(
+  root: string,
+  /**
+   * Called as files come off, at most every `PROGRESS_EVERY` removals.
+   *
+   * Throttled rather than per-file because a week is tens of thousands of unlinks and one IPC
+   * broadcast each would cost more than the deleting does. The count is the honest unit here:
+   * there is no total to divide by, since the walk discovers the tree as it goes, and a
+   * percentage invented from a guess would be worse than a number that only goes up.
+   */
+  onProgress?: (filesRemoved: number) => void
+): Promise<{
   filesRemoved: number;
   leftovers: Array<{ path: string; reason: string }>;
 }> {
   const leftovers: Array<{ path: string; reason: string }> = [];
   let filesRemoved = 0;
+  const PROGRESS_EVERY = 200;
+  let nextProgressAt = PROGRESS_EVERY;
 
   /** How many unlinks are in flight at once. SMB pipelines this happily; rsync does more. */
   const UNLINK_BATCH = 16;
@@ -242,6 +270,10 @@ async function deleteArchiveTree(root: string): Promise<{
       }));
       for (const r of results) {
         if (r) { leftovers.push(r); clean = false; } else { filesRemoved++; }
+      }
+      if (onProgress && filesRemoved >= nextProgressAt) {
+        nextProgressAt = filesRemoved + PROGRESS_EVERY;
+        onProgress(filesRemoved);
       }
     }
 
@@ -376,6 +408,22 @@ function weekFolderOfProject(projectPath: string): string | null {
 function isAtOrUnder(parent: string, child: string): boolean {
   const rel = path.relative(path.resolve(parent), path.resolve(child));
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+/**
+ * Where a folder would be archived to, or null if it does not map to one.
+ *
+ * `destinationFor` throws on an unmappable path, which is right when the caller is about to
+ * transfer something — but a GUARD asking "would this sync write into the folder I am
+ * deleting?" must not fail the whole request over an item it cannot place. An unmappable
+ * item is not writing anywhere, so it cannot be the conflict, and null says so.
+ */
+function safeDestination(localPath: string, kind: 'week' | 'day', root: string): string | null {
+  try {
+    return destinationFor(localPath, kind, root);
+  } catch {
+    return null;
+  }
 }
 
 /** The window that invoked a call, so a dialog opens on it rather than on the main window. */
@@ -1845,13 +1893,27 @@ function setupArchiveHandlers(store: Store<any>): void {
         throw new Error(`archive:sync item ${i} kind must be 'week' or 'day', got ${JSON.stringify(it.kind)}`);
       }
     });
-    // The deletion handlers check sync.busy before their irreversible step, but they are
-    // async now — this is the other half of that mutual exclusion. An rsync reading (or
-    // writing near) a tree that a deletion is tearing down is never acceptable.
-    if (deletionInFlight) {
-      throw new Error(`A deletion is running (${deletionInFlight}) — wait for it to finish before starting a sync.`);
+    // The other half of the delete/sync mutual exclusion. An rsync reading (or writing near)
+    // a tree a deletion is tearing down is never acceptable — but only for the tree actually
+    // being torn down. A sync of an unrelated week is no more dangerous during a delete than
+    // it is at any other time, and refusing it was the same over-broad shape this phase
+    // removed from the delete side.
+    const root = archiveRoot();
+    for (const it of items) {
+      for (const { target, scope } of deleteTargets.values()) {
+        const mine = scope === 'local' ? it.localPath : safeDestination(it.localPath, it.kind, root);
+        // comparablePath() on BOTH sides, the same fold the queue's own guards use. One side
+        // realpathed and the other raw agrees only on a tree with no symlinks and no casing
+        // variants in it, and stops agreeing silently the first day that changes.
+        if (mine && isAtOrUnder(comparablePath(target), comparablePath(mine))) {
+          throw new Error(
+            `${path.basename(it.localPath)} is inside ${path.basename(target)}, which is being deleted ` +
+            `right now — nothing was queued. Syncing it would put back what the delete is removing.`
+          );
+        }
+      }
     }
-    return sync.enqueue(items, archiveRoot(), archiveMountUrl());
+    return sync.enqueue(items, root, archiveMountUrl());
   });
 
   /** Stop work by the FOLDERS it covers — running or merely queued. */
@@ -1969,90 +2031,122 @@ function setupArchiveHandlers(store: Store<any>): void {
     if (deletionInFlight) {
       throw new Error(`A deletion is already running (${deletionInFlight}) — wait for it to finish. Nothing was deleted.`);
     }
+
+    const root = archiveRoot();
+
+    // THE SEMANTIC CONFLICT, checked before anything is queued so the refusal is immediate.
+    //
+    // Ordering cannot solve this one. A queued sync whose destination is inside the folder
+    // being deleted will push it straight back the moment the delete finishes: the operator
+    // deletes a week, watches it succeed, and it reappears. Waiting for that sync would not
+    // help either — it would simply re-upload what is about to be removed. The only honest
+    // answer is to refuse and name the job in the way.
+    //
+    // Destinations, not sources: a sync's localPath is a LOCAL folder and can never be inside
+    // an archive-side target. Comparing sources here would be a guard that never fires.
+    const writers = sync.syncsWritingUnder(target);
+    if (writers.length > 0) {
+      throw new Error(
+        `${path.basename(target)} has ${writers.length} sync${writers.length === 1 ? '' : 's'} ` +
+        `running or queued that would upload straight back into it ` +
+        `(${writers.map(w => path.basename(w.localPath)).join(', ')}) — nothing was deleted. ` +
+        `Cancel ${writers.length === 1 ? 'it' : 'them'} first.`
+      );
+    }
+
     deletionInFlight = target;
+    // Stored RAW. The comparison folds both sides itself, and a folded path kept here would
+    // be lossy for no gain — it is also what the refusal message names.
+    deleteTargets.set(target, { target, scope: 'remote' });
     try {
-      const root = archiveRoot();
       const status = sync.status(root);
       if (!status.available) {
         throw new Error(`The archive is not reachable (${status.reason || `${root} is not available`}) — nothing was deleted.`);
       }
-      if (sync.busy) {
-        throw new Error(
-          `A sync is running or queued (${sync.busyPath || 'a queued folder'}) — nothing is deleted from the ` +
-          `archive while rsync is writing to it. Stop or finish the sync first.`
-        );
-      }
 
-      const stat = fs.statSync(target, { throwIfNoEntry: false });
-      if (!stat || !stat.isDirectory()) {
-        throw new Error(`${target} is not a folder on the archive — nothing was deleted.`);
-      }
-
-      const realTarget = fs.realpathSync(target);
-      const realRoot = fs.realpathSync(root);
-      if (path.dirname(realTarget) !== realRoot) {
-        throw new Error(
-          `${target} resolves to ${realTarget}, whose parent is ${path.dirname(realTarget)} and not the archive ` +
-          `root ${realRoot}. Only a week folder DIRECTLY under the archive root can be deleted.`
-        );
-      }
-
-      const name = path.basename(realTarget);
-      if (name.startsWith('.') || NON_WEEK_ENTRIES.has(name.toLowerCase())) {
-        throw new Error(`${name} is a system or excluded entry on the archive, not a deletable week — refusing to delete it.`);
-      }
-      const filesDir = fs.statSync(path.join(realTarget, 'files'), { throwIfNoEntry: false });
-      if (!filesDir || !filesDir.isDirectory()) {
-        throw new Error(
-          `${realTarget} has no files/ directory, so it is not a week this app archived — refusing to delete it. ` +
-          `Remove it by hand if that is really what you want.`
-        );
-      }
-
-      // The last look before the irreversible call. Everything above took time; a sync
-      // starting during it would make this a delete underneath a live rsync.
-      if (sync.busy) {
-        throw new Error(
-          `A sync started while ${name} was being checked — nothing was deleted. Try again once it finishes.`
-        );
-      }
-
-      log.warn(`[archive] deleting the ARCHIVE copy of ${name}: ${realTarget}`);
-      const { filesRemoved, leftovers } = await deleteArchiveTree(realTarget);
-      if (leftovers.length > 0) {
-        // Space is reclaimed (every regular file the share showed us is gone) but a
-        // skeleton survives — entries only the server itself can remove. Escalate to the
-        // NAS over SSH, where they are ordinary symlinks, and verify through the mount.
-        const sshHost = (store as any).get('archiveSshHost') || DEFAULT_ARCHIVE_SSH_HOST;
-        log.warn(`[archive] ${leftovers.length} entries survived the SMB delete of ${name} — finishing on ${sshHost}`);
-        const finishError = await finishRemoteDeleteOnNas(sshHost, name);
-
-        if (finishError === null) {
-          // The SMB attribute cache can report a just-deleted directory for a moment.
-          for (let i = 0; i < 10 && fs.existsSync(realTarget); i++) {
-            await new Promise(r => setTimeout(r, 300));
-          }
-          if (!fs.existsSync(realTarget)) {
-            log.info(`[archive] deleted ${realTarget} (${filesRemoved} files over SMB, skeleton finished on ${sshHost})`);
-            return { deleted: realTarget, name, finishedOnNas: true };
-          }
+      // Everything below runs with the archive to itself. The queue is what makes the
+      // rsync-vs-rm hazard impossible rather than merely unlikely: no transfer can be running
+      // while this body is, and it waits for at most the one in flight rather than for the
+      // whole batch behind it.
+      return await sync.runExclusive('delete-remote', target, 'week', root, async () => {
+        const stat = fs.statSync(target, { throwIfNoEntry: false });
+        if (!stat || !stat.isDirectory()) {
+          throw new Error(`${target} is not a folder on the archive — nothing was deleted.`);
         }
 
-        const detail = leftovers.slice(0, 4).map(l => `${path.relative(root, l.path)} (${l.reason})`).join('; ');
-        const more = leftovers.length > 4 ? ` …and ${leftovers.length - 4} more` : '';
-        throw new Error(
-          `Removed ${filesRemoved} files from ${name}, but ${leftovers.length} ` +
-          `${leftovers.length === 1 ? 'entry' : 'entries'} cannot be deleted over the network share (${detail}${more}), ` +
-          `and finishing on the NAS itself failed: ${finishError ?? `the folder still exists after ${sshHost} reported success`}. ` +
-          `These are symlinks on the archive server — install its fcpx-rm-week helper ` +
-          `(source: editor-backend/nas/fcpx-rm-week, install instructions in the file) or remove the folder from the ` +
-          `NAS console by hand. The freed space is already reclaimed.`
-        );
-      }
-      log.info(`[archive] deleted ${realTarget} from the archive (${filesRemoved} files)`);
-      return { deleted: realTarget, name };
+        const realTarget = fs.realpathSync(target);
+        const realRoot = fs.realpathSync(root);
+        if (path.dirname(realTarget) !== realRoot) {
+          throw new Error(
+            `${target} resolves to ${realTarget}, whose parent is ${path.dirname(realTarget)} and not the archive ` +
+            `root ${realRoot}. Only a week folder DIRECTLY under the archive root can be deleted.`
+          );
+        }
+
+        const name = path.basename(realTarget);
+        if (name.startsWith('.') || NON_WEEK_ENTRIES.has(name.toLowerCase())) {
+          throw new Error(`${name} is a system or excluded entry on the archive, not a deletable week — refusing to delete it.`);
+        }
+        const filesDir = fs.statSync(path.join(realTarget, 'files'), { throwIfNoEntry: false });
+        if (!filesDir || !filesDir.isDirectory()) {
+          throw new Error(
+            `${realTarget} has no files/ directory, so it is not a week this app archived — refusing to delete it. ` +
+            `Remove it by hand if that is really what you want.`
+          );
+        }
+
+        // No "has a sync started?" re-check here any more, and its absence is the point: this
+        // body holds the queue, so a transfer CANNOT have started during the work above. The
+        // old check was the best a handler outside the queue could do — it narrowed the race
+        // rather than closing it.
+        log.warn(`[archive] deleting the ARCHIVE copy of ${name}: ${realTarget}`);
+        // `path` ECHOES THE CALLER'S OWN STRING (`target`), deliberately, and not the
+        // realpath-resolved `realTarget` used for the safety decisions below. The renderer
+        // correlates these frames by an exact string compare against the path it sent, so an
+        // "improvement" to the resolved form here would silently stop every progress frame
+        // from reaching the row that asked for it — the delete would work and look frozen.
+        // Resolve for safety, echo for correlation.
+        broadcast('archive:delete-progress', { path: target, name, phase: 'deleting', filesRemoved: 0 });
+        const { filesRemoved, leftovers } = await deleteArchiveTree(realTarget, n => {
+          broadcast('archive:delete-progress', { path: target, name, phase: 'deleting', filesRemoved: n });
+        });
+        if (leftovers.length > 0) {
+          // Space is reclaimed (every regular file the share showed us is gone) but a
+          // skeleton survives — entries only the server itself can remove. Escalate to the
+          // NAS over SSH, where they are ordinary symlinks, and verify through the mount.
+          const sshHost = (store as any).get('archiveSshHost') || DEFAULT_ARCHIVE_SSH_HOST;
+          log.warn(`[archive] ${leftovers.length} entries survived the SMB delete of ${name} — finishing on ${sshHost}`);
+          broadcast('archive:delete-progress', { path: target, name, phase: 'finishing-on-nas', filesRemoved });
+          const finishError = await finishRemoteDeleteOnNas(sshHost, name);
+
+          if (finishError === null) {
+            // The SMB attribute cache can report a just-deleted directory for a moment.
+            for (let i = 0; i < 10 && fs.existsSync(realTarget); i++) {
+              await new Promise(r => setTimeout(r, 300));
+            }
+            if (!fs.existsSync(realTarget)) {
+              log.info(`[archive] deleted ${realTarget} (${filesRemoved} files over SMB, skeleton finished on ${sshHost})`);
+              return { deleted: realTarget, name, finishedOnNas: true };
+            }
+          }
+
+          const detail = leftovers.slice(0, 4).map(l => `${path.relative(root, l.path)} (${l.reason})`).join('; ');
+          const more = leftovers.length > 4 ? ` …and ${leftovers.length - 4} more` : '';
+          throw new Error(
+            `Removed ${filesRemoved} files from ${name}, but ${leftovers.length} ` +
+            `${leftovers.length === 1 ? 'entry' : 'entries'} cannot be deleted over the network share (${detail}${more}), ` +
+            `and finishing on the NAS itself failed: ${finishError ?? `the folder still exists after ${sshHost} reported success`}. ` +
+            `These are symlinks on the archive server — install its fcpx-rm-week helper ` +
+            `(source: editor-backend/nas/fcpx-rm-week, install instructions in the file) or remove the folder from the ` +
+            `NAS console by hand. The freed space is already reclaimed.`
+          );
+        }
+        log.info(`[archive] deleted ${realTarget} from the archive (${filesRemoved} files)`);
+        return { deleted: realTarget, name };
+      });
     } finally {
       deletionInFlight = null;
+      deleteTargets.delete(target);
     }
   });
 
@@ -2081,7 +2175,10 @@ function setupArchiveHandlers(store: Store<any>): void {
    *   8. the archive is reachable;
    *   9. a FRESH `archiveCheck` of the week says inSync, with zero pending files and not
    *      neverArchived (a check also refuses outright while any sync is running);
-   *  10. still nothing syncing (re-checked immediately before the irreversible call).
+   *  10. nothing CAN have started since step 7 — this handler holds the ArchiveSync queue for
+   *      its whole length, so there is no re-check here any more and none is needed. It used to
+   *      re-read `sync.busy` immediately before the irreversible call, which was the best a
+   *      handler outside the queue could do: it narrowed the race rather than closing it.
    *
    * Only then is the folder removed and the registry rewritten atomically.
    */
@@ -2093,118 +2190,156 @@ function setupArchiveHandlers(store: Store<any>): void {
     if (deletionInFlight) {
       throw new Error(`A deletion is already running (${deletionInFlight}) — wait for it to finish. Nothing was deleted.`);
     }
+    const weekResolved = path.resolve(weekPath.replace(/[\\/]+$/, ''));
+
+    // The semantic conflict, refused before anything is queued — same reasoning as the remote
+    // delete, but comparing SOURCES: a local delete removes the folder a sync reads FROM.
+    const localWriters = sync.jobsUnder(weekResolved).filter(j => j.op === 'sync');
+    if (localWriters.length > 0) {
+      throw new Error(
+        `${path.basename(weekResolved)} has ${localWriters.length} sync${localWriters.length === 1 ? '' : 's'} ` +
+        `running or queued (${localWriters.map(w => path.basename(w.localPath)).join(', ')}) — ` +
+        `nothing was deleted while it is being uploaded. Cancel ${localWriters.length === 1 ? 'it' : 'them'} ` +
+        `or let ${localWriters.length === 1 ? 'it' : 'them'} finish first.`
+      );
+    }
+
     deletionInFlight = weekPath;
+    deleteTargets.set(weekPath, { target: weekResolved, scope: 'local' });
     try {
-      const week = path.resolve(weekPath.replace(/[\\/]+$/, ''));
-      const name = path.basename(week);
+      return await sync.runExclusive('delete-local', weekResolved, 'week', archiveRoot(), async ctx => {
+        const week = weekResolved;
+        const name = path.basename(week);
 
-      // The registry is read FIRST, and a corrupt one stops everything here. The rewrite is
-      // the last step of this handler, so discovering the file is unreadable afterwards would
-      // mean the folder was already gone with no way to record it.
-      const registry = readProjectsRegistryFile();
-      const underWeek = registry.projects.filter(p => isAtOrUnder(week, p.path));
-      const isRegistryWeek = registry.projects.some(p => {
-        const w = weekFolderOfProject(p.path);
-        return !!w && path.resolve(w) === week;
-      });
-      if (!isRegistryWeek) {
-        throw new Error(
-          `No project in the list lives at ${week}/files/<day>, so ${name} is not a week folder this ` +
-          `sidebar represents. Only a week the list actually groups can be deleted.`
-        );
-      }
-
-      const stat = fs.statSync(week, { throwIfNoEntry: false });
-      if (!stat || !stat.isDirectory()) {
-        throw new Error(`${week} is not a folder — nothing was deleted.`);
-      }
-
-      const root = archiveRoot();
-      if (isAtOrUnder(root, week)) {
-        throw new Error(
-          `${week} is inside the archive root ${root}. This deletes the LOCAL copy; it must never ` +
-          `be pointed at the archived one.`
-        );
-      }
-
-      // Path-specific, unlike the remote delete: another week syncing says nothing about this
-      // one. A day inside this week counts — its rsync writes into the folder about to go.
-      const queue = sync.queueState();
-      const involved = [...(queue.running ? [queue.running] : []), ...queue.pending]
-        .filter(j => isAtOrUnder(week, j.localPath));
-      if (involved.length > 0) {
-        throw new Error(
-          `${name} has a sync running or queued (${involved.map(j => j.localPath).join(', ')}) — ` +
-          `nothing is deleted while it is being uploaded. Stop or finish the sync first.`
-        );
-      }
-
-      const status = sync.status(root);
-      if (!status.available) {
-        throw new Error(
-          `The archive is not reachable (${status.reason || `${root} is not available`}), so there is no way to ` +
-          `confirm ${name} is safely archived — nothing was deleted.`
-        );
-      }
-
-      // The re-verification. `check` itself refuses while ANY sync is running or queued, so a
-      // transfer elsewhere surfaces here as its own message rather than as a silent pass.
-      const check = await sync.check(week, 'week', root);
-      if (check.neverArchived) {
-        throw new Error(
-          `${name} has never been archived — ${check.destPath} does not exist. Nothing was deleted.`
-        );
-      }
-      if (!check.inSync || check.pending.length > 0) {
-        const bytes = check.pendingBytes;
-        throw new Error(
-          `${name} is NOT fully archived: ${check.pending.length} file${check.pending.length === 1 ? '' : 's'} ` +
-          `(${bytes} bytes) would still be uploaded to ${check.destPath}. Nothing was deleted — sync it first.`
-        );
-      }
-
-      // Verified. Anything that could have changed during the dry run gets one last look.
-      if (sync.busy) {
-        throw new Error(
-          `A sync started while ${name} was being verified — nothing was deleted. Try again once it finishes.`
-        );
-      }
-
-      // The archive copy is confirmed identical as of a moment ago. Everything below is
-      // irreversible, and the resolved realpath is used so a symlinked week folder deletes
-      // the folder rather than following the link out of it.
-      const realWeek = fs.realpathSync(week);
-      if (isAtOrUnder(fs.realpathSync(root), realWeek)) {
-        throw new Error(
-          `${week} resolves to ${realWeek}, which is inside the archive root. This deletes the LOCAL copy only.`
-        );
-      }
-      log.warn(`[archive] deleting the LOCAL copy of ${name}: ${realWeek} (archived at ${check.destPath})`);
-      // Async so tens of GB of local unlinks don't freeze every window. The sync-vs-delete
-      // race this opens is closed on the other side: archive:sync refuses to enqueue while
-      // deletionInFlight is set.
-      await fs.promises.rm(realWeek, { recursive: true, force: false });
-      log.info(`[archive] deleted ${realWeek}; removing ${underWeek.length} project(s) from the registry`);
-
-      const removedProjects = underWeek.map(p => p.path);
-      try {
-        writeProjectsRegistryFile({
-          version: 1,
-          projects: registry.projects.filter(p => !isAtOrUnder(week, p.path))
+        // The registry is read FIRST, and a corrupt one stops everything here. The rewrite is
+        // the last step of this handler, so discovering the file is unreadable afterwards would
+        // mean the folder was already gone with no way to record it.
+        const registry = readProjectsRegistryFile();
+        const underWeek = registry.projects.filter(p => isAtOrUnder(week, p.path));
+        const isRegistryWeek = registry.projects.some(p => {
+          const w = weekFolderOfProject(p.path);
+          return !!w && path.resolve(w) === week;
         });
-      } catch (err: any) {
-        // The folder is gone and the list still names it. Said out loud rather than swallowed:
-        // the next load scans those folders, finds them missing, and prunes them — but the
-        // user is told why the list looks stale until then.
-        throw new Error(
-          `${name} was deleted from ${realWeek}, but the projects list could not be updated: ` +
-          `${err?.message || String(err)}. Its rows disappear on the next reload.`
-        );
-      }
+        if (!isRegistryWeek) {
+          throw new Error(
+            `No project in the list lives at ${week}/files/<day>, so ${name} is not a week folder this ` +
+            `sidebar represents. Only a week the list actually groups can be deleted.`
+          );
+        }
 
-      return { deleted: realWeek, destPath: check.destPath, removedProjects };
+        const stat = fs.statSync(week, { throwIfNoEntry: false });
+        if (!stat || !stat.isDirectory()) {
+          throw new Error(`${week} is not a folder — nothing was deleted.`);
+        }
+
+        const root = archiveRoot();
+        if (isAtOrUnder(root, week)) {
+          throw new Error(
+            `${week} is inside the archive root ${root}. This deletes the LOCAL copy; it must never ` +
+            `be pointed at the archived one.`
+          );
+        }
+
+        // Re-checked here as a fail-loud backstop; the primary refusal happened before this was
+        // queued. Filtering to 'sync' is what keeps this job from refusing on ITSELF — a queued
+        // delete of week X is, quite correctly, a job under week X.
+        //
+        // KEPT even though it is now unreachable, while the remote body's equivalent was
+        // REMOVED — the asymmetry is deliberate, not an oversight. What the remote body
+        // dropped was a TIMING re-check ("did a sync start while we worked?"), which holding
+        // the queue makes impossible to answer wrongly. This is a SEMANTIC check ("is a sync
+        // aimed at this week?"), whose answer does not depend on holding the queue at all, and
+        // it is the last thing between a resurrected week and the operator if the pre-flight
+        // refusal above is ever refactored away.
+        //
+        // Complete for the targets that exist, and only because of an invariant nothing else
+        // states: both delete handlers are week-granular, so every job under consideration is
+        // either this week or a day inside it, and isAtOrUnder catches both. A day-level delete
+        // added later would make isAtOrUnder(day, pendingWeek) false, the guard would pass, and
+        // the pending week sync would push the day straight back.
+        const involved = sync.jobsUnder(week).filter(j => j.op === 'sync');
+        if (involved.length > 0) {
+          throw new Error(
+            `${name} has a sync running or queued (${involved.map(j => j.localPath).join(', ')}) — ` +
+            `nothing is deleted while it is being uploaded. Stop or finish the sync first.`
+          );
+        }
+
+        const status = sync.status(root);
+        if (!status.available) {
+          throw new Error(
+            `The archive is not reachable (${status.reason || `${root} is not available`}), so there is no way to ` +
+            `confirm ${name} is safely archived — nothing was deleted.`
+          );
+        }
+
+        // The re-verification. `ctx.check` runs the dry run DIRECTLY: this body already holds
+        // the queue, and calling the public `check()` would queue a job behind the slot this
+        // very body is occupying — a deadlock that presents as a hang, not an error.
+        //
+        // This is also the scan the old code could not run at all during a sync, which is what
+        // made deleting an unrelated week fail.
+        // `path` ECHOES THE CALLER'S OWN STRING (`weekPath`), deliberately, and not
+        // `weekResolved`. See the note in the remote handler: the renderer correlates by exact
+        // string, so resolving here would leave the delete working and looking frozen.
+        broadcast('archive:delete-progress', { path: weekPath, name, phase: 'verifying' });
+        const check = await ctx.check(week, 'week', root);
+        if (check.neverArchived) {
+          throw new Error(
+            `${name} has never been archived — ${check.destPath} does not exist. Nothing was deleted.`
+          );
+        }
+        if (!check.inSync || check.pending.length > 0) {
+          const bytes = check.pendingBytes;
+          throw new Error(
+            `${name} is NOT fully archived: ${check.pending.length} file${check.pending.length === 1 ? '' : 's'} ` +
+            `(${bytes} bytes) would still be uploaded to ${check.destPath}. Nothing was deleted — sync it first.`
+          );
+        }
+
+        // No "did a sync start?" re-check: this body holds the queue, so none can have. The old
+        // check narrowed that race as far as a handler outside the queue could; the queue closes
+        // it.
+        //
+        // The archive copy is confirmed identical as of a moment ago. Everything below is
+        // irreversible, and the resolved realpath is used so a symlinked week folder deletes
+        // the folder rather than following the link out of it.
+        const realWeek = fs.realpathSync(week);
+        if (isAtOrUnder(fs.realpathSync(root), realWeek)) {
+          throw new Error(
+            `${week} resolves to ${realWeek}, which is inside the archive root. This deletes the LOCAL copy only.`
+          );
+        }
+        log.warn(`[archive] deleting the LOCAL copy of ${name}: ${realWeek} (archived at ${check.destPath})`);
+        broadcast('archive:delete-progress', { path: weekPath, name, phase: 'deleting' });
+        // Async so tens of GB of local unlinks don't freeze every window. The sync-vs-delete
+        // race this opens is closed on the other side: archive:sync refuses to enqueue while
+        // deletionInFlight is set.
+        await fs.promises.rm(realWeek, { recursive: true, force: false });
+        log.info(`[archive] deleted ${realWeek}; removing ${underWeek.length} project(s) from the registry`);
+        broadcast('archive:delete-progress', { path: weekPath, name, phase: 'updating-registry' });
+
+        const removedProjects = underWeek.map(p => p.path);
+        try {
+          writeProjectsRegistryFile({
+            version: 1,
+            projects: registry.projects.filter(p => !isAtOrUnder(week, p.path))
+          });
+        } catch (err: any) {
+          // The folder is gone and the list still names it. Said out loud rather than swallowed:
+          // the next load scans those folders, finds them missing, and prunes them — but the
+          // user is told why the list looks stale until then.
+          throw new Error(
+            `${name} was deleted from ${realWeek}, but the projects list could not be updated: ` +
+            `${err?.message || String(err)}. Its rows disappear on the next reload.`
+          );
+        }
+
+        return { deleted: realWeek, destPath: check.destPath, removedProjects };
+      });
     } finally {
       deletionInFlight = null;
+      deleteTargets.delete(weekPath);
     }
   });
 }
