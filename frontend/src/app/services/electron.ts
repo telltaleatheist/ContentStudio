@@ -308,7 +308,21 @@ export interface MetadataRoutingChapters {
   embeddingAvailability: MetadataRoutingAvailability;
 }
 
+/**
+ * One slot: a single choice covering several tasks (big = the four packaging fields,
+ * small = description and tags). `selectedOptionId` is null when the slot's tasks
+ * disagree — a per-field override — and the modal shows MIXED rather than reconciling.
+ */
+export interface MetadataRoutingSlot {
+  id: string;
+  label: string;
+  taskIds: string[];
+  options: MetadataRoutingOption[];
+  selectedOptionId: string | null;
+}
+
 export interface MetadataRouting {
+  slots: MetadataRoutingSlot[];
   tasks: MetadataRoutingTask[];
   localModels: MetadataRoutingHost;
   chapters: MetadataRoutingChapters;

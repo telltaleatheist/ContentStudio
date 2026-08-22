@@ -341,6 +341,73 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
 ];
 
 /**
+ * The two-slot view of the same table: ONE choice for the four packaging fields, one for
+ * the two mechanical ones.
+ *
+ * The shipped roster is two models, and the operator's actual decision is almost never
+ * "which model writes pinned comments" — it is "which model is the BIG model this run".
+ * A slot names that decision: picking on a slot writes the same per-task entries the
+ * per-field rows write, into the same store, resolved by the same code. Slots ADD no
+ * state anywhere — they are a projection of `metadataRouting`, and a store whose four big
+ * fields disagree (a per-field override, e.g. titles on the 32B adapter) simply renders
+ * the slot as MIXED rather than being rewritten to agree.
+ *
+ * `optionIds` is the slot's own offer list, narrower than the tasks' union on purpose:
+ * the big slot offers the 27B or a Claude model — the operator's stated choice — and the
+ * small slot offers the 9B and its measured A/B rival the 4B. Everything else the tasks
+ * offer (32B titles adapter, cloud on the mechanical fields) remains reachable through
+ * the per-field rows, which stay authoritative.
+ */
+export interface MetadataRoutingSlot {
+  id: 'big' | 'small';
+  label: string;
+  /** The routed tasks this slot sets together. Every task is in exactly one slot. */
+  taskIds: MetadataRoutingTaskId[];
+  /** Offered on the slot's own picker. Each must be offered by EVERY task in `taskIds`. */
+  optionIds: string[];
+}
+
+export const METADATA_ROUTING_SLOTS: MetadataRoutingSlot[] = [
+  {
+    id: 'big',
+    label: 'Big model',
+    taskIds: ['titles', 'thumbnail_text', 'pinned_comment', 'clip_suggestions'],
+    optionIds: ['qwen38-27b', 'sonnet5', 'opus5'],
+  },
+  {
+    id: 'small',
+    label: 'Small model',
+    taskIds: ['description', 'tags'],
+    optionIds: ['qwen35-9b', 'qwen35-4b'],
+  },
+];
+
+// The slot table is a projection of the task table, so a mismatch between them is a
+// registry bug, and it fails HERE at load rather than as a phantom option in the modal.
+for (const slot of METADATA_ROUTING_SLOTS) {
+  for (const taskId of slot.taskIds) {
+    const task = METADATA_ROUTING_TASKS.find((t) => t.id === taskId);
+    if (!task) throw new Error(`Routing slot "${slot.id}" names unknown task "${taskId}"`);
+    for (const optionId of slot.optionIds) {
+      if (!task.options.includes(optionId)) {
+        throw new Error(
+          `Routing slot "${slot.id}" offers "${optionId}", which task "${taskId}" does not — ` +
+            `a slot may only offer what every one of its tasks offers`
+        );
+      }
+    }
+  }
+}
+for (const task of METADATA_ROUTING_TASKS) {
+  const owners = METADATA_ROUTING_SLOTS.filter((s) => s.taskIds.includes(task.id));
+  if (owners.length !== 1) {
+    throw new Error(
+      `Routing task "${task.id}" is in ${owners.length} slots; every task belongs to exactly one`
+    );
+  }
+}
+
+/**
  * Ids this build used to offer, and why they went. Read by `migrateStoredRouting` ONLY.
  *
  * An existing store holds whatever the user last chose, and on 2026-08-22 a whole task and
@@ -667,7 +734,21 @@ export interface MetadataRoutingChaptersView {
   embeddingAvailability: MetadataRoutingAvailability;
 }
 
+/**
+ * One slot, resolved against this store. `selectedOptionId` is the option every task in
+ * the slot points at — or null when they disagree, which the modal renders as MIXED and
+ * never silently reconciles.
+ */
+export interface MetadataRoutingSlotView {
+  id: string;
+  label: string;
+  taskIds: string[];
+  options: MetadataRoutingOptionView[];
+  selectedOptionId: string | null;
+}
+
 export interface MetadataRoutingView {
+  slots: MetadataRoutingSlotView[];
   tasks: MetadataRoutingTaskView[];
   localModels: MetadataRoutingHostView;
   chapters: MetadataRoutingChaptersView;
@@ -703,7 +784,7 @@ function optionView(id: string, inventory: OllamaInventory): MetadataRoutingOpti
  * The whole table plus this store's selections, in the shape the modal consumes.
  *
  * FROZEN contract (metadata-routing:get). The frontend is written against exactly this,
- * so the registry may gain tasks and options without the payload changing shape.
+ * so the registry may gain tasks, options and slots without the payload changing shape.
  *
  * Each option carries whether its model is actually installed, because a routing that
  * names a model the machine does not have looks exactly like one that works until the
@@ -724,6 +805,20 @@ export function buildRoutingView(stored: unknown, inventory: OllamaInventory): M
       : 'not-installed';
   };
   return {
+    slots: METADATA_ROUTING_SLOTS.map((slot) => {
+      const picks = slot.taskIds.map((taskId) => resolved[taskId]);
+      // Agreed AND offered on the slot itself; agreement on a per-field-only model (both
+      // mechanical fields on a cloud model, say) is a Custom state, not a phantom option.
+      const agreed =
+        picks.every((id) => id === picks[0]) && slot.optionIds.includes(picks[0]) ? picks[0] : null;
+      return {
+        id: slot.id,
+        label: slot.label,
+        taskIds: [...slot.taskIds],
+        options: slot.optionIds.map((id) => optionView(id, inventory)),
+        selectedOptionId: agreed,
+      };
+    }),
     tasks: METADATA_ROUTING_TASKS.map((task) => ({
       id: task.id,
       label: task.label,

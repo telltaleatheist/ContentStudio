@@ -10,6 +10,7 @@ import {
   MetadataRoutingChapters,
   MetadataRoutingHost,
   MetadataRoutingOption,
+  MetadataRoutingSlot,
   MetadataRoutingTask,
 } from '../../services/electron';
 
@@ -68,19 +69,56 @@ export type ModelRoutingDialogResult = boolean | undefined;
             </div>
           }
         }
-        @if (applyAllOptions().length > 0) {
-          <div class="apply-all-row">
-            <span class="apply-all-label">Set every field to:</span>
-            @for (option of applyAllOptions(); track option.id) {
-              <button mat-stroked-button class="apply-all-button" (click)="applyToAll(option.id)">
-                {{ option.label }}
-              </button>
-            }
+        <!-- The two-slot roster: the decision the operator actually makes. Picking here
+             writes the same per-task entries the override rows write; a store whose slot
+             fields disagree (an override in play) renders as Custom, never reconciled. -->
+        @for (slot of slots(); track slot.id) {
+          <div class="routing-row">
+            <div class="slot-label">
+              <span class="task-label">{{ slot.label }}</span>
+              <span class="slot-fields">{{ slotFieldsLabel(slot) }}</span>
+            </div>
+            <mat-form-field appearance="outline" subscriptSizing="dynamic" class="task-select">
+              <mat-select
+                [value]="slotValue(slot)"
+                placeholder="Custom — see per-field overrides"
+                (selectionChange)="selectSlot(slot, $event.value)"
+                [attr.aria-label]="slot.label">
+                @for (option of slot.options; track option.id) {
+                  <mat-option [value]="option.id">
+                    {{ option.label }}
+                    @if (option.availability === 'not-installed') {
+                      <span class="option-flag missing">— not installed</span>
+                    }
+                    @if (option.availability === 'unknown') {
+                      <span class="option-flag unknown">— unknown</span>
+                    }
+                  </mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
           </div>
-          <p class="apply-all-note">
-            Fields that don't offer that model keep their selection. Review below, then Save.
-          </p>
+          @if (slotOption(slot); as chosen) {
+            @if (chosen.availability === 'not-installed') {
+              <p class="row-note missing">
+                {{ chosen.model }} is not installed on {{ localModels().host }}. Every
+                {{ slot.label.toLowerCase() }} field will fail when it runs — pull it, or pick a
+                model that is installed.
+              </p>
+            }
+            @if (chosen.availability === 'unknown' && chosen.availabilityNote) {
+              <p class="row-note unknown">{{ chosen.model }}: {{ chosen.availabilityNote }}.</p>
+            }
+          }
         }
+
+        <!-- Everything the slots deliberately don't offer — the 32B titles adapter, cloud on
+             the mechanical fields, the odd one-field experiment — stays reachable here. -->
+        <button mat-button class="overrides-toggle" (click)="showOverrides.set(!showOverrides())">
+          <mat-icon>{{ showOverrides() ? 'expand_less' : 'expand_more' }}</mat-icon>
+          Per-field overrides
+        </button>
+        @if (showOverrides()) {
         @for (task of tasks(); track task.id) {
           <div class="routing-row">
             <span class="task-label">{{ task.label }}</span>
@@ -126,6 +164,7 @@ export type ModelRoutingDialogResult = boolean | undefined;
               <p class="row-note unknown">{{ chosen.model }}: {{ chosen.availabilityNote }}.</p>
             }
           }
+        }
         }
 
         <!-- Chapters are not on this list because they are not a choice: one pipeline
@@ -204,24 +243,22 @@ export type ModelRoutingDialogResult = boolean | undefined;
 
     .empty { color: var(--text-secondary); font-size: 14px; }
 
-    .apply-all-row {
+    .slot-label {
       display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-bottom: 4px;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
     }
 
-    .apply-all-label {
-      color: var(--text-primary);
-      font-size: 14px;
-      font-weight: 500;
-    }
-
-    .apply-all-note {
+    .slot-fields {
       color: var(--text-secondary);
       font-size: 12px;
-      margin: 0 0 12px;
+    }
+
+    .overrides-toggle {
+      margin: 12px 0 4px;
+      color: var(--text-secondary);
+      font-size: 13px;
     }
 
     .routing-row {
@@ -294,7 +331,10 @@ export class ModelRoutingDialog implements OnInit {
   readonly saveError = signal<string>('');
   readonly saving = signal(false);
   readonly tasks = signal<MetadataRoutingTask[]>([]);
+  readonly slots = signal<MetadataRoutingSlot[]>([]);
   readonly selections = signal<Record<string, string>>({});
+  /** Opens itself when a slot loads as Custom — a hidden override is not explorable. */
+  readonly showOverrides = signal(false);
   /**
    * The Ollama host the payload was judged against. The placeholder is never rendered —
    * load() sets the real one before phase becomes 'ready', and nothing here draws before
@@ -310,23 +350,6 @@ export class ModelRoutingDialog implements OnInit {
 
   /** Selections as they were when the payload loaded — Save stays off until this differs. */
   private initialSelections: Record<string, string> = {};
-
-  /**
-   * The "set every field to X" shortcuts: options offered by every task.
-   *
-   * No task is excluded any more. Chapters used to be, because a local-only pipeline could
-   * never offer a cloud model and its presence made this list permanently empty; chapters
-   * are not a routable task at all now, so the list is simply every task's shared options.
-   * Computed from the loaded payload, so a new universally-offered model shows up on its own.
-   */
-  readonly applyAllOptions = computed(() => {
-    const fieldTasks = this.tasks();
-    if (fieldTasks.length === 0) return [];
-    const [first, ...rest] = fieldTasks;
-    return first.options.filter(option =>
-      rest.every(task => task.options.some(o => o.id === option.id))
-    );
-  });
 
   readonly hasChanges = computed(() => {
     const current = this.selections();
@@ -364,7 +387,13 @@ export class ModelRoutingDialog implements OnInit {
       this.localModels.set(routing.localModels);
       this.chapters.set(routing.chapters);
       this.tasks.set(tasks);
+      this.slots.set(routing.slots);
       this.selections.set(selections);
+      // A slot the store has overridden per-field loads as Custom; open the rows that
+      // explain it rather than leaving a placeholder pointing at a collapsed section.
+      if (routing.slots.some(slot => this.slotValue(slot) === null)) {
+        this.showOverrides.set(true);
+      }
       this.phase.set('ready');
     } catch (err) {
       this.error.set(this.describe(err));
@@ -381,15 +410,36 @@ export class ModelRoutingDialog implements OnInit {
     this.selections.update(current => ({ ...current, [taskId]: optionId }));
   }
 
-  /** Point every task that offers `optionId` at it; tasks that don't offer it keep theirs. */
-  applyToAll(optionId: string): void {
+  /**
+   * The option a slot currently amounts to: the one every one of its tasks points at,
+   * PROVIDED the slot offers it. Anything else — disagreeing tasks, or agreement on a
+   * model only the per-field rows offer — is null, rendered as Custom and never rewritten.
+   */
+  slotValue(slot: MetadataRoutingSlot): string | null {
+    const current = this.selections();
+    const picks = slot.taskIds.map(taskId => current[taskId]);
+    const first = picks[0];
+    if (!first || picks.some(pick => pick !== first)) return null;
+    return slot.options.some(option => option.id === first) ? first : null;
+  }
+
+  /** The chosen option's view, so the slot row can report ITS availability. */
+  slotOption(slot: MetadataRoutingSlot): MetadataRoutingOption | undefined {
+    const value = this.slotValue(slot);
+    return value ? slot.options.find(option => option.id === value) : undefined;
+  }
+
+  /** "titles, thumbnail text, pinned comment, clip suggestions" under the slot name. */
+  slotFieldsLabel(slot: MetadataRoutingSlot): string {
+    const byId = new Map(this.tasks().map(task => [task.id, task.label]));
+    return slot.taskIds.map(taskId => (byId.get(taskId) || taskId).toLowerCase()).join(', ');
+  }
+
+  /** One pick on the slot writes every one of its tasks. */
+  selectSlot(slot: MetadataRoutingSlot, optionId: string): void {
     this.selections.update(current => {
       const next = { ...current };
-      for (const task of this.tasks()) {
-        if (task.options.some(o => o.id === optionId)) {
-          next[task.id] = optionId;
-        }
-      }
+      for (const taskId of slot.taskIds) next[taskId] = optionId;
       return next;
     });
   }

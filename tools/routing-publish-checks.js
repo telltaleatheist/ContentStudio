@@ -148,6 +148,48 @@ check('the shipped defaults are all local, and the packaging four share one mode
   }
 });
 
+/**
+ * THE TWO-SLOT VIEW. The modal's primary control is one BIG-model choice (the four packaging
+ * fields: 27B or a Claude model) and one SMALL-model choice (description + tags: 9B or its A/B
+ * rival the 4B). The slot table is a projection of the task table — the registry throws at load
+ * if they disagree — and the view resolves a slot to null (Custom) rather than rewriting a
+ * store whose fields disagree or agree on a model only the per-field rows offer.
+ */
+check('the slot table matches the operator decision: big = 27B or Claude, small = 9B or 4B', () => {
+  const slots = routing.METADATA_ROUTING_SLOTS;
+  eq(slots.length, 2);
+  const big = slots.find((s) => s.id === 'big');
+  const small = slots.find((s) => s.id === 'small');
+  eq(big.taskIds.join(','), 'titles,thumbnail_text,pinned_comment,clip_suggestions');
+  eq(big.optionIds.join(','), 'qwen38-27b,sonnet5,opus5');
+  eq(small.taskIds.join(','), 'description,tags');
+  eq(small.optionIds.join(','), 'qwen35-9b,qwen35-4b');
+});
+
+check('the routing view resolves slots, and an override renders as Custom rather than being rewritten', () => {
+  const inventory = { host: 'http://localhost:11434', reachable: false, models: [] };
+
+  const stock = routing.buildRoutingView(undefined, inventory);
+  eq(stock.slots.find((s) => s.id === 'big').selectedOptionId, 'qwen38-27b');
+  eq(stock.slots.find((s) => s.id === 'small').selectedOptionId, 'qwen35-9b');
+
+  // A per-field override — titles on the 32B adapter — makes the big slot Custom, and the
+  // stored selection survives untouched in the task rows.
+  const overridden = routing.buildRoutingView({ titles: 'headline-titles-32b' }, inventory);
+  eq(overridden.slots.find((s) => s.id === 'big').selectedOptionId, null);
+  eq(overridden.tasks.find((t) => t.id === 'titles').selectedOptionId, 'headline-titles-32b');
+
+  // Agreement on a model the slot does not offer is also Custom, not a phantom slot option.
+  // (Unreachable on the big slot — its offers ARE the intersection of its tasks' offers — so
+  // the case that exercises it is the small slot's fields both routed to a cloud model.)
+  const cloudSmall = routing.buildRoutingView({ description: 'opus5', tags: 'opus5' }, inventory);
+  const smallView = cloudSmall.slots.find((s) => s.id === 'small');
+  eq(smallView.selectedOptionId, null);
+  if (smallView.options.some((o) => o.id === 'opus5')) {
+    throw new Error('the small slot offers opus5, which is a per-field-only choice');
+  }
+});
+
 /** Summarization is DECLARED, not taken from a Settings field that might name a cloud model. */
 check('summarization is declared, and declared local', () => {
   if (!routing.SUMMARIZATION_MODEL) throw new Error('SUMMARIZATION_MODEL is not exported');
