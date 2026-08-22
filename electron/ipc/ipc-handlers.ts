@@ -53,6 +53,8 @@ import {
 import { setupPublishIpc } from '../services/publish/publish-ipc';
 import { PublishBridge } from '../services/publish/publish-bridge';
 import { setupEditorIpc } from '../services/editor/editor-ipc';
+import { setupTranscriptLinkIpc } from '../services/metadata/transcript-link-ipc';
+import type { TranscriptRef } from '../services/publish/publish-types';
 import { getMainWindow } from '../main';
 
 /**
@@ -439,8 +441,15 @@ async function runTranscription(job: PipelineJob): Promise<void> {
     // Process inputs (transcription happens here). Collect per-input failures so
     // skipped items surface in result.warnings instead of silently vanishing.
     const customNotesMap = new Map(Object.entries(job.metadataParams.inputNotes || {}));
+    // The operator's Phase-2 choice per input, keyed by the same absolute path
+    // `chapterFlags` uses. Entries whose value is null are the DECLARED final-only mode
+    // and must survive the trip as null, not be dropped to "absent" — the two mean
+    // different things downstream (spec §3.2).
+    const transcriptRefMap = new Map(Object.entries(job.metadataParams.inputTranscripts || {})) as
+      Map<string, TranscriptRef | null>;
     const inputFailures: string[] = [];
-    const contentItems = await inputHandler.processMultipleInputs(normalizedInputs, customNotesMap, inputFailures);
+    const contentItems = await inputHandler.processMultipleInputs(
+      normalizedInputs, customNotesMap, inputFailures, transcriptRefMap);
 
     if (job.cancelled) {
       job.resolve({ success: false, error: 'Job cancelled by user' });
@@ -1034,6 +1043,12 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         jobId: params.jobId,
         jobName: params.jobName,
         chapterFlags: params.chapterFlags || {},
+        // The operator's Phase-2 decision for each input, keyed by the same absolute path
+        // `chapterFlags` is. A TranscriptRef means "generate content fields from this
+        // editor story"; an explicit null means "final export only", which is a DECLARED
+        // MODE, not a default (spec §3.2). PR 4 carries and records the choice; PR 5 is
+        // what makes the generator read it.
+        inputTranscripts: params.inputTranscripts || {},
         chapterStageModels: settings.chapterStageModels || undefined,
         chapterNumCtx: settings.chapterNumCtx || undefined,
         // Per-task model routing, read from the store AT JOB TIME. The registry supplies
@@ -2469,6 +2484,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   // archiveMountUrl), whose defaults are resolved at the read site.
   setupEditorIpc(store);
   // ==================== END EDITOR ====================
+
+  // ==================== TRANSCRIPT LINK ====================
+  // Phase 2: finding, probing and resolving the editor story transcript behind a final
+  // export. Registered as its own seam like publish/ and editor/. Answers only — the
+  // operator confirms every link on the Inputs page.
+  setupTranscriptLinkIpc();
+  // ==================== END TRANSCRIPT LINK ====================
 
   log.info('IPC handlers registered');
 }

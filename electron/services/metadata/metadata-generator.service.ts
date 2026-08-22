@@ -27,6 +27,7 @@ import {
 } from './metadata-routing';
 import { excludePromoChapters } from './promo-chapters';
 import { JobCancelledError } from './cancellation';
+import type { TranscriptRef } from '../publish/publish-types';
 import { queueAITask } from '../queue-manager.service';
 import * as log from 'electron-log';
 import * as fs from 'fs';
@@ -60,6 +61,18 @@ export interface GenerationParams {
   // loop (appended to the metadata prompt); undefined = omit (expected state).
   insightsBlock?: string;
   chapterFlags?: { [key: string]: boolean };
+  /**
+   * The operator's Phase-2 link decision per input, keyed by the input's absolute path —
+   * the same key `chapterFlags` uses. A `TranscriptRef` means "the content fields should
+   * come from this editor story"; an explicit `null` means "final export only", which is
+   * a declared mode rather than a default (spec §3.2).
+   *
+   * CARRIED, NOT CONSUMED. Nothing in this service reads it: `summarizeTranscript` still
+   * reads `item.content` and the chapter pipeline still reads `item.srtSegments` only.
+   * It is threaded now so PR 5's split has the choice already in hand, and so a queued job
+   * carries the decision the operator made when he queued it.
+   */
+  inputTranscripts?: { [key: string]: TranscriptRef | null };
   /**
    * Per-task model routing, as stored in the `metadataRouting` setting (taskId ->
    * optionId, see metadata-routing.ts). Resolved against the registry here, so an absent

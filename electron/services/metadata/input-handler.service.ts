@@ -13,6 +13,7 @@ import {
   buildImportedContentItem,
   isTranscriptImportPath,
 } from './transcript-import.service';
+import type { TranscriptRef } from '../publish/publish-types';
 
 export interface ContentItem {
   content: string;
@@ -25,6 +26,20 @@ export interface ContentItem {
   title?: string;
   /** Provenance + speaker/split data for transcripts imported from AutoCutStudio. */
   importMeta?: TranscriptImportMeta;
+  /**
+   * The editor story transcript the operator linked this input to (Phase 2), or null when
+   * he declared "final export only".
+   *
+   * CARRIED, NOT CONSUMED. PR 4 finds, confirms, stores and shows the link; nothing reads
+   * this to generate anything. `content` above is still the final export's Whisper
+   * transcript on every path, and `srtSegments` — the only thing chapters ever read —
+   * stays the final export's for good. The generation split is PR 5.
+   *
+   * `undefined` means the input was never offered a choice (a subject, a text item, an
+   * already-imported transcript); `null` means the operator was offered one and declared
+   * final-only. The three states are not interchangeable.
+   */
+  transcriptRef?: TranscriptRef | null;
 }
 
 export class InputDetector {
@@ -174,7 +189,8 @@ export class InputHandlerService {
   async processInput(
     input: string,
     customNotes?: string,
-    itemIndex?: number
+    itemIndex?: number,
+    transcriptRef?: TranscriptRef | null
   ): Promise<ContentItem> {
     console.log(`[InputHandler] Processing input: ${input}`);
 
@@ -191,7 +207,7 @@ export class InputHandlerService {
     if (inputType === 'subject') {
       return this.processSubject(input, customNotes);
     } else if (inputType === 'video') {
-      return await this.processVideo(input, customNotes, itemIndex);
+      return await this.processVideo(input, customNotes, itemIndex, transcriptRef);
     } else if (inputType === 'transcript_file') {
       return this.processTranscriptFile(input, customNotes);
     } else if (inputType === 'directory') {
@@ -225,7 +241,12 @@ export class InputHandlerService {
   /**
    * Process a video file
    */
-  private async processVideo(videoPath: string, customNotes?: string, itemIndex?: number): Promise<ContentItem> {
+  private async processVideo(
+    videoPath: string,
+    customNotes?: string,
+    itemIndex?: number,
+    transcriptRef?: TranscriptRef | null
+  ): Promise<ContentItem> {
     log.info(`[InputHandler] Processing video: ${videoPath}`);
 
     try {
@@ -261,6 +282,10 @@ export class InputHandlerService {
         source: videoPath,
         processingNotes: customNotes?.trim(),
         srtSegments: result.segments,
+        // Carried forward untouched. Whisper above still produced BOTH `content` and
+        // `srtSegments`, exactly as it always has — the link is recorded next to them,
+        // not instead of them. PR 5 is what makes `content` come from the story.
+        transcriptRef,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -403,7 +428,8 @@ export class InputHandlerService {
   async processMultipleInputs(
     inputs: string[],
     customNotesMap?: Map<string, string>,
-    failures?: string[]
+    failures?: string[],
+    transcriptRefMap?: Map<string, TranscriptRef | null>
   ): Promise<ContentItem[]> {
     console.log(`[InputHandler] Processing ${inputs.length} inputs (max 5 concurrent transcriptions)`);
 
@@ -423,7 +449,13 @@ export class InputHandlerService {
           return dirItems[0] || null; // Return first item (directories processed separately)
         } else {
           const customNotes = customNotesMap?.get(input);
-          return await this.processInput(input, customNotes, index);
+          // `has` rather than `get`: an entry whose value is null is the operator having
+          // DECLARED final-only, which is not the same as no entry at all (never offered
+          // a choice). Collapsing them would erase the declaration.
+          const transcriptRef = transcriptRefMap?.has(input)
+            ? transcriptRefMap.get(input)
+            : undefined;
+          return await this.processInput(input, customNotes, index, transcriptRef);
         }
       } catch (error) {
         console.error(`[InputHandler] Failed to process input ${input}:`, error);
