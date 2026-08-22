@@ -99,19 +99,6 @@
             Compilation Mode
           </mat-checkbox>
 
-          <!-- Master Chapters Checkbox (only shown when there are video items) -->
-          @if (hasVideoItems()) {
-            <mat-checkbox
-              [checked]="allChaptersEnabled()"
-              [indeterminate]="someChaptersEnabled() && !allChaptersEnabled()"
-              (change)="toggleAllChapters($event.checked)"
-              color="primary"
-              class="master-chapters-checkbox"
-              matTooltip="Enable/disable chapter generation for all video items">
-              Chapters
-            </mat-checkbox>
-          }
-
           <!-- Clear Inputs Button -->
           <button
             mat-button
@@ -192,18 +179,6 @@
                     [class.active]="!!item.notes">
                     Notes
                   </button>
-
-                <!-- Chapters toggle (boxed, lit orange when on) -->
-                @if (canGenerateChapters(item)) {
-                  <button
-                    mat-stroked-button
-                    class="box-toggle"
-                    [class.active]="item.generateChapters !== false"
-                    [matTooltip]="(item.generateChapters !== false ? 'Chapters on' : 'Chapters off') + ' — generate YouTube chapter markers'"
-                    (click)="toggleChapterGeneration(i, item.generateChapters === false)">
-                    Chapters
-                  </button>
-                }
 
                 <!-- Split Episode (imported transcripts only) -->
                 @if (isTranscriptImport(item)) {

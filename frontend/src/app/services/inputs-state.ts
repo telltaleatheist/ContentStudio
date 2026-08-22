@@ -9,7 +9,6 @@ export interface InputItem {
   selected: boolean;
   promptSet: string; // ID of the prompt set to use (e.g., "sample-youtube")
   notes?: string; // Optional notes/instructions for the AI (e.g., "focus on tax fraud")
-  generateChapters?: boolean; // For video files: generate YouTube chapter markers (default: true)
   splitEpisode?: boolean; // For transcript imports: mark for split-into-segments before generating
   textContent?: string; // For text-subject items: the actual text content
   /**
@@ -22,7 +21,7 @@ export interface InputItem {
    * of the two it was, so a report can never imply a decision nobody made.
    *
    * Set on the item (not held in a component signal) so it is captured into the queued job
-   * alongside `generateChapters` and survives the sessionStorage round-trip.
+   * with the rest of the item and survives the sessionStorage round-trip.
    */
   transcriptChoice?: TranscriptChoice;
   // Master report specific fields

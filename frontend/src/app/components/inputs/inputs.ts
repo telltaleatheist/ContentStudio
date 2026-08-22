@@ -314,8 +314,7 @@ export class Inputs implements OnInit, OnDestroy {
             displayName: fileName,
             icon,
             selected: true,
-            promptSet: this.inputsState.masterPromptSet(),
-            generateChapters: (type === 'video' || type === 'transcript-import') ? true : undefined
+            promptSet: this.inputsState.masterPromptSet()
           });
         }
       }
@@ -344,7 +343,6 @@ export class Inputs implements OnInit, OnDestroy {
           icon: 'record_voice_over',
           selected: true,
           promptSet: this.inputsState.masterPromptSet(),
-          generateChapters: true,
         });
       }
       const count = result.items.length;
@@ -422,8 +420,7 @@ export class Inputs implements OnInit, OnDestroy {
           displayName: fileName,
           icon,
           selected: true,
-          promptSet: this.inputsState.masterPromptSet(),
-          generateChapters: (type === 'video' || type === 'transcript-import') ? true : undefined
+          promptSet: this.inputsState.masterPromptSet()
         });
       }
     }
@@ -437,13 +434,6 @@ export class Inputs implements OnInit, OnDestroy {
     if (event.previousIndex !== event.currentIndex) {
       this.inputsState.reorderItems(event.previousIndex, event.currentIndex);
     }
-  }
-
-  toggleChapterGeneration(index: number, value: boolean) {
-    const items = this.inputsState.inputItems();
-    const updatedItems = [...items];
-    updatedItems[index] = { ...updatedItems[index], generateChapters: value };
-    this.inputsState.inputItems.set(updatedItems);
   }
 
   // ==================== Editor transcript link (Phase 2) ====================
@@ -871,7 +861,6 @@ export class Inputs implements OnInit, OnDestroy {
         icon: 'record_voice_over',
         selected: true,
         promptSet: item.promptSet,
-        generateChapters: item.generateChapters !== false,
       }));
       this.inputsState.replaceItemAt(curIndex, newItems);
       this.notificationService.success('Split Episode', `Split into ${newItems.length} stories.`);
@@ -1378,27 +1367,8 @@ export class Inputs implements OnInit, OnDestroy {
         notes: item.notes
       }));
 
-      // Extract chapter flags for video files (only for YouTube individual jobs)
-      const chapterFlags: { [path: string]: boolean } = {};
-      const isYouTube = this.isYouTubePromptSet(nextJob.promptSet);
-      const isIndividual = nextJob.mode === 'individual';
-
-      // Only generate chapters for YouTube videos in individual mode
-      if (isYouTube && isIndividual) {
-        nextJob.inputs.forEach(item => {
-          console.log('Processing item:', item.type, item.path, 'generateChapters:', item.generateChapters);
-          // Videos and imported transcripts both carry timestamped segments, so
-          // both can produce chapters.
-          if ((item.type === 'video' || item.type === 'transcript-import') && item.generateChapters !== false) {
-            chapterFlags[item.path] = true;
-          }
-        });
-      }
-
-      console.log('Chapter flags being sent:', chapterFlags, '(YouTube:', isYouTube, ', Individual:', isIndividual, ')');
-
-      // What each input declares about its content transcript, keyed the same way
-      // chapterFlags is. EVERY linkable input gets an entry, including the ones nobody
+      // What each input declares about its content transcript, keyed by its
+      // absolute path. EVERY linkable input gets an entry, including the ones nobody
       // touched: linking is optional, and "he left it unlinked" is a mode this run took,
       // not an absence. The three values are distinct on purpose (spec §3.2) —
       //
@@ -1450,7 +1420,6 @@ export class Inputs implements OnInit, OnDestroy {
         mode: nextJob.mode,
         jobId: nextJob.id,
         jobName: nextJob.name,
-        chapterFlags,
         inputTranscripts,
         showPrompt: opts.showPrompt
       });
@@ -1837,46 +1806,6 @@ export class Inputs implements OnInit, OnDestroy {
   getPromptSetIcon(promptSetId: string): string {
     const promptSet = this.availablePromptSets().find(ps => ps.id === promptSetId);
     return promptSet?.platform === 'youtube' ? 'video_library' : 'podcasts';
-  }
-
-  // Helper to check if a prompt set is YouTube platform
-  isYouTubePromptSet(promptSetId: string): boolean {
-    const promptSet = this.availablePromptSets().find(ps => ps.id === promptSetId);
-    return promptSet?.platform === 'youtube';
-  }
-
-  // Helper to check if chapters should be available for an item
-  canGenerateChapters(item: InputItem): boolean {
-    // Chapters available for any video, transcript file, or imported transcript
-    return item.type === 'video' || item.type === 'transcript' || item.type === 'transcript-import';
-  }
-
-  // Master chapters checkbox helpers
-  hasVideoItems(): boolean {
-    return this.inputsState.inputItems().some(item => this.canGenerateChapters(item));
-  }
-
-  allChaptersEnabled(): boolean {
-    const videoItems = this.inputsState.inputItems().filter(item => this.canGenerateChapters(item));
-    if (videoItems.length === 0) return false;
-    return videoItems.every(item => item.generateChapters !== false);
-  }
-
-  someChaptersEnabled(): boolean {
-    const videoItems = this.inputsState.inputItems().filter(item => this.canGenerateChapters(item));
-    if (videoItems.length === 0) return false;
-    return videoItems.some(item => item.generateChapters !== false);
-  }
-
-  toggleAllChapters(enabled: boolean) {
-    const items = this.inputsState.inputItems();
-    const updatedItems = items.map(item => {
-      if (this.canGenerateChapters(item)) {
-        return { ...item, generateChapters: enabled };
-      }
-      return item;
-    });
-    this.inputsState.inputItems.set(updatedItems);
   }
 
   // Global queue progress helpers

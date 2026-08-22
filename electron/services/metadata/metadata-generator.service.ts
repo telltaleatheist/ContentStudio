@@ -21,9 +21,11 @@ import {
 import {
   CHAPTER_PIPELINE_MODELS,
   MetadataRoutingSelections,
+  MetadataRoutingTaskId,
   ResolvedMetadataRouting,
   SUMMARIZATION_MODEL,
   resolveMetadataRouting,
+  routingOption,
 } from './metadata-routing';
 import type { ModelRosterEntry } from './metadata-tasks';
 import { excludePromoChapters } from './promo-chapters';
@@ -75,10 +77,9 @@ export interface GenerationParams {
   // Pre-resolved "CHANNEL PERFORMANCE DATA" block from the analytics feedback
   // loop (appended to the metadata prompt); undefined = omit (expected state).
   insightsBlock?: string;
-  chapterFlags?: { [key: string]: boolean };
   /**
-   * The operator's Phase-2 link decision per input, keyed by the input's absolute path —
-   * the same key `chapterFlags` uses. A `TranscriptRef` means "the content fields should
+   * The operator's Phase-2 link decision per input, keyed by the input's absolute path.
+   * A `TranscriptRef` means "the content fields should
    * come from this editor story"; an explicit `null` means "final export only", which is
    * a declared mode rather than a default (spec §3.2).
    *
@@ -143,10 +144,12 @@ export interface GenerationResult {
 /**
  * What the chapter step produced for one item.
  *
- * `chaptersSkipped` is set on EVERY path that leaves the item without a published chapter
- * list after the user asked for one, and it is what makes that visible in the saved report
- * rather than only in the run's warnings. Absent when chapters were never requested — a
- * report with no chapters and no explanation is correct in that case.
+ * `chaptersSkipped` is set on EVERY path that leaves a timestamped item without a published
+ * chapter list, and it is what makes that visible in the saved report rather than only in
+ * the run's warnings. Absent when the input had no timestamped transcript (a text subject,
+ * a plain transcript file) — chapters don't apply there, so a report with no chapters and
+ * no explanation is correct in that case. Chapters are not a user option: since 2026-08-22
+ * every item with SRT segments gets them, whatever the prompt set.
  */
 interface ChapterOutcome {
   chapters?: Chapter[];
@@ -187,6 +190,13 @@ export class MetadataGeneratorService {
       // Initialize AI Manager
       const aiConfig: AIConfig = {
         provider: params.aiProvider,
+        // The transcript's direct-pass ceiling follows the ROUTED field models, not the
+        // legacy provider above: an all-local run gets the local (90k) window even when
+        // the Settings provider is a cloud one. Any routed cloud field → cost ceiling.
+        transcriptCeiling: (Object.entries(this.routing(params)) as [MetadataRoutingTaskId, string][])
+          .every(([taskId, optionId]) => routingOption(taskId, optionId).kind === 'local')
+          ? 'local'
+          : 'cloud',
         model: params.aiModel, // Legacy support
         summarizationModel: params.summarizationModel,
         metadataModel: params.metadataModel,
@@ -347,7 +357,6 @@ export class MetadataGeneratorService {
               params,
               i,
               contentItems.length,
-              params.chapterFlags?.[item.source || ''] || false,
               warnings,
               computedChapters
             );
@@ -486,7 +495,6 @@ export class MetadataGeneratorService {
 
         try {
           const sourceLabel = item.source || `item_${i + 1}`;
-          const shouldGenerateChapters = params.chapterFlags?.[item.source || ''] || false;
 
           // ---- Chapters FIRST -------------------------------------------------
           // Chapters are not a trailing decoration any more. Their subject list is
@@ -503,7 +511,6 @@ export class MetadataGeneratorService {
             params,
             i,
             contentItems.length,
-            shouldGenerateChapters,
             warnings,
             computedChapters
           );
@@ -895,12 +902,16 @@ export class MetadataGeneratorService {
     params: GenerationParams,
     itemIndex: number,
     itemCount: number,
-    requested: boolean,
     warnings: string[],
     sink?: { [sourceLabel: string]: ChapterPipelineResult }
   ): Promise<ChapterOutcome> {
     const sourceLabel = item.source || `item_${itemIndex + 1}`;
-    if (!requested) {
+
+    if (!item.srtSegments || item.srtSegments.length === 0) {
+      // Chapters are decided by the INPUT, not by an option: a timestamped transcript
+      // (video, imported transcript) gets them, a text subject or plain transcript file
+      // has nothing to timestamp. Not a warning — there is nothing to skip.
+      console.log(`[MetadataGenerator] ${sourceLabel}: no timestamped transcript, so chapters don't apply`);
       return {};
     }
 
@@ -912,15 +923,6 @@ export class MetadataGeneratorService {
       // set of failures. The promo split is re-run rather than carried across, because it
       // is a pure function of the chapters and re-deriving it cannot disagree with them.
       return this.splitOutPromos(reuse, sourceLabel, []);
-    }
-
-    if (!item.srtSegments || item.srtSegments.length === 0) {
-      // Chapters need a timestamped transcript (SRT segments); a subject or plain
-      // transcript file has none, so report why they were skipped.
-      const msg = `${sourceLabel}: chapters were requested but no timestamped transcript was available to generate them, so the rest of the metadata was generated WITHOUT chapter subjects`;
-      console.warn(`[MetadataGenerator] ${msg}`);
-      warnings.push(msg);
-      return { chaptersSkipped: { outcome: 'skipped', reason: 'No timestamped transcript (SRT segments) was available, so the chapter pipeline never ran.' } };
     }
 
     this.throwIfCancelled(params, `before the chapter pipeline for ${sourceLabel}`);
@@ -941,7 +943,7 @@ export class MetadataGeneratorService {
       if (result.chapters.length < 3) {
         // <3 chapters are dropped (YouTube requires at least 3). Don't let that vanish
         // silently when the user explicitly asked for chapters.
-        const msg = `${sourceLabel}: chapters were requested but only ${result.chapters.length} chapter(s) were found (YouTube requires at least 3), so none were added and the rest of the metadata was generated WITHOUT chapter subjects`;
+        const msg = `${sourceLabel}: only ${result.chapters.length} chapter(s) were found (YouTube requires at least 3), so none were added and the rest of the metadata was generated WITHOUT chapter subjects`;
         console.warn(`[MetadataGenerator] ${msg}`);
         warnings.push(msg);
         return {
