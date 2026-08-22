@@ -139,14 +139,38 @@ const api = {
   // titles order is meaningful: index 0 becomes the main title AND A/B variant 1
   publishSetTitles: (itemId: string, titles: string[]) =>
     ipcRenderer.invoke('publish-set-titles', itemId, titles),
-  // pass null for a field to clear the override and fall back to the generated value
+  // Every field goes through a per-field validator in the main process; an unknown field
+  // name is refused rather than ignored. null clears a field where null is legal.
   publishSetFields: (
     itemId: string,
-    fields: { descriptionOverride?: string | null; tagsOverride?: string | null; channelId?: string | null }
+    fields: {
+      descriptionOverride?: string | null;
+      tagsOverride?: string | null;
+      channelId?: string | null;
+      publishAt?: string | null;
+      isPodcast?: boolean;
+    }
   ) => ipcRenderer.invoke('publish-set-fields', itemId, fields),
   publishGetResolved: (itemId: string) => ipcRenderer.invoke('publish-get-resolved', itemId),
   publishListActionable: () => ipcRenderer.invoke('publish-list-actionable'),
   publishClear: (itemId: string) => ipcRenderer.invoke('publish-clear', itemId),
+  // Thumbnails. Their own channels because a thumbnail is a FILE: it is validated against
+  // the bytes on disk (magic + extension agreement, ≤2 MiB, ≥1280x720), the measurements
+  // are stored with the path, and a non-16:9 image comes back with a warning attached.
+  // Pass null to clear.
+  publishSetThumbnail: (itemId: string, absPath: string | null) =>
+    ipcRenderer.invoke('publish-set-thumbnail', itemId, absPath),
+  // Read-only. Returns null when there is nothing to offer, which is the common case.
+  publishProposeThumbnail: (itemId: string) =>
+    ipcRenderer.invoke('publish-propose-thumbnail', itemId),
+  // Downscaled in the MAIN process (nativeImage) so the preview never needs a file://
+  // read from the renderer — webSecurity stays on.
+  publishReadThumbnail: (itemId: string, maxPx: number) =>
+    ipcRenderer.invoke('publish-read-thumbnail', itemId, maxPx),
+  // Answers only. Seeding channelId from the answer is the panel's decision, not this
+  // call's side effect.
+  publishResolveChannel: (promptSet: string) =>
+    ipcRenderer.invoke('publish-resolve-channel', promptSet),
 
   // ==================== EDITOR ====================
   // The ported AutoCutStudio timeline editor. Every member of the editor's `EditorHost`

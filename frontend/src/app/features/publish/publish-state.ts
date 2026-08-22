@@ -14,8 +14,14 @@
  */
 
 import { Injectable, computed, inject, signal } from '@angular/core';
-import { ElectronService } from '../../services/electron';
-import { ChosenMetadata, MAX_AB_VARIANTS, MAX_TITLE_LENGTH, ResolvedMetadata } from './publish.types';
+import { ElectronService, PublishFields } from '../../services/electron';
+import {
+  ChosenMetadata,
+  MAX_AB_VARIANTS,
+  MAX_TITLE_LENGTH,
+  ResolvedMetadata,
+  ThumbnailMeta,
+} from './publish.types';
 
 @Injectable({ providedIn: 'root' })
 export class PublishState {
@@ -64,6 +70,33 @@ export class PublishState {
 
   /** The operator's tags edit, or null when they haven't made one. */
   readonly tagsOverride = computed(() => this._selection()?.tagsOverride ?? null);
+
+  // The Phase-1 publish fields, read-only for now: the panel that edits them lands with
+  // the Publish UI. They are exposed here rather than reached out of `selection()` at
+  // the call site so there is one place that knows how a missing selection reads —
+  // which is NOT the same as a stored value: no record at all means the operator has
+  // never touched this item, and every one of these says so with the field's own
+  // never-set value.
+
+  /** The routed channel, or null when the item is not routed yet. */
+  readonly channelId = computed(() => this._selection()?.channelId ?? null);
+
+  /** The requested go-live time (ISO with zone), or null for no schedule. */
+  readonly publishAt = computed(() => this._selection()?.publishAt ?? null);
+
+  /** When the schedule was last set — what explains a stale publishAt. */
+  readonly publishAtSetAt = computed(() => this._selection()?.publishAtSetAt ?? null);
+
+  /** Absolute path of the accepted thumbnail, or null. */
+  readonly thumbnailPath = computed(() => this._selection()?.thumbnailPath ?? null);
+
+  /** What that file measured when it was accepted. */
+  readonly thumbnailMeta = computed<ThumbnailMeta | null>(
+    () => this._selection()?.thumbnailMeta ?? null
+  );
+
+  /** Podcast episode rather than a YouTube-first video. False until set otherwise. */
+  readonly isPodcast = computed(() => this._selection()?.isPodcast ?? false);
 
   /** Exactly what the extension will type into Studio's description box. */
   readonly resolvedDescription = computed(() => this._resolved()?.description ?? '');
@@ -277,14 +310,14 @@ export class PublishState {
   }
 
   /**
-   * Persist a description/tags edit. Pass null to clear the override and fall back to
-   * the generated value.
+   * Persist one or more publish fields.
+   *
+   * Pass null to clear a field where null is legal (the overrides fall back to the
+   * generated value). Validation lives in the main process and the write is
+   * all-or-nothing, so a rejection here means NOTHING changed — the error text names the
+   * field and the rule and is shown as-is rather than summarised.
    */
-  async setFields(fields: {
-    descriptionOverride?: string | null;
-    tagsOverride?: string | null;
-    channelId?: string | null;
-  }): Promise<void> {
+  async setFields(fields: PublishFields): Promise<void> {
     const t = this.target('save that change');
     if (!t) return;
 

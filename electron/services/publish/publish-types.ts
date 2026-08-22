@@ -42,6 +42,29 @@ export function isItemId(value: unknown): value is string {
 /** YouTube enforces a 100-character title limit. */
 export const MAX_TITLE_LENGTH = 100;
 
+/**
+ * A schedule must be at least this far in the future when it is SET.
+ *
+ * Not re-checked on read: a schedule that has since gone stale is a real state the
+ * calendar has to be able to show and explain (that is what `publishAtSetAt` is for),
+ * not something to quietly scrub out of the record.
+ */
+export const PUBLISH_AT_MIN_LEAD_MINUTES = 15;
+
+/** And no further out than this. A date beyond it is a typo, not a plan. */
+export const PUBLISH_AT_MAX_HORIZON_YEARS = 2;
+
+/**
+ * ISO-8601 instant with an EXPLICIT zone — `Z` or `±HH:MM`.
+ *
+ * A bare `2026-09-01T14:00` is rejected rather than interpreted. It means a different
+ * moment depending on who reads it, and the reader here is not the machine that typed
+ * it: YouTube takes a UTC instant, so a local string would silently ship an upload at
+ * the wrong hour whenever the app's TZ and the operator's intent disagreed (a DST
+ * boundary between now and the date is enough to do that on its own).
+ */
+const ISO_WITH_ZONE = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}(:\d{2})?(\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})$/;
+
 export type PublishStatus =
   | 'selecting'   // operator is still choosing; not ready to fill
   | 'ready'       // titles chosen, no YouTube video linked yet
@@ -51,6 +74,55 @@ export type PublishStatus =
 
 /** Which Studio fields the extension has been asked to fill. */
 export type FillTarget = 'title' | 'description' | 'tags';
+
+/**
+ * What was measured about a thumbnail file at the moment it was accepted.
+ *
+ * Stored alongside the path because the path alone cannot answer "is this still the
+ * image I approved?" — Callisto is an external volume, and the file can be replaced,
+ * re-exported at a different size, or gone entirely by the time we upload. The
+ * validator is re-run at use time and its result compared against this.
+ */
+export interface ThumbnailMeta {
+  bytes: number;
+  width: number;
+  height: number;
+  mime: 'image/png' | 'image/jpeg';
+}
+
+/**
+ * A link from a generated item to ONE story's editor transcript (Phase 2).
+ *
+ * THE TYPE ONLY. Nothing in this PR resolves, finds, or consumes one — that is PR 4.
+ * It is declared here now so the record shape is settled in the same change that
+ * settles the rest of ChosenMetadata, rather than migrating the file twice.
+ *
+ * The identity fields travel ALONGSIDE the path on purpose. A path that no longer
+ * resolves can then say what it lost ("story 3 'jake lang' from session 2026-08-12"),
+ * and a path that still resolves but whose session was re-exported can be detected as
+ * CHANGED rather than reused as if nothing happened — see spec §3.1's three-state
+ * resolution (ok / missing / changed).
+ */
+export interface TranscriptRef {
+  kind: 'acs-story';
+  /** Absolute path to <session>_stories_transcripts/<NN>-<slug>.json. */
+  path: string;
+  /** The editor session the story came from, e.g. the `<session>` in the filename. */
+  sourceSession: string;
+  /** The editor project folder that session lives in. */
+  projectFolder: string;
+  storyNumber: number;
+  storySlug: string;
+  storyTitle: string;
+  /** Duration the transcript itself claims, used to compute drift against the export. */
+  durationSeconds: number;
+  /** Word count at link time: the cheap check that says "this file changed under us". */
+  wordCount: number;
+  /** ISO. When the operator made this link. */
+  linkedAt: string;
+  /** How the candidate was found — never a silent auto-link; see spec §3.2. */
+  via: 'exact-title' | 'label-match' | 'manual';
+}
 
 /**
  * The operator's chosen metadata for one generated item.
@@ -77,8 +149,75 @@ export interface ChosenMetadata {
   /** null = not edited, fall back to the generated tags. Comma-separated, matching MetadataResult.tags. */
   tagsOverride: string | null;
 
-  /** Channel this item is destined for. Resolved from the prompt set when possible. */
+  /**
+   * Channel this item is destined for.
+   *
+   * A VALUE HERE IS A KNOWN CHANNEL. It is seeded from the job's prompt set via
+   * channels.json (resolveChannelForPromptSet), the operator can override it, and the
+   * override is sticky — but every write goes through the validator, which refuses any
+   * id that is not in the registry and names it. So a non-null channelId can be handed
+   * to the YouTube API without being re-checked.
+   *
+   * null means "not routed yet", which is a real state and the only other one: an
+   * unmapped prompt set stays null WITH A REASON rather than defaulting to Telltale
+   * (spec §2.2 / Q6). Seeding happens lazily when the panel opens, not by a migration
+   * that would have to guess for the 44 live records.
+   */
   channelId: string | null;
+
+  /**
+   * When the operator intends this to go live: ISO-8601 with an explicit zone, or null
+   * for "no schedule". See PUBLISH_AT_MIN_LEAD_MINUTES / PUBLISH_AT_MAX_HORIZON_YEARS
+   * and validatePublishAt.
+   *
+   * This is INTENT, not state. YouTube only accepts a publishAt while a video is still
+   * private and never-published; that constraint is enforced at the API call in Phase
+   * 3/4, deliberately not here (spec Q4). Phase 1 stores what the operator asked for.
+   */
+  publishAt: string | null;
+
+  /**
+   * ISO. When `publishAt` was last set — recorded on EVERY set, including the set that
+   * clears it to null.
+   *
+   * Provenance, not decoration: a schedule whose time has passed is ambiguous on its own
+   * ("did it publish, or did we miss it?"), and the answer usually starts with when the
+   * operator asked for it. Without this the calendar can only show a stale date and
+   * shrug.
+   */
+  publishAtSetAt: string | null;
+
+  /**
+   * Absolute path to the thumbnail image, or null for none.
+   *
+   * Validated when set (PNG/JPEG by extension AND magic bytes, ≤2 MiB, ≥1280x720) and
+   * RE-VALIDATED at use time — this points at an external volume, so "it was fine when
+   * I picked it" is not a claim about now.
+   */
+  thumbnailPath: string | null;
+  /** What the file measured when it was accepted. null exactly when thumbnailPath is. */
+  thumbnailMeta: ThumbnailMeta | null;
+
+  /**
+   * True when this item is a podcast episode rather than a YouTube-first video.
+   *
+   * A STRICT BOOLEAN, NEVER ABSENT. Written explicitly by emptyChosenMetadata and
+   * filled in by upgradeStoredMetadata for records written before the field existed.
+   * That is the `_is_compilation` lesson: an absent flag read as falsy is
+   * indistinguishable from a flag deliberately set false, so the day the reader's
+   * defaulting changed, every old record silently changed meaning.
+   */
+  isPodcast: boolean;
+
+  /**
+   * The operator's durable choice of editor-story transcript for this item, or null for
+   * "generate content fields from the final export's own transcript".
+   *
+   * PHASE 2. Nothing in this PR sets, resolves or consumes it — the field exists so the
+   * record shape is settled once. null here is not a fallback: it is the declared
+   * final-export-only mode (spec §3.4).
+   */
+  transcriptRef: TranscriptRef | null;
 
   /** Set once the item is linked to a real video. */
   videoId: string | null;
@@ -231,6 +370,61 @@ export function validateChosenTitles(titles: string[]): string[] {
 }
 
 /**
+ * Validate a schedule, returning the error message or null when it passes.
+ *
+ * Pure, and takes `now` as an argument so the two time-relative rules are testable
+ * without waiting. Every message names the OFFENDING VALUE and the rule it broke —
+ * "invalid date" tells the operator nothing about which of four things they got wrong.
+ *
+ * null is not passed here: clearing is handled by the caller, because clearing has no
+ * rules to break.
+ */
+export function validatePublishAt(value: string, now: Date = new Date()): string | null {
+  if (typeof value !== 'string' || !value.trim()) {
+    return `publishAt must be an ISO-8601 timestamp with an explicit zone; got ${JSON.stringify(value)}.`;
+  }
+  const raw = value.trim();
+
+  if (!ISO_WITH_ZONE.test(raw)) {
+    return (
+      `publishAt ${JSON.stringify(raw)} has no explicit time zone. ` +
+      `Use an offset or Z (e.g. 2026-09-01T14:00:00-04:00 or 2026-09-01T18:00:00Z) — ` +
+      `a local-looking timestamp means a different moment to whoever reads it, and ` +
+      `YouTube reads it as an instant.`
+    );
+  }
+
+  const when = new Date(raw);
+  if (Number.isNaN(when.getTime())) {
+    // Shape was right, calendar was not: 2026-02-30T00:00:00Z gets here.
+    return `publishAt ${JSON.stringify(raw)} is not a real date and time.`;
+  }
+
+  const leadMs = when.getTime() - now.getTime();
+  const minLeadMs = PUBLISH_AT_MIN_LEAD_MINUTES * 60_000;
+  if (leadMs < minLeadMs) {
+    const minutes = Math.round(leadMs / 60_000);
+    const howFar =
+      minutes < 0 ? `${Math.abs(minutes)} minutes in the PAST` : `only ${minutes} minutes away`;
+    return (
+      `publishAt ${JSON.stringify(raw)} is ${howFar}; a schedule must be at least ` +
+      `${PUBLISH_AT_MIN_LEAD_MINUTES} minutes in the future when it is set.`
+    );
+  }
+
+  const horizon = new Date(now.getTime());
+  horizon.setFullYear(horizon.getFullYear() + PUBLISH_AT_MAX_HORIZON_YEARS);
+  if (when.getTime() > horizon.getTime()) {
+    return (
+      `publishAt ${JSON.stringify(raw)} is more than ${PUBLISH_AT_MAX_HORIZON_YEARS} years out ` +
+      `(the limit is ${horizon.toISOString()}); that is a typo, not a plan.`
+    );
+  }
+
+  return null;
+}
+
+/**
  * A blank record for an item that has none yet.
  *
  * Both arguments are validated rather than trusted: this is the one place a selection
@@ -251,6 +445,15 @@ export function emptyChosenMetadata(itemId: string, jobId: string): ChosenMetada
     descriptionOverride: null,
     tagsOverride: null,
     channelId: null,
+    // EVERY field is written explicitly, including the ones whose value is null and the
+    // one whose value is false. A record is never partially shaped: `'isPodcast' in
+    // record` is always true, so "absent" never has to be given a meaning.
+    publishAt: null,
+    publishAtSetAt: null,
+    thumbnailPath: null,
+    thumbnailMeta: null,
+    isPodcast: false,
+    transcriptRef: null,
     videoId: null,
     sourceFilename: null,
     sourceDurationSec: null,
@@ -258,4 +461,35 @@ export function emptyChosenMetadata(itemId: string, jobId: string): ChosenMetada
     updatedAt: new Date().toISOString(),
     filledAt: null,
   };
+}
+
+/**
+ * A record read from disk, brought up to the current field set.
+ *
+ * This is NOT a fallback and it is not error recovery. It is a one-way schema upgrade
+ * for fields that DID NOT EXIST when the record was written: the 44 live selections
+ * predate publishAt / thumbnailPath / isPodcast / transcriptRef entirely, and each one
+ * gets exactly the value emptyChosenMetadata would have written on the day that field
+ * shipped. Nothing is inferred, guessed, or repaired.
+ *
+ * Everything ALREADY PRESENT is left exactly as found — including values this version
+ * would reject on a write. Stored data is the operator's, and quietly "correcting" it on
+ * read would hide the fact that it needs attention.
+ */
+export function upgradeStoredMetadata(record: ChosenMetadata): ChosenMetadata {
+  // The static type says every field is there; the FILE is what is actually being
+  // described, and it was written by an older version. `in` on the raw object is the
+  // only thing that can tell "written as null" from "did not exist yet" — which is the
+  // distinction this function is about.
+  const stored = record as unknown as Record<string, unknown>;
+  const upgraded: ChosenMetadata = { ...record };
+
+  if (!('publishAt' in stored)) upgraded.publishAt = null;
+  if (!('publishAtSetAt' in stored)) upgraded.publishAtSetAt = null;
+  if (!('thumbnailPath' in stored)) upgraded.thumbnailPath = null;
+  if (!('thumbnailMeta' in stored)) upgraded.thumbnailMeta = null;
+  if (!('isPodcast' in stored)) upgraded.isPodcast = false;
+  if (!('transcriptRef' in stored)) upgraded.transcriptRef = null;
+
+  return upgraded;
 }

@@ -38,6 +38,7 @@ import {
   PublishStatus,
   emptyChosenMetadata,
   isItemId,
+  upgradeStoredMetadata,
   MAX_AB_VARIANTS,
 } from './publish-types';
 
@@ -55,6 +56,16 @@ export interface GeneratedFallback {
   tags: string;
   /** Basename of the analyzed source file, when the host can determine it. */
   sourceFilename?: string | null;
+  /**
+   * FULL path to the analyzed source file, when the host can determine it.
+   *
+   * Distinct from sourceFilename, which is a basename for matching a YouTube title. This
+   * is the one thing that can locate the item's week on disk, and therefore the only
+   * input the thumbnail proposal has (<week>/complete/<slot> - <label>.mov beside
+   * <week>/thumbnails/<slot> - youtube-thumbnail.png). null for a text subject or a
+   * compilation, both of which have no single source file and therefore no proposal.
+   */
+  sourcePath?: string | null;
   /** Source duration in seconds, when known. null just means the match is unverified. */
   sourceDurationSec?: number | null;
 }
@@ -158,7 +169,10 @@ export class PublishStoreService {
         `Selection file ${file} records item ${JSON.stringify(record.itemId)} — the file name and its contents disagree.`
       );
     }
-    return record;
+    // Fields added after this record was written get the value they would have been born
+    // with. See upgradeStoredMetadata: a one-way schema upgrade, not a repair — anything
+    // present is returned exactly as stored.
+    return upgradeStoredMetadata(record);
   }
 
   private writeItemFile(record: ChosenMetadata): void {
