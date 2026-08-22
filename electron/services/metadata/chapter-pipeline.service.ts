@@ -131,6 +131,20 @@ export interface ChapterPipelineResult {
     /** Stage 4 ran with HOST:/CLIP: speaker tags. */
     speakerTagged: boolean;
     calls: number;
+    /**
+     * WHICH SCORER decided this run's boundaries, on the paths that have a choice.
+     *
+     * Only the embedding path (chapter-embedding.service.ts) sets it: 'embedding' when the
+     * batched /api/embed call ran, 'lexical' when it failed and the TF-IDF fallback scored
+     * the junctions instead, 'none' when the video was too short to score at all. The
+     * lexical mode is a real degradation — it matches words, not meaning — so it is
+     * recorded here as well as warned about, because a warning scrolls past and a stat
+     * stays on the run.
+     *
+     * Absent on the sealed pipeline and the single call, which have no scorer to choose:
+     * their boundaries come from model ratings and from one whole-transcript answer.
+     */
+    scorer?: 'embedding' | 'lexical' | 'none';
   };
 }
 

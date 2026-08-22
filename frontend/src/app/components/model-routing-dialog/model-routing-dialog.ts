@@ -107,10 +107,19 @@ export type ModelRoutingDialogResult = boolean | undefined;
                right up until the run failed. -->
           @if (selectedOption(task); as chosen) {
             @if (chosen.availability === 'not-installed') {
-              <p class="row-note missing">
-                {{ chosen.model }} is not installed on {{ localModels().host }}. This will fail when
-                {{ task.label }} runs — pull it, or pick a model that is installed.
-              </p>
+              <!-- A multi-model option carries its own note naming WHICH model is missing;
+                   the generic sentence names the option's primary model, which on such an
+                   option may be installed perfectly well. -->
+              @if (chosen.availabilityNote) {
+                <p class="row-note missing">
+                  {{ chosen.availabilityNote }} — on {{ localModels().host }}.
+                </p>
+              } @else {
+                <p class="row-note missing">
+                  {{ chosen.model }} is not installed on {{ localModels().host }}. This will fail when
+                  {{ task.label }} runs — pull it, or pick a model that is installed.
+                </p>
+              }
             }
             @if (chosen.availability === 'unknown' && chosen.availabilityNote) {
               <p class="row-note unknown">{{ chosen.model }}: {{ chosen.availabilityNote }}.</p>
