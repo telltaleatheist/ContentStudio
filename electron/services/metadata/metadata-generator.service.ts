@@ -25,12 +25,26 @@ import {
   resolveMetadataRouting,
 } from './metadata-routing';
 import { excludePromoChapters } from './promo-chapters';
+import { topEntities, transcriptCasing } from './entity-extraction';
+import { rankKeyPhrases } from './key-phrases';
+import axios from 'axios';
 import { JobCancelledError } from './cancellation';
 import type { TranscriptRef } from '../publish/publish-types';
 import { queueAITask } from '../queue-manager.service';
 import * as log from 'electron-log';
 import * as fs from 'fs';
 import * as path from 'path';
+
+/**
+ * How many proper nouns and key phrases the description, tags and hashtags get to draw on.
+ *
+ * Not a cap on what the video contains — a cap on what any one call is asked to hold in its
+ * head. Twelve names is more than a 300-word body can name; forty phrases is more than a
+ * 400-character tag list can spend. Both are generous on purpose so the assembly rules
+ * downstream have something to choose from, and both are far short of "everything".
+ */
+const ENTITY_POOL_SIZE = 12;
+const KEY_PHRASE_POOL_SIZE = 40;
 
 export interface GenerationParams {
   inputs: string[];
@@ -343,7 +357,8 @@ export class MetadataGeneratorService {
             // Same mode decision the real run makes, so the user reads the prompts that
             // will actually be sent — three labelled task prompts when chapters exist,
             // the one whole-metadata prompt when they don't.
-            const taskRun = this.resolveTaskRun(aiManager, params, sourceLabel, summary, subjects, details);
+            const taskRun = await this.resolveTaskRun(
+              aiManager, params, item, sourceLabel, summary, warnings, subjects, details);
             if (taskRun) {
               prompts.push(...buildTaskPromptsForDisplay(taskRun));
             } else {
@@ -501,7 +516,8 @@ export class MetadataGeneratorService {
           // Chapters decide the SHAPE of this call, not just its contents: with a chapter
           // list the fields are generated as separate task units (metadata-tasks.ts),
           // without one they come back from the single legacy call.
-          const taskRun = this.resolveTaskRun(aiManager, params, sourceLabel, summary, chapterSubjects, chapterDetails);
+          const taskRun = await this.resolveTaskRun(
+            aiManager, params, item, sourceLabel, summary, warnings, chapterSubjects, chapterDetails);
           const metadata = taskRun
             ? await runMetadataTasks(aiManager, taskRun)
             : await aiManager.generateMetadata(summary, sourceLabel, undefined, chapterSubjects, chapterDetails);
@@ -707,14 +723,16 @@ export class MetadataGeneratorService {
    * recovery: an item never silently splits without chapters, and never silently merges
    * back with them.
    */
-  private static resolveTaskRun(
+  private static async resolveTaskRun(
     aiManager: AIManagerService,
     params: GenerationParams,
+    item: ContentItem,
     sourceLabel: string,
     summary: string,
+    warnings: string[],
     chapterSubjects?: string[],
     chapterDetails?: string[]
-  ): MetadataTaskRun | undefined {
+  ): Promise<MetadataTaskRun | undefined> {
     if (!chapterSubjects || chapterSubjects.length === 0) {
       console.log(`[MetadataGenerator] ${sourceLabel}: no chapter subjects — one call generates every field (legacy path)`);
       return undefined;
@@ -731,12 +749,13 @@ export class MetadataGeneratorService {
       `[MetadataGenerator] ${sourceLabel}: ${chapterSubjects.length} chapter subjects — ` +
         `${plan.units.length} unit(s): ${plan.summary}`
     );
-    if (plan.hashtagsOwnedByDescription) {
-      console.log(
-        `[MetadataGenerator] ${sourceLabel}: hashtags come from the description adapter; ` +
-          `no cloud group will request them`
-      );
-    }
+
+    // The pools the description prompts, the assembled tags and the derived hashtags all read
+    // (spec §2). Both are measured from the app's CONTENT text — the ad-free editor transcript
+    // when one is linked, the final export's otherwise — which is the same resolution every
+    // content field in this service goes through and never the timed final export by accident.
+    const contentText = this.contentTextOf(item).text;
+    const pools = await this.extractPools(contentText, params, sourceLabel, warnings);
 
     return {
       plan,
@@ -745,8 +764,69 @@ export class MetadataGeneratorService {
         sourceLabel,
         chapterSubjects,
         chapterDetails: chapterDetails || [],
+        videoTitle: this.getCleanTitle(item),
+        promptSetName: params.promptSet || 'unknown',
+        entities: pools.entities,
+        keyPhrases: pools.keyPhrases,
+        contentText,
+        // A unit's DECLARED degradation lands in the run's warnings beside the chapter
+        // pipeline's, which is the only place the operator reads them after the fact.
+        warn: (message: string) => {
+          console.warn(`[MetadataGenerator] ${sourceLabel}: ${message}`);
+          warnings.push(`${sourceLabel}: ${message}`);
+        },
       },
     };
+  }
+
+  /**
+   * The entity and key-phrase pools for one item.
+   *
+   * Entities are pure code (entity-extraction.ts) and cannot fail. Key phrases want ONE batched
+   * embedding call on the same nomic-embed-text the chapter pipeline uses; when that model is
+   * absent or the host does not answer, the ranking falls to frequency and the run RECORDS it
+   * as a declared mode, exactly as the chapter pipeline records its lexical scorer. The tags
+   * and hashtags that come out of a frequency ranking are worse, not wrong, and the report says
+   * which ranking produced them.
+   *
+   * A transcript that cannot be read for proper nouns at all is also declared: an uncased
+   * transcript makes the entity half of every pool empty, and "no names in this video" and "no
+   * capital letters in this transcript" must not look the same in the report.
+   */
+  private static async extractPools(
+    contentText: string,
+    params: GenerationParams,
+    sourceLabel: string,
+    warnings: string[]
+  ): Promise<{ entities: string[]; keyPhrases: string[] }> {
+    const casing = transcriptCasing(contentText);
+    if (!casing.usable) {
+      const msg =
+        `${sourceLabel}: the content transcript cannot be read for proper nouns — ${casing.reason} — so the ` +
+        `description, tags and hashtags were written with no entity list`;
+      console.warn(`[MetadataGenerator] ${msg}`);
+      warnings.push(msg);
+    }
+
+    const entities = casing.usable ? topEntities(contentText, ENTITY_POOL_SIZE) : [];
+
+    const host = params.aiHost || 'http://localhost:11434';
+    const ranked = await rankKeyPhrases(contentText, {
+      client: axios.create({ baseURL: host }),
+      model: CHAPTER_PIPELINE_MODELS.embedding,
+      limit: KEY_PHRASE_POOL_SIZE,
+      signal: params.cancelSignal,
+      logPrefix: `[MetadataGenerator] ${sourceLabel}:`,
+    });
+    if (ranked.notice) {
+      warnings.push(`${sourceLabel}: ${ranked.notice}`);
+    }
+
+    log.info(
+      `[MetadataGenerator] ${sourceLabel}: ${entities.length} entit(ies) and ${ranked.phrases.length} ` +
+        `key phrase(s) (${ranked.mode} ranking) feed the description, tags and hashtags`
+    );
+    return { entities, keyPhrases: ranked.phrases };
   }
 
   /**
@@ -1047,6 +1127,10 @@ export class MetadataGeneratorService {
       // "2026-08-19 jesse watters mocks democrat candidates" tells the summarizer who
       // is speaking and why, which is what grounds the names it writes.
       videoTitle: item.title || (item.source ? path.basename(item.source) : undefined),
+      // Spec §6.1 lever 2's other half: which channel this is for. The prompt set IS the
+      // channel in this app — one yml per channel — so the name the run already loaded is
+      // the honest answer, and nothing new is plumbed in from elsewhere to produce it.
+      channelName: params.promptSet,
       cancelCallback: params.cancelCallback,
       abortSignal: params.cancelSignal,
       onProgress: reportProgress,

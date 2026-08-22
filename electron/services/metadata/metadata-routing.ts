@@ -129,6 +129,23 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    */
   'qwen35-9b': { kind: 'local', label: 'Qwen3.5 9B', model: 'qwen3.5:9b', promptStyle: 'prompt-set' },
   /**
+   * The metadata spec's A/B candidate for the two MECHANICAL calls, offered on description
+   * and tags and nowhere else.
+   *
+   * §5's measurement is what makes a 4b credible here at all: qwen3.5:4b is the measured floor
+   * for schema-constrained mechanical work (10/10 on boundary placement, ~1.2s a call), and
+   * the description hook and body became exactly that kind of work when they stopped reading
+   * the transcript and started reading the chapter summaries under a JSON Schema. The same
+   * measurement says qwen3.5:2b fails instruction-following even constrained, so there is no
+   * smaller rung offered.
+   *
+   * NOT the default, deliberately. The default stays the 9B and this is the option the
+   * operator flips to run the comparison §7.3 asks for — adopt the 4b only if he cannot
+   * reliably tell which is which. A default that changed on the strength of an untested
+   * proposal would make that comparison retrospective.
+   */
+  'qwen35-4b': { kind: 'local', label: 'Qwen3.5 4B', model: 'qwen3.5:4b', promptStyle: 'prompt-set' },
+  /**
    * A BASE model on fields that used to be cloud-only, which is a deliberate exception to
    * this file's own rule and the reason the note below METADATA_ROUTING_TASKS was rewritten.
    *
@@ -224,13 +241,28 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
   {
     id: 'description',
     label: 'Description',
-    options: ['qwen35-9b', 'qwen38-27b', 'sonnet5', 'opus5'],
+    options: ['qwen35-9b', 'qwen35-4b', 'qwen38-27b', 'sonnet5', 'opus5'],
     defaultOptionId: 'qwen35-9b',
   },
   {
+    /**
+     * READ ONLY BY THE LEGACY PATH as of this build.
+     *
+     * An item WITH chapters has its tags assembled in code from the entity and key-phrase
+     * pools (metadata spec §4 and §6.2, tags-hashtags.ts): no model writes them, so this
+     * selection is not consulted for that item and the run's log says so per item. An item
+     * WITHOUT chapters still takes the single legacy call, which writes every field including
+     * tags on the model the run is configured for.
+     *
+     * The task is kept in the table rather than removed because removing it would drop every
+     * existing store's `tags` selection through migrateStoredRouting for a change the user
+     * did not make, and because the code-assembled path is one build old. It is offered the
+     * 4b for the same reason description is: if tags ever go back to a model, that is the
+     * comparison to run.
+     */
     id: 'tags',
     label: 'Tags',
-    options: ['qwen35-9b', 'qwen38-27b', 'sonnet5', 'opus5'],
+    options: ['qwen35-9b', 'qwen35-4b', 'qwen38-27b', 'sonnet5', 'opus5'],
     defaultOptionId: 'qwen35-9b',
   },
   {

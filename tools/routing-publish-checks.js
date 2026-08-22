@@ -28,6 +28,9 @@ const store = require(path.join(ROOT, 'services/publish/publish-store.service.js
 const types = require(path.join(ROOT, 'services/publish/publish-types.js'));
 const composer = require(path.join(ROOT, 'services/metadata/description-composer.js'));
 const validators = require(path.join(ROOT, 'services/publish/field-validators.js'));
+const entities = require(path.join(ROOT, 'services/metadata/entity-extraction.js'));
+const quality = require(path.join(ROOT, 'services/metadata/chapter-title-quality.js'));
+const tagsHashtags = require(path.join(ROOT, 'services/metadata/tags-hashtags.js'));
 
 /**
  * The release-cadence rules live in the RENDERER, which has no dist/main to require, so
@@ -189,14 +192,239 @@ check('an override still wins over both forms', () => {
   eq(store.resolveChosenMetadata(rec, generated()).description, 'hand written');
 });
 
+// The `now: () => new Date()` this used to pass was a latent bug in THIS FILE, not in the
+// validator: FieldContext.now is a Date, and the publishAt validator calls ctx.now.toISOString().
+// It never fired because the only field asserted here does not read the clock. Fixed in passing.
 check('publish-set-fields accepts the flag and refuses anything but a boolean', () => {
-  eq(validators.buildFieldPatch({ chaptersInDescription: false }, { listChannels: () => [], now: () => new Date() }),
+  eq(validators.buildFieldPatch({ chaptersInDescription: false }, { listChannels: () => [], now: new Date() }),
      { chaptersInDescription: false });
   let threw = false;
   try {
-    validators.buildFieldPatch({ chaptersInDescription: 'no' }, { listChannels: () => [], now: () => new Date() });
+    validators.buildFieldPatch({ chaptersInDescription: 'no' }, { listChannels: () => [], now: new Date() });
   } catch { threw = true; }
   if (!threw) throw new Error('a string should be refused, not coerced');
+});
+
+// ------------------------------------------- generation quality (metadata spec §4, §6.1-6.3)
+//
+// These are the surfaces the description/tags/hashtags build made CODE-OWNED. They belong
+// here for the same reason the two above do: each decides something on the user's behalf and
+// has a wrong answer that looks exactly like a right one — an entity that was never in the
+// transcript, a tag list quietly cut mid-tag, a chapter title whose subject the model invented.
+
+const CHAPTER_TRANSCRIPT =
+  'Gene Bailey opens the broadcast talking about Christian nationalist action. ' +
+  'He reads from Luke 19:13 and tells the audience to occupy territory. ' +
+  'Later Gene Bailey brings up Jabez, D.L. Moody and Isaiah to justify a political takeover.';
+
+check('the entity extractor reads names out of a cased transcript and skips sentence openers', () => {
+  const found = entities.topEntities(CHAPTER_TRANSCRIPT, 8);
+  for (const name of ['Gene Bailey', 'Jabez', 'Isaiah']) {
+    if (!found.some((f) => f.includes(name.split(' ')[0]))) throw new Error(name + ' was not extracted');
+  }
+  // "He" and "Later" open sentences and are ordinary words: position explains them.
+  if (found.some((f) => /^(He|Later)$/.test(f))) throw new Error('a sentence opener was returned as an entity');
+  // Sub-names fold into the longer name rather than spending a slot each.
+  if (found.filter((f) => /Bailey/.test(f)).length !== 1) throw new Error('Gene / Bailey / Gene Bailey were not folded');
+});
+
+check('an uncased transcript is REPORTED as unreadable, not silently mined', () => {
+  const cased = entities.transcriptCasing(CHAPTER_TRANSCRIPT);
+  if (!cased.usable) throw new Error('a normal Whisper transcript should be usable: ' + cased.reason);
+  const uncased = entities.transcriptCasing(CHAPTER_TRANSCRIPT.toLowerCase());
+  if (uncased.usable) throw new Error('an all-lowercase transcript must not be called usable');
+  if (!uncased.reason) throw new Error('the refusal must say why');
+  eq(entities.topEntities(CHAPTER_TRANSCRIPT.toLowerCase(), 8), []);
+});
+
+check('grounding catches a name the chapter never said, and passes one it did', () => {
+  const good = quality.groundTitle("Gene Bailey's misreading of Luke 19:13", CHAPTER_TRANSCRIPT);
+  eq(good.grounded, true, 'a title built from the transcript is grounded');
+  const leaked = quality.groundTitle("Kent Christmas's death-angel prophecy", CHAPTER_TRANSCRIPT);
+  eq(leaked.grounded, false, 'a name from outside the chapter is ungrounded');
+  if (!leaked.ungrounded.join(' ').includes('Kent')) throw new Error('the ungrounded name is not named');
+});
+
+check("the operator's four real titles: three narrate an actor, his corrections do not", () => {
+  const failed = [
+    "A YouTuber critiques Gene Bailey's chapter on Christian nationalist action and the David and Goliath framing",
+    "The speaker debunks Gene Bailey's misreading of Luke 19:13 and his call to occupy territory",
+    "The speaker dismantles Gene Bailey's use of Jabez, D.L. Moody, and Isaiah to justify Christian political takeover",
+    "The speaker reacts to Gene Bailey's end-times and gender identity claims",
+  ];
+  for (const title of failed) {
+    if (!quality.narratesAnActor(title).narrated) throw new Error('missed a narrated title: ' + title);
+  }
+  const corrected = [
+    "Gene Bailey's chapter on Christian nationalist action and the David and Goliath framing",
+    "Debunking Gene Bailey's misreading of Luke 19:13 and his call to occupy territory",
+    "Gene Bailey's use of Jabez, D.L. Moody, and Isaiah to justify Christian political takeover",
+  ];
+  for (const title of corrected) {
+    if (quality.narratesAnActor(title).narrated) throw new Error('flagged a correct title: ' + title);
+  }
+  // Briefcase's alignment case: a REAL person as subject still narrates in verb form.
+  if (!quality.narratesAnActor('Pastor Brad Wells shares his prayer ministry').narrated) {
+    throw new Error('narration-verb form was missed');
+  }
+  if (quality.narratesAnActor("Pastor Brad Wells's prayer ministry").narrated) {
+    throw new Error('the topic form of the same chapter was flagged');
+  }
+});
+
+check('a POSSESSIVE actor is the target register, not the failure (both apostrophes)', () => {
+  // Briefcase's regression set, verbatim. Their detector matched the actor-noun boundary inside
+  // the possessive and flagged the very form the operator asked for.
+  const clean = [
+    "The panel's debate over whether the ceasefire holds",
+    "The panel’s debate over whether the ceasefire holds", // typographic apostrophe
+    "Pastor Brad Wells's account of his 11-year prayer ministry",
+    "Pastor Brad Wells’s account of his 11-year prayer ministry",
+  ];
+  for (const title of clean) {
+    if (quality.narratesAnActor(title).narrated) throw new Error('flagged the target register: ' + title);
+  }
+  const narrated = ['The panel debates whether the ceasefire holds', 'Pastor Brad Wells shares his ministry'];
+  for (const title of narrated) {
+    if (!quality.narratesAnActor(title).narrated) throw new Error('missed a narrated title: ' + title);
+  }
+  // The exemption stops at the INVENTED-NARRATOR family. A real run put "the speaker's book on
+  // Christian nationalism" in a chapter title, which is possessive AND still an invented actor.
+  for (const title of ["The speaker's book on Christian nationalism", 'The speaker’s book on Christian nationalism',
+                       "The video's take on Roswell"]) {
+    if (!quality.narratesAnActor(title).narrated) throw new Error('a possessive invented actor passed: ' + title);
+  }
+});
+
+check('a noun that doubles as a verb is not a narration verb', () => {
+  // The operator's own target form for a panel video. "Debate" leads the clause as a NOUN.
+  for (const body of [
+    "Debate about Trump's refusal to extend the Iran ceasefire MOU and rising tensions in the Strait of Hormuz",
+    "Paul Petit's report on the 29-state lawsuit against Meta",
+    'Discussion of mainstream alien belief, Roswell, and the UAP disclosure order',
+  ]) {
+    if (quality.narratesAnActor(body).narrated) throw new Error('flagged the target register: ' + body);
+  }
+  // ...but the same word with a subject in front of it still is one.
+  if (!quality.narratesAnActor("The episode examines Kent Christmas's prophecies").narrated) {
+    throw new Error('an actor subject with a verb was missed');
+  }
+});
+
+check('the metric counts specificity and register independently', () => {
+  const m = quality.scoreChapterTitles([
+    "The speaker debunks Gene Bailey's misreading of Luke 19:13", // entity-rich, NARRATED
+    'Man yells about conspiracies',                               // the spec's own generic example,
+                                                                  // which fails BOTH dimensions
+    "Gene Bailey's use of Jabez and D.L. Moody",                  // clean on both
+  ]);
+  eq(m.titles, 3);
+  eq(m.genericTitles, 1, 'generic count');
+  eq(m.narratedTitles, 2, 'narrated count');
+  if (m.properNounsPerTitle <= 0) throw new Error('proper nouns were not counted');
+  // The whole point of three numbers: the narrated one is NOT the generic one.
+  if (m.perTitle[0].generic) throw new Error('an entity-rich narrated title was scored generic');
+});
+
+check('tags: spec order, nothing absent from the content, budget stops rather than truncates', () => {
+  const a = tagsHashtags.assembleTags({
+    primaryPhrase: 'christian nationalist action',
+    entities: ['Gene Bailey', 'D.L. Moody'],
+    keyPhrases: ['occupy territory', 'political takeover'],
+    categories: ['news'],
+    contentText: CHAPTER_TRANSCRIPT,
+  });
+  eq(a.tags[0], 'christian nationalist action', 'the exact primary phrase leads');
+  eq(a.tags[1], 'Gene Bailey', 'entities come before key phrases');
+  if (a.tags.includes('news')) throw new Error('a single generic word was published as a tag');
+  if (a.cost > tagsHashtags.GENERATED_TAG_BUDGET_CHARS) throw new Error('over budget');
+
+  const absent = tagsHashtags.assembleTags({
+    primaryPhrase: 'Kent Christmas death angel',
+    entities: [], keyPhrases: [], categories: [], contentText: CHAPTER_TRANSCRIPT,
+  });
+  eq(absent.tags, [], 'a phrase the content never contains is not published');
+  eq(absent.notInContent, ['Kent Christmas death angel'], 'and it is RECORDED, not silently dropped');
+
+  // Budget: many long real phrases, every one of them present in the content.
+  const long = 'gene bailey christian nationalist action luke occupy territory jabez moody isaiah takeover ';
+  const filler = [];
+  for (let i = 0; i < 40; i++) filler.push('christian nationalist action luke occupy territory jabez');
+  const capped = tagsHashtags.assembleTags({
+    primaryPhrase: 'christian nationalist action',
+    entities: [], keyPhrases: filler.concat(['gene bailey', 'occupy territory', 'jabez moody isaiah']),
+    categories: [], contentText: long.repeat(3) + ' gene bailey occupy territory jabez moody isaiah',
+  });
+  if (capped.cost > tagsHashtags.GENERATED_TAG_BUDGET_CHARS) throw new Error('budget exceeded');
+  for (const tag of capped.tags) {
+    if (tag.endsWith(' ') || tag.length < 3) throw new Error('a tag looks truncated: "' + tag + '"');
+  }
+});
+
+check('hashtags: 3-5, camel-cased, deduped against the title', () => {
+  const tags = tagsHashtags.buildHashtags({
+    entities: ['Gene Bailey', 'D.L. Moody'],
+    keyPhrases: ['christian nationalist action', 'occupy territory'],
+    title: 'Gene Bailey tells his audience to occupy territory',
+    brandTag: 'Telltale Unfiltered',
+  });
+  if (tags.length < 3 || tags.length > 5) throw new Error('got ' + tags.length + ' hashtags: ' + tags.join(' '));
+  for (const tag of tags) {
+    if (!/^#[A-Za-z0-9]+$/.test(tag)) throw new Error('not a camel-cased hashtag: ' + tag);
+  }
+  // "occupy territory" is entirely inside the title, so it adds nothing above the title.
+  if (tags.includes('#OccupyTerritory')) throw new Error('a hashtag repeating the title was kept');
+  eq(tagsHashtags.camelCaseHashtag('christian nationalist action'), 'ChristianNationalistAction');
+});
+
+// ------------------------------------------------- the composer's TWO orders
+//
+// The hook is what selects the order, and its absence is a real historical read: every report
+// on disk was written before the hook existed and must compose exactly as it always did.
+
+const HOOKED = { ...ITEM, description_hook: 'Gene Bailey tells his audience to occupy territory.' };
+
+check('an item WITH a hook composes hook / chapters / body / hashtags', () => {
+  const out = composer.composeDescription(HOOKED, { includeChapters: true });
+  if (!out.startsWith('Gene Bailey tells')) throw new Error('the hook is not first');
+  const hookAt = out.indexOf('Gene Bailey tells');
+  const chaptersAt = out.indexOf('0:00 - Opening');
+  const bodyAt = out.indexOf('Body paragraph one.');
+  const hashAt = out.indexOf('#One #Two');
+  if (!(hookAt < chaptersAt && chaptersAt < bodyAt && bodyAt < hashAt)) {
+    throw new Error('order is wrong: ' + JSON.stringify({ hookAt, chaptersAt, bodyAt, hashAt }));
+  }
+});
+
+check('with the chapter block switched off the hook still leads and the block is gone', () => {
+  const out = composer.composeDescription(HOOKED, { includeChapters: false });
+  if (!out.startsWith('Gene Bailey tells')) throw new Error('the hook is not first');
+  if (out.includes('0:00 - Opening')) throw new Error('chapters leaked into the WITHOUT form');
+  if (!out.includes('Body paragraph one.')) throw new Error('body lost');
+});
+
+check('an item WITHOUT a hook composes byte-for-byte as it always did', () => {
+  // The same two assertions the pre-existing checks make, restated against the historical
+  // shape explicitly: this is the regression that would break every report on disk.
+  eq(composer.composeDescription(ITEM, { includeChapters: true }),
+     composer.composeDescription({ ...ITEM, description_hook: undefined }, { includeChapters: true }));
+  if (!composer.composeDescription(ITEM, { includeChapters: true }).startsWith('0:00 - Opening')) {
+    throw new Error('a hookless item must still start with its chapter block');
+  }
+});
+
+// ------------------------------------------------- routing: the A/B option
+check('the 4b is offered on description and tags, and the defaults did NOT move', () => {
+  const table = Object.fromEntries(routing.METADATA_ROUTING_TASKS.map((t) => [t.id, t]));
+  if (!routing.METADATA_ROUTING_OPTIONS['qwen35-4b']) throw new Error('qwen35-4b is not an option');
+  eq(routing.METADATA_ROUTING_OPTIONS['qwen35-4b'].model, 'qwen3.5:4b');
+  for (const id of ['description', 'tags']) {
+    if (!table[id].options.includes('qwen35-4b')) throw new Error('qwen35-4b is not offered for ' + id);
+    eq(table[id].defaultOptionId, 'qwen35-9b', id + ' default');
+  }
+  for (const id of ['titles', 'thumbnail_text', 'pinned_comment', 'clip_suggestions']) {
+    if (table[id].options.includes('qwen35-4b')) throw new Error('qwen35-4b leaked onto ' + id);
+  }
 });
 
 // ------------------------------------------------- release cadences (publish-slots.ts)

@@ -16,13 +16,32 @@
  * - The model NEVER emits a timestamp. It quotes a verbatim sentence and code maps that
  *   quote to a time against the caption word stream (chapter-transcript.ts). An invented
  *   timestamp is a guess; a mapped quote is a measurement.
- * - The examples are invented and neutral-domain on purpose. A prompt example naming a real
- *   person leaks into outputs about a DIFFERENT unnamed person of the same archetype,
- *   deterministically, at temperature 0. "Alex Jones on Sandy Hook" once shipped in here and
- *   surfaced in labels for spans that never mentioned him; Mayor Ellison is invented, and
- *   the summarize prompt says so inside itself because the inoculation alone did not hold.
  * - The summarize call reads the chapter's RAW transcript, never an intermediate label, and
  *   is given the video title and the previous chapter's summary as its only outside context.
+ *
+ * TWO RULES CHANGED ON 2026-08-22 (this build), and the second one reverses the first:
+ *
+ * - POSITIVE FORM ONLY. These bodies state the style that is wanted and show correct
+ *   examples. They no longer name a wrong form anywhere — no "never say the speaker", no
+ *   contrast pair, no list of banned words. Operator's ruling, and the mechanism behind it is
+ *   the same one the next bullet describes: a model shown a form reproduces it, and that does
+ *   not stop being true because the prompt attached the word "never" to it. The register
+ *   failure this replaced ("The speaker debunks ...", "A YouTuber critiques ...") is now
+ *   caught in CODE, after the fact, by chapter-title-quality.ts — one re-ask, then a declared
+ *   warning, never a rewrite.
+ * - REAL NAMES IN THE EXAMPLES, WITH THE RISK STATED. The examples above used to be invented
+ *   and neutral-domain, because a prompt example naming a real person leaks into outputs
+ *   about a DIFFERENT unnamed person of the same archetype, deterministically, at temperature
+ *   0 — "Alex Jones on Sandy Hook" once shipped in here and surfaced in labels for spans that
+ *   never mentioned him. The operator supplied his own corrected titles as the target register
+ *   and directed that they be used verbatim, so "Gene Bailey", "Luke 19:13", "Jabez" and
+ *   "D.L. Moody" are now in the prompt and CAN leak the same way. What makes that a managed
+ *   risk rather than a repeat of the old bug: the grounding check added in this build tests
+ *   every proper noun in a returned title against that chapter's own transcript, so a leaked
+ *   "Gene Bailey" is now DETECTED — re-asked once and then reported in the run's warnings —
+ *   instead of shipping unnoticed. If those warnings start naming these example names on
+ *   unrelated videos, that is the leak, and the fix is to replace the examples with the
+ *   operator rather than to add a ban list.
  */
 
 /**
@@ -34,9 +53,9 @@
  * edits are ContentStudio's `{placeholder}` convention (formatPrompt) in place of the
  * reference implementation's template literals.
  *
- * The three laws in this file's header — quote instead of timestamping, one thing per
- * call, invented examples only — are all live in these bodies. Read them there before
- * editing either one.
+ * The laws in this file's header — quote instead of timestamping, one thing per call,
+ * positive form only — are all live in these bodies. Read them there before editing either
+ * one.
  */
 export const CHAPTER_EMBEDDING_PROMPTS = {
   /**
@@ -78,37 +97,53 @@ Output exactly this shape and nothing else:
    * title or filename (who is speaking and why) and the PREVIOUS chapter's summary
    * (so "back to what we discussed" resolves, and titles do not repeat).
    *
-   * The naming rules below the JSON shape are ContentStudio's own, carried over from the
-   * deleted pipeline's stage-4 prompt: they are what keeps a chapter marker out of
-   * "Introduction / Overview / Conclusion" and out of names the transcript never contained.
+   * The naming rules below the JSON shape are ContentStudio's own. They are what keeps a
+   * chapter marker off a filler word and onto the subject matter, and they are stated as
+   * what to DO — the "specifically enough that it could not be swapped with a chapter of any
+   * other video" line replaced a list of forbidden headings, for the reason in the header.
    *
-   * The REGISTER rule at the top of that list was added 2026-08-22 and is not cosmetic. Left
-   * to itself the model writes "The speaker discusses mainstream alien belief, Roswell, and
-   * Trump's UAP disclosure order" — a sentence whose subject it invented. It cannot know who
-   * is speaking: on this channel the voice in any given second is either the creator or the
-   * footage he is reacting to, and the transcript does not always say which. The fix is a
-   * register, not a banned-word check: asked for topic and noun-phrase form, the phrasing
-   * never arises, and nothing has to police the output afterwards.
+   * The REGISTER rule is not cosmetic. Left to itself the model writes "The speaker discusses
+   * mainstream alien belief" or "A YouTuber critiques Gene Bailey's chapter" — sentences whose
+   * subject it invented. It cannot know who is speaking: on this channel the voice in any
+   * given second is either the creator or the footage he is reacting to, and the transcript
+   * does not always say which. The fix here is a register and four correct examples; the
+   * check that the register held is in chapter-title-quality.ts, in code, and it triggers one
+   * re-ask and then a declared warning.
    *
-   * Placeholders: {number}, {video}, {previous_context} (already rendered, may be empty),
-   * {transcript}
+   * `{entity_scaffold}` is spec §6.1 lever 3: the proper nouns extracted from THIS chapter's
+   * own transcript slice (entity-extraction.ts), per-chapter and never whole-video, because a
+   * whole-video list invites the name from chapter 2 into the title of chapter 5. It is
+   * already rendered by the caller and is empty when the slice yielded nothing.
+   *
+   * Placeholders: {number}, {video}, {context_lines} (already rendered, may be empty),
+   * {entity_scaffold} (already rendered, may be empty), {transcript}
    */
   SUMMARIZE_CHAPTER: `Label chapter {number} of a video transcript. Output JSON only.
 Video: {video}
-{previous_context}
+{context_lines}
 Produce:
 - title: one sentence (max ~15 words) naming what this chapter is about.
 - summary: 2-3 sentences on what this stretch of the video covers.
 
-Rules for both fields:
-- Write about the CONTENT, in topic and noun-phrase form: "Roswell and the UAP disclosure order", "Discussion of mainstream alien belief". Never invent a subject to attribute it to — no "the speaker", "the host", "the narrator", "the creator", "this video", and no bare "he" or "she" standing in for whoever is talking. You cannot tell from a transcript who is speaking at any moment, the answer changes from line to line, and a viewer reading a chapter marker can already see who is on screen.
-- Name the person, organisation, story or claim IF this chapter's transcript names one — "Mayor Ellison on the bridge contract scandal", not "a local corruption argument". (Ellison is invented for this instruction — never copy a name from these instructions into your answer.) That is a real name from the content and is exactly what is wanted; it is the opposite of inventing an unnamed speaker.
-- Never mention a person, group or story this chapter's own transcript does not, not even one you are sure of from outside knowledge. If it only ever says "the mayor", write "the mayor".
-- Cover the whole chapter, not just its opening. Where it moves through more than one thing, name what it spends most of itself on.
-- Say what is there, plainly. No headline writing, no teasing, no colons, no "Part 1".
-- Never "Introduction", "Overview", "Background", "Conclusion", "Discussion", "Analysis", "Continued", "More on this".
-- A sponsor read, a Patreon plug, a channel promo or a sign-off should simply say that is what it is.
+How to write the title:
+- Title the CONTENT itself, in topic form: a bare noun phrase, or a gerund phrase. Build it around the specific people, claims and events this chapter's transcript contains.
+- Titles in exactly the right form:
+  - "Gene Bailey's chapter on Christian nationalist action and the David and Goliath framing"
+  - "Debunking Gene Bailey's misreading of Luke 19:13 and his call to occupy territory"
+  - "Gene Bailey's use of Jabez, D.L. Moody, and Isaiah to justify Christian political takeover"
+  - "Roswell and the UAP disclosure order"
+- Every name in your answer comes from the transcript below. Where the transcript names a person, organisation, story or claim, put that name in the title; where it says only "the mayor", the title says "the mayor".
+- Where a stretch is somebody's response to something rather than a claim of its own, title the claim and the response as content: "The bridge contract claim, rebutted"; "Patreon plug and a promotion of the book Was Hitler an Atheist"; "Sign-off and a book promotion".
 
+How to write the summary:
+- The same topic form as the title, in 2-3 sentences: the claims, the people named in the transcript, and what is said about them.
+- Cover the whole chapter. Where it moves through more than one thing, say what it spends most of itself on.
+
+For both fields:
+- Say what is there, plainly. Straight description, no colons, no part numbers.
+- Name the concrete subject matter of this stretch specifically enough that the answer could not be swapped with a chapter of any other video.
+- A sponsor read, a Patreon plug, a channel promo or a sign-off simply says that is what it is.
+{entity_scaffold}
 Output exactly this shape and nothing else:
 {
   "title": "...",
@@ -128,27 +163,40 @@ TRANSCRIPT:
    * was the one objecting. This body is the untagged one plus the two lines that fix it,
    * and it runs ONLY when every caption resolves to a side.
    *
-   * Placeholders: {number}, {video}, {previous_context}, {transcript}
+   * Placeholders: {number}, {video}, {context_lines}, {entity_scaffold}, {transcript}
    */
   SUMMARIZE_CHAPTER_TAGGED: `Label chapter {number} of a video transcript. Output JSON only.
 Video: {video}
-{previous_context}
+{context_lines}
 The transcript below is tagged by speaker. HOST: is the creator of this video talking. CLIP: is footage he is playing and reacting to — those words are somebody else's, and the claims in them are not his.
 
 Produce:
 - title: one sentence (max ~15 words) naming what this chapter is about.
 - summary: 2-3 sentences on what this stretch of the video covers.
 
-Rules for both fields:
-- Write about the CONTENT, in topic and noun-phrase form: "Roswell and the UAP disclosure order", "Rebuttal of the bridge contract claim". Never invent a subject to attribute it to — no "the speaker", "the host", "the narrator", "the creator", "this video", and no bare "he" or "she" standing in for whoever is talking. The tags below tell you which SIDE a line came from, which is not the same as knowing who said it, and a viewer reading a chapter marker can already see who is on screen.
-- Use the tags to get the claim the right way round. A claim made in a CLIP line is the footage's, not this channel's, and the HOST lines are the response to it. Never write the chapter as though the claim being objected to is the one being made.
-- Carry the verdict where the HOST lines give one — that is what the chapter is actually about — but write it as the content it is ("the bridge contract claim, rebutted"), not as something a person did.
-- Name the person, organisation, story or claim IF this chapter's transcript names one — "Mayor Ellison on the bridge contract scandal", not "a local corruption argument". (Ellison is invented for this instruction — never copy a name from these instructions into your answer.) That is a real name from the content and is exactly what is wanted; it is the opposite of inventing an unnamed speaker.
-- Never mention a person, group or story this chapter's own transcript does not, not even one you are sure of from outside knowledge.
-- Cover the whole chapter, not just its opening. Say what is there, plainly. No headline writing, no teasing, no colons, no "Part 1".
-- Never "Introduction", "Overview", "Background", "Conclusion", "Discussion", "Analysis", "Continued", "More on this".
-- A sponsor read, a Patreon plug, a channel promo or a sign-off should simply say that is what it is.
+How to write the title:
+- Title the CONTENT itself, in topic form: a bare noun phrase, or a gerund phrase. Build it around the specific people, claims and events this chapter's transcript contains.
+- Titles in exactly the right form:
+  - "Gene Bailey's chapter on Christian nationalist action and the David and Goliath framing"
+  - "Debunking Gene Bailey's misreading of Luke 19:13 and his call to occupy territory"
+  - "Gene Bailey's use of Jabez, D.L. Moody, and Isaiah to justify Christian political takeover"
+  - "The bridge contract claim, rebutted"
+- Every name in your answer comes from the transcript below. Where the transcript names a person, organisation, story or claim, put that name in the title; where it says only "the mayor", the title says "the mayor".
+- Where a stretch is somebody's response to something rather than a claim of its own, title the claim and the response as content: "The bridge contract claim, rebutted"; "Patreon plug and a promotion of the book Was Hitler an Atheist"; "Sign-off and a book promotion".
 
+How to use the tags:
+- A claim in a CLIP line belongs to the footage; the HOST lines are the response to it. Write the chapter around the claim that is actually being made and the response it gets, in that relation.
+- Where the HOST lines reach a verdict, carry it — as the content it is ("the bridge contract claim, rebutted").
+
+How to write the summary:
+- The same topic form as the title, in 2-3 sentences: the claims, the people named in the transcript, and what is said about them.
+- Cover the whole chapter. Where it moves through more than one thing, say what it spends most of itself on.
+
+For both fields:
+- Say what is there, plainly. Straight description, no colons, no part numbers.
+- Name the concrete subject matter of this stretch specifically enough that the answer could not be swapped with a chapter of any other video.
+- A sponsor read, a Patreon plug, a channel promo or a sign-off simply says that is what it is.
+{entity_scaffold}
 Output exactly this shape and nothing else:
 {
   "title": "...",

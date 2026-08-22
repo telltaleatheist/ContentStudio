@@ -49,6 +49,12 @@
  *                                  it is not reproduced here.)
  *  - a summarize answer fails   -> the chapter is named from its own opening words and a
  *                                  warning says so, exactly as the sealed pipeline does.
+ *  - a title names something    -> ONE re-ask at a different seed, and if the second answer
+ *    its chapter never said,       fails the same way the FIRST answer is kept exactly as
+ *    or narrates an actor          written and a warning names the title. Never a rewrite,
+ *                                  never a block: the operator curates the output.
+ *  - the transcript is uncased  -> the entity scaffold and the grounding check cannot run,
+ *                                  and a warning says the titles were written without them.
  *  - under 2 stretches          -> one chapter, zero model calls, `stats.scorer` 'none',
  *                                  and a warning saying the video was too short to score.
  *
@@ -83,6 +89,8 @@ import {
 } from './ollama-json';
 import { formatPrompt } from './system-prompts';
 import { isAbortError } from './cancellation';
+import { topEntities, transcriptCasing } from './entity-extraction';
+import { groundTitle, narratesAnActor } from './chapter-title-quality';
 
 /** The three stages that can report progress. Stages 1, 3 and 5 are code and run instantly. */
 export type ChapterEmbeddingStage = 'embed' | 'place' | 'summarize';
@@ -171,6 +179,27 @@ const CTX_MAX = 32768;
 const CALL_TIMEOUT_MS = 600_000;
 
 /**
+ * How many proper nouns the per-chapter entity scaffold offers (spec §6.1 lever 3).
+ *
+ * Eight is a chapter's worth of names on this content class. A longer list stops being a
+ * scaffold and starts being a checklist the model tries to satisfy, which is how a title
+ * ends up naming five people to describe one argument.
+ */
+const ENTITY_SCAFFOLD_LIMIT = 8;
+
+/**
+ * The sampling the ONE re-ask uses.
+ *
+ * The pipeline summarizes at temperature 0 with seed 0, so re-sending the identical prompt
+ * unchanged would return the identical answer — a re-ask that cannot produce a different
+ * result is not a re-ask. A different seed and a little temperature is what makes it a second
+ * SAMPLE. Nothing about the prompt changes: per the operator's ruling the re-ask never quotes
+ * the rejected title back and never describes what was wrong with it, because a prompt that
+ * shows a model the wrong form teaches it that form.
+ */
+const RE_ASK_SAMPLING = { temperature: 0.3, seed: 1 };
+
+/**
  * Trap 4. Above this the KV cache spills off the GPU and every token slows down. It is a
  * PERFORMANCE ceiling, not a correctness one: a run that needs more gets more, and says so
  * in a warning, because a truncated prompt would be a wrong answer while a slow one is
@@ -206,6 +235,15 @@ export interface ChapterEmbeddingOptions {
   numCtx?: number;
   /** The video's title or filename — section 8's second required context input. */
   videoTitle?: string;
+  /**
+   * The channel this video is for, when the caller already has it (spec §6.1 lever 2: give
+   * the model whatever real context exists — "proper nouns in beat proper nouns out").
+   *
+   * OPTIONAL and never derived. The caller passes the loaded prompt set's name because that
+   * is what a run already knows about which channel it is publishing to; nothing is plumbed
+   * from further away to fill it, and an absent one simply does not appear in the prompt.
+   */
+  channelName?: string;
   /** Consolidation ceiling in seconds. Defaults to 3x the cadence target for the duration. */
   maxChapterSeconds?: number;
   onProgress?: (stage: ChapterEmbeddingStage, done: number, total: number) => void;
@@ -752,6 +790,19 @@ export class ChapterEmbeddingService {
         `${this.speakerTagged ? 'speaker-tagged' : 'untagged'}`
     );
 
+    // The entity scaffold and the grounding check both read capitalization as the name
+    // signal, so a transcript without sentence casing silently disables both. Measured once
+    // per run and DECLARED when it fails, because "no entities in this chapter" and "no
+    // capital letters in this transcript" are different facts with the same symptom.
+    const casing = transcriptCasing(cues.map((c) => c.text).join(' '));
+    if (!casing.usable) {
+      this.warn(
+        `this transcript cannot be read for proper nouns — ${casing.reason} — so chapter titles were ` +
+          `written with no per-chapter name scaffold, and the check that a title's names come from its ` +
+          `own transcript could not run`
+      );
+    }
+
     // Section 7 — under two stretches there is no junction to score. One chapter, zero
     // calls, and the reason is stated rather than left to look like a model result.
     if (stretches.length < MIN_STRETCHES_TO_SCORE) {
@@ -1089,26 +1140,59 @@ export class ChapterEmbeddingService {
       }
 
       const body = this.speakerTagged ? this.transcriptBetween(cues, startSec, endSec, true) : raw;
-      const parsed = await this.askJson(
-        'summarize',
-        formatPrompt(
-          this.speakerTagged
-            ? CHAPTER_EMBEDDING_PROMPTS.SUMMARIZE_CHAPTER_TAGGED
-            : CHAPTER_EMBEDDING_PROMPTS.SUMMARIZE_CHAPTER,
-          {
-            number: i + 1,
-            video: this.options.videoTitle || 'untitled',
-            previous_context: previousSummary ? `Previous chapter: "${previousSummary}"\n` : '',
-            // Substituted last, as everywhere else in this codebase: transcript text that
-            // happens to contain a brace token must not be rewritten by a later pass.
-            transcript: body,
-          }
-        ),
-        `chapter ${i + 1}/${starts.length} (${formatClock(startSec)}-${formatClock(endSec)})`
+      // Lever 3, per-chapter and never whole-video: the names in THIS slice, so the model is
+      // scaffolded toward what is here and not toward what chapter 2 was about.
+      const entities = topEntities(raw, ENTITY_SCAFFOLD_LIMIT);
+      const what = `chapter ${i + 1}/${starts.length} (${formatClock(startSec)}-${formatClock(endSec)})`;
+      const prompt = formatPrompt(
+        this.speakerTagged
+          ? CHAPTER_EMBEDDING_PROMPTS.SUMMARIZE_CHAPTER_TAGGED
+          : CHAPTER_EMBEDDING_PROMPTS.SUMMARIZE_CHAPTER,
+        {
+          number: i + 1,
+          video: this.options.videoTitle || 'untitled',
+          context_lines: this.contextLines(previousSummary),
+          entity_scaffold:
+            entities.length > 0
+              ? `\nNames this chapter's transcript uses, to build the title around where they fit: ${entities.join(', ')}.\n`
+              : '',
+          // Substituted last, as everywhere else in this codebase: transcript text that
+          // happens to contain a brace token must not be rewritten by a later pass.
+          transcript: body,
+        }
       );
+
+      const parsed = await this.askJson('summarize', prompt, what);
 
       let title = ChapterEmbeddingService.readString(parsed?.title);
       let summary = ChapterEmbeddingService.readString(parsed?.summary);
+
+      // Spec §6.1 lever 3's grounding rule and lever 4's register, checked in code AFTER the
+      // fact because neither can be checked in the prompt without showing the model the form
+      // it must not write. ONE re-ask, then the output is KEPT with a declared warning: the
+      // operator curates, and a title this cannot verify is still a title he can read.
+      if (title) {
+        const first = this.judgeTitle(title, raw);
+        if (first.length > 0) {
+          const second = await this.askJson('summarize', prompt, `${what}, second attempt`, RE_ASK_SAMPLING);
+          const retitled = ChapterEmbeddingService.readString(second?.title);
+          const resummarized = ChapterEmbeddingService.readString(second?.summary);
+          const secondFaults = retitled ? this.judgeTitle(retitled, raw) : ['it came back with no title'];
+          if (retitled && secondFaults.length === 0) {
+            log.info(`[ChapterEmbedding] ${what}: re-asked (${first.join('; ')}) and the second answer holds`);
+            title = retitled;
+            summary = resummarized || summary;
+          } else {
+            // Both attempts failed the same class of check. The FIRST answer is kept — it is
+            // the one the pipeline's own sampling settings produced — and the run says so.
+            this.warn(
+              `the chapter at ${formatClock(startSec)} is titled "${title}", which was asked for twice and ` +
+                `both times ${first.join(' and ')}; the model's answer is kept as written and nothing was ` +
+                `rewritten, so this title is worth a look before publishing`
+            );
+          }
+        }
+      }
 
       if (!title) {
         // Named from its own opening words instead of by the model. The chapter still
@@ -1136,6 +1220,52 @@ export class ChapterEmbeddingService {
     }
 
     return chapters;
+  }
+
+  /**
+   * The two context lines above the transcript: the channel, and the previous summary.
+   *
+   * Both are lever 2 (context seeding). The previous summary is section 8's law and has
+   * always been here; the channel is new and is only present when the caller had one to give.
+   */
+  private contextLines(previousSummary: string): string {
+    const lines: string[] = [];
+    if (this.options.channelName) lines.push(`Channel: ${this.options.channelName}`);
+    if (previousSummary) lines.push(`Previous chapter: "${previousSummary}"`);
+    return lines.length > 0 ? `${lines.join('\n')}\n` : '';
+  }
+
+  /**
+   * What is wrong with this title, in the words the run's warning will use. Empty means
+   * nothing is.
+   *
+   * TWO INDEPENDENT CHECKS, because a title can pass one and fail the other — the run that
+   * motivated the register check was entity-rich and still narrated:
+   *
+   *  - GROUNDING (§6.1 lever 3): every proper noun in the title occurs in this chapter's own
+   *    transcript. Catches both a name the model knew from the world and a name it took from
+   *    the prompt's own examples.
+   *  - REGISTER (§6.1 lever 4): the title names the content rather than an actor covering it.
+   *
+   * Returns REASONS, never a corrected title. Nothing in this file rewrites a model's words.
+   */
+  private judgeTitle(title: string, chapterTranscript: string): string[] {
+    const faults: string[] = [];
+
+    const grounding = groundTitle(title, chapterTranscript);
+    if (!grounding.grounded) {
+      faults.push(
+        `it names ${grounding.ungrounded.map((n) => `"${n}"`).join(', ')}, which this chapter's own ` +
+          `transcript does not contain`
+      );
+    }
+
+    const register = narratesAnActor(title);
+    if (register.narrated) {
+      faults.push('it is written about someone covering the subject rather than about the subject');
+    }
+
+    return faults;
   }
 
   // ------------------------------------------------------------------ transcript prep
@@ -1258,7 +1388,17 @@ export class ChapterEmbeddingService {
    * chapter name, not the run, so it returns null and the stage recovers and warns. A
    * transport failure affects every remaining call, so it throws.
    */
-  private async askJson(stage: ChapterEmbeddingStage, prompt: string, what: string): Promise<any | null> {
+  private async askJson(
+    stage: ChapterEmbeddingStage,
+    prompt: string,
+    what: string,
+    /**
+     * Sampling for a SECOND look at the same prompt. Omitted everywhere the pipeline is
+     * taking a measurement, which is everywhere but the summarize re-ask: temperature 0 and
+     * a pinned seed are what make a junction resolve to the same sentence every run.
+     */
+    sampling?: { temperature: number; seed: number }
+  ): Promise<any | null> {
     this.checkCancelled();
     const model = this.modelFor(stage);
     this.calls++;
@@ -1268,8 +1408,8 @@ export class ChapterEmbeddingService {
       prompt,
       numCtx: this.numCtx,
       numPredict: NUM_PREDICT,
-      temperature: 0,
-      seed: 0,
+      temperature: sampling?.temperature ?? 0,
+      seed: sampling?.seed ?? 0,
       keepAlive: KEEP_ALIVE,
       timeoutMs: CALL_TIMEOUT_MS,
       signal: this.options.abortSignal,

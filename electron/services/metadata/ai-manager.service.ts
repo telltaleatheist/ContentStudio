@@ -60,6 +60,13 @@ export interface MetadataResult {
   thumbnail_text?: string[];
   titles?: string[];
   description?: string;
+  /**
+   * The description's opening line, <=150 characters (metadata spec §1.1).
+   *
+   * Present only on items generated through the chaptered path by this build or later. Its
+   * absence is what tells description-composer.ts to compose an item the way it always did.
+   */
+  description_hook?: string;
   tags?: string;
   hashtags?: string;
   pinned_comment?: string[];
@@ -998,6 +1005,56 @@ export class AIManagerService {
 
     // Should not reach here, but satisfy TypeScript
     throw new Error('Failed to generate metadata after retries');
+  }
+
+  /**
+   * One cloud request whose answer is a SMALL JSON OBJECT that is not a metadata package.
+   *
+   * `runMetadataRequest` above cannot serve this: it runs the answer through
+   * normalizeMetadataKeys, which fills the whole field registry and would turn `{"hook": ...}`
+   * into a MetadataResult with an empty everything. The description calls (description-unit.ts)
+   * ask for one key at a time under their own schema, so they need the object as it came back.
+   *
+   * NO SAMPLING PARAMETERS are sent, here or anywhere else on a cloud path: newer Claude and
+   * OpenAI models reject them (spec §5). The temperatures in the spec are for the local branch.
+   *
+   * ONE attempt. The caller's policy for an unusable answer is its own — the description unit
+   * re-asks once and then keeps what it got — and a retry buried here would spend a second call
+   * before that policy ever saw the first answer.
+   */
+  async runJsonRequest(prompt: string, model: string, what: string): Promise<Record<string, unknown>> {
+    await this.ensureProviderReady(model);
+    const response = await this.makeRequest(prompt, model, 300);
+    if (!response) {
+      throw new Error(`No response from "${model}" for ${what}`);
+    }
+    const match = response.match(/\{[\s\S]*\}/);
+    if (!match) {
+      throw new Error(`No JSON object in the answer to ${what} from "${model}": ${response.slice(0, 200)}`);
+    }
+    try {
+      const parsed = JSON.parse(match[0]);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error(`the answer parsed to ${JSON.stringify(parsed)}, which is not an object`);
+      }
+      return parsed as Record<string, unknown>;
+    } catch (error: any) {
+      throw new Error(
+        `Unparseable JSON in the answer to ${what} from "${model}": ${error?.message || error} ` +
+          `(${match[0].slice(0, 200)})`
+      );
+    }
+  }
+
+  /**
+   * The loaded prompt set's channel and creator tags, in its own order.
+   *
+   * Read by the code that DERIVES hashtags: §6.3 wants the channel's brand tag among them when
+   * the channel uses one, and the prompt set is the thing that knows whether it does. Empty
+   * when the set declares none — nothing is guessed from the set's filename.
+   */
+  channelTags(): string[] {
+    return (this.currentPromptSet?.channel_tags || []).map((t) => t.trim()).filter((t) => t.length > 0);
   }
 
   /**

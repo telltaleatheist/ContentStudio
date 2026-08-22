@@ -41,6 +41,26 @@ export const METADATA_FIELDS: MetadataFieldDef[] = [
     txtStyle: 'numbered',
   },
   {
+    /**
+     * The description's first line — the ~150 characters YouTube shows as the search snippet
+     * and above the fold on mobile (metadata spec §1.1).
+     *
+     * Its own field rather than the first line of `description` because the composer has to
+     * put it ABOVE the chapter block while the body sits below it (§3's ruled order), and
+     * splitting one string back apart at compose time would be parsing a field this app
+     * already had structured.
+     *
+     * ABSENT on every item generated before this build, and on every item that took the
+     * legacy single call. The composer treats absence as "this item composes the old way",
+     * which is the same tolerant-historical-read contract it already had.
+     */
+    key: 'description_hook',
+    aliases: ['descriptionHook', 'hook'],
+    kind: 'string',
+    txtLabel: 'DESCRIPTION HOOK',
+    txtStyle: 'block',
+  },
+  {
     key: 'description',
     aliases: [
       'episode_description',
