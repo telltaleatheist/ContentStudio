@@ -41,6 +41,7 @@ import { SRTSegment } from './whisper.service';
 import { Chapter, SubChapter, TimeUtils } from './chapter-generator.service';
 import { CHAPTER_PROMPTS } from './chapter-prompts';
 import { formatPrompt } from './system-prompts';
+import { isAbortError } from './cancellation';
 
 export type ChapterStage = 'label' | 'rate' | 'place' | 'summarize' | 'consolidate';
 
@@ -81,6 +82,12 @@ export interface ChapterPipelineOptions {
   consolidate?: boolean;
   onProgress?: (stage: ChapterStage, done: number, total: number) => void;
   cancelCallback?: () => boolean;
+  /**
+   * Fired when the run is cancelled, so the call currently in flight is aborted instead
+   * of running to completion. `cancelCallback` is polled between calls and cannot reach
+   * inside one — and it is inside one that a stalled stage spends its minutes.
+   */
+  abortSignal?: AbortSignal;
 }
 
 /** One chapter's subject as stage 4 wrote it: the marker, and the prose behind it. */
@@ -553,7 +560,7 @@ export class ChapterPipelineService {
   }
 
   private checkCancelled(): void {
-    if (this.options.cancelCallback?.()) {
+    if (this.options.abortSignal?.aborted || this.options.cancelCallback?.()) {
       throw new Error('Chapter generation cancelled by user');
     }
   }
@@ -616,10 +623,13 @@ export class ChapterPipelineService {
               num_predict: NUM_PREDICT,
             },
           },
-          { timeout: CALL_TIMEOUT_MS }
+          { timeout: CALL_TIMEOUT_MS, signal: this.options.abortSignal }
         );
         data = response.data;
       } catch (error: any) {
+        if (isAbortError(error)) {
+          throw new Error(`Chapter stage "${stage}" was cancelled by the user during ${what} (model ${model})`);
+        }
         const status = error?.response?.status;
         const detail = error?.response?.data?.error || error?.message || 'unknown error';
         if (status === 404) {

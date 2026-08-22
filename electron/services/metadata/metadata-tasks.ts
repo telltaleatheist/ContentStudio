@@ -35,6 +35,7 @@ import { spawn, ChildProcess } from 'child_process';
 import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import { queueAITask } from '../queue-manager.service';
+import { JobCancelledError, isAbortError } from './cancellation';
 import {
   METADATA_ROUTING_OPTIONS,
   MetadataRoutingOption,
@@ -544,7 +545,9 @@ export class LocalAdapterUnit implements MetadataUnit {
     option: MetadataRoutingOption,
     defaultHost: string,
     /** True when this run's `hashtags` come from the description adapter's last line. */
-    private readonly ownsHashtags: boolean
+    private readonly ownsHashtags: boolean,
+    /** Fired on cancel, so an adapter call in flight is aborted rather than waited out. */
+    private readonly abortSignal?: AbortSignal
   ) {
     if (option.kind !== 'local') {
       throw new Error(
@@ -662,6 +665,11 @@ export class LocalAdapterUnit implements MetadataUnit {
 
     const deadline = Date.now() + SHIM_READY_TIMEOUT_MS;
     while (Date.now() < deadline) {
+      // Two minutes is a long time to keep waiting for a run the user has already
+      // stopped. The spawned host is already tracked in `shim`, so unload() stops it.
+      if (this.abortSignal?.aborted) {
+        throw new JobCancelledError(`while waiting for the "${this.model}" server to come up on ${this.host}`);
+      }
       if (exited) {
         throw new Error(
           `Metadata task "${this.task}" started the server for "${this.model}" ` +
@@ -778,6 +786,11 @@ export class LocalAdapterUnit implements MetadataUnit {
       `local-${task}-${requestId}`,
       `Local adapter: ${task} (${model})`,
       async () => {
+        // Cancelling while this unit sat in the AI queue must not let it start.
+        if (this.abortSignal?.aborted) {
+          throw new JobCancelledError(`before the "${task}" adapter request left the AI queue`);
+        }
+
         let data: any;
         try {
           const response = await this.client.post(
@@ -790,10 +803,13 @@ export class LocalAdapterUnit implements MetadataUnit {
               keep_alive: ADAPTER_KEEP_ALIVE,
               options,
             },
-            { timeout: ADAPTER_TIMEOUT_MS }
+            { timeout: ADAPTER_TIMEOUT_MS, signal: this.abortSignal }
           );
           data = response.data;
         } catch (error: any) {
+          if (isAbortError(error)) {
+            throw new JobCancelledError(`the "${task}" adapter request to "${model}" was aborted mid-flight`);
+          }
           const status = error?.response?.status;
           const detail = error?.response?.data?.error || error?.message || 'unknown error';
           if (status === 404) {
@@ -963,7 +979,10 @@ export function planMetadataUnits(
   routing: ResolvedMetadataRouting,
   defaultHost: string,
   aiManager: AIManagerService,
-  hasInsights: boolean
+  hasInsights: boolean,
+  /** This run's cancel signal, threaded to the local adapters (the cloud groups get it
+   *  from the AI manager's config). */
+  abortSignal?: AbortSignal
 ): MetadataRunPlan {
   const localPlans: Array<{ task: AdapterTask; option: MetadataRoutingOption }> = [];
   /** model -> fields, in first-appearance order (Map preserves insertion order). */
@@ -1057,7 +1076,7 @@ export function planMetadataUnits(
   }
 
   const units: MetadataUnit[] = localPlans.map(
-    (plan) => new LocalAdapterUnit(plan.task, plan.option, defaultHost, hashtagsOwnedByDescription)
+    (plan) => new LocalAdapterUnit(plan.task, plan.option, defaultHost, hashtagsOwnedByDescription, abortSignal)
   );
 
   for (const [model, fields] of groupFields) {

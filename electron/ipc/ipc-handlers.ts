@@ -172,6 +172,15 @@ interface PipelineJob {
   resolve: (value: any) => void;
   reject: (error: any) => void;
   cancelled: boolean;
+  /**
+   * Fired by cancel(), alongside the `cancelled` flag.
+   *
+   * The flag is polled — it can only be read BETWEEN stages, which is no help at all
+   * during the one long model call a cancel is most likely to arrive in the middle of.
+   * The signal is handed to the provider clients so that call is aborted outright
+   * instead of running to completion and being billed.
+   */
+  abortController: AbortController;
 }
 
 interface AiGenerationJob {
@@ -315,7 +324,8 @@ async function runTranscription(job: PipelineJob): Promise<void> {
         preTranscribedContent: job.contentItems,
         inputWarnings: inputFailures,
         progressCallback: job.progressCallback,
-        cancelCallback: () => job.cancelled
+        cancelCallback: () => job.cancelled,
+        cancelSignal: job.abortController.signal
       };
 
       const jobResult = await MetadataGeneratorService.generate(paramsWithCallback);
@@ -921,7 +931,8 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
           progressCallback,
           resolve,
           reject,
-          cancelled: false
+          cancelled: false,
+          abortController: new AbortController()
         };
 
         // Store cancellation callback
@@ -929,6 +940,10 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
           runningJobs.set(params.jobId, {
             cancel: () => {
               pipelineJob.cancelled = true;
+              // Aborts whatever provider call is in flight right now. This is the event
+              // the generator needed: nothing polls for it, and nothing waits for the
+              // current stage to end.
+              pipelineJob.abortController.abort();
               log.info(`[Pipeline] Job ${params.jobId} marked as cancelled`);
               // Remove from transcription queue if still waiting
               const tIdx = transcriptionQueue.indexOf(pipelineJob);
