@@ -465,3 +465,145 @@ with spacing enforced rather than requested, this path fails on good-looking out
 often as it succeeds. The sealed pipeline remains the default, and the surviving argument for
 it is exactly the one the experiment ended on — one call is a single point of failure in a
 way that ~390 independent micro-calls are not.
+
+---
+
+## 2026-08-22 — addendum: the embedding pipeline (Briefcase method)
+
+A THIRD chapter path, opt-in beside the sealed pipeline and the 27B single call. It keeps
+this document's law intact — no model call sees a list, a count, or the whole video — and
+removes the reason the law was expensive.
+
+**The authority for this method is not this file.** It is the portable handoff document
+that describes it in full, including every constant, both prompts, the measured model
+ladder and the failure modes that shaped each decision:
+
+> `/Volumes/Callisto/Projects/Briefcase/docs/chapter-pipeline-handoff.md`
+
+with the reference implementation on Briefcase branch `analysis-pipeline-tuning`
+(`backend/src/analysis/chapter-detection.service.ts`, `phrase-matcher.ts`,
+`model-utils.ts`). Anything below that disagrees with that document is this file being out
+of date; change the document first.
+
+### What it replaces, and why it is so much cheaper
+
+The sealed method spends ~2 model calls per 45 seconds of video before it has a single
+boundary: stage 1 labels every stretch, stage 2 rates every junction. Both stages exist to
+answer ONE question — how different is what comes before this point from what comes after
+it — and this document already records that they answer it weakly (stage 2's ratings are
+individually poor; the design's power is in RANKING them, not in any single score).
+
+A text-embedding model answers that same question in milliseconds, batched, with a
+continuous score. So stages 1 and 2 become one `/api/embed` call, and the generation model
+is kept for the two things embeddings cannot do: quote the sentence a subject turns on, and
+say what a chapter is about.
+
+```
+1. STRETCH      code        45s stretches, grid-aligned, never splitting a caption
+2. SCORE        embeddings  ONE batched /api/embed call (nomic-embed-text);
+                            block cosine over 2 stretches a side; valley DEPTH
+3. SELECT       code        deepest valleys first, minGap enforced, `wanted` taken
+4. PLACE        LLM         one small call per selected junction: quote the turn
+5. CONSOLIDATE  code        merge adjacent chapters whose centroids still match
+6. SUMMARIZE    LLM         one call per chapter, from its RAW transcript + context
+```
+
+Stage 3 is stage 3 of the sealed method, unchanged — `targetSecondsFor()` is IMPORTED, not
+copied, so all three chapter paths want the same number of chapters. Measured on this
+machine: 91 stretches of a 67-minute podcast embedded in **1.5 seconds**, and the whole run
+— boundaries, placement and every chapter summarized — took **3m14s in 16 model calls**,
+against the sealed pipeline's ~390.
+
+### The two things that make it work
+
+**Depth, not similarity.** A monologue that drifts has low cohesion everywhere; only a real
+subject change is a VALLEY. Each junction's score is its drop against the nearest higher
+peak on each side, which is what makes a talky passage rank below a genuine handover.
+
+**Summaries are written from the RAW transcript.** The handoff document's section 8 is a
+law of its own, and it is the fix for a failure this document already knows: the sealed
+method's own ancestor summarized chapters from its 3-6 word stretch labels — a summary of
+summaries — and produced "man yells about conspiracies". Here every chapter's prompt gets
+(1) the chapter's actual transcript text, (2) the video's title or filename, and (3) the
+PREVIOUS chapter's summary, threaded, so chapter N knows what "back to what we discussed"
+refers to and titles do not repeat.
+
+### Every degradation is DECLARED
+
+The handoff document prescribes graceful degradations. This app does not have those: a
+degradation that is not written down is a bug. So each one is a recorded mode — logged,
+counted in `stats`, and pushed into `warnings` so it reaches the job report:
+
+| Failure | What happens | Where it is recorded |
+|---|---|---|
+| The embed call fails | The lexical TF-IDF scorer scores the junctions instead | `stats.scorer = 'lexical'` + a warning naming the failure and what it costs |
+| A placement answer is unusable, or its quote maps nowhere | That boundary keeps its raw ±45s junction time | `stats.approxStarts`, `startApprox` on the chapter, one warning per boundary |
+| A placed quote maps BACKWARDS | The boundary is dropped | A warning naming the junction (the reference implementation drops it silently; that is the one thing in the source method not reproduced) |
+| A summarize answer has no title | The chapter is named from its own opening words | A warning, exactly as the sealed pipeline's stage 4 does it |
+| Under 2 stretches of transcript | One chapter, zero model calls | `stats.scorer = 'none'` + a warning saying the video was too short to score |
+
+What is NOT degraded, and throws: transport failures (Ollama unreachable, model not
+installed, timeout). Those affect every remaining call rather than one answer, and
+`resolveChapters` already records `chaptersSkipped` for them.
+
+### The Ollama traps this path had to handle
+
+All three are the handoff document's section 6, and all three were observed live on
+qwen3.8:27b during the port:
+
+- **`think: false` is not sent.** It does not disable thinking; it RELOCATES the reasoning
+  into `response`, which breaks the JSON and increases tokens.
+- **`format: "json"` + a thinking model puts the answer in `thinking` with `response`
+  EMPTY.** This happened on nearly every call of the validation run. Handled narrowly: when
+  structured output was requested and `response` is empty, the object is read from
+  `thinking`, and the log says so.
+- **ONE `num_ctx` for the whole run**, bucketed to 4096 — Ollama fully reloads the model on
+  any change. It is sized from the largest prompt EITHER generation stage can send, so no
+  call is ever clamped; above the ceiling where the KV cache still fits on the GPU it warns
+  (slower, still correct) and above 32768 it refuses (a truncated prompt would summarize a
+  chapter's opening and call it the chapter).
+
+### Validation on this machine, 2026-08-22
+
+Both runs on qwen3.8:27b with nomic-embed-text, against ground truth read independently
+from the transcripts beforehand.
+
+**67-minute four-segment compilation** (`podcast1.srt`, segment handoffs known at 14:52,
+26:03 and 53:38):
+
+- 91 stretches embedded in **1.5 s**; 90 junctions scored; 10 boundaries selected. Whole
+  run, boundaries through summaries: **3m14s in 16 model calls**.
+- **Every one of the 10 placement calls resolved its quote.** Zero approximate starts, zero
+  warnings, zero dropped boundaries.
+- Two of the three known handoffs were hit EXACTLY: 14:52 ("This is Kat Kerr, you may be
+  familiar with her.") and 26:03 ("There's this Oklahoma political candidate."). The scorer
+  had put candidates at 15:01 and 26:16 — within one stretch — and placement pulled both
+  onto the sentence.
+- The third handoff, 53:38, is **missed**, and the depth profile says why rather than
+  leaving it a mystery: the junction at 53:16 (22 s early) is the 6th-deepest of 90 at
+  0.317, but 51:00 (0.330) was taken first and 53:16 sits 136 s after it, inside the 216 s
+  `minGap`. That is the tradeoff the handoff document names in §3.3 — "minGap suppresses
+  genuinely close pairs" — showing up on the first real video, not a surprise. The content
+  of that segment is not lost; it is inside the chapter that starts at 50:58.
+- Consolidation merged 11 boundaries to 6 chapters at centroid similarities 0.835-0.905,
+  and the chapter titles/summaries name the actual people and claims (Kat Kerr's
+  prophecies, the Oklahoma school-board candidate, the denazification comparison) rather
+  than describing the video generically — section 8's law doing what it is for.
+
+**20-minute single-topic-ish video** (`starburst.srt`): 27 stretches, 5 boundaries selected,
+consolidation merged 6 chapters down to **3** — the shape the depth profile of a
+single-subject video should produce. Every quote resolved; zero approximate starts; 8 model
+calls, 2m47s.
+
+### Status
+
+Opt-in, routing option `chapters-embedding` ("Embedding pipeline (Briefcase method)"), and
+it is the only option in the table that needs TWO models — the generation model plus
+`nomic-embed-text`. The picker names whichever one is missing before the run rather than
+reporting the option installed on the strength of half its requirements; if it runs anyway
+without the embedding model, the lexical scorer is declared in the warnings rather than
+substituted quietly.
+
+Implementation: `electron/services/metadata/chapter-embedding.service.ts`, prompts in
+`chapter-prompts.ts` as `CHAPTER_EMBEDDING_PROMPTS` (kept separate from the sealed five and
+from the single-call pair). The sealed pipeline remains the default.

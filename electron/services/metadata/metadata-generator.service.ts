@@ -10,6 +10,7 @@ import { InputHandlerService, ContentItem } from './input-handler.service';
 import { Chapter } from './chapter-generator.service';
 import { ChapterPipelineService, ChapterStage, ChapterPipelineResult } from './chapter-pipeline.service';
 import { ChapterSingleCallService } from './chapter-single-call.service';
+import { ChapterEmbeddingService } from './chapter-embedding.service';
 import { OutputHandlerService } from './output-handler.service';
 import { ContentOrigin, ItemProvenance, ItemSource, sourceKeyOf } from './item-identity';
 import {
@@ -19,6 +20,7 @@ import {
   runMetadataTasks,
 } from './metadata-tasks';
 import {
+  CHAPTERS_EMBEDDING_OPTION_ID,
   CHAPTERS_SINGLE_CALL_OPTION_ID,
   MetadataRoutingSelections,
   ResolvedMetadataRouting,
@@ -844,7 +846,10 @@ export class MetadataGeneratorService {
       console.log(
         `[MetadataGenerator] Generated ${result.chapters.length} chapters in ${result.stats.calls} model calls ` +
           `(stage 4 ${result.stats.speakerTagged ? 'speaker-tagged' : 'untagged'}, ` +
-          `${result.stats.approxStarts} approximate start(s))`
+          `${result.stats.approxStarts} approximate start(s)` +
+          // Only the embedding path has a scorer to name, and which one ran decides how
+          // good the boundaries are — so the job log says it, not just the warning stream.
+          `${result.stats.scorer ? `, ${result.stats.scorer} scorer` : ''})`
       );
       // The sink holds the PIPELINE's result, promos included: it is what "Send to AI"
       // reuses, and it must be the same list this pass started from, not the filtered one.
@@ -930,6 +935,12 @@ export class MetadataGeneratorService {
    * chapter stage fails, and resolveChapters records `chaptersSkipped` exactly as it does
    * for any other chapter failure. It does NOT retry and it does NOT drop back here.
    *
+   * The embedding option (2026-08-22) is the third code path, and the cheapest: ONE
+   * batched /api/embed call scores every junction, code selects them, and the generation
+   * model is spent only on placing each boundary and naming each chapter — ~10 calls an
+   * hour of video. It degrades where the other two fail: a missing embedding model costs
+   * it the lexical scorer and a declared warning rather than the chapter list.
+   *
    * The WHOLE run holds the single AI queue slot rather than queueing each of its
    * hundreds of calls separately: the method requires one model resident at a time,
    * and that is exactly what the 1-slot AI pool exists to guarantee.
@@ -960,6 +971,10 @@ export class MetadataGeneratorService {
     // explains what was measured and what is fenced). Chosen by option id, so the picker
     // is the only place it can be turned on.
     const singleCall = routing.chapters === CHAPTERS_SINGLE_CALL_OPTION_ID;
+    // The third architecture (2026-08-22): embeddings score the boundaries, code selects
+    // them, and the model is spent only on placing and naming. Same branch-by-option-id
+    // rule as the single call — the picker is the only place it can be turned on.
+    const embedding = routing.chapters === CHAPTERS_EMBEDDING_OPTION_ID;
 
     // Chapter work is 0-60% of this item's "generating" phase; the metadata call that
     // follows takes it from there. Weighted by the real call counts: labelling and
@@ -969,14 +984,29 @@ export class MetadataGeneratorService {
     // at the start and once at the end and says nothing in between — which is what the
     // stall notice below exists for, and on this path a long silence is the normal case
     // rather than a symptom.
-    const stageWeights: Record<string, [number, number]> = {
-      label: [0, 22],
-      rate: [22, 44],
-      place: [44, 50],
-      summarize: [50, 55],
-      consolidate: [55, 60],
-      'single-call': [0, 60],
-    };
+    //
+    // The embedding path's bands are its own table rather than extra keys in the shared
+    // one, because it reuses two of the sealed pipeline's stage NAMES ('place',
+    // 'summarize') for stages that sit at completely different points of its run. Scoring
+    // is ONE batched embed call measured in seconds, so it gets a token slice rather than
+    // a proportional one — giving seconds of work a fifth of the bar would freeze it
+    // exactly where the old label stage did. Placement is ~10 short calls; summarizing is
+    // one call per chapter on the big model, which is where its time actually goes (its
+    // consolidation is pure code and reports nothing).
+    const stageWeights: Record<string, [number, number]> = embedding
+      ? {
+          embed: [0, 6],
+          place: [6, 30],
+          summarize: [30, 60],
+        }
+      : {
+          label: [0, 22],
+          rate: [22, 44],
+          place: [44, 50],
+          summarize: [50, 55],
+          consolidate: [55, 60],
+          'single-call': [0, 60],
+        };
 
     // A stage that reports every ~3s and then says nothing for minutes is
     // indistinguishable, from the progress bar, from a hang. It usually is not one —
@@ -992,7 +1022,7 @@ export class MetadataGeneratorService {
     // next onProgress would put a stall notice on a job that already ended.
     let stallDone = false;
     let lastProgress: { stage: string; percent: number; at: number } = {
-      stage: singleCall ? 'single-call' : 'label',
+      stage: singleCall ? 'single-call' : embedding ? 'embed' : 'label',
       percent: 0,
       at: Date.now(),
     };
@@ -1040,7 +1070,22 @@ export class MetadataGeneratorService {
       );
     };
 
-    const chapterer = singleCall
+    const chapterer = embedding
+      ? new ChapterEmbeddingService({
+          host,
+          model,
+          // Sizes its own context window from the largest prompt the run will send; a
+          // configured value can only raise that floor, never lower it.
+          numCtx: params.chapterNumCtx,
+          // Section 8's second required context input: what the video IS. A filename like
+          // "2026-08-19 jesse watters mocks democrat candidates" tells the summarizer who
+          // is speaking and why, which is what grounds the names it writes.
+          videoTitle: item.title || (item.source ? path.basename(item.source) : undefined),
+          cancelCallback: params.cancelCallback,
+          abortSignal: params.cancelSignal,
+          onProgress: reportProgress,
+        })
+      : singleCall
       ? new ChapterSingleCallService({
           host,
           model,
@@ -1063,8 +1108,9 @@ export class MetadataGeneratorService {
         });
 
     log.info(
-      `[MetadataGenerator] ${singleCall ? 'Single-call chaptering' : 'Chapter pipeline'} starting for ` +
-        `${label} on ${model} @ ${host}`
+      `[MetadataGenerator] ${
+        embedding ? 'Embedding chaptering' : singleCall ? 'Single-call chaptering' : 'Chapter pipeline'
+      } starting for ${label} on ${model} @ ${host}`
     );
 
     // The AI pool's default 30-minute watchdog is sized for ONE stalled request. This

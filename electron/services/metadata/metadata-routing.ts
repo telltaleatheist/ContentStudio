@@ -60,6 +60,17 @@ export interface MetadataRoutingOption {
    * and never stopped: whoever started it owns it.
    */
   startCommand?: string[];
+  /**
+   * Other models this option needs BESIDES `model`, as `ollama list` prints them.
+   *
+   * One option, one model held until the embedding chapter path arrived: it runs a
+   * generation model AND an embedding model, and a missing embedding model does not fail
+   * the run — it costs it the weaker lexical scorer, which the run then declares. The
+   * availability probe reads this so the picker can say which of the two is missing
+   * BEFORE the run, instead of reporting the option installed on the strength of half its
+   * requirements.
+   */
+  companionModels?: string[];
 }
 
 /** The shim behind headline-32b-titles. It is not Ollama and it is not always running. */
@@ -74,6 +85,14 @@ const HEADLINE_32B_START_HINT =
  * instead of matching a string literal in two files.
  */
 export const CHAPTERS_SINGLE_CALL_OPTION_ID = 'chapters-qwen27b-single';
+
+/**
+ * The second chapter-ARCHITECTURE option id: the embedding pipeline
+ * (chapter-embedding.service.ts). Exported for the same reason as the one above —
+ * metadata-generator.service.ts branches on it by identity rather than matching a string
+ * literal in two files.
+ */
+export const CHAPTERS_EMBEDDING_OPTION_ID = 'chapters-embedding';
 
 export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
   sonnet5: { kind: 'cloud', label: 'Claude Sonnet 5', model: 'claude:claude-sonnet-5' },
@@ -155,6 +174,32 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
     label: 'Qwen 27B — single call (experimental)',
     model: 'qwen3.8:27b',
   },
+  /**
+   * The THIRD chapter architecture: embeddings score the boundaries, code selects them,
+   * and the generation model is spent only on placing and naming (chapter-embedding.service.ts).
+   *
+   * Ported 2026-08-22 from the portable handoff document that is its authority,
+   * /Volumes/Callisto/Projects/Briefcase/docs/chapter-pipeline-handoff.md, where it was
+   * validated on real broadcast content in August 2026: on a 63-minute panel show it found
+   * an ad break the whole-transcript approach missed entirely, placed it to the second, and
+   * cut the boundary stage from ~5 minutes to ~1. It is the cheapest of the three paths by
+   * an order of magnitude — ~10 generation calls an hour of video against the sealed
+   * pipeline's ~390 — because the O(N) label and rate stages are replaced by ONE batched
+   * embedding call.
+   *
+   * TWO MODELS, which is why this option carries `companionModels`. The generation model
+   * below places and summarizes; `nomic-embed-text` (137M, 274MB) does the scoring. If the
+   * embedding model is missing the run does NOT stop — it declares the lexical TF-IDF
+   * scorer in its stats and warnings and carries on with measurably weaker boundaries —
+   * but the picker says so up front, because "it worked, just worse" is exactly the kind of
+   * degradation a user should get to decline before spending the run.
+   */
+  [CHAPTERS_EMBEDDING_OPTION_ID]: {
+    kind: 'local',
+    label: 'Embedding pipeline (Briefcase method)',
+    model: 'qwen3.8:27b',
+    companionModels: ['nomic-embed-text'],
+  },
   'headline-titles-32b': {
     kind: 'local',
     label: 'Headline 32B (titles)',
@@ -190,7 +235,14 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
   {
     id: 'chapters',
     label: 'Chapters',
-    options: ['cogito-14b', 'qwen25-14b', 'qwen3-14b', 'qwen38-27b', CHAPTERS_SINGLE_CALL_OPTION_ID],
+    options: [
+      'cogito-14b',
+      'qwen25-14b',
+      'qwen3-14b',
+      'qwen38-27b',
+      CHAPTERS_SINGLE_CALL_OPTION_ID,
+      CHAPTERS_EMBEDDING_OPTION_ID,
+    ],
     defaultOptionId: 'cogito-14b',
   },
   {
@@ -394,7 +446,13 @@ export interface MetadataRoutingOptionView {
   /** The model this option names, so the modal can say which one is missing. */
   model: string;
   availability: MetadataRoutingAvailability;
-  /** Why the availability is `unknown` for a reason the host banner does not already give. */
+  /**
+   * The detail the availability alone does not carry:
+   *  - `unknown` for a reason the host banner does not already give (the MLX shim);
+   *  - `not-installed` on a MULTI-MODEL option, naming which of its models is missing —
+   *    without it the modal's generic sentence would name the option's primary model,
+   *    which may be installed perfectly well.
+   */
   availabilityNote?: string;
 }
 
@@ -437,8 +495,30 @@ function optionView(id: string, inventory: OllamaInventory): MetadataRoutingOpti
   if (!inventory.reachable) {
     return { ...base, availability: 'unknown' };
   }
-  const installed = inventory.models.some((name) => normalizeOllamaName(name) === normalizeOllamaName(option.model));
-  return { ...base, availability: installed ? 'installed' : 'not-installed' };
+
+  // An option may need more than one model (see companionModels). It is installed only
+  // when ALL of them are, and when one is missing the note says WHICH — "qwen3.8:27b is
+  // not installed" would be a false statement about a two-model option whose generation
+  // model is right there.
+  const required = [option.model, ...(option.companionModels || [])];
+  const missing = required.filter(
+    (name) => !inventory.models.some((installed) => normalizeOllamaName(installed) === normalizeOllamaName(name))
+  );
+  if (missing.length === 0) {
+    return { ...base, availability: 'installed' };
+  }
+  return {
+    ...base,
+    availability: 'not-installed',
+    ...(option.companionModels && option.companionModels.length > 0
+      ? {
+          availabilityNote:
+            `this option needs ${required.join(' + ')}; ` +
+            `${missing.join(' and ')} ${missing.length > 1 ? 'are' : 'is'} not installed ` +
+            `(pull with: ${missing.map((m) => `ollama pull ${m}`).join('; ')})`,
+        }
+      : {}),
+  };
 }
 
 /**

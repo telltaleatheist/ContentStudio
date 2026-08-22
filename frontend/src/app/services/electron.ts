@@ -264,7 +264,10 @@ export interface MetadataRoutingOption {
   /** The model name behind the label, so a missing one can be named. */
   model: string;
   availability: MetadataRoutingAvailability;
-  /** Why `unknown`, when the host banner does not already say it. */
+  /**
+   * Why `unknown`, when the host banner does not already say it — or, on an option that
+   * needs more than one model, which of them is missing when it is `not-installed`.
+   */
   availabilityNote?: string;
 }
 

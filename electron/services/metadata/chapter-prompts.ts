@@ -408,3 +408,139 @@ Cover the WHOLE video. The chapters must run in the order they appear in the tra
 Return JSON only, in this exact shape:
 {"chapters": [{"quote": "<exact words from the transcript>", "title": "<3 to 8 words>", "summary": "<20 to 45 words>"}]}`,
 };
+
+/**
+ * The embedding pipeline's two prompts (2026-08-22).
+ *
+ * Kept separate from the sealed five and from the single-call pair for the same reason
+ * those two are separate from each other: they belong to a different ARCHITECTURE
+ * (chapter-embedding.service.ts), and editing one of these must never be mistaken for
+ * editing a sealed artifact.
+ *
+ * Both bodies are copied from the portable handoff document that is their authority —
+ * /Volumes/Callisto/Projects/Briefcase/docs/chapter-pipeline-handoff.md, §3.4 and §8 —
+ * which validated them in Briefcase in August 2026 on real broadcast content. The only
+ * edits are ContentStudio's `{placeholder}` convention (formatPrompt) in place of the
+ * reference implementation's template literals.
+ *
+ * What survives from the sealed method, unchanged:
+ *  - the model NEVER emits a timestamp. It quotes; code measures the quote against the
+ *    caption word stream. An invented timestamp is a guess; a mapped quote is a
+ *    measurement.
+ *  - no call sees a list, a count, or the whole video. PLACE_BOUNDARY sees ~90 seconds
+ *    around ONE junction; SUMMARIZE_CHAPTER sees ONE chapter.
+ *  - the worked example names the invented Mayor Ellison, never a real person: a real
+ *    name in a prompt example surfaces in outputs about a different, unnamed person of
+ *    the same archetype, deterministically, at temperature 0.
+ */
+export const CHAPTER_EMBEDDING_PROMPTS = {
+  /**
+   * Stage 4 — place ONE selected junction to the sentence it turns on.
+   *
+   * §3.4 verbatim. Every rule in it is load-bearing; the multi-change paragraph in
+   * particular exists because a 90-second window sometimes contains several transitions
+   * ("we'll be right back" + ad #1 + ad #2) and models otherwise pick one arbitrarily.
+   *
+   * Placeholders: {title_context} (already rendered, may be empty), {window}
+   */
+  PLACE_BOUNDARY: `Below is one stretch of a video transcript. Somewhere inside it the speaker moves from one subject to the next.
+{title_context}
+TRANSCRIPT:
+{window}
+
+Find where the handover BEGINS — the first sentence a viewer would want to land on if they clicked a chapter marker here.
+
+That is the sentence where the speaker TURNS AWAY from the old subject, which is usually a beat EARLIER than the sentence that first explains the new one. If the speaker says "anyway, let's talk about X" and then explains X three sentences later, the turn is "anyway, let's talk about X" — quote that, not the explanation. A viewer dropped at the explanation has already missed the start.
+
+Prefer, in this order:
+1. the sentence where the speaker announces, introduces or turns toward the new subject
+2. the sentence where the speaker closes off the old subject, if the turn is not announced
+3. the first sentence that is plainly about the new subject, if there is no turn at all
+
+If the transcript contains MORE THAN ONE subject change, pick the one nearest the MIDDLE of the excerpt — the excerpt is centered on the boundary being placed, so changes near its edges belong to neighboring chapters, not this one.
+
+Copy the sentence EXACTLY as it appears above, word for word, at least six words, no timestamps and no tidying up. That quote is what fixes the chapter's start time to the second, so a quote you reworded points at the wrong moment.
+
+Output exactly this shape and nothing else:
+{"quote": "<exact sentence from the transcript above>"}`,
+
+  /**
+   * Stage 6 — name and summarize ONE chapter, from its RAW transcript.
+   *
+   * §8's law, which is the difference between chapters worth reading and "man yells
+   * about conspiracies": the summarizing model reads what was actually SAID in the
+   * chapter, never an intermediate label, plus two pieces of real context — the video's
+   * title or filename (who is speaking and why) and the PREVIOUS chapter's summary
+   * (so "back to what we discussed" resolves, and titles do not repeat).
+   *
+   * The naming rules below the JSON shape are ContentStudio's own, carried over from the
+   * sealed stage-4 prompt: they are what keeps a chapter marker out of "Introduction /
+   * Overview / Conclusion" and out of names the transcript never contained.
+   *
+   * Placeholders: {number}, {video}, {previous_context} (already rendered, may be empty),
+   * {transcript}
+   */
+  SUMMARIZE_CHAPTER: `Label chapter {number} of a video transcript. Output JSON only.
+Video: {video}
+{previous_context}
+Produce:
+- title: one sentence (max ~15 words) naming what this chapter is about.
+- summary: 2-3 sentences on what the speaker actually says.
+
+Rules for both fields:
+- Name the person, organisation, story or claim IF this chapter's transcript names one — "Mayor Ellison on the bridge contract scandal", not "a local corruption argument". (Ellison is invented for this instruction — never copy a name from these instructions into your answer.)
+- Never mention a person, group or story this chapter's own transcript does not, not even one you are sure of from outside knowledge. If it only ever says "the mayor", write "the mayor".
+- Cover the whole chapter, not just its opening. Where it moves through more than one thing, name what it spends most of itself on.
+- Say what happens, plainly. No headline writing, no teasing, no colons, no "Part 1".
+- Never "Introduction", "Overview", "Background", "Conclusion", "Discussion", "Analysis", "Continued", "More on this".
+- A sponsor read, a Patreon plug, a channel promo or a sign-off should simply say that is what it is.
+
+Output exactly this shape and nothing else:
+{
+  "title": "...",
+  "summary": "..."
+}
+
+TRANSCRIPT:
+{transcript}`,
+
+  /**
+   * The same call for a transcript that knows who is speaking.
+   *
+   * ContentStudio's imported AutoCutStudio transcripts carry a HOST/CLIP side per caption
+   * (a plain Whisper run does not). Untagged, a summarizer cannot tell the host's verdict
+   * from the claim being played and inverts attribution — the sealed pipeline's stage 4
+   * was measured doing exactly that, naming the host as the subject of a chapter where he
+   * was the one objecting. This body is the untagged one plus the two lines that fix it,
+   * and it runs ONLY when every caption resolves to a side.
+   *
+   * Placeholders: {number}, {video}, {previous_context}, {transcript}
+   */
+  SUMMARIZE_CHAPTER_TAGGED: `Label chapter {number} of a video transcript. Output JSON only.
+Video: {video}
+{previous_context}
+The transcript below is tagged by speaker. HOST: is the creator of this video talking. CLIP: is footage he is playing and reacting to — those words are somebody else's, and the claims in them are not his.
+
+Produce:
+- title: one sentence (max ~15 words) naming what this chapter is about.
+- summary: 2-3 sentences on what the speaker actually says.
+
+Rules for both fields:
+- Attribute correctly. A claim made in a CLIP line belongs to whoever is in the footage, and the HOST's response to it is his verdict on it. Never write the chapter as though the host is making the claim he is objecting to.
+- Carry the host's verdict where he gives one — that is what the chapter is actually about.
+- Never say "the host", "the creator", "the narrator" or "the video". Name the activity or the story itself.
+- Name the person, organisation, story or claim IF this chapter's transcript names one — "Mayor Ellison on the bridge contract scandal", not "a local corruption argument". (Ellison is invented for this instruction — never copy a name from these instructions into your answer.)
+- Never mention a person, group or story this chapter's own transcript does not, not even one you are sure of from outside knowledge.
+- Cover the whole chapter, not just its opening. Say what happens, plainly. No headline writing, no teasing, no colons, no "Part 1".
+- Never "Introduction", "Overview", "Background", "Conclusion", "Discussion", "Analysis", "Continued", "More on this".
+- A sponsor read, a Patreon plug, a channel promo or a sign-off should simply say that is what it is.
+
+Output exactly this shape and nothing else:
+{
+  "title": "...",
+  "summary": "..."
+}
+
+TRANSCRIPT:
+{transcript}`,
+};
