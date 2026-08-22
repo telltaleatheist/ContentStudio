@@ -141,9 +141,12 @@ def concat_resample(ffmpeg, stems, output, target_sr):
     # as_posix() keeps forward slashes — the ffmpeg concat demuxer chokes on
     # Windows backslash paths.
     listf.write_text("".join(f"file '{s.resolve().as_posix()}'\n" for s in stems))
+    # -rf64 auto: this is the one full-length output here (the chunks are bounded
+    # by --max_min), and 32-bit RIFF chunk sizes clamp past 4 GiB — see
+    # audio_sync.apply_sync_to_audio for what that silently costs downstream.
     r = run([ffmpeg, "-nostdin", "-v", "error", "-f", "concat", "-safe", "0",
              "-i", str(listf), "-ar", str(target_sr), "-c:a", "pcm_s24le",
-             "-y", str(output)])
+             "-rf64", "auto", "-y", str(output)])
     listf.unlink(missing_ok=True)
     if r.returncode != 0:
         sys.exit(f"ERROR: concat/resample failed: {r.stderr[-500:]}")

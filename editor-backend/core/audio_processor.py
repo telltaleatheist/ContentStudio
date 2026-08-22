@@ -132,6 +132,7 @@ class AudioProcessor:
             'ffmpeg', '-i', str(input_path),
             '-filter:a', f'atempo={correction_factor}',
             '-c:a', 'pcm_s24le',  # 24-bit PCM for high quality
+            '-rf64', 'auto',  # 32-bit RIFF sizes clamp past 4 GiB — see audio_sync.apply_sync_to_audio
             '-y',  # Overwrite output
             str(output_path)
         ]
@@ -189,6 +190,7 @@ class AudioProcessor:
             '-acodec', 'pcm_s16le',  # PCM 16-bit
             '-ar', str(self.config.get('audio.sample_rate', 48000)),  # Sample rate
             '-ac', '2',  # Stereo
+            '-rf64', 'auto',  # 32-bit RIFF sizes clamp past 4 GiB — see audio_sync.apply_sync_to_audio
             '-y',  # Overwrite output
             str(output_path)
         ]
@@ -246,6 +248,7 @@ class AudioProcessor:
             'ffmpeg', '-i', str(input_path),
             '-filter:a', f'atempo={sync_factor}',
             '-c:a', 'pcm_s16le',
+            '-rf64', 'auto',  # 32-bit RIFF sizes clamp past 4 GiB — see audio_sync.apply_sync_to_audio
             '-y',  # Overwrite output
             str(output_path)
         ]
@@ -341,6 +344,12 @@ class AudioProcessor:
             '-acodec', 'pcm_s16le' if output_format == 'wav' else 'aac',
             '-ar', str(self.config.get('audio.sample_rate', 48000)),
             '-ac', '2',
+        ]
+        # 32-bit RIFF sizes clamp past 4 GiB — see audio_sync.apply_sync_to_audio.
+        # -rf64 belongs to the wav muxer only; passing it to any other muxer errors.
+        if output_format == 'wav':
+            cmd += ['-rf64', 'auto']
+        cmd += [
             '-y',
             str(output_path)
         ]
