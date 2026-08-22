@@ -33,7 +33,7 @@
  * PURE. No I/O, no model, no config.
  */
 
-import { extractProperNouns, occursIn } from './entity-extraction';
+import { COMMON_WORDS, extractProperNouns, occursIn } from './entity-extraction';
 
 /**
  * Nouns that stand in for whoever is talking.
@@ -226,6 +226,74 @@ export interface GroundingVerdict {
 export function groundTitle(title: string, chapterTranscript: string): GroundingVerdict {
   const properNouns = extractProperNouns(title).map((m) => m.text);
   const ungrounded = properNouns.filter((noun) => !groundedIn(chapterTranscript, noun));
+  return { properNouns, ungrounded, grounded: ungrounded.length === 0 };
+}
+
+/**
+ * The grounding rule for a VIEWER-FACING title, which is Title Cased and therefore lies about
+ * which of its words are names.
+ *
+ * WHY THIS IS NOT `groundTitle` ABOVE, measured on this build's own harness run against the
+ * 27b. `groundTitle` is written for a CHAPTER title, which is sentence-cased topic form, so a
+ * mid-string capital really is evidence of a proper noun. A YouTube title capitalizes every
+ * word, so the same extractor returned "Buy", "Zero Accountability", "Critics Demons" and
+ * "Preachers Need" as names: seven of ten titles came back ungrounded in a run where one of
+ * them actually was. A check that fires on almost everything is not a check — the operator
+ * learns to scroll past it, and the one real hallucination in that run ("a Fourteenth Seat",
+ * against a transcript that says twelve seats) scrolls past with it.
+ *
+ * WHAT IT ACTUALLY TESTS, stated plainly because the honest name is not "proper nouns": TWO OR
+ * MORE ADJACENT CAPITALIZED WORDS THAT THE INPUTS DO NOT CONTAIN AT ALL. Not "is this a name" —
+ * without a lexicon you cannot tell an invented name from an invented abstract phrase, and both
+ * of them are the operator's problem anyway. What it catches:
+ *
+ *   - a name from world knowledge ("Kenneth Copeland" on a video that never mentions him),
+ *   - a name leaking out of the prompt's own examples ("Gene Bailey" on an unrelated video) —
+ *     the measured failure mode documented in the chapter prompts' header, and
+ *   - a claim built from words the video never said ("Occupy Territory"), which for a channel
+ *     whose brief opens by naming libel exposure is worth the same look.
+ *
+ * Adjacency and the two-word minimum are what keep it quiet. A single capitalized word in Title
+ * Case is just a word; a function word between two unknown words ("Kenneth And Copeland") means
+ * two things rather than one; and one word the transcript does contain anywhere in the run ends
+ * it, because a phrase sharing vocabulary with the video came from the video.
+ *
+ * Comparison is case-insensitive, punctuation-insensitive, possessive-stripped and singularized
+ * ("Preachers" is grounded by a transcript that says "preacher"), all via `occursIn`.
+ */
+export function groundViewerTitle(title: string, groundingText: string): GroundingVerdict {
+  const words = title.split(/\s+/).filter(Boolean);
+  const properNouns: string[] = [];
+  const ungrounded: string[] = [];
+
+  let run: string[] = [];
+  const closeRun = () => {
+    if (run.length >= 2) {
+      const surface = run.join(' ');
+      properNouns.push(surface);
+      ungrounded.push(surface);
+    }
+    run = [];
+  };
+
+  for (const word of words) {
+    const bare = word.replace(/['’]s\b/i, '').replace(/[^A-Za-z0-9]/g, '');
+    // Not a capitalized word, or a word that is capitalized for grammar rather than for being
+    // a name. Either way it ends the run: a function word between two unknown words means they
+    // are two things, not one name.
+    if (bare.length < 2 || !/^[A-Z]/.test(word) || COMMON_WORDS.has(bare.toLowerCase())) {
+      closeRun();
+      continue;
+    }
+    const known = occursIn(groundingText, bare) || occursIn(groundingText, singular(bare));
+    if (known) {
+      closeRun();
+      continue;
+    }
+    run.push(word.replace(/[.,;:!?]+$/, ''));
+  }
+  closeRun();
+
   return { properNouns, ungrounded, grounded: ungrounded.length === 0 };
 }
 

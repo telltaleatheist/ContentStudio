@@ -71,7 +71,7 @@ const INNER_FUNCTION_WORDS = new Set([
  * being names. Deliberately a SHORT list of high-frequency words — a long one starts deleting
  * real names ("Christian", "Bishop", "Bible" are all names of things this channel covers).
  */
-const COMMON_WORDS = new Set([
+export const COMMON_WORDS = new Set([
   'a', 'about', 'after', 'again', 'all', 'also', 'although', 'always', 'am', 'an', 'and', 'another',
   'any', 'anyway', 'are', 'as', 'at', 'back', 'because', 'been', 'before', 'being', 'both', 'but',
   'by', 'can', 'come', 'could', 'did', 'do', 'does', 'down', 'each', 'even', 'ever', 'every',

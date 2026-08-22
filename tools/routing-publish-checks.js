@@ -714,14 +714,62 @@ check('a channel that publishes no thumbnails says so by its field list', () => 
 check('a title naming something the transcript never mentions is reported ungrounded', () => {
   const transcript = 'Marcus Wray told his congregation that God wants a fourth private jet.';
   const faults = tasks.ungroundedTitles(
-    ['Marcus Wray wants a fourth jet', 'Kenneth Copeland wants a fourth jet'],
+    ['Marcus Wray Wants A Fourth Jet', 'Kenneth Copeland Wants A Fourth Jet'],
     transcript
   );
   eq(faults.length, 1, 'exactly one title is ungrounded');
-  eq(faults[0].title, 'Kenneth Copeland wants a fourth jet');
+  eq(faults[0].title, 'Kenneth Copeland Wants A Fourth Jet');
   if (!faults[0].invented.join(' ').includes('Kenneth Copeland')) {
     throw new Error('the invented name was not named: ' + JSON.stringify(faults[0]));
   }
+});
+
+/**
+ * THE FALSE-POSITIVE STORM THIS REPLACED, kept as a regression because it is the reason the
+ * viewer-facing check exists separately from the chapter one.
+ *
+ * These are real titles from this build's harness run against the 27b. Under the chapter-title
+ * extractor, Title Case made "Buy", "Zero Accountability", "Critics Demons" and "Preachers
+ * Need" all look like invented names, and seven of ten titles came back ungrounded — which
+ * would have buried the ONE title in that run that really did make something up.
+ */
+check('Title Case does not turn ordinary words into invented names', () => {
+  const fixture = path.join(__dirname, '..', 'prompt-harness', 'fixtures', 'transcript.example.txt');
+  const transcript = require('fs').readFileSync(fixture, 'utf8');
+  const clean = [
+    'Marcus Wray Says God Told Him To Buy A Fourth Private Jet',
+    'The Preacher Who Called His Critics Demons For Questioning A Jet',
+    "Preachers Need A Tail Number. Faith Doesn't. Marcus Wray Proves It",
+    'He Blamed Satan For People Asking Why A Preacher Needs Twelve Seats',
+    'Wray: Questioning The Jet Means Satan Is Using You',
+  ];
+  const faults = tasks.ungroundedTitles(clean, transcript);
+  if (faults.length > 0) throw new Error('false positives: ' + JSON.stringify(faults));
+
+  // And the one from the same run that really did invent something: the transcript says the
+  // aircraft seats twelve, and there is no fourteenth of anything in it.
+  const real = tasks.ungroundedTitles(
+    ['Marcus Wray Told His Congregation God Wants A Fourteenth Seat'], transcript);
+  eq(real.length, 1, 'the genuine hallucination is still caught');
+  eq(real[0].invented, ['Fourteenth Seat']);
+});
+
+/**
+ * The check reports a CLAIM BUILT FROM WORDS THE VIDEO NEVER SAID as readily as an invented
+ * name, and that is the intended reading rather than a leak in the test.
+ *
+ * Without a lexicon you cannot tell "Kenneth Copeland" from "Zero Accountability": both are two
+ * adjacent capitalized words the inputs do not contain. For a channel whose brief opens by
+ * naming its libel exposure, both are worth the same look — so the warning names the phrase and
+ * says the video's own words do not contain it, rather than claiming it is a name.
+ */
+check('a phrase built from words the video never said is reported too', () => {
+  const fixture = path.join(__dirname, '..', 'prompt-harness', 'fixtures', 'transcript.example.txt');
+  const transcript = require('fs').readFileSync(fixture, 'utf8');
+  const faults = tasks.ungroundedTitles(
+    ['Four Private Jets. One Bible Verse. Zero Accountability. Marcus Wray.'], transcript);
+  eq(faults.length, 1);
+  eq(faults[0].invented, ['Zero Accountability'], 'the transcript says neither word');
 });
 
 /**
@@ -729,20 +777,24 @@ check('a title naming something the transcript never mentions is reported ungrou
  * ("Gene Bailey's misreading of Luke 19:13"), so a check that flagged the target register as
  * invented would fire on almost every correct title.
  */
-check('possessive and split-spelling names are NOT false-positived', () => {
+check('possessive and split-spelled names are NOT false-positived', () => {
   const transcript =
-    'Gene Bailey read Luke 19:13 and quoted D. L. Moody, then brought up the prayer of Jabez.';
+    'Gene Bailey read Luke 19:13 and quoted D. L. Moody, then brought up the prayer of Jabez. ' +
+    'He misread the verse as a call to occupy territory until Christ returns.';
+  eq(tasks.ungroundedTitles(
+    ["Gene Bailey's Misreading Of Luke 19:13 And His Call To Occupy Territory"], transcript), [],
+    'the possessive form the prompts ask for is the target register, not a fault');
+  eq(tasks.ungroundedTitles(
+    ["Gene Bailey's Use Of Jabez And D.L. Moody To Justify A Takeover"], transcript), [],
+    'a name the transcript spells apart ("D. L. Moody") still grounds its title spelling');
+
+  // A name from somewhere else entirely, in the same shape, IS caught.
   const faults = tasks.ungroundedTitles(
-    [
-      "Gene Bailey's misreading of Luke 19:13 and his call to occupy territory",
-      "Gene Bailey's use of Jabez, D.L. Moody, and Isaiah to justify a takeover",
-    ],
-    transcript
-  );
-  // "Isaiah" is genuinely absent, so the second title IS ungrounded — but for that reason
-  // alone, and the possessives and the split-spelled "D.L. Moody" must not contribute.
-  eq(faults.length, 1, 'only the title with a genuinely absent name');
-  eq(faults[0].invented, ['Isaiah'], 'and only that name');
+    ["Kenneth Copeland's Use Of Jabez To Justify A Takeover"], transcript);
+  eq(faults.length, 1, 'the leaked name is caught even in possessive form');
+  if (!faults[0].invented.join(' ').includes('Kenneth Copeland')) {
+    throw new Error('the invented name was not named: ' + JSON.stringify(faults[0]));
+  }
 });
 
 check('nothing to check against is not silently a pass', () => {

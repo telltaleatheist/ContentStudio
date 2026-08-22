@@ -2205,6 +2205,9 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         summarizationModel: fullModel,
         apiKey,
         host: settings.ollamaHost || 'http://localhost:11434',
+        // Where the prompt assets live. Every prompt is an asset now, including the
+        // episode-split one, so a service built without this has nowhere to read them from.
+        promptSetsDir: getPromptSetsDirectory(),
       };
       const aiService = new AIManagerService(aiConfig);
       const initialized = await aiService.initialize();

@@ -108,6 +108,15 @@ export interface EpisodeSplitParams {
   aiModel: string;
   aiApiKey?: string;
   aiHost?: string;
+  /**
+   * The userData prompt-sets directory, so the AI manager this builds can load the prompt
+   * assets from it (prompt-assets.ts reads <promptSetsDir>/prompts).
+   *
+   * REQUIRED, and not defaulted: the episode-split prompt is an asset like every other prompt
+   * now, and a service constructed without somewhere to read it from would fail at the moment
+   * it needed the prompt rather than at the moment it was built wrong.
+   */
+  promptSetsDir: string;
   jobId?: string;
   progressCallback?: (phase: string, message: string, percent?: number) => void;
   cancelCallback?: () => boolean;
@@ -323,6 +332,7 @@ export class EpisodeSplitterService {
         summarizationModel: aiModel,
         apiKey: aiApiKey,
         host: aiHost,
+        promptSetsDir: params.promptSetsDir,
       };
 
       const aiService = new AIManagerService(aiConfig);

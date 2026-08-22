@@ -52,7 +52,7 @@ import {
 import { DescriptionUnit } from './description-unit';
 import { assembleTags, buildHashtags, hashtagLine, GENERATED_TAG_BUDGET_CHARS } from './tags-hashtags';
 import { promptAssets } from './prompt-assets';
-import { groundTitle } from './chapter-title-quality';
+import { groundViewerTitle } from './chapter-title-quality';
 // Type-only: the units receive an AIManagerService instance, they never construct one.
 // A value import here would close an import cycle (ai-manager imports this module for
 // its section parser) and break at require() time.
@@ -1552,20 +1552,23 @@ export interface UngroundedTitle {
 }
 
 /**
- * Which of these titles assert a proper noun nothing in the inputs contains.
+ * Which of these titles assert a name nothing in the inputs contains.
  *
- * PURE, so the check is testable without a model. It is the same `groundTitle` the chapter
- * pipeline uses on chapter titles — one implementation of "did the model make this name up",
- * including its possessive handling ("Gene Bailey's misreading" is grounded by a transcript that
- * says "Gene Bailey") and its per-word fallback for names transcripts spell apart ("D.L. Moody"
- * against "D. L. Moody").
+ * PURE, so the check is testable without a model. It uses `groundViewerTitle`, not the chapter
+ * pipeline's `groundTitle`, and the difference is measured rather than stylistic: a chapter
+ * title is sentence-cased topic form, so a mid-string capital really is evidence of a name,
+ * while a YouTube title Title Cases every word and tells you nothing. See that function for what
+ * the viewer-facing bar is and why it is deliberately conservative.
+ *
+ * Possessives are handled the same way on both paths — "Gene Bailey's misreading" is grounded by
+ * a transcript that says "Gene Bailey".
  */
 export function ungroundedTitles(titles: unknown, groundingText: string): UngroundedTitle[] {
   if (!Array.isArray(titles)) return [];
   const faults: UngroundedTitle[] = [];
   for (const title of titles) {
     if (typeof title !== 'string' || title.trim().length === 0) continue;
-    const verdict = groundTitle(title, groundingText);
+    const verdict = groundViewerTitle(title, groundingText);
     if (!verdict.grounded) faults.push({ title, invented: verdict.ungrounded });
   }
   return faults;
@@ -1620,10 +1623,11 @@ async function groundTitlesOnce(
   }
 
   ctx.warn(
-    `titles were asked for twice and both times named something the video's transcript, chapters and ` +
-      `filename do not contain — ` +
-      secondFaults.map((f) => `"${f.title}" (${f.invented.join(', ')})`).join('; ') +
-      `. They are kept exactly as the model wrote them; nothing was dropped or rewritten.`
+    `titles were asked for twice and both times used a phrase the video's transcript, chapters and ` +
+      `filename contain no part of — ` +
+      secondFaults.map((f) => `"${f.title}" says ${f.invented.map((i) => `"${i}"`).join(' and ')}`).join('; ') +
+      `. Check whether that is a real name from somewhere else or a claim the video does not make. The titles ` +
+      `are kept exactly as the model wrote them; nothing was dropped or rewritten.`
   );
   return second;
 }
