@@ -61,17 +61,29 @@ export const DIRECT_PASS_MAX_CHARS = {
  */
 export function directPassesRaw(options: {
   chars: number;
-  /** AIConfig.provider — anything other than 'ollama' is a cloud transport. */
-  provider: string;
+  /** Which DIRECT_PASS_MAX_CHARS entry the transcript is measured against. */
+  ceiling: 'local' | 'cloud';
   forceCondense?: boolean;
 }): boolean {
   if (options.forceCondense) return false;
-  const ceiling = options.provider === 'ollama' ? DIRECT_PASS_MAX_CHARS.local : DIRECT_PASS_MAX_CHARS.cloud;
-  return options.chars <= ceiling;
+  return options.chars <= DIRECT_PASS_MAX_CHARS[options.ceiling];
 }
 
 export interface AIConfig {
   provider: 'ollama' | 'openai' | 'claude';
+  /**
+   * Which direct-pass ceiling the transcript is measured against, decided by WHERE THE
+   * FIELD CALLS GO, not by `provider` above. The per-field metadata path sets it from the
+   * resolved routing: every routed field model local → 'local' (90k), any cloud → 'cloud'
+   * (60k, the cost ceiling). Absent for callers whose every call really does go through
+   * `provider` (compilation packaging, episode splitting) — there the provider IS the
+   * answer and it is derived, not defaulted.
+   *
+   * This field exists because the 2026-08-22 restructure made `provider` a legacy setting
+   * the metadata calls no longer follow: an all-local run under a cloud `provider` was
+   * condensing 62k-char transcripts that fit the local window raw.
+   */
+  transcriptCeiling?: 'local' | 'cloud';
   model?: string; // Legacy single model (backward compatibility)
   summarizationModel?: string; // Model for fast summarization
   metadataModel?: string; // Model for final metadata generation
@@ -655,13 +667,14 @@ export class AIManagerService {
       return transcript;
     }
 
-    const isCloud = this.config.provider !== 'ollama';
-    const directPassMax = isCloud ? DIRECT_PASS_MAX_CHARS.cloud : DIRECT_PASS_MAX_CHARS.local;
+    const ceiling = this.config.transcriptCeiling
+      ?? (this.config.provider === 'ollama' ? 'local' : 'cloud');
+    const directPassMax = DIRECT_PASS_MAX_CHARS[ceiling];
 
-    if (directPassesRaw({ chars: transcript.length, provider: this.config.provider, forceCondense: options?.forceCondense })) {
+    if (directPassesRaw({ chars: transcript.length, ceiling, forceCondense: options?.forceCondense })) {
       console.log(
         `[AIManager] Direct pass for ${sourceName}: ${transcript.length} chars of raw transcript sent to the ` +
-          `metadata calls unsummarized (${isCloud ? 'cloud' : 'local'} ceiling ${directPassMax})`
+          `metadata calls unsummarized (${ceiling} ceiling ${directPassMax})`
       );
       return transcript;
     }
@@ -684,7 +697,13 @@ export class AIManagerService {
     console.log(`[AIManager]     Transcript length: ${transcript.length} chars`);
     console.log(`[AIManager]     Using model: ${this.summaryModel}`);
 
-    const chunkSize = isCloud
+    // Chunk size follows the SUMMARIZER's transport (the model doing the condensing),
+    // which is independent of both `provider` and the ceiling above. Same provider
+    // detection as initialize(): anything not explicitly cloud-prefixed is Ollama.
+    const summaryIsCloud =
+      this.summaryModel.startsWith('claude:') || this.summaryModel.startsWith('claude-') ||
+      this.summaryModel.startsWith('openai:') || this.summaryModel.startsWith('gpt-');
+    const chunkSize = summaryIsCloud
       ? AIManagerService.CLOUD_SUMMARIZE_CHUNK_CHARS
       : AIManagerService.OLLAMA_SUMMARIZE_CHUNK_CHARS;
 

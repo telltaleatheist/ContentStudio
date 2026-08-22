@@ -575,8 +575,8 @@ async function runTranscription(job: PipelineJob): Promise<void> {
     // Process inputs (transcription happens here). Collect per-input failures so
     // skipped items surface in result.warnings instead of silently vanishing.
     const customNotesMap = new Map(Object.entries(job.metadataParams.inputNotes || {}));
-    // The Phase-2 declaration per input, keyed by the same absolute path `chapterFlags`
-    // uses. Entries whose value is a FinalOnlyDeclaration are the DECLARED final-only
+    // The Phase-2 declaration per input, keyed by the input's absolute path.
+    // Entries whose value is a FinalOnlyDeclaration are the DECLARED final-only
     // mode and must survive the trip intact, not be dropped to "absent" — the two mean
     // different things downstream (spec §3.2).
     const transcriptLinkMap = new Map(Object.entries(job.metadataParams.inputTranscripts || {})) as
@@ -1231,9 +1231,8 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         promptSetsDir: getPromptSetsDirectory(),
         jobId: params.jobId,
         jobName: params.jobName,
-        chapterFlags: params.chapterFlags || {},
-        // The Phase-2 declaration for each input, keyed by the same absolute path
-        // `chapterFlags` is. A TranscriptRef means "generate content fields from this
+        // The Phase-2 declaration for each input, keyed by the input's absolute
+        // path. A TranscriptRef means "generate content fields from this
         // editor story"; a FinalOnlyDeclaration means "final export only" and carries WHY
         // — the operator said so, or he linked nothing and this is the default. Both are
         // DECLARED MODES and both are recorded (spec §3.2). An absent key means the input

@@ -639,21 +639,44 @@ check('a third model is a DECLARED warning naming the fields, and never a refusa
  * locally generated title was written from a précis of the video rather than the video.
  */
 check('a local transcript passes through raw right up to the ceiling', () => {
-  eq(aiManager.directPassesRaw({ chars: 89000, provider: 'ollama' }), true, '89k should reach the model raw');
-  eq(aiManager.directPassesRaw({ chars: 91000, provider: 'ollama' }), false, '91k does not fit and must condense');
+  eq(aiManager.directPassesRaw({ chars: 89000, ceiling: 'local' }), true, '89k should reach the model raw');
+  eq(aiManager.directPassesRaw({ chars: 91000, ceiling: 'local' }), false, '91k does not fit and must condense');
   eq(aiManager.DIRECT_PASS_MAX_CHARS.local, 90000, 'the local ceiling moved');
 });
 
 check('compilation still condenses whatever the length', () => {
-  eq(aiManager.directPassesRaw({ chars: 1000, provider: 'ollama', forceCondense: true }), false,
+  eq(aiManager.directPassesRaw({ chars: 1000, ceiling: 'local', forceCondense: true }), false,
     'forceCondense is the compilation contract and it is not size-dependent');
-  eq(aiManager.directPassesRaw({ chars: 1000, provider: 'claude', forceCondense: true }), false,
+  eq(aiManager.directPassesRaw({ chars: 1000, ceiling: 'cloud', forceCondense: true }), false,
     'and it is not transport-dependent either');
 });
 
 check('the cloud ceiling is unchanged by any of this', () => {
-  eq(aiManager.directPassesRaw({ chars: 59000, provider: 'claude' }), true, 'under the cloud ceiling');
-  eq(aiManager.directPassesRaw({ chars: 61000, provider: 'claude' }), false, 'over the cloud ceiling');
+  eq(aiManager.directPassesRaw({ chars: 59000, ceiling: 'cloud' }), true, 'under the cloud ceiling');
+  eq(aiManager.directPassesRaw({ chars: 61000, ceiling: 'cloud' }), false, 'over the cloud ceiling');
+});
+
+/**
+ * THE CEILING FOLLOWS THE ROUTING, NOT THE SETTINGS PROVIDER. The 2026-08-22 live run
+ * that motivated this: an all-local roster under a cloud Settings provider condensed a
+ * 62k transcript that fit the local window raw.
+ */
+check('an all-local routing earns the local ceiling whatever the Settings provider says', () => {
+  const routed = routing.resolveMetadataRouting({});
+  const allLocal = Object.entries(routed)
+    .every(([taskId, optionId]) => routing.routingOption(taskId, optionId).kind === 'local');
+  eq(allLocal, true, 'the shipped defaults are the all-local roster');
+  eq(aiManager.directPassesRaw({ chars: 62299, ceiling: allLocal ? 'local' : 'cloud' }), true,
+    'the podcast 1.mov transcript reaches the model raw');
+});
+
+check('one cloud field drops the run to the cost ceiling', () => {
+  const routed = routing.resolveMetadataRouting({ titles: 'sonnet5' });
+  const allLocal = Object.entries(routed)
+    .every(([taskId, optionId]) => routing.routingOption(taskId, optionId).kind === 'local');
+  eq(allLocal, false, 'sonnet5 titles make the run partly cloud');
+  eq(aiManager.directPassesRaw({ chars: 62299, ceiling: allLocal ? 'local' : 'cloud' }), false,
+    '62k is over the cloud cost ceiling');
 });
 
 check('a podcast plans no thumbnail or clip unit at all', () => {

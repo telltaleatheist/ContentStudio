@@ -908,10 +908,9 @@ export class ElectronService {
     /** Required: the queue row's own id. The main process refuses a request without it. */
     jobId: string;
     jobName?: string;
-    chapterFlags?: { [path: string]: boolean };
     /**
-     * What each linkable input declares about its content transcript, keyed by the same
-     * `item.path` `chapterFlags` is. A ref means "this video's content comes from that
+     * What each linkable input declares about its content transcript, keyed by
+     * `item.path`. A ref means "this video's content comes from that
      * editor story"; a FinalOnlyDeclaration means "the final export's own transcript",
      * and says whether the operator declared it or simply linked nothing.
      *
