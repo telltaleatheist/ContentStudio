@@ -21,6 +21,19 @@ import { NotesDialog } from '../notes-dialog/notes-dialog';
 import { SplitReviewDialog, SplitReviewDialogData, SplitReviewDialogResult } from '../split-review-dialog/split-review-dialog';
 import { EditTextSubjectDialog, EditTextSubjectData } from '../edit-text-subject-dialog/edit-text-subject-dialog';
 import { PromptViewDialog } from '../prompt-view-dialog/prompt-view-dialog';
+import {
+  StoryPickerDialog,
+  StoryPickerDialogData,
+  StoryPickerDialogResult,
+} from '../story-picker-dialog/story-picker-dialog';
+import type { TranscriptRef } from '../../features/publish/publish.types';
+import {
+  isDriftWarning,
+  type CandidateScan,
+  type DriftProbe,
+  type TranscriptCandidate,
+  type TranscriptChoice,
+} from '../../features/transcript-link/transcript-link.types';
 import { InputsStateService, InputItem } from '../../services/inputs-state';
 import { JobQueueService, QueuedJob } from '../../services/job-queue';
 import { NotificationService } from '../../services/notification';
@@ -99,6 +112,15 @@ export class Inputs implements OnInit, OnDestroy {
           this.expandedJobIds.set(newExpanded);
         }
       }
+    });
+
+    // Ask the editor-transcript question for every video item, as soon as it lands.
+    // Deferred out of the reactive pass on purpose: the scan writes signals of its own, and
+    // an effect that writes what it read is how a loop starts. Reading inputItems() here is
+    // what subscribes this effect to the list.
+    effect(() => {
+      this.inputsState.inputItems();
+      queueMicrotask(() => void this.scanTranscriptCandidates());
     });
   }
 
@@ -404,6 +426,338 @@ export class Inputs implements OnInit, OnDestroy {
     this.inputsState.inputItems.set(updatedItems);
   }
 
+  // ==================== Editor transcript link (Phase 2) ====================
+  //
+  // Every video item is asked one question before it can run: which editor story is this?
+  // The finder hints (75% of the 40 live exports get a candidate) but never decides,
+  // because the hint is the wrong story about 1 time in 4. The operator answers; the answer
+  // rides the job. NOTHING in this release generates differently because of it — PR 5 is
+  // the split. See PHASE-1-2-SPEC.md §3.2.
+
+  /** Scan results keyed by item.path. Not persisted: it is a fact about disk, re-read each session. */
+  transcriptScans = signal<Record<string, CandidateScan>>({});
+  /** Paths with a scan in flight, so the row can say so instead of looking empty. */
+  transcriptScanning = signal<string[]>([]);
+  /** Drift per (video, candidate transcript). Keyed by the pair — one .mov, several candidates. */
+  transcriptDrift = signal<Record<string, DriftProbe>>({});
+  /**
+   * Why a drift probe failed, same key. Kept so "not measured" and "still measuring" stay
+   * distinguishable — an absent entry means in flight, and only in flight.
+   */
+  driftFailures = signal<Record<string, string>>({});
+  /** Paths whose picker dialog is open, so the button can't be double-fired. */
+  pickingTranscriptFor = signal<string | null>(null);
+
+  /** Only real video items are asked. A subject or an imported transcript has no final export. */
+  canLinkTranscript(item: InputItem): boolean {
+    return item.type === 'video';
+  }
+
+  driftKey(videoPath: string, transcriptPath: string): string {
+    // A separator that cannot occur in a path, so the pair is a key and not a
+    // coincidence of two paths that concatenate the same way.
+    return videoPath + '\u0000' + transcriptPath;
+  }
+
+  scanFor(item: InputItem): CandidateScan | null {
+    return this.transcriptScans()[item.path] || null;
+  }
+
+  isScanningTranscript(item: InputItem): boolean {
+    return this.transcriptScanning().includes(item.path);
+  }
+
+  driftFor(item: InputItem, candidate: TranscriptCandidate): DriftProbe | null {
+    return this.transcriptDrift()[this.driftKey(item.path, candidate.transcriptPath)] || null;
+  }
+
+  /**
+   * Find the candidates for every video item that has not been scanned yet.
+   *
+   * Called after each of the four ways an item can arrive. An item whose scan finds nothing
+   * SELF-RESOLVES to final-only right here, recording what was searched — the row still
+   * shows the decision and the report still records which path the run took, which is what
+   * makes final-only a declared mode rather than a fallback (spec §3.2).
+   */
+  private async scanTranscriptCandidates(): Promise<void> {
+    // Every video the operator could be asked about: the ones on the page AND the ones
+    // already sitting in a pending job. A queued item that was cleared off the Inputs list
+    // still needs a scan, or the row that reports its decision has nothing to report and
+    // Start Queue refuses an item nothing can answer for.
+    const byPath = new Map<string, InputItem>();
+    for (const item of this.inputsState.inputItems()) byPath.set(item.path, item);
+    for (const job of this.jobQueue.getPendingJobs()) {
+      for (const item of job.inputs) if (!byPath.has(item.path)) byPath.set(item.path, item);
+    }
+
+    const pending = [...byPath.values()].filter(item =>
+      this.canLinkTranscript(item) &&
+      !this.transcriptScans()[item.path] &&
+      !this.transcriptScanning().includes(item.path));
+    if (pending.length === 0) return;
+
+    // Claim ALL of them before the first await. Items arrive in bursts and every arrival
+    // fires the effect again, so a claim made one-at-a-time inside the loop would let a
+    // second pass pick up items this one has not reached yet and scan them twice.
+    this.transcriptScanning.set([...this.transcriptScanning(), ...pending.map(i => i.path)]);
+
+    for (const item of pending) {
+      const res = await this.electron.transcriptFindCandidates(item.path);
+      this.transcriptScanning.set(this.transcriptScanning().filter(p => p !== item.path));
+
+      if (!res.success) {
+        // A scan that cannot run is stated, not smoothed over: the row will show that the
+        // question could not be asked, and Start Queue will still demand an answer.
+        this.notificationService.error(
+          'Editor transcript',
+          `Could not look for an editor story for ${item.displayName}: ${res.error}`);
+        continue;
+      }
+
+      const scan = res.data;
+      this.transcriptScans.set({ ...this.transcriptScans(), [item.path]: scan });
+
+      for (const problem of scan.problems) {
+        this.notificationService.warning('Editor transcript', problem);
+      }
+
+      if (scan.candidates.length === 0) {
+        this.setTranscriptChoice(item.path, {
+          mode: 'final-only',
+          reason: `no editor story matched — ${scan.searchedDescription}`,
+        });
+      } else {
+        // Drift is part of the question, so measure it before the operator answers.
+        void this.probeCandidateDrift(item.path, scan);
+      }
+    }
+  }
+
+  /** ffprobe the export once per candidate, so the row can show the drift line up front. */
+  private async probeCandidateDrift(videoPath: string, scan: CandidateScan): Promise<void> {
+    for (const candidate of scan.candidates) {
+      if (!candidate.ref) continue;   // nothing linkable: nothing to measure against
+      const res = await this.electron.transcriptProbeDrift(videoPath, candidate.ref);
+      const key = this.driftKey(videoPath, candidate.transcriptPath);
+      if (!res.success) {
+        // Record the FAILURE, not nothing. Leaving the entry absent is indistinguishable
+        // from "still in flight", and the row would say "measuring…" for ever.
+        this.notificationService.warning(
+          'Editor transcript',
+          `Could not measure drift for "${candidate.storyTitle}": ${res.error}`);
+        this.driftFailures.set({ ...this.driftFailures(), [key]: res.error || 'the probe failed' });
+        continue;
+      }
+      this.transcriptDrift.set({ ...this.transcriptDrift(), [key]: res.data });
+    }
+  }
+
+  /**
+   * Write a decision onto the item, by path — an index goes stale across an await.
+   *
+   * ALSO writes it onto the same input inside any job already waiting in the queue.
+   * `addJob` snapshots the items, so without this a video queued before the operator
+   * answered could never be satisfied: Start Queue would name it, he would answer on the
+   * Inputs row, and the queued snapshot would still say undecided. The queue is where the
+   * answer has to land, because the queue is what runs.
+   */
+  private setTranscriptChoice(itemPath: string, choice: TranscriptChoice): void {
+    const items = this.inputsState.inputItems();
+    const index = items.findIndex(it => it.path === itemPath);
+    if (index !== -1) {
+      const updated = [...items];
+      updated[index] = { ...updated[index], transcriptChoice: choice };
+      this.inputsState.inputItems.set(updated);
+    }
+
+    for (const job of this.jobQueue.getPendingJobs()) {
+      if (!job.inputs.some(it => it.path === itemPath)) continue;
+      this.jobQueue.updateJob(job.id, {
+        inputs: job.inputs.map(it =>
+          it.path === itemPath ? { ...it, transcriptChoice: choice } : it),
+      });
+    }
+  }
+
+  /** The operator picked one of the hinted candidates. */
+  chooseCandidate(item: InputItem, candidate: TranscriptCandidate): void {
+    // The template only renders this button when `ref` is set, so reaching here without one
+    // means the two disagree. Say so rather than absorbing the click silently.
+    if (!candidate.ref) {
+      this.notificationService.error(
+        'Editor transcript',
+        `"${candidate.storyTitle}" cannot be linked: ${candidate.refUnavailableReason}`);
+      return;
+    }
+    const drift = this.driftFor(item, candidate);
+    this.setTranscriptChoice(item.path, {
+      mode: 'linked',
+      // Stamp the moment of the decision, not the moment of the scan.
+      ref: { ...candidate.ref, linkedAt: new Date().toISOString() },
+      driftSec: drift ? drift.driftSec : null,
+      driftPct: drift ? drift.driftPct : null,
+    });
+  }
+
+  /** The operator declared there is no editor story for this one. */
+  chooseFinalOnly(item: InputItem): void {
+    this.setTranscriptChoice(item.path, {
+      mode: 'final-only',
+      reason: 'declared by the operator: content fields come from the final export\'s transcript, ' +
+        'including any sponsor reads',
+    });
+  }
+
+  /** Open the picker. Progressive scope; whatever comes back is recorded as a manual link. */
+  openStoryPicker(item: InputItem): void {
+    const scan = this.scanFor(item);
+    this.pickingTranscriptFor.set(item.path);
+
+    const dialogRef = this.dialog.open(StoryPickerDialog, {
+      width: '860px',
+      maxWidth: '95vw',
+      data: {
+        videoName: item.displayName,
+        week: scan ? scan.scannedWeek : null,
+      } as StoryPickerDialogData,
+    });
+
+    dialogRef.afterClosed().subscribe(async (outcome: StoryPickerDialogResult | undefined) => {
+      this.pickingTranscriptFor.set(null);
+      if (!outcome) return;
+
+      // Measure this story against THIS export before recording the choice — a manually
+      // picked story is exactly the case where drift is worth seeing.
+      let driftSec: number | null = null;
+      let driftPct: number | null = null;
+      const probe = await this.electron.transcriptProbeDrift(item.path, outcome.ref);
+      if (probe.success) {
+        driftSec = probe.data.driftSec;
+        driftPct = probe.data.driftPct;
+        this.transcriptDrift.set({
+          ...this.transcriptDrift(),
+          [this.driftKey(item.path, outcome.candidate.transcriptPath)]: probe.data,
+        });
+      } else {
+        this.notificationService.warning(
+          'Editor transcript',
+          `Linked "${outcome.candidate.storyTitle}" but could not measure drift: ${probe.error}`);
+      }
+
+      this.setTranscriptChoice(item.path, { mode: 'linked', ref: outcome.ref, driftSec, driftPct });
+    });
+  }
+
+  /** "Export it now" straight from the row, for the single-candidate case. */
+  async exportStoryTranscripts(item: InputItem, candidate: TranscriptCandidate): Promise<void> {
+    if (this.exportingTranscriptsFor()) return;
+    this.exportingTranscriptsFor.set(item.path);
+    const res = await this.electron.transcriptExportStories(candidate.projectFolder);
+    this.exportingTranscriptsFor.set(null);
+
+    if (!res.success) {
+      this.notificationService.error('Export story transcripts', res.error || 'the export failed');
+      return;
+    }
+    this.notificationService.success(
+      'Export story transcripts',
+      `Wrote ${res.data.storiesEmitted} transcript(s) to ${res.data.transcriptsDir}`);
+
+    // Re-scan: the candidate that had no transcript now has one, and so do its siblings.
+    this.forgetTranscriptScan(item.path);
+    await this.scanTranscriptCandidates();
+  }
+
+  /**
+   * Drop everything measured about one video so the next pass re-reads it.
+   *
+   * Clears the drift entries too: they are keyed by (video, transcript path) and a freshly
+   * exported transcript at the same path is a DIFFERENT file. Keeping the old number would
+   * show a measurement of something that no longer exists.
+   */
+  private forgetTranscriptScan(itemPath: string): void {
+    const scans = { ...this.transcriptScans() };
+    delete scans[itemPath];
+    this.transcriptScans.set(scans);
+
+    const prefix = itemPath + '\u0000';
+    const keep = (map: Record<string, unknown>) =>
+      Object.fromEntries(Object.entries(map).filter(([k]) => !k.startsWith(prefix)));
+    this.transcriptDrift.set(keep(this.transcriptDrift()) as Record<string, DriftProbe>);
+    this.driftFailures.set(keep(this.driftFailures()) as Record<string, string>);
+  }
+
+  /** Ask again for one item after a scan failed, or after the week changed on disk. */
+  async retryTranscriptScan(item: InputItem): Promise<void> {
+    this.forgetTranscriptScan(item.path);
+    await this.scanTranscriptCandidates();
+  }
+
+  exportingTranscriptsFor = signal<string | null>(null);
+
+  /** Is this item still waiting for an answer it must give? */
+  needsTranscriptChoice(item: InputItem): boolean {
+    if (!this.canLinkTranscript(item)) return false;
+    if (item.transcriptChoice) return false;
+    const scan = this.scanFor(item);
+    // No scan yet means the question has not been asked, so it cannot be answered — and a
+    // run must not start on an unasked question either.
+    return scan === null || scan.candidates.length > 0;
+  }
+
+  /** One line summarising the decision, for the row and the queue. */
+  transcriptChoiceLabel(item: InputItem): string {
+    const choice = item.transcriptChoice;
+    if (!choice) return 'No editor story chosen yet';
+    if (choice.mode === 'final-only') return `Final export only — ${choice.reason}`;
+    const drift = choice.driftPct === null
+      ? 'drift not measured'
+      : `${choice.driftPct > 0 ? '+' : ''}${choice.driftPct.toFixed(1)}% vs the final cut`;
+    return `Linked to "${choice.ref.storyTitle}" (${choice.ref.sourceSession}, ${choice.ref.via}) — ${drift}`;
+  }
+
+  /** Match-kind wording for the radio label. */
+  viaLabel(candidate: TranscriptCandidate): string {
+    return candidate.via === 'exact-title' ? 'exact title' : 'label match';
+  }
+
+  /** The drift line under a candidate, or the reason there isn't one. */
+  driftLabel(item: InputItem, candidate: TranscriptCandidate): string {
+    if (!candidate.ref) {
+      return candidate.refUnavailableReason || 'this story has no usable transcript';
+    }
+    const failure = this.driftFailures()[this.driftKey(item.path, candidate.transcriptPath)];
+    if (failure) return `drift could not be measured: ${failure}`;
+    const drift = this.driftFor(item, candidate);
+    if (!drift) return 'measuring drift against the final export…';
+    const sign = drift.driftSec > 0 ? '+' : '';
+    const shorter = drift.driftSec < 0 ? 'shorter' : 'longer';
+    return `final cut is ${sign}${drift.driftSec.toFixed(1)}s ` +
+      `(${Math.abs(drift.driftPct).toFixed(1)}% ${shorter}) than the story`;
+  }
+
+  /** The confirm wording, which says so when drift is past ±10%. */
+  candidateActionLabel(item: InputItem, candidate: TranscriptCandidate): string {
+    const drift = this.driftFor(item, candidate);
+    if (drift && isDriftWarning(drift.driftPct)) {
+      const shorter = drift.driftSec < 0 ? 'shorter' : 'longer';
+      return `Link anyway (${Math.abs(drift.driftPct).toFixed(0)}% ${shorter})`;
+    }
+    return 'Link this story';
+  }
+
+  /** Does this row paint as a warning? */
+  rowIsWarning(item: InputItem): boolean {
+    const choice = item.transcriptChoice;
+    if (choice && choice.mode === 'linked') return isDriftWarning(choice.driftPct);
+    const scan = this.scanFor(item);
+    if (!scan) return false;
+    return scan.candidates.some(c => {
+      const d = this.driftFor(item, c);
+      return d ? isDriftWarning(d.driftPct) : false;
+    });
+  }
+
   // ==================== Split episode ====================
 
   // Which item's split modal is currently open (disables its button).
@@ -615,6 +969,59 @@ export class Inputs implements OnInit, OnDestroy {
     } catch (error) {
       console.error('[StartQueue] Error validating directory:', error);
       this.notificationService.error('Directory Error', 'Failed to validate output directory. Please check your settings.');
+      this.queueStarted.set(false);
+      return;
+    }
+
+    // REFUSE while any queued video item still owes an editor-transcript answer.
+    //
+    // The choice is required, not defaulted, because the finder is wrong about one time in
+    // four; starting without it would silently pick a branch on the operator's behalf. The
+    // refusal names the items so he knows exactly which rows to look at.
+    const undecided = this.jobQueue.getPendingJobs()
+      .flatMap(job => job.inputs.map(item => ({ job, item })))
+      .filter(({ item }) => this.needsTranscriptChoice(item));
+
+    if (undecided.length > 0) {
+      const names = undecided.map(({ job, item }) => `• ${item.displayName} (in "${job.name}")`).join('\n');
+      this.notificationService.error(
+        'Editor transcript choice required',
+        `${undecided.length} video ${undecided.length === 1 ? 'item has' : 'items have'} no ` +
+        `editor-story decision yet. Choose a story or "Final export only" on each row first:\n${names}`);
+      this.queueStarted.set(false);
+      return;
+    }
+
+    // RE-VALIDATE every declared link before the run starts.
+    //
+    // A link is a claim about a file on an external volume, made minutes or days ago. The
+    // spec is explicit that a declared link whose file is missing or changed FAILS the run
+    // rather than quietly falling back to final-only, and that a re-exported session must
+    // never be reused silently — so this is where the claim is checked, once, loudly.
+    const stale: string[] = [];
+    for (const job of this.jobQueue.getPendingJobs()) {
+      for (const item of job.inputs) {
+        const choice = item.transcriptChoice;
+        if (!choice || choice.mode !== 'linked') continue;
+        const res = await this.electron.transcriptResolveRef(choice.ref);
+        if (!res.success) {
+          stale.push(`• ${item.displayName}: the link could not be checked — ${res.error}`);
+          continue;
+        }
+        if (res.data.state === 'missing') {
+          stale.push(`• ${item.displayName}: linked transcript is gone — ${res.data.reason}`);
+        } else if (res.data.state === 'changed') {
+          stale.push(`• ${item.displayName}: linked transcript changed — ${res.data.reason}`);
+        }
+      }
+    }
+
+    if (stale.length > 0) {
+      this.notificationService.error(
+        'Editor transcript link is no longer valid',
+        `${stale.length} linked ${stale.length === 1 ? 'item' : 'items'} cannot run as ` +
+        `declared. Re-confirm each link (or choose "Final export only") before starting:\n` +
+        `${stale.join('\n')}`);
       this.queueStarted.set(false);
       return;
     }
@@ -943,6 +1350,20 @@ export class Inputs implements OnInit, OnDestroy {
 
       console.log('Chapter flags being sent:', chapterFlags, '(YouTube:', isYouTube, ', Individual:', isIndividual, ')');
 
+      // The operator's editor-transcript decision per input, keyed the same way
+      // chapterFlags is. Both branches are SENT: a ref for a link, an explicit null for
+      // "final export only". null rather than an omitted key, because the choice is a
+      // declared mode and the report has to be able to say which branch ran (spec §3.2).
+      // Compilation mode gets per-input refs like any other — no special case.
+      const inputTranscripts: { [path: string]: TranscriptRef | null } = {};
+      nextJob.inputs.forEach(item => {
+        const choice = item.transcriptChoice;
+        if (!choice) return;   // never offered a choice (subject, imported transcript, …)
+        inputTranscripts[item.path] = choice.mode === 'linked' ? choice.ref : null;
+      });
+
+      console.log('Input transcripts being sent:', inputTranscripts);
+
       const result = await this.electron.generateMetadata({
         inputs,
         promptSet: nextJob.promptSet,
@@ -950,6 +1371,7 @@ export class Inputs implements OnInit, OnDestroy {
         jobId: nextJob.id,
         jobName: nextJob.name,
         chapterFlags,
+        inputTranscripts,
         showPrompt: opts.showPrompt
       });
 

@@ -172,6 +172,31 @@ const api = {
   publishResolveChannel: (promptSet: string) =>
     ipcRenderer.invoke('publish-resolve-channel', promptSet),
 
+  // ==================== TRANSCRIPT LINK (Phase 2) ====================
+  // Which editor story is this final export? These are ANSWERS — none of them links
+  // anything. The operator confirms every link on the Inputs page, because over the 40
+  // live exports the hint rate is 75% and a silent auto-link would be wrong ~1 in 4.
+  // Read-only, no side effects: safe to call for every video item as it lands.
+  transcriptFindCandidates: (videoPath: string) =>
+    ipcRenderer.invoke('transcript-find-candidates', videoPath),
+  // ffprobes the .mov. Costs a second or two on a network volume — call it per candidate,
+  // not per keystroke.
+  transcriptProbeDrift: (videoPath: string, ref: unknown) =>
+    ipcRenderer.invoke('transcript-probe-drift', videoPath, ref),
+  // Three-state: ok / missing / changed. `changed` exists so a re-exported session can
+  // never be reused as though nothing happened.
+  transcriptResolveRef: (ref: unknown) =>
+    ipcRenderer.invoke('transcript-resolve-ref', ref),
+  // The picker's progressive scope: {kind:'week'} | {kind:'registered-projects'} |
+  // {kind:'project'}. One channel, because they differ only in which folders are read.
+  transcriptListStories: (scope: unknown) =>
+    ipcRenderer.invoke('transcript-list-stories', scope),
+  // "Export it now" — the ONLY one of these that writes. Runs the editor's own
+  // story-transcript export for a project, headlessly, from its saved edit state.
+  transcriptExportStories: (projectFolder: string) =>
+    ipcRenderer.invoke('transcript-export-stories', projectFolder),
+  // ==================== END TRANSCRIPT LINK ====================
+
   // ==================== EDITOR ====================
   // The ported AutoCutStudio timeline editor. Every member of the editor's `EditorHost`
   // port has a method here with the SAME NAME, except where that name is already taken by

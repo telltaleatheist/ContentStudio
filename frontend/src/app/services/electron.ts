@@ -8,7 +8,16 @@ import type {
   ThumbnailPreview,
   ThumbnailProposal,
   ThumbnailSetResult,
+  TranscriptRef,
 } from '../features/publish/publish.types';
+import type {
+  CandidateScan,
+  DriftProbe,
+  RefResolution,
+  StoryExportResult,
+  StoryList,
+  StoryScope,
+} from '../features/transcript-link/transcript-link.types';
 
 /**
  * The fields publish-set-fields accepts.
@@ -479,6 +488,18 @@ declare global {
       ) => Promise<PublishResult<ThumbnailPreview | null>>;
       publishResolveChannel: (promptSet: string) => Promise<PublishResult<ChannelResolution>>;
 
+      // ==================== TRANSCRIPT LINK (Phase 2) ====================
+      transcriptFindCandidates: (videoPath: string) => Promise<PublishResult<CandidateScan>>;
+      transcriptProbeDrift: (
+        videoPath: string,
+        ref: TranscriptRef
+      ) => Promise<PublishResult<DriftProbe>>;
+      transcriptResolveRef: (ref: TranscriptRef) => Promise<PublishResult<RefResolution>>;
+      transcriptListStories: (scope: StoryScope) => Promise<PublishResult<StoryList>>;
+      transcriptExportStories: (
+        projectFolder: string
+      ) => Promise<PublishResult<StoryExportResult>>;
+
       // ==================== EDITOR ====================
       //
       // The timeline editor's whole bridge. Every name here backs one member of the
@@ -808,6 +829,15 @@ export class ElectronService {
     jobId: string;
     jobName?: string;
     chapterFlags?: { [path: string]: boolean };
+    /**
+     * The operator's Phase-2 link decision per input, keyed by the same `item.path`
+     * `chapterFlags` is. A ref means "this video's content came from that editor story";
+     * an explicit null means "final export only", which is a DECLARED mode — which is why
+     * null is sent rather than the key being omitted.
+     *
+     * PR 4 carries it; nothing generates differently because of it yet.
+     */
+    inputTranscripts?: { [path: string]: TranscriptRef | null };
     showPrompt?: boolean;
   }): Promise<any> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
@@ -1123,6 +1153,41 @@ export class ElectronService {
   async publishClear(itemId: string): Promise<PublishResult<boolean>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.publishClear(itemId);
+  }
+
+  // ==================== TRANSCRIPT LINK (Phase 2) ====================
+  //
+  // Answers, not decisions. Nothing here links anything — the Inputs page asks, shows, and
+  // the operator confirms. Only transcriptExportStories writes.
+
+  /** Which editor stories could this final export be? Read-only; safe to call per item. */
+  async transcriptFindCandidates(videoPath: string): Promise<PublishResult<CandidateScan>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.transcriptFindCandidates(videoPath);
+  }
+
+  /** ffprobes the .mov — a second or two on a network volume. Call per candidate. */
+  async transcriptProbeDrift(videoPath: string, ref: TranscriptRef): Promise<PublishResult<DriftProbe>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.transcriptProbeDrift(videoPath, ref);
+  }
+
+  /** ok / missing / changed. `changed` blocks reuse of a re-exported session. */
+  async transcriptResolveRef(ref: TranscriptRef): Promise<PublishResult<RefResolution>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.transcriptResolveRef(ref);
+  }
+
+  /** The picker's stories, at whichever scope it has widened to. */
+  async transcriptListStories(scope: StoryScope): Promise<PublishResult<StoryList>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.transcriptListStories(scope);
+  }
+
+  /** "Export it now": writes the missing story transcripts for one editor project. */
+  async transcriptExportStories(projectFolder: string): Promise<PublishResult<StoryExportResult>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.transcriptExportStories(projectFolder);
   }
 
   // ==================== EDITOR ====================

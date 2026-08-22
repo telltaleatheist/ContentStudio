@@ -1,4 +1,5 @@
 import { Injectable, signal, effect } from '@angular/core';
+import type { TranscriptChoice } from '../features/transcript-link/transcript-link.types';
 
 export interface InputItem {
   type: string; // 'subject', 'video', 'transcript_file', 'master-report', 'text-subject'
@@ -11,6 +12,19 @@ export interface InputItem {
   generateChapters?: boolean; // For video files: generate YouTube chapter markers (default: true)
   splitEpisode?: boolean; // For transcript imports: mark for split-into-segments before generating
   textContent?: string; // For text-subject items: the actual text content
+  /**
+   * The operator's Phase-2 decision: which editor story transcript this video came from,
+   * or an explicit declaration that there is none (spec §3.2).
+   *
+   * ABSENT means UNDECIDED, and Start Queue refuses naming any video item that still has
+   * candidates and no decision. It is never a synonym for 'final-only' — over the 40 live
+   * exports a candidate is found 75% of the time and is the wrong one about 1 time in 4,
+   * so defaulting either way would be a silent wrong answer.
+   *
+   * Set on the item (not held in a component signal) so it is captured into the queued job
+   * alongside `generateChapters` and survives the sessionStorage round-trip.
+   */
+  transcriptChoice?: TranscriptChoice;
   // Master report specific fields
   masterReportPath?: string; // Path to the master report JSON file
   masterReportData?: {

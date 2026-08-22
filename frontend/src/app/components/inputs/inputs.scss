@@ -678,6 +678,135 @@
           }
         }
       }
+      // Editor transcript link (Phase 2). A second row under .input-row, because the
+      // question needs a candidate title, a session and a drift line — none of which fit
+      // as another chip on a flex row that already wraps.
+      .transcript-link-row {
+        margin-top: 0.6rem;
+        padding: 0.6rem 0.75rem;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.10);
+
+        // Undecided: the row is the reason Start Queue will refuse, so it says so in
+        // theme orange rather than sitting quietly like settled state.
+        &.undecided {
+          background: rgba(255, 107, 53, 0.08);
+          border-color: rgba(255, 107, 53, 0.30);
+        }
+
+        // Drift past +/-10%: the words may describe material that was deliberately cut.
+        // Same amber recipe as .job-error-message uses for red, so the two read as one
+        // system. Warning wins over undecided: it is the more specific statement.
+        &.warning {
+          background: rgba(255, 202, 40, 0.10);
+          border-color: rgba(255, 202, 40, 0.35);
+        }
+
+        .tl-header {
+          display: flex;
+          align-items: center;
+          gap: 0.4rem;
+          margin-bottom: 0.4rem;
+
+          mat-icon {
+            font-size: 18px;
+            width: 18px;
+            height: 18px;
+            color: rgba(255, 255, 255, 0.6);
+          }
+
+          .tl-title {
+            color: #fff;
+            font-size: 0.85rem;
+            font-weight: 600;
+          }
+
+          .tl-required {
+            margin-left: auto;
+            color: var(--primary-orange);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+          }
+
+          .tl-ambiguous {
+            color: #ffca28;
+            font-size: 0.78rem;
+          }
+        }
+
+        .tl-options {
+          display: flex;
+          flex-direction: column;
+          gap: 0.35rem;
+        }
+
+        .tl-option {
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+          padding: 0.35rem 0.4rem;
+          border-radius: 4px;
+          border: 1px solid transparent;
+
+          &.selected {
+            background: rgba(255, 107, 53, 0.10);
+            border-color: rgba(255, 107, 53, 0.35);
+          }
+
+          .tl-option-main {
+            flex: 1 1 auto;
+            min-width: 0;
+          }
+
+          .tl-option-title {
+            color: #fff;
+            font-size: 0.85rem;
+            word-break: break-word;
+          }
+
+          .tl-option-kind {
+            color: rgba(255, 255, 255, 0.55);
+            font-size: 0.75rem;
+            margin-left: 0.4rem;
+          }
+
+          .tl-option-drift {
+            color: rgba(255, 255, 255, 0.55);
+            font-size: 0.75rem;
+            word-break: break-word;
+          }
+
+          .box-toggle {
+            flex-shrink: 0;
+          }
+        }
+
+        .tl-status {
+          display: flex;
+          align-items: flex-start;
+          gap: 0.4rem;
+          color: rgba(255, 255, 255, 0.7);
+          font-size: 0.78rem;
+          line-height: 1.4;
+          word-break: break-word;
+
+          mat-icon {
+            flex-shrink: 0;
+            font-size: 18px;
+            width: 18px;
+            height: 18px;
+          }
+
+          &.resolved {
+            margin-top: 0.4rem;
+
+            mat-icon { color: #66bb6a; }
+          }
+        }
+      }
+
     }
 
     .add-to-queue-button {
@@ -1257,6 +1386,31 @@
                       &.pending {
                         color: var(--text-muted);
                       }
+                    }
+                  }
+
+                  // The editor-transcript decision this queued item carries. Stated on
+                  // BOTH branches — a link and a declared final-only are equally worth
+                  // reading, which is what stops final-only reading as "nothing happened".
+                  .item-transcript-choice {
+                    display: flex;
+                    align-items: flex-start;
+                    gap: 0.3rem;
+                    margin-top: 0.15rem;
+                    color: rgba(255, 255, 255, 0.5);
+                    font-size: 0.72rem;
+                    line-height: 1.35;
+                    word-break: break-word;
+
+                    mat-icon {
+                      flex-shrink: 0;
+                      font-size: 14px;
+                      width: 14px;
+                      height: 14px;
+                    }
+
+                    &.undecided {
+                      color: var(--primary-orange);
                     }
                   }
                 }

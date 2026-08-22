@@ -23,8 +23,11 @@ export interface ThumbnailMeta {
 }
 
 /**
- * A link to one story's editor transcript (Phase 2). TYPE ONLY in this release —
- * nothing sets, resolves or consumes one yet.
+ * A link to one story's editor transcript (Phase 2).
+ *
+ * As of PR 4 the Inputs page finds, confirms and stores one, and it rides the job. Nothing
+ * CONSUMES it yet — content fields still come from the final export's Whisper transcript on
+ * every path. The generation split is PR 5.
  */
 export interface TranscriptRef {
   kind: 'acs-story';
