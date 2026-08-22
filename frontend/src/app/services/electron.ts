@@ -183,9 +183,21 @@ export interface YouTubeCollectorState {
 }
 
 // Metadata model routing (which model generates which metadata task)
+/**
+ * Whether the option's model is actually on the machine. `unknown` means it could not be
+ * checked — Ollama did not answer, or the option is served by something Ollama does not
+ * list — and is deliberately not the same as `not-installed`.
+ */
+export type MetadataRoutingAvailability = 'cloud' | 'installed' | 'not-installed' | 'unknown';
+
 export interface MetadataRoutingOption {
   id: string;
   label: string;
+  /** The model name behind the label, so a missing one can be named. */
+  model: string;
+  availability: MetadataRoutingAvailability;
+  /** Why `unknown`, when the host banner does not already say it. */
+  availabilityNote?: string;
 }
 
 export interface MetadataRoutingTask {
@@ -196,8 +208,17 @@ export interface MetadataRoutingTask {
   selectedOptionId: string;
 }
 
+/** The Ollama host every plain-local option was checked against. */
+export interface MetadataRoutingHost {
+  host: string;
+  reachable: boolean;
+  error?: string;
+  installedCount: number;
+}
+
 export interface MetadataRouting {
   tasks: MetadataRoutingTask[];
+  localModels: MetadataRoutingHost;
 }
 
 /**

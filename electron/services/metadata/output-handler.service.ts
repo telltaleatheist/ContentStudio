@@ -252,9 +252,20 @@ export class OutputHandlerService {
           }
         }
 
-        // Chapters section - injected in its current position (after thumbnail_text)
-        if (def.key === 'thumbnail_text' && metadata.chapters && metadata.chapters.length > 0) {
-          emitSection('CHAPTERS', this.renderChapters(metadata.chapters));
+        // Chapters section - injected in its current position (after thumbnail_text).
+        // When there are none and the run recorded why, the reason takes the section's
+        // place: a file that simply omits CHAPTERS cannot tell the reader whether they
+        // were never asked for or were lost.
+        if (def.key === 'thumbnail_text') {
+          if (metadata.chapters && metadata.chapters.length > 0) {
+            emitSection('CHAPTERS', this.renderChapters(metadata.chapters));
+          } else if (metadata.chaptersSkipped) {
+            const { outcome, reason } = metadata.chaptersSkipped;
+            emitSection('CHAPTERS', [
+              outcome === 'failed' ? 'Chapter generation FAILED. No chapters were added.' : 'No chapters were added.',
+              reason,
+            ]);
+          }
         }
       }
 

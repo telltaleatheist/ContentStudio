@@ -110,6 +110,22 @@ export interface GenerationResult {
   computedChapters?: { [sourceLabel: string]: ChapterPipelineResult };
 }
 
+/**
+ * What the chapter step produced for one item.
+ *
+ * `chaptersSkipped` is set on EVERY path that leaves the item without a published chapter
+ * list after the user asked for one, and it is what makes that visible in the saved report
+ * rather than only in the run's warnings. Absent when chapters were never requested — a
+ * report with no chapters and no explanation is correct in that case.
+ */
+interface ChapterOutcome {
+  chapters?: Chapter[];
+  excludedChapters?: Chapter[];
+  subjects?: string[];
+  details?: string[];
+  chaptersSkipped?: { outcome: 'failed' | 'skipped'; reason: string };
+}
+
 export class MetadataGeneratorService {
   /**
    * Generate metadata for inputs
@@ -424,7 +440,13 @@ export class MetadataGeneratorService {
           // Chapters are not a trailing decoration any more. Their subject list is
           // what the title, description and tag stages condition on, so it has to
           // exist before the metadata call is assembled (see CHAPTERING.md).
-          const { chapters, excludedChapters, subjects: chapterSubjects, details: chapterDetails } = await this.resolveChapters(
+          const {
+            chapters,
+            excludedChapters,
+            subjects: chapterSubjects,
+            details: chapterDetails,
+            chaptersSkipped,
+          } = await this.resolveChapters(
             item,
             params,
             i,
@@ -463,6 +485,13 @@ export class MetadataGeneratorService {
           // JSON is where the user finds out what was taken out and why.
           if (excludedChapters) {
             metadata.excludedChapters = excludedChapters;
+          }
+          // Why there are no chapters, written onto the ITEM rather than left in the
+          // run's warnings: warnings die with the response, and the report is read long
+          // after. Without this a chapterless item is indistinguishable from one that was
+          // never asked for chapters.
+          if (chaptersSkipped) {
+            metadata.chaptersSkipped = chaptersSkipped;
           }
 
           // Save this item to the job immediately
@@ -715,7 +744,7 @@ export class MetadataGeneratorService {
     requested: boolean,
     warnings: string[],
     sink?: { [sourceLabel: string]: ChapterPipelineResult }
-  ): Promise<{ chapters?: Chapter[]; excludedChapters?: Chapter[]; subjects?: string[]; details?: string[] }> {
+  ): Promise<ChapterOutcome> {
     const sourceLabel = item.source || `item_${itemIndex + 1}`;
     if (!requested) {
       return {};
@@ -737,7 +766,7 @@ export class MetadataGeneratorService {
       const msg = `${sourceLabel}: chapters were requested but no timestamped transcript was available to generate them, so the rest of the metadata was generated WITHOUT chapter subjects`;
       console.warn(`[MetadataGenerator] ${msg}`);
       warnings.push(msg);
-      return {};
+      return { chaptersSkipped: { outcome: 'skipped', reason: 'No timestamped transcript (SRT segments) was available, so the chapter pipeline never ran.' } };
     }
 
     this.throwIfCancelled(params, `before the chapter pipeline for ${sourceLabel}`);
@@ -761,7 +790,12 @@ export class MetadataGeneratorService {
         const msg = `${sourceLabel}: chapters were requested but only ${result.chapters.length} chapter(s) were found (YouTube requires at least 3), so none were added and the rest of the metadata was generated WITHOUT chapter subjects`;
         console.warn(`[MetadataGenerator] ${msg}`);
         warnings.push(msg);
-        return {};
+        return {
+          chaptersSkipped: {
+            outcome: 'skipped',
+            reason: `Only ${result.chapters.length} chapter(s) were found, and YouTube requires at least 3, so none were kept.`,
+          },
+        };
       }
 
       console.log(
@@ -783,7 +817,7 @@ export class MetadataGeneratorService {
       const msg = `${sourceLabel}: chapter generation failed, so the rest of the metadata was generated WITHOUT chapter subjects: ${errMsg}`;
       console.error(`[MetadataGenerator] ${msg}`);
       warnings.push(msg);
-      return {};
+      return { chaptersSkipped: { outcome: 'failed', reason: errMsg } };
     }
   }
 
@@ -800,7 +834,7 @@ export class MetadataGeneratorService {
     result: ChapterPipelineResult,
     sourceLabel: string,
     warnings: string[]
-  ): { chapters?: Chapter[]; excludedChapters?: Chapter[]; subjects?: string[]; details?: string[] } {
+  ): ChapterOutcome {
     const partition = excludePromoChapters(
       result.chapters,
       result.subjects,
@@ -819,7 +853,15 @@ export class MetadataGeneratorService {
     // condition on, so this item takes the legacy single call — stated by returning no
     // subjects, exactly as a run whose pipeline came back short does.
     if (partition.content.length === 0) {
-      return { excludedChapters };
+      return {
+        excludedChapters,
+        chaptersSkipped: {
+          outcome: 'skipped',
+          reason:
+            `All ${partition.excluded.length} chapter(s) the pipeline found were classified as promos, ` +
+            `so there was no chapter list left to publish (they are kept under excludedChapters).`,
+        },
+      };
     }
 
     return {

@@ -32,6 +32,7 @@ import { composeDescription, composeTags } from '../services/metadata/descriptio
 import {
   buildRoutingView,
   describeRouting,
+  probeOllamaInventory,
   resolveMetadataRouting,
   validateRoutingSelections,
 } from '../services/metadata/metadata-routing';
@@ -708,7 +709,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     // cannot honour must reach the user as an error, because it is the same error their
     // next generation would fail with.
     const stored = (store as any).get('metadataRouting');
-    return buildRoutingView(stored);
+    // Which local models are actually installed, read fresh on every open. The host is
+    // the one generation resolves against (passed down as aiHost), so what the modal
+    // marks installed is what a run would find.
+    const inventory = await probeOllamaInventory(
+      String((store as any).get('ollamaHost', 'http://localhost:11434'))
+    );
+    return buildRoutingView(stored, inventory);
   });
 
   ipcMain.handle('metadata-routing:set', async (_event, selections) => {

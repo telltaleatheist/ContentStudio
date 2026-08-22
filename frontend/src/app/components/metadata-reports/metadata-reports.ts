@@ -34,6 +34,9 @@ interface ParsedMetadata {
   pinned_comment?: string[]; // Pinned comment suggestions
   clip_suggestions?: string[]; // Shorts-able moment suggestions
   chapters?: Array<{ timestamp: string; title: string; sequence: number }>; // YouTube chapter markers
+  // Why this item has no chapters, as the run recorded it on the job JSON. Shown where
+  // the chapter list would have been — a report read later has no other account of it.
+  chaptersSkipped?: { outcome: 'failed' | 'skipped'; reason: string };
   _title?: string; // The display title from the source
   _prompt_set?: string; // The prompt set used for generation
 }
@@ -800,6 +803,16 @@ export class MetadataReports implements OnInit {
   }
 
   /**
+   * The recorded reason this item has no chapters — null when it has some, or when the
+   * run recorded nothing (chapters were never requested, so there is nothing to explain).
+   */
+  chaptersMissing(): { outcome: 'failed' | 'skipped'; reason: string } | null {
+    const meta = this.metadata();
+    if (!meta || (meta.chapters && meta.chapters.length > 0)) return null;
+    return meta.chaptersSkipped ?? null;
+  }
+
+  /**
    * Normalize variant key names from different AI models to the expected ParsedMetadata fields.
    * Also flattens objects to strings (some models return {text: "...", style: "..."} instead of plain strings).
    */
@@ -838,6 +851,7 @@ export class MetadataReports implements OnInit {
       pinned_comment: toStrArray(raw.pinned_comment || raw.pinnedComment || raw.pinned_comments) || undefined,
       clip_suggestions: toStrArray(raw.clip_suggestions || raw.clipSuggestions || raw.clips) || undefined,
       chapters: raw.chapters,
+      chaptersSkipped: raw.chaptersSkipped,
       _title: raw._title,
       _prompt_set: raw._prompt_set,
     };

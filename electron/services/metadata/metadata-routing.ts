@@ -281,9 +281,86 @@ export function describeRouting(routing: ResolvedMetadataRouting): string {
 // The IPC payload
 // ---------------------------------------------------------------------------
 
+/**
+ * Is this option's model actually there?
+ *
+ * - `cloud` — the question does not apply; a Claude/OpenAI model is present by definition.
+ * - `installed` / `not-installed` — Ollama answered and either does or does not list it.
+ * - `unknown` — nobody can say. Either Ollama did not answer (so NOTHING it serves can be
+ *   judged), or the option is served by something that is not Ollama and has no listing to
+ *   read. Deliberately distinct from `not-installed`: "we could not check" and "it is not
+ *   there" have different fixes, and collapsing them would be a guess.
+ */
+export type MetadataRoutingAvailability = 'cloud' | 'installed' | 'not-installed' | 'unknown';
+
+/** What one read of Ollama's GET /api/tags says. */
+export interface OllamaInventory {
+  host: string;
+  reachable: boolean;
+  /** Model names exactly as /api/tags lists them. Empty when the host did not answer. */
+  models: string[];
+  /** Why the host could not be read. Present only when `reachable` is false. */
+  error?: string;
+}
+
+/**
+ * An option is served by plain Ollama when it is local and names no host of its own.
+ * The one option that DOES name a host (the 32B titles model) is served by an
+ * Ollama-shaped MLX shim this app starts on demand — its /api/tags is a different
+ * server's, and a shim that is merely not running is not a missing model.
+ */
+function servedByOllama(option: MetadataRoutingOption): boolean {
+  return option.kind === 'local' && !option.host;
+}
+
+/**
+ * Ollama prints an untagged model as `name:latest`, and the registry writes the bare name
+ * for the adapters (`headline-14b-descriptions`). Comparing the two raw would report every
+ * installed adapter as missing.
+ */
+function normalizeOllamaName(name: string): string {
+  return name.includes(':') ? name : `${name}:latest`;
+}
+
+/**
+ * Read the installed model list off an Ollama host.
+ *
+ * A host that does not answer comes back as `reachable: false` WITH the reason, not as an
+ * empty model list: an empty list would mark every local option "not installed", which is
+ * a different claim than "we could not ask". This is a status query for the picker — it
+ * changes no behaviour and substitutes no model, and generation still fails loudly on a
+ * model that is not there.
+ */
+export async function probeOllamaInventory(host: string): Promise<OllamaInventory> {
+  const base = host.replace(/\/$/, '');
+  try {
+    const response = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(4000) });
+    if (!response.ok) {
+      return { host: base, reachable: false, models: [], error: `Ollama at ${base} returned HTTP ${response.status}.` };
+    }
+    const data = (await response.json()) as { models?: Array<{ name?: string }> };
+    if (!Array.isArray(data.models)) {
+      // A 200 with no model list is not "nothing is installed" — it is something other
+      // than Ollama answering on that port, and calling it an empty inventory would mark
+      // every local option missing on the strength of a reply we did not understand.
+      return { host: base, reachable: false, models: [], error: `${base}/api/tags answered without a model list.` };
+    }
+    const models = data.models.map((m) => String(m.name || '')).filter((name) => name.length > 0);
+    return { host: base, reachable: true, models };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { host: base, reachable: false, models: [], error: `Ollama at ${base} could not be reached: ${message}` };
+  }
+}
+
 export interface MetadataRoutingOptionView {
   id: string;
   label: string;
+  /** The model this option names, so the modal can say which one is missing. */
+  model: string;
+  availability: MetadataRoutingAvailability;
+  /** Why the availability is `unknown` for a reason the host banner does not already give. */
+  availabilityNote?: string;
 }
 
 export interface MetadataRoutingTaskView {
@@ -293,8 +370,40 @@ export interface MetadataRoutingTaskView {
   selectedOptionId: string;
 }
 
+/** The state of the Ollama host every plain-local option was judged against. */
+export interface MetadataRoutingHostView {
+  host: string;
+  reachable: boolean;
+  error?: string;
+  installedCount: number;
+}
+
 export interface MetadataRoutingView {
   tasks: MetadataRoutingTaskView[];
+  localModels: MetadataRoutingHostView;
+}
+
+function optionView(id: string, inventory: OllamaInventory): MetadataRoutingOptionView {
+  const option = METADATA_ROUTING_OPTIONS[id];
+  const base = { id, label: option.label, model: option.model };
+
+  if (option.kind === 'cloud') {
+    return { ...base, availability: 'cloud' };
+  }
+  if (!servedByOllama(option)) {
+    return {
+      ...base,
+      availability: 'unknown',
+      availabilityNote:
+        `served by the Ollama-shaped shim on ${option.host}, which this app starts on demand — ` +
+        `Ollama does not list it, so whether it is present cannot be checked from here`,
+    };
+  }
+  if (!inventory.reachable) {
+    return { ...base, availability: 'unknown' };
+  }
+  const installed = inventory.models.some((name) => normalizeOllamaName(name) === normalizeOllamaName(option.model));
+  return { ...base, availability: installed ? 'installed' : 'not-installed' };
 }
 
 /**
@@ -303,19 +412,31 @@ export interface MetadataRoutingView {
  * FROZEN contract (metadata-routing:get). The frontend is written against exactly this,
  * so the registry may gain tasks and options without the payload changing shape.
  *
+ * Each option carries whether its model is actually installed, because a routing that
+ * names a model the machine does not have looks exactly like one that works until the
+ * run reaches it — which is how a stored `cogito:14b` selection silently cost a job its
+ * chapters. Nothing is hidden and nothing is substituted: a missing model stays
+ * selectable and still fails loudly at generation time.
+ *
  * A stored selection that fails validation is not quietly replaced by the default here
  * either — resolveMetadataRouting throws, the IPC call fails, and the modal shows the
  * user the same error a generation would have failed with.
  */
-export function buildRoutingView(stored: unknown): MetadataRoutingView {
+export function buildRoutingView(stored: unknown, inventory: OllamaInventory): MetadataRoutingView {
   const resolved = resolveMetadataRouting(stored);
   return {
     tasks: METADATA_ROUTING_TASKS.map((task) => ({
       id: task.id,
       label: task.label,
-      options: task.options.map((id) => ({ id, label: METADATA_ROUTING_OPTIONS[id].label })),
+      options: task.options.map((id) => optionView(id, inventory)),
       selectedOptionId: resolved[task.id],
     })),
+    localModels: {
+      host: inventory.host,
+      reachable: inventory.reachable,
+      error: inventory.error,
+      installedCount: inventory.models.length,
+    },
   };
 }
 
