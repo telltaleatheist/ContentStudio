@@ -91,6 +91,55 @@ export interface VideoVerdict {
 
 export interface VideoVerdictSummary { title: string; ctr: number | null; ctrPercentile: number | null; retention30s: number | null; views: number; }
 
+/** Structural title traits measured against each other in decided A/B tests. */
+export type AbTitleTraitId = 'colon' | 'question' | 'digit';
+
+/**
+ * A trait whose isolated loss record cleared an evidence band. `lostAlone`/`wonAlone` are
+ * carried alongside the directive so the rendered rule can state its own provenance —
+ * a rule built on 25 losses must not read like one built on 2.
+ */
+export interface AbTitleRule {
+  id: AbTitleTraitId;
+  directive: string;
+  lostAlone: number;
+  wonAlone: number;
+  confidence: 'strong' | 'weak';
+}
+
+/** A trait BELOW the weak band: recorded as an observation, never stated as a rule. */
+export interface AbTitleRuleObservation {
+  id: AbTitleTraitId;
+  lostAlone: number;
+  wonAlone: number;
+}
+
+/** One winning title, with the margin it won by in percentage POINTS of watch-time share. */
+export interface AbTitleExemplar {
+  winner: string;
+  beat: string;
+  liftPts: number;
+  decidedAt: string;        // YYYY-MM-DD
+}
+
+/**
+ * Everything the generation prompt is allowed to say about a channel's A/B title tests:
+ * a bounded set of threshold-clearing rules plus a CAPPED, lift-ranked exemplar list.
+ * Replaces the old unbounded `abLearnings`, which grew one line per test forever and
+ * carried no evidence base for anything it showed.
+ */
+export interface AbTitleRulesDerivation {
+  channelId: string;
+  channelName: string;
+  derivedAt: string;                        // ISO — the "as of" date rendered in the block
+  decidedTests: number;
+  earliestDecidedAt: string | null;         // YYYY-MM-DD; null only when decidedTests === 0
+  latestDecidedAt: string | null;
+  rules: AbTitleRule[];
+  observations: AbTitleRuleObservation[];
+  exemplars: AbTitleExemplar[];
+}
+
 export interface ChannelInsights {
   channelId: string;
   computedAt: string;
@@ -98,7 +147,8 @@ export interface ChannelInsights {
   baselines: { medianCtrFirstWeek: number | null; medianAvgPctViewed: number | null; medianRetention30s: number | null; medianFirstWeekViews: number | null };
   topPackaging: VideoVerdictSummary[];    // ~8 best by packagingScore, recency-weighted (videos <90d old get 2x weight)
   bottomPackaging: VideoVerdictSummary[]; // ~5 worst
-  abLearnings: Array<{ variants: string[]; winner: string; liftPct: number }>;
+  /** Derived at distillation time from the channel's ab-tests.json — see ab-title-rules.ts. */
+  abTitleRules: AbTitleRulesDerivation;
   topSearchTerms: Array<{ term: string; views: number }>;
   aiBrief: string | null;                 // v1: always null (field reserved)
 }

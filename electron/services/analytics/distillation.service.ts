@@ -21,6 +21,7 @@ import {
   VideoVerdictSummary,
 } from './analytics-types';
 import { AnalyticsStoreService } from './analytics-store.service';
+import { deriveAbTitleRules } from './ab-title-rules';
 
 // First-week snapshot targeting: nearest snapshot to 168h of video age, within ±48h.
 const FIRST_WEEK_TARGET_HOURS = 168;
@@ -97,8 +98,9 @@ export class DistillationService {
       this.store.loadVerdicts(channelId).map((v) => [v.videoId, v])
     );
     // A/B results are permanent and stored separately from verdicts, which are rebuilt
-    // from scratch on every run. Reading them here is what feeds real test winners into
-    // ChannelInsights.abLearnings and from there into the generation prompt.
+    // from scratch on every run. Reading them here is what puts a video's own test result
+    // on its verdict (for the analytics UI); the prompt-facing rules are derived from the
+    // same file in computeChannelInsights.
     const abTestByVideo = new Map(
       this.store.loadAbTests(channelId).map((t) => [
         t.videoId,
@@ -325,13 +327,21 @@ export class DistillationService {
       .slice(0, 5)
       .map((v) => this.toSummary(v));
 
-    const abLearnings = verdicts
-      .filter((v) => v.abTest !== null)
-      .map((v) => ({
-        variants: v.abTest!.variants,
-        winner: v.abTest!.winner,
-        liftPct: v.abTest!.liftPct,
-      }));
+    // A/B title evidence is DERIVED here, not accumulated: aggregate rules that cleared an
+    // evidence band plus a capped, lift-ranked exemplar list. It is computed from the
+    // permanent ab-tests.json rather than from verdicts, so a video whose record has aged
+    // out of the insights window still counts as evidence — a decided test does not expire.
+    const channel = this.store.listChannels().find((c) => c.channelId === channelId);
+    if (!channel) {
+      // Insights are per registered channel; deriving them for an unregistered id would
+      // produce a block whose provenance line cannot name the channel it describes.
+      throw new Error(`[Distillation] channel ${channelId} is not in the channel registry`);
+    }
+    const abTitleRules = deriveAbTitleRules(this.store.loadAbTests(channelId), {
+      channelId,
+      channelName: channel.name,
+      derivedAt: new Date(),
+    });
 
     return {
       channelId,
@@ -340,7 +350,7 @@ export class DistillationService {
       baselines,
       topPackaging,
       bottomPackaging,
-      abLearnings,
+      abTitleRules,
       topSearchTerms: this.aggregateChannelSearchTerms(channelId),
       aiBrief: null, // v1: reserved
     };

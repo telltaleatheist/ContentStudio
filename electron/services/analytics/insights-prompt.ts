@@ -11,6 +11,7 @@
 
 import { ChannelInsights, CrossChannelInsights, VideoVerdictSummary } from './analytics-types';
 import { AnalyticsStoreService } from './analytics-store.service';
+import { renderAbTitleRulesBlock } from './ab-title-rules';
 
 /** "5.3%" / "n/a" for possibly-missing percent metrics. */
 function pct(value: number | null): string {
@@ -59,20 +60,21 @@ export function buildInsightsBlock(
     }
   }
 
-  if (channelInsights.abLearnings.length > 0) {
-    lines.push('');
-    lines.push('Title A/B test learnings:');
-    for (const ab of channelInsights.abLearnings) {
-      const losers = ab.variants.filter((v) => v !== ab.winner);
-      // "pts", not "%". `liftPct` is the winner's watch-time SHARE minus the best loser's,
-      // in percentage points — see extension/src/catalogue.ts:44 and :298, where it is
-      // computed as `winnerShare - bestLoser`. Rendering it as "%" told the model a variant
-      // won by 8.57 PERCENT when it won by 8.57 POINTS of share, which are different
-      // quantities and differ by roughly 3x at these values. The name keeps the `Pct`
-      // suffix it was born with; the words the model reads must not repeat the mistake.
-      lines.push(`- Winner: "${ab.winner}" (+${Math.round(ab.liftPct * 10) / 10} pts watch-time share) over ${losers.map((l) => `"${l}"`).join(', ')}`);
-    }
+  // Derived A/B title evidence: threshold-clearing rules WITH their provenance, plus a
+  // capped exemplar list. This replaced an unbounded per-test dump that grew one line per
+  // decided test forever and said nothing about how much evidence stood behind any of it.
+  // The block is always rendered, including when it derives nothing — see
+  // renderAbTitleRulesBlock.
+  if (!channelInsights.abTitleRules) {
+    // A ChannelInsights written before this field existed. Rendering the rest of the block
+    // without it would quietly ship a prompt with no title evidence in it at all.
+    throw new Error(
+      `[InsightsPrompt] channel ${channelInsights.channelId} has insights from before A/B title-rule ` +
+      `derivation (computed ${channelInsights.computedAt}); re-run distillation`
+    );
   }
+  lines.push('');
+  lines.push(renderAbTitleRulesBlock(channelInsights.abTitleRules));
 
   if (channelInsights.topSearchTerms.length > 0) {
     lines.push('');

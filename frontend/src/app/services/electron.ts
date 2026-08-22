@@ -124,6 +124,23 @@ export interface AnalyticsVerdictSummary {
   views: number;
 }
 
+/**
+ * Derived A/B title evidence — mirror of AbTitleRulesDerivation in
+ * electron/services/analytics/analytics-types.ts. Bounded by construction: at most three
+ * rules, at most ten exemplars, whatever the size of the store.
+ */
+export interface AnalyticsAbTitleRules {
+  channelId: string;
+  channelName: string;
+  derivedAt: string;
+  decidedTests: number;
+  earliestDecidedAt: string | null;
+  latestDecidedAt: string | null;
+  rules: Array<{ id: string; directive: string; lostAlone: number; wonAlone: number; confidence: 'strong' | 'weak' }>;
+  observations: Array<{ id: string; lostAlone: number; wonAlone: number }>;
+  exemplars: Array<{ winner: string; beat: string; liftPts: number; decidedAt: string }>;
+}
+
 export interface AnalyticsChannelInsights {
   channelId: string;
   computedAt: string;
@@ -136,7 +153,7 @@ export interface AnalyticsChannelInsights {
   };
   topPackaging: AnalyticsVerdictSummary[];
   bottomPackaging: AnalyticsVerdictSummary[];
-  abLearnings: Array<{ variants: string[]; winner: string; liftPct: number }>;
+  abTitleRules: AnalyticsAbTitleRules;
   topSearchTerms: Array<{ term: string; views: number }>;
   aiBrief: string | null;
 }
