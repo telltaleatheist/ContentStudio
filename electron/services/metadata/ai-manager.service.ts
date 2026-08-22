@@ -24,6 +24,7 @@ import {
 } from './metadata-tasks';
 import { Chapter } from './chapter-generator.service';
 import { queueAITask } from '../queue-manager.service';
+import { JobCancelledError, isAbortError } from './cancellation';
 
 export interface AIConfig {
   provider: 'ollama' | 'openai' | 'claude';
@@ -47,6 +48,12 @@ export interface AIConfig {
    * loud failure at request time, never a silent switch to a provider that is configured.
    */
   cloudApiKeys?: { claude?: string; openai?: string };
+  /**
+   * Fired when the user cancels the run. Handed to every provider client so a request
+   * already in flight is ABORTED rather than left to finish and be billed — a cancelled
+   * job has no business still paying for a 28k-token Claude call.
+   */
+  abortSignal?: AbortSignal;
 }
 
 export interface MetadataResult {
@@ -1307,6 +1314,13 @@ export class AIManagerService {
         `ai-${requestId}`,
         `AI Request: ${model}`,
         async () => {
+          // The queue slot may have been waited on for minutes. A cancel that arrives
+          // while this request is QUEUED must not let it start: the caller's boundary
+          // guard ran before the wait, not after it.
+          if (this.config.abortSignal?.aborted) {
+            throw new JobCancelledError(`before the "${model}" request left the AI queue`);
+          }
+
           // Detect provider from model name - EXPLICIT routing, no fallbacks
           // Model format must be "provider:model" (e.g., "ollama:cogito:14b", "openai:gpt-4o", "claude:claude-3-5-sonnet")
           if (model.startsWith('openai:')) {
@@ -1333,7 +1347,11 @@ export class AIManagerService {
     } catch (error: any) {
       const endTimestamp = new Date().toISOString();
       console.error(`[AIManager] ✖ AI REQUEST FAILED [${requestId}] at ${endTimestamp}:`, error);
-      // Re-throw with context so the caller gets a useful error message
+      // Re-throw with context so the caller gets a useful error message. A CANCELLED
+      // request arrives here as a plain Error whatever it was thrown as — the AI queue
+      // re-wraps every rejection (queue-manager.service.ts) — so there is nothing to
+      // re-classify here. Its message survives, and the orchestrator decides a run was
+      // cancelled from the abort signal, not from the error.
       throw new Error(error?.message || `AI request failed for model "${model}"`);
     }
   }
@@ -1378,7 +1396,7 @@ export class AIManagerService {
             num_ctx: AIManagerService.OLLAMA_NUM_CTX,
           },
         },
-        { timeout: timeout * 1000 }
+        { timeout: timeout * 1000, signal: this.config.abortSignal }
       );
 
       // Warn if the response was cut off at num_predict — the JSON is likely
@@ -1389,6 +1407,10 @@ export class AIManagerService {
 
       return response.data.response;
     } catch (error: any) {
+      if (isAbortError(error)) {
+        throw new JobCancelledError(`the Ollama request to "${model}" was aborted mid-flight`);
+      }
+
       // Extract useful error details from Ollama response
       const ollamaError = error?.response?.data?.error || error?.message || 'Unknown error';
       const status = error?.response?.status;
@@ -1419,12 +1441,15 @@ export class AIManagerService {
     console.log(`[AIManager] Making OpenAI request to model: ${model}`);
 
     try {
-      const response = await this.openaiClient.chat.completions.create({
-        model,
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 2000,
-        temperature: 0.7,
-      });
+      const response = await this.openaiClient.chat.completions.create(
+        {
+          model,
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 2000,
+          temperature: 0.7,
+        },
+        { signal: this.config.abortSignal }
+      );
 
       const content = response.choices[0]?.message?.content;
       console.log(`[AIManager] OpenAI response received, content length: ${content?.length || 0}`);
@@ -1435,6 +1460,9 @@ export class AIManagerService {
 
       return content || null;
     } catch (error: any) {
+      if (isAbortError(error)) {
+        throw new JobCancelledError(`the OpenAI request to "${model}" was aborted mid-flight`);
+      }
       const errorMsg = error?.message || 'Unknown error';
       console.error('[AIManager] OpenAI request failed:', errorMsg);
       console.error('[AIManager] OpenAI error details:', error?.response?.data || error);
@@ -1473,12 +1501,17 @@ export class AIManagerService {
       // Map friendly name to actual API model name
       const actualModel = this.mapClaudeModelName(model);
 
-      const response = await this.anthropicClient.messages.create({
-        model: actualModel,
-        max_tokens: 16000,
-        system: 'You are a helpful assistant. When asked to return JSON, output ONLY valid JSON with no markdown, no commentary, and no extra text. Start your response with { and end with }.',
-        messages: [{ role: 'user', content: prompt }],
-      });
+      const response = await this.anthropicClient.messages.create(
+        {
+          model: actualModel,
+          max_tokens: 16000,
+          system: 'You are a helpful assistant. When asked to return JSON, output ONLY valid JSON with no markdown, no commentary, and no extra text. Start your response with { and end with }.',
+          messages: [{ role: 'user', content: prompt }],
+        },
+        // The signal is the whole point of the cancel path: without it a cancel during
+        // this call is billed in full and the answer is thrown away.
+        { signal: this.config.abortSignal }
+      );
 
       // Log why Claude stopped
       log.info(`[AIManager] Claude stop_reason: ${response.stop_reason}`);
@@ -1492,6 +1525,9 @@ export class AIManagerService {
       const textBlock = response.content.find((block) => block.type === 'text');
       return textBlock?.type === 'text' ? textBlock.text : null;
     } catch (error: any) {
+      if (isAbortError(error)) {
+        throw new JobCancelledError(`the Claude request to "${model}" was aborted mid-flight`);
+      }
       const errorMsg = error?.message || 'Unknown error';
       log.error('[AIManager] Claude request failed:', errorMsg);
       console.error('[AIManager] Claude request failed:', error);

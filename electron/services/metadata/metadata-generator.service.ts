@@ -23,6 +23,7 @@ import {
   routingOption,
 } from './metadata-routing';
 import { excludePromoChapters } from './promo-chapters';
+import { JobCancelledError } from './cancellation';
 import { queueAITask } from '../queue-manager.service';
 import * as log from 'electron-log';
 import * as fs from 'fs';
@@ -82,6 +83,16 @@ export interface GenerationParams {
   showPrompt?: boolean; // "Show prompt" flow: assemble the prompt(s) and STOP — no metadata AI call, job, or output
   progressCallback?: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => void;
   cancelCallback?: () => boolean; // Returns true if job should be cancelled
+  /**
+   * Fired the moment cancellation is requested, so a model call ALREADY IN FLIGHT is
+   * aborted instead of running to completion and being billed.
+   *
+   * `cancelCallback` cannot do that job: it is polled, and a poll between stages says
+   * nothing about the 28k-token call running inside one. This is threaded into every
+   * provider client the run reaches — the AI manager, the local adapters and the
+   * chapter pipeline.
+   */
+  cancelSignal?: AbortSignal;
 }
 
 export interface GenerationResult {
@@ -105,6 +116,12 @@ export class MetadataGeneratorService {
    */
   static async generate(params: GenerationParams): Promise<GenerationResult> {
     const startTime = Date.now();
+
+    // Hoisted out of the try so the SINGLE cancellation exit in the catch below can mark
+    // the job 'cancelled' whichever stage threw. Undefined until the job is initialized
+    // (the show-prompt flow never initializes one).
+    let outputHandler: OutputHandlerService | undefined;
+    let jobId: string | undefined;
 
     console.log('[MetadataGenerator] Starting generation...');
     console.log('[MetadataGenerator] Inputs:', params.inputs.length);
@@ -133,6 +150,7 @@ export class MetadataGeneratorService {
         promptSet: params.promptSet,
         promptSetsDir: params.promptSetsDir,
         insightsBlock: params.insightsBlock,
+        abortSignal: params.cancelSignal,
       };
 
       log.info('[MetadataGenerator] Creating AIManagerService...');
@@ -199,14 +217,7 @@ export class MetadataGeneratorService {
         contentItems = await inputHandler.processMultipleInputs(normalizedInputs, customNotesMap, inputFailures);
       }
 
-      // Check for cancellation after input processing
-      if (params.cancelCallback && params.cancelCallback()) {
-        log.info('[MetadataGenerator] Job cancelled after input processing');
-        return {
-          success: false,
-          error: 'Job cancelled by user',
-        };
-      }
+      this.throwIfCancelled(params, 'after input processing');
 
       if (contentItems.length === 0) {
         log.error('[MetadataGenerator] No content items processed from inputs');
@@ -225,7 +236,7 @@ export class MetadataGeneratorService {
 
       // Initialize job and output handler
       const outputPath = params.outputPath || this.getDefaultOutputPath();
-      const outputHandler = new OutputHandlerService(outputPath);
+      outputHandler = new OutputHandlerService(outputPath);
       const jobName = params.jobName || this.generateJobName(contentItems);
 
       // Partial failures / dropped-content notices, seeded with input-stage skips.
@@ -259,10 +270,7 @@ export class MetadataGeneratorService {
           params.progressCallback?.('generating', 'Assembling prompt...', 50);
           const itemSummaries: string[] = [];
           for (let i = 0; i < contentItems.length; i++) {
-            if (params.cancelCallback && params.cancelCallback()) {
-              console.log(`[MetadataGenerator] Job cancelled while assembling compilation prompt (item ${i + 1}/${contentItems.length})`);
-              return { success: false, error: 'Job cancelled by user' };
-            }
+            this.throwIfCancelled(params, `assembling compilation prompt (item ${i + 1}/${contentItems.length})`);
             const item = contentItems[i];
             const sourceLabel = item.source || `Item ${i + 1}`;
             const itemSummary = await aiManager.summarizeTranscript(item.content, sourceLabel, { forceCondense: true });
@@ -277,10 +285,7 @@ export class MetadataGeneratorService {
         } else {
           // Individual mode: one prompt per item, mirroring the normal per-item summarize.
           for (let i = 0; i < contentItems.length; i++) {
-            if (params.cancelCallback && params.cancelCallback()) {
-              console.log(`[MetadataGenerator] Job cancelled while assembling prompt (item ${i + 1}/${contentItems.length})`);
-              return { success: false, error: 'Job cancelled by user' };
-            }
+            this.throwIfCancelled(params, `assembling prompt (item ${i + 1}/${contentItems.length})`);
             const item = contentItems[i];
             const sourceLabel = item.source || `item_${i + 1}`;
 
@@ -294,6 +299,7 @@ export class MetadataGeneratorService {
               computedChapters
             );
 
+            this.throwIfCancelled(params, `before summarizing ${sourceLabel} for the prompt`);
             params.progressCallback?.('generating', 'Assembling prompt...', 80, undefined, i);
             const summary = await aiManager.summarizeTranscript(item.content, sourceLabel);
 
@@ -334,6 +340,7 @@ export class MetadataGeneratorService {
         input_types: contentItems.map(item => item.contentType),
       });
 
+      jobId = jobInfo.jobId;
       console.log(`[MetadataGenerator] Job initialized: ${jobInfo.jobId}`);
 
       // Generate metadata based on mode (`warnings` was seeded above, before the
@@ -355,15 +362,8 @@ export class MetadataGeneratorService {
         params.progressCallback?.('generating', 'Analyzing combined content...', 0);
         const itemSummaries: string[] = [];
         for (let i = 0; i < contentItems.length; i++) {
-          // Check for cancellation before each (potentially long) summarization
-          if (params.cancelCallback && params.cancelCallback()) {
-            console.log(`[MetadataGenerator] Job cancelled while summarizing item ${i + 1}/${contentItems.length}`);
-            outputHandler.updateJobStatus(jobInfo.jobId, 'cancelled');
-            return {
-              success: false,
-              error: 'Job cancelled by user',
-            };
-          }
+          // Checked before each (potentially long) summarization
+          this.throwIfCancelled(params, `before summarizing compilation item ${i + 1}/${contentItems.length}`);
 
           const item = contentItems[i];
           const sourceLabel = item.source || `Item ${i + 1}`;
@@ -376,15 +376,8 @@ export class MetadataGeneratorService {
         // Recombine summaries with ITEM labels intact
         const summary = itemSummaries.join('\n\n');
 
-        // Check for cancellation before the final (long) metadata generation
-        if (params.cancelCallback && params.cancelCallback()) {
-          console.log('[MetadataGenerator] Job cancelled before compilation metadata generation');
-          outputHandler.updateJobStatus(jobInfo.jobId, 'cancelled');
-          return {
-            success: false,
-            error: 'Job cancelled by user',
-          };
-        }
+        // Checked before the final (long) metadata generation
+        this.throwIfCancelled(params, 'before compilation metadata generation');
 
         // Generate single metadata for compilation with hardcoded compilation instructions
         params.progressCallback?.('generating', 'Generating metadata for compilation...', 50);
@@ -415,15 +408,10 @@ export class MetadataGeneratorService {
         console.log('[MetadataGenerator] Individual mode: processing items separately');
 
         for (let i = 0; i < contentItems.length; i++) {
-        // Check for cancellation before each item
-        if (params.cancelCallback && params.cancelCallback()) {
-          console.log(`[MetadataGenerator] Job cancelled at item ${i + 1}/${contentItems.length}`);
-          outputHandler.updateJobStatus(jobInfo.jobId, 'cancelled');
-          return {
-            success: false,
-            error: 'Job cancelled by user',
-          };
-        }
+        // Checked before each item. This is NOT the whole story: a real job has exactly
+        // one item, so every guard that matters is the one at the next STAGE boundary
+        // inside the loop body.
+        this.throwIfCancelled(params, `at item ${i + 1}/${contentItems.length}`);
 
         const item = contentItems[i];
         console.log(`[MetadataGenerator] Generating metadata ${i + 1}/${contentItems.length}`);
@@ -447,10 +435,12 @@ export class MetadataGeneratorService {
           );
 
           // ---- Everything else, conditioned on those chapters -----------------
+          this.throwIfCancelled(params, `before summarizing ${sourceLabel}`);
           console.log(`[MetadataGenerator] Sending generating phase: Analyzing content for item ${i}`);
           params.progressCallback?.('generating', `Analyzing content ${i + 1}/${contentItems.length}...`, 60, undefined, i);
           const summary = await aiManager.summarizeTranscript(item.content, sourceLabel);
 
+          this.throwIfCancelled(params, `before generating metadata for ${sourceLabel}`);
           console.log(`[MetadataGenerator] Sending generating phase: Generating metadata for item ${i}`);
           params.progressCallback?.('generating', `Generating metadata ${i + 1}/${contentItems.length}...`, 80, undefined, i);
 
@@ -484,6 +474,12 @@ export class MetadataGeneratorService {
           params.progressCallback?.('generating', `Completed ${i + 1}/${contentItems.length}`, 100, undefined, i);
           metadataItems.push(metadata);
         } catch (error) {
+          // A cancelled run is not a failed item. Demoting it to a warning here is what
+          // let a cancel become a 'completed' job: the loop would carry on to the next
+          // item and the run would end down the success path.
+          if (this.isCancellation(params, error)) {
+            throw error;
+          }
           const errMsg = error instanceof Error ? error.message : String(error);
           const sourceLabel = item.source || `item_${i + 1}`;
           log.error(`[MetadataGenerator] Failed to generate metadata for item ${i + 1}:`, error);
@@ -510,6 +506,10 @@ export class MetadataGeneratorService {
           warnings: warnings.length > 0 ? warnings : undefined,
         };
       }
+
+      // The last guard, and the one that makes the promise hold: a cancel that landed
+      // after the final save must not be written down as a completed job.
+      this.throwIfCancelled(params, 'before the job was marked complete');
 
       // Mark job as completed
       outputHandler.updateJobStatus(jobInfo.jobId, 'completed');
@@ -552,6 +552,22 @@ export class MetadataGeneratorService {
         warnings: warnings.length > 0 ? warnings : undefined,
       };
     } catch (error) {
+      // THE cancellation exit. Every guard and every aborted provider call lands here,
+      // so there is one place that decides what a cancelled run is worth: status
+      // 'cancelled' on the job, never 'completed' and never 'failed'.
+      if (this.isCancellation(params, error)) {
+        log.info(
+          `[MetadataGenerator] ${error instanceof Error ? error.message : String(error)}`
+        );
+        if (outputHandler && jobId) {
+          outputHandler.updateJobStatus(jobId, 'cancelled');
+        }
+        return {
+          success: false,
+          error: 'Job cancelled by user',
+        };
+      }
+
       const errorMessage = error instanceof Error ? error.message : String(error);
       const errorStack = error instanceof Error ? error.stack : undefined;
 
@@ -567,6 +583,44 @@ export class MetadataGeneratorService {
         error: errorMessage,
       };
     }
+  }
+
+  /**
+   * Has the user asked for this run to stop?
+   *
+   * Both sources are consulted because they answer at different moments: the signal fires
+   * the instant cancel is requested (and is what aborts a call already in flight), the
+   * callback is the polled flag the caller has always exposed.
+   */
+  private static cancelRequested(params: GenerationParams): boolean {
+    return params.cancelSignal?.aborted === true || params.cancelCallback?.() === true;
+  }
+
+  /**
+   * The stage-boundary guard: called by every stage that is about to make a model call,
+   * so a cancel is never more than one stage stale.
+   *
+   * The check it replaces ran once per ITEM. A real job has exactly one item, so a cancel
+   * arriving after that check ran the entire remaining pipeline — summarization, titles,
+   * description, tags, chapters — and billed all of it.
+   */
+  private static throwIfCancelled(params: GenerationParams, where: string): void {
+    if (this.cancelRequested(params)) {
+      throw new JobCancelledError(where);
+    }
+  }
+
+  /**
+   * Is this error the run stopping because the user cancelled it?
+   *
+   * The error itself is only half the answer. An aborted provider call surfaces as that
+   * client's own transport error, and the AI queue re-wraps every rejection as a plain
+   * Error (queue-manager.service.ts), so the type and message do not survive the trip.
+   * What does survive is the fact that cancellation was requested — and once it has been,
+   * whatever the run threw on the way down IS the cancellation.
+   */
+  private static isCancellation(params: GenerationParams, error: unknown): boolean {
+    return error instanceof JobCancelledError || this.cancelRequested(params);
   }
 
   /**
@@ -600,7 +654,8 @@ export class MetadataGeneratorService {
       this.routing(params),
       params.aiHost || 'http://localhost:11434',
       aiManager,
-      Boolean(params.insightsBlock)
+      Boolean(params.insightsBlock),
+      params.cancelSignal
     );
     console.log(
       `[MetadataGenerator] ${sourceLabel}: ${chapterSubjects.length} chapter subjects — ` +
@@ -685,6 +740,7 @@ export class MetadataGeneratorService {
       return {};
     }
 
+    this.throwIfCancelled(params, `before the chapter pipeline for ${sourceLabel}`);
     console.log(`[MetadataGenerator] Generating chapters for item ${itemIndex} (before metadata)...`);
     params.progressCallback?.('generating', `Finding chapters ${itemIndex + 1}/${itemCount}...`, 0, undefined, itemIndex);
 
@@ -718,6 +774,11 @@ export class MetadataGeneratorService {
       if (sink) sink[sourceLabel] = result;
       return this.splitOutPromos(result, sourceLabel, warnings);
     } catch (error) {
+      // A cancelled run is not a degraded chapter list. Reporting it as a warning here
+      // would let the item carry on and pay for the metadata call the user just stopped.
+      if (this.isCancellation(params, error)) {
+        throw error;
+      }
       const errMsg = error instanceof Error ? error.message : String(error);
       const msg = `${sourceLabel}: chapter generation failed, so the rest of the metadata was generated WITHOUT chapter subjects: ${errMsg}`;
       console.error(`[MetadataGenerator] ${msg}`);
@@ -812,15 +873,66 @@ export class MetadataGeneratorService {
       consolidate: [55, 60],
     };
 
+    // A stage that reports every ~3s and then says nothing for minutes is
+    // indistinguishable, from the progress bar, from a hang. It usually is not one —
+    // Ollama loading a model or thrashing KV cache has been clocked here at 516 silent
+    // seconds — but only this code knows that, so it says so.
+    //
+    // A SIGNAL and nothing more: nothing is killed, retried or rerouted. The 4-hour task
+    // timeout below remains the only thing that ends a genuinely wedged run.
+    const STALL_NOTICE_MS = 60_000;
+    let stallTimer: NodeJS.Timeout | undefined;
+    // Latched by the final disarm. Without it, the watchdog case re-arms the timer: the
+    // queue rejects this promise while the closure is still running, and the closure's
+    // next onProgress would put a stall notice on a job that already ended.
+    let stallDone = false;
+    let lastProgress: { stage: ChapterStage; percent: number; at: number } = {
+      stage: 'label',
+      percent: 0,
+      at: Date.now(),
+    };
+
+    const armStallNotice = () => {
+      if (stallDone) return;
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        const silentSec = Math.round((Date.now() - lastProgress.at) / 1000);
+        log.warn(
+          `[MetadataGenerator] Chapter stage "${lastProgress.stage}" for ${label} has reported no progress ` +
+            `for ${silentSec}s; the model call is still in flight`
+        );
+        params.progressCallback?.(
+          'generating',
+          `Chapters (${lastProgress.stage}) ${itemIndex + 1}/${itemCount} — no progress for ${silentSec}s, ` +
+            `model call still in flight`,
+          lastProgress.percent,
+          undefined,
+          itemIndex
+        );
+        // Re-armed rather than one-shot: a stall the user is watching should keep
+        // counting up, not report 60s once and go quiet again.
+        armStallNotice();
+      }, STALL_NOTICE_MS);
+    };
+
+    const disarmStallNotice = () => {
+      stallDone = true;
+      clearTimeout(stallTimer);
+      stallTimer = undefined;
+    };
+
     const pipeline = new ChapterPipelineService({
       host,
       model,
       stageModels: params.chapterStageModels,
       numCtx: params.chapterNumCtx,
       cancelCallback: params.cancelCallback,
+      abortSignal: params.cancelSignal,
       onProgress: (stage, done, total) => {
         const [from, to] = stageWeights[stage];
         const percent = Math.round(from + ((to - from) * done) / Math.max(1, total));
+        lastProgress = { stage, percent, at: Date.now() };
+        armStallNotice();
         params.progressCallback?.(
           'generating',
           `Chapters (${stage} ${done}/${total}) ${itemIndex + 1}/${itemCount}...`,
@@ -840,13 +952,26 @@ export class MetadataGeneratorService {
     // a genuinely wedged run.
     const CHAPTER_TASK_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 
-    return queueAITask(
-      `chapters-${params.jobId || 'job'}-${itemIndex}`,
-      `Chapters: ${label}`,
-      () => pipeline.generate(item.srtSegments!),
-      undefined,
-      CHAPTER_TASK_TIMEOUT_MS
-    );
+    try {
+      return await queueAITask(
+        `chapters-${params.jobId || 'job'}-${itemIndex}`,
+        `Chapters: ${label}`,
+        () => {
+          // Armed only once the pipeline actually starts. Time spent waiting for the AI
+          // queue slot is not a stall, and the UI already says the job is queued.
+          armStallNotice();
+          return pipeline.generate(item.srtSegments!);
+        },
+        undefined,
+        CHAPTER_TASK_TIMEOUT_MS
+      );
+    } finally {
+      // Completion, failure, cancellation and the queue watchdog force-failing the task
+      // all land here, so the timer cannot outlive the stage and report progress against
+      // a job that has already ended. Disarming OUTSIDE the queued closure is what covers
+      // the watchdog case: it rejects this promise while the closure is still running.
+      disarmStallNotice();
+    }
   }
 
   /**
