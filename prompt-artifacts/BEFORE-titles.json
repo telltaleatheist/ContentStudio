@@ -1,0 +1,17 @@
+[
+  {
+    "run": 1,
+    "ms": 589251,
+    "error": "Ollama request timed out after 300s. Model \"qwen3.8:27b\" may be too large for your hardware, or Ollama is still loading the model. Try a smaller model or increase available memory."
+  },
+  {
+    "run": 2,
+    "ms": 593942,
+    "error": "Ollama request timed out after 300s. Model \"qwen3.8:27b\" may be too large for your hardware, or Ollama is still loading the model. Try a smaller model or increase available memory."
+  },
+  {
+    "run": 3,
+    "ms": 558755,
+    "error": "Ollama request timed out after 300s. Model \"qwen3.8:27b\" may be too large for your hardware, or Ollama is still loading the model. Try a smaller model or increase available memory."
+  }
+]

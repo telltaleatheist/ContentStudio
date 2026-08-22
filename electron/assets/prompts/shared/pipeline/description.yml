@@ -1,0 +1,71 @@
+# The description's two schema-constrained calls (description-unit.ts).
+#
+# POSITIVE FORM ONLY, and correct examples only — for the same measured reason it applies to
+# the chapter prompts: a model shown a wrong form reproduces it, and attaching the word "never"
+# to it does not change that. The register these want is stated as what to WRITE, and the
+# examples are real hooks and openings for real videos.
+#
+# WHAT THEY DO NOT CARRY, stated because it is a real editorial cost and a deliberate one: the
+# channel's `## DESCRIPTION` section (prompts/shared/fields/description.yml). That section is
+# two paragraphs, a soft CTA, a banned-phrase list and a voice note, and loading fifteen
+# editorial bullets onto a schema-constrained small model is exactly the over-specification
+# these calls exist to avoid. The channel reaches these prompts as the channel NAME.
+#
+# `{coverage}` is filled by code with one of the two labelled blocks below: the chapter list
+# where the pipeline produced one, the text subject where the item has no chapters. Both say
+# the same thing about what the model is working from and differ only in what that is.
+#
+# Placeholders: {channel}, {video}, {coverage}, {pools}, and the two character/word budgets,
+# which are substituted from description-unit.ts's own constants so the number in the prompt
+# and the number the code measures can never drift apart.
+
+coverage_chapters: |-
+  What the video covers, chapter by chapter:
+  {items}
+
+coverage_subject: |-
+  What the video covers, as the operator described it:
+  {items}
+
+hook: |-
+  Write the opening line of a YouTube description. Output JSON only.
+
+  Channel: {channel}
+  Video: {video}
+
+  {coverage}
+
+  Names and phrases from the video, to draw on where they fit:
+  {pools}
+
+  Write one complete sentence, ending in a full stop, of at most {hookTargetChars} characters. Name the two or three things above that would draw a viewer in — not all of them — and put the words somebody would type into search at the front. The names go in as parts of noun phrases, a possessive or an object, so the sentence is about the claim, the event or the argument itself.
+
+  Hooks in exactly the right form:
+  "Iran ceasefire collapse, Byron Donalds's projected win in Florida, and the 29-state lawsuit against Meta."
+  "Gene Bailey's misreading of Luke 19:13 and the David and Goliath framing behind his call to occupy territory."
+
+  Output exactly this shape and nothing else:
+  {"hook": "..."}
+
+body: |-
+  Write the body paragraph of a YouTube description. Output JSON only.
+
+  Channel: {channel}
+  Video: {video}
+
+  {coverage}
+
+  Names and phrases from the video, to draw on where they fit:
+  {pools}
+
+  Write one paragraph of {bodyMinWords} to {bodyMaxWords} words that walks through what the video covers in order. Every name you use comes from the material above, and the names go in as parts of noun phrases — a possessive or an object, so the sentence is about the claim, the refusal or the argument itself. Where the material describes somebody responding to something, write the claim and the response as content: "the bridge contract claim, rebutted", "Jack Hibbs's First Amendment argument and the constitutional answer to it".
+
+  Openings in exactly the right form:
+  "Debate about Trump's refusal to extend the Iran ceasefire MOU and rising tensions in the Strait of Hormuz, then the Florida results and Byron Donalds's projected win."
+  "Gene Bailey's misreading of Luke 19:13, his call to occupy territory, and the David and Goliath framing behind it."
+  "Paul Petit's report on the 29-state lawsuit against Meta, and the panel's disagreement over what it means for teenagers."
+
+  No links, no timestamps, no calls to subscribe: the chapter block and the standing links are assembled by code afterwards.
+
+  Output exactly this shape and nothing else:
+  {"body": "..."}

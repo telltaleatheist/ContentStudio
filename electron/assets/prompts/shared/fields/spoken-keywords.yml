@@ -1,0 +1,14 @@
+# Spoken keywords — the words that must be SAID ALOUD in a Short for YouTube's own transcript
+# index to find it. Only the shorts channel publishes this field; no routing task owns it, so
+# it rides with whichever group absorbs the sections no unit claimed (metadata-tasks.ts).
+section: SPOKEN_KEYWORDS
+
+instructions: |-
+  ## SPOKEN KEYWORDS
+
+  - List 3-5 terms that should be said aloud in the clip for transcript-based discovery
+  - YouTube transcribes Shorts audio and uses it for search indexing and recommendation — the key term should be spoken in the FIRST 5 SECONDS
+  - Prioritize: subject's name, the specific claim or topic, and one broader category term
+  - These should feel natural when spoken, not like a keyword list read aloud
+
+self_check: []

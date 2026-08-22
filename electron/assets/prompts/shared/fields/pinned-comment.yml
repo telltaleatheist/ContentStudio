@@ -1,0 +1,24 @@
+# Pinned comment. Identical across the long-form YouTube channels; Shorts uses it as the funnel
+# CTA back to the full video, which is a different job and carries its own override.
+section: PINNED_COMMENT
+
+instructions: |-
+  ## PINNED_COMMENT
+
+  - Generate {pinned_comment_count} options. Early comments boost distribution, so each must be genuinely answerable, not rhetorical.
+  - Each option is either (a) a pointed discussion question that makes viewers pick a side or share their own experience with this grifter/movement/doctrine, or (b) a sharp one-liner take that begs for reactions.
+  - Reference something specific from this video. Generic engagement bait ("What do you think?") is banned.
+  - No links.
+
+self_check: []
+
+overrides:
+  shorts:
+    instructions: |-
+      ## PINNED_COMMENT
+
+      - Generate {pinned_comment_count} option
+      - This is where the CTA lives — point to the full video with minimal context; imply a link destination without inserting a URL
+      - Include a second hook that creates hunger for the full video
+      - Reference something specific from the longer content that the Short didn't cover
+    self_check: []

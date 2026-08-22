@@ -31,6 +31,19 @@ const validators = require(path.join(ROOT, 'services/publish/field-validators.js
 const entities = require(path.join(ROOT, 'services/metadata/entity-extraction.js'));
 const quality = require(path.join(ROOT, 'services/metadata/chapter-title-quality.js'));
 const tagsHashtags = require(path.join(ROOT, 'services/metadata/tags-hashtags.js'));
+const promptAssetsModule = require(path.join(ROOT, 'services/metadata/prompt-assets.js'));
+const tasks = require(path.join(ROOT, 'services/metadata/metadata-tasks.js'));
+
+/**
+ * The prompt assets are read from the REPO'S OWN electron/assets/prompts, not from userData.
+ *
+ * That is deliberate: these checks assert what THIS COMMIT ships. Pointing them at the
+ * installed copy would make them pass or fail on the state of one developer's machine, which
+ * is the opposite of what a pre-merge check is for.
+ */
+const ASSETS_ROOT = path.join(__dirname, '..', 'electron', 'assets', 'prompts');
+promptAssetsModule.initPromptAssets(ASSETS_ROOT);
+const assets = promptAssetsModule.promptAssets();
 
 /**
  * The release-cadence rules live in the RENDERER, which has no dist/main to require, so
@@ -91,7 +104,7 @@ check('a real pre-upgrade store migrates instead of throwing', () => {
   const resolved = routing.resolveMetadataRouting(m.selections);
   eq(resolved.description, 'qwen35-9b');
   eq(resolved.tags, 'qwen35-9b');
-  eq(resolved.titles, 'sonnet5');
+  eq(resolved.titles, 'qwen38-27b', 'the shipped default, which is local as of the consolidation build');
   eq(resolved.thumbnail_text, 'opus5', 'the one legal choice is KEPT');
   eq('chapters' in resolved, false, 'chapters is no longer a task');
 });
@@ -113,10 +126,33 @@ check('an empty / absent store is not a migration', () => {
   eq(routing.migrateStoredRouting({}).changed, false);
 });
 
-check('the shipped defaults are the new table', () => {
-  eq(routing.describeRouting(routing.resolveMetadataRouting(undefined)),
-    'titles=claude:claude-sonnet-5, description=qwen3.5:9b, tags=qwen3.5:9b, ' +
-    'thumbnail_text=qwen3.8:27b, pinned_comment=qwen3.5:9b, clip_suggestions=qwen3.8:27b');
+/**
+ * THE WHOLE POINT OF THIS ONE: every default is local, and four of them are the SAME local
+ * model, which is what makes titles + thumbnail + pinned + clips one call whose self-check can
+ * actually be followed. A default that drifted back to the cloud would cost money silently.
+ */
+check('the shipped defaults are all local, and the packaging four share one model', () => {
+  const resolved = routing.resolveMetadataRouting(undefined);
+  eq(routing.describeRouting(resolved),
+    'titles=qwen3.8:27b, description=qwen3.5:9b, tags=qwen3.5:9b, ' +
+    'thumbnail_text=qwen3.8:27b, pinned_comment=qwen3.8:27b, clip_suggestions=qwen3.8:27b');
+  for (const task of Object.keys(resolved)) {
+    const option = routing.METADATA_ROUTING_OPTIONS[resolved[task]];
+    if (option.kind !== 'local') throw new Error(task + ' defaults to a ' + option.kind + ' model');
+  }
+  const packaging = ['titles', 'thumbnail_text', 'pinned_comment', 'clip_suggestions']
+    .map((t) => resolved[t]);
+  if (new Set(packaging).size !== 1) {
+    throw new Error('the packaging fields are on ' + new Set(packaging).size + ' models, so they are not one call');
+  }
+});
+
+/** Summarization is DECLARED, not taken from a Settings field that might name a cloud model. */
+check('summarization is declared, and declared local', () => {
+  if (!routing.SUMMARIZATION_MODEL) throw new Error('SUMMARIZATION_MODEL is not exported');
+  if (!routing.SUMMARIZATION_MODEL.startsWith('ollama:')) {
+    throw new Error('summarization defaults to ' + routing.SUMMARIZATION_MODEL + ', which is not local');
+  }
 });
 
 check('every removed option id is really gone from the table', () => {
@@ -517,6 +553,367 @@ check('a horizon that cannot hold a day is refused rather than silently returnin
   let threw = false;
   try { slots.slotsAfter('telltale', new Date(2026, 7, 22, 9, 0), 0); } catch { threw = true; }
   if (!threw) throw new Error('a zero-day horizon should be refused');
+});
+
+// ------------------------------------------------------- the prompt assets
+//
+// These assert the CONTRACT of the one prompt directory: every channel assembles, nothing is
+// silently substituted when a key is missing, and the two defects the consolidation was for —
+// an unfollowable self-check and an ungrounded title — are actually caught.
+
+check('every shipped channel assembles an editorial prompt and a full instruction set', () => {
+  const ids = assets.channelIds();
+  if (ids.length < 5) throw new Error('expected the five shipped channels, got ' + ids.join(', '));
+  for (const id of ids) {
+    const channel = assets.channel(id);
+    const editorial = assets.editorialPrompt(channel);
+    if (!editorial.includes('{subject}')) {
+      throw new Error(id + ': the editorial prompt has no {subject} slot left for the content');
+    }
+    if (editorial.includes('{channel_focus}')) {
+      throw new Error(id + ': {channel_focus} was never filled');
+    }
+    for (const field of channel.fields) {
+      const section = assets.fieldSection(channel, field);
+      const leftover = section.match(/\{[a-z_]+\}/);
+      if (leftover) throw new Error(id + '/' + field + ': unfilled slot ' + leftover[0]);
+    }
+  }
+});
+
+/**
+ * NO FALLBACKS, tested rather than asserted in a comment. A prompt this app cannot find must
+ * stop the run naming the file and the key — never resolve to a built-in stand-in, because a
+ * stand-in prompt produces output that looks generated and was written to no brief.
+ */
+check('a missing prompt key throws naming the file and the key', () => {
+  let message = '';
+  try {
+    assets.pipeline('system.yml', 'no_such_prompt');
+  } catch (e) {
+    message = e.message;
+  }
+  if (!message) throw new Error('a missing key resolved to something instead of throwing');
+  if (!message.includes('system.yml')) throw new Error('the error does not name the file: ' + message);
+  if (!message.includes('no_such_prompt')) throw new Error('the error does not name the key: ' + message);
+
+  let fileMessage = '';
+  try {
+    assets.pipeline('not-a-file.yml', 'json_system');
+  } catch (e) {
+    fileMessage = e.message;
+  }
+  if (!fileMessage.includes('not-a-file.yml')) throw new Error('a missing FILE did not name itself: ' + fileMessage);
+});
+
+check('an unknown channel throws and names the ones that exist', () => {
+  let message = '';
+  try { assets.channel('youtube-nonexistent'); } catch (e) { message = e.message; }
+  if (!message.includes('youtube-telltale')) throw new Error('the error does not list the real channels: ' + message);
+});
+
+/**
+ * THE SELF-CHECK DEFECT. Before this build the whole self-check rode with whichever group held
+ * the titles, so a titles-only group was told "thumbnail options don't repeat core words from
+ * the top 3 titles" about thumbnail text it would never write. Assembled per group, that line
+ * appears only where BOTH fields are in the same call — which, on the shipped routing, is
+ * always.
+ */
+check('the self-check is assembled per group and never asks for a field the group lacks', () => {
+  const telltale = assets.channel('youtube-telltale');
+
+  const titlesOnly = assets.selfCheckBlock(telltale, ['titles']);
+  if (/[Tt]humbnail/.test(titlesOnly)) {
+    throw new Error('a titles-only group was handed a thumbnail check:\n' + titlesOnly);
+  }
+  if (!titlesOnly.includes('hook inside the first 45 characters')) {
+    throw new Error('the titles group lost its own title check:\n' + titlesOnly);
+  }
+
+  const both = assets.selfCheckBlock(telltale, ['titles', 'thumbnail_text']);
+  if (!/[Tt]humbnail options don't repeat core words/.test(both)) {
+    throw new Error('a group holding BOTH fields lost the cross-field check:\n' + both);
+  }
+
+  const thumbOnly = assets.selfCheckBlock(telltale, ['thumbnail_text']);
+  if (/top 3 titles/.test(thumbOnly)) {
+    throw new Error('a thumbnail-only group was told to compare against titles it did not write:\n' + thumbOnly);
+  }
+
+  // The global lines ride with every group, whatever it holds.
+  for (const block of [titlesOnly, both, thumbOnly]) {
+    if (!block.includes('NO AI-ISMS')) throw new Error('a group lost the global self-check lines');
+  }
+});
+
+/**
+ * THE NINE TITLE DEFECTS, asserted where they can be: the frozen A/B numbers, the dead length
+ * floor, the ASCII ban and the author-note are all absences, and an absence is exactly the kind
+ * of thing that comes back without a test.
+ */
+check('the titles prompt carries none of the nine defects it was rewritten to remove', () => {
+  const telltale = assets.channel('youtube-telltale');
+  const titles = assets.fieldSection(telltale, 'titles');
+  const editorial = assets.editorialPrompt(telltale);
+  const selfCheck = assets.selfCheckBlock(telltale, telltale.fields);
+  const all = [titles, editorial, selfCheck].join('\n');
+
+  const banned = [
+    ['25 of 31', 'a frozen A/B count'],
+    ['14 of 17', 'a frozen A/B count'],
+    ['underperformed in our A/B', 'a frozen A/B claim'],
+    ['45-70 characters', 'the dead length floor'],
+    ['bracketed tag', 'the unevidenced bracket suggestion'],
+    ['ASCII characters only', 'the diacritic-banning self-check line'],
+    ['Do not require question-format', 'a note to the prompt author'],
+    ['Name names. Always.', 'the absolute that contradicted the lead-with-the-deed rule'],
+    ["drives the description's first sentence and the tags", 'a claim about fields this call no longer writes'],
+    ['Did X really', 'the question-format legal example the A/B evidence contradicts'],
+  ];
+  for (const [needle, why] of banned) {
+    if (all.includes(needle)) throw new Error(`"${needle}" is still in the prompt (${why})`);
+  }
+
+  if (!titles.includes('70 characters is the ceiling')) throw new Error('the 70-character ceiling is missing');
+  if (!editorial.includes('accused of')) throw new Error('the attributed-claim legal example is missing');
+  if (!/accented letters in real names/i.test(selfCheck)) {
+    throw new Error('the self-check no longer allows diacritics in real names');
+  }
+
+  // Stated ONCE where the titles are asked for, not four times across the set.
+  const swapMentions = (all.match(/swap test/gi) || []).length;
+  if (swapMentions !== 2) {
+    throw new Error(`the "no rephrasings" rule appears ${swapMentions} times; it should be the rule plus one check`);
+  }
+});
+
+check("unfiltered's pipe-tail title format replaces the shared length line, and only there", () => {
+  const unfiltered = assets.fieldSection(assets.channel('youtube-unfiltered'), 'titles');
+  if (!unfiltered.includes('| [subject] | p[N]')) throw new Error('the multi-part convention is gone');
+  if (unfiltered.includes('70 characters is the ceiling')) {
+    throw new Error('unfiltered kept a ceiling its own convention deliberately exceeds');
+  }
+  const telltale = assets.fieldSection(assets.channel('youtube-telltale'), 'titles');
+  if (telltale.includes('| [subject] |')) throw new Error("unfiltered's format leaked into a normal channel");
+});
+
+check('a channel that publishes no thumbnails says so by its field list', () => {
+  const spreaker = assets.channel('podcast-spreaker');
+  if (spreaker.fields.includes('thumbnail_text')) throw new Error('the podcast grew a thumbnail');
+  if (spreaker.fields.includes('clip_suggestions')) throw new Error('the podcast grew clip suggestions');
+  eq(spreaker.fields, ['titles', 'description', 'tags'], 'the three fields a podcast publishes');
+});
+
+// ------------------------------------------------------- the grounding check
+//
+// Every proper noun a generated title asserts has to be somewhere in the inputs. The check
+// NEVER blocks — it triggers one re-ask and then a declared warning — so what is asserted here
+// is that it FIRES on an invented name and stays quiet on a real one, including the possessive
+// form the prompts explicitly ask for.
+
+check('a title naming something the transcript never mentions is reported ungrounded', () => {
+  const transcript = 'Marcus Wray told his congregation that God wants a fourth private jet.';
+  const faults = tasks.ungroundedTitles(
+    ['Marcus Wray wants a fourth jet', 'Kenneth Copeland wants a fourth jet'],
+    transcript
+  );
+  eq(faults.length, 1, 'exactly one title is ungrounded');
+  eq(faults[0].title, 'Kenneth Copeland wants a fourth jet');
+  if (!faults[0].invented.join(' ').includes('Kenneth Copeland')) {
+    throw new Error('the invented name was not named: ' + JSON.stringify(faults[0]));
+  }
+});
+
+/**
+ * THE FALSE POSITIVE THIS MUST NOT HAVE. The prompts ask for possessive form on purpose
+ * ("Gene Bailey's misreading of Luke 19:13"), so a check that flagged the target register as
+ * invented would fire on almost every correct title.
+ */
+check('possessive and split-spelling names are NOT false-positived', () => {
+  const transcript =
+    'Gene Bailey read Luke 19:13 and quoted D. L. Moody, then brought up the prayer of Jabez.';
+  const faults = tasks.ungroundedTitles(
+    [
+      "Gene Bailey's misreading of Luke 19:13 and his call to occupy territory",
+      "Gene Bailey's use of Jabez, D.L. Moody, and Isaiah to justify a takeover",
+    ],
+    transcript
+  );
+  // "Isaiah" is genuinely absent, so the second title IS ungrounded — but for that reason
+  // alone, and the possessives and the split-spelled "D.L. Moody" must not contribute.
+  eq(faults.length, 1, 'only the title with a genuinely absent name');
+  eq(faults[0].invented, ['Isaiah'], 'and only that name');
+});
+
+check('nothing to check against is not silently a pass', () => {
+  eq(tasks.ungroundedTitles(['Anything at all'], ''), [], 'no corpus, no verdict');
+  eq(tasks.ungroundedTitles(undefined, 'a transcript'), [], 'a unit that returned no titles');
+});
+
+check('the grounding corpus is everything the model was actually given', () => {
+  const text = tasks.titleGroundingText({
+    content: 'SUMMARY TEXT',
+    contentText: 'FULL TRANSCRIPT',
+    videoTitle: 'THE VIDEO TITLE',
+    sourceLabel: 'source-file.mp4',
+    chapterSubjects: ['CHAPTER ONE'],
+    chapterDetails: ['CHAPTER ONE DETAIL'],
+  });
+  for (const part of ['SUMMARY TEXT', 'FULL TRANSCRIPT', 'THE VIDEO TITLE', 'source-file.mp4',
+                      'CHAPTER ONE', 'CHAPTER ONE DETAIL']) {
+    if (!text.includes(part)) throw new Error('the corpus is missing ' + part);
+  }
+});
+
+// ------------------------------------------------------- the legacy path is gone
+//
+// The run planner is asserted through a STUB AIManagerService rather than a real one: what is
+// under test is which units get planned for which kind of item, and that is pure decision-making
+// over the routing table and the channel's field list.
+
+function stubManager(channelId) {
+  const channel = assets.channel(channelId);
+  const sections = channel.fields.map((f) => tasks.METADATA_FIELD_SECTIONS[f].section);
+  return { promptSetSectionKeys: () => new Set(sections) };
+}
+
+check('an item WITHOUT chapters plans the same routed units, not a legacy single call', () => {
+  const resolved = routing.resolveMetadataRouting(undefined);
+  const plan = tasks.planMetadataUnits(resolved, 'http://localhost:11434',
+    stubManager('youtube-telltale'), false, /* hasChapters */ false);
+
+  const written = new Set();
+  for (const unit of plan.units) for (const f of unit.fields) written.add(f);
+
+  for (const field of ['titles', 'thumbnail_text', 'pinned_comment', 'clip_suggestions',
+                       'description', 'description_hook', 'tags']) {
+    if (!written.has(field)) throw new Error(field + ' is not written by any unit on a chapterless item');
+  }
+  eq(plan.assembleTags, false, 'tags come from a model when there is no chapter list to measure pools against');
+  eq(plan.assembleHashtags, true, 'hashtags are still derived in code');
+});
+
+check('an item WITH chapters keeps its code-assembled tags', () => {
+  const resolved = routing.resolveMetadataRouting(undefined);
+  const plan = tasks.planMetadataUnits(resolved, 'http://localhost:11434',
+    stubManager('youtube-telltale'), false, /* hasChapters */ true);
+
+  const written = new Set();
+  for (const unit of plan.units) for (const f of unit.fields) written.add(f);
+  if (written.has('tags')) throw new Error('a model was planned for tags on a chaptered item');
+  eq(plan.assembleTags, true, 'assembled from the pools instead');
+});
+
+/**
+ * The four packaging fields default to ONE model, so they are ONE call. This is the property
+ * that makes the cross-field self-check followable, and it is worth asserting on the PLAN and
+ * not only on the routing table — a grouping bug would leave the table correct and the calls
+ * split.
+ */
+check('the shipped defaults plan ONE packaging call, not four', () => {
+  const plan = tasks.planMetadataUnits(routing.resolveMetadataRouting(undefined),
+    'http://localhost:11434', stubManager('youtube-telltale'), true, true);
+  const packaging = plan.units.filter((u) => u.fields.includes('titles'));
+  eq(packaging.length, 1, 'exactly one unit writes titles');
+  for (const field of ['thumbnail_text', 'pinned_comment', 'clip_suggestions']) {
+    if (!packaging[0].fields.includes(field)) {
+      throw new Error(field + ' is in a different call from the titles it has to be coherent with');
+    }
+  }
+});
+
+check('a podcast plans no thumbnail or clip unit at all', () => {
+  const plan = tasks.planMetadataUnits(routing.resolveMetadataRouting(undefined),
+    'http://localhost:11434', stubManager('podcast-spreaker'), false, true);
+  const written = new Set();
+  for (const unit of plan.units) for (const f of unit.fields) written.add(f);
+  if (written.has('thumbnail_text')) throw new Error('the podcast was routed a thumbnail');
+  if (written.has('clip_suggestions')) throw new Error('the podcast was routed clip suggestions');
+  eq(plan.assembleHashtags, false, 'and it renders no hashtags either');
+});
+
+// ------------------------------------------------------- the userData migration
+//
+// Simulated against a temp directory rather than the real one: the question is whether an
+// install carrying the OLD flat prompt sets ends up with the new tree, and whether a
+// hand-edited old set is left alone and announced rather than moved.
+
+check('a userData dir holding the old flat prompt sets migrates to the new tree', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cs-prompt-migration-'));
+  const promptSets = path.join(tmp, 'prompt_sets');
+  fs.mkdirSync(promptSets);
+
+  // An install as it looked before this build: five channel sets, one summarization file, and
+  // a .bak the operator made himself.
+  const legacy = ['youtube-telltale.yml', 'youtube-fireside.yml', 'youtube-unfiltered.yml',
+                  'youtube-shorts.yml', 'podcast-spreaker.yml', 'summarization_prompts.yml'];
+  const crypto = require('crypto');
+  const provenance = { version: 1, files: {} };
+  for (const file of legacy) {
+    const body = 'name: ' + file + '\neditorial_prompt: |-\n  old\n';
+    fs.writeFileSync(path.join(promptSets, file), body);
+    provenance.files[file] = {
+      shippedHash: crypto.createHash('sha256').update(body).digest('hex'),
+      updatedAt: new Date().toISOString(),
+    };
+  }
+  fs.writeFileSync(path.join(promptSets, 'youtube-telltale.yml.bak-2026-08-02'), 'a backup of my own');
+
+  // The operator edited one of them after we installed it, so its hash no longer matches.
+  fs.appendFileSync(path.join(promptSets, 'youtube-fireside.yml'), '\n# my own edit\n');
+
+  // --- what ensurePromptSetsDirectory does, applied here to the temp dir ---
+  const installRecursively = (src, destRoot, prefix = '') => {
+    for (const entry of fs.readdirSync(path.join(src, prefix), { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) installRecursively(src, destRoot, rel);
+      else if (/\.ya?ml$/.test(entry.name)) {
+        const dest = path.join(destRoot, 'prompts', rel);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(path.join(ASSETS_ROOT, rel), dest);
+      }
+    }
+  };
+  installRecursively(ASSETS_ROOT, promptSets);
+
+  const archive = path.join(promptSets, 'superseded');
+  const keptForEdits = [];
+  for (const file of legacy) {
+    const filePath = path.join(promptSets, file);
+    const hash = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+    if (provenance.files[file].shippedHash === hash) {
+      fs.mkdirSync(archive, { recursive: true });
+      fs.renameSync(filePath, path.join(archive, file));
+    } else {
+      keptForEdits.push(file);
+    }
+  }
+  // --- end of the simulated migration ---
+
+  eq(keptForEdits, ['youtube-fireside.yml'], 'the ONE file with local edits is kept and announced');
+  if (fs.existsSync(path.join(promptSets, 'youtube-telltale.yml'))) {
+    throw new Error('an untouched superseded set was left in place to look live');
+  }
+  if (!fs.existsSync(path.join(archive, 'youtube-telltale.yml'))) {
+    throw new Error('an untouched superseded set was deleted rather than archived');
+  }
+  if (!fs.existsSync(path.join(promptSets, 'youtube-fireside.yml'))) {
+    throw new Error("the operator's edited file was moved out from under him");
+  }
+  if (!fs.existsSync(path.join(promptSets, 'youtube-telltale.yml.bak-2026-08-02'))) {
+    throw new Error('a .bak file was touched; those are the operator\'s');
+  }
+
+  // The migrated install is a working one: load the assets straight out of it.
+  const migrated = promptAssetsModule.PromptAssets.load(path.join(promptSets, 'prompts'));
+  if (!migrated.hasChannel('youtube-telltale')) throw new Error('the migrated tree has no channels');
+  if (!migrated.pipeline('summarization.yml', 'youtube.system').includes('evidence-extraction')) {
+    throw new Error('the summarization prompt did not survive the fold-in');
+  }
+
+  fs.rmSync(tmp, { recursive: true, force: true });
 });
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);

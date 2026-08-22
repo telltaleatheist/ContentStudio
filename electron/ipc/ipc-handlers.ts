@@ -45,6 +45,7 @@ import {
 import { isItemId } from '../services/metadata/item-identity';
 import { composeChapterBlock, composeDescription, composeTags } from '../services/metadata/description-composer';
 import {
+  SUMMARIZATION_MODEL,
   buildRoutingView,
   describeRouting,
   migrateStoredRouting,
@@ -52,6 +53,7 @@ import {
   resolveMetadataRouting,
   validateRoutingSelections,
 } from '../services/metadata/metadata-routing';
+import { PROMPTS_SUBDIR, initPromptAssets } from '../services/metadata/prompt-assets';
 import { setupPublishIpc } from '../services/publish/publish-ipc';
 import { SpreakerConfigService } from '../services/spreaker/spreaker-config.service';
 import { SpreakerApiService } from '../services/spreaker/spreaker-api.service';
@@ -202,6 +204,99 @@ function writePromptSetProvenance(provenance: PromptSetProvenance): void {
 }
 
 /**
+ * Every bundled YAML asset, as paths relative to the asset root, deepest last.
+ *
+ * Recursive because the prompt assets are a tree now. Relative paths (with forward slashes on
+ * every platform, so a manifest written on one reads on another) are what the provenance
+ * manifest keys on; the old flat layout's bare filenames are relative paths too, so nothing has
+ * to be migrated for the manifest to keep matching.
+ */
+function listBundledPromptAssets(root: string, prefix = ''): string[] {
+  const out: string[] = [];
+  for (const entry of fs.readdirSync(path.join(root, prefix), { withFileTypes: true })) {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      out.push(...listBundledPromptAssets(root, rel));
+    } else if (entry.name.endsWith('.yml') || entry.name.endsWith('.yaml')) {
+      out.push(rel);
+    }
+  }
+  return out;
+}
+
+/**
+ * The per-channel prompt sets this build superseded, and what happens to the copies already
+ * sitting in the user's directory.
+ *
+ * THE DECISION, stated because the alternative — leaving them there unread — is exactly the
+ * kind of silence this codebase forbids. A file the app installed, that the operator can see,
+ * that looks like the thing generating his metadata and is not, is worse than either deleting
+ * it or moving it. So:
+ *
+ *   - UNTOUCHED since we installed it (its hash still matches the provenance manifest): the
+ *     operator never edited it and nothing is lost. It is MOVED to `prompt_sets/superseded/`,
+ *     out of the way, and the move is logged by name.
+ *   - HAND-EDITED, or present with no provenance record at all: it stays exactly where it is
+ *     and is named in a LOUD warning, plus the same renderer notice the withheld-update path
+ *     uses. Those edits are the operator's work and the app does not get to decide they are
+ *     obsolete — but he does need to know they are no longer being read.
+ *
+ * Either way the file is never read again: prompt assembly comes from `prompts/` (see
+ * prompt-assets.ts) and there is no code path left that opens `prompt_sets/<channel>.yml`.
+ *
+ * `.bak*` files are not touched, looked at, or mentioned. They are the operator's.
+ */
+const SUPERSEDED_PROMPT_SETS = [
+  'youtube-telltale.yml',
+  'youtube-fireside.yml',
+  'youtube-unfiltered.yml',
+  'youtube-shorts.yml',
+  'podcast-spreaker.yml',
+  'summarization_prompts.yml',
+];
+
+function retireSupersededPromptSets(provenance: PromptSetProvenance): string[] {
+  const promptSetsDir = getPromptSetsDirectory();
+  const archiveDir = path.join(promptSetsDir, 'superseded');
+  const keptForEdits: string[] = [];
+  const archived: string[] = [];
+
+  for (const file of SUPERSEDED_PROMPT_SETS) {
+    const filePath = path.join(promptSetsDir, file);
+    if (!fs.existsSync(filePath)) continue;
+
+    const record = provenance.files[file];
+    const installedHash = sha256OfFile(filePath);
+
+    if (record && record.shippedHash === installedHash) {
+      fs.mkdirSync(archiveDir, { recursive: true });
+      fs.renameSync(filePath, path.join(archiveDir, file));
+      delete provenance.files[file];
+      archived.push(file);
+      continue;
+    }
+    keptForEdits.push(file);
+  }
+
+  if (archived.length > 0) {
+    log.info(
+      `Superseded prompt sets moved to ${archiveDir}: ${archived.join(', ')}. They were byte-identical to the ` +
+        `versions this app installed, so nothing of yours was in them. Prompts now come from ` +
+        `${path.join(promptSetsDir, 'prompts')}.`
+    );
+  }
+  if (keptForEdits.length > 0) {
+    log.warn(
+      `These prompt sets have local edits and are NO LONGER READ: ${keptForEdits.join(', ')} (in ${promptSetsDir}). ` +
+        `They have been left exactly where they are rather than moved or deleted. Prompt text now lives in ` +
+        `${path.join(promptSetsDir, 'prompts')} — the shared editorial core, the per-field instruction blocks and ` +
+        `the per-channel data files — and your edits need porting there to take effect again.`
+    );
+  }
+  return keptForEdits;
+}
+
+/**
  * Install and refresh the bundled prompt-set assets in userData/prompt_sets.
  *
  * The old rule was "seed only when the directory is empty", so a prompt improvement
@@ -233,11 +328,15 @@ function ensurePromptSetsDirectory(): void {
     throw new Error(`Bundled prompt assets not found at: ${samplePromptsDir}`);
   }
 
-  // Every YAML under the asset directory, not a hardcoded list of channels: a new prompt
-  // set ships by dropping the file into electron/assets and nothing here changes.
-  const bundledFiles = fs.readdirSync(samplePromptsDir).filter(f =>
-    f.endsWith('.yml') || f.endsWith('.yaml')
-  );
+  // Every YAML under the asset directory, RECURSIVELY, as paths relative to it — not a
+  // hardcoded list: a new prompt set ships by dropping a file in and nothing here changes.
+  //
+  // Recursive as of this build, because the assets became a TREE
+  // (prompts/shared/fields/titles.yml, prompts/channels/telltale.yml and so on) rather than a
+  // flat directory of per-channel sets. Relative paths are what the provenance manifest keys
+  // on now; a bare filename from the old flat layout is still a valid relative path, so an
+  // existing manifest keeps resolving without a version bump.
+  const bundledFiles = listBundledPromptAssets(samplePromptsDir);
 
   const provenance = readPromptSetProvenance();
   const withheld: string[] = [];
@@ -248,6 +347,9 @@ function ensurePromptSetsDirectory(): void {
   for (const file of bundledFiles) {
     const srcPath = path.join(samplePromptsDir, file);
     const destPath = path.join(promptSetsDir, file);
+    // The tree has subdirectories now. Making them here rather than assuming a flat
+    // destination is what lets the same per-file provenance rules apply unchanged.
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
     const bundledHash = sha256OfFile(srcPath);
     const record = provenance.files[file];
 
@@ -301,6 +403,12 @@ function ensurePromptSetsDirectory(): void {
     }
   }
 
+  // AFTER the install pass, so a machine that has never run this build gets the new tree first
+  // and only then has the old flat sets retired out from under it. Ordering the other way would
+  // leave a window in which neither layout was present.
+  const supersededWithEdits = retireSupersededPromptSets(provenance);
+  if (supersededWithEdits.length > 0) provenanceChanged = true;
+
   if (provenanceChanged) {
     writePromptSetProvenance(provenance);
   }
@@ -309,13 +417,23 @@ function ensurePromptSetsDirectory(): void {
     log.info(`Prompt assets: ${installed} installed, ${updated} updated in ${promptSetsDir}`);
   }
 
-  pendingPromptAssetNotice = withheld.length > 0 ? { withheld } : null;
+  const allWithheld = [...withheld, ...supersededWithEdits];
+  pendingPromptAssetNotice = allWithheld.length > 0 ? { withheld: allWithheld } : null;
   if (withheld.length > 0) {
     log.warn(
       `Prompt assets NOT updated because they have local edits: ${withheld.join(', ')}. ` +
       `Newer bundled versions ship with this build (${samplePromptsDir}).`
     );
   }
+
+  /**
+   * Load them. Right here, at startup, immediately after they are known to be on disk.
+   *
+   * The AIManagerService constructor calls this too and it is idempotent — but a broken or
+   * incomplete prompt tree should stop the app while it is starting, not an hour into a run
+   * when the first metadata call goes to assemble a prompt.
+   */
+  initPromptAssets(path.join(promptSetsDir, PROMPTS_SUBDIR));
 }
 
 // Track running jobs and their cancellation callbacks
@@ -1056,7 +1174,25 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         apiKey = apiKeys.claudeApiKey;
       }
 
-      log.info(`[IPC] Using AI model: ${fullModel} (provider: ${aiProvider}, model: ${aiModel})`);
+      /**
+       * WHAT THE SETTINGS PAGE'S "AI MODEL" STILL GOVERNS, which is much less than it did.
+       *
+       * It used to be the model that wrote every field of every chapterless item (the legacy
+       * whole-metadata call) AND the model that summarized every transcript on every path. The
+       * first is gone: those items are routed like all the others, against the routing table
+       * the operator sets in the routing dialog. The second is gone too — summarization runs on
+       * SUMMARIZATION_MODEL, declared in metadata-routing.ts, so a transcript is not silently
+       * read by a cloud provider on a run whose every visible field is local.
+       *
+       * What is left is COMPILATION packaging, which is a declared mode the operator selects,
+       * and the provider clients this service constructs. That is why `fullModel` is still
+       * resolved and still passed — and why the log line now says which of the two it is for.
+       */
+      log.info(
+        `[IPC] Settings AI model ${fullModel} (provider: ${aiProvider}, model: ${aiModel}) is used for COMPILATION ` +
+          `packaging only; per-field metadata follows the routing table and summarization runs on ` +
+          `${SUMMARIZATION_MODEL}`
+      );
 
       // Performance-feedback loop: when the active prompt set maps to a
       // registered analytics channel that has computed insights, append the
@@ -1071,7 +1207,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         mode: params.mode || settings.defaultMode,
         aiProvider: metaProvider, // Use metadata provider as primary
         aiModel: fullModel, // Full prefixed model (e.g., "claude:claude-sonnet-4-5")
-        summarizationModel: fullModel, // Use same model for both
+        summarizationModel: SUMMARIZATION_MODEL,
         metadataModel: fullModel,
         aiApiKey: apiKey,
         aiHost: settings.ollamaHost || 'http://localhost:11434',

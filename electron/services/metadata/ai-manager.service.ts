@@ -16,12 +16,15 @@ import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import { METADATA_FIELDS } from './metadata-fields';
 import {
   InstructionSection,
+  MetadataFieldId,
   MetadataGroupSpec,
   MetadataRunContext,
   buildGroupInstructions,
+  buildOutputFormat,
   groupNeedsTranscript,
   parseInstructionSections,
 } from './metadata-tasks';
+import { ChannelData, PROMPTS_SUBDIR, initPromptAssets, promptAssets } from './prompt-assets';
 import { Chapter } from './chapter-generator.service';
 import { queueAITask } from '../queue-manager.service';
 import { JobCancelledError, isAbortError } from './cancellation';
@@ -99,6 +102,16 @@ export interface MetadataResult {
   chaptersSkipped?: { outcome: 'failed' | 'skipped'; reason: string };
 }
 
+/**
+ * A channel's prompt set, ASSEMBLED from the prompt assets rather than read from one file.
+ *
+ * The shape is unchanged from when it was a whole YAML on disk, deliberately: everything
+ * downstream of here — the section parser, the group builder, the tag append, the description
+ * links — reads these four strings and does not care that `editorial_prompt` is now the shared
+ * editorial blocks with this channel's variant applied, or that `instructions_prompt` is the
+ * shared per-field sections in this channel's declared order. Assembly happens once, in
+ * `loadPrompts`; see prompt-assets.ts for what it assembles from.
+ */
 export interface PromptSet {
   name: string;
   editorial_prompt: string;
@@ -132,8 +145,14 @@ export class AIManagerService {
   private ollamaClient?: AxiosInstance;
   private openaiClient?: OpenAI;
   private anthropicClient?: Anthropic;
-  private summarizationPrompts: any;
   private currentPromptSet?: PromptSet;
+  /**
+   * The CHANNEL behind the loaded prompt set (prompts/channels/*.yml): its field list, its
+   * counts, its variant selections. Kept alongside the assembled PromptSet because the
+   * per-group self-check has to be assembled from the fields a group actually holds, which is a
+   * question about the channel and not about the assembled string.
+   */
+  private currentChannel?: ChannelData;
   // instructions_prompt split on its `## ` headers. Parsed once per loaded prompt set —
   // every task unit asks for it, and the file cannot change mid-run.
   private instructionSectionsCache?: InstructionSection[];
@@ -236,34 +255,42 @@ export class AIManagerService {
   constructor(config: AIConfig) {
     this.config = config;
 
-    // Set models - use specific models if provided, otherwise use defaults
-    if (config.summarizationModel && config.metadataModel) {
-      // User-specified models (from settings)
-      this.summaryModel = config.summarizationModel;
-      this.metadataModel = config.metadataModel;
-    } else if (config.model) {
-      // Legacy single model (backward compatibility)
-      this.summaryModel = config.model;
-      this.metadataModel = config.model;
-    } else {
-      // Provider defaults
-      if (config.provider === 'ollama') {
-        // Use different models for speed vs quality (provider-prefixed for makeRequest routing)
-        this.summaryModel = 'ollama:phi-3.5:3.8b'; // Fast model for summaries (2.2GB)
-        this.metadataModel = 'ollama:qwen2.5:7b'; // Quality model for metadata (4.7GB)
-      } else if (config.provider === 'openai') {
-        this.summaryModel = 'openai:gpt-4o-mini'; // Fast/cheap for summaries
-        this.metadataModel = 'openai:gpt-4o'; // Quality for metadata
-      } else if (config.provider === 'claude') {
-        this.summaryModel = 'claude:claude-3-haiku-20240307'; // Fast
-        this.metadataModel = 'claude:claude-3-5-sonnet-20241022'; // Quality
-      }
-    }
+    /**
+     * The two models are resolved INDEPENDENTLY now, and that is a fix rather than a tidy-up.
+     *
+     * The old condition was `config.summarizationModel && config.metadataModel` — BOTH or
+     * neither. Since this build the summarization model is declared
+     * (metadata-routing.ts SUMMARIZATION_MODEL) while the metadata model comes from a Settings
+     * field that may legitimately be empty, so the AND would have thrown the declared
+     * summarizer away the moment Settings had no model in it and quietly summarized on
+     * `ollama:phi-3.5:3.8b` instead. A declared value must not be conditional on an unrelated
+     * one being present.
+     */
+    const PROVIDER_DEFAULTS: Record<string, { summary: string; metadata: string }> = {
+      // Fast model for summaries (2.2GB) / quality model for metadata (4.7GB).
+      ollama: { summary: 'ollama:phi-3.5:3.8b', metadata: 'ollama:qwen2.5:7b' },
+      openai: { summary: 'openai:gpt-4o-mini', metadata: 'openai:gpt-4o' },
+      claude: { summary: 'claude:claude-3-haiku-20240307', metadata: 'claude:claude-3-5-sonnet-20241022' },
+    };
+    const defaults = PROVIDER_DEFAULTS[config.provider];
+    this.summaryModel = config.summarizationModel || config.model || defaults?.summary || '';
+    this.metadataModel = config.metadataModel || config.model || defaults?.metadata || '';
 
     // Set prompts directories
     this.promptsDir = this.getPromptsDir();
     // Use provided promptSetsDir or fall back to bundled location
     this.promptSetsDir = config.promptSetsDir || path.join(this.promptsDir, 'prompt_sets');
+
+    /**
+     * Load the prompt assets HERE, in the constructor, rather than lazily at first use.
+     *
+     * Every path that reaches a model — metadata, chapters, descriptions, adapters, episode
+     * splitting — runs under a service constructed here, so this is the one choke point where
+     * "the prompts are missing" can be discovered before an hour of transcription has been
+     * spent. It throws; it does not warn and carry on with something built in, because there is
+     * nothing built in.
+     */
+    initPromptAssets(path.join(this.promptSetsDir, PROMPTS_SUBDIR));
 
     console.log('[AIManager] Initialized');
     console.log('[AIManager] Provider:', config.provider);
@@ -482,79 +509,73 @@ export class AIManagerService {
   }
 
   /**
-   * Load prompts from YAML files
+   * Assemble this run's prompt set out of the prompt assets.
+   *
+   * WHAT REPLACED WHAT. This used to read one big per-channel YAML out of userData and hand it
+   * downstream whole. There is no per-channel YAML any more: a channel is a small DATA file
+   * (prompts/channels/*.yml) naming its focus paragraph, which fields it publishes, how many of
+   * each, and its links, and everything model-facing comes from prompts/shared/. This method is
+   * where those are put together, once, into the same four-string shape the rest of the service
+   * has always consumed.
+   *
+   * THE ORDER OF THE INSTRUCTIONS is the channel's declared field order, then OUTPUT FORMAT,
+   * then the FINAL SELF-CHECK — which is what the old sets did by hand and what
+   * `parseInstructionSections` downstream expects to find. The self-check placed HERE is the
+   * whole-channel one, used by the compilation call; a routed group gets a self-check assembled
+   * from its own fields instead (buildGroupInstructions).
+   *
+   * AN UNKNOWN CHANNEL THROWS. An ABSENT one is a warning and nothing more: master analysis and
+   * the episode splitter construct this service with no prompt set at all and never generate
+   * metadata, and failing their startup over a channel they will not use would be inventing a
+   * requirement.
    */
   private loadPrompts(): void {
-    // Summarization prompts are optional — a generic built-in prompt covers their
-    // absence, so failures here are soft.
-    try {
-      const summarizationPath = path.join(this.promptsDir, 'summarization_prompts.yml');
-      if (fs.existsSync(summarizationPath)) {
-        const content = fs.readFileSync(summarizationPath, 'utf-8');
-        this.summarizationPrompts = yaml.load(content);
-        console.log('[AIManager] Loaded summarization prompts');
-      }
-    } catch (error) {
-      console.error('[AIManager] Error loading summarization prompts:', error);
-    }
+    const assets = promptAssets();
+    const promptSetName = this.config.promptSet;
 
-    // The prompt set is required for metadata generation. A malformed file must
-    // fail HERE with its real cause — swallowing it surfaces later as a bare
-    // "No prompt set loaded", hiding the actual problem from the user.
-    // (A missing file stays a warning: master/episode analysis construct this
-    // service without a prompt set and never call generateMetadata.)
-    const promptSetName = this.config.promptSet || 'sample-youtube';
-    const promptSetPath = path.join(this.promptSetsDir, `${promptSetName}.yml`);
-
-    if (!fs.existsSync(promptSetPath)) {
-      console.warn(`[AIManager] Prompt set not found: ${promptSetName}`);
+    if (!promptSetName) {
+      log.info('[AIManager] no prompt set requested; this service will not generate channel metadata');
       return;
     }
-
-    let loaded: unknown;
-    try {
-      const content = fs.readFileSync(promptSetPath, 'utf-8');
-      loaded = yaml.load(content);
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      throw new Error(`Prompt set "${promptSetName}" is not valid YAML (${promptSetPath}): ${reason}`);
-    }
-
-    const promptSet = loaded as PromptSet;
-    if (!promptSet || typeof promptSet.editorial_prompt !== 'string' || typeof promptSet.instructions_prompt !== 'string') {
+    if (!assets.hasChannel(promptSetName)) {
       throw new Error(
-        `Prompt set "${promptSetName}" (${promptSetPath}) is missing required fields: editorial_prompt and instructions_prompt must be strings`
+        `No channel "${promptSetName}" in the prompt assets. Known channels: ${assets.channelIds().join(', ')}. ` +
+          `(Channel ids live in the "id:" key of electron/assets/prompts/channels/*.yml and are unchanged from ` +
+          `the prompt-set filenames they replaced.)`
       );
     }
 
-    // channel_tags is optional, but a MALFORMED one is not tolerated: the whole point of
-    // the key is that the channel's own name reaches the tag list, and a silently ignored
-    // "channel_tags: Telltale" (a string, not a list) would publish tags that quietly
-    // never name the channel.
-    if (promptSet.channel_tags !== undefined) {
-      const valid =
-        Array.isArray(promptSet.channel_tags) &&
-        promptSet.channel_tags.every((t) => typeof t === 'string' && t.trim().length > 0);
-      if (!valid) {
-        throw new Error(
-          `Prompt set "${promptSetName}" (${promptSetPath}) has a channel_tags key that is not a list of non-empty ` +
-            `strings (got: ${JSON.stringify(promptSet.channel_tags)}). Write it as a YAML list, e.g. ` +
-            `channel_tags: ["Telltale", "Owen Morgan"]`
-        );
-      }
+    const channel = assets.channel(promptSetName);
+    const fields = channel.fields as MetadataFieldId[];
+    const sections = fields.map((field) => assets.fieldSection(channel, field));
+    const instructions = [
+      ...sections,
+      buildOutputFormat(fields).trim(),
+      assets.selfCheckBlock(channel, fields),
+    ].join('\n\n');
+
+    this.currentChannel = channel;
+    this.currentPromptSet = {
+      name: channel.name,
+      editorial_prompt: assets.editorialPrompt(channel),
+      instructions_prompt: instructions,
+      description_links: channel.descriptionLinks,
+      channel_tags: channel.channelTags,
+    };
+    this.instructionSectionsCache = undefined;
+
+    if (channel.channelTags && channel.channelTags.length > 0) {
       log.info(
-        `[AIManager] Prompt set "${promptSetName}" appends ${promptSet.channel_tags.length} channel tag(s): ` +
-          promptSet.channel_tags.join(', ')
+        `[AIManager] channel "${channel.id}" appends ${channel.channelTags.length} channel tag(s): ` +
+          channel.channelTags.join(', ')
       );
     } else {
-      log.info(
-        `[AIManager] Prompt set "${promptSetName}" has no channel_tags key, so no channel or creator tags are appended`
-      );
+      log.info(`[AIManager] channel "${channel.id}" declares no channel_tags, so no channel or creator tags are appended`);
     }
-
-    this.currentPromptSet = promptSet;
-    this.instructionSectionsCache = undefined;
-    console.log(`[AIManager] Loaded prompt set: ${promptSet.name}`);
+    log.info(
+      `[AIManager] assembled prompt set for "${channel.id}" (${channel.name}): fields ${fields.join(', ')}; ` +
+        `editorial variant "${channel.editorialVariant}", field variant "${channel.fieldVariant}"`
+    );
   }
 
   /**
@@ -670,34 +691,51 @@ export class AIManagerService {
   }
 
   /**
-   * Create summarization prompt
+   * The evidence-extraction prompt that runs before anything else reads a transcript.
+   *
+   * THE FALLBACK THAT WAS HERE IS GONE, and it was the worst one in the app. It read:
+   *
+   *     this.summarizationPrompts?.youtube?.system || 'You are a helpful assistant that
+   *       summarizes video transcripts.'
+   *
+   * with a matching `|| 'Summarize this transcript:\n\n{transcript}'` on the user turn. The
+   * real prompt exists to PRESERVE AMMUNITION — exact quotes, named people, the specific
+   * claims a title has to be anchored to — and explicitly says a smooth generalized summary is
+   * a failed output. The substitute asked for precisely that smooth generalized summary. Its
+   * output then became the `{subject}` every downstream field was written from, so a missing
+   * asset file produced a whole run of plausible, unanchored metadata with nothing anywhere
+   * saying the evidence had been thrown away.
+   *
+   * It now throws, naming the file and the key.
    */
   private createSummarizationPrompt(text: string, sourceName: string): string {
-    const systemPrompt = this.summarizationPrompts?.youtube?.system ||
-      'You are a helpful assistant that summarizes video transcripts.';
+    const assets = promptAssets();
+    const systemPrompt = assets.pipeline('summarization.yml', 'youtube.system');
+    // Function replacer: transcript text routinely contains $-patterns ($&, $', $`).
+    const userPrompt = assets
+      .pipeline('summarization.yml', 'youtube.user')
+      .replace('{transcript}', () => text);
 
-    const userPrompt = (this.summarizationPrompts?.youtube?.user || 'Summarize this transcript:\n\n{transcript}')
-      .replace('{transcript}', () => text); // function replacer: transcript text may contain $-patterns
-
-    // Add source filename context if available
-    const sourceContext = sourceName ? `\n\nSource: ${sourceName}\n(Use the source filename for context about names, topics, and proper nouns)` : '';
+    const sourceContext = sourceName
+      ? assets.pipeline('summarization.yml', 'youtube.source_context').replace(/\{sourceName\}/g, () => sourceName)
+      : '';
 
     return `${systemPrompt}\n\n${userPrompt}${sourceContext}`;
   }
 
   /**
-   * Assemble the metadata prompt WITHOUT sending it to the AI.
-   * Thin public wrapper over createMetadataPrompt so callers (e.g. the
-   * "Show prompt" flow) can obtain the exact prompt generateMetadata would submit.
+   * Assemble the COMPILATION prompt without sending it, for the "Show prompt" flow.
+   *
+   * `compilationInfo` is REQUIRED and the parameter is no longer optional, which is the type
+   * system carrying the rule stated on `generateCompilationMetadata` below: there is one
+   * whole-metadata call left in this app and it is the compilation one.
    */
-  buildMetadataPrompt(
+  buildCompilationPrompt(
     content: string,
-    sourceName?: string,
-    compilationInfo?: { sourceCount: number; contentTypes: string[] },
-    chapterSubjects?: string[],
-    chapterDetails?: string[]
+    sourceName: string | undefined,
+    compilationInfo: { sourceCount: number; contentTypes: string[] }
   ): string {
-    return this.createMetadataPrompt(content, sourceName, compilationInfo, chapterSubjects, chapterDetails);
+    return this.createCompilationPrompt(content, sourceName, compilationInfo);
   }
 
   /**
@@ -715,72 +753,73 @@ export class AIManagerService {
   }
 
   /**
-   * Generate metadata from transcript/summary
+   * THE ONE SURVIVING WHOLE-METADATA CALL: a compilation.
+   *
+   * WHAT WENT. This method used to take any item at all and write every field in one request to
+   * whatever model the Settings page's "AI Model" picker named. That was the LEGACY PATH, and an
+   * item reached it not because anyone chose it but because it had no chapters — a typed text
+   * subject, an import whose chapter pipeline came back short, a video that was all ads. So a
+   * run could silently divide in two: chaptered items generated as routed local units against
+   * the routing table, chapterless ones generated as one call against a Settings field the
+   * operator had probably forgotten was there, possibly to a cloud provider, with nothing in the
+   * report distinguishing them. Every one of those items now plans the SAME routed units
+   * (metadata-tasks.ts, planMetadataUnits), with the text subject as their content slot.
+   *
+   * WHY A COMPILATION IS NOT THAT. A compilation is a DECLARED MODE — the operator selects it —
+   * and it is genuinely a different request: N unrelated items, one umbrella title, and a
+   * description that must be a bulleted list in item order and nothing else. The routed units do
+   * not have that shape, and forcing them into it would mean a second set of prompts for a mode
+   * that already has one. So this call stays, gated on `compilationInfo` being present in the
+   * signature rather than at runtime, named for what it is, and logged as a declared mode every
+   * time it runs.
    */
-  async generateMetadata(
+  async generateCompilationMetadata(
     content: string,
-    sourceName?: string,
-    compilationInfo?: { sourceCount: number; contentTypes: string[] },
-    chapterSubjects?: string[],
-    chapterDetails?: string[]
+    sourceName: string | undefined,
+    compilationInfo: { sourceCount: number; contentTypes: string[] }
   ): Promise<MetadataResult> {
     if (!this.currentPromptSet) {
       throw new Error('No prompt set loaded');
     }
 
-    console.log(`[AIManager] === METADATA GENERATION STARTING for ${sourceName || 'unknown'} ===`);
+    log.info(
+      `[AIManager] DECLARED MODE: compilation packaging for ${sourceName || 'unknown'} — one whole-metadata call ` +
+        `covering ${compilationInfo.sourceCount} item(s) on ${this.metadataModel}, because a compilation's umbrella ` +
+        `title and bulleted description are a different request shape from the routed per-field units`
+    );
     console.log(`[AIManager]     Content length: ${content.length} chars`);
-    console.log(`[AIManager]     Using model: ${this.metadataModel}`);
-    console.log(`[AIManager]     Compilation: ${compilationInfo ? `yes (${compilationInfo.sourceCount} items)` : 'no'}`);
-    console.log(`[AIManager]     Chapter subjects: ${chapterSubjects ? chapterSubjects.length : 'none'}`);
 
-    const prompt = this.createMetadataPrompt(content, sourceName, compilationInfo, chapterSubjects, chapterDetails);
+    const prompt = this.createCompilationPrompt(content, sourceName, compilationInfo);
     return this.generateMetadataFromAssembledPrompt(prompt);
   }
 
   /**
-   * Create metadata generation prompt
+   * The compilation prompt: the whole channel brief, every field at once, with the compilation
+   * overrides appended.
    *
-   * chapterSubjects, when present, are the chapter names the local chapter pipeline
-   * already derived from this transcript. They go in FIRST, ahead of the transcript
-   * itself, because they are the most reliable account of what the video contains —
-   * measured span by span rather than inferred from a summary.
-   *
-   * chapterDetails is the same list's description-grade prose (index-aligned, stage 4's
-   * `detail` field). A 4-8 word marker says which subjects exist; the detail sentence
-   * says what actually happened in them, which is what a description or a tag list has
-   * to be specific about. Blank entries are simply omitted — a chapter the summarizer
-   * could not describe still contributes its name.
+   * The override block is APPENDED rather than spliced over the TITLES / DESCRIPTION / TAGS
+   * sections, and says in its own first line that it replaces them. That was robust to any
+   * prompt-set format when the sets were user-edited YAML; it is kept now because it is still
+   * the honest shape — the reader of this prompt sees both the standing rules and the ones that
+   * supersede them for this request, in that order.
    */
-  private createMetadataPrompt(
+  private createCompilationPrompt(
     content: string,
-    sourceName?: string,
-    compilationInfo?: { sourceCount: number; contentTypes: string[] },
-    chapterSubjects?: string[],
-    chapterDetails?: string[]
+    sourceName: string | undefined,
+    compilationInfo: { sourceCount: number; contentTypes: string[] }
   ): string {
     if (!this.currentPromptSet) {
       throw new Error('No prompt set loaded');
     }
 
-    // Use centralized system prompt
     const systemPrompt = SYSTEM_PROMPTS.JSON_SYSTEM;
-
-    const subject = this.buildSubjectBlock(content, sourceName, compilationInfo, chapterSubjects, chapterDetails);
+    const subject = this.buildSubjectBlock(content, sourceName, compilationInfo);
     const editorialPrompt = this.fillSubject(subject);
 
-    // Instructions prompt defines what to generate
-    let instructionsPrompt = this.currentPromptSet.instructions_prompt;
-
-    // In compilation mode, append an override block that REPLACES the TITLES,
-    // DESCRIPTION, and TAGS rules to reflect all items. Appending (rather than
-    // regex-surgery on the user-editable YAML) is robust to any prompt-set format.
-    if (compilationInfo) {
-      const overrideBlock = formatPrompt(SYSTEM_PROMPTS.COMPILATION_INSTRUCTIONS_OVERRIDE, {
-        sourceCount: compilationInfo.sourceCount,
-      });
-      instructionsPrompt = `${instructionsPrompt}\n${overrideBlock}`;
-    }
+    const overrideBlock = formatPrompt(SYSTEM_PROMPTS.COMPILATION_INSTRUCTIONS_OVERRIDE, {
+      sourceCount: compilationInfo.sourceCount,
+    });
+    const instructionsPrompt = `${this.currentPromptSet.instructions_prompt}\n${overrideBlock}`;
 
     // Analytics feedback loop: append the pre-resolved channel performance
     // block (if any) AFTER the existing prompt content — purely additive.
@@ -791,10 +830,10 @@ export class AIManagerService {
 
   /**
    * The `{subject}` payload: compilation framing, source filename, the chapter table of
-   * contents, then the content slot. Shared by the legacy single call and the per-task
-   * calls so a task differs from the whole-metadata call only in what it puts in that
+   * contents, then the content slot. Shared by the compilation call and the routed group
+   * calls, so a group differs from the whole-metadata call only in what it puts in that
    * content slot — the transcript for packaging, a short "the chapters are the content"
-   * note for description and tags.
+   * note for the fields conditioned on the chapter list.
    */
   private buildSubjectBlock(
     content: string,
@@ -855,6 +894,38 @@ export class AIManagerService {
     return new Set(this.instructionSections().map((s) => s.key));
   }
 
+  /**
+   * This run's channel data (prompts/channels/*.yml), or a throw.
+   *
+   * Exposed because the per-group self-check has to be assembled from a group's own fields, and
+   * that is a question about the channel — which field variant, which counts — not about the
+   * already-assembled instructions string.
+   */
+  private channel(): ChannelData {
+    if (!this.currentChannel) {
+      throw new Error('No prompt set loaded');
+    }
+    return this.currentChannel;
+  }
+
+  /**
+   * The FINAL SELF-CHECK for one group, built from the fields that group actually writes.
+   *
+   * THE DEFECT THIS FIXES. The self-check used to ride as ONE verbatim block with whichever
+   * group held the titles. Once fields could be routed to different models that became a block
+   * of instructions the receiving model could not perform: a titles-only group was told
+   * "thumbnail options don't repeat core words from the top 3 titles" about thumbnail text it
+   * would never see. Unfollowable lines are not harmless — they teach a model that some of this
+   * prompt is decoration.
+   *
+   * Under the shipped routing all four packaging fields are on ONE model, so every line
+   * including the cross-field ones is emitted and followable, which is the coherence the prompt
+   * sets were written for in the first place.
+   */
+  groupSelfCheck(fields: MetadataFieldId[]): string {
+    return promptAssets().selfCheckBlock(this.channel(), fields);
+  }
+
   /** instructions_prompt split on its `## ` headers, parsed once per loaded prompt set. */
   private instructionSections(): InstructionSection[] {
     if (!this.currentPromptSet) {
@@ -884,9 +955,19 @@ export class AIManagerService {
     }
 
     const promptSetName = this.config.promptSet || this.currentPromptSet.name || 'unknown';
-    const contentSlot = groupNeedsTranscript(spec.fields) ? ctx.content : SYSTEM_PROMPTS.TASK_CHAPTERS_ONLY_INPUT;
+    // The chapters-only stand-in is only a stand-in where there ARE chapters. A text-subject
+    // run has no chapter list for it to point at, so every group reads the subject itself —
+    // which is the whole content this item has.
+    const hasChapters = ctx.chapterSubjects.length > 0;
+    const contentSlot =
+      groupNeedsTranscript(spec.fields) || !hasChapters ? ctx.content : SYSTEM_PROMPTS.TASK_CHAPTERS_ONLY_INPUT;
     const subject = this.buildSubjectBlock(contentSlot, ctx.sourceLabel, undefined, ctx.chapterSubjects, ctx.chapterDetails);
-    const instructions = buildGroupInstructions(spec, this.instructionSections(), promptSetName);
+    const instructions = buildGroupInstructions(
+      spec,
+      this.instructionSections(),
+      promptSetName,
+      this.groupSelfCheck(spec.fields)
+    );
 
     // Channel performance data speaks to titles, thumbnails and packaging — the fields it
     // was distilled from. Which group carries it is decided when the run is planned, not
@@ -906,7 +987,12 @@ export class AIManagerService {
       throw new Error('No prompt set loaded');
     }
     const promptSetName = this.config.promptSet || this.currentPromptSet.name || 'unknown';
-    return buildGroupInstructions(spec, this.instructionSections(), promptSetName).metadataKeys;
+    return buildGroupInstructions(
+      spec,
+      this.instructionSections(),
+      promptSetName,
+      this.groupSelfCheck(spec.fields)
+    ).metadataKeys;
   }
 
   /**

@@ -1,0 +1,56 @@
+# The DESCRIPTION section.
+#
+# WHO ACTUALLY READS THIS, because it is not what it looks like. On the routed path the
+# description is DescriptionUnit's two schema-constrained calls, whose prompts live in
+# prompts/shared/pipeline/description.yml — this section is stripped out of every group's
+# instructions there (metadata-tasks.ts owns the field in code). What this section is FOR:
+#
+#   - declaring that the channel publishes a description at all (the `fields` list in
+#     prompts/channels/*.yml), and
+#   - the COMPILATION call, which is the one surviving whole-metadata request and does read
+#     these rules in full.
+section: DESCRIPTION
+
+instructions: |-
+  ## DESCRIPTION
+
+  - Two paragraphs separated by one blank line
+  - Paragraph 1 (3-5 sentences): Sentence 1 must work standalone as a search snippet — primary search phrase within the first 60 characters, and the full hook inside the first 157 characters (everything before "Show more"). No line breaks inside the paragraph. Write it like the opening line of a news segment, not a diary entry.
+  - Sentences 2-3: What specifically you're debunking, fact-checking, or exposing. Weave in 1-2 secondary keywords naturally.
+  - Final sentence: Channel positioning or soft CTA.
+  - Paragraph 2 (2-3 sentences): Below-the-fold search context — secondary keywords, related search terms, names and topics woven into readable sentences. Keep it genuine; keyword-stuffed walls of text are dead weight and get ignored.
+  - TRANSCRIPT/SUMMARY inputs: reference the single most damaging or absurd specific claim from the input in sentence 1
+  - SHORT DESCRIPTION inputs: frame the topic and subject factually
+  - Voice: confident, direct, slightly pissed. Banned phrases: "I'm still shaking," "what happened next," "you won't believe," "worse than we all feared," "everything changed," "broke the internet," "let that sink in," "I need to talk about this," "and honestly," "here's the thing," "buckle up"
+  - Register: write about the topics and the named people directly, as the subject of your sentences. Topic and noun-phrase form, built around the real names the input gives you — "Discussion of mainstream alien belief, Roswell, and the UAP disclosure order"; "Gene Bailey's use of Jabez, D.L. Moody, and Isaiah to justify Christian political takeover"; "Debunking Gene Bailey's misreading of Luke 19:13 and his call to occupy territory". Who is talking changes shot to shot — sometimes it is this channel, sometimes it is the footage being reacted to — and the viewer can see who is on screen, so the writing is about what is being said and who it is about.
+
+self_check: []
+
+overrides:
+  shorts:
+    instructions: |-
+      ## DESCRIPTION
+
+      - 2-3 sentences maximum (nobody reads Shorts descriptions — this is for the algorithm)
+      - Sentence 1: subject name + primary keyword + what the clip shows. Functional, not persuasive.
+      - Sentence 2: secondary keyword and content categorization context
+      - The CTA lives in the pinned comment, not here
+      - Keep it factual and keyword-rich; the clickbait-filler list applies here too
+      - Voice doesn't matter here — this is metadata for machines, not humans
+    self_check: []
+
+  spreaker:
+    instructions: |-
+      ## DESCRIPTION
+
+      - 150-250 words, plain text
+      - FIRST 120 CHARACTERS (critical): Spotify shows ~120 characters and Apple ~150 before "show more" — this fragment must work as a standalone pitch that makes someone press play. Include the primary search phrase and the subject's full name, and be specific about what the episode delivers. No line breaks inside it.
+      - Body: Expand on the specific claims debunked, evidence examined, or story told. Include concrete payoffs that signal depth: "We trace every source," "I fact-checked each claim," "We follow the money"
+      - Use the primary search phrase once or twice more, woven naturally, plus related terms and every important name spelled fully — Spotify's semantic search rewards natural topical coverage; mechanical repetition does nothing and keyword stuffing violates Apple's guidelines
+      - End with a brief CTA (subscribe, leave a review, check the website)
+      - Keep the show title and host name out of it
+      - TRANSCRIPT/SUMMARY inputs: reference the single most damaging or absurd specific claim from the input in the first 120 characters
+      - SHORT DESCRIPTION inputs: frame the topic and subject factually
+      - Voice: confident, direct, authoritative. Banned phrases: "I'm still shaking," "what happened next," "you won't believe," "worse than we all feared," "everything changed," "let that sink in," "I need to talk about this," "and honestly," "here's the thing," "buckle up"
+      - Register: write about the topics and the named people directly, as the subject of your sentences. Topic and noun-phrase form, built around the real names the input gives you — "Discussion of mainstream alien belief, Roswell, and the UAP disclosure order"; "Gene Bailey's use of Jabez, D.L. Moody, and Isaiah to justify Christian political takeover".
+    self_check: []
