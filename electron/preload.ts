@@ -35,6 +35,10 @@ const api = {
   createPromptSet: (promptSet: any) => ipcRenderer.invoke('create-prompt-set', promptSet),
   updatePromptSet: (id: string, promptSet: any) => ipcRenderer.invoke('update-prompt-set', id, promptSet),
   deletePromptSet: (id: string) => ipcRenderer.invoke('delete-prompt-set', id),
+  // Bundled prompt updates the main process refused to apply over local edits, computed
+  // at startup. Pull-only (nothing is listening when it is computed) and delivered once;
+  // null means nothing was withheld.
+  takePendingPromptAssetNotice: () => ipcRenderer.invoke('prompt-assets:take-pending-notice'),
 
   // File operations
   selectFiles: () => ipcRenderer.invoke('select-files'),
