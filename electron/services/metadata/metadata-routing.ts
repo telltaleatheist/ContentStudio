@@ -108,6 +108,23 @@ const HEADLINE_32B_START_HINT =
  * `embedding` missing does not stop a run — it costs it the lexical TF-IDF scorer, which the
  * run then declares in its warnings — and the modal says so up front so the user can decline.
  */
+/**
+ * The model that extracts evidence from a transcript before anything else reads it.
+ *
+ * DECLARED HERE, not routed, and not taken from the Settings page. Summarization used to run on
+ * whatever the "AI Model" picker said — which meant a user who had ever configured a cloud
+ * model was silently paying a cloud provider to read every transcript, on a run whose every
+ * other field was local. That is the kind of divergence this build exists to remove: the
+ * summarizer is a fixed, stated part of the pipeline, exactly like CHAPTER_PIPELINE_MODELS
+ * below, and it is stated in one place.
+ *
+ * Provider-prefixed because AIManagerService's model strings are.
+ *
+ * NOT a fallback for an absent setting — there is no setting. Anyone who wants a different
+ * summarizer changes this line, and the change is visible in the diff and in the run's log.
+ */
+export const SUMMARIZATION_MODEL = 'ollama:qwen3.8:27b';
+
 export const CHAPTER_PIPELINE_MODELS = {
   /** Places each boundary and names each chapter. */
   generation: 'qwen3.8:27b',
@@ -222,21 +239,45 @@ export interface MetadataRoutingTask {
  *    `qwen38-27b` option — it is a property of a GENERIC brief, and these tasks send the
  *    per-channel yml sets and the abLearnings block, not a generic brief.
  *
- * Where a task defaults to the 27B rather than the 9B, the reason is the same in each case:
- * the output is tiny and the judgement behind it is not. Thumbnail text is three words that
- * have to carry a whole video, and clip suggestions require reasoning over the WHOLE
- * transcript at once — both are worth the slower model. Description, tags and pinned
- * comments are longer writing against a detailed brief, which is what the 9B is for.
+ * EVERY DEFAULT IS LOCAL AS OF THIS BUILD. Titles were the last cloud default and moved to
+ * the 27B; pinned comments moved off the 9B onto it too. The shipped table is now:
+ *
+ *   titles, thumbnail_text, pinned_comment, clip_suggestions  ->  qwen3.8:27b
+ *   description                                               ->  qwen3.5:9b (DescriptionUnit)
+ *   tags                                                      ->  code-assembled where the item
+ *                                                                 has chapters, else qwen3.5:9b
+ *
+ * THE GROUPING IS THE POINT, not just the model choice. Four fields on ONE model is ONE call,
+ * and the fields in it are the ones the prompt sets were written to be written together: the
+ * self-check's "the thumbnail text must not repeat a word from your top 3 titles" is a rule a
+ * model can only follow if it wrote both, and for a year it could not. Where the operator
+ * routes them apart, the self-check is assembled per group instead (prompt-assets.ts
+ * `selfCheckBlock`) so no group is ever handed a check about a field it will not write.
+ *
+ * The two fields that stay off the big model do so for stated reasons: the description is two
+ * schema-constrained mechanical calls over already-extracted inputs, which is what the 9B is
+ * for; tags on a chaptered item are not written by a model at all.
  *
  * Cloud stays offered on every task. Nothing here is a fallback: a local model that fails
  * fails the field, and the user picks the cloud option deliberately if they want it.
  */
 export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
   {
+    /**
+     * LOCAL BY DEFAULT as of this build, which is the last field to move.
+     *
+     * Titles were the one task still defaulting to a cloud model, and the argument for that
+     * was never really about titles — it was that the 27B, given a GENERIC brief, writes a
+     * colon title 47% of the time. That measurement is on the option itself (`qwen38-27b`
+     * above) along with what it actually means: the shape collapses to 0% once the real
+     * head-to-heads are in the prompt, and this path always puts them there.
+     *
+     * Ordered so the shipped default is first.
+     */
     id: 'titles',
     label: 'Titles',
-    options: ['sonnet5', 'opus5', 'headline-titles-32b', 'qwen38-27b'],
-    defaultOptionId: 'sonnet5',
+    options: ['qwen38-27b', 'headline-titles-32b', 'sonnet5', 'opus5'],
+    defaultOptionId: 'qwen38-27b',
   },
   {
     id: 'description',
@@ -246,19 +287,21 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
   },
   {
     /**
-     * READ ONLY BY THE LEGACY PATH as of this build.
+     * READ ON THE TEXT-SUBJECT PATH, not on the chaptered one.
      *
      * An item WITH chapters has its tags assembled in code from the entity and key-phrase
      * pools (metadata spec §4 and §6.2, tags-hashtags.ts): no model writes them, so this
-     * selection is not consulted for that item and the run's log says so per item. An item
-     * WITHOUT chapters still takes the single legacy call, which writes every field including
-     * tags on the model the run is configured for.
+     * selection is not consulted for that item and the run's log says so per item.
      *
-     * The task is kept in the table rather than removed because removing it would drop every
-     * existing store's `tags` selection through migrateStoredRouting for a change the user
-     * did not make, and because the code-assembled path is one build old. It is offered the
-     * 4b for the same reason description is: if tags ever go back to a model, that is the
-     * comparison to run.
+     * An item WITHOUT chapters — a text subject the operator typed, an import whose chapter
+     * pipeline came back short — has no chapter list for those pools to be measured against, so
+     * its tags ARE written by a model, and this is the entry that says which one. That used to
+     * happen inside a single legacy whole-metadata call on whatever the Settings page's "AI
+     * Model" picker said; it is now this routed unit like every other field, which is the whole
+     * point of killing that path.
+     *
+     * It is offered the 4b for the same reason description is: if tags ever go back to a model
+     * on the chaptered path too, that is the comparison to run.
      */
     id: 'tags',
     label: 'Tags',
@@ -274,10 +317,18 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     defaultOptionId: 'qwen38-27b',
   },
   {
+    /**
+     * 27B by default, moved off the 9B in this build at the operator's direction.
+     *
+     * The reason is grouping as much as quality: pinned comments now share a model with
+     * titles, thumbnails and clips, so all four are written in ONE call by ONE model that can
+     * see its own titles — which is what makes "reference something specific from this video"
+     * and the cross-field self-check followable instead of aspirational.
+     */
     id: 'pinned_comment',
     label: 'Pinned comment',
-    options: ['qwen35-9b', 'qwen38-27b', 'sonnet5', 'opus5'],
-    defaultOptionId: 'qwen35-9b',
+    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5'],
+    defaultOptionId: 'qwen38-27b',
   },
   {
     id: 'clip_suggestions',

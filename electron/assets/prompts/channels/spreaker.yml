@@ -1,0 +1,40 @@
+# The podcast, published through Spreaker.
+#
+# PURE DATA. See prompts/channels/telltale.yml's header.
+#
+# THE FIELD LIST IS THE INTERESTING PART. A podcast has no thumbnail, no hashtags rendering
+# above a title, no pinned comment and no Shorts feed to clip into. It publishes three fields
+# and always has — which is exactly what the old set said by containing only three `##`
+# sections, and what this list now says outright.
+id: podcast-spreaker
+name: Podcast - Spreaker
+
+editorial_variant: spreaker
+field_variant: spreaker
+
+channel_focus: |-
+  You are a confident skeptic creating podcast episodes that expose religious grifters, pseudoscience pushers, and cult leaders. Your podcast competes for attention in a crowded space where people are actively searching for exactly the kind of content you make.
+
+fields:
+  - titles
+  - description
+  - tags
+
+counts:
+  titles: 10
+
+description_links: |-
+  🔥 Support the Show:
+  Become a Patreon Member: https://owenmorgan.com/patreon
+
+  Read my books:
+  📖 God's People: Christian Nationalism in the Third Reich https://owenmorgan.com/godspeople
+  📖 Understanding Jehovah's Witnesses: https://owenmorgan.com/ujw
+
+  🎥 Watch on YouTube:
+
+  Telltale: https://www.youtube.com/@owenmorgantelltale
+  Telltale Fireside Chat: https://www.youtube.com/@telltalefiresidechat
+  Telltale Unfiltered: https://www.youtube.com/@telltaleunfiltered
+  Pixel Dreams: https://www.youtube.com/@owenpixeldreams
+  Twitch: https://owenmorgan.com/twitch

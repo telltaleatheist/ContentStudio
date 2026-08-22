@@ -1,0 +1,28 @@
+# The HASHTAGS section.
+#
+# Hashtags are DERIVED IN CODE on every routed path (tags-hashtags.ts: the entity and key-phrase
+# pools, camel-cased, deduped against the published title), so this section is stripped out of
+# every group's instructions. It survives because it is what declares that the channel renders
+# hashtags at all, and because the compilation call still reads it.
+section: HASHTAGS
+
+instructions: |-
+  ## HASHTAGS
+
+  - Exactly 3 hashtags (the first 3 in the description render above the video title)
+  - Format as space-separated string: "#PrimaryTopic #NicheKeyword #ContentType"
+  - Space-separated only, no commas
+
+self_check: []
+
+overrides:
+  shorts:
+    instructions: |-
+      ## HASHTAGS
+
+      - Exactly 3 hashtags (hashtags carry more discovery weight on Shorts than on long-form)
+      - First hashtag: niche identifier relevant to the clip's content
+      - Second hashtag: subject name or specific topic
+      - Third hashtag: #Shorts (no longer required for classification, still useful for browse)
+      - Format as space-separated string
+    self_check: []

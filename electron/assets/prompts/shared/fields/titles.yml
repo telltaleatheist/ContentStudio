@@ -1,0 +1,133 @@
+# The titles instruction block, shared by every channel.
+#
+# It was byte-identical across telltale, fireside and unfiltered; unfiltered's only real
+# difference is its multi-part title FORMAT, which is now channel data ({title_format}) rather
+# than a fourth copy of this section. Shorts and Spreaker are genuinely different jobs and
+# carry their own `overrides` entry below.
+#
+# NINE DEFECTS WERE FIXED ON THE WAY IN. Each is listed here because the wording that replaced
+# it looks arbitrary without the reason:
+#
+#  1. QUESTION-TITLE CONTRADICTION. The legal block offered "Did X really...?" as a safe way to
+#     frame an allegation while the runtime A/B block was telling the model question titles
+#     lose. Attributed-claim phrasing ("accused of") is now the only legal-safe example given,
+#     in editorial-core.yml's `legal` block; the question example is gone.
+#  2. DEAD LENGTH FLOOR. "45-70 characters" contradicted the required "one short punchy title
+#     (4-6 words)", which cannot reach 45. It is a 70-character CEILING plus the
+#     hook-inside-45 rule, and nothing else.
+#  3. "Name names. Always." contradicted "if the subject is not widely known, lead with the
+#     deed". The nuanced rule stands; the absolute is gone (editorial-core.yml).
+#  4. FROZEN A/B CITATIONS. "colon titles lost 25 of 31", "questions lost 14 of 17", "digits
+#     underperformed" were baked numbers from one snapshot. The runtime CHANNEL PERFORMANCE
+#     DATA block (analytics/ab-title-rules.ts) derives those same three traits from live data,
+#     with provenance and a strong/weak band. This file keeps the plain style guidance and no
+#     numbers.
+#  5. The "[bracketed tag]" suggestion was unevidenced and pulled against the say-it-out-loud
+#     principle. Gone.
+#  6. "ASCII characters only" in the self-check banned "Beyoncé". It now bans emoji and smart
+#     punctuation and allows diacritics in proper names.
+#  7. "Do not require question-format titles" was a note to the prompt's AUTHOR that shipped to
+#     the model. Gone.
+#  8. The internal-analysis step claimed the search phrase "drives the description's first
+#     sentence and the tags". Neither field is written by this call any more (DescriptionUnit
+#     and code-assembled tags). Reworded to what the phrase does for a TITLE.
+#  9. GROUNDING is checked in CODE, not asked for in the prompt: every proper noun in a
+#     generated title must appear in the transcript or the chapter details, one re-ask, then
+#     the title is KEPT with a declared warning (metadata-tasks.ts, chapter-title-quality.ts).
+#
+# `{titles_count}` and `{title_format}` are channel data slots (prompts/channels/*.yml).
+section: TITLES
+
+instructions: |-
+  ## TITLES
+
+  - Generate {titles_count} options that represent genuinely DIFFERENT ANGLES. Apply the swap test as you go: if two of your titles could be exchanged and nobody would notice, one of them is redundant — replace it with a new angle rather than a new wording.
+  - Before generating, internally identify at least 5 distinct framings, then distribute titles across them. Framing types include:
+    - Plain-language reframe (strip the euphemism, say what they're actually doing)
+    - Person-focused (lead with WHO, make it personal)
+    - "Wait, what?" angle (lead with the most absurd specific detail)
+    - Schadenfreude (the subject embarrassing themselves)
+    - Protective outrage (frame as a threat to real people)
+    - Investigative reveal (something uncovered or underreported)
+    - Confrontational/direct address (talk to the audience or subject)
+    - Counter-narrative (turn the subject's self-image against them)
+    - Pattern/trend (connect to a bigger picture)
+    - Simple declarative (just state the damning fact plainly)
+  {title_format}
+  - Front-load the subject name OR the plain-language reframe in the first 3-5 words. Where the subject's own terminology belongs in the title at all, it follows the reframe.
+  - Include at least one simple declarative title and one short punchy title (4-6 words).
+  - TRANSCRIPT/SUMMARY inputs: anchor at least 5 titles to specific moments, claims, or quotes from the input
+  - SHORT DESCRIPTION inputs: keep to the quotes, admissions and reactions the input states or clearly implies
+  - Person-focused titles lead with recognizable names. Where the subject is not widely known, lead with what they DID and let the name follow — a viewer won't click on a name they don't recognize.
+  - The top 3 titles are for YouTube's Test & Compare, which measures watch time per impression rather than clicks. Send it three of your genuinely distinct angles — different emotional appeals, different entry points — so the test measures something. A click-baity variant viewers abandon will lose.
+
+# The default title FORMAT line, used where a channel declares no `title_format` of its own.
+# It is a slot rather than a fixed line because Unfiltered's multi-part convention deliberately
+# runs longer than any cap (see prompts/channels/unfiltered.yml).
+default_title_format: |-
+  - Length: 70 characters is the ceiling. The hook must land inside the FIRST 45 characters — that is all mobile search results and notifications show.
+    - Write the title as one unbroken claim; prefer that to a `Topic: elaboration` construction.
+
+# Lines this field contributes to the FINAL SELF-CHECK, assembled per GROUP.
+#
+# Keyed by field so a group that writes titles and nothing else is not handed a check about
+# thumbnail text it has no way to perform. Where the operator routes titles and thumbnails to
+# the same model — the shipped default — both sets of lines ride together and the
+# cross-field check becomes followable again.
+self_check:
+  - "Each title: hook inside the first 45 characters, none over 70 total"
+  - "Swap test: no two titles interchangeable"
+
+overrides:
+  shorts:
+    instructions: |-
+      ## TITLES
+
+      - Generate {titles_count} options that represent genuinely DIFFERENT ANGLES. Apply the swap test as you go: if two of your titles could be exchanged and nobody would notice, one of them is redundant — replace it with a new angle rather than a new wording.
+      - Before generating, identify at least 3 distinct framings, then distribute titles across them. Framing types include:
+        - Name + specific claim (front-load who and what)
+        - Reaction/verdict (your take on the moment)
+        - Cliffhanger (incomplete information that demands the click)
+        - Plain-language reframe (strip the jargon, state the absurdity)
+        - Challenge/confrontation (direct address to subject or audience)
+      {title_format}
+      - Front-load the subject name OR the accusation in the first 3-4 words
+      - Fragments over complete sentences — "Pastor's worst lie" is the shape
+      - TRANSCRIPT/CLIP inputs: anchor titles to the actual moment in the clip
+      - SHORT DESCRIPTION inputs: keep to the quotes and reactions the input states or clearly implies
+      - Person-focused titles lead with the name only where the person is recognizable. Otherwise lead with what they said or did.
+    default_title_format: |-
+      - 40 characters MAX (hard limit — count carefully)
+    self_check:
+      - "Each title 40 characters or fewer — count them"
+      - "Swap test: no two titles interchangeable"
+
+  spreaker:
+    instructions: |-
+      ## TITLES
+
+      - Generate {titles_count} options that represent genuinely DIFFERENT ANGLES. Apply the swap test as you go: if two of your titles could be exchanged and nobody would notice, one of them is redundant — replace it with a new angle rather than a new wording.
+      - Before generating, internally identify at least 5 distinct framings, then distribute titles across them. Framing types include:
+        - Plain-language reframe (strip the euphemism, say what they're actually doing in human terms)
+        - Specific accusation (name the lie, name the claim, name the failure)
+        - Investigative framing (position as research, fact-check, deep dive)
+        - Schadenfreude (the subject embarrassing themselves with their own words)
+        - Protective framing (who this harms and why it matters)
+        - Counter-narrative (turn the subject's self-image against them)
+        - Debunk/exposed format (clear signal of what the episode delivers)
+        - Pattern/trend (connect to a bigger picture or movement)
+        - Simple declarative (just state the damning fact plainly)
+      {title_format}
+      - At least 2 titles must be EVERGREEN-framed: the durable claim or doctrine someone will still type into a search box a year from now, fact-checked, rather than the news hook
+      - Full names spelled out correctly, no nicknames alone, no episode numbers, no show name, no emojis
+      - Front-load the subject name OR the plain-language reframe in the first 3-5 words
+      - TRANSCRIPT/SUMMARY inputs: anchor at least 5 titles to specific claims, arguments, or quotes from the input
+      - SHORT DESCRIPTION inputs: keep to the quotes, admissions and reactions the input states or clearly implies
+      - Person-focused titles lead with recognizable names. Where the subject is not widely known, lead with what they DID or CLAIMED and let the name follow.
+      - The top 3 titles should test genuinely different hypotheses about what hooks listeners — different angles, different emotional appeals, different entry points into the topic.
+    default_title_format: |-
+      - Length: 70 characters is the ceiling, and around 60 is the sweet spot. The searchable core — the name, the claim, or the reframe — sits inside the FIRST 30-40 characters; mobile list views cut from the end.
+    self_check:
+      - "Each title: searchable core inside the first 40 characters, none over 70 total, no episode numbers, no emojis, no show name"
+      - "At least 2 evergreen-framed titles present"
+      - "Swap test: no two titles interchangeable"

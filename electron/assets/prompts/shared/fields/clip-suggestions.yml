@@ -1,0 +1,17 @@
+# Clip suggestions — the moments in a long-form video worth cutting into a Short.
+#
+# Only the long-form YouTube channels publish this. Shorts IS the clip (nothing to suggest) and
+# a podcast has no Shorts feed, so neither lists the field.
+section: CLIP_SUGGESTIONS
+
+instructions: |-
+  ## CLIP_SUGGESTIONS
+
+  - Identify the 3-5 moments from this content most likely to succeed as YouTube Shorts
+  - ONLY generate these when the input contains actual transcript content, quotes, or specific moments (TRANSCRIPT/SUMMARY inputs). For SHORT DESCRIPTION inputs, return an empty array.
+  - Each suggestion is ONE string: the verbatim quote or specific moment, then " — ", then why it stops a scroll (which emotional trigger it hits and what makes it self-contained)
+  - Prioritize moments that are: self-contained without setup, under 60 seconds of content, and absurd or damning when stated plainly
+  - Every quote and every moment comes from the input, word for word where you quote it
+  - Register: describe the moment itself, in topic / noun-phrase form, built around the real names the input gives you. Quote the words, name whoever the input names, and say what makes the moment land. Correct form: "Gene Bailey's use of Jabez, D.L. Moody, and Isaiah to justify Christian political takeover"; "Discussion of mainstream alien belief, Roswell, and the UAP disclosure order".
+
+self_check: []

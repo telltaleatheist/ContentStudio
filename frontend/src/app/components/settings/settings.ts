@@ -65,7 +65,12 @@ export class Settings implements OnInit, OnDestroy {
   outputDirectory = signal('');
 
   // Prompt set selection
-  selectedPromptSet = signal('sample-youtube');
+  /**
+   * The default channel a run publishes to. EMPTY until the list arrives or a stored setting
+   * names one — see loadPromptSets. It used to be seeded with 'sample-youtube', a prompt set
+   * this repo has not shipped in a very long time.
+   */
+  selectedPromptSet = signal('');
   availablePromptSets = signal<Array<{id: string, name: string, platform: string}>>([]);
 
   // A saved model that isn't present in the fetched provider lists (e.g. the
@@ -316,6 +321,12 @@ export class Settings implements OnInit, OnDestroy {
       const result = await this.electron.listPromptSets();
       if (result.success && result.promptSets) {
         this.availablePromptSets.set(result.promptSets);
+        // Show what will actually be used: a stored selection a later build removed, or no
+        // stored selection at all, both resolve to the first channel that really exists.
+        const current = this.selectedPromptSet();
+        if (result.promptSets.length > 0 && !result.promptSets.some((set: {id: string}) => set.id === current)) {
+          this.selectedPromptSet.set(result.promptSets[0].id);
+        }
       }
     } catch (error) {
       this.notificationService.error('Prompt Sets Error', 'Failed to load prompt sets: ' + (error as Error).message);

@@ -1,0 +1,59 @@
+# Unfiltered — long, casual livestreams, posted as independent hour-long parts.
+#
+# PURE DATA. See prompts/channels/telltale.yml's header for what that means and why.
+id: youtube-unfiltered
+name: "Unfiltered YouTube (Long-Form)"
+
+# The one editorial block that genuinely differs for this channel is TITLE PHILOSOPHY: a
+# stream title promises a conversation to settle into, not a six-minute payoff. That override
+# lives in prompts/shared/editorial-core.yml under `variants.unfiltered`.
+editorial_variant: unfiltered
+field_variant: default
+
+channel_focus: |-
+  You are a no-bullshit skeptic who talks politics and religion during long, casual livestreams while playing a video game on YouTube. This is long-form hangout content — you're playing something while working through the same grifters, pseudoscience, cults, and church-state fights you'd cover anywhere, just at stream length and stream pace. The game is the backdrop; the conversation is the point.
+
+fields:
+  - titles
+  - description
+  - tags
+  - thumbnail_text
+  - hashtags
+  - pinned_comment
+  - clip_suggestions
+
+counts:
+  titles: 10
+  thumbnail_text: 10
+  pinned_comment: 3
+
+# THE TITLE FORMAT OVERRIDE. This channel posts one long stream split into independent
+# hour-long parts, and its titles carry a structural tail that deliberately runs LONGER than
+# any normal character cap. It replaces the shared `default_title_format` line in
+# prompts/shared/fields/titles.yml, which is why the length rule is a slot there rather than a
+# fixed line — the pipe tail is exempt from the one-unbroken-claim guidance for the same
+# reason: it is structure, not a colon construction.
+title_format: |-
+  - FORMAT — Unfiltered's multi-part convention: structure each title as `[hook] | [subject] | p[N]` — the compelling hook, then the subject/through-line (the person, group, or topic), then the part marker (p1, p2, p3). That ` | [subject] | p[N]` tail intentionally runs the title past a normal cap; that is expected and correct here.
+    - The hook must land inside the FIRST ~45 characters (all that mobile search results and notifications show). The ` | [subject] | p[N]` tail is truncated in previews, so nothing essential goes there.
+    - Write the hook itself as one unbroken claim. The pipe-delimited tail is structural and is exempt from that.
+    - INDEPENDENCE: each part stands alone. Write every title so a viewer who lands on p2 or p3 with no prior context understands what it is.
+    - [N] is THIS input's part number: use the part the input states if it is given; otherwise leave `pN` as a literal placeholder for the human to fill.
+
+channel_tags: ["Telltale Unfiltered", "Owen Morgan"]
+
+description_links: |-
+  🔥 Support the Show:
+  Become a Patreon Member: https://owenmorgan.com/patreon
+
+  Read my books:
+  📖 God's People: Christian Nationalism in the Third Reich https://owenmorgan.com/godspeople
+  📖 Understanding Jehovah's Witnesses: https://owenmorgan.com/ujw
+
+  🎥 Watch on YouTube:
+
+  Telltale: https://www.youtube.com/@owenmorgantelltale
+  Telltale Fireside Chat: https://www.youtube.com/@telltalefiresidechat
+  Telltale Unfiltered: https://www.youtube.com/@telltaleunfiltered
+  Pixel Dreams: https://www.youtube.com/@owenpixeldreams
+  Twitch: https://owenmorgan.com/twitch

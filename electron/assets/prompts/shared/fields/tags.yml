@@ -1,0 +1,41 @@
+# The TAGS section.
+#
+# READ BY TWO PATHS, and only two. On the CHAPTERED path tags are assembled in code from the
+# entity and key-phrase pools with no model call at all, so this section is stripped out of
+# every group's instructions. It is sent to a model on the TEXT-SUBJECT path (no chapters —
+# there are no pools measured against a chapter list to assemble from) and on the COMPILATION
+# call, and it is what declares that the channel publishes tags at all.
+section: TAGS
+
+instructions: |-
+  ## TAGS
+
+  - 8-12 tags, under 500 characters total
+  - Include: subject's full name, specific topic keywords, channel brand terms, 2-3 long-tail phrases a viewer would actually type into YouTube search
+  - Include 1-2 common misspellings of the subject's name if applicable — misspelling coverage is the one tag use YouTube officially endorses
+  - Prioritize specific multi-word phrases over single broad terms
+  - Every tag names something the content actually covers: YouTube reads a tag the video never mentions as a spam signal.
+
+self_check: []
+
+overrides:
+  shorts:
+    instructions: |-
+      ## TAGS
+
+      - 5-8 tags maximum
+      - Include: subject's full name, topic keyword, content type, channel brand terms
+      - Prioritize terms people actually search on YouTube
+      - Include "shorts" as a tag
+      - Every tag names something the clip actually covers.
+    self_check: []
+
+  spreaker:
+    instructions: |-
+      ## TAGS (SPREAKER)
+
+      - 8-15 tags, comma-separated. Multi-word tags are allowed and encouraged — use the phrases people actually search
+      - Include: the subject's full name (as one tag), the specific claims/doctrines/organizations discussed, niche identifiers (e.g. atheism, skepticism, cult recovery), and 2-3 broader discovery terms
+      - Include a common misspelling of the subject's name as its own tag if one is widespread
+      - These tags power Spreaker's own discovery pages and minor directories — Apple and Spotify ignore RSS keywords, so keep tags focused and relevant rather than exhaustive
+    self_check: []

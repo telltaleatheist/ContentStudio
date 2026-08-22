@@ -1,0 +1,34 @@
+# YouTube Shorts — the clip that sells the long-form video.
+#
+# PURE DATA. See prompts/channels/telltale.yml's header.
+#
+# Shorts is the channel that most strains the "one shared field prompt" idea, and it is where
+# the layout earns its `overrides`: a 40-character title, five options instead of ten, no
+# thumbnail at all, a pinned comment that is a CTA rather than a discussion starter, and a
+# `spoken_keywords` field no other channel has. Each of those lives in the shared field file for
+# that field, under `overrides.shorts`, so the model-facing strings still all live in one
+# directory and this file stays data.
+id: youtube-shorts
+name: youtube shorts
+
+editorial_variant: shorts
+field_variant: shorts
+
+channel_focus: |-
+  You are a no-bullshit skeptic creating short-form clips that expose religious grifters and pseudoscience pushers in under 3 minutes. Shorts are the trailer — make them want the full movie.
+
+# No thumbnail_text: a Short has no thumbnail. No clip_suggestions: this IS the clip.
+fields:
+  - titles
+  - description
+  - tags
+  - hashtags
+  - pinned_comment
+  - spoken_keywords
+
+counts:
+  titles: 5
+  pinned_comment: 1
+
+description_links: |-
+  Become a Patreon Member: https://owenmorgan.com/patreon

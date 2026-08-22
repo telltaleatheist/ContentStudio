@@ -24,13 +24,19 @@
  * entity pool and the key-phrase pool. NOT the raw transcript — the whole point of §2 is that
  * this layer runs on already-extracted inputs, which is what makes it viable on a 4b at all.
  *
+ * AND WHERE THERE ARE NO CHAPTERS. This unit used to be planned only for chaptered items;
+ * everything else took a whole-metadata call on whatever the Settings page named, and got its
+ * description from the channel's `## DESCRIPTION` section there. That path is gone. A
+ * chapterless item plans this unit like any other, and the `{coverage}` slot carries the
+ * operator's text subject instead of the chapter list — the same two calls, the same schemas,
+ * the same failure policy, over the only description of the video that exists.
+ *
  * WHAT THEY DO NOT CARRY, stated because it is a real editorial cost and a deliberate one:
- * the channel yml's `## DESCRIPTION` section. That section is written for the LEGACY
- * single-call path — two paragraphs, a soft CTA, a banned-phrase list, a voice note — and
- * loading fifteen editorial bullets onto a schema-constrained 4b is exactly the
- * over-specification §5 says these calls exist to avoid. The channel still reaches these
- * prompts, as the channel NAME in the context line. The legacy path's DESCRIPTION section is
- * untouched and still runs for items with no chapters.
+ * the channel's `## DESCRIPTION` section. That section is two paragraphs, a soft CTA, a
+ * banned-phrase list and a voice note, and loading fifteen editorial bullets onto a
+ * schema-constrained small model is exactly the over-specification §5 says these calls exist to
+ * avoid. The channel reaches these prompts as the channel NAME in the context line. The section
+ * itself still runs, in full, on the compilation call.
  *
  * FAILURE POLICY. A hook over the 150-character cap or prose in the wrong register is asked
  * for ONE more time and then KEPT AS WRITTEN with a declared warning on the run. Nothing here
@@ -46,6 +52,7 @@ import { MetadataRoutingOption } from './metadata-routing';
 import { queueAITask } from '../queue-manager.service';
 import { JobCancelledError } from './cancellation';
 import { narratesAnActor } from './chapter-title-quality';
+import { promptAssets } from './prompt-assets';
 import type { MetadataFieldId, MetadataRunContext, MetadataUnit } from './metadata-tasks';
 import type { AIManagerService } from './ai-manager.service';
 
@@ -128,58 +135,34 @@ const BODY_SCHEMA = {
 } as const;
 
 /**
- * The hook prompt.
+ * The two prompts, read from prompts/shared/pipeline/description.yml.
  *
- * POSITIVE FORM ONLY, and correct examples only — the operator's standing ruling, for the
- * same measured reason it applies to the chapter prompts: a model shown a wrong form
- * reproduces it, and attaching the word "never" to it does not change that. The register this
- * wants is stated as what to write, and the example is the spec's own worked one (§6.4), which
- * is a real hook for a real video at 141 characters.
+ * THE BODIES MOVED but nothing about them changed except one slot: the block naming what the
+ * video covers used to be hardcoded as "What the video covers, chapter by chapter:" followed by
+ * the chapter list. It is now `{coverage}`, filled from the asset with whichever of two labelled
+ * blocks fits the item — the chapter list where the pipeline produced one, the operator's text
+ * subject where it did not. That is what lets a chapterless item write its description here
+ * instead of taking a whole-metadata call on some other model.
+ *
+ * Getters, so a missing file or key throws naming both at the moment the prompt is wanted, and
+ * the character and word budgets are substituted from THIS FILE'S constants — the number the
+ * prompt asks for and the number the code measures cannot drift apart.
  */
 export const DESCRIPTION_PROMPTS = {
-  HOOK: `Write the opening line of a YouTube description. Output JSON only.
-
-Channel: {channel}
-Video: {video}
-
-What the video covers, chapter by chapter:
-{chapters}
-
-Names and phrases from the video, to draw on where they fit:
-{pools}
-
-Write one complete sentence, ending in a full stop, of at most ${HOOK_TARGET_CHARS} characters. Name the two or three things above that would draw a viewer in — not all of them — and put the words somebody would type into search at the front. The names go in as parts of noun phrases, a possessive or an object, so the sentence is about the claim, the event or the argument itself.
-
-Hooks in exactly the right form:
-"Iran ceasefire collapse, Byron Donalds's projected win in Florida, and the 29-state lawsuit against Meta."
-"Gene Bailey's misreading of Luke 19:13 and the David and Goliath framing behind his call to occupy territory."
-
-Output exactly this shape and nothing else:
-{"hook": "..."}`,
-
-  BODY: `Write the body paragraph of a YouTube description. Output JSON only.
-
-Channel: {channel}
-Video: {video}
-
-What the video covers, chapter by chapter:
-{chapters}
-
-Names and phrases from the video, to draw on where they fit:
-{pools}
-
-Write one paragraph of ${BODY_MIN_WORDS} to ${BODY_MAX_WORDS} words that walks through what the video covers in order. Every name you use comes from the chapter summaries above, and the names go in as parts of noun phrases — a possessive or an object, so the sentence is about the claim, the refusal or the argument itself. Where a summary describes somebody responding to something, write the claim and the response as content: "the bridge contract claim, rebutted", "Jack Hibbs's First Amendment argument and the constitutional answer to it".
-
-Openings in exactly the right form:
-"Debate about Trump's refusal to extend the Iran ceasefire MOU and rising tensions in the Strait of Hormuz, then the Florida results and Byron Donalds's projected win."
-"Gene Bailey's misreading of Luke 19:13, his call to occupy territory, and the David and Goliath framing behind it."
-"Paul Petit's report on the 29-state lawsuit against Meta, and the panel's disagreement over what it means for teenagers."
-
-No links, no timestamps, no calls to subscribe: the chapter block and the standing links are assembled by code afterwards.
-
-Output exactly this shape and nothing else:
-{"body": "..."}`,
+  get HOOK(): string {
+    return promptAssets()
+      .pipeline(DESCRIPTION_FILE, 'hook')
+      .replace(/\{hookTargetChars\}/g, () => String(HOOK_TARGET_CHARS));
+  },
+  get BODY(): string {
+    return promptAssets()
+      .pipeline(DESCRIPTION_FILE, 'body')
+      .replace(/\{bodyMinWords\}/g, () => String(BODY_MIN_WORDS))
+      .replace(/\{bodyMaxWords\}/g, () => String(BODY_MAX_WORDS));
+  },
 };
+
+const DESCRIPTION_FILE = 'description.yml';
 
 /** The two fields this unit owns. `description` is the BODY; the hook is its own field. */
 const DESCRIPTION_FIELDS: MetadataFieldId[] = ['description_hook', 'description'];
@@ -396,13 +379,6 @@ export class DescriptionUnit implements MetadataUnit {
   // ----------------------------------------------------------------------------- prompting
 
   private buildPrompt(template: string, ctx: MetadataRunContext): string {
-    const chapters = ctx.chapterSubjects
-      .map((subject, i) => {
-        const detail = (ctx.chapterDetails[i] || '').trim();
-        return detail ? `- ${subject}: ${detail}` : `- ${subject}`;
-      })
-      .join('\n');
-
     const pools = [
       ctx.entities.length > 0 ? `Names: ${ctx.entities.join(', ')}` : '',
       ctx.keyPhrases.length > 0 ? `Phrases: ${ctx.keyPhrases.join(', ')}` : '',
@@ -410,13 +386,49 @@ export class DescriptionUnit implements MetadataUnit {
       .filter(Boolean)
       .join('\n');
 
-    // `chapters` and `pools` are substituted before the free text they contain can be read as
+    // `coverage` and `pools` are substituted before the free text they contain can be read as
     // a placeholder, and nothing after them re-runs the substitution.
     return template
       .replace(/\{channel\}/g, () => ctx.promptSetName)
       .replace(/\{video\}/g, () => ctx.videoTitle || ctx.sourceLabel)
-      .replace(/\{chapters\}/g, () => chapters || '(none)')
+      .replace(/\{coverage\}/g, () => this.coverageBlock(ctx))
       .replace(/\{pools\}/g, () => pools || '(none)');
+  }
+
+  /**
+   * What the video covers, in whichever form this item actually has it.
+   *
+   * TWO SHAPES, both LABELLED, and the label is the point. The chapter list is a measured table
+   * of contents — every line was written from its own span of the video — and the text subject
+   * is one or two sentences the operator typed. A model told "chapter by chapter" about a
+   * one-line subject would write as if it had detail it does not have; a model handed the
+   * subject with no label at all would not know how much weight to give it.
+   *
+   * An item with NEITHER throws. The description has nothing to be written from, and producing
+   * a paragraph anyway would be inventing the video.
+   */
+  private coverageBlock(ctx: MetadataRunContext): string {
+    const assets = promptAssets();
+    if (ctx.chapterSubjects.length > 0) {
+      const items = ctx.chapterSubjects
+        .map((subject, i) => {
+          const detail = (ctx.chapterDetails[i] || '').trim();
+          return detail ? `- ${subject}: ${detail}` : `- ${subject}`;
+        })
+        .join('\n');
+      return assets
+        .pipeline(DESCRIPTION_FILE, 'coverage_chapters')
+        .replace(/\{items\}/g, () => items);
+    }
+
+    const subject = (ctx.content || '').trim();
+    if (subject.length === 0) {
+      throw new Error(
+        `The description for ${ctx.sourceLabel} has nothing to write from: this item has no chapter ` +
+          `list and no subject text. Nothing here invents one.`
+      );
+    }
+    return assets.pipeline(DESCRIPTION_FILE, 'coverage_subject').replace(/\{items\}/g, () => subject);
   }
 }
 
