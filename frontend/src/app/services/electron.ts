@@ -9,6 +9,7 @@ import type {
   ChosenMetadata,
   PublishResult,
   PushOutcome,
+  ReportIndexResponse,
   ResolvedMetadata,
   SpreakerPushOutcome,
   SpreakerStatus,
@@ -481,6 +482,7 @@ declare global {
       youtubeGetCollectorState: () => Promise<{ success: boolean; state?: YouTubeCollectorState; error?: string }>;
 
       // Publish (chosen titles / A-B test setup) — every call names one item by its id
+      publishListIndex: () => Promise<PublishResult<ReportIndexResponse>>;
       publishGetSelection: (itemId: string) => Promise<PublishResult<ChosenMetadata | null>>;
       publishSetTitles: (itemId: string, titles: string[]) => Promise<PublishResult<ChosenMetadata>>;
       publishSetFields: (
@@ -1102,6 +1104,19 @@ export class ElectronService {
   }
 
   // Publish (chosen titles / A-B test setup)
+
+  /**
+   * Every generated item, joined in the MAIN PROCESS to what the operator has decided
+   * about it.
+   *
+   * The reports list and the publish calendar both read this one call. It replaced the
+   * reports page's per-mount scan, which read and parsed every job file in the metadata
+   * directory (111 of them on this install) from the renderer.
+   */
+  async publishListIndex(): Promise<PublishResult<ReportIndexResponse>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishListIndex();
+  }
 
   /** One item's stored selection, or null when nothing has been picked for it. */
   async publishGetSelection(itemId: string): Promise<PublishResult<ChosenMetadata | null>> {

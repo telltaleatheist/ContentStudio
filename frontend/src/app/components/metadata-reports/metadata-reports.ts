@@ -1,4 +1,5 @@
 import { Component, ElementRef, OnInit, ViewChild, computed, inject, signal } from '@angular/core';
+import { ActivatedRoute, RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { MatCardModule } from '@angular/material/card';
 import { MatListModule } from '@angular/material/list';
@@ -16,7 +17,7 @@ import {
   SpreakerUploadDialog,
   SpreakerUploadDialogData,
 } from '../../features/publish/spreaker-upload-dialog';
-import { MAX_AB_VARIANTS } from '../../features/publish/publish.types';
+import { MAX_AB_VARIANTS, type ReportIndexEntry } from '../../features/publish/publish.types';
 import {
   basename,
   describePublishAt,
@@ -88,13 +89,23 @@ interface ParsedMetadata {
     MatProgressSpinnerModule,
     MatChipsModule,
     MatCheckboxModule,
-    MatDialogModule
+    MatDialogModule,
+    RouterLink
   ],
   templateUrl: './metadata-reports.html',
   styleUrl: './metadata-reports.scss'
 })
 export class MetadataReports implements OnInit {
   reports = signal<MetadataReport[]>([]);
+  /**
+   * The main process's joined index, as it arrived — one entry per item, each carrying
+   * its publish record's facts (channel, schedule, status).
+   *
+   * The list renders `reports()`; this is the same data before it was flattened into the
+   * shape that list has always used, kept because it is what the publish calendar reads
+   * and because it costs one call rather than two.
+   */
+  reportIndex = signal<ReportIndexEntry[]>([]);
   selectedReport = signal<MetadataReport | null>(null);
   metadata = signal<ParsedMetadata | null>(null);
   isLoading = signal(false);
@@ -114,7 +125,8 @@ export class MetadataReports implements OnInit {
   constructor(
     private electron: ElectronService,
     private notificationService: NotificationService,
-    private dialog: MatDialog
+    private dialog: MatDialog,
+    private route: ActivatedRoute
   ) {}
 
   /**
@@ -631,8 +643,53 @@ export class MetadataReports implements OnInit {
 
   async ngOnInit() {
     await this.loadReports();
+
+    // Deep link: /metadata-reports?item=<itemId>, which is what every chip on the publish
+    // calendar navigates to. Read once, AFTER the list exists — the parameter names a row,
+    // and there is no row to select before the index has been read.
+    //
+    // A snapshot rather than a subscription: this route is entered fresh from the calendar
+    // (the component is constructed each time), so there is no in-place parameter change
+    // to react to, and a subscription would re-select the same report on every unrelated
+    // navigation.
+    const requestedItemId = this.route.snapshot.queryParamMap.get('item');
+    if (requestedItemId) await this.selectByItemId(requestedItemId);
   }
 
+  /**
+   * Open the report for one item id, or say why it could not be opened.
+   *
+   * The id comes from a link, so it can name an item that has since been deleted. That is
+   * reported: a deep link that silently landed on an unselected page would look exactly
+   * like the operator having clicked "Metadata Reports" in the sidebar.
+   */
+  private async selectByItemId(itemId: string): Promise<void> {
+    const row = this.reports().find((r) => r.itemId === itemId);
+    if (!row) {
+      this.notificationService.warning(
+        'That report is not in the list',
+        `Nothing in the current report list has the item id ${itemId}. It may have been deleted.`,
+      );
+      return;
+    }
+    await this.selectReport(row);
+  }
+
+  /**
+   * The report list, from the main process's index.
+   *
+   * This used to read and `JSON.parse` EVERY job file under `.contentstudio/metadata`
+   * here in the renderer — 111 files on this install — on every mount and every refresh,
+   * over an IPC round trip per file. The rows it produces are the same rows; what changed
+   * is that the directory is now walked once, in the process that already caches those
+   * files by mtime (services/metadata/report-index.ts), and each item arrives joined to
+   * its publish record so the calendar can read the same call.
+   *
+   * The three ways this can go wrong are still three different outcomes, exactly as
+   * before: the call itself failing, the reports directory not existing (which is what
+   * the older on-disk layout looks like), and individual report files that could not be
+   * indexed. None of them shortens the list quietly.
+   */
   async loadReports() {
     try {
       this.isLoading.set(true);
@@ -650,9 +707,6 @@ export class MetadataReports implements OnInit {
         return;
       }
 
-      // New structure: JSON files are in .contentstudio/metadata/
-      const metadataJsonDir = `${baseDir}/.contentstudio/metadata`;
-
       // Bring the files up to schema_version 2 BEFORE listing them, so every row below
       // can require an item id. This is the lazy trigger the migration is designed for:
       // the operator has opened the reports page, which means the output volume is
@@ -660,141 +714,88 @@ export class MetadataReports implements OnInit {
       // from a migration that did not run.
       await this.reportMigrationOutcome();
 
-      // Check if new structure exists
-      let result: any = null;
-      let readError: string | null = null;
-      try {
-        result = await this.electron.readDirectory(metadataJsonDir);
-      } catch (e) {
-        readError = (e as Error).message;
-        console.warn('Could not read metadata directory at', metadataJsonDir, e);
-      }
+      const indexed = await this.electron.publishListIndex();
 
-      // A missing CURRENT directory and an unreadable one are different things, and this used
-      // to treat them identically: any non-success silently fell through to the legacy layout
-      // and returned. A genuinely broken read — bad permissions, a disconnected volume, an
-      // output directory pointing somewhere that no longer exists — showed the user an empty
-      // or partial list with no indication that anything had gone wrong, and no way to tell
-      // "you have no reports" from "we could not look".
-      //
-      // The legacy path is still tried, because old installs really do have that layout, but
-      // it is now a documented migration step rather than a catch-all, and a failure of BOTH
-      // says so.
-      if (!result || !result.success) {
+      // A call that FAILED is not a call that found nothing. The legacy layout is still
+      // tried, because old installs really do have it, but a failure of BOTH says so and
+      // carries the main process's reason verbatim.
+      if (!indexed.success || !indexed.data) {
         const legacyFound = await this.loadReportsLegacy(baseDir);
         if (!legacyFound) {
           this.notificationService.error(
             'Could not read reports',
-            readError
-              ? `${metadataJsonDir} could not be read (${readError}), and no reports were found in the older layout either.`
-              : `No reports directory at ${metadataJsonDir}, and none in the older layout either. Check the output directory in Settings.`,
+            `The report index could not be built (${indexed.error ?? 'no reason given'}), ` +
+              'and no reports were found in the older layout either.',
           );
         }
         return;
       }
 
-      this.reportsDirectory.set(metadataJsonDir);
+      const index = indexed.data;
 
-      if (result.files) {
-        const reports: MetadataReport[] = [];
-        /** Report files that could not be listed. Counted, never silently dropped. */
-        const skipped: string[] = [];
-
-        // Read all JSON files
-        for (const file of result.files) {
-          if (!file.name.endsWith('.json')) continue;
-
-          try {
-            const jsonPath = `${metadataJsonDir}/${file.name}`;
-            const content = await this.electron.readFile(jsonPath);
-            if (content) {
-              const jobData = JSON.parse(content);
-
-              // Get the txt folder path
-              const txtFolder = jobData.txt_folder || '';
-              const jobDate = new Date(jobData.created_at || file.mtime);
-              // No `|| file.name` fallback. A report file whose job_id is missing is a
-              // corrupt file, not a file to guess an id for: every delete, every publish
-              // selection and every draft match is keyed by that id, so inventing one from
-              // the filename produces a report the operator can see and nothing can act on.
-              // Skipped loudly instead — the file is named in the console and the run
-              // continues, because one bad file must not hide the rest.
-              const jobId = jobData.job_id;
-              if (typeof jobId !== 'string' || !jobId) {
-                console.warn(`[MetadataReports] ${file.name} has no job_id — skipped.`);
-                skipped.push(file.name);
-                continue;
-              }
-
-              // A job file with no items array is corrupt, not a job to build a
-              // job-shaped row for: the row that used to be built here had no item index
-              // and no item id, so it could be clicked (throwing "missing itemIndex") and
-              // deleted (deleting nothing), which is worse than not being listed.
-              if (!jobData.items || !Array.isArray(jobData.items)) {
-                console.warn(`[MetadataReports] ${file.name} has no items array — skipped.`);
-                skipped.push(file.name);
-                continue;
-              }
-
-              // Create a report for EACH item in the job
-              jobData.items.forEach((item: any, index: number) => {
-                // After migration every item carries a permanent id. One without is a
-                // corrupt (or unmigrated, or hand-edited) record, and it is skipped for
-                // the same reason a missing job_id is: every action on the row — delete,
-                // and shortly the publish link — is keyed by that id, so a row without
-                // one is a row the operator can see and nothing can act on.
-                const itemId = item.item_id;
-                if (typeof itemId !== 'string' || !itemId) {
-                  console.warn(`[MetadataReports] ${file.name} item ${index} has no item_id — skipped.`);
-                  skipped.push(`${file.name} (item ${index + 1})`);
-                  return;
-                }
-
-                // Get the display title from the item
-                const itemTitle = item._title || `Item ${index + 1}`;
-
-                // The item's own text file, as the run that wrote it recorded. Null means
-                // the migration could not match one, and showInFolder falls back to the
-                // folder rather than pointing at a file nobody claimed.
-                const txtFilePath = typeof item.txt_path === 'string' ? item.txt_path : '';
-
-                reports.push({
-                  name: `${jobId}-item-${index}`,
-                  path: jsonPath,  // Path to JSON file
-                  date: jobDate,
-                  size: file.size || 0,
-                  promptSet: jobData.prompt_set,
-                  displayTitle: itemTitle,
-                  txtFolder: txtFolder,  // Store txt folder path
-                  jobId: jobId,
-                  itemId: itemId,
-                  itemIndex: index,
-                  txtFilePath: txtFilePath
-                });
-              });
-            }
-          } catch (e) {
-            console.warn('Could not read metadata file', file.name, e);
-            skipped.push(file.name);
-          }
-        }
-
-        // Files that could not be listed are SAID, not just counted into the console. A
-        // reports page silently missing three of forty rows looks exactly like a reports page
-        // that has thirty-seven rows, and the operator has no way to tell.
-        if (skipped.length > 0) {
-          this.notificationService.warning(
-            'Some reports could not be listed',
-            `${skipped.length} file${skipped.length === 1 ? '' : 's'} skipped: ${skipped.slice(0, 5).join(', ')}` +
-              (skipped.length > 5 ? `, and ${skipped.length - 5} more` : '') +
-              '. They are unreadable, or missing the job_id / item_id every action is keyed by;' +
-              ' see the console for detail.',
+      // The directory is not there at all — which is exactly what an install predating
+      // `.contentstudio/metadata` looks like. Same documented migration step as before,
+      // not a catch-all.
+      if (index.directoryMissing) {
+        const legacyFound = await this.loadReportsLegacy(baseDir);
+        if (!legacyFound) {
+          this.notificationService.error(
+            'Could not read reports',
+            `No reports directory at ${index.directory}, and none in the older layout either. ` +
+              'Check the output directory in Settings.',
           );
         }
+        return;
+      }
 
-        // Sort by date descending
-        reports.sort((a, b) => b.date.getTime() - a.date.getTime());
-        this.reports.set(reports);
+      this.reportsDirectory.set(index.directory);
+
+      // Kept for the publish facts the index carries (channel, schedule, status). The
+      // list below renders none of them yet — the calendar does — but they arrive in the
+      // same call, so holding them costs nothing and re-fetching them would.
+      this.reportIndex.set(index.entries);
+
+      this.reports.set(
+        index.entries.map((entry) => ({
+          name: `${entry.jobId}-item-${entry.itemIndex}`,
+          path: entry.jobPath,      // Path to JSON file
+          date: new Date(entry.dateIso),
+          size: entry.jobSizeBytes,
+          promptSet: entry.promptSet ?? undefined,
+          displayTitle: entry.displayTitle,
+          txtFolder: entry.txtFolder ?? '',
+          jobId: entry.jobId,
+          itemId: entry.itemId,
+          itemIndex: entry.itemIndex,
+          txtFilePath: entry.txtFilePath ?? '',
+        })),
+      );
+
+      // Files that could not be listed are SAID, not just counted into the console. A
+      // reports page silently missing three of forty rows looks exactly like a reports page
+      // that has thirty-seven rows, and the operator has no way to tell.
+      if (index.problems.length > 0) {
+        const named = index.problems.map((p) => p.file);
+        this.notificationService.warning(
+          'Some reports could not be listed',
+          `${named.length} file${named.length === 1 ? '' : 's'} skipped: ${named.slice(0, 5).join(', ')}` +
+            (named.length > 5 ? `, and ${named.length - 5} more` : '') +
+            '. They are unreadable, or missing the job_id / item_id every action is keyed by;' +
+            ' see the console for detail.',
+        );
+      }
+
+      // A publish record whose report has been deleted. It has no title and no date, so
+      // there is no row to render — but a schedule the operator set is now attached to
+      // nothing, and that is worth one sentence rather than silence.
+      if (index.orphanedSelections.length > 0) {
+        const n = index.orphanedSelections.length;
+        this.notificationService.warning(
+          'Publish records without a report',
+          `${n} publish selection${n === 1 ? '' : 's'} name an item that is no longer in any ` +
+            `report: ${index.orphanedSelections.slice(0, 5).join(', ')}` +
+            (n > 5 ? `, and ${n - 5} more` : '') + '.',
+        );
       }
     } catch (error) {
       this.notificationService.error('Load Error', 'Failed to load metadata reports: ' + (error as Error).message);

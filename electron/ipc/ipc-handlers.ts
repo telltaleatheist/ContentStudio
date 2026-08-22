@@ -28,6 +28,7 @@ import {
   createGeneratedIndexReader,
   sourceFilenameOf,
 } from '../services/metadata/generated-index';
+import { createReportIndexReader } from '../services/metadata/report-index';
 import { OutputHandlerService, deleteJobTxtFiles } from '../services/metadata/output-handler.service';
 import {
   ReportMigrationReceipt,
@@ -2397,6 +2398,28 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   // services/metadata; publish/ only ever receives the result.
   const readGeneratedIndex = createGeneratedIndexReader(metadataReportsDir);
 
+  // The BROWSE projection of the same files: one row per item, carrying where it lives
+  // and what to print. Backs `publish-list-index`, which is what the reports page lists
+  // from and what the publish calendar reads — neither of them scans the directory in the
+  // renderer any more.
+  const readReportIndex = createReportIndexReader(metadataReportsDir);
+
+  const listReportRowsForPublish = () => {
+    // Same lazy migration gate as listGeneratedForPublish below, and for the same reason:
+    // every row is keyed by an item id that the migration is what mints, and the calendar
+    // can be the first page opened in a session. A directory that does not exist is not
+    // migrated — nothing has been generated yet, and the reader reports that as
+    // directoryMissing rather than as a fault.
+    const reportsDir = metadataReportsDir();
+    if (fs.existsSync(reportsDir)) ensureReportsMigrated(reportsDir);
+
+    const result = readReportIndex();
+    for (const problem of result.problems) {
+      log.error(`[Publish] cannot index report ${problem.file}: ${problem.message}`);
+    }
+    return result;
+  };
+
   const listGeneratedForPublish = (): GeneratedIndex => {
     // The publish surface REQUIRES item_id on every item (generated-index.summarizeJob
     // throws without one), so the migration that mints them has to have run before the
@@ -2493,6 +2516,10 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     // imported, exactly like readGenerated: the report FORMAT is services/metadata's
     // business and publish/ never learns it.
     listGenerated: listGeneratedForPublish,
+    // The browse projection of the same index, for the one call the reports list and the
+    // calendar share. Injected exactly like listGenerated: publish/ never learns the
+    // report file format.
+    listReportRows: listReportRowsForPublish,
     // And the resolver that decides whether a stored transcript link still names the file
     // it was made against. Carry-forward carries only 'ok'; 'missing' and 'changed' are
     // refused with this function's own reason, which names the path and the disagreement.

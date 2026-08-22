@@ -21,6 +21,11 @@
               Export
             </button>
           }
+          <!-- The other half of the round trip: every chip on the calendar links back
+               here with ?item=<itemId>. -->
+          <button mat-icon-button routerLink="/publish-calendar" title="Publish calendar">
+            <mat-icon>event</mat-icon>
+          </button>
           <button mat-icon-button (click)="loadReports()" [disabled]="isLoading()" title="Refresh reports">
             <mat-icon>refresh</mat-icon>
           </button>
