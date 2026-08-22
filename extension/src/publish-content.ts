@@ -95,7 +95,7 @@ async function runFillers(detail: ItemDetail, videoId: string, ids: FillId[]): P
 
   if (anySucceeded) {
     try {
-      await requestFilled(detail.jobId, detail.itemIndex, videoId);
+      await requestFilled(detail.itemId, videoId);
     } catch (error) {
       shelf?.log(
         false,
@@ -144,7 +144,7 @@ async function resolveCurrentVideo(): Promise<void> {
     }
 
     // resolveForPage returns the fill-ready shape; the shelf needs the full picker data.
-    const detail = await requestItem(resolved.item.jobId, resolved.item.itemIndex);
+    const detail = await requestItem(resolved.item.itemId);
     item = detail;
     // A match with nothing picked is the one case worth interrupting for: there is a
     // decision to make before this video can be filled.
@@ -187,9 +187,9 @@ function callbacks() {
       await resolveCurrentVideo();
     },
 
-    onOpenReport: async (jobId: string, itemIndex: number) => {
+    onOpenReport: async (itemId: string) => {
       try {
-        const detail = await requestItem(jobId, itemIndex);
+        const detail = await requestItem(itemId);
         item = detail;
         manualPick = true;
         shelf?.setItem(detail, 'Picked by hand.');
@@ -201,7 +201,7 @@ function callbacks() {
     onSaveTitles: async (titles: string[]) => {
       if (!item) return;
       try {
-        const result = await requestSaveTitles(item.jobId, item.itemIndex, titles);
+        const result = await requestSaveTitles(item.itemId, titles);
         if (!result.ok) {
           // Validation failures carry ContentStudio's own wording — show it verbatim
           // rather than inventing a second set of rules here.

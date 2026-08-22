@@ -36,8 +36,10 @@ import {
 
 /** One item the extension can fill, with everything it needs to do it. */
 export interface PendingFillItem {
+  /** The item's permanent id — what every call back into ContentStudio names. */
+  itemId: string;
+  /** Display back-reference to the run that produced it. Never a lookup key. */
   jobId: string;
-  itemIndex: number;
   /** Ordered. titles[0] is the main title AND A/B variant 1. */
   titles: string[];
   description: string;
@@ -70,8 +72,10 @@ export interface ResolveOutcome {
  * would hide the difference between "never opened" and "deliberately cleared".
  */
 export interface BrowseRow {
+  /** The item's permanent id — what opening this row sends back. */
+  itemId: string;
+  /** Display back-reference to the run that produced it. Never a lookup key. */
   jobId: string;
-  itemIndex: number;
   label: string;
   createdAt: string;
   promptSet: string | null;
@@ -97,8 +101,10 @@ export interface BrowsePage {
 
 /** Everything the shelf needs to pick titles for one item. */
 export interface ItemDetail {
+  /** The item's permanent id — what saving titles for it names. */
+  itemId: string;
+  /** Display back-reference to the run that produced it. Never a lookup key. */
   jobId: string;
-  itemIndex: number;
   label: string;
   createdAt: string;
   /** EVERY generated title, not just the chosen ones -- this is the picker's source. */
@@ -128,21 +134,21 @@ const MAX_BROWSE_LIMIT = 200;
 export class PublishBridge {
   constructor(
     private store: PublishStoreService,
-    private readGenerated: (jobId: string, itemIndex: number) => GeneratedFallback | null,
+    private readGenerated: (itemId: string) => GeneratedFallback | null,
     private listGenerated: () => GeneratedIndex
   ) {}
 
-  private toPending(jobId: string, itemIndex: number): PendingFillItem | null {
-    const generated = this.readGenerated(jobId, itemIndex);
+  private toPending(itemId: string): PendingFillItem | null {
+    const generated = this.readGenerated(itemId);
     if (!generated) return null;
 
-    const chosen = this.store.get(jobId, itemIndex);
+    const chosen = this.store.get(itemId);
     if (!chosen) return null;
 
     const r = resolveChosenMetadata(chosen, generated);
     return {
+      itemId: r.itemId,
       jobId: r.jobId,
-      itemIndex: r.itemIndex,
       titles: r.titles,
       description: r.description,
       tags: r.tags,
@@ -150,7 +156,7 @@ export class PublishBridge {
       channelId: r.channelId,
       videoId: r.videoId,
       status: r.status,
-      label: r.sourceFilename || r.titles[0] || `${jobId} item ${itemIndex}`,
+      label: r.sourceFilename || r.titles[0] || itemId,
     };
   }
 
@@ -158,7 +164,7 @@ export class PublishBridge {
   async listPending(): Promise<PendingFillItem[]> {
     const out: PendingFillItem[] = [];
     for (const sel of this.store.listActionable()) {
-      const item = this.toPending(sel.jobId, sel.itemIndex);
+      const item = this.toPending(sel.itemId);
       if (item) out.push(item);
     }
     return out;
@@ -184,10 +190,10 @@ export class PublishBridge {
     // Only the requested page touches the selection store, so browsing 1,000 reports
     // doesn't mean 1,000 file reads.
     const rows: BrowseRow[] = slice.map((i) => {
-      const chosen = this.store.get(i.jobId, i.itemIndex);
+      const chosen = this.store.get(i.itemId);
       return {
+        itemId: i.itemId,
         jobId: i.jobId,
-        itemIndex: i.itemIndex,
         label: i.label,
         createdAt: i.createdAt,
         promptSet: i.promptSet,
@@ -203,24 +209,22 @@ export class PublishBridge {
 
   /**
    * Full detail for one item: every generated title plus whatever is already picked.
-   * Returns null when the job or item no longer exists on disk.
+   * Returns null when the item no longer exists on disk.
    */
-  async getItem(jobId: string, itemIndex: number): Promise<ItemDetail | null> {
-    const generated = this.readGenerated(jobId, itemIndex);
+  async getItem(itemId: string): Promise<ItemDetail | null> {
+    const generated = this.readGenerated(itemId);
     if (!generated) return null;
 
-    const chosen = this.store.get(jobId, itemIndex);
-    const summary = this.listGenerated().items.find(
-      (i) => i.jobId === jobId && i.itemIndex === itemIndex
-    );
+    const chosen = this.store.get(itemId);
+    const summary = this.listGenerated().items.find((i) => i.itemId === itemId);
 
     const sourceFilename = chosen?.sourceFilename ?? generated.sourceFilename ?? null;
     const generatedTitles = generated.titles ?? [];
 
     return {
-      jobId,
-      itemIndex,
-      label: summary?.label ?? sourceFilename ?? generatedTitles[0] ?? `${jobId} item ${itemIndex}`,
+      itemId,
+      jobId: generated.jobId,
+      label: summary?.label ?? sourceFilename ?? generatedTitles[0] ?? itemId,
       createdAt: summary?.createdAt ?? '',
       generatedTitles,
       chosenTitles: chosen?.chosenTitles ?? [],
@@ -242,10 +246,10 @@ export class PublishBridge {
    * The same validation the reports page goes through -- the shelf is a second entry
    * point to one store, not a second set of rules.
    */
-  async setTitles(jobId: string, itemIndex: number, titles: string[]): Promise<SetTitlesResult> {
-    const generated = this.readGenerated(jobId, itemIndex);
+  async setTitles(itemId: string, titles: string[]): Promise<SetTitlesResult> {
+    const generated = this.readGenerated(itemId);
     if (!generated) {
-      return { ok: false, errors: [`No generated item ${jobId}[${itemIndex}] on disk.`] };
+      return { ok: false, errors: [`No generated item ${itemId} on disk.`] };
     }
 
     const cleaned = titles.map((t) => t.trim()).filter(Boolean);
@@ -255,17 +259,17 @@ export class PublishBridge {
       if (errors.length) return { ok: false, errors };
     }
 
-    await this.store.update(jobId, itemIndex, {
+    await this.store.update(itemId, generated.jobId, {
       chosenTitles: cleaned,
       // Capture the source filename at selection time -- the job's input path may be
       // gone by the time this is filled.
       ...(generated.sourceFilename ? { sourceFilename: generated.sourceFilename } : {}),
     });
 
-    const item = await this.getItem(jobId, itemIndex);
+    const item = await this.getItem(itemId);
     if (!item) {
       // Cannot happen: readGenerated just succeeded above. Loud rather than a silent null.
-      throw new Error(`Saved titles for ${jobId}[${itemIndex}] but could not read it back.`);
+      throw new Error(`Saved titles for ${itemId} but could not read it back.`);
     }
     return { ok: true, item };
   }
@@ -321,8 +325,8 @@ export class PublishBridge {
 
     if (hits.length === 1) {
       const hit = hits[0];
-      const chosen = this.store.get(hit.jobId, hit.itemIndex);
-      const item = this.toPendingFromGenerated(hit.jobId, hit.itemIndex);
+      const chosen = this.store.get(hit.itemId);
+      const item = this.toPendingFromGenerated(hit.itemId);
       if (!item) {
         return {
           item: null,
@@ -354,19 +358,19 @@ export class PublishBridge {
    * as resolveChosenMetadata does, so the shelf shows the same defaults the reports page
    * would.
    */
-  private toPendingFromGenerated(jobId: string, itemIndex: number): PendingFillItem | null {
-    const generated = this.readGenerated(jobId, itemIndex);
+  private toPendingFromGenerated(itemId: string): PendingFillItem | null {
+    const generated = this.readGenerated(itemId);
     if (!generated) return null;
 
     const chosen =
-      this.store.get(jobId, itemIndex) ??
+      this.store.get(itemId) ??
       // No record yet: resolve against a blank one so the fallback rules stay in one place.
-      emptyChosenMetadata(jobId, itemIndex);
+      emptyChosenMetadata(itemId, generated.jobId);
 
     const r = resolveChosenMetadata(chosen, generated);
     return {
+      itemId: r.itemId,
       jobId: r.jobId,
-      itemIndex: r.itemIndex,
       titles: r.titles,
       description: r.description,
       tags: r.tags,
@@ -374,7 +378,7 @@ export class PublishBridge {
       channelId: r.channelId,
       videoId: r.videoId,
       status: r.status,
-      label: r.sourceFilename || r.titles[0] || `${jobId} item ${itemIndex}`,
+      label: r.sourceFilename || r.titles[0] || itemId,
     };
   }
 
@@ -384,8 +388,15 @@ export class PublishBridge {
    * Deliberately NOT 'published': filling only puts text in the form. The operator
    * still has to press Save/Publish in Studio, and we can't observe that from here.
    */
-  async markFilled(jobId: string, itemIndex: number, videoId: string): Promise<void> {
-    await this.store.update(jobId, itemIndex, {
+  async markFilled(itemId: string, videoId: string): Promise<void> {
+    const generated = this.readGenerated(itemId);
+    if (!generated) {
+      // The extension just filled a Studio form for an item that is not on disk. Saying
+      // so is the only useful thing left: writing a record against an item that does not
+      // exist would produce a selection nothing could ever reach.
+      throw new Error(`Cannot record a fill for ${itemId}: no such generated item.`);
+    }
+    await this.store.update(itemId, generated.jobId, {
       videoId,
       status: 'filled',
       filledAt: new Date().toISOString(),

@@ -164,8 +164,8 @@ export interface ShelfCallbacks {
   onFill(ids: FillId[]): Promise<void>;
   /** Re-pull everything from ContentStudio. */
   onRefresh(): Promise<void>;
-  /** Operator chose a report from the browser. */
-  onOpenReport(jobId: string, itemIndex: number): Promise<void>;
+  /** Operator chose a report from the browser, named by the item's permanent id. */
+  onOpenReport(itemId: string): Promise<void>;
   /** Operator changed the chosen title set. Order is the variant order. */
   onSaveTitles(titles: string[]): Promise<void>;
   /** Fetch one page of the report index. */
@@ -797,7 +797,7 @@ export class PublishShelf {
         el.append(left, count);
         el.title = row.label;
         el.addEventListener('click', () => {
-          void this.callbacks.onOpenReport(row.jobId, row.itemIndex);
+          void this.callbacks.onOpenReport(row.itemId);
         });
       }
       spacer.appendChild(el);

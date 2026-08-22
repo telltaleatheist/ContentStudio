@@ -23,6 +23,22 @@
 /** YouTube's native A/B test accepts at most 3 title variants. */
 export const MAX_AB_VARIANTS = 3;
 
+/**
+ * Exact shape of an item id: `itm-<epochMs base36>-<8 base36>`.
+ *
+ * The regex lives HERE, not in services/metadata, for the reason this whole file exists:
+ * publish/ must not import from the generator. services/metadata/item-identity.ts mints
+ * the ids and re-exports this predicate, so there is exactly ONE definition of the shape
+ * and the two sides agree by construction rather than by two regexes that look alike.
+ *
+ * Anything failing this is REJECTED at the boundary it arrived on. Nothing is coerced,
+ * and in particular an itemIndex is never translated into an id — see publish-ipc.ts and
+ * the ingest server's publish routes.
+ */
+export function isItemId(value: unknown): value is string {
+  return typeof value === 'string' && /^itm-[0-9a-z]+-[0-9a-z]{8}$/.test(value);
+}
+
 /** YouTube enforces a 100-character title limit. */
 export const MAX_TITLE_LENGTH = 100;
 
@@ -38,11 +54,20 @@ export type FillTarget = 'title' | 'description' | 'tags';
 
 /**
  * The operator's chosen metadata for one generated item.
- * Keyed by (jobId, itemIndex) -- a job can produce many items.
+ *
+ * Keyed by `itemId` alone. It used to be keyed by (jobId, itemIndex), which is not a key:
+ * the index changes the moment a sibling item is deleted, and every selection above the
+ * hole then names a different item's chosen titles — which were still served to the
+ * extension. See ITEM-ID-PLAN.md P4/P5.
+ *
+ * `jobId` survives as a DISPLAY BACK-REFERENCE only: it says which run produced this
+ * item, which is worth showing, and it is what `clearItemsOfJob` matches when a whole job
+ * is deleted from history. Nothing looks an item up by it.
  */
 export interface ChosenMetadata {
+  itemId: string;
+  /** Display back-reference to the run that produced this item. Never a lookup key. */
   jobId: string;
-  itemIndex: number;
 
   /** Ordered A/B variants; index 0 becomes the video's main title. Length <= MAX_AB_VARIANTS. */
   chosenTitles: string[];
@@ -73,8 +98,9 @@ export interface ChosenMetadata {
 
 /** A ChosenMetadata with generated values merged in -- what the extension actually consumes. */
 export interface ResolvedMetadata {
+  itemId: string;
+  /** Display back-reference to the run that produced this item. Never a lookup key. */
   jobId: string;
-  itemIndex: number;
   channelId: string | null;
   videoId: string | null;
   /** Ordered. titles[0] is the main title AND A/B variant 1. */
@@ -109,8 +135,9 @@ export type MatchConfidence =
 
 export interface DraftMatch {
   videoId: string;
+  itemId: string;
+  /** Display back-reference to the run that produced this item. Never a lookup key. */
   jobId: string;
-  itemIndex: number;
   confidence: MatchConfidence;
   /** Human-readable reason, surfaced in the confirm panel. */
   reason: string;
@@ -203,10 +230,23 @@ export function validateChosenTitles(titles: string[]): string[] {
   return errors;
 }
 
-export function emptyChosenMetadata(jobId: string, itemIndex: number): ChosenMetadata {
+/**
+ * A blank record for an item that has none yet.
+ *
+ * Both arguments are validated rather than trusted: this is the one place a selection
+ * record comes into existence, and a record filed under a malformed id is a record
+ * nothing will ever find again.
+ */
+export function emptyChosenMetadata(itemId: string, jobId: string): ChosenMetadata {
+  if (!isItemId(itemId)) {
+    throw new Error(`emptyChosenMetadata requires a valid item id; got ${JSON.stringify(itemId)}`);
+  }
+  if (typeof jobId !== 'string' || !jobId.trim()) {
+    throw new Error(`emptyChosenMetadata requires the item's jobId; got ${JSON.stringify(jobId)}`);
+  }
   return {
+    itemId,
     jobId,
-    itemIndex,
     chosenTitles: [],
     descriptionOverride: null,
     tagsOverride: null,

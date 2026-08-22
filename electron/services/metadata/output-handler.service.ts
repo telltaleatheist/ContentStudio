@@ -38,12 +38,16 @@ export interface JobMetadata {
 export interface SelectionRemoval {
   /** Whether a stored selection for this item existed and was removed. */
   removed: boolean;
-  /** How many higher-indexed selections were shifted down to stay aligned. */
-  shifted: number;
 }
 
 export interface DeleteItemHooks {
-  removeSelection: (jobId: string, itemIndex: number) => Promise<SelectionRemoval>;
+  /**
+   * Forget the item's publish selection. Takes the ITEM ID and nothing else: selections
+   * are one file per item now, so this is an unlink. It used to take (jobId, itemIndex)
+   * and had to renumber every selection above the hole, because an index-keyed map over
+   * an array that just lost an element is wrong the instant the delete lands.
+   */
+  removeSelection: (itemId: string) => Promise<SelectionRemoval>;
 }
 
 /** The facts of one delete. Every field is an outcome, not an intention. */
@@ -58,7 +62,6 @@ export interface DeleteItemReceipt {
   txtReason?: string;
   txtFolderRemoved: boolean;
   selectionDeleted: boolean;
-  selectionsShifted: number;
   /** False when the array's length didn't match items[] and was therefore left alone. */
   inputsSpliced: boolean;
   inputTypesSpliced: boolean;
@@ -336,8 +339,9 @@ export class OutputHandlerService {
     }
 
     // 4. Publish state. A selection left pointing at a deleted item is still served to
-    //    the extension (P5), so a failure here is a failure of the delete.
-    const selection = await hooks.removeSelection(jobId, itemIndex);
+    //    the extension (P5), so a failure here is a failure of the delete. One unlink,
+    //    by the item's own id — there is nothing left for a sibling's removal to move.
+    const selection = await hooks.removeSelection(itemId);
 
     const receipt: DeleteItemReceipt = {
       jobId,
@@ -348,7 +352,6 @@ export class OutputHandlerService {
       ...(txtReason ? { txtReason } : {}),
       txtFolderRemoved,
       selectionDeleted: selection.removed,
-      selectionsShifted: selection.shifted,
       inputsSpliced,
       inputTypesSpliced,
     };

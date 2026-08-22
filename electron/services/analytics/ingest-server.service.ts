@@ -64,13 +64,44 @@ export interface IngestServerStatus {
 export interface PublishRoutes {
   listPending(): Promise<unknown[]>;
   resolveForPage(videoId: string, filename: string | null): Promise<unknown>;
-  markFilled(jobId: string, itemIndex: number, videoId: string): Promise<void>;
+  markFilled(itemId: string, videoId: string): Promise<void>;
   /** A page of the full report index, so the shelf can reach any generated item. */
   listReports(offset: number, limit: number, query: string): Promise<unknown>;
   /** Full detail for one item, including every generated title (the shelf's picker). */
-  getItem(jobId: string, itemIndex: number): Promise<unknown>;
+  getItem(itemId: string): Promise<unknown>;
   /** The shelf writing back the chosen A/B variant set. */
-  setTitles(jobId: string, itemIndex: number, titles: string[]): Promise<unknown>;
+  setTitles(itemId: string, titles: string[]): Promise<unknown>;
+}
+
+/**
+ * The companion extension version that speaks item ids.
+ *
+ * Every /publish/* route that used to take (jobId, itemIndex) now takes an itemId, and an
+ * old-shaped request is REFUSED naming this version rather than translated. Translation
+ * is what the ids exist to end: index 2 of a job that has since had an item deleted is a
+ * different item than the caller meant, and neither side can tell.
+ */
+const PUBLISH_MIN_EXTENSION_VERSION = '0.2.0';
+
+/** The one wording for "your extension is too old", so every route says the same thing. */
+function legacyShapeError(field: string): string {
+  return (
+    `This request sends "${field}", the old positional shape. ContentStudio now identifies ` +
+    `generated items by item_id, and will not translate a position into one — a position ` +
+    `names a different item as soon as a sibling is deleted. Update the ContentStudio ` +
+    `Companion extension to ${PUBLISH_MIN_EXTENSION_VERSION} or later.`
+  );
+}
+
+/**
+ * This layer checks only that an itemId was SENT — that it is a non-empty string and that
+ * no positional field came with it. The exact id shape is the publish store's business
+ * (publish-types.isItemId), and it rejects a malformed one loudly; copying its regex here
+ * would put a second definition of the format in a module that deliberately knows nothing
+ * about publish/, and two regexes eventually stop agreeing.
+ */
+function requireItemIdField(body: any): string | null {
+  return typeof body?.itemId === 'string' && body.itemId.trim() ? body.itemId : null;
 }
 
 export class IngestServerService {
@@ -326,16 +357,16 @@ export class IngestServerService {
         // Filling only puts text in the form — the operator still presses Save in Studio.
         if (req.method === 'POST' && url === '/publish/filled') {
           const body = JSON.parse(await this.readBody(req));
-          if (
-            !body ||
-            typeof body.jobId !== 'string' ||
-            typeof body.itemIndex !== 'number' ||
-            typeof body.videoId !== 'string'
-          ) {
-            this.sendJson(res, 400, { error: 'Body must be {jobId, itemIndex, videoId}' });
+          if (body && 'itemIndex' in body) {
+            this.sendJson(res, 400, { error: legacyShapeError('itemIndex') });
             return;
           }
-          await this.publishRoutes.markFilled(body.jobId, body.itemIndex, body.videoId);
+          const itemId = requireItemIdField(body);
+          if (!itemId || typeof body.videoId !== 'string') {
+            this.sendJson(res, 400, { error: 'Body must be {itemId: string, videoId: string}' });
+            return;
+          }
+          await this.publishRoutes.markFilled(itemId, body.videoId);
           this.sendJson(res, 200, { ok: true });
           return;
         }
@@ -361,15 +392,18 @@ export class IngestServerService {
         // One item in full, including every generated title — what the picker renders.
         if (req.method === 'GET' && url === '/publish/item') {
           const params = this.queryOf(req);
-          const jobId = params.get('jobId');
-          const itemIndex = Number(params.get('itemIndex'));
-          if (!jobId || !Number.isInteger(itemIndex) || itemIndex < 0) {
-            this.sendJson(res, 400, { error: 'jobId and a non-negative itemIndex are required' });
+          if (params.has('itemIndex')) {
+            this.sendJson(res, 400, { error: legacyShapeError('itemIndex') });
             return;
           }
-          const item = await this.publishRoutes.getItem(jobId, itemIndex);
+          const itemId = params.get('itemId');
+          if (!itemId) {
+            this.sendJson(res, 400, { error: 'itemId is required' });
+            return;
+          }
+          const item = await this.publishRoutes.getItem(itemId);
           if (!item) {
-            this.sendJson(res, 404, { error: `No generated item ${jobId}[${itemIndex}]` });
+            this.sendJson(res, 404, { error: `No generated item ${itemId}` });
             return;
           }
           this.sendJson(res, 200, { item });
@@ -379,25 +413,24 @@ export class IngestServerService {
         // The shelf picking titles. Order is meaningful and stored exactly as sent.
         if (req.method === 'POST' && url === '/publish/titles') {
           const body = JSON.parse(await this.readBody(req));
+          if (body && 'itemIndex' in body) {
+            this.sendJson(res, 400, { error: legacyShapeError('itemIndex') });
+            return;
+          }
+          const itemId = requireItemIdField(body);
           if (
-            !body ||
-            typeof body.jobId !== 'string' ||
-            typeof body.itemIndex !== 'number' ||
+            !itemId ||
             !Array.isArray(body.titles) ||
             body.titles.some((t: unknown) => typeof t !== 'string')
           ) {
             this.sendJson(res, 400, {
-              error: 'Body must be {jobId: string, itemIndex: number, titles: string[]}',
+              error: 'Body must be {itemId: string, titles: string[]}',
             });
             return;
           }
           // Validation failures come back as {ok:false, errors} with a 200 — they are an
           // expected outcome of a click, and the shelf shows the reason verbatim.
-          this.sendJson(
-            res,
-            200,
-            await this.publishRoutes.setTitles(body.jobId, body.itemIndex, body.titles)
-          );
+          this.sendJson(res, 200, await this.publishRoutes.setTitles(itemId, body.titles));
           return;
         }
       } catch (error) {

@@ -267,9 +267,27 @@ export interface ReportMigrationReceipt {
   failures: Array<{ file: string; error: string }>;
 }
 
+/**
+ * What the selections half of the same pass did.
+ *
+ * It runs immediately after the reports half, against the files that half just wrote:
+ * a stored selection can only be moved onto an item id once the item HAS one. Files it
+ * could not match are moved, unchanged, to `orphanedDir` — never deleted.
+ */
+export interface SelectionMigrationReceipt {
+  selectionsDir: string;
+  filesScanned: number;
+  filesMigrated: number;
+  selectionsMigrated: number;
+  filesOrphaned: number;
+  orphanedDir: string;
+  failures: Array<{ file: string; error: string }>;
+}
+
 export interface ReportMigrationResponse {
   ran: boolean;
   receipt: ReportMigrationReceipt | null;
+  selectionReceipt: SelectionMigrationReceipt | null;
   /** Operator-facing summary, present exactly when there is a receipt to summarise. */
   message: string | null;
   /** The reports directory is not there at all — nothing to migrate, nothing to report. */
@@ -306,7 +324,6 @@ export interface DeleteItemReceipt {
   txtReason?: string;
   txtFolderRemoved: boolean;
   selectionDeleted: boolean;
-  selectionsShifted: number;
   inputsSpliced: boolean;
   inputTypesSpliced: boolean;
 }
@@ -413,17 +430,16 @@ declare global {
       youtubeCollectNow: (channelId?: string) => Promise<{ success: boolean; results?: YouTubeChannelCollectResult[]; error?: string }>;
       youtubeGetCollectorState: () => Promise<{ success: boolean; state?: YouTubeCollectorState; error?: string }>;
 
-      // Publish (chosen titles / A-B test setup)
-      publishGetSelections: (jobId: string) => Promise<PublishResult<Record<number, ChosenMetadata>>>;
-      publishSetTitles: (jobId: string, itemIndex: number, titles: string[]) => Promise<PublishResult<ChosenMetadata>>;
+      // Publish (chosen titles / A-B test setup) — every call names one item by its id
+      publishGetSelection: (itemId: string) => Promise<PublishResult<ChosenMetadata | null>>;
+      publishSetTitles: (itemId: string, titles: string[]) => Promise<PublishResult<ChosenMetadata>>;
       publishSetFields: (
-        jobId: string,
-        itemIndex: number,
+        itemId: string,
         fields: { descriptionOverride?: string | null; tagsOverride?: string | null; channelId?: string | null }
       ) => Promise<PublishResult<ChosenMetadata>>;
-      publishGetResolved: (jobId: string, itemIndex: number) => Promise<PublishResult<ResolvedMetadata>>;
+      publishGetResolved: (itemId: string) => Promise<PublishResult<ResolvedMetadata>>;
       publishListActionable: () => Promise<PublishResult<ChosenMetadata[]>>;
-      publishClear: (jobId: string, itemIndex: number) => Promise<PublishResult<boolean>>;
+      publishClear: (itemId: string) => Promise<PublishResult<boolean>>;
 
       // ==================== EDITOR ====================
       //
@@ -980,30 +996,30 @@ export class ElectronService {
 
   // Publish (chosen titles / A-B test setup)
 
-  async publishGetSelections(jobId: string): Promise<PublishResult<Record<number, ChosenMetadata>>> {
+  /** One item's stored selection, or null when nothing has been picked for it. */
+  async publishGetSelection(itemId: string): Promise<PublishResult<ChosenMetadata | null>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.publishGetSelections(jobId);
+    return await this.ipcRenderer.publishGetSelection(itemId);
   }
 
   /** `titles` order is meaningful: index 0 becomes the main title AND A/B variant 1. */
-  async publishSetTitles(jobId: string, itemIndex: number, titles: string[]): Promise<PublishResult<ChosenMetadata>> {
+  async publishSetTitles(itemId: string, titles: string[]): Promise<PublishResult<ChosenMetadata>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.publishSetTitles(jobId, itemIndex, titles);
+    return await this.ipcRenderer.publishSetTitles(itemId, titles);
   }
 
   /** Pass null for a field to clear the override and fall back to the generated value. */
   async publishSetFields(
-    jobId: string,
-    itemIndex: number,
+    itemId: string,
     fields: { descriptionOverride?: string | null; tagsOverride?: string | null; channelId?: string | null }
   ): Promise<PublishResult<ChosenMetadata>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.publishSetFields(jobId, itemIndex, fields);
+    return await this.ipcRenderer.publishSetFields(itemId, fields);
   }
 
-  async publishGetResolved(jobId: string, itemIndex: number): Promise<PublishResult<ResolvedMetadata>> {
+  async publishGetResolved(itemId: string): Promise<PublishResult<ResolvedMetadata>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.publishGetResolved(jobId, itemIndex);
+    return await this.ipcRenderer.publishGetResolved(itemId);
   }
 
   async publishListActionable(): Promise<PublishResult<ChosenMetadata[]>> {
@@ -1011,9 +1027,9 @@ export class ElectronService {
     return await this.ipcRenderer.publishListActionable();
   }
 
-  async publishClear(jobId: string, itemIndex: number): Promise<PublishResult<boolean>> {
+  async publishClear(itemId: string): Promise<PublishResult<boolean>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.publishClear(jobId, itemIndex);
+    return await this.ipcRenderer.publishClear(itemId);
   }
 
   // ==================== EDITOR ====================

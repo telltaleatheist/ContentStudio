@@ -15,7 +15,18 @@
 
 import * as crypto from 'crypto';
 import * as path from 'path';
-import { normalizeForMatch } from '../publish/publish-types';
+import { isItemId, normalizeForMatch } from '../publish/publish-types';
+
+/**
+ * Exact shape check. Anything else crossing an IPC boundary is rejected, not coerced.
+ *
+ * DEFINED in publish-types.ts and re-exported here. The publish store, the publish IPC
+ * layer and the extension's HTTP routes all have to reject a malformed id, and publish/
+ * must not import from services/metadata (that is what keeps it liftable) — so the one
+ * definition lives on the side that cannot import, and this side, which can, uses it.
+ * Two regexes that merely look alike would eventually stop being alike.
+ */
+export { isItemId };
 
 /**
  * Job files carrying identity are `schema_version: 2`. Files without the key are
@@ -46,11 +57,6 @@ export function mintItemId(now: number = Date.now()): string {
   }
 
   return `itm-${Math.floor(now).toString(36)}-${random.slice(0, RANDOM_CHARS)}`;
-}
-
-/** Exact shape check. Anything else crossing an IPC boundary is rejected, not coerced. */
-export function isItemId(value: unknown): value is string {
-  return typeof value === 'string' && /^itm-[0-9a-z]+-[0-9a-z]{8}$/.test(value);
 }
 
 /**

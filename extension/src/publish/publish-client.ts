@@ -2,10 +2,16 @@
 //
 //   GET  /publish/pending  -> { items: PendingFillItem[] }
 //   POST /publish/resolve  -> body { videoId, filename } -> { item, reason, linked, needsTitles }
-//   POST /publish/filled   -> body { jobId, itemIndex, videoId } -> { ok: true }
+//   POST /publish/filled   -> body { itemId, videoId } -> { ok: true }
 //   GET  /publish/reports  -> ?offset&limit&q -> BrowsePage
-//   GET  /publish/item     -> ?jobId&itemIndex -> { item: ItemDetail }
-//   POST /publish/titles   -> body { jobId, itemIndex, titles } -> SetTitlesResult
+//   GET  /publish/item     -> ?itemId -> { item: ItemDetail }
+//   POST /publish/titles   -> body { itemId, titles } -> SetTitlesResult
+//
+// EVERY route names ONE generated item by its permanent `itemId`. They used to take a
+// (jobId, itemIndex) pair; the index was a position in the job's items[] array, so
+// deleting a sibling item silently made every stored index name a different item. The app
+// REFUSES the old shape with a 400 naming the extension version rather than translating
+// it, because a translation would be a guess about which item the operator meant.
 //
 // Same auth story as the analytics endpoints: none. The server is localhost-bound and
 // rejects cross-origin web Origins; this extension's chrome-extension:// Origin is
@@ -17,8 +23,10 @@
 import { getSettings } from '../settings';
 
 export interface PendingFillItem {
+  /** The item's permanent id — what every call back to ContentStudio names. */
+  itemId: string;
+  /** Display back-reference to the run that produced it. Never a lookup key. */
   jobId: string;
-  itemIndex: number;
   /** Ordered. titles[0] is the main title AND A/B variant 1. */
   titles: string[];
   description: string;
@@ -40,8 +48,10 @@ export interface ResolveOutcome {
 
 /** One row in the shelf's report browser. Mirrors publish-bridge.BrowseRow. */
 export interface BrowseRow {
+  /** The item's permanent id — what opening this row sends back. */
+  itemId: string;
+  /** Display back-reference to the run that produced it. Never a lookup key. */
   jobId: string;
-  itemIndex: number;
   label: string;
   createdAt: string;
   promptSet: string | null;
@@ -62,8 +72,10 @@ export interface BrowsePage {
 
 /** Everything the shelf needs to pick titles for one item. Mirrors publish-bridge.ItemDetail. */
 export interface ItemDetail {
+  /** The item's permanent id — what saving titles for it names. */
+  itemId: string;
+  /** Display back-reference to the run that produced it. Never a lookup key. */
   jobId: string;
-  itemIndex: number;
   label: string;
   createdAt: string;
   generatedTitles: string[];
@@ -179,10 +191,10 @@ export async function resolveForPage(videoId: string, filename: string | null): 
 }
 
 /** Record that fields were filled. NOT the same as published — the operator still saves. */
-export async function reportFilled(jobId: string, itemIndex: number, videoId: string): Promise<void> {
+export async function reportFilled(itemId: string, videoId: string): Promise<void> {
   await call<{ ok: boolean }>('/publish/filled', {
     method: 'POST',
-    body: JSON.stringify({ jobId, itemIndex, videoId }),
+    body: JSON.stringify({ itemId, videoId }),
   });
 }
 
@@ -204,8 +216,8 @@ export async function fetchReports(offset: number, limit: number, query: string)
 }
 
 /** One item in full, including every generated title — the picker's source data. */
-export async function fetchItem(jobId: string, itemIndex: number): Promise<ItemDetail> {
-  const params = new URLSearchParams({ jobId, itemIndex: String(itemIndex) });
+export async function fetchItem(itemId: string): Promise<ItemDetail> {
+  const params = new URLSearchParams({ itemId });
   const body = await call<{ item?: ItemDetail }>(`/publish/item?${params.toString()}`);
   if (!body || !body.item || !Array.isArray(body.item.generatedTitles)) {
     throw new PublishClientError('unexpected-response', '/publish/item returned an unexpected body');
@@ -219,14 +231,10 @@ export async function fetchItem(jobId: string, itemIndex: number): Promise<ItemD
  * A validation failure comes back as {ok:false, errors} rather than throwing — it's an
  * expected outcome of a click, and the reason belongs in the shelf verbatim.
  */
-export async function saveTitles(
-  jobId: string,
-  itemIndex: number,
-  titles: string[],
-): Promise<SetTitlesResult> {
+export async function saveTitles(itemId: string, titles: string[]): Promise<SetTitlesResult> {
   const body = await call<SetTitlesResult>('/publish/titles', {
     method: 'POST',
-    body: JSON.stringify({ jobId, itemIndex, titles }),
+    body: JSON.stringify({ itemId, titles }),
   });
   if (!body || typeof body.ok !== 'boolean') {
     throw new PublishClientError('unexpected-response', '/publish/titles returned an unexpected body');

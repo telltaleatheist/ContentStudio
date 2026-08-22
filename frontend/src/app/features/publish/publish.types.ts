@@ -15,8 +15,10 @@ export const MAX_TITLE_LENGTH = 100;
 export type PublishStatus = 'selecting' | 'ready' | 'linked' | 'filled' | 'published';
 
 export interface ChosenMetadata {
+  /** The item's permanent id — the only thing that identifies it. */
+  itemId: string;
+  /** Display back-reference to the run that produced it. Never a lookup key. */
   jobId: string;
-  itemIndex: number;
   /** Ordered. Index 0 becomes the main title AND A/B variant 1. */
   chosenTitles: string[];
   descriptionOverride: string | null;
@@ -31,8 +33,10 @@ export interface ChosenMetadata {
 }
 
 export interface ResolvedMetadata {
+  /** The item's permanent id — the only thing that identifies it. */
+  itemId: string;
+  /** Display back-reference to the run that produced it. Never a lookup key. */
   jobId: string;
-  itemIndex: number;
   channelId: string | null;
   videoId: string | null;
   titles: string[];
