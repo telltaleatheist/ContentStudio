@@ -246,6 +246,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // Disabled mic blocks the export actually emitted, straight from the result JSON. null =
   // the mute pass did not run; 0 is a REAL value and is shown as such.
   exportMicMuteBlocks: number | null = null;
+  // What the export did about the per-story Content Studio transcripts, verbatim from the
+  // result JSON. null = a plain-cuts export, where they do not apply.
+  exportTranscripts: 'exported' | 'no sidecar' | null = null;
+  exportTranscriptsDir: string | null = null;
   // File ▸ Export… chooser modal (pick Master FCPXML vs Stories).
   exportChooserOpen = false;
   // Mute the mic wherever the SCREEN track is speaking and the mic is not. ON by default:
@@ -648,6 +652,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.exportError = null;
     this.exportChooserOpen = false;
     this.exportMicMuteBlocks = null;
+    this.exportTranscripts = null;
+    this.exportTranscriptsDir = null;
     // Back to the default (mute armed) — an "off" choice is per-session state and is
     // restored from the new session's sidecar, never carried over from the previous one.
     this.muteMicDuringScreen = true;
@@ -2359,6 +2365,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.exportError = null;
     this.exportResultPath = null;
     this.exportMicMuteBlocks = null;
+    this.exportTranscripts = null;
+    this.exportTranscriptsDir = null;
     this.cdr.detectChanges();
     try {
       const stories = this.hasStories() ? this.resolveStoryRegions() : undefined;
@@ -2374,10 +2382,20 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       });
       const path = res?.path;
       if (!path) throw new Error(res?.message || 'Export did not return an output path.');
+      // Read the whole result BEFORE anything is shown, so a result this build cannot make
+      // sense of raises while the modal is still empty — never half-success, half-error.
+      // Only the two values Python defines are accepted; an unknown one means the backend
+      // contract moved and the note would be guessing.
+      const tx = res?.transcripts;
+      if (tx !== undefined && tx !== 'exported' && tx !== 'no sidecar') {
+        throw new Error(`Export reported an unrecognised transcripts state: ${JSON.stringify(tx)}`);
+      }
       this.exportResultPath = path;
       // Present only when the mute pass ran. Zero is a real count and must not be coerced
       // away — the typeof check keeps 0 while turning an absent field into "did not run".
       this.exportMicMuteBlocks = typeof res?.micMuteBlocks === 'number' ? res.micMuteBlocks : null;
+      this.exportTranscripts = tx ?? null;
+      this.exportTranscriptsDir = tx === 'exported' ? res.transcriptsDir : null;
     } catch (err: any) {
       // Python's message is authoritative — show it verbatim.
       this.exportError = err?.message || String(err);
@@ -2436,6 +2454,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.exportResultPath = null;
     this.exportError = null;
     this.exportMicMuteBlocks = null;
+    this.exportTranscripts = null;
+    this.exportTranscriptsDir = null;
   }
 
   // ── Stories (mark / name / number spans) ─────────────────────────────────────

@@ -620,6 +620,13 @@ export class PythonService {
    * export_result line. Rejects — never fabricates a result — on a Python-side
    * error line, a non-zero / signalled exit (with the stderr tail in the message),
    * or a spawn failure. Single-settle guard: only the first resolve/reject wins.
+   *
+   * With `stories` and output 'fcpxml', Python writes the per-story Content Studio
+   * transcripts alongside the FCPXML whenever the session has a transcript sidecar; the
+   * resolved result carries `transcripts` ('exported' | 'no sidecar'), `transcriptsDir`
+   * and a per-story `transcriptPath`. A sidecar that exists but cannot be used fails the
+   * WHOLE export — there is no result in which the FCPXML shipped and the transcripts
+   * quietly did not.
    */
   editorExport(
     zipPath: string,
@@ -722,11 +729,17 @@ export class PythonService {
           processLine(stdoutBuffer.trim());
         }
         if (code === 0 && result) {
+          // This is a WHITELIST, not a pass-through: a field Python emits reaches the
+          // renderer only if it is named here. `micMuteBlocks` and `transcripts` are as
+          // load-bearing as the path — the modal reports both — so they are copied on
+          // every branch that can carry them.
           finish(() => resolve(
             result.type === 'story_export_result'
               ? { path: result.path, storiesEmitted: result.storiesEmitted, stories: result.stories,
-                  transcriptsDir: result.transcriptsDir }
-              : { path: result.path, cutsApplied: result.cutsApplied, newDurationSeconds: result.newDurationSeconds }
+                  transcripts: result.transcripts, transcriptsDir: result.transcriptsDir,
+                  micMuteBlocks: result.micMuteBlocks }
+              : { path: result.path, cutsApplied: result.cutsApplied,
+                  newDurationSeconds: result.newDurationSeconds, micMuteBlocks: result.micMuteBlocks }
           ));
         } else {
           const stderrSuffix = stderrTail.trim() ? `: ${stderrTail.trim()}` : '';
