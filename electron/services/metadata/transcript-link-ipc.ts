@@ -177,6 +177,10 @@ function registeredProjectFolders(): { folders: string[]; problems: string[] } {
  * This is what makes "Export it now" possible without opening the editor: the sidecar
  * already stores `cuts` as `{startFrame,endFrame}` and `stories` as
  * `{number,title,regions}`, which is exactly the export payload.
+ *
+ * The ONE thing it cannot carry across is a reorder — the sidecar's `sequence` is in a
+ * different coordinate system from the exporter's, so a reordered project is REFUSED here
+ * rather than exported in the wrong order (see the check below).
  */
 function exportPayloadFromSidecar(projectFolder: string): {
   zipPath: string;
@@ -219,6 +223,20 @@ function exportPayloadFromSidecar(projectFolder: string): {
   if (!Array.isArray(edits?.stories) || edits.stories.length === 0) {
     throw new Error(`${editsPath} defines no stories — split the session into stories in the ` +
       `editor before exporting story transcripts`);
+  }
+
+  // A reordered project cannot be exported from the sidecar alone. The sidecar stores the
+  // reorder as SLOTS over the whole original timeline (cut material included) — that is what
+  // lets an undone cut land back where it was lifted from — while the exporter requires a
+  // partition of the SURVIVORS, in playback order, frame-aligned. Converting between them needs
+  // the manifest's frameSeconds and the editor's cut math, neither of which exists here. Writing
+  // transcripts in source order for a timeline the operator reordered would be a silently wrong
+  // artifact, so refuse and name the one place that can do it.
+  if (Array.isArray(edits?.sequence) && edits.sequence.length > 0) {
+    throw new Error(`${editsPath} records a reordered timeline (${edits.sequence.length} spans). ` +
+      `The playback order cannot be reconstructed from the sidecar alone, and transcripts written ` +
+      `in source order would not match the export — open the session in the editor and export the ` +
+      `story transcripts from there`);
   }
 
   const stories = edits.stories.map((s: any) => {
@@ -351,7 +369,10 @@ export function setupTranscriptLinkIpc(): void {
         const { zipPath, cuts, stories } = exportPayloadFromSidecar(folder);
         log.info(`[transcript-link] exporting story transcripts for ${zipPath} ` +
           `(${stories.length} stories, ${cuts.length} cuts)`);
-        const result = await pythonService().editorExport(zipPath, cuts, stories, 'transcripts', false);
+        // No `sequence`: exportPayloadFromSidecar refuses a reordered project outright (see
+        // there), so every project reaching here is in source order and undefined is the truth.
+        const result = await pythonService().editorExport(
+          zipPath, cuts, undefined, stories, 'transcripts', false);
         if (!result?.transcriptsDir) {
           throw new Error(`the exporter returned no transcriptsDir: ${JSON.stringify(result)}`);
         }

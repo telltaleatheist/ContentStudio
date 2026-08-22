@@ -591,6 +591,12 @@ function setupEditorSessionHandlers(): void {
   ipcMain.handle('editor:export', async (_event, payload: {
     zipPath: string;
     cuts: Array<{ startFrame: number; endFrame: number }>;
+    // The reorder: a partition of the SURVIVORS (the complement of `cuts`) in ORIGINAL
+    // frame-aligned seconds, in the order they play. Absent = source order. Must be forwarded
+    // explicitly below, like every other field — this handler passes NAMED arguments on to
+    // pythonService, so a field it does not name never reaches Python and the timeline exports
+    // in the order the operator moved footage OUT of.
+    sequence?: Array<{ start: number; end: number }>;
     stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>;
     output?: 'fcpxml' | 'transcripts';
     // Split every mic lane where the screen track speaks and the mic does not, and disable
@@ -671,8 +677,30 @@ function setupEditorSessionHandlers(): void {
       throw new Error(`editor:export muteMicDuringScreen must be a boolean, got: ${typeof muteMic}`);
     }
 
+    // Shape guard only. Python owns the reorder's real contract — frame alignment, and that the
+    // spans partition exactly what the cuts leave behind — and refuses anything else by name;
+    // re-deriving that here would be a second implementation of the same rules that could drift
+    // out of step with the one doing the export.
+    const sequence = payload?.sequence;
+    if (sequence !== undefined) {
+      if (!Array.isArray(sequence)) {
+        throw new Error(`editor:export sequence, when present, must be an array of {start, end} spans`);
+      }
+      // An empty array is a caller bug, not "no reorder": the caller computed an order and lost
+      // it. Silently dropping it to undefined would export source order and say nothing.
+      if (sequence.length === 0) {
+        throw new Error('editor:export sequence is empty — omit it entirely to keep source order');
+      }
+      for (let i = 0; i < sequence.length; i++) {
+        const sp = sequence[i];
+        if (!sp || typeof sp.start !== 'number' || typeof sp.end !== 'number' || !(sp.start < sp.end)) {
+          throw new Error(`editor:export sequence span at index ${i} is invalid: ${JSON.stringify(sp)}`);
+        }
+      }
+    }
+
     return await pythonService().editorExport(
-      zipPath, cuts, isStoryExport ? stories : undefined, isStoryExport ? output : undefined,
+      zipPath, cuts, sequence, isStoryExport ? stories : undefined, isStoryExport ? output : undefined,
       muteMic);
   });
 
