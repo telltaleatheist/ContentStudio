@@ -28,6 +28,13 @@ import {
   createGeneratedIndexReader,
   sourceFilenameOf,
 } from '../services/metadata/generated-index';
+import { OutputHandlerService, deleteJobTxtFiles } from '../services/metadata/output-handler.service';
+import {
+  ReportMigrationReceipt,
+  describeMigration,
+  migrateReports,
+  migrationIsNoteworthy,
+} from '../services/metadata/report-migration';
 import { composeDescription, composeTags } from '../services/metadata/description-composer';
 import {
   buildRoutingView,
@@ -103,6 +110,20 @@ interface PromptAssetNotice {
   withheld: string[];
 }
 let pendingPromptAssetNotice: PromptAssetNotice | null = null;
+
+/**
+ * Report migration state, for the session.
+ *
+ * `reportsMigrated` flips only after a sweep that actually READ the reports directory.
+ * The directory lives on an external volume, so "we could not look" must not be recorded
+ * as "there was nothing to do" — the next request has to try again.
+ *
+ * `pendingMigrationReceipt` is drained by the request that asks for it, in the same shape
+ * as the prompt-asset notice above: a migration nobody was told about is a migration the
+ * operator has to discover by noticing something missing.
+ */
+let reportsMigrated = false;
+let pendingMigrationReceipt: ReportMigrationReceipt | null = null;
 
 /**
  * Where the provenance manifest lives. Deliberately OUTSIDE prompt_sets/: that directory
@@ -843,16 +864,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     }
   });
 
-  // Delete directory
-  ipcMain.handle('delete-directory', async (_event, dirPath) => {
-    try {
-      await fs.promises.rm(dirPath, { recursive: true, force: true });
-      return { success: true };
-    } catch (error) {
-      log.error('Error deleting directory:', error);
-      throw error;
-    }
-  });
+  // `delete-directory` used to live here: an unbounded `fs.rm(anyPath, { recursive: true,
+  // force: true })` handed to the renderer, whose only caller was the reports page's
+  // delete — where it was pointed at a single .txt file, at a JSON report, and (had the
+  // dead `txt_files` branch ever populated) at whatever else a report happened to carry.
+  // `force: true` also meant "already gone" reported success. Reports now delete through
+  // `reports-delete-item`, which names its own paths in the main process, so the
+  // primitive has no callers and is gone rather than left lying around.
 
   // Show in folder
   ipcMain.handle('show-in-folder', async (_event, filePath) => {
@@ -1439,10 +1457,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
             if (createdAt < fourWeeksAgo) {
               log.info(`[JobHistory] Pruning old job: ${file} (created ${new Date(createdAt).toISOString()})`);
               try {
-                // Delete txt folder if it exists
-                if (job.txt_folder && fs.existsSync(job.txt_folder)) {
-                  fs.rmSync(job.txt_folder, { recursive: true, force: true });
-                }
+                // The job's OWN text files, by recorded path — never the folder. It is
+                // named after the job, so every regeneration of the same source shares
+                // it (seven jobs share one folder in the live data) and `rm -rf` on it
+                // took the other jobs' output with it. Items with no recorded path are
+                // pre-migration and their text is left, which the counts state.
+                const cleanup = deleteJobTxtFiles(job);
+                log.info(`[JobHistory] Pruned text for ${file}:`, cleanup);
                 fs.unlinkSync(filePath);
               } catch (deleteError) {
                 log.warn(`[JobHistory] Failed to prune ${file}:`, deleteError);
@@ -1480,6 +1501,97 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       log.error('Error getting job history:', error);
       return [];
     }
+  });
+
+  /**
+   * Bring the reports directory up to schema_version 2, once per session, on demand.
+   *
+   * Called by the reports page immediately before it lists the directory — lazily, and
+   * never at boot: with the output volume unmounted a boot-time sweep would report "0
+   * files migrated", which reads as success and is a statement about a directory it
+   * never opened.
+   *
+   * The receipt rides back on this response rather than through a separate pull: the
+   * request that caused the work is the one place where the work is guaranteed to have a
+   * listener.
+   */
+  ipcMain.handle('reports-ensure-migrated', async () => {
+    const settings = (store as any).store;
+    const outputDirectory = settings.outputDirectory;
+    if (!outputDirectory) {
+      return { ran: false, receipt: null, message: null, error: 'No output directory configured' };
+    }
+
+    const metadataDir = path.join(outputDirectory, '.contentstudio', 'metadata');
+    if (!fs.existsSync(metadataDir)) {
+      // Not there is not the same as not readable, and it is not this handler's error to
+      // report: the caller is about to list that same directory and say what it found
+      // (including the older layout it may find instead). It is still not recorded as
+      // migrated — a directory that does not exist has not been migrated.
+      return { ran: false, receipt: null, message: null, notFound: true };
+    }
+
+    if (!reportsMigrated) {
+      try {
+        const receipt = migrateReports(metadataDir);
+        reportsMigrated = true;
+        log.info('[ReportMigration]', receipt);
+        if (migrationIsNoteworthy(receipt)) {
+          pendingMigrationReceipt = receipt;
+        }
+      } catch (error) {
+        // The sweep could not read the directory. Say so and stay un-migrated, so the
+        // next attempt tries again instead of trusting a run that never happened.
+        const message = error instanceof Error ? error.message : String(error);
+        log.error('[ReportMigration] Failed:', error);
+        return { ran: false, receipt: null, message: null, error: message };
+      }
+    }
+
+    const receipt = pendingMigrationReceipt;
+    pendingMigrationReceipt = null;
+    return {
+      ran: receipt !== null,
+      receipt,
+      message: receipt ? describeMigration(receipt) : null,
+    };
+  });
+
+  /**
+   * Delete ONE generated item: its text file, its row in the report, its publish selection.
+   *
+   * The renderer sends two ids and no paths. It used to do this itself over
+   * `delete-directory` plus a read-modify-write of the report JSON that bypassed the
+   * output handler's write queue, then renumbered its own rows in memory whether or not
+   * the write had succeeded. Every part of that is now one transaction in the main
+   * process, and it throws rather than reporting a delete it did not do.
+   */
+  ipcMain.handle('reports-delete-item', async (_event, jobId: string, itemId: string) => {
+    const settings = (store as any).store;
+    const outputDirectory = settings.outputDirectory;
+    if (!outputDirectory) {
+      throw new Error('No output directory configured — cannot delete a report item.');
+    }
+
+    const metadataDir = path.join(outputDirectory, '.contentstudio', 'metadata');
+    if (!fs.existsSync(metadataDir)) {
+      throw new Error(`Reports directory not found: ${metadataDir}`);
+    }
+
+    const handler = OutputHandlerService.forOutputDir(outputDirectory);
+    const receipt = await handler.deleteItem(jobId, itemId, {
+      // Selections are still keyed by itemIndex until PR B repoints them at item ids, so
+      // removing one is a splice, not an unlink: see PublishStoreService.removeIndexAndShift.
+      removeSelection: (job, itemIndex) => analytics.publishStore.removeIndexAndShift(job, itemIndex),
+    });
+
+    // Deleting the last item deletes the job, and a held "Show prompt" transcript for a
+    // job that no longer exists is a transcript nothing can ever send.
+    if (receipt.jobFileDeleted) {
+      heldTranscripts.delete(jobId);
+    }
+
+    return receipt;
   });
 
   // Delete job history entry
@@ -1547,24 +1659,45 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
 
             // Check both job.id and job.job_id for compatibility
             if (job.id === jobId || job.job_id === jobId) {
-              // Delete the txt folder if it exists
-              if (job.txt_folder && fs.existsSync(job.txt_folder)) {
-                try {
-                  fs.rmSync(job.txt_folder, { recursive: true, force: true });
-                  log.info(`Deleted txt folder: ${job.txt_folder}`);
-                } catch (error) {
-                  log.warn(`Could not delete txt folder: ${job.txt_folder}`, error);
-                }
-              }
+              // The job's own text files, one recorded path at a time.
+              //
+              // This used to be `fs.rmSync(job.txt_folder, { recursive: true, force: true })`,
+              // and it was destroying other reports' work: `txt_folder` is derived from the
+              // job NAME, so regenerating a source produces a new job that writes into the
+              // same folder — seven jobs share `4 - satanism` in the live data. Deleting any
+              // one of them deleted all seven jobs' text output.
+              //
+              // Items that predate the migration recorded no path. Their .txt files are LEFT,
+              // and the result says so: a file we cannot attribute to this job is not a file
+              // to delete on this job's behalf.
+              const cleanup = deleteJobTxtFiles(job);
+              log.info(`[JobHistory] Text cleanup for ${jobId}:`, cleanup);
 
               // Delete the JSON metadata file
               fs.unlinkSync(filePath);
               log.info(`Deleted job history entry: ${jobId}`);
+
+              const notes: string[] = [];
+              if (cleanup.left > 0) {
+                notes.push(
+                  `${cleanup.left} text file${cleanup.left === 1 ? '' : 's'} were left in ${job.txt_folder} ` +
+                  `because the report recorded no per-item path for them.`
+                );
+              }
+              for (const failure of cleanup.failed) {
+                notes.push(`${failure.path} could not be removed (${failure.error}).`);
+              }
+              if (selectionsWarning) {
+                notes.push(`Its publish selections could not be removed: ${selectionsWarning}`);
+              }
+
               return {
                 success: true,
-                ...(selectionsWarning
-                  ? { warning: `The job was deleted, but its publish selections could not be removed: ${selectionsWarning}` }
-                  : {}),
+                txtFilesDeleted: cleanup.deleted,
+                txtFilesMissing: cleanup.missing,
+                txtFilesLeft: cleanup.left,
+                txtFolderRemoved: cleanup.folderRemoved,
+                ...(notes.length > 0 ? { warning: notes.join(' ') } : {}),
               };
             }
           } catch (parseError) {

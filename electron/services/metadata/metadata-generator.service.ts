@@ -11,6 +11,7 @@ import { Chapter } from './chapter-generator.service';
 import { ChapterPipelineService, ChapterStage, ChapterPipelineResult } from './chapter-pipeline.service';
 import { ChapterSingleCallService } from './chapter-single-call.service';
 import { OutputHandlerService } from './output-handler.service';
+import { ItemSource, sourceKeyOf } from './item-identity';
 import {
   MetadataTaskRun,
   buildTaskPromptsForDisplay,
@@ -254,7 +255,9 @@ export class MetadataGeneratorService {
 
       // Initialize job and output handler
       const outputPath = params.outputPath || this.getDefaultOutputPath();
-      outputHandler = new OutputHandlerService(outputPath);
+      // Shared per output directory: the handler's write queue only orders calls that go
+      // through the same instance, and a reports-page delete now arrives on that queue too.
+      outputHandler = OutputHandlerService.forOutputDir(outputPath);
       const jobName = params.jobName || this.generateJobName(contentItems);
 
       // Partial failures / dropped-content notices, seeded with input-stage skips.
@@ -414,8 +417,12 @@ export class MetadataGeneratorService {
         (metadata as any)._is_compilation = true;
         (metadata as any)._source_count = contentItems.length;
 
-        // Save compilation result
-        const saveResult = await outputHandler.addItemToJob(jobInfo.jobId, metadata);
+        // Save compilation result. A compilation has no single source, so its source_key
+        // is an explicit null rather than the first input's: the key exists to answer
+        // "is this the same video, generated again?", and a set of N inputs cannot
+        // answer it. `_is_compilation` on the item says which kind of item this is.
+        const compilationSource: ItemSource = { source_key: null, source_path: null };
+        const saveResult = await outputHandler.addItemToJob(jobInfo.jobId, metadata, compilationSource);
         console.log(`[MetadataGenerator] Saved compilation to: ${saveResult.txtPath}`);
 
         params.progressCallback?.('generating', 'Compilation complete', 100);
@@ -476,9 +483,12 @@ export class MetadataGeneratorService {
             ? await runMetadataTasks(aiManager, taskRun)
             : await aiManager.generateMetadata(summary, sourceLabel, undefined, chapterSubjects, chapterDetails);
 
-          // Add title and source info
+          // Add title and source info. `_is_compilation` is written on BOTH branches now:
+          // it used to be true-or-absent, so "not a compilation" and "written by a build
+          // that did not record it" were the same value to every reader.
           (metadata as any)._title = this.getCleanTitle(item);
           (metadata as any)._prompt_set = params.promptSet;
+          (metadata as any)._is_compilation = false;
 
           if (chapters) {
             metadata.chapters = chapters;
@@ -496,8 +506,11 @@ export class MetadataGeneratorService {
             metadata.chaptersSkipped = chaptersSkipped;
           }
 
-          // Save this item to the job immediately
-          const saveResult = await outputHandler.addItemToJob(jobInfo.jobId, metadata);
+          // Save this item to the job immediately, with what it was generated FROM —
+          // recorded at generation time, never derived on read from `original_inputs`
+          // (which is a different array with its own length, and already disagrees with
+          // items[] on 16 of the live report files).
+          const saveResult = await outputHandler.addItemToJob(jobInfo.jobId, metadata, this.itemSourceOf(item));
           console.log(`[MetadataGenerator] Saved metadata to: ${saveResult.txtPath}`);
 
           // Mark this item as complete
@@ -1053,6 +1066,26 @@ export class MetadataGeneratorService {
       // the watchdog case: it rejects this promise while the closure is still running.
       disarmStallNotice();
     }
+  }
+
+  /**
+   * What an item was generated FROM, in the shape the report file stores.
+   *
+   * A text subject has no source file, and says so with an explicit null — a key derived
+   * from the subject text would join two unrelated topics that happen to open with the
+   * same words. A file input with no path is a bug in input handling, not an item to
+   * record a blank source for.
+   */
+  private static itemSourceOf(item: ContentItem): ItemSource {
+    if (item.contentType === 'subject') {
+      return { source_key: null, source_path: null };
+    }
+    if (!item.source || !item.source.trim()) {
+      throw new Error(
+        `Content item of type ${item.contentType} has no source path — cannot record its source key.`
+      );
+    }
+    return { source_key: sourceKeyOf(item.source), source_path: item.source };
   }
 
   /**

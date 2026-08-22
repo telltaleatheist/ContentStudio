@@ -20,8 +20,17 @@ interface MetadataReport {
   displayTitle?: string; // The actual title from the metadata
   txtFolder?: string; // Path to the folder containing txt files
   jobId?: string; // The job ID this item belongs to
-  itemIndex?: number; // Index of this item within the job (for multiple items)
-  txtFilePath?: string; // Path to the specific TXT file for this item
+  /**
+   * The item's permanent id — what a delete names, and the only field here that keeps
+   * meaning after a sibling is removed.
+   *
+   * Optional ONLY because the pre-`.contentstudio/metadata` legacy layout below has no
+   * items to have ids: those rows are folders. Every row built from a job file has one,
+   * and a job item without one is reported as corrupt rather than listed.
+   */
+  itemId?: string;
+  itemIndex?: number; // Position within the job — for reading items[], never for identity
+  txtFilePath?: string; // The TXT file this item recorded, when it recorded one
   selected?: boolean; // Selection state for batch operations
 }
 
@@ -264,6 +273,13 @@ export class MetadataReports implements OnInit {
       // New structure: JSON files are in .contentstudio/metadata/
       const metadataJsonDir = `${baseDir}/.contentstudio/metadata`;
 
+      // Bring the files up to schema_version 2 BEFORE listing them, so every row below
+      // can require an item id. This is the lazy trigger the migration is designed for:
+      // the operator has opened the reports page, which means the output volume is
+      // present. Whatever it did is said out loud — a silent migration is indistinguishable
+      // from a migration that did not run.
+      await this.reportMigrationOutcome();
+
       // Check if new structure exists
       let result: any = null;
       let readError: string | null = null;
@@ -330,44 +346,52 @@ export class MetadataReports implements OnInit {
                 continue;
               }
 
+              // A job file with no items array is corrupt, not a job to build a
+              // job-shaped row for: the row that used to be built here had no item index
+              // and no item id, so it could be clicked (throwing "missing itemIndex") and
+              // deleted (deleting nothing), which is worse than not being listed.
+              if (!jobData.items || !Array.isArray(jobData.items)) {
+                console.warn(`[MetadataReports] ${file.name} has no items array — skipped.`);
+                skipped.push(file.name);
+                continue;
+              }
+
               // Create a report for EACH item in the job
-              if (jobData.items && Array.isArray(jobData.items)) {
-                jobData.items.forEach((item: any, index: number) => {
-                  // Get the display title from the item
-                  const itemTitle = item._title || `Item ${index + 1}`;
+              jobData.items.forEach((item: any, index: number) => {
+                // After migration every item carries a permanent id. One without is a
+                // corrupt (or unmigrated, or hand-edited) record, and it is skipped for
+                // the same reason a missing job_id is: every action on the row — delete,
+                // and shortly the publish link — is keyed by that id, so a row without
+                // one is a row the operator can see and nothing can act on.
+                const itemId = item.item_id;
+                if (typeof itemId !== 'string' || !itemId) {
+                  console.warn(`[MetadataReports] ${file.name} item ${index} has no item_id — skipped.`);
+                  skipped.push(`${file.name} (item ${index + 1})`);
+                  return;
+                }
 
-                  // Get the corresponding txt file path if available
-                  let txtFilePath = '';
-                  if (jobData.txt_files && jobData.txt_files[index]) {
-                    txtFilePath = jobData.txt_files[index];
-                  }
+                // Get the display title from the item
+                const itemTitle = item._title || `Item ${index + 1}`;
 
-                  reports.push({
-                    name: `${jobId}-item-${index}`,
-                    path: jsonPath,  // Path to JSON file
-                    date: jobDate,
-                    size: file.size || 0,
-                    promptSet: jobData.prompt_set,
-                    displayTitle: itemTitle,
-                    txtFolder: txtFolder,  // Store txt folder path
-                    jobId: jobId,
-                    itemIndex: index,
-                    txtFilePath: txtFilePath
-                  });
-                });
-              } else {
-                // Fallback for jobs without items array (shouldn't happen with new structure)
+                // The item's own text file, as the run that wrote it recorded. Null means
+                // the migration could not match one, and showInFolder falls back to the
+                // folder rather than pointing at a file nobody claimed.
+                const txtFilePath = typeof item.txt_path === 'string' ? item.txt_path : '';
+
                 reports.push({
-                  name: jobId,
-                  path: jsonPath,
+                  name: `${jobId}-item-${index}`,
+                  path: jsonPath,  // Path to JSON file
                   date: jobDate,
                   size: file.size || 0,
                   promptSet: jobData.prompt_set,
-                  displayTitle: jobData.job_name,
-                  txtFolder: txtFolder,
-                  jobId: jobId
+                  displayTitle: itemTitle,
+                  txtFolder: txtFolder,  // Store txt folder path
+                  jobId: jobId,
+                  itemId: itemId,
+                  itemIndex: index,
+                  txtFilePath: txtFilePath
                 });
-              }
+              });
             }
           } catch (e) {
             console.warn('Could not read metadata file', file.name, e);
@@ -383,7 +407,8 @@ export class MetadataReports implements OnInit {
             'Some reports could not be listed',
             `${skipped.length} file${skipped.length === 1 ? '' : 's'} skipped: ${skipped.slice(0, 5).join(', ')}` +
               (skipped.length > 5 ? `, and ${skipped.length - 5} more` : '') +
-              '. They are unreadable or missing a job_id; see the console for detail.',
+              '. They are unreadable, or missing the job_id / item_id every action is keyed by;' +
+              ' see the console for detail.',
           );
         }
 
@@ -395,6 +420,41 @@ export class MetadataReports implements OnInit {
       this.notificationService.error('Load Error', 'Failed to load metadata reports: ' + (error as Error).message);
     } finally {
       this.isLoading.set(false);
+    }
+  }
+
+  /**
+   * Run the one-off report migration and tell the operator what it did.
+   *
+   * Nothing is thrown from here: a migration that could not run leaves the files exactly
+   * as they were, and the listing below will report every item it then cannot identify.
+   * Saying both — "the migration failed" and "these rows are unusable" — is the point.
+   */
+  private async reportMigrationOutcome(): Promise<void> {
+    try {
+      const outcome = await this.electron.ensureReportsMigrated();
+
+      if (outcome.error) {
+        this.notificationService.error(
+          'Reports could not be updated',
+          `The one-off update of the report files did not run: ${outcome.error}`,
+        );
+        return;
+      }
+
+      if (outcome.ran && outcome.message) {
+        const failed = (outcome.receipt?.failures.length ?? 0) > 0;
+        if (failed) {
+          this.notificationService.error('Reports updated, with failures', outcome.message);
+        } else {
+          this.notificationService.success('Reports updated', outcome.message);
+        }
+      }
+    } catch (e) {
+      this.notificationService.error(
+        'Reports could not be updated',
+        `The one-off update of the report files could not be started: ${(e as Error).message}`,
+      );
     }
   }
 
@@ -558,102 +618,55 @@ export class MetadataReports implements OnInit {
     }
   }
 
+  /**
+   * Ask the main process to delete one item, then re-read the directory.
+   *
+   * What used to be here: an unbounded `delete-directory` aimed at the txt file, a
+   * renderer-side read-modify-write of the job JSON that bypassed the output handler's
+   * write queue, and an in-memory renumber of the sibling rows that ran whether or not
+   * the write had succeeded — so a failed write left the UI showing the wrong item's
+   * metadata under the right title (P3). All three are gone. The renderer names an item
+   * and re-reads what is actually on disk; it no longer keeps its own opinion about it.
+   */
   async deleteReport(report: MetadataReport, event: Event) {
     event.stopPropagation();
 
-    // Every partial failure below used to be a console.warn on the way to an unconditional
-    // "Report deleted successfully". The operator was told the delete worked while the txt
-    // file was still on disk, or while the JSON still held the item. Collected instead, and
-    // reported at the end alongside whatever DID happen.
-    const problems: string[] = [];
+    if (!report.jobId || !report.itemId) {
+      // Not reachable from a listed row (rows without both ids are never built), which is
+      // exactly why it is worth saying rather than silently returning.
+      this.notificationService.error(
+        'Cannot delete this report',
+        `${report.name} has no job id or item id, so there is nothing the app can safely delete.`,
+      );
+      return;
+    }
 
     try {
-      // Delete the individual TXT file if it exists
-      if (report.txtFilePath) {
-        try {
-          await this.electron.deleteDirectory(report.txtFilePath);
-          console.log('[MetadataReports] Deleted TXT file:', report.txtFilePath);
-        } catch (e) {
-          console.warn('Could not delete txt file:', report.txtFilePath, e);
-          problems.push(`the text file at ${report.txtFilePath} could not be removed (${(e as Error).message})`);
-        }
-      }
+      const receipt = await this.electron.deleteReportItem(report.jobId, report.itemId);
 
-      // Check how many items from this job exist
-      const jobReports = this.reports().filter(r => r.jobId === report.jobId);
+      // The list is rebuilt from disk rather than patched: the delete may also have
+      // removed the whole job file, and the positions of every sibling item have moved.
+      await this.loadReports();
 
-      if (jobReports.length === 1) {
-        // This is the last item - delete the entire JSON file
-        await this.electron.deleteDirectory(report.path);
-        console.log('[MetadataReports] Deleted JSON file (last item):', report.path);
-      } else {
-        // Multiple items exist - remove this item from the JSON
-        try {
-          const content = await this.electron.readFile(report.path);
-          if (content) {
-            const jobData = JSON.parse(content);
-
-            // Remove the item at this index
-            if (jobData.items && report.itemIndex !== undefined) {
-              jobData.items.splice(report.itemIndex, 1);
-
-              // Update txt_files array if it exists
-              if (jobData.txt_files && jobData.txt_files[report.itemIndex]) {
-                jobData.txt_files.splice(report.itemIndex, 1);
-              }
-
-              // Save the updated JSON
-              await this.electron.writeTextFile(report.path, JSON.stringify(jobData, null, 2));
-              console.log('[MetadataReports] Updated JSON file (removed item):', report.path);
-            }
-          }
-        } catch (e) {
-          console.warn('Could not update JSON file:', e);
-          // The heaviest of the three: the row disappears from the list below regardless, so
-          // without this the item is gone from view and still in the file, and it returns on
-          // the next load with no explanation.
-          problems.push(`the report file still lists this item (${(e as Error).message})`);
-        }
-      }
-
-      // Remove from UI list (use unique name, not shared path) and renumber the
-      // sibling rows for this job so their itemIndex stays aligned with the now
-      // spliced jobData.items array (otherwise clicking a later sibling throws
-      // "Item index out of bounds"). The txt file each sibling points at is
-      // unchanged by the splice, so txtFilePath stays as-is.
-      const deletedIndex = report.itemIndex;
-      this.reports.update(reports =>
-        reports
-          .filter(r => r.name !== report.name)
-          .map(r => {
-            if (
-              r.jobId === report.jobId &&
-              deletedIndex !== undefined &&
-              r.itemIndex !== undefined &&
-              r.itemIndex > deletedIndex
-            ) {
-              const newIndex = r.itemIndex - 1;
-              return { ...r, itemIndex: newIndex, name: `${r.jobId}-item-${newIndex}` };
-            }
-            return r;
-          })
-      );
-
-      // Clear selection if deleted report was selected
       if (this.selectedReport()?.name === report.name) {
         this.selectedReport.set(null);
         this.metadata.set(null);
       }
 
-      if (problems.length > 0) {
-        this.notificationService.error(
-          'Deleted, but not completely',
-          `The report was removed from the list, but ${problems.join(', and ')}.`,
+      // The one outcome the operator cannot see from the list: a text file left behind
+      // because the item never recorded where it was. Said, not logged.
+      if (!receipt.txtDeleted) {
+        this.notificationService.warning(
+          'Deleted, text file left behind',
+          `The report entry is gone, but its text file was not removed (${receipt.txtReason}).` +
+            (report.txtFolder ? ` Look in ${report.txtFolder}.` : ''),
         );
       } else {
-        this.notificationService.success('Deleted', 'Report deleted successfully');
+        this.notificationService.success('Deleted', 'Report and its text file deleted');
       }
     } catch (error) {
+      // A rejected delete did nothing at all — the main process is a single transaction
+      // that throws rather than half-finishing — so the row stays exactly where it is.
       this.notificationService.error('Delete Error', 'Failed to delete report: ' + (error as Error).message);
     }
   }
