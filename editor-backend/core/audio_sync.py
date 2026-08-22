@@ -122,6 +122,7 @@ class AudioSyncAnalyzer:
             '-i', str(file2),
             '-filter_complex', '[0:a][1:a]amix=inputs=2:duration=longest',
             '-c:a', 'pcm_s16le',
+            '-rf64', 'auto',  # RIFF chunk sizes are 32-bit; see note in apply_sync_to_audio
             '-y',
             temp_merged.name
         ]
@@ -705,10 +706,19 @@ class MediaSyncProcessor:
 
         filter_str = ','.join(filters) if filters else ('pan=stereo|c0=c0|c1=c0' if is_soundboard else 'anull')
 
+        # -rf64 auto: a RIFF/WAV header stores chunk sizes in 32 bits, so past
+        # 4 GiB ffmpeg clamps them to 0xFFFFFFFF and exits 0 with only a stderr
+        # warning. The samples are all still on disk, but any reader that trusts
+        # the header (FCP X does; ffmpeg does not) plays silence from the 4 GiB
+        # mark on. At 24-bit/48k/stereo that mark is 4:08:33 — well inside a
+        # normal stream length. 'auto' emits an RF64 header with 64-bit sizes
+        # only once the file actually crosses 4 GiB, so smaller files stay
+        # plain RIFF.
         cmd = [
             'ffmpeg', '-i', str(input_path),
             '-filter:a', filter_str,
             '-c:a', 'pcm_s24le',  # High quality PCM
+            '-rf64', 'auto',
             '-ac', '2',  # Force 2 channels output
             '-y',
             str(output_path)

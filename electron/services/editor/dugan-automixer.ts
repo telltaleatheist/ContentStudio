@@ -441,6 +441,14 @@ export class DuganAutomixer {
       ]);
 
       // Spawn encoder: f32le pipe → output file
+      //
+      // -rf64 auto is load-bearing. A RIFF/WAV header stores its chunk sizes in
+      // 32 bits, so once the output passes 4 GiB ffmpeg clamps them to
+      // 0xFFFFFFFF, warns on stderr, and still exits 0. Every sample is written
+      // to disk, but readers that trust the header — FCP X does, ffmpeg does
+      // not — go silent from the 4 GiB mark on. At 24-bit/48k/stereo that is
+      // 4:08:33, i.e. inside a normal stream. 'auto' switches to an RF64 header
+      // with 64-bit sizes only when the file actually crosses 4 GiB.
       const encoder = spawn(ffmpeg, [
         '-y',
         '-f', 'f32le',
@@ -448,7 +456,10 @@ export class DuganAutomixer {
         '-ac', ch.toString(),
         '-i', 'pipe:0',
         '-c:a', info.codec,
-        '-v', 'error',
+        '-rf64', 'auto',
+        // 'warning', not 'error': muxer complaints like the 4 GiB clamp above are
+        // warning-level and exit 0, so at 'error' they were invisible twice over.
+        '-v', 'warning',
         tmpPath
       ]);
 
@@ -581,6 +592,11 @@ export class DuganAutomixer {
       encoder.on('close', (code) => {
         if (code !== 0 && !hadError) {
           return cleanup(new Error(`ffmpeg encode failed (${code}): ${encodeStderr}`));
+        }
+        // A clean exit is not the same as a clean write — the 4 GiB WAV clamp
+        // exits 0 and only says so here. Never let a successful exit swallow it.
+        if (encodeStderr.trim()) {
+          log.warn(`  ffmpeg encoder warnings for ${path.basename(filePath)}: ${encodeStderr.trim()}`);
         }
         encoderDone = true;
         tryFinalize();
