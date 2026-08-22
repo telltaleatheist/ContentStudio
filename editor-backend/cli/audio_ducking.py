@@ -94,6 +94,7 @@ class AudioDucker:
             f'knee=1[out]',               # Hard knee (1) = very aggressive/dramatic
             '-map', '[out]',
             '-c:a', 'pcm_s16le',  # 16-bit PCM WAV
+            '-rf64', 'auto',  # 32-bit RIFF sizes clamp past 4 GiB — see audio_sync.apply_sync_to_audio
             '-y',  # Overwrite output
             str(output_path)
         ]
