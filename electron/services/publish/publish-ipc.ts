@@ -404,26 +404,51 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
   });
 
   /**
-   * A downscaled data URL for the item's thumbnail, for the preview.
+   * A downscaled data URL for a thumbnail, for the preview.
    *
    * Done in the MAIN PROCESS, with Electron's own nativeImage, for one reason: the
    * alternative is pointing an <img> at a file:// path on an external volume from a
    * renderer, which means relaxing webSecurity. Nothing is worth that. nativeImage also
    * means no image dependency for a resize the framework already does.
    *
-   * The file is re-validated first. This runs long after the path was chosen, against a
-   * volume that can be unplugged, so "it was valid when picked" is not a claim about the
-   * file the operator is about to look at.
+   * TWO CALLERS, and the optional `absPath` is which one:
+   *   omitted  -> the item's STORED thumbnail, or null when it has none.
+   *   given    -> THAT file, which is how a PROPOSAL is previewed. A proposal is by
+   *               definition not stored (spec Q5: never pre-applied, always confirmed),
+   *               so previewing one from the record would show the operator the image
+   *               they already have while asking them to accept a different one.
+   *               With a path there is no null answer: a file that cannot be previewed
+   *               is an error, not an empty slot.
+   *
+   * The file is re-validated first, either way. This runs long after the path was chosen,
+   * against a volume that can be unplugged, so "it was valid when picked" is not a claim
+   * about the file the operator is about to look at.
    */
-  ipcMain.handle('publish-read-thumbnail', async (_e, itemId: string, maxPx: number) => {
+  ipcMain.handle('publish-read-thumbnail', async (
+    _e,
+    itemId: string,
+    maxPx: number,
+    requestedPath?: string | null
+  ) => {
     try {
       const id = requireItemId(itemId, 'itemId');
 
-      const selection = store.get(id);
-      const absPath = selection?.thumbnailPath ?? null;
-      if (!absPath) {
-        // Nothing chosen is a state, not a fault: the panel shows its empty slot.
-        return ok(null);
+      let absPath: string;
+      if (requestedPath === undefined || requestedPath === null) {
+        const stored = store.get(id)?.thumbnailPath ?? null;
+        if (!stored) {
+          // Nothing chosen is a state, not a fault: the panel shows its empty slot.
+          return ok(null);
+        }
+        absPath = stored;
+      } else {
+        if (typeof requestedPath !== 'string' || !requestedPath.trim()) {
+          throw new Error(
+            `publish-read-thumbnail's path must be an absolute file path, or omitted to ` +
+            `read the item's stored thumbnail; got ${describeValue(requestedPath)}.`
+          );
+        }
+        absPath = requestedPath;
       }
 
       if (!Number.isInteger(maxPx) || maxPx < 16 || maxPx > 4096) {

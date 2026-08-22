@@ -14,14 +14,24 @@
  */
 
 import { Injectable, computed, inject, signal } from '@angular/core';
-import { ElectronService, PublishFields } from '../../services/electron';
+import { AnalyticsChannel, ElectronService, PublishFields } from '../../services/electron';
 import {
+  ChannelResolution,
   ChosenMetadata,
   MAX_AB_VARIANTS,
   MAX_TITLE_LENGTH,
   ResolvedMetadata,
   ThumbnailMeta,
+  ThumbnailPreview,
+  ThumbnailProposal,
 } from './publish.types';
+import { composePublishAt } from './publish-schedule';
+
+/**
+ * How big a preview the main process renders. Wide enough to stay sharp in the panel on
+ * a retina display and small enough that the data URL is not the size of the file.
+ */
+const THUMBNAIL_PREVIEW_MAX_PX = 640;
 
 @Injectable({ providedIn: 'root' })
 export class PublishState {
@@ -49,6 +59,55 @@ export class PublishState {
   private readonly _itemId = signal<string | null>(null);
   private readonly _saving = signal(false);
   private readonly _error = signal<string | null>(null);
+
+  // ------------------------------------------------------- the Publish panel's state
+  //
+  // Everything below belongs to the panel above Titles: the channel registry it offers,
+  // the routing it suggests for an item nobody has routed yet, and the thumbnail it
+  // shows. None of it is stored — it is what the panel needs in order to ASK.
+
+  /** Every registered channel, re-read on each load so a newly connected one appears. */
+  private readonly _channels = signal<AnalyticsChannel[]>([]);
+
+  /**
+   * Whether that list has actually been read yet.
+   *
+   * An empty list means two different things — "the registry has no channels" and "the
+   * registry has not been read" — and one of them is not something to draw a conclusion
+   * from. Without this, an item with a stored channel is briefly accused of pointing at
+   * an unregistered one every time a report is opened.
+   */
+  private readonly _channelsLoaded = signal(false);
+
+  /**
+   * What the item's prompt set routes to, when the record has no channel of its own.
+   *
+   * A SUGGESTION, never a stored value: it pre-selects the picker and is written with the
+   * operator's next save (see withChannelSeed). Resolving is only ever done for a record
+   * whose channelId is null, so a stored choice is never re-routed behind the operator.
+   */
+  private readonly _channelSuggestion = signal<ChannelResolution | null>(null);
+
+  /**
+   * True once the operator has touched the picker themselves.
+   *
+   * This is what makes an override sticky. Without it, choosing "not routed" on an item
+   * that HAS a suggestion would be undone by the next save of any other field, which
+   * would silently route a video the operator had just declined to route.
+   */
+  private readonly _channelTouched = signal(false);
+
+  /** The stored thumbnail, decoded and downscaled by the main process. */
+  private readonly _thumbnailPreview = signal<ThumbnailPreview | null>(null);
+
+  /** Non-fatal notes about the stored thumbnail — small, or not 16:9. Shown, not hidden. */
+  private readonly _thumbnailWarnings = signal<string[]>([]);
+
+  /** An exported thumbnail found on disk for an item that has none. Never auto-applied. */
+  private readonly _proposal = signal<ThumbnailProposal | null>(null);
+
+  /** The proposal's own preview, so Confirm is a decision about an image, not a path. */
+  private readonly _proposalPreview = signal<ThumbnailPreview | null>(null);
 
   readonly selection = this._selection.asReadonly();
   readonly resolved = this._resolved.asReadonly();
@@ -98,6 +157,57 @@ export class PublishState {
   /** Podcast episode rather than a YouTube-first video. False until set otherwise. */
   readonly isPodcast = computed(() => this._selection()?.isPodcast ?? false);
 
+  /** Every channel the picker can offer. */
+  readonly channels = this._channels.asReadonly();
+
+  /** The stored thumbnail's preview, or null when there is nothing stored to show. */
+  readonly thumbnailPreview = this._thumbnailPreview.asReadonly();
+
+  /** Warnings that came back with the stored thumbnail. Empty is the usual answer. */
+  readonly thumbnailWarnings = this._thumbnailWarnings.asReadonly();
+
+  /** The exported thumbnail on offer, or null when there is none to offer. */
+  readonly proposal = this._proposal.asReadonly();
+
+  /** The offered image itself. Confirm is only shown once this has arrived. */
+  readonly proposalPreview = this._proposalPreview.asReadonly();
+
+  /**
+   * What the picker shows: the stored channel, or the suggestion standing in for it.
+   *
+   * One value for both cases, because the picker has one selected option. Which of the
+   * two it is comes from channelIsSuggested, and the panel says so on screen — a
+   * suggestion that looked stored would be a routing decision nobody made.
+   */
+  readonly selectedChannelId = computed(
+    () => this.channelId() ?? this._channelSuggestion()?.channelId ?? null
+  );
+
+  /** True when the picker is showing a suggestion that has not been saved yet. */
+  readonly channelIsSuggested = computed(
+    () => this.channelId() === null && !!this._channelSuggestion()?.channelId
+  );
+
+  /**
+   * Why the picker reads the way it does: "Prompt set X is mapped to Y", or the reason
+   * nothing could be routed. Null once the item has a channel of its own, which needs no
+   * explanation.
+   */
+  readonly channelNote = computed(() => this._channelSuggestion()?.reason ?? null);
+
+  /**
+   * A stored channel id that the registry no longer knows.
+   *
+   * The picker cannot show an option that does not exist, and a blank picker on an item
+   * that IS routed reads as "not routed yet" — the opposite of the truth. Named instead.
+   */
+  readonly unknownStoredChannel = computed(() => {
+    if (!this._channelsLoaded()) return null;
+    const stored = this.channelId();
+    if (!stored) return null;
+    return this._channels().some((c) => c.channelId === stored) ? null : stored;
+  });
+
   /** Exactly what the extension will type into Studio's description box. */
   readonly resolvedDescription = computed(() => this._resolved()?.description ?? '');
 
@@ -112,6 +222,18 @@ export class PublishState {
    * UI can disable controls rather than let a click do nothing.
    */
   readonly hasTarget = computed(() => this._itemId() !== null);
+
+  /**
+   * Record a failure.
+   *
+   * APPENDS when there is already one, rather than replacing it. Loading the panel makes
+   * several independent calls, and keeping only the first (or only the last) failure
+   * leaves a half-loaded panel with one plausible explanation for two problems.
+   */
+  private reportError(message: string): void {
+    const existing = this._error();
+    this._error.set(existing ? `${existing}\n${message}` : message);
+  }
 
   /**
    * Guard for every mutation.
@@ -133,9 +255,15 @@ export class PublishState {
   /**
    * Point the state at a report item. Safe to call repeatedly; clears any stale
    * selection first so the UI never briefly shows the previous item's picks.
+   *
+   * `promptSet` is the run's prompt set, and it is REQUIRED rather than optional because
+   * it is the whole input to channel seeding: an item opened without one cannot be
+   * routed, and the panel says that instead of showing an empty picker with no account
+   * of why. Pass null only when the report genuinely records none.
    */
-  async load(itemId: string | null | undefined): Promise<void> {
+  async load(itemId: string | null | undefined, promptSet: string | null | undefined): Promise<void> {
     this._error.set(null);
+    this.resetPanel();
 
     if (!itemId) {
       this._itemId.set(null);
@@ -165,12 +293,147 @@ export class PublishState {
     // A failure here means the description and tags on screen would be blank, which reads
     // as "this item has none". Say what happened instead.
     if (!resolved.success || !resolved.data) {
-      this._error.set(
+      this.reportError(
         resolved.error ?? 'Could not read the description and tags for this item.'
+      );
+    } else {
+      this._resolved.set(resolved.data);
+    }
+
+    // The panel's own reads. Deliberately AFTER the selection is in place — both of them
+    // are decided by what the record already holds — and deliberately not fatal to each
+    // other: a channel registry that will not load must not also cost the thumbnail.
+    await this.refreshChannels();
+    if (this._itemId() !== itemId) return;
+    await this.refreshChannelSuggestion(itemId, promptSet ?? null);
+    if (this._itemId() !== itemId) return;
+    await this.refreshThumbnail(itemId);
+  }
+
+  /** Everything the panel derives, back to "nothing is open". */
+  private resetPanel(): void {
+    this._channelSuggestion.set(null);
+    this._channelTouched.set(false);
+    this._thumbnailPreview.set(null);
+    this._thumbnailWarnings.set([]);
+    this._proposal.set(null);
+    this._proposalPreview.set(null);
+  }
+
+  /**
+   * Re-read the channel registry.
+   *
+   * Not cached, for the reason publish-ipc does not cache it either: connecting a channel
+   * or editing its prompt sets has to take effect without a restart, and a stale list
+   * would show the operator a picker missing the channel they just added.
+   */
+  private async refreshChannels(): Promise<void> {
+    const res = await this.electron.analyticsListChannels();
+    if (!res.success || !res.channels) {
+      this.reportError(
+        res.error ?? 'Could not read the channel registry, so no channel can be chosen.'
       );
       return;
     }
-    this._resolved.set(resolved.data);
+    this._channels.set(res.channels);
+    this._channelsLoaded.set(true);
+  }
+
+  /**
+   * Seed the channel picker for an item that has never been routed (spec Q6).
+   *
+   * Three outcomes, all visible:
+   *   the item already has a channel -> nothing happens. A stored choice is the answer.
+   *   the prompt set routes          -> a pre-selected SUGGESTION, saved with the next save.
+   *   it does not (or there is none) -> the picker stays empty WITH THE REASON, which is
+   *                                     the whole point of resolveChannelForPromptSet
+   *                                     returning one. A contradictory registry (two
+   *                                     channels claiming one prompt set) comes back as a
+   *                                     failed call and lands in the error banner naming
+   *                                     both — it is a config error, not a choice.
+   */
+  private async refreshChannelSuggestion(itemId: string, promptSet: string | null): Promise<void> {
+    if (this._selection()?.channelId) return;
+
+    if (!promptSet || !promptSet.trim()) {
+      this._channelSuggestion.set({
+        channelId: null,
+        name: null,
+        reason:
+          'This report records no prompt set, so there is nothing to route from. ' +
+          'Choose a channel yourself.',
+      });
+      return;
+    }
+
+    const res = await this.electron.publishResolveChannel(promptSet);
+    if (this._itemId() !== itemId) return;
+    if (!res.success || !res.data) {
+      this.reportError(res.error ?? `Could not route prompt set "${promptSet}" to a channel.`);
+      return;
+    }
+    this._channelSuggestion.set(res.data);
+  }
+
+  /**
+   * Read the thumbnail half of the panel: the stored image, or the one on offer.
+   *
+   * Exactly one of the two, and in that order — an item with a thumbnail is not offered
+   * another one. The proposal is read only when there is nothing stored, and it is never
+   * applied here; it is shown with its own preview so Confirm is a decision about an
+   * image rather than about a path (spec Q5 — slots are renumbered between export and
+   * upload often enough that pre-applying would be wrong routinely and invisibly).
+   */
+  private async refreshThumbnail(itemId: string): Promise<void> {
+    this._thumbnailPreview.set(null);
+    this._thumbnailWarnings.set([]);
+    this._proposal.set(null);
+    this._proposalPreview.set(null);
+
+    if (this.thumbnailPath()) {
+      const res = await this.electron.publishReadThumbnail(itemId, THUMBNAIL_PREVIEW_MAX_PX);
+      if (this._itemId() !== itemId) return;
+      if (!res.success) {
+        this.reportError(res.error ?? 'Could not read the stored thumbnail.');
+        return;
+      }
+      if (!res.data) {
+        // The record says there is a thumbnail and the reader says there is not. That is
+        // a disagreement about the record, not an empty slot.
+        this.reportError(
+          `The record has thumbnail ${this.thumbnailPath()} but the main process found ` +
+          `nothing to preview for this item.`
+        );
+        return;
+      }
+      this._thumbnailPreview.set(res.data);
+      this._thumbnailWarnings.set(res.data.warnings);
+      return;
+    }
+
+    const proposal = await this.electron.publishProposeThumbnail(itemId);
+    if (this._itemId() !== itemId) return;
+    if (!proposal.success) {
+      this.reportError(proposal.error ?? 'Could not look for an exported thumbnail.');
+      return;
+    }
+    // No proposal is the ordinary answer — most items have no exported thumbnail.
+    if (!proposal.data) return;
+    this._proposal.set(proposal.data);
+
+    const preview = await this.electron.publishReadThumbnail(
+      itemId,
+      THUMBNAIL_PREVIEW_MAX_PX,
+      proposal.data.path
+    );
+    if (this._itemId() !== itemId) return;
+    if (!preview.success || !preview.data) {
+      this.reportError(
+        preview.error ?? `Could not render a preview of ${proposal.data.path}.`
+      );
+      return;
+    }
+    this._proposalPreview.set(preview.data);
   }
 
   /**
@@ -321,10 +584,15 @@ export class PublishState {
     const t = this.target('save that change');
     if (!t) return;
 
+    // A pending channel suggestion rides along with whatever else is being saved, in the
+    // SAME call, so it is written by the same all-or-nothing write rather than by a
+    // second one that could half-succeed.
+    const payload = this.withChannelSeed(fields);
+
     this._saving.set(true);
     this._error.set(null);
     try {
-      const res = await this.electron.publishSetFields(t, fields);
+      const res = await this.electron.publishSetFields(t, payload);
       if (!res.success || !res.data) {
         this._error.set(res.error ?? 'Failed to save changes');
         return;
@@ -335,6 +603,170 @@ export class PublishState {
     } finally {
       this._saving.set(false);
     }
+  }
+
+  // --------------------------------------------------------- the Publish panel's writes
+  //
+  // Channel seeding, spelled out once: a suggestion is shown pre-selected and is written
+  // WITH THE OPERATOR'S NEXT SAVE, whatever that save is. It is never written on its own
+  // off the back of merely opening a report — an open is not a decision — and it is
+  // dropped the moment the operator touches the picker, because at that point they have
+  // decided and the suggestion has nothing left to say. The panel states this on screen
+  // ("saved with your next change") so the write is never a surprise.
+
+  /** The suggestion a save should carry, or null when there is nothing pending. */
+  private pendingChannelSeed(): string | null {
+    if (this._channelTouched()) return null;
+    if (this._selection()?.channelId) return null;
+    return this._channelSuggestion()?.channelId ?? null;
+  }
+
+  /** Merge the pending suggestion into a write, unless the write is about the channel. */
+  private withChannelSeed(fields: PublishFields): PublishFields {
+    if ('channelId' in fields) return fields;
+    const seed = this.pendingChannelSeed();
+    return seed === null ? fields : { ...fields, channelId: seed };
+  }
+
+  /**
+   * Save the suggestion after a write that went through a DIFFERENT channel.
+   *
+   * The thumbnail has its own IPC channel, so it cannot carry the seed in its payload the
+   * way setFields does. It is written after the thumbnail write succeeds, never before:
+   * a failed action must not still route the video.
+   */
+  private async commitChannelSeed(itemId: string): Promise<void> {
+    const seed = this.pendingChannelSeed();
+    if (seed === null) return;
+
+    const res = await this.electron.publishSetFields(itemId, { channelId: seed });
+    if (!res.success || !res.data) {
+      this.reportError(res.error ?? 'Saved, but the suggested channel could not be stored.');
+      return;
+    }
+    this._selection.set(res.data);
+  }
+
+  /**
+   * The operator's own choice of channel, including `null` for "not routed".
+   *
+   * Marks the picker touched first, so no later save re-applies the suggestion this
+   * choice replaces. That is what makes an override stick.
+   */
+  async chooseChannel(channelId: string | null): Promise<void> {
+    this._channelTouched.set(true);
+    this._channelSuggestion.set(null);
+    await this.setFields({ channelId });
+  }
+
+  /**
+   * Set the go-live time from the two local boxes the panel offers.
+   *
+   * Composition lives here rather than in the component so the ONE place that turns a
+   * wall clock into an instant is inside the feature. A value that cannot be composed
+   * (an incomplete pair, or the hour that does not exist on a spring-forward morning)
+   * is a refusal shown in the same banner as a rejected save — nothing is sent.
+   */
+  async setPublishAtLocal(date: string, time: string): Promise<void> {
+    let iso: string;
+    try {
+      iso = composePublishAt(date, time);
+    } catch (err: any) {
+      this._error.set(err?.message || String(err));
+      return;
+    }
+    await this.setFields({ publishAt: iso });
+  }
+
+  /** Drop the schedule. The record still records when it was dropped. */
+  async clearPublishAt(): Promise<void> {
+    await this.setFields({ publishAt: null });
+  }
+
+  /** Podcast episode or not. Strictly boolean — the main process refuses anything else. */
+  async setPodcast(isPodcast: boolean): Promise<void> {
+    await this.setFields({ isPodcast });
+  }
+
+  /**
+   * Attach a thumbnail file.
+   *
+   * Validation is entirely the main process's (extension AND magic bytes, ≤2 MiB,
+   * ≥640x360), so a rejection arrives as text naming the file and the rule and is shown
+   * verbatim. Warnings come back WITH a success — a 4:3 image is stored and used, and the
+   * note about it sits under the row rather than replacing the image.
+   */
+  async setThumbnail(absPath: string): Promise<void> {
+    const t = this.target('set the thumbnail');
+    if (!t) return;
+
+    this._saving.set(true);
+    this._error.set(null);
+    try {
+      const res = await this.electron.publishSetThumbnail(t, absPath);
+      if (!res.success || !res.data) {
+        this._error.set(res.error ?? 'Failed to set the thumbnail');
+        return;
+      }
+      this._selection.set(res.data.selection);
+      this._thumbnailWarnings.set(res.data.warnings);
+      this._proposal.set(null);
+      this._proposalPreview.set(null);
+      await this.commitChannelSeed(t);
+      await this.refreshThumbnail(t);
+    } finally {
+      this._saving.set(false);
+    }
+  }
+
+  /**
+   * Detach the thumbnail.
+   *
+   * refreshThumbnail runs afterwards, which means the exported thumbnail (if there is
+   * one) is offered again — clearing a thumbnail is how the operator asks to be shown
+   * what is on disk.
+   */
+  async clearThumbnail(): Promise<void> {
+    const t = this.target('clear the thumbnail');
+    if (!t) return;
+
+    this._saving.set(true);
+    this._error.set(null);
+    try {
+      const res = await this.electron.publishSetThumbnail(t, null);
+      if (!res.success || !res.data) {
+        this._error.set(res.error ?? 'Failed to clear the thumbnail');
+        return;
+      }
+      this._selection.set(res.data.selection);
+      this._thumbnailWarnings.set([]);
+      await this.commitChannelSeed(t);
+      await this.refreshThumbnail(t);
+    } finally {
+      this._saving.set(false);
+    }
+  }
+
+  /** Accept the offered thumbnail. The only thing that ever applies a proposal. */
+  async confirmProposal(): Promise<void> {
+    const proposal = this._proposal();
+    if (!proposal) {
+      this._error.set('There is no proposed thumbnail to confirm.');
+      return;
+    }
+    await this.setThumbnail(proposal.path);
+  }
+
+  /**
+   * Stop offering it, for now.
+   *
+   * Stores NOTHING — there is no field for "declined", and inventing one here would be a
+   * claim the record cannot make. Reopening the report offers it again, which is honest:
+   * the file is still on disk and the item still has no thumbnail.
+   */
+  dismissProposal(): void {
+    this._proposal.set(null);
+    this._proposalPreview.set(null);
   }
 
   /** Drop every pick for the current item. */
@@ -360,5 +792,16 @@ export class PublishState {
 
   dismissError(): void {
     this._error.set(null);
+  }
+
+  /**
+   * Show a refusal that came from the panel rather than from the main process.
+   *
+   * There are a couple: picking two files for one thumbnail, confirming a proposal that
+   * is no longer on screen. They are refusals like any other and belong in the same
+   * banner, not in a console nobody is reading.
+   */
+  showError(message: string): void {
+    this._error.set(message);
   }
 }

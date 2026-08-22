@@ -1,4 +1,4 @@
-import { Component, ElementRef, OnInit, ViewChild, inject, signal } from '@angular/core';
+import { Component, ElementRef, OnInit, ViewChild, computed, inject, signal } from '@angular/core';
 import { MatCardModule } from '@angular/material/card';
 import { MatListModule } from '@angular/material/list';
 import { MatIconModule } from '@angular/material/icon';
@@ -10,6 +10,14 @@ import { ElectronService } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
 import { PublishState } from '../../features/publish/publish-state';
 import { MAX_AB_VARIANTS } from '../../features/publish/publish.types';
+import {
+  basename,
+  describePublishAt,
+  formatBytes,
+  offsetLabel,
+  offsetStringFor,
+  splitPublishAt,
+} from '../../features/publish/publish-schedule';
 
 interface MetadataReport {
   name: string;
@@ -110,6 +118,129 @@ export class MetadataReports implements OnInit {
   /** True when the 3-variant cap blocks picking this one. */
   isTitleBlocked(title: any): boolean {
     return this.publish.isBlocked(this.getTitleText(title));
+  }
+
+  // -------------------------------------------------------------- publish panel
+  //
+  // The panel above Titles. Everything it edits lives in PublishState — what is here is
+  // the two schedule boxes and the handlers that turn one click into one call.
+  //
+  // The boxes hold LOCAL WALL-CLOCK text with no zone in it, which is not yet a moment;
+  // PublishState composes it with the offset in effect on that date before anything is
+  // saved. That is why the offset is printed next to them rather than assumed.
+
+  /** The operator's draft, or null for "show what is stored". */
+  readonly scheduleDateDraft = signal<string | null>(null);
+  readonly scheduleTimeDraft = signal<string | null>(null);
+
+  /** What the date box shows: the draft if there is one, else the stored schedule. */
+  readonly scheduleDate = computed(() => {
+    const draft = this.scheduleDateDraft();
+    if (draft !== null) return draft;
+    const at = this.publish.publishAt();
+    return at ? splitPublishAt(at).date : '';
+  });
+
+  readonly scheduleTime = computed(() => {
+    const draft = this.scheduleTimeDraft();
+    if (draft !== null) return draft;
+    const at = this.publish.publishAt();
+    return at ? splitPublishAt(at).time : '';
+  });
+
+  /** A moment needs both halves. Until then there is nothing to compose. */
+  readonly scheduleComplete = computed(() => !!this.scheduleDate() && !!this.scheduleTime());
+
+  /**
+   * The offset the boxes will be composed with.
+   *
+   * The one in effect ON THAT DATE, which is not always the one in effect today — that
+   * is the whole reason it is on screen. Before both boxes are filled there is no moment
+   * to ask about, so it shows today's.
+   */
+  readonly scheduleOffset = computed(() => {
+    if (!this.scheduleComplete()) return offsetLabel(offsetStringFor(new Date()));
+    const at = new Date(`${this.scheduleDate()}T${this.scheduleTime()}:00`);
+    if (Number.isNaN(at.getTime())) return offsetLabel(offsetStringFor(new Date()));
+    return offsetLabel(offsetStringFor(at));
+  });
+
+  /**
+   * How the stored schedule reads: local wall time, the offset it is read in, the offset
+   * it was stored with, and how far off it is.
+   *
+   * Computed when the item loads and whenever the schedule changes, so "in 15 days" is
+   * as of the last change rather than as of this second. That is the resolution the line
+   * is for.
+   */
+  readonly scheduleDescription = computed(() => {
+    const at = this.publish.publishAt();
+    return at ? describePublishAt(at) : null;
+  });
+
+  /** `1920x1080 · 412 KB · image/png` for whichever image the row is describing. */
+  thumbnailFacts(meta: { width: number; height: number; bytes: number; mime: string }): string {
+    return `${meta.width}x${meta.height} · ${formatBytes(meta.bytes)} · ${meta.mime}`;
+  }
+
+  /** The file's own name — the path itself is on the row's tooltip. */
+  fileName(absPath: string): string {
+    return basename(absPath);
+  }
+
+  /** The picker's value, as a string the <select> can match. '' is "not routed". */
+  channelSelectValue(): string {
+    return this.publish.selectedChannelId() ?? '';
+  }
+
+  /** An explicit choice, including the empty option — see PublishState.chooseChannel. */
+  async onChannelChange(event: Event) {
+    const value = (event.target as HTMLSelectElement).value;
+    await this.publish.chooseChannel(value === '' ? null : value);
+  }
+
+  async saveSchedule() {
+    await this.publish.setPublishAtLocal(this.scheduleDate(), this.scheduleTime());
+    // A rejected schedule keeps what was typed so it can be corrected; an accepted one
+    // drops the drafts so the boxes go back to reflecting the record.
+    if (this.publish.error()) return;
+    this.clearScheduleDrafts();
+  }
+
+  async clearSchedule() {
+    await this.publish.clearPublishAt();
+    if (this.publish.error()) return;
+    this.clearScheduleDrafts();
+  }
+
+  private clearScheduleDrafts() {
+    this.scheduleDateDraft.set(null);
+    this.scheduleTimeDraft.set(null);
+  }
+
+  async onPodcastChange(checked: boolean) {
+    await this.publish.setPodcast(checked);
+  }
+
+  /**
+   * Pick a thumbnail file.
+   *
+   * The dialog is unfiltered, and everything about whether the file is usable is decided
+   * in the main process against the bytes — so a wrong pick comes back naming the file
+   * and the rule instead of being screened out by an extension list that magic bytes
+   * disagree with.
+   */
+  async changeThumbnail() {
+    const picked = await this.electron.selectFiles();
+    // Cancelling is not a failure and has nothing to report.
+    if (!picked.success || picked.files.length === 0) return;
+    if (picked.files.length > 1) {
+      this.publish.showError(
+        `A video has one thumbnail; you picked ${picked.files.length} files. Choose one.`
+      );
+      return;
+    }
+    await this.publish.setThumbnail(picked.files[0]);
   }
 
   // ------------------------------------------------------------------- editing
@@ -598,6 +729,7 @@ export class MetadataReports implements OnInit {
       this.cancelEditTitle();
       this.cancelEditDescription();
       this.cancelEditTags();
+      this.clearScheduleDrafts();
 
       // Load any previously chosen A/B titles for this item, BY ITS ID. The row's
       // itemIndex is only ever a position into the array read above; it has never been
@@ -606,7 +738,10 @@ export class MetadataReports implements OnInit {
       //
       // Deliberately not awaited with the metadata read — a failure here must not blank
       // the report.
-      void this.publish.load(report.itemId);
+      //
+      // The prompt set travels with it: it is the only input to channel seeding, and an
+      // item opened without one gets a panel that says so rather than an empty picker.
+      void this.publish.load(report.itemId, report.promptSet);
     } catch (error) {
       console.error('[MetadataReports] Error loading report:', error);
       this.notificationService.error('Read Error', 'Failed to read report: ' + (error as Error).message);
