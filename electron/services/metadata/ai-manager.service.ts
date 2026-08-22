@@ -78,6 +78,18 @@ export interface MetadataResult {
    * publishes or conditions on them.
    */
   excludedChapters?: Chapter[];
+  /**
+   * Why this item has no chapters, when the user asked for them.
+   *
+   * The run's `warnings` array says the same thing, but it lives only as long as the
+   * completion response — open the report a week later and a chapterless item looks
+   * identical to one that was never meant to have chapters. This travels with the item
+   * into the job JSON and the TXT, so the reason outlives the run that produced it.
+   *
+   * `failed` is the pipeline throwing; `skipped` is the item never reaching it, or its
+   * result being discarded before it could publish (too few chapters, all promo).
+   */
+  chaptersSkipped?: { outcome: 'failed' | 'skipped'; reason: string };
 }
 
 export interface PromptSet {

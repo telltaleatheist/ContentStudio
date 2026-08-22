@@ -5,7 +5,12 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatSelectModule } from '@angular/material/select';
-import { ElectronService, MetadataRoutingTask } from '../../services/electron';
+import {
+  ElectronService,
+  MetadataRoutingHost,
+  MetadataRoutingOption,
+  MetadataRoutingTask,
+} from '../../services/electron';
 
 type Phase = 'loading' | 'ready' | 'error';
 
@@ -51,6 +56,17 @@ export type ModelRoutingDialogResult = boolean | undefined;
         @if (tasks().length === 0) {
           <p class="empty">No routable tasks were returned.</p>
         }
+        @if (localModels(); as host) {
+          @if (!host.reachable) {
+            <div class="host-banner">
+              <mat-icon>help_outline</mat-icon>
+              <span>
+                {{ host.error || 'Ollama at ' + host.host + ' could not be reached.' }}
+                Which local models are installed is unknown, so none are marked below.
+              </span>
+            </div>
+          }
+        }
         @if (applyAllOptions().length > 0) {
           <div class="apply-all-row">
             <span class="apply-all-label">Set every field to:</span>
@@ -73,11 +89,33 @@ export type ModelRoutingDialogResult = boolean | undefined;
                 (selectionChange)="select(task.id, $event.value)"
                 [attr.aria-label]="task.label + ' model'">
                 @for (option of task.options; track option.id) {
-                  <mat-option [value]="option.id">{{ option.label }}</mat-option>
+                  <mat-option [value]="option.id">
+                    {{ option.label }}
+                    @if (option.availability === 'not-installed') {
+                      <span class="option-flag missing">— not installed</span>
+                    }
+                    @if (option.availability === 'unknown') {
+                      <span class="option-flag unknown">— unknown</span>
+                    }
+                  </mat-option>
                 }
               </mat-select>
             </mat-form-field>
           </div>
+          <!-- The saved-but-missing case: the closed select shows only a label, so a
+               routing pointing at a model this machine does not have would look normal
+               right up until the run failed. -->
+          @if (selectedOption(task); as chosen) {
+            @if (chosen.availability === 'not-installed') {
+              <p class="row-note missing">
+                {{ chosen.model }} is not installed on {{ localModels().host }}. This will fail when
+                {{ task.label }} runs — pull it, or pick a model that is installed.
+              </p>
+            }
+            @if (chosen.availability === 'unknown' && chosen.availabilityNote) {
+              <p class="row-note unknown">{{ chosen.model }}: {{ chosen.availabilityNote }}.</p>
+            }
+          }
         }
 
         @if (saveError(); as message) {
@@ -165,6 +203,36 @@ export type ModelRoutingDialogResult = boolean | undefined;
     }
 
     .task-select { width: 300px; flex: 0 0 auto; }
+
+    .host-banner {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      color: var(--text-secondary);
+      font-size: 13px;
+      margin: 0 0 12px;
+
+      .mat-icon { flex: 0 0 auto; }
+    }
+
+    .option-flag {
+      font-size: 12px;
+      margin-left: 6px;
+
+      &.missing { color: var(--danger-text); }
+      &.unknown { color: var(--text-secondary); }
+    }
+
+    .row-note {
+      font-size: 12px;
+      margin: 0 0 8px;
+
+      &.missing { color: var(--danger-text); }
+      &.unknown { color: var(--text-secondary); }
+    }
+
+    :host-context([data-theme="dark"]) .option-flag.missing,
+    :host-context([data-theme="dark"]) .row-note.missing { color: #ff6b6b; }
   `]
 })
 export class ModelRoutingDialog implements OnInit {
@@ -174,6 +242,12 @@ export class ModelRoutingDialog implements OnInit {
   readonly saving = signal(false);
   readonly tasks = signal<MetadataRoutingTask[]>([]);
   readonly selections = signal<Record<string, string>>({});
+  /**
+   * The Ollama host the payload was judged against. The placeholder is never rendered —
+   * load() sets the real one before phase becomes 'ready', and nothing here draws before
+   * that — but it starts unreachable so nothing could be read as installed if it were.
+   */
+  readonly localModels = signal<MetadataRoutingHost>({ host: '', reachable: false, installedCount: 0 });
 
   /** Selections as they were when the payload loaded — Save stays off until this differs. */
   private initialSelections: Record<string, string> = {};
@@ -227,6 +301,7 @@ export class ModelRoutingDialog implements OnInit {
 
       // Baseline first: hasChanges() must never see new selections against a stale baseline.
       this.initialSelections = { ...selections };
+      this.localModels.set(routing.localModels);
       this.tasks.set(tasks);
       this.selections.set(selections);
       this.phase.set('ready');
@@ -234,6 +309,11 @@ export class ModelRoutingDialog implements OnInit {
       this.error.set(this.describe(err));
       this.phase.set('error');
     }
+  }
+
+  /** The option a task currently points at, so the row can report ITS availability. */
+  selectedOption(task: MetadataRoutingTask): MetadataRoutingOption | undefined {
+    return task.options.find(option => option.id === this.selections()[task.id]);
   }
 
   select(taskId: string, optionId: string): void {

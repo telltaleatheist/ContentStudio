@@ -725,7 +725,8 @@ export class ChapterPipelineService {
     if (failures > stretches.length / 2) {
       throw new Error(
         `Chapter stage "label" failed on ${failures} of ${stretches.length} transcript stretches. ` +
-          `That model's output is not usable for chaptering — try cogito:14b or qwen2.5:14b.`
+          `"${this.modelFor('label')}" on ${this.options.host} did not return usable output — check Model ` +
+          `routing and that this model is one of your installed Ollama models.`
       );
     }
     if (failures > 0) {
@@ -789,8 +790,9 @@ export class ChapterPipelineService {
 
     if (total > 0 && failures > total / 2) {
       throw new Error(
-        `Chapter stage "rate" failed on ${failures} of ${total} transcript junctions. ` +
-          `Boundary selection has nothing left to rank — try cogito:14b or qwen2.5:14b.`
+        `Chapter stage "rate" failed on ${failures} of ${total} transcript junctions, so boundary ` +
+          `selection has nothing left to rank. "${this.modelFor('rate')}" on ${this.options.host} did not ` +
+          `return usable output — check Model routing and that this model is one of your installed Ollama models.`
       );
     }
     if (failures > 0) {

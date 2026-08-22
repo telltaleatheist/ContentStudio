@@ -607,6 +607,40 @@
     padding: 1rem;
   }
 
+  // Stands in for the list when the run recorded why there is none.
+  .chapters-missing {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    margin: 1rem;
+    padding: 1rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+
+    mat-icon {
+      flex-shrink: 0;
+      color: var(--text-secondary);
+    }
+
+    &.failed mat-icon {
+      color: var(--danger-text, #d32f2f);
+    }
+
+    .chapters-missing-headline {
+      font-size: 0.9375rem;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .chapters-missing-reason {
+      margin-top: 0.25rem;
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+      line-height: 1.4;
+    }
+  }
+
   .chapter-item {
     display: flex;
     align-items: center;

@@ -362,6 +362,28 @@
               </div>
             }
 
+            <!-- Chapters that were asked for and did not happen. Takes the chapter
+                 section's place so the reason sits where the list would have been. -->
+            @if (chaptersMissing(); as skipped) {
+              <div class="metadata-section">
+                <div class="section-header">
+                  <div class="section-title-row">
+                    <mat-icon>list</mat-icon>
+                    <h3>Chapters</h3>
+                  </div>
+                </div>
+                <div class="chapters-missing" [class.failed]="skipped.outcome === 'failed'">
+                  <mat-icon>{{ skipped.outcome === 'failed' ? 'error_outline' : 'info_outline' }}</mat-icon>
+                  <div>
+                    <div class="chapters-missing-headline">
+                      {{ skipped.outcome === 'failed' ? 'Chapter generation failed — no chapters were added.' : 'No chapters were added.' }}
+                    </div>
+                    <div class="chapters-missing-reason">{{ skipped.reason }}</div>
+                  </div>
+                </div>
+              </div>
+            }
+
             <!-- Pinned Comment Section (if present) -->
             @if (metadata()!.pinned_comment && metadata()!.pinned_comment.length > 0) {
               <div class="metadata-section">
