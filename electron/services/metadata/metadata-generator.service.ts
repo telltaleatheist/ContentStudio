@@ -882,6 +882,10 @@ export class MetadataGeneratorService {
     // timeout below remains the only thing that ends a genuinely wedged run.
     const STALL_NOTICE_MS = 60_000;
     let stallTimer: NodeJS.Timeout | undefined;
+    // Latched by the final disarm. Without it, the watchdog case re-arms the timer: the
+    // queue rejects this promise while the closure is still running, and the closure's
+    // next onProgress would put a stall notice on a job that already ended.
+    let stallDone = false;
     let lastProgress: { stage: ChapterStage; percent: number; at: number } = {
       stage: 'label',
       percent: 0,
@@ -889,6 +893,7 @@ export class MetadataGeneratorService {
     };
 
     const armStallNotice = () => {
+      if (stallDone) return;
       clearTimeout(stallTimer);
       stallTimer = setTimeout(() => {
         const silentSec = Math.round((Date.now() - lastProgress.at) / 1000);
@@ -911,6 +916,7 @@ export class MetadataGeneratorService {
     };
 
     const disarmStallNotice = () => {
+      stallDone = true;
       clearTimeout(stallTimer);
       stallTimer = undefined;
     };
