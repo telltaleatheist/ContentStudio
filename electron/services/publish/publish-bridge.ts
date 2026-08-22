@@ -48,6 +48,12 @@ export interface PendingFillItem {
   channelId: string | null;
   videoId: string | null;
   status: string;
+  /**
+   * The operator's monetization intent, three-valued: true = turn it on, false = turn it
+   * off, null = no decision recorded, leave Studio's control alone. The Data API cannot
+   * write this field at all, which is why it travels to the extension.
+   */
+  monetize: boolean | null;
   /** Display label for the extension's list. */
   label: string;
 }
@@ -116,6 +122,8 @@ export interface ItemDetail {
   sourceFilename: string | null;
   status: PublishStatus | 'none';
   videoId: string | null;
+  /** Monetization intent. null (including "no record at all") means: do not touch it. */
+  monetize: boolean | null;
   /** Sent along so the shelf never hard-codes YouTube's limits. */
   maxVariants: number;
   maxTitleLength: number;
@@ -156,6 +164,7 @@ export class PublishBridge {
       channelId: r.channelId,
       videoId: r.videoId,
       status: r.status,
+      monetize: r.monetize,
       label: r.sourceFilename || r.titles[0] || itemId,
     };
   }
@@ -233,6 +242,8 @@ export class PublishBridge {
       sourceFilename,
       status: chosen ? chosen.status : 'none',
       videoId: chosen ? chosen.videoId : null,
+      // No selection record means no decision has been made, which is exactly null.
+      monetize: chosen ? chosen.monetize : null,
       maxVariants: MAX_AB_VARIANTS,
       maxTitleLength: MAX_TITLE_LENGTH,
     };
@@ -378,6 +389,7 @@ export class PublishBridge {
       channelId: r.channelId,
       videoId: r.videoId,
       status: r.status,
+      monetize: r.monetize,
       label: r.sourceFilename || r.titles[0] || itemId,
     };
   }

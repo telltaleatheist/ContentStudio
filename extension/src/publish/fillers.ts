@@ -1,7 +1,9 @@
 // The fill registry.
 //
-// Each action declares { id, label, detect, fill } so adding the planned extras later
-// (thumbnail upload, scheduling) is one new entry rather than surgery on the panel.
+// Each action declares { id, label, surface, detect, fill } so adding the planned extras
+// later (thumbnail upload, scheduling) is one new entry rather than surgery on the panel.
+// Monetization (0.2.1) was exactly that: one entry, plus the `surface` field it needed
+// because its control is on a different Studio panel from every other field.
 //
 // Nothing here is ever committed on the operator's behalf: fillers put text into the
 // form and stop. The operator still presses "Set test" in the A/B dialog and "Save" on
@@ -14,6 +16,12 @@
 //     `aria-label="Add title N"` only used as a confirmation, because that label is
 //     localized English and would break on a non-English Studio.
 
+import {
+  findMonetizationRadios,
+  monetizationAvailability,
+  planMonetization,
+  radioIsChecked,
+} from './monetization';
 import {
   FillError,
   buttonByText,
@@ -33,7 +41,23 @@ export type FillId =
   | 'description'
   | 'tags'
   | 'altered-content'
-  | 'paid-promotion';
+  | 'paid-promotion'
+  | 'monetization';
+
+/**
+ * Which Studio SURFACE a filler's controls live on.
+ *
+ * Studio splits one video's settings across two places that are never on screen at the
+ * same time: the metadata form ('details' — the standalone /video/<id>/edit page, or the
+ * upload wizard's Details step) and the monetization panel ('monetization' — the
+ * standalone /video/<id>/monetization page, or the wizard's Monetization step).
+ *
+ * Declared per filler rather than inferred, so the shelf can offer exactly the actions
+ * the page in front of the operator can actually take, and "Fill everything" means
+ * "everything fillable HERE" instead of a run that half-fails by design. Adding a filler
+ * for a third surface is one more value.
+ */
+export type FillSurface = 'details' | 'monetization';
 
 export interface FillContext {
   /** Ordered. titles[0] is the main title AND A/B variant 1. */
@@ -41,6 +65,12 @@ export interface FillContext {
   description: string;
   /** Comma-separated. */
   tags: string;
+  /**
+   * The operator's monetization intent: true = turn it on, false = turn it off, null =
+   * no decision recorded, which means the monetization control is not touched at all.
+   * Three-valued for a reason — see ChosenMetadata.monetize in the app.
+   */
+  monetize: boolean | null;
 }
 
 export type FillOutcome =
@@ -50,6 +80,8 @@ export type FillOutcome =
 export interface Filler {
   id: FillId;
   label: string;
+  /** The Studio page/panel this filler's controls live on. */
+  surface: FillSurface;
   /** Whether this action has anything to do on the current page with this data. */
   detect(ctx: FillContext): { available: true } | { available: false; reason: string };
   fill(ctx: FillContext): Promise<FillOutcome>;
@@ -180,6 +212,7 @@ async function openAbDialog(): Promise<HTMLElement[]> {
 const titleFiller: Filler = {
   id: 'title',
   label: 'Main title',
+  surface: 'details',
   detect(ctx) {
     if (!ctx.titles.length) return { available: false, reason: 'No titles chosen for this item' };
     if (!visible(SEL.mainTitle)) return { available: false, reason: 'Title field not on this page' };
@@ -214,6 +247,7 @@ const titleFiller: Filler = {
 const abTestFiller: Filler = {
   id: 'ab-test',
   label: 'A/B variants',
+  surface: 'details',
   detect(ctx) {
     if (ctx.titles.length < 2) {
       return {
@@ -280,6 +314,7 @@ const abTestFiller: Filler = {
 const descriptionFiller: Filler = {
   id: 'description',
   label: 'Description',
+  surface: 'details',
   detect(ctx) {
     if (!ctx.description.trim()) return { available: false, reason: 'No description for this item' };
     if (!visible(SEL.description)) return { available: false, reason: 'Description field not on this page' };
@@ -309,6 +344,7 @@ const descriptionFiller: Filler = {
 const tagsFiller: Filler = {
   id: 'tags',
   label: 'Tags',
+  surface: 'details',
   detect(ctx) {
     if (!ctx.tags.trim()) return { available: false, reason: 'No tags for this item' };
     return { available: true };
@@ -378,6 +414,8 @@ function radioFiller(
   return {
     id,
     label,
+    // Both standing-default answers live in the details form's advanced section.
+    surface: 'details',
     detect() {
       return { available: true };
     },
@@ -434,6 +472,7 @@ function checkboxIsChecked(el: HTMLElement): boolean {
 const paidPromotionFiller: Filler = {
   id: 'paid-promotion',
   label: 'No paid promotion',
+  surface: 'details',
   detect() {
     return { available: true };
   },
@@ -476,6 +515,73 @@ const paidPromotionFiller: Filler = {
 };
 
 /**
+ * Monetization — the one field the YouTube Data API cannot write at all.
+ *
+ * Lives on a DIFFERENT Studio surface from every other filler (the standalone
+ * /video/VIDEOID/monetization page, or the upload wizard's Monetization step), which is
+ * why `surface` exists. This filler does NOT navigate there: the shelf offers it only
+ * when the control is already on screen, because clicking Studio's own navigation on the
+ * operator's behalf is the automation this design refuses to do — and a "navigate then
+ * fill" would also silently discard unsaved edits on the details form.
+ *
+ * All of the deciding is in monetization.ts and is pure. What is left here is: read the
+ * radios, ask what to do, do exactly that, and confirm it landed.
+ */
+const monetizationFiller: Filler = {
+  id: 'monetization',
+  label: 'Monetization',
+  surface: 'monetization',
+  detect(ctx) {
+    // Cheap check first: with no decision recorded there is nothing to do regardless of
+    // what page this is, and scanning the DOM to say so would be wasted work.
+    if (ctx.monetize === null) return monetizationAvailability(null, false);
+    return monetizationAvailability(ctx.monetize, findMonetizationRadios().found);
+  },
+  async fill(ctx) {
+    try {
+      if (ctx.monetize === null) {
+        // Reachable via "Fill everything" if the shelf's data changed under it. Refusing
+        // is the point of the third state: no decision means touch nothing.
+        return {
+          ok: false,
+          reason: 'No monetization decision on this report — nothing was changed.',
+        };
+      }
+
+      const target = findMonetizationRadios();
+      if (!target.found) throw new FillError(target.reason);
+
+      const plan = planMonetization(target.facts, ctx.monetize);
+      if (plan.kind === 'refuse') throw new FillError(plan.reason);
+      if (plan.kind === 'already') return { ok: true, detail: plan.detail };
+
+      const radio = target.radios[plan.index];
+      if (!radio) {
+        throw new FillError(
+          `Monetization radio ${plan.index + 1} of ${target.radios.length} vanished before it was clicked`,
+        );
+      }
+
+      radio.click();
+      await sleep(300);
+
+      if (!radioIsChecked(radio)) {
+        return {
+          ok: false,
+          reason:
+            `Clicked the "${ctx.monetize ? 'on' : 'off'}" monetization radio but it did not ` +
+            `become selected — Studio may be refusing it (channel not in the Partner ` +
+            `Program, or this video not eligible).`,
+        };
+      }
+      return { ok: true, detail: `${plan.detail} Press Save in Studio to keep it.` };
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+    }
+  },
+};
+
+/**
  * Registry order IS the execution order for "Fill everything".
  *
  * The A/B action is LAST on purpose: it opens a modal that covers the rest of the form.
@@ -490,8 +596,22 @@ export const FILLERS: Filler[] = [
   paidPromotionFiller,
   titleFiller,
   abTestFiller,
+  // Last, and on its own surface: it is never on screen at the same time as the ones
+  // above, so a run that includes it is a run on the monetization panel alone.
+  monetizationFiller,
 ];
 
 export function fillerById(id: FillId): Filler | undefined {
   return FILLERS.find((f) => f.id === id);
+}
+
+/**
+ * The fillers whose controls live on one of the surfaces currently on screen.
+ *
+ * The shelf builds its buttons from this rather than from FILLERS, so an action is never
+ * offered for a panel the operator is not looking at — a "Description" button on the
+ * monetization tab could only ever fail.
+ */
+export function fillersForSurfaces(surfaces: FillSurface[]): Filler[] {
+  return FILLERS.filter((f) => surfaces.includes(f.surface));
 }

@@ -252,6 +252,34 @@ export class MetadataReports implements OnInit {
   }
 
   /**
+   * The monetization picker's value, as a string the <select> can match.
+   *
+   * THREE options, not a checkbox: '' is "no decision recorded", which is a real answer
+   * and the only one that leaves Studio's monetization control untouched. A checkbox
+   * could only say on/off and would turn every never-answered item into "off".
+   */
+  monetizeSelectValue(): string {
+    const value = this.publish.monetize();
+    if (value === null) return '';
+    return value ? 'on' : 'off';
+  }
+
+  /** Record the intent. Nothing here monetizes anything — the extension fills Studio. */
+  async onMonetizeChange(event: Event) {
+    const value = (event.target as HTMLSelectElement).value;
+    if (value !== '' && value !== 'on' && value !== 'off') {
+      // The template owns these three options; anything else means the two have drifted
+      // apart, and writing a guess would put a decision on the record nobody made.
+      this.publish.showError(
+        `The monetization picker offered an option this handler does not know: ` +
+        `${JSON.stringify(value)}. Nothing was saved.`
+      );
+      return;
+    }
+    await this.publish.setMonetize(value === '' ? null : value === 'on');
+  }
+
+  /**
    * Pick a thumbnail file.
    *
    * The dialog is unfiltered, and everything about whether the file is usable is decided

@@ -16,7 +16,13 @@
 // Rendered inside a shadow root so Studio's stylesheet can't reach in and ours can't leak
 // out. Two tabs: the video currently open, and the report browser.
 
-import { FILLERS, type FillContext, type FillId, type Filler } from './fillers';
+import {
+  fillersForSurfaces,
+  type FillContext,
+  type FillId,
+  type FillSurface,
+  type Filler,
+} from './fillers';
 import type { BrowsePage, BrowseRow, ItemDetail } from './publish-client';
 import { DEFAULT_SHELF_PREFS, loadShelfPrefs, saveShelfPrefs, type ShelfPrefs } from './shelf-prefs';
 import { STALE_CONTEXT_MESSAGE, extensionContextAlive } from './publish-messages';
@@ -181,6 +187,15 @@ export interface PageContext {
   isDraft: boolean;
   /** Whether the metadata form is actually present and fillable. */
   formReady: boolean;
+  /**
+   * Whether Studio's MONETIZATION control is present and fillable.
+   *
+   * A separate fact from formReady, not a refinement of it: the two panels are never on
+   * screen together, so on the monetization tab this is true while formReady is false.
+   * Without it the shelf would say "open a video in Studio to fill it" while standing on
+   * a page it can fill.
+   */
+  monetizationReady: boolean;
 }
 
 export class PublishShelf {
@@ -199,7 +214,13 @@ export class PublishShelf {
   // ---- current-item state
   private item: ItemDetail | null = null;
   private reason = '';
-  private page: PageContext = { videoId: null, filename: null, isDraft: false, formReady: false };
+  private page: PageContext = {
+    videoId: null,
+    filename: null,
+    isDraft: false,
+    formReady: false,
+    monetizationReady: false,
+  };
   private statusText = 'Waiting for ContentStudio…';
   private errorText: string | null = null;
   private showAllTitles = false;
@@ -584,10 +605,16 @@ export class PublishShelf {
     const actions = document.createElement('div');
     actions.className = 'actions';
 
-    if (!this.page.formReady) {
+    // Which of Studio's panels is in front of the operator right now. Both can be false
+    // (no video open); they are never both true, because Studio shows one at a time.
+    const surfaces: FillSurface[] = [];
+    if (this.page.formReady) surfaces.push('details');
+    if (this.page.monetizationReady) surfaces.push('monetization');
+
+    if (!surfaces.length) {
       const note = document.createElement('div');
       note.className = 'muted';
-      note.textContent = 'Open a video in Studio to fill it.';
+      note.textContent = "Open a video's Details or Monetization tab in Studio to fill it.";
       actions.appendChild(note);
       return actions;
     }
@@ -596,13 +623,22 @@ export class PublishShelf {
       titles: item.chosenTitles.length ? item.chosenTitles : item.generatedTitles.slice(0, item.maxVariants),
       description: item.description,
       tags: item.tags,
+      monetize: item.monetize,
     };
 
-    const all = document.createElement('button');
-    all.className = 'act primary';
-    all.textContent = 'Fill everything';
-    all.addEventListener('click', () => this.run(FILLERS.map((f) => f.id)));
-    actions.appendChild(all);
+    // Only the actions this page can actually take. An action for the OTHER panel is not
+    // shown greyed out — it is not a decision the operator can act on from here, and the
+    // fix is navigating Studio, which this extension deliberately does not do for them.
+    const offered = fillersForSurfaces(surfaces);
+
+    // With a single action on offer, "Fill everything" is the same button twice.
+    if (offered.length > 1) {
+      const all = document.createElement('button');
+      all.className = 'act primary';
+      all.textContent = 'Fill everything';
+      all.addEventListener('click', () => this.run(offered.map((f) => f.id)));
+      actions.appendChild(all);
+    }
 
     const button = (filler: Filler): HTMLButtonElement => {
       const detected = filler.detect(ctx);
@@ -621,11 +657,18 @@ export class PublishShelf {
 
     // The A/B action stays visible rather than folded away: re-setting a test (cancel,
     // change the titles, set again) is a normal thing to do, not a rare repair.
-    const abFiller = FILLERS.find((f) => f.id === 'ab-test');
+    const abFiller = offered.find((f) => f.id === 'ab-test');
     if (abFiller) actions.appendChild(button(abFiller));
 
-    // The rest are the exception — keep them one click down.
-    const rest = FILLERS.filter((f) => f.id !== 'ab-test');
+    // The rest are the exception — keep them one click down. Except when there is only
+    // one action here at all (the monetization tab): hiding the page's single button
+    // behind a disclosure would be a puzzle, not a UI.
+    const rest = offered.filter((f) => f.id !== 'ab-test');
+    if (rest.length === 1 && !abFiller) {
+      actions.appendChild(button(rest[0]!));
+      return actions;
+    }
+
     const details = document.createElement('details');
     const summary = document.createElement('summary');
     summary.textContent = 'One field at a time';

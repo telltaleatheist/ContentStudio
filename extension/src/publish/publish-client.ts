@@ -35,6 +35,12 @@ export interface PendingFillItem {
   channelId: string | null;
   videoId: string | null;
   status: string;
+  /**
+   * The operator's monetization intent: true = turn it on in Studio, false = turn it
+   * off, null = no decision recorded, so the monetization control is not touched.
+   * ContentStudio 1.1+ / this extension 0.2.1+.
+   */
+  monetize: boolean | null;
   label: string;
 }
 
@@ -85,6 +91,8 @@ export interface ItemDetail {
   sourceFilename: string | null;
   status: string;
   videoId: string | null;
+  /** Monetization intent; null (including "no selection record") means: leave it alone. */
+  monetize: boolean | null;
   maxVariants: number;
   maxTitleLength: number;
 }
@@ -165,11 +173,34 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+/**
+ * Refuse a payload from a ContentStudio that predates `monetize`.
+ *
+ * An older app simply omits the field, and `undefined` is the one value that must never
+ * reach the monetization filler: `undefined === null` is false, so it would read as a
+ * real decision and the falsy branch would switch monetization OFF on a video whose
+ * operator never said anything. Three values are legal here and a fourth is a version
+ * mismatch, which is a thing to SAY rather than to work around.
+ *
+ * Checked on every route that carries an item, not once at startup: the app can be
+ * restarted (or downgraded) under a Studio tab that stays open for days.
+ */
+function requireMonetize(value: unknown, route: string): void {
+  if (value === true || value === false || value === null) return;
+  throw new PublishClientError(
+    'unexpected-response',
+    `${route} did not include a "monetize" value (got ${JSON.stringify(value)}). ` +
+      `This extension is 0.2.1 or newer and ContentStudio is older than the monetization ` +
+      `field — update ContentStudio.`,
+  );
+}
+
 export async function fetchPending(): Promise<PendingFillItem[]> {
   const body = await call<{ items?: PendingFillItem[] }>('/publish/pending');
   if (!body || !Array.isArray(body.items)) {
     throw new PublishClientError('unexpected-response', '/publish/pending did not return an items array');
   }
+  for (const item of body.items) requireMonetize(item.monetize, '/publish/pending');
   return body.items;
 }
 
@@ -187,6 +218,8 @@ export async function resolveForPage(videoId: string, filename: string | null): 
   if (!body || typeof body.reason !== 'string') {
     throw new PublishClientError('unexpected-response', '/publish/resolve returned an unexpected body');
   }
+  // A null item is a normal answer (nothing matched) and carries nothing to check.
+  if (body.item) requireMonetize(body.item.monetize, '/publish/resolve');
   return body;
 }
 
@@ -222,6 +255,7 @@ export async function fetchItem(itemId: string): Promise<ItemDetail> {
   if (!body || !body.item || !Array.isArray(body.item.generatedTitles)) {
     throw new PublishClientError('unexpected-response', '/publish/item returned an unexpected body');
   }
+  requireMonetize(body.item.monetize, '/publish/item');
   return body.item;
 }
 
@@ -239,5 +273,7 @@ export async function saveTitles(itemId: string, titles: string[]): Promise<SetT
   if (!body || typeof body.ok !== 'boolean') {
     throw new PublishClientError('unexpected-response', '/publish/titles returned an unexpected body');
   }
+  // The success shape carries a full ItemDetail, which is what the shelf then fills from.
+  if (body.ok) requireMonetize(body.item.monetize, '/publish/titles');
   return body;
 }

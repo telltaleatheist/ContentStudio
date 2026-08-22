@@ -251,6 +251,26 @@ export interface ChosenMetadata {
   isPodcast: boolean;
 
   /**
+   * Whether this video should be monetized — the operator's INTENT, three-valued.
+   *
+   *   true  -> turn monetization ON in Studio
+   *   false -> turn it OFF in Studio
+   *   null  -> NO DECISION RECORDED. The extension does not touch the control at all.
+   *
+   * null is a third state, not a default-off. The YouTube Data API cannot set
+   * monetization (PUBLISH-PIPELINE-PLAN Phase 5), so the only thing that acts on this is
+   * the companion extension typing into Studio's Monetization tab, and "the operator
+   * never said" must not read as "the operator said off" — that would flip monetization
+   * off on every legacy record the day the field shipped. Hence `boolean | null` rather
+   * than the strict boolean `isPodcast` uses: isPodcast's false is a real answer, this
+   * one's absence is not.
+   *
+   * Like isPodcast it is NEVER ABSENT: written explicitly by emptyChosenMetadata and
+   * filled in by upgradeStoredMetadata, so `'monetize' in record` is always true.
+   */
+  monetize: boolean | null;
+
+  /**
    * The operator's durable choice of editor-story transcript for this item, or null for
    * "generate content fields from the final export's own transcript".
    *
@@ -311,6 +331,12 @@ export interface ResolvedMetadata {
   sourceFilename: string | null;
   sourceDurationSec: number | null;
   status: PublishStatus;
+  /**
+   * The monetization intent, passed through UNRESOLVED — there is no generated value to
+   * fall back to, so this is the stored three-valued field verbatim. null reaches the
+   * extension as "leave Studio's monetization control alone".
+   */
+  monetize: boolean | null;
 }
 
 /** A YouTube video the matcher considers a fillable draft. */
@@ -514,6 +540,10 @@ export function emptyChosenMetadata(itemId: string, jobId: string): ChosenMetada
     thumbnailPath: null,
     thumbnailMeta: null,
     isPodcast: false,
+    // null, not false: "no monetization decision recorded" is a distinct state from
+    // "monetize: off", and only the first one means the extension leaves the control
+    // alone. See the field's doc comment.
+    monetize: null,
     transcriptRef: null,
     pushedAt: null,
     pushReceipt: null,
@@ -552,6 +582,11 @@ export function upgradeStoredMetadata(record: ChosenMetadata): ChosenMetadata {
   if (!('thumbnailPath' in stored)) upgraded.thumbnailPath = null;
   if (!('thumbnailMeta' in stored)) upgraded.thumbnailMeta = null;
   if (!('isPodcast' in stored)) upgraded.isPodcast = false;
+  // Every record written before Phase 5 gets `null` — "nobody has decided" — which is
+  // exactly what emptyChosenMetadata writes today. Reading absence as `false` would be
+  // an inference: it would tell the extension to switch monetization OFF on 44 videos
+  // whose operator never said anything of the kind.
+  if (!('monetize' in stored)) upgraded.monetize = null;
   if (!('transcriptRef' in stored)) upgraded.transcriptRef = null;
   if (!('pushedAt' in stored)) upgraded.pushedAt = null;
   if (!('pushReceipt' in stored)) upgraded.pushReceipt = null;

@@ -32,6 +32,7 @@ import {
   requestSaveTitles,
 } from './publish/publish-messages';
 import { detailsFormReady, isDetailsPage, looksLikeDraft, readFilename, videoIdFromUrl } from './publish/page';
+import { isMonetizationUrl, monetizationSurfaceReady } from './publish/monetization';
 import { waitFor } from './publish/dom';
 
 let shelf: PublishShelf | null = null;
@@ -52,6 +53,11 @@ function pageContext(): PageContext {
     filename: readFilename(),
     isDraft: looksLikeDraft(),
     formReady: detailsFormReady(),
+    // Studio's monetization panel is a SEPARATE surface: the standalone
+    // /video/.../monetization page, or the upload wizard's Monetization step. It is read
+    // here, alongside the details form, because either one can be what the operator is
+    // looking at and the shelf offers actions for whichever it is.
+    monetizationReady: monetizationSurfaceReady(),
   };
 }
 
@@ -64,6 +70,9 @@ function fillContextOf(detail: ItemDetail): FillContext {
       : detail.generatedTitles.slice(0, detail.maxVariants),
     description: detail.description,
     tags: detail.tags,
+    // Straight through, three-valued. null means the operator recorded no decision, and
+    // the monetization filler then refuses rather than picking one.
+    monetize: detail.monetize,
   };
 }
 
@@ -117,26 +126,47 @@ async function resolveCurrentVideo(): Promise<void> {
   const ctx = pageContext();
   shelf?.setPageContext(ctx);
 
-  if (!ctx.videoId || !isDetailsPage()) {
+  // TWO kinds of page can have a video open, and the monetization one is the odd shape:
+  //   * details page / upload wizard  -> isDetailsPage(), the metadata form and the
+  //                                      filename sidebar that filename-matching needs
+  //   * standalone monetization page  -> the url carries the video id, but there is no
+  //                                      metadata form and no filename sidebar on it
+  // Both are worth resolving, because a video that is already LINKED resolves by its id
+  // alone — which is exactly the case where the operator came here to set monetization.
+  // (The wizard's Monetization STEP is not a third case: it keeps the wizard's url, so
+  // isDetailsPage() is still true there.)
+  const onDetails = isDetailsPage();
+  const onMonetization = isMonetizationUrl();
+
+  if (!ctx.videoId || (!onDetails && !onMonetization)) {
     item = null;
     resolvedFor = null;
     shelf?.setStatus('No video open. Use Reports to load one.');
     return;
   }
 
-  // Wait for the SPA to actually render the form before reading the sidebar off it.
-  try {
-    await waitFor(() => detailsFormReady(), 'the Studio details form', 15000);
-  } catch {
-    shelf?.setStatus('Studio has not finished loading this video.');
-    return;
+  if (onDetails) {
+    // Wait for the SPA to actually render the form before reading the sidebar off it.
+    try {
+      await waitFor(() => detailsFormReady(), 'the Studio details form', 15000);
+    } catch {
+      shelf?.setStatus('Studio has not finished loading this video.');
+      return;
+    }
   }
+  // Nothing to wait for on the monetization page: the video id is in the url and the
+  // filename sidebar does not exist there, so resolution has everything it will get. The
+  // monetization PANEL's own readiness is a separate fact and is reported in the page
+  // context, not waited on — a channel outside the Partner Program never renders it, and
+  // sitting in a 15-second timeout would report that as "still loading".
 
-  const withForm = pageContext();
-  shelf?.setPageContext(withForm);
+  // Re-read: on the details page the form (and with it the filename) has only just
+  // arrived, and on either page the fillable surfaces are what the shelf renders from.
+  const loaded = pageContext();
+  shelf?.setPageContext(loaded);
 
   try {
-    const resolved = await requestResolve(withForm.videoId!, withForm.filename);
+    const resolved = await requestResolve(loaded.videoId!, loaded.filename);
     if (!resolved.item) {
       item = null;
       shelf?.setStatus(resolved.reason);
@@ -241,6 +271,7 @@ async function onNavigation(): Promise<void> {
  */
 function watchNavigation(): void {
   let lastUrl = location.href;
+  let lastSurfaces = surfaceKey();
   const timer = setInterval(() => {
     // Once the extension is reloaded this tab's context is dead for good. Stop polling and
     // say so ONCE — otherwise every tick fires another chrome.* call that throws, which is
@@ -253,9 +284,28 @@ function watchNavigation(): void {
     }
     if (location.href !== lastUrl) {
       lastUrl = location.href;
+      lastSurfaces = surfaceKey();
       void onNavigation();
+      return;
+    }
+
+    // The upload wizard changes STEP without changing the url: Details -> Monetization is
+    // the same href, and the details form leaves while the monetization panel arrives. A
+    // url watcher alone would leave the shelf offering description/tags buttons on a page
+    // that has neither. So the two surface facts are polled as well, and the shelf is
+    // told only when one of them actually flips — a re-render on every tick would fight
+    // the operator for focus in the report browser's search box.
+    const surfaces = surfaceKey();
+    if (surfaces !== lastSurfaces) {
+      lastSurfaces = surfaces;
+      shelf?.setPageContext(pageContext());
     }
   }, 600);
+}
+
+/** The two surface facts as one comparable string. Cheap enough to read every tick. */
+function surfaceKey(): string {
+  return `${detailsFormReady()}|${monetizationSurfaceReady()}`;
 }
 
 /**
