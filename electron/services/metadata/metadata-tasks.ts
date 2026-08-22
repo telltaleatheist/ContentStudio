@@ -49,6 +49,8 @@ import {
   MetadataRoutingTaskId,
   ResolvedMetadataRouting,
 } from './metadata-routing';
+import { DescriptionUnit } from './description-unit';
+import { assembleTags, buildHashtags, hashtagLine, GENERATED_TAG_BUDGET_CHARS } from './tags-hashtags';
 // Type-only: the units receive an AIManagerService instance, they never construct one.
 // A value import here would close an import cycle (ai-manager imports this module for
 // its section parser) and break at require() time.
@@ -57,14 +59,19 @@ import type { AIManagerService, MetadataResult } from './ai-manager.service';
 /**
  * A metadata field a unit can be responsible for.
  *
- * `hashtags` and `spoken_keywords` are not routable tasks — see METADATA_ROUTING_TASKS.
- * Hashtags follow the description (the description adapter writes its own hashtag line);
- * spoken keywords exist only in the shorts prompt set and ride with whichever group
- * absorbs the sections no unit claimed.
+ * `hashtags`, `tags` and `spoken_keywords` are not routable tasks in the chaptered path.
+ * Hashtags and tags are ASSEMBLED IN CODE from the entity and key-phrase pools (spec §4,
+ * §6.2, §6.3 — tags-hashtags.ts); spoken keywords exist only in the shorts prompt set and
+ * ride with whichever group absorbs the sections no unit claimed.
+ *
+ * `description_hook` is the first ~150 characters of the description, generated as its own
+ * call by DescriptionUnit and stored as its own field so the composer can put it above the
+ * chapter block (spec §3's ruled order) without parsing it back out of the description.
  */
 export type MetadataFieldId =
   | 'titles'
   | 'description'
+  | 'description_hook'
   | 'tags'
   | 'thumbnail_text'
   | 'pinned_comment'
@@ -72,10 +79,15 @@ export type MetadataFieldId =
   | 'hashtags'
   | 'spoken_keywords';
 
-/** The routable tasks that produce a metadata field, in the order units run. */
+/**
+ * The routable tasks that produce a metadata field through a PROMPT-SET GROUP, in the order
+ * units run.
+ *
+ * `description` is absent because it is no longer a group field: it is DescriptionUnit's two
+ * calls, planned separately below off the same `description` routing entry. `tags` is absent
+ * because there is no call at all — code assembles them after the units finish.
+ */
 const FIELD_TASKS: Array<{ task: MetadataRoutingTaskId; field: MetadataFieldId }> = [
-  { task: 'description', field: 'description' },
-  { task: 'tags', field: 'tags' },
   { task: 'titles', field: 'titles' },
   { task: 'thumbnail_text', field: 'thumbnail_text' },
   { task: 'pinned_comment', field: 'pinned_comment' },
@@ -91,8 +103,42 @@ export interface MetadataRunContext {
   content: string;
   sourceLabel: string;
   chapterSubjects: string[];
-  /** Index-aligned with chapterSubjects; entries may be blank. */
+  /**
+   * The per-chapter SUMMARIES, index-aligned with chapterSubjects; entries may be blank.
+   *
+   * These are the embedding pipeline's stage-6 threaded summaries, carried straight through
+   * (ChapterPipelineResult.subjectDetails[].detail). They are the description layer's primary
+   * input per spec §2 — "none of this needs to read the raw transcript" — so the same prose
+   * that already reaches the report's chapter `detail` is what the hook and body are written
+   * from. Nothing new is computed to get them here.
+   */
   chapterDetails: string[];
+  /** The video's title or filename. Context seeding for the description calls (spec §6.1 lever 2). */
+  videoTitle: string;
+  /** The loaded prompt set, which in this app IS the channel. */
+  promptSetName: string;
+  /**
+   * Proper nouns measured out of the CONTENT text (entity-extraction.ts), best-first.
+   *
+   * One extraction, three consumers — the description prompts, the assembled tags and the
+   * derived hashtags — so those three cannot disagree about who the video is about.
+   */
+  entities: string[];
+  /** Key phrases ranked against the content text (key-phrases.ts), best-first. */
+  keyPhrases: string[];
+  /**
+   * The app's CONTENT text: the ad-free editor transcript when one is linked, the final
+   * export's otherwise (`contentTextOf`). Tag assembly tests every candidate against it,
+   * because YouTube reads a tag that is not in the content as a spam signal (spec §6.2).
+   */
+  contentText: string;
+  /**
+   * Record a DECLARED degradation on the run. Units call it for the things that are a
+   * warning rather than a failure — a hook over the character cap, prose in the wrong
+   * register — and the caller pushes them into the job's warnings alongside the chapter
+   * pipeline's own.
+   */
+  warn: (message: string) => void;
 }
 
 export interface MetadataUnit {
@@ -186,6 +232,9 @@ interface MetadataFieldSpec {
 export const METADATA_FIELD_SECTIONS: Record<MetadataFieldId, MetadataFieldSpec> = {
   titles: { section: 'TITLES', shape: '["string", ...]', needsTranscript: true },
   description: { section: 'DESCRIPTION', shape: '"one string"', needsTranscript: false },
+  // Not a prompt-set section and never sent to a group: the hook comes out of
+  // DescriptionUnit's own call. The entry exists so the field id has one registry.
+  description_hook: { section: 'DESCRIPTION', shape: '"one string"', needsTranscript: false },
   tags: { section: 'TAGS', shape: '"comma-separated string"', needsTranscript: false },
   thumbnail_text: { section: 'THUMBNAIL_TEXT', shape: '["string", ...]', needsTranscript: true },
   pinned_comment: { section: 'PINNED_COMMENT', shape: '["string", ...]', needsTranscript: true },
@@ -194,18 +243,41 @@ export const METADATA_FIELD_SECTIONS: Record<MetadataFieldId, MetadataFieldSpec>
   spoken_keywords: { section: 'SPOKEN_KEYWORDS', shape: '["string", ...]', needsTranscript: true },
 };
 
-/** Canonical section key -> field, for reading a prompt set back the other way. */
+/**
+ * Canonical section key -> field, for reading a prompt set back the other way.
+ *
+ * `description_hook` is excluded: it shares DESCRIPTION's section key (it has no section of
+ * its own) and including it would make the reverse lookup depend on declaration order.
+ */
 const SECTION_TO_FIELD: Record<string, MetadataFieldId> = Object.fromEntries(
-  (Object.entries(METADATA_FIELD_SECTIONS) as Array<[MetadataFieldId, MetadataFieldSpec]>).map(
-    ([field, spec]) => [spec.section, field]
-  )
+  (Object.entries(METADATA_FIELD_SECTIONS) as Array<[MetadataFieldId, MetadataFieldSpec]>)
+    .filter(([field]) => field !== 'description_hook')
+    .map(([field, spec]) => [spec.section, field])
 );
 
 /**
- * Sections no unit may carry as instructions: chapters are code-owned (the pipeline
- * measures them), and these two are rebuilt or placed per group.
+ * Sections no prompt-set group may carry as instructions.
+ *
+ * Three kinds, all code-owned for different reasons:
+ *  - CHAPTERS: the pipeline MEASURES them, so a model writing them would be guessing.
+ *  - OUTPUT_FORMAT / FINAL_SELF-CHECK: rebuilt or placed per group.
+ *  - DESCRIPTION / TAGS / HASHTAGS: this build's change (spec §2's ownership table). The
+ *    description is DescriptionUnit's own two calls with their own prompts; tags and hashtags
+ *    are assembled from the entity and key-phrase pools with no call at all. Sending a group
+ *    the channel's `## TAGS` instructions when nothing in that group writes tags would put
+ *    rules in the prompt for a field the answer will not contain.
+ *
+ * The prompt-set sections themselves are UNCHANGED and still run, in full, on the legacy
+ * single-call path — the one that generates for a text subject with no chapters.
  */
-const CODE_OWNED_SECTIONS = new Set(['CHAPTERS', 'OUTPUT_FORMAT', 'FINAL_SELF-CHECK']);
+const CODE_OWNED_SECTIONS = new Set([
+  'CHAPTERS',
+  'OUTPUT_FORMAT',
+  'FINAL_SELF-CHECK',
+  'DESCRIPTION',
+  'TAGS',
+  'HASHTAGS',
+]);
 
 function buildOutputFormat(fields: MetadataFieldId[]): string {
   const keyLines = fields.map((f) => `  "${f}": ${METADATA_FIELD_SECTIONS[f].shape}`).join(',\n');
@@ -299,7 +371,10 @@ export function buildGroupInstructions(
       if (spec.selfCheck) kept.push(section.text);
       continue;
     }
-    if (section.key === 'CHAPTERS') continue;
+    // CHAPTERS, DESCRIPTION, TAGS and HASHTAGS: code owns the field, so its instructions do
+    // not travel with any group. (OUTPUT_FORMAT and FINAL_SELF-CHECK are in the same set and
+    // were already handled above, in their own placement branches.)
+    if (CODE_OWNED_SECTIONS.has(section.key)) continue;
 
     const mine = wanted.get(section.key);
     if (mine) {
@@ -737,8 +812,6 @@ export class LocalAdapterUnit implements MetadataUnit {
     private readonly task: AdapterTask,
     option: MetadataRoutingOption,
     defaultHost: string,
-    /** True when this run's `hashtags` come from the description adapter's last line. */
-    private readonly ownsHashtags: boolean,
     /** Fired on cancel, so an adapter call in flight is aborted rather than waited out. */
     private readonly abortSignal?: AbortSignal
   ) {
@@ -751,11 +824,15 @@ export class LocalAdapterUnit implements MetadataUnit {
     this.model = option.model;
     this.startHint = option.startHint;
     this.startCommand = option.startCommand;
-    // The description adapter's trained output ENDS with a hashtag line, so this unit
-    // returns `hashtags` whether or not the prompt set has a "## HASHTAGS" section —
-    // there is no way to ask the adapter for a description without one, and dropping the
-    // line it wrote would be discarding output the model actually produced.
-    this.fields = task === 'description' && ownsHashtags ? ['description', 'hashtags'] : [task];
+    // ONE field per adapter. This used to be two for the description adapter, whose trained
+    // output ends with a hashtag line that was parsed out into the `hashtags` field. Hashtags
+    // are code-owned as of this build (spec §2's ownership ruling), and the description is not
+    // an adapter shape any more either, so there is no second field left for any adapter to
+    // claim. `splitDescriptionAndHashtags` below is kept for the adapter-shaped answer it
+    // still knows how to read; planMetadataUnits now refuses to route the description to an
+    // adapter, so the branch that calls it is unreachable until an adapter is trained for the
+    // hook/body shape, and is left standing as that adapter's contract rather than deleted.
+    this.fields = [task];
     this.label = `${task} (local ${this.model} @ ${this.host})`;
     this.client = axios.create({
       baseURL: this.host,
@@ -1142,16 +1219,15 @@ export interface MetadataRunPlan {
   /** The units this run executes, in order: trained adapters first, then the prompt-set groups. */
   units: MetadataUnit[];
   /**
-   * Which unit writes the `hashtags` field, decided from the routing alone.
+   * Whether this run's prompt set publishes tags and hashtags at all.
    *
-   * The description ADAPTER always ends with a hashtag line; the prompt-set description
-   * never does (the prompt set's own `## HASHTAGS` section is a separate section). So the
-   * field follows the description task's option: on an adapter it is parsed out of that
-   * adapter's own last line, and on a prompt-set model the HASHTAGS section simply joins
-   * whichever group already carries DESCRIPTION. Two units writing one field would let the
-   * merge order decide the answer.
+   * Both are code-assembled now, so nothing is ROUTED for them — but "this channel has no
+   * tags" is still a real statement a prompt set makes by leaving the section out (the
+   * Spreaker podcast set has no `## HASHTAGS` and never did), and assembling a field the
+   * channel does not publish would put it in the report anyway.
    */
-  hashtagsOwnedByDescription: boolean;
+  assembleTags: boolean;
+  assembleHashtags: boolean;
   /** One line for the job log: which model writes what, and how many calls that is. */
   summary: string;
 }
@@ -1246,28 +1322,53 @@ export function planMetadataUnits(
     }
   }
 
+  // The description is its own pair of calls now (DescriptionUnit), planned off the same
+  // `description` routing entry the group used to read. It is not grouped with anything: the
+  // two calls carry their own prompts and their own schemas, so there is nothing for a
+  // co-resident field to share with them.
+  const describes = available.has(METADATA_FIELD_SECTIONS.description.section);
+  let descriptionUnit: MetadataUnit | undefined;
+  if (describes) {
+    const optionId = routing.description;
+    const option = METADATA_ROUTING_OPTIONS[optionId];
+    if (!option) {
+      throw new Error(`Metadata task "description" is routed to unknown option "${optionId}"`);
+    }
+    if (option.promptStyle === 'adapter') {
+      throw new Error(
+        `Metadata task "description" is routed to the trained adapter "${option.model}", which was trained to ` +
+          `write a whole description from a subject list in one turn. The description is now two ` +
+          `schema-constrained calls (a hook and a body) written from the chapter summaries, which is not a ` +
+          `shape any adapter was trained on. Route it to a base model or to the cloud.`
+      );
+    }
+    descriptionUnit = new DescriptionUnit(aiManager, option, defaultHost, abortSignal);
+  } else {
+    skipped.push('description');
+  }
+
   if (skipped.length > 0) {
     log.info(
       `[MetadataTasks] the loaded prompt set defines no section for ${skipped.join(', ')}, so ` +
         `${skipped.length === 1 ? 'that field is' : 'those fields are'} not generated this run`
     );
   }
-  if (adapterPlans.length === 0 && groupFields.size === 0) {
+
+  // Code-assembled, so neither has a routing entry to read or a call to make. Whether they
+  // are assembled at all is still the PROMPT SET's statement about the channel.
+  const assemblesTags = available.has(METADATA_FIELD_SECTIONS.tags.section);
+  const assemblesHashtags = available.has(METADATA_FIELD_SECTIONS.hashtags.section);
+  log.info(
+    `[MetadataTasks] tags ${assemblesTags ? 'are' : 'are not'} assembled in code from the entity and key-phrase ` +
+      `pools this run, and hashtags ${assemblesHashtags ? 'are' : 'are not'} — no model writes either, and the ` +
+      `"Tags" routing selection is not read for an item that has chapters`
+  );
+
+  if (adapterPlans.length === 0 && groupFields.size === 0 && !descriptionUnit && !assemblesTags && !assemblesHashtags) {
     throw new Error(
       `The loaded prompt set defines none of the metadata fields this app generates ` +
-        `(${FIELD_TASKS.map((f) => f.field).join(', ')}), so there is nothing to run`
+        `(description, tags, hashtags, ${FIELD_TASKS.map((f) => f.field).join(', ')}), so there is nothing to run`
     );
-  }
-
-  const hashtagsOwnedByDescription = adapterPlans.some((p) => p.task === 'description');
-  if (!hashtagsOwnedByDescription && available.has(METADATA_FIELD_SECTIONS.hashtags.section)) {
-    // Prompt-set description: the HASHTAGS section joins the group that already has DESCRIPTION.
-    for (const fields of groupFields.values()) {
-      if (fields.includes('description')) {
-        fields.push('hashtags');
-        break;
-      }
-    }
   }
 
   const models = Array.from(groupFields.keys());
@@ -1295,14 +1396,16 @@ export function planMetadataUnits(
   // instructions for a field it will not return.
   const ownerOf = new Map<string, string>();
   for (const plan of adapterPlans) ownerOf.set(METADATA_FIELD_SECTIONS[plan.task].section, `adapter:${plan.task}`);
-  if (hashtagsOwnedByDescription) ownerOf.set(METADATA_FIELD_SECTIONS.hashtags.section, 'adapter:description');
   for (const [model, fields] of groupFields) {
     for (const field of fields) ownerOf.set(METADATA_FIELD_SECTIONS[field].section, `group:${model}`);
   }
 
   const units: MetadataUnit[] = adapterPlans.map(
-    (plan) => new LocalAdapterUnit(plan.task, plan.option, defaultHost, hashtagsOwnedByDescription, abortSignal)
+    (plan) => new LocalAdapterUnit(plan.task, plan.option, defaultHost, abortSignal)
   );
+  // First, because everything downstream of it is cheaper and the operator watching a run
+  // sees the field they care most about resolve first.
+  if (descriptionUnit) units.unshift(descriptionUnit);
 
   for (const [model, fields] of groupFields) {
     const ownedElsewhere = new Set<string>();
@@ -1325,8 +1428,12 @@ export function planMetadataUnits(
     );
   }
 
-  const summary = units.map((u) => u.label).join(' | ');
-  return { units, hashtagsOwnedByDescription, summary };
+  const summary = [
+    ...units.map((u) => u.label),
+    ...(assemblesTags ? ['tags (code)'] : []),
+    ...(assemblesHashtags ? ['hashtags (code)'] : []),
+  ].join(' | ');
+  return { units, assembleTags: assemblesTags, assembleHashtags: assemblesHashtags, summary };
 }
 
 // ---------------------------------------------------------------------------
@@ -1360,10 +1467,14 @@ export async function runMetadataTasks(
       Object.assign(merged, fields);
     }
 
+    // Tags and hashtags, assembled from the pools with no model call at all (spec §4, §6.2,
+    // §6.3). AFTER the units, because the hashtag rule dedupes against the title and the
+    // titles unit is one of the ones that just ran.
+    assembleCodeOwnedFields(aiManager, run, merged);
+
     // Description links, the channel tag append and hashtag spacing are applied ONCE, to
     // the merged object. Per unit they could not be: the links append to a description one
-    // unit returns, while the hashtags they sit beside come back from another — or, when
-    // the description adapter runs, from that unit's own last line.
+    // unit returns, while the channel tags append to a list assembled just above.
     return aiManager.finalizeMetadata(merged as MetadataResult);
   } finally {
     // A failed run leaves a 9.5GB adapter resident just as surely as a successful one, so
@@ -1371,6 +1482,67 @@ export async function runMetadataTasks(
     for (const unit of resident) {
       await unit.unload!();
     }
+  }
+}
+
+/**
+ * Tags and hashtags, built in code from the pools this run already measured.
+ *
+ * Spec §2's ownership ruling, applied: neither field is ever emitted by a model on the
+ * chaptered path. What that buys, beyond a saved call, is a property no model can offer —
+ * every tag published came out of the content text, tested by `occursIn`, because YouTube
+ * treats a tag the video does not mention as a spam signal (§6.2).
+ *
+ * The PRIMARY PHRASE is the top-ranked key phrase, which is the phrase the embedding ranking
+ * put closest to the whole document. The CATEGORY terms are the highest-ranked SINGLE WORDS in
+ * the same ranking — one word is what makes a term broad, and being high in the ranking is what
+ * makes it this video's broad term rather than any video's. (They were briefly taken from the
+ * TAIL of the ranking, on the theory that the least document-specific phrase is the most
+ * general one. It is not: the tail of a spoken transcript is "lies told" and "book titled".)
+ *
+ * Nothing here throws on an empty pool: a video whose transcript yielded no rankable phrase
+ * gets no tags and says so in the log. Manufacturing one from the filename would be inventing
+ * an input.
+ */
+function assembleCodeOwnedFields(
+  aiManager: AIManagerService,
+  run: MetadataTaskRun,
+  merged: Record<string, unknown>
+): void {
+  const ctx = run.ctx;
+
+  if (run.plan.assembleTags) {
+    const assembled = assembleTags({
+      primaryPhrase: ctx.keyPhrases[0] || ctx.entities[0] || '',
+      entities: ctx.entities,
+      keyPhrases: ctx.keyPhrases,
+      categories: ctx.keyPhrases.filter((p) => !p.includes(' ')).slice(0, 3),
+      contentText: ctx.contentText,
+    });
+    merged.tags = assembled.tags.join(',');
+    log.info(
+      `[MetadataTasks] ${ctx.sourceLabel}: assembled ${assembled.tags.length} tag(s) in code, ` +
+        `${assembled.cost}/${GENERATED_TAG_BUDGET_CHARS} characters` +
+        (assembled.dropped.length > 0 ? `; ${assembled.dropped.length} left out for budget` : '') +
+        (assembled.notInContent.length > 0
+          ? `; ${assembled.notInContent.length} left out because the content text does not contain them`
+          : '')
+    );
+  }
+
+  if (run.plan.assembleHashtags) {
+    const titles = Array.isArray(merged.titles) ? (merged.titles as unknown[]) : [];
+    const hashtags = buildHashtags({
+      entities: ctx.entities,
+      keyPhrases: ctx.keyPhrases,
+      // Deduped against the FIRST title, which is the one the operator publishes by default.
+      title: typeof titles[0] === 'string' ? (titles[0] as string) : ctx.videoTitle,
+      // The channel's own brand tag, when the prompt set declares channel_tags. Never
+      // invented: a channel with no declared tag simply gets one fewer hashtag.
+      brandTag: aiManager.channelTags()[0],
+    });
+    merged.hashtags = hashtagLine(hashtags);
+    log.info(`[MetadataTasks] ${ctx.sourceLabel}: derived ${hashtags.length} hashtag(s) in code: ${merged.hashtags}`);
   }
 }
 

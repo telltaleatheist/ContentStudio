@@ -20,7 +20,9 @@
  *     thinking model sometimes puts the object in `thinking` and leaves `response` empty.
  *     Observed on nearly every call of the chapter validation run. Handled NARROWLY: read
  *     `thinking` when structured output was requested AND `response` is empty, and say so
- *     in the log. Never otherwise.
+ *     in the log. Never otherwise. A caller that sends a full JSON SCHEMA as `format`
+ *     (`schema` below) gets the identical treatment — it is the same field and the same
+ *     grammar mechanism, only tighter.
  *  4. ONE num_ctx for the whole run, bucketed. Ollama fully reloads the model on ANY
  *     num_ctx change, so a value computed per call turns a run into a series of reloads.
  *     `bucketNumCtx` below is the one sizing rule; it REFUSES rather than truncating,
@@ -73,6 +75,25 @@ export interface OllamaJsonRequest {
   what: string;
   /** Log tag, e.g. `[ChapterEmbedding] stage "place"`. */
   logPrefix: string;
+  /**
+   * A FULL JSON Schema for the answer, sent as Ollama's `format`, instead of the bare
+   * `"json"` this module otherwise sends.
+   *
+   * Ollama's `format` accepts either the string `"json"` — a grammar that only requires
+   * SOME valid JSON — or a JSON Schema object, which constrains the keys and their types
+   * during decoding. The metadata spec (§5) asks for the schema form on the two mechanical
+   * description calls, where the measured win is not the parse but the SUPPRESSED
+   * OVER-REASONING: an unconstrained small model asked for one sentence has been measured
+   * spending its whole output budget reasoning and never answering.
+   *
+   * The judgment callers deliberately do NOT set this. Schema-constraining a chapter
+   * summarization measurably destroys it (spec §5, chaptering handoff trap #3) — the
+   * reasoning that a grammar suppresses is doing real work there.
+   *
+   * Trap 3 applies to BOTH forms and is handled the same way for both: any structured
+   * output can push the object into `thinking`.
+   */
+  schema?: Record<string, unknown>;
 }
 
 /**
@@ -155,8 +176,9 @@ export async function askOllamaJson(
         prompt: request.prompt,
         stream: false,
         // Trap 3. Requested deliberately: it is what makes the answer parseable, and it is
-        // also what can push the object into `thinking`, which readAnswer handles.
-        format: 'json',
+        // also what can push the object into `thinking`, which readAnswer handles. A caller
+        // that supplied a SCHEMA gets the schema — same field, same trap, tighter grammar.
+        format: request.schema ?? 'json',
         keep_alive: request.keepAlive || OLLAMA_KEEP_ALIVE,
         // Trap 2: no `think` key. Adding one relocates the reasoning into `response`.
         options: {
