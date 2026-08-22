@@ -20,6 +20,7 @@ import {
   ChosenMetadata,
   MAX_AB_VARIANTS,
   MAX_TITLE_LENGTH,
+  PushReceipt,
   ResolvedMetadata,
   ThumbnailMeta,
   ThumbnailPreview,
@@ -109,6 +110,19 @@ export class PublishState {
   /** The proposal's own preview, so Confirm is a decision about an image, not a path. */
   private readonly _proposalPreview = signal<ThumbnailPreview | null>(null);
 
+  /** True while a push is in flight. Separate from _saving: it is a REMOTE write. */
+  private readonly _pushing = signal(false);
+
+  /**
+   * The receipt from the push made in this sitting, or null.
+   *
+   * Deliberately not the same thing as `selection().pushReceipt`, which is the LAST push
+   * whenever it happened — possibly last week, possibly by a different sitting. This one
+   * says "the thing you just clicked did this", and it is cleared when the panel moves to
+   * another item.
+   */
+  private readonly _receipt = signal<PushReceipt | null>(null);
+
   readonly selection = this._selection.asReadonly();
   readonly resolved = this._resolved.asReadonly();
   readonly saving = this._saving.asReadonly();
@@ -171,6 +185,44 @@ export class PublishState {
 
   /** The offered image itself. Confirm is only shown once this has arrived. */
   readonly proposalPreview = this._proposalPreview.asReadonly();
+
+  /** The video this item is linked to, or null when nothing is linked yet. */
+  readonly videoId = computed(() => this._selection()?.videoId ?? null);
+
+  /** ISO of the last push to that video, or null for never. */
+  readonly pushedAt = computed(() => this._selection()?.pushedAt ?? null);
+
+  /** What the last push sent, whenever it happened. Null until there has been one. */
+  readonly lastPushReceipt = computed<PushReceipt | null>(
+    () => this._selection()?.pushReceipt ?? null
+  );
+
+  /** True while the push is in flight. */
+  readonly pushing = this._pushing.asReadonly();
+
+  /** The receipt from a push made in this sitting. Null until one succeeds here. */
+  readonly receipt = this._receipt.asReadonly();
+
+  /** The title a push would put on the video: variant 1, and nothing else. */
+  readonly pushTitle = computed(() => this.chosenTitles()[0] ?? null);
+
+  /**
+   * Why "Push to YouTube" is unavailable, or null when it is available.
+   *
+   * A disabled button with no account of itself is a dead end. Each of these is also
+   * refused by the main process — this is the same rule said early, not a second one, and
+   * it never lets a push through that the main process would reject.
+   */
+  readonly pushBlockedReason = computed<string | null>(() => {
+    if (!this.hasTarget()) return 'No report is open.';
+    if (!this.videoId()) {
+      return 'This item is not linked to a YouTube video yet. Upload the draft in the ' +
+        'browser and link it first — nothing here uploads video.';
+    }
+    if (!this.channelId()) return 'This item is not routed to a channel yet.';
+    if (!this.pushTitle()) return 'No title is chosen. Variant 1 is what goes on the video.';
+    return null;
+  });
 
   /**
    * What the picker shows: the stored channel, or the suggestion standing in for it.
@@ -318,6 +370,9 @@ export class PublishState {
     this._thumbnailWarnings.set([]);
     this._proposal.set(null);
     this._proposalPreview.set(null);
+    // The receipt belongs to the item it was for. Leaving it up while another report is
+    // open would credit this item with a push that happened to a different video.
+    this._receipt.set(null);
   }
 
   /**
@@ -788,6 +843,51 @@ export class PublishState {
     } finally {
       this._saving.set(false);
     }
+  }
+
+  /**
+   * Push this item's chosen metadata to its linked video.
+   *
+   * THE ONLY REMOTE WRITE IN THIS SERVICE, and the only one that changes something the
+   * audience can see. It is never called from a value change — the component asks for an
+   * explicit confirmation first, showing exactly what will be sent.
+   *
+   * Nothing is decided here. The main process reads the video, refuses what has to be
+   * refused (no chosen title, a video on another channel, a published video that cannot
+   * be scheduled, a thumbnail that no longer validates) and its message is shown as it
+   * came. A failure means NOTHING was written — the refusals all happen before the write.
+   */
+  async pushToYouTube(): Promise<PushReceipt | null> {
+    const t = this.target('push to YouTube');
+    if (!t) return null;
+
+    const blocked = this.pushBlockedReason();
+    if (blocked) {
+      this._error.set(`Cannot push: ${blocked}`);
+      return null;
+    }
+
+    this._pushing.set(true);
+    this._error.set(null);
+    this._receipt.set(null);
+    try {
+      const res = await this.electron.publishPushYouTube(t);
+      if (this._itemId() !== t) return null;
+      if (!res.success || !res.data) {
+        this._error.set(res.error ?? 'The push failed and the main process gave no reason.');
+        return null;
+      }
+      this._selection.set(res.data.selection);
+      this._receipt.set(res.data.receipt);
+      return res.data.receipt;
+    } finally {
+      this._pushing.set(false);
+    }
+  }
+
+  /** Put the receipt away. It stays on the record; this only closes the panel's copy. */
+  dismissReceipt(): void {
+    this._receipt.set(null);
   }
 
   dismissError(): void {

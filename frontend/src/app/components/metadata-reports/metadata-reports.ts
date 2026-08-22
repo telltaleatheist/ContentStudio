@@ -1,4 +1,5 @@
 import { Component, ElementRef, OnInit, ViewChild, computed, inject, signal } from '@angular/core';
+import { firstValueFrom } from 'rxjs';
 import { MatCardModule } from '@angular/material/card';
 import { MatListModule } from '@angular/material/list';
 import { MatIconModule } from '@angular/material/icon';
@@ -6,9 +7,11 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatCheckboxModule } from '@angular/material/checkbox';
+import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { ElectronService } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
 import { PublishState } from '../../features/publish/publish-state';
+import { YouTubePushDialog, YouTubePushDialogData } from '../../features/publish/youtube-push-dialog';
 import { MAX_AB_VARIANTS } from '../../features/publish/publish.types';
 import {
   basename,
@@ -68,7 +71,8 @@ interface ParsedMetadata {
     MatButtonModule,
     MatProgressSpinnerModule,
     MatChipsModule,
-    MatCheckboxModule
+    MatCheckboxModule,
+    MatDialogModule
   ],
   templateUrl: './metadata-reports.html',
   styleUrl: './metadata-reports.scss'
@@ -93,7 +97,8 @@ export class MetadataReports implements OnInit {
 
   constructor(
     private electron: ElectronService,
-    private notificationService: NotificationService
+    private notificationService: NotificationService,
+    private dialog: MatDialog
   ) {}
 
   /**
@@ -241,6 +246,83 @@ export class MetadataReports implements OnInit {
       return;
     }
     await this.publish.setThumbnail(picked.files[0]);
+  }
+
+  // ------------------------------------------------------------- push to YouTube
+  //
+  // The only control on this page that changes something the audience can see. Two steps,
+  // always: a dialog listing exactly what will be sent, then the call. There is no
+  // "push without asking" path and there is no batch push — one video at a time, looked at.
+
+  /** An ISO instant as this Mac reads it. Used for push timestamps in the panel. */
+  localTime(iso: string): string {
+    return describePublishAt(iso).local;
+  }
+
+  /** The channel's display name, or its raw id when the registry has no name for it. */
+  pushChannelLabel(): string {
+    const id = this.publish.channelId();
+    if (!id) return 'no channel';
+    const known = this.publish.channels().find((c) => c.channelId === id);
+    return known ? `${known.name} (${id})` : id;
+  }
+
+  /**
+   * Confirm, then push.
+   *
+   * Everything shown in the dialog is the value that will actually be sent: the title is
+   * chosen variant 1, the description and tags are the RESOLVED ones (overrides applied,
+   * composed in the main process) — the same values the extension would have typed into
+   * Studio. Nothing is recomposed here for display.
+   */
+  async pushToYouTube() {
+    const blocked = this.publish.pushBlockedReason();
+    if (blocked) {
+      this.publish.showError(`Cannot push: ${blocked}`);
+      return;
+    }
+
+    const description = this.publish.resolvedDescription();
+    const tags = this.publish.resolvedTags()
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+    const schedule = this.publish.publishAt();
+    const thumbnailPath = this.publish.thumbnailPath();
+    const preview = this.publish.thumbnailPreview();
+
+    const data: YouTubePushDialogData = {
+      videoId: this.publish.videoId()!,
+      channelLabel: this.pushChannelLabel(),
+      title: this.publish.pushTitle()!,
+      descriptionFirstLine: description.split('\n')[0].trim(),
+      descriptionChars: description.length,
+      tagCount: tags.length,
+      tagsPreview: tags.slice(0, 8).join(', ') + (tags.length > 8 ? `, +${tags.length - 8} more` : ''),
+      scheduleLabel: schedule ? this.describeScheduleForPush(schedule) : null,
+      thumbnailName: thumbnailPath ? this.fileName(thumbnailPath) : null,
+      // Only the image already on screen. Reading one here would be a second read of a
+      // file the panel has already read, and a slow dialog for no new information.
+      thumbnailDataUrl: preview && preview.path === thumbnailPath ? preview.dataUrl : null,
+    };
+
+    const confirmed = await firstValueFrom(
+      this.dialog.open(YouTubePushDialog, { data, width: '640px' }).afterClosed()
+    );
+    if (!confirmed) return;
+
+    const receipt = await this.publish.pushToYouTube();
+    if (!receipt) return; // the failure is in the banner, verbatim
+    this.notificationService.success(
+      'Pushed to YouTube',
+      `"${receipt.updated.title}" — video ${receipt.videoId} on ${this.pushChannelLabel()}.`
+    );
+  }
+
+  /** The schedule as the dialog states it: local wall clock, its offset, and the raw instant. */
+  private describeScheduleForPush(iso: string): string {
+    const when = describePublishAt(iso);
+    return `${when.local} (${when.localOffset}) — stored as ${when.raw}`;
   }
 
   // ------------------------------------------------------------------- editing

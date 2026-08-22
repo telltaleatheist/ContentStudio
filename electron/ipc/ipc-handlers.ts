@@ -2466,6 +2466,25 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     // RoutableChannel structurally, which is what keeps publish/ free of an analytics
     // import.
     listChannels: () => analyticsStore.listChannels(),
+    // The three YouTube WRITES the push action needs, bound one by one rather than by
+    // handing publish/ the whole client. Same reason as listRecentUploads above, with a
+    // sharper edge: these are the only calls in the app that modify a live video, so the
+    // set of them is written out here where it can be read at a glance.
+    pushApi: {
+      getVideoParts: (channelId: string, videoId: string) =>
+        analytics.youtubeApi.getVideoParts(channelId, videoId),
+      updateVideo: (
+        channelId: string,
+        parts: Array<'snippet' | 'status'>,
+        body: { id: string; snippet?: Record<string, any>; status?: Record<string, any> }
+      ) => analytics.youtubeApi.updateVideo(channelId, parts, body),
+      setThumbnail: (
+        channelId: string,
+        videoId: string,
+        image: Buffer,
+        mime: 'image/png' | 'image/jpeg'
+      ) => analytics.youtubeApi.setThumbnail(channelId, videoId, image, mime),
+    },
   });
 
   // Expose the publish routes on the existing localhost ingest server so the companion

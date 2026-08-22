@@ -19,6 +19,7 @@ import { ipcMain, nativeImage } from 'electron';
 import type { UploadStatusEntry } from '../youtube/youtube-api.service';
 import { PublishStoreService, GeneratedFallback, resolveChosenMetadata } from './publish-store.service';
 import { matchDraft, toFillCandidates } from './video-matcher';
+import { YouTubePushApi, pushItemToYouTube } from './youtube-push';
 import { RoutableChannel, findChannelById, resolveChannelForPromptSet } from './channel-routing';
 import {
   ThumbnailValidation,
@@ -56,6 +57,15 @@ export interface PublishIpcDeps {
    * without a restart, and a stale copy would reject an id that is in fact valid.
    */
   listChannels: () => RoutableChannel[];
+  /**
+   * The three YouTube write calls "Push to YouTube" needs, injected exactly like
+   * listRecentUploads — as a narrow surface rather than the whole client.
+   *
+   * That is not decoration here: this is the seam where a push can be exercised against
+   * a fixture instead of a real channel, and a mistake in the read-modify-write rewrites
+   * a live video. Nothing in publish/ constructs a YouTube client.
+   */
+  pushApi: YouTubePushApi;
 }
 
 /** Uniform envelope so the renderer can branch on success without try/catch everywhere. */
@@ -259,10 +269,19 @@ export function buildFieldPatch(fields: Record<string, unknown>, ctx: FieldConte
 }
 
 export function setupPublishIpc(deps: PublishIpcDeps): void {
-  const { store, readGenerated, listRecentUploads, listChannels } = deps;
+  const { store, readGenerated, listRecentUploads, listChannels, pushApi } = deps;
 
   if (typeof listChannels !== 'function') {
     throw new Error('setupPublishIpc requires listChannels: channel routing cannot be faked.');
+  }
+
+  if (!pushApi || typeof pushApi.getVideoParts !== 'function' || typeof pushApi.updateVideo !== 'function'
+      || typeof pushApi.setThumbnail !== 'function') {
+    throw new Error(
+      'setupPublishIpc requires pushApi with getVideoParts, updateVideo and setThumbnail. ' +
+      'A push that could not read the video first would replace its snippet with whatever ' +
+      'this app happened to know.'
+    );
   }
 
   /**
@@ -589,6 +608,28 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       const id = requireItemId(itemId, 'itemId');
       const generated = requireGenerated(id);
       return ok(await store.update(id, generated.jobId, { videoId: null, status: 'ready' }));
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * Push the item's chosen metadata onto its linked video.
+   *
+   * The ONE channel in this file that writes to YouTube. It reads the video's current
+   * snippet and status first and hands them back with only the fields it means to change
+   * replaced — videos.update replaces a whole part, so anything less would clear the
+   * fields it did not mention.
+   *
+   * Failures arrive VERBATIM. A 403 from a revoked grant, a quota message, "this video
+   * is PUBLIC and cannot be scheduled" — all of them are the operator's next action, and
+   * summarising them into "push failed" would delete the only useful part.
+   */
+  ipcMain.handle('publish-push-youtube', async (_e, itemId: string) => {
+    try {
+      const id = requireItemId(itemId, 'itemId');
+      const outcome = await pushItemToYouTube(id, { store, readGenerated, api: pushApi });
+      return ok(outcome);
     } catch (err: any) {
       return fail(err?.message || String(err));
     }

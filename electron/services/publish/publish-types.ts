@@ -91,6 +91,47 @@ export interface ThumbnailMeta {
 }
 
 /**
+ * What one "Push to YouTube" actually did.
+ *
+ * Every part of the push is named here EITHER in `updated` OR in `skipped` with the
+ * reason it was not sent. There is no third state: a part that is in neither would be a
+ * part nobody can account for, and "did the thumbnail go?" is exactly the question this
+ * record exists to answer weeks later.
+ *
+ * Sizes rather than contents for description and tags — the values themselves are already
+ * on the record (or regenerable from the report), and a receipt that duplicated them
+ * would be a second copy that could disagree with the first.
+ */
+export interface PushReceipt {
+  /** The video that was written to. */
+  videoId: string;
+  /** The channel that video belongs to, as YouTube reported it at push time. */
+  channelId: string;
+  /** ISO. When the push completed. */
+  pushedAt: string;
+  updated: {
+    /** snippet.title as sent — chosenTitles[0], the operator's variant 1. */
+    title: string;
+    /** Characters of description sent, and its first line, which is what a human recognises. */
+    description: { chars: number; firstLine: string };
+    /** How many tags were sent. */
+    tags: { count: number };
+    /** Present only when status.publishAt was set by this push. */
+    publishAt?: string;
+    /** Present only when a thumbnail was uploaded; the absolute path of the file sent. */
+    thumbnail?: string;
+  };
+  /**
+   * The parts this push did NOT send, each with the reason. A part is absent from here
+   * exactly when it is present in `updated`.
+   */
+  skipped: {
+    publishAt?: string;
+    thumbnail?: string;
+  };
+}
+
+/**
  * A link from a generated item to ONE story's editor transcript (Phase 2).
  *
  * THE TYPE ONLY. Nothing in this PR resolves, finds, or consumes one — that is PR 4.
@@ -218,6 +259,25 @@ export interface ChosenMetadata {
    * final-export-only mode (spec §3.4).
    */
   transcriptRef: TranscriptRef | null;
+
+  /**
+   * ISO. When metadata was last PUSHED to the linked video, or null for never.
+   *
+   * Distinct from `filledAt`, which records the extension typing into Studio's form and
+   * says nothing about whether the operator then saved it. This one is an API write that
+   * either happened or threw, so it is the only timestamp here that means "YouTube has
+   * these values".
+   */
+  pushedAt: string | null;
+
+  /**
+   * What that push sent, part by part. null exactly when pushedAt is.
+   *
+   * Only the LAST push is kept. This is a record of the video's current state as far as
+   * this app knows it, not a history: a log of pushes belongs in a log, and keeping an
+   * array here would grow a selection file without anything ever reading past index 0.
+   */
+  pushReceipt: PushReceipt | null;
 
   /** Set once the item is linked to a real video. */
   videoId: string | null;
@@ -454,6 +514,8 @@ export function emptyChosenMetadata(itemId: string, jobId: string): ChosenMetada
     thumbnailMeta: null,
     isPodcast: false,
     transcriptRef: null,
+    pushedAt: null,
+    pushReceipt: null,
     videoId: null,
     sourceFilename: null,
     sourceDurationSec: null,
@@ -490,6 +552,8 @@ export function upgradeStoredMetadata(record: ChosenMetadata): ChosenMetadata {
   if (!('thumbnailMeta' in stored)) upgraded.thumbnailMeta = null;
   if (!('isPodcast' in stored)) upgraded.isPodcast = false;
   if (!('transcriptRef' in stored)) upgraded.transcriptRef = null;
+  if (!('pushedAt' in stored)) upgraded.pushedAt = null;
+  if (!('pushReceipt' in stored)) upgraded.pushReceipt = null;
 
   return upgraded;
 }

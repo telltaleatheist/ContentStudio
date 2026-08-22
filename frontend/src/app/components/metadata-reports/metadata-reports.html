@@ -305,6 +305,66 @@
                     }
                   </div>
                 }
+
+                <!-- Push to YouTube. The ONE control on this page that writes to a live
+                     video, and it writes only to the video this item is already linked
+                     to: it uploads nothing and creates nothing (the API audit is still
+                     pending, so drafts are uploaded in the browser). It always asks
+                     first, listing exactly what will be sent. -->
+                <div class="publish-row">
+                  <span class="publish-label">YouTube</span>
+                  <div class="publish-control">
+                    @if (publish.videoId(); as videoId) {
+                      <code class="publish-video" title="The linked video">{{ videoId }}</code>
+                    } @else {
+                      <span class="publish-empty">No video linked.</span>
+                    }
+                    <button class="copy-btn confirm"
+                            [disabled]="!!publish.pushBlockedReason() || publish.pushing() || publish.saving()"
+                            (click)="pushToYouTube()">
+                      @if (publish.pushing()) { Pushing… } @else { Push to YouTube }
+                    </button>
+                  </div>
+                </div>
+
+                <!-- A disabled button with no account of itself is a dead end. -->
+                @if (publish.pushBlockedReason(); as why) {
+                  <p class="publish-note">{{ why }}</p>
+                } @else if (publish.lastPushReceipt(); as last) {
+                  <p class="publish-note">
+                    Last pushed {{ localTime(last.pushedAt) }} — "{{ last.updated.title }}".
+                  </p>
+                }
+
+                <!-- The receipt for the push made just now: every part either sent, with
+                     what was sent, or named with the reason it was not. -->
+                @if (publish.receipt(); as receipt) {
+                  <div class="publish-receipt">
+                    <div class="publish-proposal-head">
+                      <mat-icon>task_alt</mat-icon>
+                      <strong>Pushed to {{ receipt.videoId }}</strong>
+                      <button class="copy-btn" (click)="publish.dismissReceipt()">Dismiss</button>
+                    </div>
+                    <p class="publish-note">Title — {{ receipt.updated.title }}</p>
+                    <p class="publish-note">
+                      Description — {{ receipt.updated.description.chars }} characters, starting
+                      "{{ receipt.updated.description.firstLine }}"
+                    </p>
+                    <p class="publish-note">Tags — {{ receipt.updated.tags.count }} sent</p>
+                    @if (receipt.updated.publishAt) {
+                      <p class="publish-note">
+                        Schedule — {{ localTime(receipt.updated.publishAt) }}, video kept private until then
+                      </p>
+                    } @else if (receipt.skipped.publishAt) {
+                      <p class="publish-note">Schedule — {{ receipt.skipped.publishAt }}</p>
+                    }
+                    @if (receipt.updated.thumbnail) {
+                      <p class="publish-note">Thumbnail — {{ fileName(receipt.updated.thumbnail) }} uploaded</p>
+                    } @else if (receipt.skipped.thumbnail) {
+                      <p class="publish-note">Thumbnail — {{ receipt.skipped.thumbnail }}</p>
+                    }
+                  </div>
+                }
               </div>
             </div>
 
