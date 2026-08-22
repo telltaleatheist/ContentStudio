@@ -414,18 +414,26 @@ export class PromptAssets {
   }
 
   /**
-   * The FINAL SELF-CHECK block for ONE GROUP of fields.
+   * The FINAL SELF-CHECK block for ONE CALL.
    *
    * This is the fix for a real defect: the self-check used to travel as one verbatim block with
-   * whichever group held the titles, so a titles-only group was told "thumbnail options don't
+   * whichever call held the titles, so a titles-only call was told "thumbnail options don't
    * repeat core words from the top 3 titles" about thumbnail text it would never write. Lines
-   * are assembled from the fields the group ACTUALLY HAS — global lines always, each field's own
-   * lines when that field is present, and a cross-field line only when BOTH its fields are.
+   * are assembled from the fields the call ACTUALLY HAS — global lines always, each field's own
+   * lines when that field is present, and a cross-field line only when its other field is there
+   * to compare against.
+   *
+   * `alsoAvailable` is what keeps the cross-field lines alive under one call per field. A field
+   * listed there is not WRITTEN by this call and contributes no lines of its own — it is handed
+   * to the call as INPUT DATA (metadata-tasks.ts `inputFields`), which is all a cross-field
+   * check needs: the thumbnail call is given the titles, so "don't repeat their core words" is
+   * a rule it can perform. Without it, splitting titles and thumbnails into separate calls
+   * would have silently deleted the one line that ties them together.
    */
-  selfCheckBlock(channel: ChannelData, fields: string[]): string {
+  selfCheckBlock(channel: ChannelData, fields: string[], alsoAvailable: string[] = []): string {
     const filePath = path.join(this.root, 'shared', 'fields', 'self-check.yml');
     const header = this.requireString(this.selfCheckFile, filePath, 'header');
-    const present = new Set(fields);
+    const present = new Set([...fields, ...alsoAvailable]);
     const lines: string[] = [];
 
     for (const field of fields) {

@@ -17,17 +17,58 @@ import { METADATA_FIELDS } from './metadata-fields';
 import {
   InstructionSection,
   MetadataFieldId,
-  MetadataGroupSpec,
+  MetadataFieldUnitSpec,
   MetadataRunContext,
-  buildGroupInstructions,
+  buildFieldInstructions,
+  buildInputDataBlock,
   buildOutputFormat,
-  groupNeedsTranscript,
   parseInstructionSections,
 } from './metadata-tasks';
 import { ChannelData, PROMPTS_SUBDIR, initPromptAssets, promptAssets } from './prompt-assets';
 import { Chapter } from './chapter-generator.service';
 import { queueAITask } from '../queue-manager.service';
 import { JobCancelledError, isAbortError } from './cancellation';
+
+/**
+ * How much raw transcript each transport reads BEFORE anything is condensed.
+ *
+ * Module-level and exported because the rule is asserted in the pure-check harness
+ * (tools/routing-publish-checks.js): the whole point of the 2026-08-22 change is that a local
+ * run reads the video rather than a précis of it, and a threshold that quietly drifted back
+ * down would look exactly like a run that happened to have a long transcript.
+ *
+ * cloud — unchanged. ~60k characters is roughly an hour of speech, and beyond it the
+ *   evidence-extraction pass is cheaper than the tokens.
+ * local — NEW, and derived rather than chosen. The per-field calls refuse above
+ *   LOCAL_FIELD_CTX_MAX = 40960 tokens (metadata-tasks.ts), which is ~143,000 characters at
+ *   this codebase's 3.5 chars/token estimate. Out of that comes the output budget
+ *   (num_predict 8192 ≈ 29,000 characters) and the prompt assembled around the transcript
+ *   (editorial core, field section, self-check, chapter block, insights ≈ 20,000 characters).
+ *   143k - 29k - 20k ≈ 94k; 90,000 is that with the margin left in.
+ */
+export const DIRECT_PASS_MAX_CHARS = {
+  cloud: 60000,
+  local: 90000,
+} as const;
+
+/**
+ * Does this transcript reach the model AS ITSELF?
+ *
+ * The one place the question is answered, so the threshold cannot be stated in one place and
+ * applied in another. `forceCondense` is the compilation mode's declared exception: its items'
+ * outputs are joined into one combined prompt, so each has to be short by construction whatever
+ * its length.
+ */
+export function directPassesRaw(options: {
+  chars: number;
+  /** AIConfig.provider — anything other than 'ollama' is a cloud transport. */
+  provider: string;
+  forceCondense?: boolean;
+}): boolean {
+  if (options.forceCondense) return false;
+  const ceiling = options.provider === 'ollama' ? DIRECT_PASS_MAX_CHARS.local : DIRECT_PASS_MAX_CHARS.cloud;
+  return options.chars <= ceiling;
+}
 
 export interface AIConfig {
   provider: 'ollama' | 'openai' | 'claude';
@@ -298,15 +339,24 @@ export class AIManagerService {
     console.log('[AIManager] Metadata model:', this.metadataModel);
   }
 
-  // Token-efficiency thresholds (chars). ~3.5-4 chars/token, ~50k chars/hour of speech.
-  // Direct pass: below this, the metadata model reads the raw transcript — no
-  // summarization call. Summarizing first costs MORE (the summarizer reads the same
-  // input, plus you pay its output and a second call) and loses verbatim quotes.
-  private static readonly CLOUD_DIRECT_PASS_MAX_CHARS = 60000;
-  // Above direct-pass size, extract evidence in large chunks (few requests, less
-  // prompt overhead, better per-chunk context than the old 8k chunks).
+  /**
+   * The direct-pass ceilings live at module scope (DIRECT_PASS_MAX_CHARS above) because the
+   * pure-check harness asserts them. What stays here is the CHUNK size used once a transcript
+   * is over one of them.
+   *
+   * Above direct-pass size, evidence is extracted in large chunks: few requests, less prompt
+   * overhead, and far better per-chunk context than the old 8k chunks.
+   */
   private static readonly CLOUD_SUMMARIZE_CHUNK_CHARS = 60000;
-  private static readonly OLLAMA_SUMMARIZE_CHUNK_CHARS = 8000;
+
+  /**
+   * Chunk size when a transcript is over the direct-pass ceiling and has to be condensed.
+   *
+   * 8000 was a 14B-era number. The summarizer's transport pins num_ctx 32768 (~114,000
+   * characters), so 8k chunks were spending fifteen calls on work that fits in two, and each
+   * of those calls saw a fifteenth of the video with no idea what surrounded it.
+   */
+  private static readonly OLLAMA_SUMMARIZE_CHUNK_CHARS = 60000;
 
   /**
    * Get the prompts directory path
@@ -521,8 +571,8 @@ export class AIManagerService {
    * THE ORDER OF THE INSTRUCTIONS is the channel's declared field order, then OUTPUT FORMAT,
    * then the FINAL SELF-CHECK — which is what the old sets did by hand and what
    * `parseInstructionSections` downstream expects to find. The self-check placed HERE is the
-   * whole-channel one, used by the compilation call; a routed group gets a self-check assembled
-   * from its own fields instead (buildGroupInstructions).
+   * whole-channel one, used by the compilation call; a routed FIELD call gets a self-check
+   * assembled from its own field's lines instead (buildFieldInstructions).
    *
    * AN UNKNOWN CHANNEL THROWS. An ABSENT one is a warning and nothing more: master analysis and
    * the episode splitter construct this service with no prompt set at all and never generate
@@ -581,14 +631,20 @@ export class AIManagerService {
   /**
    * Prepare transcript content for metadata generation.
    *
-   * Cloud providers (Claude/OpenAI): transcripts up to CLOUD_DIRECT_PASS_MAX_CHARS
-   * pass through UNCHANGED — the metadata model reads the raw transcript, which is
-   * both cheaper (no summarizer input+output, no second call) and higher quality
-   * (verbatim quotes survive). Longer transcripts get evidence-extraction in
-   * large chunks. Ollama always condenses (small context window).
+   * THE RAW TRANSCRIPT IS THE INPUT, on both transports. A transcript up to the provider's
+   * direct-pass ceiling passes through UNCHANGED — the field calls read the video, not a
+   * précis of it — which is cheaper (no summarizer input, no summarizer output, no second
+   * call) and better (verbatim quotes, phrasing and sarcasm survive to the model that has to
+   * write a title out of them).
    *
-   * options.forceCondense: always condense regardless of size — used for
-   * compilation items, whose outputs get joined into one combined prompt.
+   * SUMMARIZATION NOW FIRES FOR TWO REASONS AND NO OTHERS:
+   *   - the transcript genuinely cannot fit — a multi-hour livestream over the ceiling, where
+   *     evidence extraction in large chunks is the declared degradation and the run logs it;
+   *   - `forceCondense`, for compilation items, whose per-item outputs are joined into one
+   *     combined prompt and so must each be short by construction.
+   *
+   * It is no longer the DEFAULT on the local path. It was, and that meant every locally
+   * generated title was written from a summary of the video rather than from the video.
    */
   async summarizeTranscript(
     transcript: string,
@@ -600,10 +656,28 @@ export class AIManagerService {
     }
 
     const isCloud = this.config.provider !== 'ollama';
+    const directPassMax = isCloud ? DIRECT_PASS_MAX_CHARS.cloud : DIRECT_PASS_MAX_CHARS.local;
 
-    if (isCloud && !options?.forceCondense && transcript.length <= AIManagerService.CLOUD_DIRECT_PASS_MAX_CHARS) {
-      console.log(`[AIManager] Direct pass for ${sourceName}: ${transcript.length} chars sent to metadata model unsummarized`);
+    if (directPassesRaw({ chars: transcript.length, provider: this.config.provider, forceCondense: options?.forceCondense })) {
+      console.log(
+        `[AIManager] Direct pass for ${sourceName}: ${transcript.length} chars of raw transcript sent to the ` +
+          `metadata calls unsummarized (${isCloud ? 'cloud' : 'local'} ceiling ${directPassMax})`
+      );
       return transcript;
+    }
+
+    // A DECLARED degradation either way, said out loud with which of the two reasons it was.
+    if (options?.forceCondense) {
+      log.info(
+        `[AIManager] ${sourceName}: condensing ${transcript.length} chars because this item asked for it ` +
+          `(compilation mode joins every item's output into one combined prompt)`
+      );
+    } else {
+      log.warn(
+        `[AIManager] ${sourceName}: ${transcript.length} chars is over the ${directPassMax}-character ` +
+          `direct-pass ceiling, so the metadata calls will read an evidence extraction rather than the ` +
+          `transcript itself. Verbatim quotes and phrasing do not survive that step.`
+      );
     }
 
     console.log(`[AIManager] ═══ SUMMARIZATION STARTING for ${sourceName} ═══`);
@@ -914,21 +988,21 @@ export class AIManagerService {
   }
 
   /**
-   * The FINAL SELF-CHECK for one group, built from the fields that group actually writes.
+   * The FINAL SELF-CHECK for ONE FIELD's call.
    *
    * THE DEFECT THIS FIXES. The self-check used to ride as ONE verbatim block with whichever
-   * group held the titles. Once fields could be routed to different models that became a block
-   * of instructions the receiving model could not perform: a titles-only group was told
-   * "thumbnail options don't repeat core words from the top 3 titles" about thumbnail text it
-   * would never see. Unfollowable lines are not harmless — they teach a model that some of this
-   * prompt is decoration.
+   * call held the titles, so a call that wrote only titles was told "thumbnail options don't
+   * repeat core words from the top 3 titles" about thumbnail text it would never see.
+   * Unfollowable lines are not harmless — they teach a model that some of this prompt is
+   * decoration.
    *
-   * Under the shipped routing all four packaging fields are on ONE model, so every line
-   * including the cross-field ones is emitted and followable, which is the coherence the prompt
-   * sets were written for in the first place.
+   * `inputFields` is what keeps the CROSS-FIELD lines alive now that no two fields share a
+   * call. A line that needs a second field is emitted when that field is either written here or
+   * SUPPLIED here as input data: the thumbnail call is handed the titles, so it is told not to
+   * repeat their core words, and it can obey because it can read them.
    */
-  groupSelfCheck(fields: MetadataFieldId[]): string {
-    return promptAssets().selfCheckBlock(this.channel(), fields);
+  fieldSelfCheck(field: MetadataFieldId, inputFields: MetadataFieldId[] = []): string {
+    return promptAssets().selfCheckBlock(this.channel(), [field], inputFields);
   }
 
   /** instructions_prompt split on its `## ` headers, parsed once per loaded prompt set. */
@@ -943,61 +1017,58 @@ export class AIManagerService {
   }
 
   /**
-   * Assemble ONE cloud group's prompt (metadata-tasks.ts).
+   * Assemble ONE FIELD's prompt (metadata-tasks.ts).
    *
-   * Same three blocks as the whole-metadata prompt — JSON system, editorial prompt with
-   * the subject filled in, instructions — but the instructions are only this group's
-   * sections and an OUTPUT FORMAT naming only its keys.
+   * Same three blocks the whole-metadata prompt has always had — JSON system, editorial prompt
+   * with the subject filled in, instructions — except the instructions are ONE field's section,
+   * an OUTPUT FORMAT naming ONE key, and the self-check lines that one field can perform.
    *
-   * The transcript reaches a group only if one of its fields needs it: description, tags
-   * and hashtags condition on the chapter list alone, which is the conditioning their
-   * local adapters get, so a Sonnet group holding only those two reads exactly what the
-   * adapters would have read.
+   * WHAT CHANGED IN THE SUBJECT BLOCK: the transcript reaches EVERY call. It used to reach only
+   * the calls whose fields were declared to need it, and the rest got a short "the chapter list
+   * is the content" stand-in — a concession to context windows that meant the description was
+   * written from a précis of the video. The transcript is direct-passed now
+   * (summarizeTranscript above), so there is one content slot and it holds the video.
+   *
+   * `pending` is the "Show prompt" preview, assembled before any call has run: a call that
+   * reads an earlier field's answer renders a labelled placeholder instead of that answer. It
+   * is never the shape that gets SENT — buildInputDataBlock refuses without the real input.
    */
-  buildMetadataGroupPrompt(spec: MetadataGroupSpec, ctx: MetadataRunContext): string {
+  buildMetadataFieldPrompt(
+    spec: MetadataFieldUnitSpec,
+    ctx: MetadataRunContext,
+    options?: { pending?: boolean }
+  ): string {
     if (!this.currentPromptSet) {
       throw new Error('No prompt set loaded');
     }
 
     const promptSetName = this.config.promptSet || this.currentPromptSet.name || 'unknown';
-    // The chapters-only stand-in is only a stand-in where there ARE chapters. A text-subject
-    // run has no chapter list for it to point at, so every group reads the subject itself —
-    // which is the whole content this item has.
-    const hasChapters = ctx.chapterSubjects.length > 0;
-    const contentSlot =
-      groupNeedsTranscript(spec.fields) || !hasChapters ? ctx.content : SYSTEM_PROMPTS.TASK_CHAPTERS_ONLY_INPUT;
-    const subject = this.buildSubjectBlock(contentSlot, ctx.sourceLabel, undefined, ctx.chapterSubjects, ctx.chapterDetails);
-    const instructions = buildGroupInstructions(
+    const subject = this.buildSubjectBlock(
+      ctx.content,
+      ctx.sourceLabel,
+      undefined,
+      ctx.chapterSubjects,
+      ctx.chapterDetails
+    );
+    // Whatever an earlier call in this run wrote that this one has to read — today, the titles
+    // the thumbnail text has to avoid repeating.
+    const inputData = buildInputDataBlock(spec, ctx, options);
+    const instructions = buildFieldInstructions(
       spec,
       this.instructionSections(),
       promptSetName,
-      this.groupSelfCheck(spec.fields)
+      this.fieldSelfCheck(spec.field, spec.inputFields)
     );
 
     // Channel performance data speaks to titles, thumbnails and packaging — the fields it
-    // was distilled from. Which group carries it is decided when the run is planned, not
+    // was distilled from. Which call carries it is decided when the run is planned, not
     // here (see planMetadataUnits).
     const insightsSuffix = spec.insights && this.config.insightsBlock ? `\n\n${this.config.insightsBlock}` : '';
 
-    return `${SYSTEM_PROMPTS.JSON_SYSTEM}\n\n${this.fillSubject(subject)}\n\n${instructions.text}${insightsSuffix}`;
-  }
-
-  /**
-   * The metadata keys a cloud group is responsible for returning, per the loaded prompt
-   * set AND per this run's field ownership — a group returns no `hashtags` key in a run
-   * where the description adapter writes them, so it must not be asked for one either.
-   */
-  metadataGroupKeys(spec: MetadataGroupSpec): string[] {
-    if (!this.currentPromptSet) {
-      throw new Error('No prompt set loaded');
-    }
-    const promptSetName = this.config.promptSet || this.currentPromptSet.name || 'unknown';
-    return buildGroupInstructions(
-      spec,
-      this.instructionSections(),
-      promptSetName,
-      this.groupSelfCheck(spec.fields)
-    ).metadataKeys;
+    return (
+      `${SYSTEM_PROMPTS.JSON_SYSTEM}\n\n${this.fillSubject(subject)}` +
+      `${inputData ? `\n${inputData}` : ''}\n\n${instructions.text}${insightsSuffix}`
+    );
   }
 
   /**
@@ -1259,7 +1330,7 @@ export class AIManagerService {
    * and returned nothing has failed, and an empty array is not the same answer as a
    * missing key.
    *
-   * PUBLIC because LocalGroupUnit (metadata-tasks.ts) has to run the identical parse. It is
+   * PUBLIC because LocalFieldUnit (metadata-tasks.ts) has to run the identical parse. It is
    * not just JSON.parse — it is four stages of repair against the shapes models actually
    * return — and a local group that parsed its answer any other way would accept and reject
    * different responses than the cloud group running the same prompt.

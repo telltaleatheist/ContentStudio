@@ -15,9 +15,15 @@
 # where the pipeline produced one, the text subject where the item has no chapters. Both say
 # the same thing about what the model is working from and differ only in what that is.
 #
-# Placeholders: {channel}, {video}, {coverage}, {pools}, and the two character/word budgets,
-# which are substituted from description-unit.ts's own constants so the number in the prompt
-# and the number the code measures can never drift apart.
+# `{transcript}` is the video's own words, and it SUPERSEDES the summaries-only input these two
+# calls used to run on. It is rendered beside the chapter list, never instead of it — the
+# chapter list is a measurement of what the video spends its time on, which a transcript does
+# not tell you — and it is empty on a chapterless item, where the coverage block already IS the
+# only description of the video that exists.
+#
+# Placeholders: {channel}, {video}, {coverage}, {transcript}, {pools}, and the two
+# character/word budgets, which are substituted from description-unit.ts's own constants so the
+# number in the prompt and the number the code measures can never drift apart.
 
 coverage_chapters: |-
   What the video covers, chapter by chapter:
@@ -27,6 +33,10 @@ coverage_subject: |-
   What the video covers, as the operator described it:
   {items}
 
+transcript_block: |-
+  The transcript of the video, in full:
+  {items}
+
 hook: |-
   Write the opening line of a YouTube description. Output JSON only.
 
@@ -34,6 +44,8 @@ hook: |-
   Video: {video}
 
   {coverage}
+
+  {transcript}
 
   Names and phrases from the video, to draw on where they fit:
   {pools}
@@ -54,6 +66,8 @@ body: |-
   Video: {video}
 
   {coverage}
+
+  {transcript}
 
   Names and phrases from the video, to draw on where they fit:
   {pools}

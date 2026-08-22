@@ -33,6 +33,7 @@ const quality = require(path.join(ROOT, 'services/metadata/chapter-title-quality
 const tagsHashtags = require(path.join(ROOT, 'services/metadata/tags-hashtags.js'));
 const promptAssetsModule = require(path.join(ROOT, 'services/metadata/prompt-assets.js'));
 const tasks = require(path.join(ROOT, 'services/metadata/metadata-tasks.js'));
+const aiManager = require(path.join(ROOT, 'services/metadata/ai-manager.service.js'));
 
 /**
  * The prompt assets are read from the REPO'S OWN electron/assets/prompts, not from userData.
@@ -637,7 +638,18 @@ check('the self-check is assembled per group and never asks for a field the grou
 
   const thumbOnly = assets.selfCheckBlock(telltale, ['thumbnail_text']);
   if (/top 3 titles/.test(thumbOnly)) {
-    throw new Error('a thumbnail-only group was told to compare against titles it did not write:\n' + thumbOnly);
+    throw new Error('a thumbnail call was told to compare against titles it can neither write nor read:\n' + thumbOnly);
+  }
+
+  // ONE CALL PER FIELD makes this the shipped case: the thumbnail call writes only the
+  // thumbnail text, and the titles reach it as INPUT DATA. The cross-field line has to come
+  // back, or splitting the calls would have silently deleted the rule that ties them together.
+  const thumbWithTitlesGiven = assets.selfCheckBlock(telltale, ['thumbnail_text'], ['titles']);
+  if (!/[Tt]humbnail options don't repeat core words/.test(thumbWithTitlesGiven)) {
+    throw new Error('a thumbnail call HANDED the titles lost the cross-field check:\n' + thumbWithTitlesGiven);
+  }
+  if (/hook inside the first 45 characters/.test(thumbWithTitlesGiven)) {
+    throw new Error('a field supplied as INPUT contributed its own check lines:\n' + thumbWithTitlesGiven);
   }
 
   // The global lines ride with every group, whatever it holds.
@@ -817,11 +829,11 @@ check('the grounding corpus is everything the model was actually given', () => {
   }
 });
 
-// ------------------------------------------------------- the legacy path is gone
+// ------------------------------------------------------- one call per field
 //
 // The run planner is asserted through a STUB AIManagerService rather than a real one: what is
-// under test is which units get planned for which kind of item, and that is pure decision-making
-// over the routing table and the channel's field list.
+// under test is which calls get planned for which kind of item, in what order, and that is pure
+// decision-making over the routing table and the channel's field list.
 
 function stubManager(channelId) {
   const channel = assets.channel(channelId);
@@ -829,59 +841,273 @@ function stubManager(channelId) {
   return { promptSetSectionKeys: () => new Set(sections) };
 }
 
+function plan(channelId, options) {
+  const o = options || {};
+  return tasks.planMetadataUnits({
+    routing: routing.resolveMetadataRouting(o.routing),
+    defaultHost: 'http://localhost:11434',
+    aiManager: stubManager(channelId),
+    hasInsights: Boolean(o.hasInsights),
+    hasChapters: Boolean(o.hasChapters),
+    alsoLoads: o.alsoLoads || [],
+  });
+}
+
 check('an item WITHOUT chapters plans the same routed units, not a legacy single call', () => {
-  const resolved = routing.resolveMetadataRouting(undefined);
-  const plan = tasks.planMetadataUnits(resolved, 'http://localhost:11434',
-    stubManager('youtube-telltale'), false, /* hasChapters */ false);
+  const p = plan('youtube-telltale', { hasChapters: false });
 
   const written = new Set();
-  for (const unit of plan.units) for (const f of unit.fields) written.add(f);
+  for (const unit of p.units) for (const f of unit.fields) written.add(f);
 
   for (const field of ['titles', 'thumbnail_text', 'pinned_comment', 'clip_suggestions',
                        'description', 'description_hook', 'tags']) {
     if (!written.has(field)) throw new Error(field + ' is not written by any unit on a chapterless item');
   }
-  eq(plan.assembleTags, false, 'tags come from a model when there is no chapter list to measure pools against');
-  eq(plan.assembleHashtags, true, 'hashtags are still derived in code');
+  eq(p.assembleTags, false, 'tags come from a model when there is no chapter list to measure pools against');
+  eq(p.assembleHashtags, true, 'hashtags are still derived in code');
 });
 
 check('an item WITH chapters keeps its code-assembled tags', () => {
-  const resolved = routing.resolveMetadataRouting(undefined);
-  const plan = tasks.planMetadataUnits(resolved, 'http://localhost:11434',
-    stubManager('youtube-telltale'), false, /* hasChapters */ true);
+  const p = plan('youtube-telltale', { hasChapters: true });
 
   const written = new Set();
-  for (const unit of plan.units) for (const f of unit.fields) written.add(f);
+  for (const unit of p.units) for (const f of unit.fields) written.add(f);
   if (written.has('tags')) throw new Error('a model was planned for tags on a chaptered item');
-  eq(plan.assembleTags, true, 'assembled from the pools instead');
+  eq(p.assembleTags, true, 'assembled from the pools instead');
 });
 
 /**
- * The four packaging fields default to ONE model, so they are ONE call. This is the property
- * that makes the cross-field self-check followable, and it is worth asserting on the PLAN and
- * not only on the routing table — a grouping bug would leave the table correct and the calls
- * split.
+ * THE SHAPE CHANGE ITSELF. Every field is its own call and every call names exactly one key.
+ *
+ * This is the property the whole branch exists for, and it is asserted on the PLAN rather than
+ * only on the routing table: a grouping bug would leave the table correct and quietly put four
+ * fields back in one JSON object — which is the shape that dropped a key in 1 of 6 measured runs
+ * (prompt-artifacts/README.md) and wrote `FOURTH JET` as a title in the seven-field era.
  */
-check('the shipped defaults plan ONE packaging call, not four', () => {
-  const plan = tasks.planMetadataUnits(routing.resolveMetadataRouting(undefined),
-    'http://localhost:11434', stubManager('youtube-telltale'), true, true);
-  const packaging = plan.units.filter((u) => u.fields.includes('titles'));
-  eq(packaging.length, 1, 'exactly one unit writes titles');
-  for (const field of ['thumbnail_text', 'pinned_comment', 'clip_suggestions']) {
-    if (!packaging[0].fields.includes(field)) {
-      throw new Error(field + ' is in a different call from the titles it has to be coherent with');
+check('every field gets its OWN call, and each call names exactly one key', () => {
+  const p = plan('youtube-telltale', { hasChapters: true, hasInsights: true });
+  for (const unit of p.units) {
+    // The description is the one deliberate pair: a hook and a body, two calls, two keys, one
+    // unit — schema-constrained separately (description-unit.ts).
+    if (unit.fields.includes('description')) {
+      eq(unit.fields.length, 2, 'the description unit writes the hook and the body and nothing else');
+      continue;
+    }
+    eq(unit.fields.length, 1, 'unit "' + unit.label + '" carries more than one field');
+  }
+  const packaging = p.units.filter((u) =>
+    ['titles', 'thumbnail_text', 'pinned_comment', 'clip_suggestions'].some((f) => u.fields.includes(f)));
+  eq(packaging.length, 4, 'the four packaging fields are four separate calls');
+});
+
+/**
+ * THE ORDERING CONTRACT. Titles first, because the thumbnail call is handed them as input data
+ * — that is what replaced the coherence a shared call used to buy. And units on one model run
+ * consecutively, because Ollama reloads a model that has been evicted in between.
+ */
+check('titles run first, and the thumbnail call declares them as its input', () => {
+  const p = plan('youtube-telltale', { hasChapters: true });
+  eq(p.units[0].fields[0], 'titles', 'the first unit is the titles call');
+
+  const thumb = p.units.find((u) => u.fields.includes('thumbnail_text'));
+  if (!thumb.inputFields.includes('titles')) {
+    throw new Error('the thumbnail call does not read the titles, so its cross-field rule is unfollowable');
+  }
+  // Every input a unit declares must be WRITTEN by an earlier unit. A plan that fails this
+  // throws halfway through a real job, with the model already loaded.
+  const writtenSoFar = new Set();
+  for (const unit of p.units) {
+    for (const input of unit.inputFields) {
+      if (!writtenSoFar.has(input)) {
+        throw new Error(unit.label + ' reads "' + input + '", which nothing before it writes');
+      }
+    }
+    for (const f of unit.fields) writtenSoFar.add(f);
+  }
+});
+
+check('calls on the same model run consecutively, so each model loads once', () => {
+  const p = plan('youtube-telltale', { hasChapters: false });
+  const labels = p.units.map((u) => u.label);
+  // The label ends in the model, which is what the ordering groups on.
+  const modelOf = (label) => label.replace(/^.*\((local|cloud) /, '').replace(/\).*$/, '');
+  const seen = [];
+  for (const label of labels) {
+    const model = modelOf(label);
+    if (seen[seen.length - 1] !== model) {
+      if (seen.includes(model)) {
+        throw new Error('model ' + model + ' is loaded, evicted and loaded again: ' + labels.join(' -> '));
+      }
+      seen.push(model);
     }
   }
 });
 
+/**
+ * THE TITLES BLOCK the thumbnail call reads, and what it does when it is not there.
+ *
+ * Three cases, and the third is the one that matters: an absent input is a PLANNING BUG, so it
+ * throws rather than sending a call that silently lost half its brief.
+ */
+check('the titles reach the thumbnail call as input data, or the call refuses', () => {
+  const spec = { field: 'thumbnail_text', model: 'qwen3.8:27b', insights: false, inputFields: ['titles'] };
+  const ctx = { sourceLabel: 'x.mp4', generated: { titles: ['Alpha One', 'Beta Two'] } };
+
+  const block = tasks.buildInputDataBlock(spec, ctx);
+  if (!block.includes('Alpha One') || !block.includes('Beta Two')) {
+    throw new Error('the titles are not in the block the thumbnail call reads:\n' + block);
+  }
+  if (!/1\. Alpha One/.test(block)) throw new Error('the titles are not numbered, so "top 3" means nothing');
+
+  // The "Show prompt" preview, assembled before anything has run.
+  const pending = tasks.buildInputDataBlock(spec, { sourceLabel: 'x.mp4', generated: {} }, { pending: true });
+  if (!/titles call runs first/.test(pending)) {
+    throw new Error('the preview does not say where the titles come from:\n' + pending);
+  }
+
+  let threw = false;
+  try {
+    tasks.buildInputDataBlock(spec, { sourceLabel: 'x.mp4', generated: {} });
+  } catch (e) {
+    threw = /needs the titles/.test(e.message);
+  }
+  if (!threw) throw new Error('a thumbnail call with no titles behind it did not refuse');
+
+  // A call that reads nothing renders nothing — no empty heading, no placeholder.
+  eq(tasks.buildInputDataBlock({ ...spec, inputFields: [] }, ctx), '', 'a call with no inputs renders no block');
+});
+
+/**
+ * ONE num_ctx PER MODEL PER RUN (ollama-json trap 4).
+ *
+ * Ollama fully reloads a model on any num_ctx change, so two calls on one model that sized
+ * themselves independently would reload a 17GB model in the middle of an item. The largest
+ * prompt wins and everybody shares it.
+ */
+check('two calls on one model share ONE num_ctx, sized by the larger', () => {
+  const budget = new tasks.ModelRunContextBudget('qwen3.8:27b');
+  budget.register('titles', () => 9000);
+  budget.register('pinned_comment', () => 4000);
+
+  const ctx = { sourceLabel: 'x.mp4' };
+  const first = budget.resolve(ctx);
+  const second = budget.resolve(ctx);
+  eq(first, second, 'the second call re-sized the window and would have reloaded the model');
+
+  const expected = tasks.runNumCtx({
+    model: 'qwen3.8:27b', needs: [9000, 4000], max: tasks.LOCAL_FIELD_CTX_MAX, what: 'the check',
+  });
+  eq(first, expected, 'the shared window is not the one the largest prompt needs');
+  if (first < 9000) throw new Error('the shared window is smaller than the largest prompt: ' + first);
+  // Bucketed to 4096 so two items whose transcripts differ slightly land on the same value.
+  eq(first % 4096, 0, 'the window is not on a 4096 bucket, so near-identical items reload the model');
+});
+
+check('a prompt too big for any window this app will ask for is REFUSED, not truncated', () => {
+  let message = '';
+  try {
+    tasks.runNumCtx({ model: 'qwen3.8:27b', needs: [200000], max: tasks.LOCAL_FIELD_CTX_MAX, what: 'a huge call' });
+  } catch (e) {
+    message = e.message;
+  }
+  if (!/above the \d+ ceiling/.test(message)) {
+    throw new Error('an oversized prompt did not refuse: ' + (message || 'it returned a number'));
+  }
+});
+
+/**
+ * THE TWO-LLM BUDGET. One call per field makes a five-model run trivially easy to configure, and
+ * every extra model is a multi-GB load that evicts the last one. The roster counts what the run
+ * ACTUALLY loads — the field calls, the chapter pipeline, the summarizer — and says so.
+ */
+check('the shipped defaults load exactly two local models, chapters and summarizer included', () => {
+  const p = plan('youtube-telltale', {
+    hasChapters: true,
+    alsoLoads: [
+      { model: routing.CHAPTER_PIPELINE_MODELS.generation, what: 'chapters' },
+      { model: routing.SUMMARIZATION_MODEL.replace(/^ollama:/, ''), what: 'summarization' },
+    ],
+  });
+  eq(p.roster.models.length, 2, 'the shipped run loads ' + p.roster.summary);
+  eq(p.roster.overBudget, false, 'the shipped defaults are over their own budget');
+  eq(p.warnings.length, 0, 'the shipped defaults declared a warning: ' + p.warnings.join('; '));
+  if (!p.roster.byModel['qwen3.8:27b'].includes('chapters')) {
+    throw new Error('the chapter pipeline is not counted against the budget it spends');
+  }
+});
+
+check('the embedding model does not count against the budget', () => {
+  const roster = tasks.buildModelRoster([
+    { model: 'qwen3.8:27b', what: 'titles' },
+    { model: 'nomic-embed-text', what: 'key phrases' },
+  ], [routing.CHAPTER_PIPELINE_MODELS.embedding]);
+  eq(roster.models.length, 1, '274MB of embeddings was counted as a resident LLM');
+});
+
+check('a third model is a DECLARED warning naming the fields, and never a refusal', () => {
+  // The operator's own routing choice: the description on the 4b and the pinned comment on the
+  // 9B, while the other three packaging fields stay on the 27B. Three models, all chosen
+  // deliberately, none of them a mistake — which is exactly why this warns instead of refusing.
+  const p = plan('youtube-telltale', {
+    hasChapters: true,
+    routing: { description: 'qwen35-4b', pinned_comment: 'qwen35-9b' },
+    alsoLoads: [{ model: routing.CHAPTER_PIPELINE_MODELS.generation, what: 'chapters' }],
+  });
+  eq(p.roster.models.length, 3, 'expected three models, got ' + p.roster.summary);
+  eq(p.roster.overBudget, true, 'three models did not register as over budget');
+  eq(p.warnings.length, 1, 'the run did not declare exactly one warning');
+  if (!/qwen3\.5:4b \(description\)/.test(p.warnings[0])) {
+    throw new Error('the warning does not name the field responsible:\n' + p.warnings[0]);
+  }
+  // Not blocked: the plan still runs, with every field it was asked for.
+  if (p.units.length === 0) throw new Error('the run was blocked instead of warned');
+});
+
+/**
+ * THE RAW TRANSCRIPT. The local path used to condense EVERY transcript, which meant every
+ * locally generated title was written from a précis of the video rather than the video.
+ */
+check('a local transcript passes through raw right up to the ceiling', () => {
+  eq(aiManager.directPassesRaw({ chars: 89000, provider: 'ollama' }), true, '89k should reach the model raw');
+  eq(aiManager.directPassesRaw({ chars: 91000, provider: 'ollama' }), false, '91k does not fit and must condense');
+  eq(aiManager.DIRECT_PASS_MAX_CHARS.local, 90000, 'the local ceiling moved');
+});
+
+check('compilation still condenses whatever the length', () => {
+  eq(aiManager.directPassesRaw({ chars: 1000, provider: 'ollama', forceCondense: true }), false,
+    'forceCondense is the compilation contract and it is not size-dependent');
+  eq(aiManager.directPassesRaw({ chars: 1000, provider: 'claude', forceCondense: true }), false,
+    'and it is not transport-dependent either');
+});
+
+check('the cloud ceiling is unchanged by any of this', () => {
+  eq(aiManager.directPassesRaw({ chars: 59000, provider: 'claude' }), true, 'under the cloud ceiling');
+  eq(aiManager.directPassesRaw({ chars: 61000, provider: 'claude' }), false, 'over the cloud ceiling');
+});
+
 check('a podcast plans no thumbnail or clip unit at all', () => {
-  const plan = tasks.planMetadataUnits(routing.resolveMetadataRouting(undefined),
-    'http://localhost:11434', stubManager('podcast-spreaker'), false, true);
+  const p = plan('podcast-spreaker', { hasChapters: true });
   const written = new Set();
-  for (const unit of plan.units) for (const f of unit.fields) written.add(f);
+  for (const unit of p.units) for (const f of unit.fields) written.add(f);
   if (written.has('thumbnail_text')) throw new Error('the podcast was routed a thumbnail');
   if (written.has('clip_suggestions')) throw new Error('the podcast was routed clip suggestions');
-  eq(plan.assembleHashtags, false, 'and it renders no hashtags either');
+  eq(p.assembleHashtags, false, 'and it renders no hashtags either');
+});
+
+/**
+ * A field the CHANNEL publishes that no routing selection owns. Shorts is the only one, and
+ * `spoken_keywords` is the only field: it used to ride inside whichever group absorbed unclaimed
+ * sections, and under one call per field it gets its own call on the titles model.
+ */
+check('an unrouted published field gets its own call rather than riding in someone else\'s', () => {
+  const p = plan('youtube-shorts', { hasChapters: true });
+  const spoken = p.units.filter((u) => u.fields.includes('spoken_keywords'));
+  eq(spoken.length, 1, 'spoken_keywords is written by ' + spoken.length + ' calls');
+  eq(spoken[0].fields.length, 1, 'it was absorbed into another call instead of getting its own');
+  const titles = p.units.find((u) => u.fields.includes('titles'));
+  if (!spoken[0].label.includes(titles.label.replace(/^titles /, ''))) {
+    throw new Error('it did not land on the titles model: ' + spoken[0].label + ' vs ' + titles.label);
+  }
 });
 
 // ------------------------------------------------------- the userData migration
