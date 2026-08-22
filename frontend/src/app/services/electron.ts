@@ -1,6 +1,8 @@
 import { Injectable, NgZone } from '@angular/core';
 import { Observable, Subject } from 'rxjs';
 import type {
+  AudioFile,
+  AudioSetResult,
   CarryForwardCandidate,
   CarryReceipt,
   ChannelResolution,
@@ -8,6 +10,8 @@ import type {
   PublishResult,
   PushOutcome,
   ResolvedMetadata,
+  SpreakerPushOutcome,
+  SpreakerStatus,
   ThumbnailPreview,
   ThumbnailProposal,
   ThumbnailSetResult,
@@ -505,6 +509,23 @@ declare global {
         fromItemId: string
       ) => Promise<PublishResult<CarryReceipt>>;
       publishPushYouTube: (itemId: string) => Promise<PublishResult<PushOutcome>>;
+
+      // Spreaker (Phase 6) — episode audio, the upload, and the machine's credentials
+      publishProposeAudio: (itemId: string) => Promise<PublishResult<AudioFile | null>>;
+      publishInspectAudio: (itemId: string) => Promise<PublishResult<AudioFile | null>>;
+      publishSetAudio: (
+        itemId: string,
+        absPath: string | null
+      ) => Promise<PublishResult<AudioSetResult>>;
+      publishPushSpreaker: (itemId: string) => Promise<PublishResult<SpreakerPushOutcome>>;
+      publishForgetSpreakerEpisode: (itemId: string) => Promise<PublishResult<ChosenMetadata>>;
+      spreakerGetStatus: () => Promise<PublishResult<SpreakerStatus>>;
+      spreakerSaveCredentials: (input: {
+        showId: string;
+        showName?: string | null;
+        accessToken?: string;
+      }) => Promise<PublishResult<SpreakerStatus>>;
+      spreakerClearCredentials: () => Promise<PublishResult<SpreakerStatus>>;
 
       // ==================== TRANSCRIPT LINK (Phase 2) ====================
       transcriptFindCandidates: (videoPath: string) => Promise<PublishResult<CandidateScan>>;
@@ -1212,6 +1233,98 @@ export class ElectronService {
   async publishPushYouTube(itemId: string): Promise<PublishResult<PushOutcome>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.publishPushYouTube(itemId);
+  }
+
+  // Spreaker (Phase 6)
+
+  /**
+   * Where this item's episode audio would be, by the naming convention — `podcast 1.mp3`
+   * beside `podcast 1.mov`.
+   *
+   * Read-only, and `data: null` is the ordinary answer: most items are videos with no
+   * exported audio next to them. Always confirmed by the operator, never applied.
+   */
+  async publishProposeAudio(itemId: string): Promise<PublishResult<AudioFile | null>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishProposeAudio(itemId);
+  }
+
+  /**
+   * Re-measure the audio file this item already has, or null when it has none.
+   *
+   * Called on every load rather than reading measurements off the record: a size and a
+   * duration are facts about a file on an external volume at a moment. A stored path
+   * whose file has gone comes back as an ERROR, not a null — null means "none chosen".
+   */
+  async publishInspectAudio(itemId: string): Promise<PublishResult<AudioFile | null>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishInspectAudio(itemId);
+  }
+
+  /**
+   * Attach the episode audio, or pass null to clear it.
+   *
+   * Validated in the main process against the bytes AND ffprobe (exists, an extension
+   * Spreaker accepts, ≤300 MB, a real audio stream), so a rejected file is never stored
+   * and comes back naming the file and the rule.
+   */
+  async publishSetAudio(
+    itemId: string,
+    absPath: string | null
+  ): Promise<PublishResult<AudioSetResult>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishSetAudio(itemId, absPath);
+  }
+
+  /**
+   * Upload this item as an episode of the configured Spreaker show.
+   *
+   * Unlike the YouTube push this CREATES: afterwards a public podcast feed carries an
+   * episode that did not exist before, published as soon as Spreaker finishes encoding
+   * unless the item carries a schedule. Everything that can refuse it does so before the
+   * request, and an item that has already been uploaded is one of those things.
+   */
+  async publishPushSpreaker(itemId: string): Promise<PublishResult<SpreakerPushOutcome>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishPushSpreaker(itemId);
+  }
+
+  /**
+   * Forget the recorded episode so this item can be uploaded again.
+   *
+   * DELETES NOTHING ON SPREAKER. It exists so the duplicate guard is not a dead end for
+   * an operator who has removed the episode on Spreaker's own site.
+   */
+  async publishForgetSpreakerEpisode(itemId: string): Promise<PublishResult<ChosenMetadata>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishForgetSpreakerEpisode(itemId);
+  }
+
+  /** Is Spreaker set up on this machine, and if not, what is missing and where does it go? */
+  async spreakerGetStatus(): Promise<PublishResult<SpreakerStatus>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.spreakerGetStatus();
+  }
+
+  /**
+   * Save the show id, and the access token when one is supplied.
+   *
+   * Omitting `accessToken` leaves the stored one alone — the UI only ever knows WHETHER a
+   * token exists, so re-saving a show id must not demand it again.
+   */
+  async spreakerSaveCredentials(input: {
+    showId: string;
+    showName?: string | null;
+    accessToken?: string;
+  }): Promise<PublishResult<SpreakerStatus>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.spreakerSaveCredentials(input);
+  }
+
+  /** Remove the stored credentials. The only way a saved token goes away. */
+  async spreakerClearCredentials(): Promise<PublishResult<SpreakerStatus>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.spreakerClearCredentials();
   }
 
   async publishGetResolved(itemId: string): Promise<PublishResult<ResolvedMetadata>> {

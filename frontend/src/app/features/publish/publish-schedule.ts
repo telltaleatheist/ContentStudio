@@ -201,6 +201,27 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/**
+ * `12:07` / `1:04:12` — an episode's length, where the point is how long it is to listen
+ * to and not how many seconds it contains.
+ *
+ * Hours appear only when there are any; minutes are zero-padded only once hours are
+ * there, so a 12-minute clip reads `12:07` and not `0:12:07`.
+ */
+export function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    throw new Error(`formatDuration needs a number of seconds; got ${JSON.stringify(seconds)}`);
+  }
+  const total = Math.round(seconds);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const mm = h > 0 ? String(m).padStart(2, '0') : String(m);
+  return h > 0
+    ? `${h}:${mm}:${String(s).padStart(2, '0')}`
+    : `${mm}:${String(s).padStart(2, '0')}`;
+}
+
 /** The file's own name, for the row that already shows nothing else about the path. */
 export function basename(absPath: string): string {
   const parts = absPath.split(/[\\/]/);

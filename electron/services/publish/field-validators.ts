@@ -187,8 +187,11 @@ export function buildFieldPatch(fields: Record<string, unknown>, ctx: FieldConte
       // happen, and the caller has to hear that rather than watch a success come back.
       throw new Error(
         `publish-set-fields cannot write ${JSON.stringify(key)}. It accepts: ${known.join(', ')}. ` +
-        `(thumbnailPath has its own channel, publish-set-thumbnail, because it is validated ` +
-        `against the file on disk.)`
+        `(thumbnailPath has its own channel, publish-set-thumbnail, and spreakerAudioPath has ` +
+        `publish-set-audio, because both are validated against the file on disk — a path is ` +
+        `only half of either value. spreakerEpisodeId / spreakerPushedAt / spreakerReceipt are ` +
+        `written by the upload itself and are not the operator's to type, exactly like ` +
+        `pushedAt / pushReceipt.)`
       );
     }
     Object.assign(patch, validator(fields[key], ctx));

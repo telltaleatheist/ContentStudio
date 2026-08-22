@@ -159,6 +159,103 @@
       </mat-form-field>
     </mat-card-content>
   </mat-card>
+
+  <!-- Spreaker Section
+       Its own Save button, and deliberately not part of "Save Settings" below: these two
+       values live in their own 0600 file in userData and are validated together in the
+       main process, so a rejected show id must not also fail to save the output directory.
+       The API keys have never gone through update-settings either, for the same reason.
+
+       Spreaker offers OAuth2 and nothing else — no API keys, no permanent tokens — and
+       refreshing needs a client secret a desktop app cannot hold. So the token is minted
+       by hand, once, and pasted here. That is why this card explains a procedure instead
+       of offering a Connect button. -->
+  <mat-card class="settings-card">
+    <mat-card-header>
+      <mat-card-title>Spreaker (podcast)</mat-card-title>
+    </mat-card-header>
+    <mat-card-content>
+      @if (spreakerStatus(); as status) {
+        @if (status.configured) {
+          <p class="small">
+            Configured — uploads go to show {{ status.showId }}@if (status.showName) { ({{ status.showName }})}.
+            @if (status.savedAt) { Saved {{ status.savedAt }}.}
+          </p>
+        } @else {
+          <p class="small"><strong>Not configured</strong> — {{ status.reason }}</p>
+        }
+      } @else {
+        <p class="small">Reading the stored Spreaker settings…</p>
+      }
+
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Show ID</mat-label>
+        <input matInput [(ngModel)]="spreakerShowId" placeholder="1234567">
+        <mat-hint>The number in your show's URL: spreaker.com/show/<strong>1234567</strong></mat-hint>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Show name (optional)</mat-label>
+        <input matInput [(ngModel)]="spreakerShowName" placeholder="Fireside Chat">
+        <mat-hint>A label for the confirmation dialog. Nothing is looked up from Spreaker.</mat-hint>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Access token</mat-label>
+        <input matInput type="password" [(ngModel)]="spreakerToken"
+               [placeholder]="spreakerStatus()?.hasToken ? 'A token is stored — leave blank to keep it' : 'Paste the OAuth2 access_token'">
+        <mat-hint>
+          Never displayed after saving. Leave blank to keep the stored one.
+        </mat-hint>
+      </mat-form-field>
+
+      <div class="spreaker-actions">
+        <button mat-raised-button color="primary"
+                [disabled]="spreakerSaving()"
+                (click)="saveSpreaker()">
+          <mat-icon>save</mat-icon>
+          Save Spreaker settings
+        </button>
+        @if (spreakerStatus()?.hasToken || spreakerStatus()?.showId) {
+          <button mat-button [disabled]="spreakerSaving()" (click)="clearSpreaker()">
+            Remove from this machine
+          </button>
+        }
+      </div>
+
+      <mat-card class="info-card">
+        <mat-card-content>
+          <div class="info-content">
+            <mat-icon class="info-icon">info</mat-icon>
+            <div>
+              <p><strong>Getting an access token</strong></p>
+              <p class="small">
+                Spreaker uses OAuth2 only — there is no API key and no permanent token, and
+                refreshing one needs an app secret this app cannot safely hold. So the token
+                is minted once, by hand:
+              </p>
+              <p class="small">
+                1. Sign in at spreaker.com and enable Developer Tools in your account
+                settings to register an app; note its Client ID and Client Secret.<br>
+                2. Visit
+                <code>https://www.spreaker.com/oauth2/authorize?client_id=…&amp;response_type=code&amp;scope=basic&amp;redirect_uri=…</code>
+                and approve it; the redirect carries a <code>code</code>.<br>
+                3. Exchange it server-side:
+                <code>POST https://api.spreaker.com/oauth2/token</code> with
+                <code>grant_type=authorization_code</code>, your client id and secret, the
+                same redirect_uri, and the code.<br>
+                4. Paste the <code>access_token</code> from the reply above.
+              </p>
+              <p class="small">
+                It is stored on this machine only. When it expires, uploads fail by name and
+                you repeat steps 2–4.
+              </p>
+            </div>
+          </div>
+        </mat-card-content>
+      </mat-card>
+    </mat-card-content>
+  </mat-card>
   </div>
 
   <!-- Save Button (outside scrollable area) -->

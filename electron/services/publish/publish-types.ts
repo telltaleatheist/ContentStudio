@@ -43,6 +43,19 @@ export function isItemId(value: unknown): value is string {
 export const MAX_TITLE_LENGTH = 100;
 
 /**
+ * Spreaker enforces a 140-character episode title limit — a DIFFERENT limit from
+ * YouTube's 100, on the same string.
+ *
+ * Both are stated because the same `chosenTitles[0]` goes to both places, and the one
+ * that binds is whichever destination is being pushed to. A title that passes here can
+ * still be refused by the YouTube push, and that is not a contradiction.
+ *
+ * Source: developers.spreaker.com/api/episodes/ (title, "Max 140 characters"), read
+ * 2026-08-22.
+ */
+export const SPREAKER_MAX_TITLE_LENGTH = 140;
+
+/**
  * A schedule must be at least this far in the future when it is SET.
  *
  * Not re-checked on read: a schedule that has since gone stale is a real state the
@@ -129,6 +142,76 @@ export interface PushReceipt {
     publishAt?: string;
     thumbnail?: string;
   };
+}
+
+/**
+ * What was measured about an episode audio file at the moment it was accepted.
+ *
+ * The audio analogue of ThumbnailMeta, and it exists for the same reason: the path alone
+ * cannot answer "is this still the file I approved?". It is NOT stored on the record —
+ * unlike a thumbnail, whose dimensions the panel shows on every load, this is measured by
+ * ffprobe (a subprocess against a file on an external volume) and re-measuring it is the
+ * only honest answer at any later moment. It travels with the propose / inspect / set
+ * replies, and a copy of it lands in the push receipt as the description of what was
+ * actually sent.
+ */
+export interface AudioMeta {
+  bytes: number;
+  /** Seconds, as ffprobe reports the container's duration. Always finite and > 0. */
+  durationSec: number;
+  /** Lower-case, with the dot: '.mp3'. */
+  extension: string;
+  /** The audio stream's codec, e.g. 'mp3', 'aac', 'pcm_s16le'. */
+  audioCodec: string;
+  /** True when the file also carries a video stream — legal, and worth saying. */
+  hasVideo: boolean;
+}
+
+/**
+ * What one "Push to Spreaker" actually did.
+ *
+ * Same shape and same discipline as PushReceipt: every part of the upload is named EITHER
+ * in `uploaded` OR in `skipped` with the reason. The difference from YouTube's is that
+ * this one describes a CREATE — the episode did not exist before this call — so it also
+ * carries the identifiers Spreaker minted, which are the only way to find the episode
+ * again from here.
+ */
+export interface SpreakerReceipt {
+  /** Spreaker's own episode id, as returned. Numeric in their API. */
+  episodeId: number;
+  /** The show it was created under, as this app asked for it. */
+  showId: string;
+  /** The show's title as Spreaker reported it, or null when the response carried none. */
+  showTitle: string | null;
+  /** ISO. When the upload completed. */
+  pushedAt: string;
+  uploaded: {
+    /** The episode title as sent — chosenTitles[0]. */
+    title: string;
+    /** Characters of description sent, and its first line. */
+    description: { chars: number; firstLine: string };
+    /** How many tags were sent. */
+    tags: { count: number };
+    /** The file that was uploaded, as it measured at upload time. */
+    audio: { path: string; bytes: number; durationSec: number };
+    /** Present only when this upload asked Spreaker to schedule publication. */
+    autoPublishedAt?: string;
+  };
+  /** The parts this upload did NOT send, each with the reason. */
+  skipped: {
+    autoPublishedAt?: string;
+  };
+  /** The episode's page on Spreaker, as reported. null when the response carried none. */
+  siteUrl: string | null;
+  /**
+   * Spreaker's encoding status at the moment of the reply — PENDING or PROCESSING for a
+   * fresh upload, never READY.
+   *
+   * Recorded because "the upload succeeded" and "the episode is playable" are different
+   * facts and this receipt must not be read as claiming the second one. Spreaker
+   * re-encodes every upload to CBR MP3 and that takes seconds to minutes.
+   */
+  encodingStatus: string | null;
 }
 
 /**
@@ -249,6 +332,43 @@ export interface ChosenMetadata {
    * defaulting changed, every old record silently changed meaning.
    */
   isPodcast: boolean;
+
+  /**
+   * Absolute path to the episode audio this item would be uploaded to Spreaker as, or
+   * null for none chosen.
+   *
+   * PROPOSED, never assumed. The workflow exports `podcast 1.mp3` beside `podcast 1.mov`,
+   * so a sibling with an audio extension is a good guess — and a guess is all it is, which
+   * is why it is offered and confirmed exactly the way an exported thumbnail is. Nothing
+   * writes this field except the operator accepting a file.
+   *
+   * Validated when set (exists, regular file, audio extension, ≤300 MB, and ffprobe finds
+   * a real audio stream) and RE-VALIDATED at push time — it points at Callisto, and a
+   * 132 MB file that was there when it was picked is not a claim about now.
+   */
+  spreakerAudioPath: string | null;
+
+  /**
+   * Spreaker's episode id once this item has been uploaded, or null for never.
+   *
+   * ALSO THE DUPLICATE GUARD, and that is the sharper half. The YouTube push is an
+   * UPDATE and pushing twice is harmless; a Spreaker push is a CREATE, and pushing twice
+   * publishes the same episode to the podcast feed twice. So a non-null value here makes
+   * the next push refuse by name, and the only way past it is the operator explicitly
+   * forgetting the link (which does not delete anything on Spreaker, and says so).
+   */
+  spreakerEpisodeId: number | null;
+
+  /** ISO. When the episode was uploaded, or null for never. Null exactly when the id is. */
+  spreakerPushedAt: string | null;
+
+  /**
+   * What that upload sent, part by part. null exactly when spreakerPushedAt is.
+   *
+   * Only the last one is kept, for the same reason pushReceipt keeps only the last: this
+   * is a record of what is on Spreaker as far as this app knows, not a history.
+   */
+  spreakerReceipt: SpreakerReceipt | null;
 
   /**
    * Whether this video should be monetized — the operator's INTENT, three-valued.
@@ -540,6 +660,13 @@ export function emptyChosenMetadata(itemId: string, jobId: string): ChosenMetada
     thumbnailPath: null,
     thumbnailMeta: null,
     isPodcast: false,
+    // The four Spreaker fields, written out like every other one. The three that describe
+    // an upload are null TOGETHER and stay that way until a push succeeds — there is no
+    // state in which an item has an episode id but no receipt.
+    spreakerAudioPath: null,
+    spreakerEpisodeId: null,
+    spreakerPushedAt: null,
+    spreakerReceipt: null,
     // null, not false: "no monetization decision recorded" is a distinct state from
     // "monetize: off", and only the first one means the extension leaves the control
     // alone. See the field's doc comment.
@@ -582,6 +709,13 @@ export function upgradeStoredMetadata(record: ChosenMetadata): ChosenMetadata {
   if (!('thumbnailPath' in stored)) upgraded.thumbnailPath = null;
   if (!('thumbnailMeta' in stored)) upgraded.thumbnailMeta = null;
   if (!('isPodcast' in stored)) upgraded.isPodcast = false;
+  // Every record written before the Spreaker upload shipped gets null on all four —
+  // no audio chosen, and no episode uploaded. Neither is an inference: a record that
+  // predates the feature cannot have uploaded anything through it.
+  if (!('spreakerAudioPath' in stored)) upgraded.spreakerAudioPath = null;
+  if (!('spreakerEpisodeId' in stored)) upgraded.spreakerEpisodeId = null;
+  if (!('spreakerPushedAt' in stored)) upgraded.spreakerPushedAt = null;
+  if (!('spreakerReceipt' in stored)) upgraded.spreakerReceipt = null;
   // Every record written before Phase 5 gets `null` — "nobody has decided" — which is
   // exactly what emptyChosenMetadata writes today. Reading absence as `false` would be
   // an inference: it would tell the extension to switch monetization OFF on 44 videos

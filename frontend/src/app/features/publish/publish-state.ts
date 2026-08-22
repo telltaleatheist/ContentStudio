@@ -16,6 +16,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { AnalyticsChannel, ElectronService, PublishFields } from '../../services/electron';
 import {
+  AudioFile,
   CarryForwardCandidate,
   CarryReceipt,
   ChannelResolution,
@@ -24,6 +25,9 @@ import {
   MAX_TITLE_LENGTH,
   PushReceipt,
   ResolvedMetadata,
+  SPREAKER_MAX_TITLE_LENGTH,
+  SpreakerReceipt,
+  SpreakerStatus,
   ThumbnailMeta,
   ThumbnailPreview,
   ThumbnailProposal,
@@ -159,6 +163,46 @@ export class PublishState {
    * another item.
    */
   private readonly _receipt = signal<PushReceipt | null>(null);
+
+  // --------------------------------------------------------------- the Spreaker half
+  //
+  // Only ever shown for an item marked `isPodcast`. Everything here is about ONE upload
+  // to ONE show: whether this machine can make it, which file it would send, and what the
+  // last one did.
+
+  /**
+   * Whether this machine can upload at all, or null when it has not been asked yet.
+   *
+   * Machine-level, not item-level — it is the same answer for every report — but re-read
+   * whenever the podcast half of the panel appears, because the operator may have just
+   * been to Settings to fix exactly this.
+   *
+   * null and `configured: false` are DIFFERENT: the first is "not asked", the second is
+   * "asked, and here is what is missing". Only the second one has something to show.
+   */
+  private readonly _spreakerStatus = signal<SpreakerStatus | null>(null);
+
+  /**
+   * The episode audio this item already has, re-measured, or null when it has none.
+   *
+   * Re-measured rather than read off the record: nothing about a 132 MB file on Callisto
+   * is stored, because a size and a duration are facts about a moment.
+   */
+  private readonly _audio = signal<AudioFile | null>(null);
+
+  /** The sibling export found on disk for an item that has no audio. Never auto-applied. */
+  private readonly _audioProposal = signal<AudioFile | null>(null);
+
+  /** True while an upload is in flight. Separate from _saving: it is a REMOTE create. */
+  private readonly _uploading = signal(false);
+
+  /**
+   * The receipt from the upload made in this sitting, or null.
+   *
+   * Not the same thing as `selection().spreakerReceipt`, which is the last upload
+   * whenever it happened. This one says "the thing you just clicked did this".
+   */
+  private readonly _spreakerReceipt = signal<SpreakerReceipt | null>(null);
 
   readonly selection = this._selection.asReadonly();
   readonly resolved = this._resolved.asReadonly();
@@ -331,6 +375,100 @@ export class PublishState {
     return null;
   });
 
+  // ------------------------------------------------------------- Spreaker, read side
+
+  /** Whether this machine can upload, or null when it has not been asked. */
+  readonly spreakerStatus = this._spreakerStatus.asReadonly();
+
+  /** True only once the status has come back AND says configured. */
+  readonly spreakerConfigured = computed(() => this._spreakerStatus()?.configured === true);
+
+  /** The episode audio, re-measured. null when the item has none chosen. */
+  readonly audio = this._audio.asReadonly();
+
+  /** The sibling export on offer. null when there is none to offer. */
+  readonly audioProposal = this._audioProposal.asReadonly();
+
+  /** Absolute path of the chosen episode audio, from the record. */
+  readonly spreakerAudioPath = computed(() => this._selection()?.spreakerAudioPath ?? null);
+
+  /** Spreaker's episode id once uploaded. Non-null is also what blocks a second upload. */
+  readonly spreakerEpisodeId = computed<number | null>(
+    () => this._selection()?.spreakerEpisodeId ?? null
+  );
+
+  /** ISO of that upload, or null for never. */
+  readonly spreakerPushedAt = computed(() => this._selection()?.spreakerPushedAt ?? null);
+
+  /** What the last upload sent, whenever it happened. */
+  readonly lastSpreakerReceipt = computed<SpreakerReceipt | null>(
+    () => this._selection()?.spreakerReceipt ?? null
+  );
+
+  /** True while the upload is in flight. */
+  readonly uploading = this._uploading.asReadonly();
+
+  /** The receipt from an upload made in this sitting. */
+  readonly spreakerReceipt = this._spreakerReceipt.asReadonly();
+
+  /**
+   * Why "Upload to Spreaker" is unavailable, or null when it is available.
+   *
+   * Every one of these is ALSO refused by the main process — this is the same rule said
+   * early, not a second one — except the configuration check, which is the same fact read
+   * from the same place. A disabled button with no account of itself is a dead end, and
+   * this one has to answer "what do I do about it?" as well as "why not?", because the
+   * commonest answer here is "go to Settings and paste a token".
+   */
+  readonly spreakerBlockedReason = computed<string | null>(() => {
+    if (!this.hasTarget()) return 'No report is open.';
+    if (!this.isPodcast()) {
+      return 'This item is not marked as a podcast episode.';
+    }
+
+    const status = this._spreakerStatus();
+    if (!status) return 'Checking whether Spreaker is set up…';
+    if (!status.configured) {
+      return `${status.reason ?? 'Spreaker is not configured.'} Set the access token and ` +
+        `show id in Settings → Spreaker.`;
+    }
+
+    const episodeId = this.spreakerEpisodeId();
+    if (episodeId !== null) {
+      return `Already uploaded as episode ${episodeId}. Uploading again would create a ` +
+        `SECOND episode in the feed, not replace that one.`;
+    }
+
+    const title = this.pushTitle();
+    if (!title) return 'No title is chosen. Variant 1 is what goes on the episode.';
+    if (title.length > SPREAKER_MAX_TITLE_LENGTH) {
+      return `The chosen title is ${title.length} characters; Spreaker's limit is ` +
+        `${SPREAKER_MAX_TITLE_LENGTH}.`;
+    }
+
+    if (!this.spreakerAudioPath()) {
+      return 'No episode audio is chosen, and an episode is the audio.';
+    }
+    if (!this._audio()) {
+      return 'The chosen audio file has not been measured — see the error above.';
+    }
+    return null;
+  });
+
+  /**
+   * What the confirmation will say the episode does when it lands.
+   *
+   * Stated as its own value because it is the one thing about a Spreaker upload that has
+   * no YouTube counterpart and surprises people: an upload with no auto_published_at is
+   * PUBLIC as soon as encoding finishes. There is no draft.
+   */
+  readonly spreakerPublicationNote = computed(() => {
+    const at = this.publishAt();
+    return at
+      ? `Scheduled — Spreaker holds it until ${at} and publishes it then.`
+      : 'Published as soon as Spreaker finishes encoding it. There is no draft state.';
+  });
+
   /**
    * What the picker shows: the stored channel, or the suggestion standing in for it.
    *
@@ -468,7 +606,74 @@ export class PublishState {
     if (this._itemId() !== itemId) return;
     await this.refreshThumbnail(itemId);
     if (this._itemId() !== itemId) return;
+    await this.refreshSpreaker(itemId);
+    if (this._itemId() !== itemId) return;
     await this.refreshCarryForward(itemId);
+  }
+
+  /**
+   * Everything the podcast half of the panel needs, or nothing at all.
+   *
+   * ONLY FOR A PODCAST ITEM. Most items are videos, the section is not rendered for them,
+   * and probing a file plus reading a credentials file for a panel nobody is looking at is
+   * work with no reader. Ticking "Publish as podcast" calls this — see setPodcast — so
+   * the section is populated the moment it appears.
+   *
+   * Failures are REPORTED, never swallowed: "there is no audio beside this export" and
+   * "we could not look" are different facts, and only the first one means there is nothing
+   * to offer.
+   */
+  private async refreshSpreaker(itemId: string): Promise<void> {
+    this._audio.set(null);
+    this._audioProposal.set(null);
+
+    if (!this.isPodcast()) {
+      // Not an error and not a state to explain — the whole section is hidden.
+      this._spreakerStatus.set(null);
+      return;
+    }
+
+    const status = await this.electron.spreakerGetStatus();
+    if (this._itemId() !== itemId) return;
+    if (!status.success || !status.data) {
+      this.reportError(
+        status.error ?? 'Could not read whether Spreaker is set up on this machine.'
+      );
+    } else {
+      this._spreakerStatus.set(status.data);
+    }
+
+    // Exactly one of the two, in this order — an item that already has audio is not
+    // offered another file. Same shape as refreshThumbnail, for the same reason.
+    if (this.spreakerAudioPath()) {
+      const res = await this.electron.publishInspectAudio(itemId);
+      if (this._itemId() !== itemId) return;
+      if (!res.success) {
+        // The record names a file and the file does not answer. That is a disagreement
+        // about the record, not an empty slot, and the upload will refuse for the same
+        // reason — so it is said here, before the operator clicks.
+        this.reportError(res.error ?? 'Could not read the chosen episode audio.');
+        return;
+      }
+      if (!res.data) {
+        this.reportError(
+          `The record has episode audio ${this.spreakerAudioPath()} but the main process ` +
+          `found nothing to measure for this item.`
+        );
+        return;
+      }
+      this._audio.set(res.data);
+      return;
+    }
+
+    const proposal = await this.electron.publishProposeAudio(itemId);
+    if (this._itemId() !== itemId) return;
+    if (!proposal.success) {
+      this.reportError(proposal.error ?? 'Could not look for an exported audio file.');
+      return;
+    }
+    // No proposal is an ordinary answer: only the podcast exports have a sibling MP3.
+    this._audioProposal.set(proposal.data ?? null);
   }
 
   /**
@@ -510,6 +715,13 @@ export class PublishState {
     this._thumbnailWarnings.set([]);
     this._proposal.set(null);
     this._proposalPreview.set(null);
+    // The Spreaker half, all of it. The status is machine-level and would still be true,
+    // but leaving it set would render the section for an item that has not been checked
+    // yet — and the FIRST thing it would show is an upload button.
+    this._spreakerStatus.set(null);
+    this._audio.set(null);
+    this._audioProposal.set(null);
+    this._spreakerReceipt.set(null);
     // The receipt belongs to the item it was for. Leaving it up while another report is
     // open would credit this item with a push that happened to a different video.
     this._receipt.set(null);
@@ -881,6 +1093,12 @@ export class PublishState {
   /** Podcast episode or not. Strictly boolean — the main process refuses anything else. */
   async setPodcast(isPodcast: boolean): Promise<void> {
     await this.setFields({ isPodcast });
+    if (this._error()) return;
+    // The Spreaker section appears (or disappears) with this flag, so its contents are
+    // read now rather than on the next load — otherwise ticking the box shows an empty
+    // section with an upload button and no idea whether the machine can upload.
+    const itemId = this._itemId();
+    if (itemId) await this.refreshSpreaker(itemId);
   }
 
   /**
@@ -1116,6 +1334,155 @@ export class PublishState {
   /** Put the receipt away. It stays on the record; this only closes the panel's copy. */
   dismissReceipt(): void {
     this._receipt.set(null);
+  }
+
+  // ------------------------------------------------------------ Spreaker, write side
+
+  /**
+   * Attach an episode audio file.
+   *
+   * Validation is entirely the main process's (exists, an extension Spreaker accepts,
+   * ≤300 MB, and ffprobe finds a real audio stream), so a rejection arrives as text naming
+   * the file and the rule. Warnings come back WITH a success: an .m4a is stored and used,
+   * and the note about Spreaker not documenting that extension sits under the row.
+   */
+  async setAudio(absPath: string): Promise<void> {
+    const t = this.target('set the episode audio');
+    if (!t) return;
+
+    this._saving.set(true);
+    this._error.set(null);
+    try {
+      const res = await this.electron.publishSetAudio(t, absPath);
+      if (!res.success || !res.data) {
+        this._error.set(res.error ?? 'Failed to set the episode audio');
+        return;
+      }
+      this._selection.set(res.data.selection);
+      this._audioProposal.set(null);
+      this._audio.set(
+        res.data.meta ? { path: absPath, meta: res.data.meta, warnings: res.data.warnings } : null
+      );
+      await this.commitChannelSeed(t);
+    } finally {
+      this._saving.set(false);
+    }
+  }
+
+  /**
+   * Detach the episode audio.
+   *
+   * refreshSpreaker runs afterwards, which means the sibling export (if there is one) is
+   * offered again — clearing is how the operator asks to be shown what is on disk.
+   */
+  async clearAudio(): Promise<void> {
+    const t = this.target('clear the episode audio');
+    if (!t) return;
+
+    this._saving.set(true);
+    this._error.set(null);
+    try {
+      const res = await this.electron.publishSetAudio(t, null);
+      if (!res.success || !res.data) {
+        this._error.set(res.error ?? 'Failed to clear the episode audio');
+        return;
+      }
+      this._selection.set(res.data.selection);
+      this._audio.set(null);
+      await this.commitChannelSeed(t);
+      await this.refreshSpreaker(t);
+    } finally {
+      this._saving.set(false);
+    }
+  }
+
+  /** Accept the offered audio file. The only thing that ever applies the proposal. */
+  async confirmAudioProposal(): Promise<void> {
+    const proposal = this._audioProposal();
+    if (!proposal) {
+      this._error.set('There is no proposed audio file to confirm.');
+      return;
+    }
+    await this.setAudio(proposal.path);
+  }
+
+  /**
+   * Stop offering it, for now.
+   *
+   * Stores NOTHING, exactly like dismissProposal: there is no "declined" field, and
+   * reopening the report offers it again, which is honest — the file is still on disk and
+   * the item still has no audio.
+   */
+  dismissAudioProposal(): void {
+    this._audioProposal.set(null);
+  }
+
+  /**
+   * Upload this item as an episode of the configured show.
+   *
+   * The caller asks for an explicit confirmation first, showing exactly what will be sent
+   * and saying that the episode publishes on arrival unless it is scheduled. This is the
+   * only method in this class that CREATES something an audience can see, and it is not
+   * idempotent: the main process refuses a second upload of an item that already has an
+   * episode id, which is why nothing here retries.
+   */
+  async uploadToSpreaker(): Promise<SpreakerReceipt | null> {
+    const t = this.target('upload to Spreaker');
+    if (!t) return null;
+
+    const blocked = this.spreakerBlockedReason();
+    if (blocked) {
+      this._error.set(`Cannot upload: ${blocked}`);
+      return null;
+    }
+
+    this._uploading.set(true);
+    this._error.set(null);
+    this._spreakerReceipt.set(null);
+    try {
+      const res = await this.electron.publishPushSpreaker(t);
+      if (this._itemId() !== t) return null;
+      if (!res.success || !res.data) {
+        this._error.set(res.error ?? 'The upload failed and the main process gave no reason.');
+        return null;
+      }
+      this._selection.set(res.data.selection);
+      this._spreakerReceipt.set(res.data.receipt);
+      return res.data.receipt;
+    } finally {
+      this._uploading.set(false);
+    }
+  }
+
+  /**
+   * Forget the recorded episode, so this item can be uploaded again.
+   *
+   * DELETES NOTHING ON SPREAKER, and the caller says so before calling. It exists because
+   * the duplicate guard would otherwise be a dead end for an operator who has already
+   * removed the episode on Spreaker's own site.
+   */
+  async forgetSpreakerEpisode(): Promise<void> {
+    const t = this.target('forget the Spreaker episode');
+    if (!t) return;
+
+    this._saving.set(true);
+    this._error.set(null);
+    try {
+      const res = await this.electron.publishForgetSpreakerEpisode(t);
+      if (!res.success || !res.data) {
+        this._error.set(res.error ?? 'Failed to forget the Spreaker episode');
+        return;
+      }
+      this._selection.set(res.data);
+      this._spreakerReceipt.set(null);
+    } finally {
+      this._saving.set(false);
+    }
+  }
+
+  /** Put the upload receipt away. It stays on the record; this closes the panel's copy. */
+  dismissSpreakerReceipt(): void {
+    this._spreakerReceipt.set(null);
   }
 
   dismissError(): void {

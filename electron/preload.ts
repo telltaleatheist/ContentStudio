@@ -221,6 +221,44 @@ const api = {
   // scheduled") come back as text, verbatim.
   publishPushYouTube: (itemId: string) => ipcRenderer.invoke('publish-push-youtube', itemId),
 
+  // Spreaker (Phase 6). One account, one show, and the item's `isPodcast` flag is what
+  // says an item belongs on it.
+  //
+  // Episode audio has its own channels for the same reason a thumbnail does: it is a FILE
+  // (exists, an extension Spreaker accepts, ≤300 MB, and ffprobe finds a real audio
+  // stream), so the path is only half the value. `propose` ANSWERS — where the sibling
+  // export would be, `podcast 1.mp3` beside `podcast 1.mov` — and null is the ordinary
+  // reply. `inspect` re-measures the file already chosen, because a duration and a size
+  // are facts about a moment and the only honest one is now. Neither writes anything.
+  publishProposeAudio: (itemId: string) => ipcRenderer.invoke('publish-propose-audio', itemId),
+  publishInspectAudio: (itemId: string) => ipcRenderer.invoke('publish-inspect-audio', itemId),
+  publishSetAudio: (itemId: string, absPath: string | null) =>
+    ipcRenderer.invoke('publish-set-audio', itemId, absPath),
+  // The upload. Unlike the YouTube push this CREATES: afterwards there is an episode in a
+  // public podcast feed that did not exist before, published as soon as Spreaker finishes
+  // encoding unless the item carries a schedule (which is sent as auto_published_at, UTC).
+  // Refuses before sending anything when the item is not a podcast, has no chosen title,
+  // has no audio, has audio that no longer validates, has ALREADY been uploaded, or when
+  // Spreaker is not configured. Failures come back verbatim.
+  publishPushSpreaker: (itemId: string) => ipcRenderer.invoke('publish-push-spreaker', itemId),
+  // Drop the record of the uploaded episode so the item can be uploaded again. DELETES
+  // NOTHING ON SPREAKER — it exists so the duplicate guard is not a dead end for an
+  // operator who removed the episode on Spreaker's own site.
+  publishForgetSpreakerEpisode: (itemId: string) =>
+    ipcRenderer.invoke('publish-forget-spreaker-episode', itemId),
+
+  // The Spreaker credentials themselves. `status` never carries the token — only whether
+  // one is stored, the show id (public: it is in every episode URL) and the path of the
+  // file, so "where does the token go?" has an answer on screen. Omit accessToken on save
+  // to leave the stored one alone; clearing it is its own call.
+  spreakerGetStatus: () => ipcRenderer.invoke('spreaker-get-status'),
+  spreakerSaveCredentials: (input: {
+    showId: string;
+    showName?: string | null;
+    accessToken?: string;
+  }) => ipcRenderer.invoke('spreaker-save-credentials', input),
+  spreakerClearCredentials: () => ipcRenderer.invoke('spreaker-clear-credentials'),
+
   // ==================== EDITOR ====================
   // The ported AutoCutStudio timeline editor. Every member of the editor's `EditorHost`
   // port has a method here with the SAME NAME, except where that name is already taken by
