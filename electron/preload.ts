@@ -149,6 +149,9 @@ const api = {
       channelId?: string | null;
       publishAt?: string | null;
       isPodcast?: boolean;
+      // Three-valued: true = monetize, false = don't, null = no decision recorded (the
+      // extension then leaves Studio's monetization control alone). Never coerced.
+      monetize?: boolean | null;
     }
   ) => ipcRenderer.invoke('publish-set-fields', itemId, fields),
   publishGetResolved: (itemId: string) => ipcRenderer.invoke('publish-get-resolved', itemId),

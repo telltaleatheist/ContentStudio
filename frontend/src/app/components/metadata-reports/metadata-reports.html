@@ -243,6 +243,37 @@
                   </p>
                 }
 
+                <!-- Monetization. INTENT ONLY, and the one publish field the YouTube
+                     Data API cannot write at all (PUBLISH-PIPELINE-PLAN Phase 5): the
+                     companion extension fills it in Studio's Monetization tab, on the
+                     operator's click. Three options because "not decided" is a real
+                     answer — it is what tells the extension to leave the control alone,
+                     and it is what every record written before this field says. -->
+                <div class="publish-row">
+                  <span class="publish-label">Monetization</span>
+                  <div class="publish-control">
+                    <select class="publish-select"
+                            [disabled]="publish.saving()"
+                            (change)="onMonetizeChange($event)">
+                      <option value="" [selected]="monetizeSelectValue() === ''">— not decided —</option>
+                      <option value="on" [selected]="monetizeSelectValue() === 'on'">Monetize (on)</option>
+                      <option value="off" [selected]="monetizeSelectValue() === 'off'">Do not monetize (off)</option>
+                    </select>
+                  </div>
+                </div>
+
+                @if (publish.monetize() === null) {
+                  <p class="publish-note">
+                    Not decided — the extension will leave Studio's monetization control
+                    untouched.
+                  </p>
+                } @else {
+                  <p class="publish-note">
+                    The extension sets this in Studio's Monetization tab when you click it
+                    there. Nothing here changes YouTube on its own.
+                  </p>
+                }
+
                 <!-- Schedule. Two local boxes plus the offset they will be composed with:
                      the stored value is an instant, and an instant needs a zone. -->
                 <div class="publish-row">

@@ -190,6 +190,12 @@ export interface ChosenMetadata {
   thumbnailMeta: ThumbnailMeta | null;
   /** Strictly boolean and never absent — see the _is_compilation lesson. */
   isPodcast: boolean;
+  /**
+   * Monetization intent. Never absent, and three-valued: true / false / null, where null
+   * means nobody has decided and the extension leaves Studio's control alone. Mirrors
+   * publish-types.ChosenMetadata.monetize.
+   */
+  monetize: boolean | null;
   /** Phase 2. Always present, null until an editor story is linked. */
   transcriptRef: TranscriptRef | null;
   /** ISO. When metadata was last pushed to the linked video, or null for never. */
@@ -217,6 +223,8 @@ export interface ResolvedMetadata {
   sourceFilename: string | null;
   sourceDurationSec: number | null;
   status: PublishStatus;
+  /** Monetization intent, passed through unresolved — there is no generated counterpart. */
+  monetize: boolean | null;
 }
 
 /**

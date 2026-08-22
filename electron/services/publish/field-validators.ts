@@ -142,6 +142,28 @@ const FIELD_VALIDATORS: Record<string, (value: unknown, ctx: FieldContext) => Fi
     }
     return { isPodcast: value };
   },
+
+  /**
+   * Monetization intent: exactly true, false, or null. Three values, no fourth.
+   *
+   * null is ACCEPTED and means "no decision recorded" — it is how the operator takes the
+   * decision back off the record, and it is the only value that tells the extension not
+   * to touch Studio's monetization control at all. So unlike `isPodcast`, null is not a
+   * clear-to-default here; it IS one of the three answers.
+   *
+   * Nothing is coerced, for the same reason isPodcast isn't: the string "false" is
+   * truthy, and this field decides whether a video earns money.
+   */
+  monetize(value) {
+    if (value !== null && typeof value !== 'boolean') {
+      throw new Error(
+        `monetize must be exactly true (monetize this video), false (do not) or null ` +
+        `(no decision recorded — the extension leaves Studio's monetization control ` +
+        `alone); got ${describeValue(value)}. It is never coerced.`
+      );
+    }
+    return { monetize: value };
+  },
 };
 
 /**

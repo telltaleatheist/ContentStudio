@@ -40,6 +40,12 @@ export interface PublishFields {
   publishAt?: string | null;
   /** Strictly boolean — a string here is refused, not coerced. */
   isPodcast?: boolean;
+  /**
+   * Monetization intent, three-valued: true = monetize this video, false = do not,
+   * null = no decision recorded. null is an ANSWER here, not a clear-to-default: it is
+   * the only value that tells the extension to leave Studio's control untouched.
+   */
+  monetize?: boolean | null;
 }
 import type {
   ArchiveCheck, ArchiveDeleteProgress, ArchiveProgress, ArchiveQueue, ArchiveResult, ArchiveStatus,

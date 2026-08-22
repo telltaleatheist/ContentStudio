@@ -426,5 +426,9 @@ export function resolveChosenMetadata(
     sourceFilename: chosen.sourceFilename ?? generated.sourceFilename ?? null,
     sourceDurationSec: chosen.sourceDurationSec ?? generated.sourceDurationSec ?? null,
     status: chosen.status,
+    // No generated counterpart and nothing to merge: monetization is a decision only the
+    // operator makes. `??` would be wrong here — false is a real answer and must not be
+    // replaced by anything.
+    monetize: chosen.monetize,
   };
 }

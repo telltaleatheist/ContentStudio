@@ -208,6 +208,15 @@ export class PublishState {
   /** Podcast episode rather than a YouTube-first video. False until set otherwise. */
   readonly isPodcast = computed(() => this._selection()?.isPodcast ?? false);
 
+  /**
+   * Monetization intent: true, false, or null for "no decision recorded".
+   *
+   * `?? null` covers the item with NO record at all, which is the same answer — nobody
+   * has decided — and NOT `false`. Only null keeps the extension's hands off Studio's
+   * monetization control.
+   */
+  readonly monetize = computed<boolean | null>(() => this._selection()?.monetize ?? null);
+
   /** Every channel the picker can offer. */
   readonly channels = this._channels.asReadonly();
 
@@ -872,6 +881,18 @@ export class PublishState {
   /** Podcast episode or not. Strictly boolean — the main process refuses anything else. */
   async setPodcast(isPodcast: boolean): Promise<void> {
     await this.setFields({ isPodcast });
+  }
+
+  /**
+   * Record what should happen to monetization in Studio, or null to record no decision.
+   *
+   * The Data API cannot write monetization at all (PUBLISH-PIPELINE-PLAN Phase 5), so
+   * this value does nothing on its own — it travels to the companion extension, which
+   * fills Studio's Monetization tab when the operator clicks the action there. Setting it
+   * here monetizes nothing by itself.
+   */
+  async setMonetize(monetize: boolean | null): Promise<void> {
+    await this.setFields({ monetize });
   }
 
   /**
