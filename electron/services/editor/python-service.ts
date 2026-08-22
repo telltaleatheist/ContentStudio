@@ -627,19 +627,31 @@ export class PythonService {
    * and a per-story `transcriptPath`. A sidecar that exists but cannot be used fails the
    * WHOLE export — there is no result in which the FCPXML shipped and the transcripts
    * quietly did not.
+   *
+   * With `sequence`, the survivors play in that order instead of source order — on the master
+   * timeline, inside each story project, and in the per-story transcripts, all from the one
+   * field. Without it Python takes the path it always took.
    */
   editorExport(
     zipPath: string,
     cuts: Array<{ startFrame: number; endFrame: number }>,
+    // The operator's playback ORDER: a partition of the SURVIVORS (the complement of `cuts`)
+    // in ORIGINAL frame-aligned seconds, listed in the order they play. UNDEFINED means source
+    // order, and it must stay undefined all the way to stdin — Python's absent-'sequence' path
+    // is the historical export, byte for byte.
+    sequence: Array<{ start: number; end: number }> | undefined,
     stories?: Array<{ number: number; title: string; regions: Array<{ start: number; end: number }> }>,
     output?: 'fcpxml' | 'transcripts',
     // Mute-mic-under-screen-audio pass. Passed EXPLICITLY into the stdin payload below —
-    // this layer historically built the payload from a fixed literal, which is how
-    // `sequence` ends up dropped; a new field only survives if it is written in by hand.
+    // this layer builds the payload field by field, so a parameter that is not written in by
+    // hand is silently dropped (which is exactly how `sequence` used to be lost here).
     muteMicDuringScreen?: boolean
   ): Promise<any> {
     const jobId = `editor_export_${Date.now()}`;
-    const mode = stories && stories.length ? `${stories.length} stories → ${output}` : `${cuts.length} cuts`;
+    const base = stories && stories.length ? `${stories.length} stories → ${output}` : `${cuts.length} cuts`;
+    // Name the reorder in the log: a wrong-order export is invisible in the result object, so
+    // the one record of whether an order was sent has to be here.
+    const mode = sequence === undefined ? base : `${base}, reordered into ${sequence.length} spans`;
     log.info(`Running editor export [${jobId}] for zip: ${zipPath} (${mode})`);
 
     const pythonPath = this.getPythonPath();
@@ -665,6 +677,11 @@ export class PythonService {
       });
       const payload = {
         ...(stories && stories.length ? { cuts, stories, output } : { cuts }),
+        // Omitted entirely without a reorder, so a project in source order serializes to the
+        // byte-identical stdin it always did and Python takes its historical path. An EMPTY
+        // array is never sent as "no reorder": Python rejects `sequence: []` outright, and it
+        // would be a caller that computed an order and lost it.
+        ...(sequence === undefined ? {} : { sequence }),
         // Omitted entirely when the caller did not ask, so an older/CLI caller's payload
         // stays exactly what it was and Python's default (false) applies.
         ...(muteMicDuringScreen === undefined ? {} : { muteMicDuringScreen }),
