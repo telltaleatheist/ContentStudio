@@ -16,10 +16,10 @@ export interface InputItem {
    * The operator's Phase-2 decision: which editor story transcript this video came from,
    * or an explicit declaration that there is none (spec §3.2).
    *
-   * ABSENT means UNDECIDED, and Start Queue refuses naming any video item that still has
-   * candidates and no decision. It is never a synonym for 'final-only' — over the 40 live
-   * exports a candidate is found 75% of the time and is the wrong one about 1 time in 4,
-   * so defaulting either way would be a silent wrong answer.
+   * OPTIONAL, and absent is the default: an item nobody linked generates from the final
+   * export's own transcript and nothing blocks on it. Absent is still not the same as the
+   * 'final-only' branch — that one is the operator saying so — and the run records which
+   * of the two it was, so a report can never imply a decision nobody made.
    *
    * Set on the item (not held in a component signal) so it is captured into the queued job
    * alongside `generateChapters` and survives the sessionStorage round-trip.

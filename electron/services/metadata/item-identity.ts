@@ -115,6 +115,28 @@ export interface ItemSource {
 export type ContentOrigin = 'editor-story-transcript' | 'final-export-whisper';
 
 /**
+ * HOW the content branch was arrived at — the `why` beside `ContentOrigin`'s `which`.
+ *
+ * Linking an editor story is OPTIONAL: an item that was never linked runs on the final
+ * export's own transcript and always could. That is a degradation of the words the model
+ * sees (sponsor reads and all), so it is a DECLARED MODE and never a silent fallback —
+ * this field is how the record says which of the three ways an unlinked run got there.
+ *
+ * `linked`                  — an editor story was linked and honored.
+ * `final-only-declared`     — the operator picked "Final export only" on the row.
+ * `final-only-default`      — the item could have been linked and was not. The default,
+ *                             recorded explicitly so "he chose the final export" and "he
+ *                             never touched the control" stay different facts.
+ * `final-only-unlinkable`   — there was no link to make: a text subject, an imported
+ *                             transcript, anything with no final export behind it.
+ */
+export type ContentDeclaration =
+  | 'linked'
+  | 'final-only-declared'
+  | 'final-only-default'
+  | 'final-only-unlinkable';
+
+/**
  * What this item was GENERATED FROM, recorded on every item at write time.
  *
  * Sibling to `ItemSource` and written the same way: supplied by the generator, never
@@ -134,6 +156,15 @@ export type ContentOrigin = 'editor-story-transcript' | 'final-export-whisper';
 export interface ItemProvenance {
   /** Which transcript fed titles / description / tags / thumbnail text. */
   content_fields: ContentOrigin;
+  /**
+   * How that branch was chosen. Present on every item this build writes, absent only on
+   * items written before linking became optional — which is why it is optional here and
+   * `content_fields` is not: an old record genuinely cannot answer this question, and an
+   * absent field says that where a defaulted value would invent an answer.
+   */
+  content_declaration?: ContentDeclaration;
+  /** The declaration in words, as the operator or the scan stated it. Null when linked. */
+  content_declaration_reason?: string | null;
   /**
    * Which transcript fed chapters. Structurally constant: the chapter pipeline reads
    * `srtSegments`, which is the final export's Whisper output on every path, forever.
@@ -168,6 +199,26 @@ export interface ItemProvenance {
  * −23%), and words from the final export include whatever sponsor read is in it. The
  * renderer mirrors this sentence in transcript-link.types.ts — keep the two in step.
  */
+/**
+ * The half-sentence that says WHY an item ran on the final export's own transcript.
+ *
+ * Empty for a linked item (the rest of the sentence already says it) and for a record
+ * written before the declaration existed — an old item has no answer, and inventing the
+ * likeliest one is exactly what the declared-mode rule exists to prevent.
+ */
+function describeDeclaration(p: ItemProvenance): string {
+  switch (p.content_declaration) {
+    case 'final-only-declared':
+      return ' The operator declared final-export-only for this item.';
+    case 'final-only-default':
+      return ' No editor story was linked — the default for an unlinked item.';
+    case 'final-only-unlinkable':
+      return ' This input had no editor story to link.';
+    default:
+      return '';
+  }
+}
+
 export function describeProvenance(p: ItemProvenance): string {
   if (!p || typeof p !== 'object' || !p.content_fields) {
     throw new Error('describeProvenance requires an ItemProvenance with content_fields');
@@ -175,7 +226,7 @@ export function describeProvenance(p: ItemProvenance): string {
 
   if (p.content_fields === 'final-export-whisper') {
     return 'Content fields generated from the final export’s transcript — includes any ' +
-      'sponsor reads. Chapters from the same transcript.';
+      `sponsor reads. Chapters from the same transcript.${describeDeclaration(p)}`;
   }
 
   const ref = p.transcript_ref;

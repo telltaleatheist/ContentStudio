@@ -219,6 +219,40 @@ export function stripSlotPrefix(value: string): string {
   return (value || '').replace(SLOT_PREFIX, '');
 }
 
+/**
+ * Why an input is running on the final export's own transcript.
+ *
+ * Linking is optional, so most video items arrive here without a link. That is a real
+ * mode with real consequences (the words include whatever sponsor read is in the cut),
+ * so it travels as a STATEMENT rather than as an absence — and it distinguishes the
+ * operator having said "final export only" from his simply never having linked anything.
+ *
+ * `kind` is what discriminates it from a `TranscriptRef` (whose kind is 'acs-story') in
+ * the per-input map that crosses the IPC boundary.
+ */
+export interface FinalOnlyDeclaration {
+  kind: 'final-only';
+  /** 'declared' = he picked it on the row. 'default-unlinked' = he linked nothing. */
+  via: 'declared' | 'default-unlinked';
+  /** The declaration in words, for the report: what was searched, or what he declared. */
+  reason: string;
+}
+
+/**
+ * What ONE input declares about its content transcript.
+ *
+ * A ref means "generate content fields from this editor story". A FinalOnlyDeclaration
+ * means "generate them from the final export, and here is why". An input ABSENT from the
+ * map is a third thing again: never offered a link at all (a text subject, an imported
+ * transcript). All three are distinguishable on purpose (spec §3.2).
+ */
+export type TranscriptLink = TranscriptRef | FinalOnlyDeclaration;
+
+/** Narrow a wire link to the ref branch. */
+export function isTranscriptRefLink(link: TranscriptLink): link is TranscriptRef {
+  return link.kind === 'acs-story';
+}
+
 /** Past this, the link row turns to warning styling and the confirm label says so. */
 export const DRIFT_WARN_PCT = 10;
 

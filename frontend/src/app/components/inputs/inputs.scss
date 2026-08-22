@@ -678,135 +678,92 @@
           }
         }
       }
-      // Editor transcript link (Phase 2). A second row under .input-row, because the
-      // question needs a candidate title, a session and a drift line — none of which fit
-      // as another chip on a flex row that already wraps.
-      .transcript-link-row {
-        margin-top: 0.6rem;
-        padding: 0.6rem 0.75rem;
-        border-radius: 6px;
-        background: rgba(255, 255, 255, 0.04);
-        border: 1px solid rgba(255, 255, 255, 0.10);
 
-        // Undecided: the row is the reason Start Queue will refuse, so it says so in
-        // theme orange rather than sitting quietly like settled state.
-        &.undecided {
-          background: rgba(255, 107, 53, 0.08);
-          border-color: rgba(255, 107, 53, 0.30);
+      // Editor transcript link (Phase 2). ONE line under .input-row: a glyph, a label,
+      // the state, and the menu that changes it. It sits at caption weight because for
+      // most items it states the default and a default should not shout — only a link
+      // the operator actually made is allowed to draw the eye.
+      .tl-row {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        margin-top: 0.45rem;
+        min-height: 28px;
+        font-size: 0.76rem;
+        line-height: 1.35;
+        color: rgba(255, 255, 255, 0.45);
+
+        .tl-glyph {
+          flex-shrink: 0;
+          font-size: 15px;
+          width: 15px;
+          height: 15px;
+          opacity: 0.75;
         }
 
-        // Drift past +/-10%: the words may describe material that was deliberately cut.
-        // Same amber recipe as .job-error-message uses for red, so the two read as one
-        // system. Warning wins over undecided: it is the more specific statement.
-        &.warning {
-          background: rgba(255, 202, 40, 0.10);
-          border-color: rgba(255, 202, 40, 0.35);
+        .tl-label {
+          flex-shrink: 0;
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+          font-size: 0.66rem;
+          color: rgba(255, 255, 255, 0.35);
+
+          // The colon belongs to the label, not to the sentence the state reads as.
+          &::after { content: ':'; }
         }
 
-        .tl-header {
-          display: flex;
-          align-items: center;
-          gap: 0.4rem;
-          margin-bottom: 0.4rem;
+        .tl-state {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          cursor: default;
+        }
 
-          mat-icon {
+        // A link the operator made is the exception worth seeing, so it — and only it —
+        // gets full-strength text.
+        &.is-linked {
+          color: rgba(255, 255, 255, 0.78);
+
+          .tl-glyph { color: #66bb6a; opacity: 1; }
+        }
+
+        // Drift past +/-10%: the story may describe material the cut no longer contains.
+        &.is-warning {
+          color: #ffca28;
+
+          .tl-glyph { color: #ffca28; }
+        }
+
+        // The lookup could not run, so the row cannot say what was searched.
+        &.is-unavailable .tl-glyph { color: rgba(255, 202, 40, 0.7); opacity: 1; }
+
+        .tl-trigger {
+          flex-shrink: 0;
+          margin-left: auto;
+          min-width: 0;
+          padding: 0 0.35rem 0 0.5rem;
+          height: 26px;
+          line-height: 26px;
+          font-size: 0.74rem;
+          letter-spacing: 0.01em;
+          color: rgba(255, 255, 255, 0.55);
+          transition: color 0.15s ease, background 0.15s ease;
+
+          &:hover:not(:disabled) {
+            color: #fff;
+            background: rgba(255, 255, 255, 0.08);
+          }
+
+          .tl-caret {
             font-size: 18px;
             width: 18px;
             height: 18px;
-            color: rgba(255, 255, 255, 0.6);
-          }
-
-          .tl-title {
-            color: #fff;
-            font-size: 0.85rem;
-            font-weight: 600;
-          }
-
-          .tl-required {
-            margin-left: auto;
-            color: var(--primary-orange);
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-          }
-
-          .tl-ambiguous {
-            color: #ffca28;
-            font-size: 0.78rem;
-          }
-        }
-
-        .tl-options {
-          display: flex;
-          flex-direction: column;
-          gap: 0.35rem;
-        }
-
-        .tl-option {
-          display: flex;
-          align-items: center;
-          gap: 0.75rem;
-          padding: 0.35rem 0.4rem;
-          border-radius: 4px;
-          border: 1px solid transparent;
-
-          &.selected {
-            background: rgba(255, 107, 53, 0.10);
-            border-color: rgba(255, 107, 53, 0.35);
-          }
-
-          .tl-option-main {
-            flex: 1 1 auto;
-            min-width: 0;
-          }
-
-          .tl-option-title {
-            color: #fff;
-            font-size: 0.85rem;
-            word-break: break-word;
-          }
-
-          .tl-option-kind {
-            color: rgba(255, 255, 255, 0.55);
-            font-size: 0.75rem;
-            margin-left: 0.4rem;
-          }
-
-          .tl-option-drift {
-            color: rgba(255, 255, 255, 0.55);
-            font-size: 0.75rem;
-            word-break: break-word;
-          }
-
-          .box-toggle {
-            flex-shrink: 0;
-          }
-        }
-
-        .tl-status {
-          display: flex;
-          align-items: flex-start;
-          gap: 0.4rem;
-          color: rgba(255, 255, 255, 0.7);
-          font-size: 0.78rem;
-          line-height: 1.4;
-          word-break: break-word;
-
-          mat-icon {
-            flex-shrink: 0;
-            font-size: 18px;
-            width: 18px;
-            height: 18px;
-          }
-
-          &.resolved {
-            margin-top: 0.4rem;
-
-            mat-icon { color: #66bb6a; }
+            margin-left: 0.05rem;
+            vertical-align: middle;
           }
         }
       }
-
     }
 
     .add-to-queue-button {
@@ -838,227 +795,6 @@
         cursor: not-allowed !important;
         box-shadow: none !important;
         border: 1px solid var(--border-color) !important;
-      }
-    }
-  }
-
-  .input-list-section {
-    min-height: 200px;
-    margin-bottom: 0.75rem;
-    padding-bottom: 0;
-
-    .section-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 1rem;
-
-      h3 {
-        margin: 0;
-      }
-
-      button {
-        color: var(--primary-orange);
-      }
-    }
-
-    .empty-state {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 3rem 1rem;
-      text-align: center;
-      color: var(--text-secondary);
-      background-color: var(--bg-secondary);
-      border-radius: var(--border-radius-large);
-
-      .empty-icon {
-        font-size: 3rem;
-        width: 3rem;
-        height: 3rem;
-        margin-bottom: 1rem;
-        color: var(--text-muted);
-      }
-
-      p {
-        margin: 0.25rem 0;
-
-        &.hint {
-          font-size: 0.9rem;
-          color: var(--text-muted);
-        }
-      }
-    }
-
-    .input-list {
-      display: flex;
-      flex-direction: column;
-      gap: 0.75rem;
-      margin-bottom: 5.25rem;
-
-      .input-card {
-        background-color: var(--bg-secondary);
-        transition: all 0.2s ease;
-        border: 2px solid transparent;
-
-        &.selected {
-          border-color: var(--primary-orange);
-          background-color: var(--bg-card);
-        }
-
-        &:hover {
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-        }
-
-        mat-card-content {
-          padding: 0.75rem 1rem;
-        }
-
-        .input-row {
-          display: flex;
-          align-items: center;
-          gap: 1rem;
-
-          .input-info {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            flex: 1;
-            min-width: 0;
-
-            mat-icon {
-              color: var(--primary-orange);
-              flex-shrink: 0;
-            }
-
-            .input-details {
-              flex: 1;
-              min-width: 0;
-
-              .item-title {
-                color: var(--text-primary);
-                font-weight: 500;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-              }
-
-              .item-subtitle {
-                color: var(--text-secondary);
-                font-size: 0.85rem;
-                text-transform: capitalize;
-              }
-            }
-          }
-
-          mat-checkbox {
-            flex-shrink: 0;
-            margin-left: 0.5rem;
-          }
-
-          button[mat-icon-button] {
-            color: var(--text-muted);
-            flex-shrink: 0;
-            margin-left: auto;
-
-            &:hover {
-              color: var(--primary-orange);
-            }
-          }
-        }
-      }
-    }
-  }
-
-  .queue-actions {
-    display: block !important;
-    visibility: visible !important;
-    min-height: 56px;
-    clear: both;
-    position: relative;
-    z-index: 1;
-
-    &.add-to-queue-section {
-      margin-top: 0;
-      margin-bottom: 2rem;
-      padding-top: 0;
-    }
-
-    &.start-queue-section {
-      margin-top: 0;
-      margin-bottom: 1.5rem;
-      padding-top: 0;
-    }
-
-    button {
-      width: 100%;
-      height: 56px !important;
-      min-height: 56px !important;
-      font-size: 1.05rem !important;
-      font-weight: 700 !important;
-      letter-spacing: 0.5px !important;
-      display: flex !important;
-      align-items: center;
-      justify-content: center;
-
-      mat-icon {
-        margin-right: 0.75rem !important;
-        font-size: 24px !important;
-        width: 24px !important;
-        height: 24px !important;
-      }
-
-      &.submit-button {
-        background: var(--gradient-primary) !important;
-        color: white !important;
-        box-shadow: 0 4px 12px rgba(255, 107, 53, 0.3) !important;
-
-        &:hover:not(:disabled) {
-          background: var(--gradient-primary) !important;
-          box-shadow: 0 6px 16px rgba(255, 107, 53, 0.4), var(--shadow-glow) !important;
-          transform: translateY(-2px);
-        }
-
-        &:disabled, &[disabled] {
-          background: var(--dark-orange) !important;
-          color: white !important;
-          opacity: 0.7 !important;
-          cursor: not-allowed !important;
-          display: flex !important;
-          visibility: visible !important;
-        }
-      }
-
-      &.start-button {
-        background: var(--gradient-primary) !important;
-        color: white !important;
-        box-shadow: 0 4px 12px rgba(255, 107, 53, 0.3) !important;
-
-        &:hover:not(:disabled) {
-          box-shadow: 0 6px 16px rgba(255, 107, 53, 0.4), var(--shadow-glow) !important;
-          transform: translateY(-2px);
-          transition: all 0.2s ease;
-        }
-
-        &:disabled, &[disabled] {
-          background: var(--dark-orange) !important;
-          color: white !important;
-          opacity: 0.7 !important;
-          cursor: not-allowed !important;
-          display: flex !important;
-          visibility: visible !important;
-        }
-      }
-
-      &:disabled {
-        display: flex !important;
-        visibility: visible !important;
-      }
-
-      &[disabled] {
-        display: flex !important;
-        visibility: visible !important;
       }
     }
   }
@@ -1409,9 +1145,6 @@
                       height: 14px;
                     }
 
-                    &.undecided {
-                      color: var(--primary-orange);
-                    }
                   }
                 }
 
@@ -1525,269 +1258,6 @@
     }
   }
 
-  .queue-section {
-    margin-top: 3rem;
-    padding-top: 2rem;
-    border-top: 2px solid var(--border-color);
-    clear: both;
-
-    .section-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 1rem;
-
-      h3 {
-        margin: 0;
-        color: white;
-      }
-
-      button {
-        color: var(--primary-orange);
-      }
-    }
-
-    .job-list {
-      display: flex;
-      flex-direction: column;
-      gap: 1rem;
-
-      .job-card {
-        background-color: rgba(255, 107, 53, 0.08);
-        border: 1px solid rgba(255, 107, 53, 0.3);
-        border-left: 4px solid transparent;
-        transition: all 0.2s ease;
-
-        &.status-pending {
-          border-left-color: var(--primary-orange);
-          background-color: rgba(255, 107, 53, 0.08);
-        }
-
-        &.status-processing {
-          border-left-color: var(--primary-orange);
-          box-shadow: 0 4px 12px rgba(255, 107, 53, 0.3);
-          background-color: rgba(255, 107, 53, 0.12);
-        }
-
-        &.status-completed {
-          border-left-color: #4caf50;
-          background-color: rgba(76, 175, 80, 0.08);
-        }
-
-        &.status-failed {
-          border-left-color: #f44336;
-          background-color: rgba(244, 67, 54, 0.08);
-        }
-
-        mat-card-content {
-          padding: 1rem 1.25rem;
-        }
-
-        .job-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: flex-start;
-          margin-bottom: 1rem;
-
-          .job-info {
-            display: flex;
-            align-items: flex-start;
-            gap: 1rem;
-            flex: 1;
-
-            mat-icon {
-              font-size: 28px;
-              width: 28px;
-              height: 28px;
-              flex-shrink: 0;
-              color: var(--primary-orange);
-            }
-
-            .job-details {
-              flex: 1;
-
-              .job-name {
-                color: white;
-                font-weight: 600;
-                font-size: 1rem;
-                margin-bottom: 0.25rem;
-              }
-
-              .job-meta {
-                display: flex;
-                gap: 1rem;
-                font-size: 0.85rem;
-
-                .job-status {
-                  color: rgba(255, 255, 255, 0.7);
-                  text-transform: capitalize;
-                }
-
-                .job-time {
-                  color: rgba(255, 255, 255, 0.5);
-                  font-family: monospace;
-                }
-              }
-            }
-          }
-
-          button[mat-icon-button] {
-            color: rgba(255, 255, 255, 0.5);
-
-            &:hover {
-              color: var(--primary-orange);
-            }
-          }
-        }
-
-        .job-progress {
-          margin-bottom: 1rem;
-
-          mat-progress-bar {
-            height: 6px;
-            border-radius: 3px;
-          }
-
-          .progress-info {
-            margin-top: 0.5rem;
-
-            .progress-text {
-              color: rgba(255, 255, 255, 0.7);
-              font-size: 0.85rem;
-            }
-          }
-        }
-
-        .job-inputs {
-          .inputs-label {
-            color: rgba(255, 255, 255, 0.7);
-            font-size: 0.85rem;
-            margin-bottom: 0.5rem;
-            font-weight: 500;
-          }
-
-          .inputs-list {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-
-            mat-chip {
-              font-size: 0.85rem;
-              background-color: rgba(255, 107, 53, 0.2) !important;
-              color: white !important;
-
-              mat-icon {
-                font-size: 16px;
-                width: 16px;
-                height: 16px;
-                margin-right: 0.25rem;
-                color: var(--primary-orange) !important;
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  .options-section {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-    margin-top: 1.5rem;
-
-    h3 {
-      margin-bottom: 1rem !important;
-    }
-
-    .full-width {
-      width: 100%;
-    }
-  }
-
-  .generate-section {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-
-    .generate-button {
-      width: 100%;
-      height: 56px !important;
-      font-size: 1.05rem !important;
-      font-weight: 700 !important;
-      letter-spacing: 0.8px !important;
-
-      mat-icon {
-        margin-right: 0.75rem !important;
-        font-size: 24px !important;
-        width: 24px !important;
-        height: 24px !important;
-      }
-
-      &:disabled {
-        opacity: 0.4 !important;
-        cursor: not-allowed !important;
-      }
-    }
-
-    .generating-status {
-      text-align: center;
-      padding: 1rem;
-      background-color: var(--bg-secondary);
-      border-radius: var(--border-radius);
-      border: 2px solid transparent;
-      opacity: 0;
-      height: 0;
-      overflow: hidden;
-      transition: opacity 0.3s ease, height 0.3s ease, border-color 0.3s ease;
-
-      &.visible {
-        opacity: 1;
-        height: auto;
-        border-color: var(--primary-orange);
-      }
-
-      p {
-        margin: 0.25rem 0;
-        color: var(--text-primary);
-        font-weight: 500;
-
-        &.hint {
-          font-size: 0.85rem;
-          color: var(--text-secondary);
-          font-weight: 400;
-        }
-      }
-
-      .progress-section {
-        margin-top: 1.5rem;
-
-        mat-progress-bar {
-          height: 8px;
-          border-radius: 4px;
-          overflow: hidden;
-        }
-
-        .progress-info {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-top: 0.75rem;
-          font-size: 0.85rem;
-
-          .progress-text {
-            color: var(--text-primary);
-            font-weight: 500;
-          }
-
-          .progress-time {
-            color: var(--text-secondary);
-            font-family: monospace;
-          }
-        }
-      }
-    }
-  }
 }
 
 // Light theme adjustments
@@ -1988,5 +1458,49 @@
   100% {
     transform: translate(-50%, -50%) scale(1);
     opacity: 1;
+  }
+}
+
+// The editor-story menu. Its panel is Material's own element, mounted in an overlay
+// outside this component's DOM, so a namespaced ::ng-deep is the only handle there is —
+// the class is unique to this control, which keeps the escape hatch from reaching any
+// other menu in the app.
+::ng-deep .tl-menu-panel.mat-mdc-menu-panel {
+  max-width: 440px;
+
+  .mat-mdc-menu-item {
+    min-height: 40px;
+    height: auto;
+    padding-top: 0.3rem;
+    padding-bottom: 0.3rem;
+  }
+
+  // Two lines per entry, so the story title never competes with its session and drift.
+  .mat-mdc-menu-item-text {
+    white-space: normal;
+    overflow: visible;
+  }
+
+  .tl-mi {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .tl-mi-title {
+    font-size: 0.85rem;
+    line-height: 1.35;
+  }
+
+  .tl-mi-meta {
+    font-size: 0.72rem;
+    line-height: 1.3;
+    opacity: 0.6;
+  }
+
+  .tl-sep {
+    height: 1px;
+    margin: 0.3rem 0;
+    background: rgba(255, 255, 255, 0.12);
   }
 }
