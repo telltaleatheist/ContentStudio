@@ -1,6 +1,34 @@
 import { Injectable, NgZone } from '@angular/core';
 import { Observable, Subject } from 'rxjs';
-import type { ChosenMetadata, PublishResult, ResolvedMetadata } from '../features/publish/publish.types';
+import type {
+  ChannelResolution,
+  ChosenMetadata,
+  PublishResult,
+  ResolvedMetadata,
+  ThumbnailPreview,
+  ThumbnailProposal,
+  ThumbnailSetResult,
+} from '../features/publish/publish.types';
+
+/**
+ * The fields publish-set-fields accepts.
+ *
+ * Exactly the main process's validator table, mirrored. A name that isn't here is
+ * REFUSED there rather than ignored, so this type is the whole contract — thumbnailPath
+ * is deliberately absent because it has its own channel (it is validated against a file).
+ */
+export interface PublishFields {
+  /** null clears the override, restoring the generated description. */
+  descriptionOverride?: string | null;
+  /** null clears the override, restoring the generated tags. */
+  tagsOverride?: string | null;
+  /** Must be a registered channel id. null means "not routed yet". */
+  channelId?: string | null;
+  /** ISO-8601 with an explicit zone, ≥15 min out, ≤2 years out. null clears. */
+  publishAt?: string | null;
+  /** Strictly boolean — a string here is refused, not coerced. */
+  isPodcast?: boolean;
+}
 import type {
   ArchiveCheck, ArchiveDeleteProgress, ArchiveProgress, ArchiveQueue, ArchiveResult, ArchiveStatus,
   AssetComponentStatus, AssetInstallProgress, AssetInstallResult,
@@ -435,11 +463,21 @@ declare global {
       publishSetTitles: (itemId: string, titles: string[]) => Promise<PublishResult<ChosenMetadata>>;
       publishSetFields: (
         itemId: string,
-        fields: { descriptionOverride?: string | null; tagsOverride?: string | null; channelId?: string | null }
+        fields: PublishFields
       ) => Promise<PublishResult<ChosenMetadata>>;
       publishGetResolved: (itemId: string) => Promise<PublishResult<ResolvedMetadata>>;
       publishListActionable: () => Promise<PublishResult<ChosenMetadata[]>>;
       publishClear: (itemId: string) => Promise<PublishResult<boolean>>;
+      publishSetThumbnail: (
+        itemId: string,
+        absPath: string | null
+      ) => Promise<PublishResult<ThumbnailSetResult>>;
+      publishProposeThumbnail: (itemId: string) => Promise<PublishResult<ThumbnailProposal | null>>;
+      publishReadThumbnail: (
+        itemId: string,
+        maxPx: number
+      ) => Promise<PublishResult<ThumbnailPreview | null>>;
+      publishResolveChannel: (promptSet: string) => Promise<PublishResult<ChannelResolution>>;
 
       // ==================== EDITOR ====================
       //
@@ -1008,13 +1046,68 @@ export class ElectronService {
     return await this.ipcRenderer.publishSetTitles(itemId, titles);
   }
 
-  /** Pass null for a field to clear the override and fall back to the generated value. */
+  /**
+   * Write one or more publish fields. Every field is validated in the main process, and
+   * the call is all-or-nothing: one bad value writes none of them.
+   *
+   * Pass null to clear a field where null is legal (the overrides fall back to the
+   * generated value; channelId and publishAt become "unset").
+   */
   async publishSetFields(
     itemId: string,
-    fields: { descriptionOverride?: string | null; tagsOverride?: string | null; channelId?: string | null }
+    fields: PublishFields
   ): Promise<PublishResult<ChosenMetadata>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.publishSetFields(itemId, fields);
+  }
+
+  /**
+   * Attach a thumbnail file, or pass null to clear it.
+   *
+   * A rejected file is never stored and comes back naming the value and the rule.
+   * Success may still carry warnings (a non-16:9 image is stored and used).
+   */
+  async publishSetThumbnail(
+    itemId: string,
+    absPath: string | null
+  ): Promise<PublishResult<ThumbnailSetResult>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishSetThumbnail(itemId, absPath);
+  }
+
+  /**
+   * The exported thumbnail this item's source path points at, if one is on disk.
+   *
+   * Read-only, and `data: null` is the ordinary answer — most items have none. Always
+   * presented for confirmation; slots are renumbered often enough that applying it
+   * automatically would be wrong routinely and invisibly.
+   */
+  async publishProposeThumbnail(itemId: string): Promise<PublishResult<ThumbnailProposal | null>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishProposeThumbnail(itemId);
+  }
+
+  /**
+   * A downscaled preview of the item's thumbnail as a data URL, or null when none is set.
+   *
+   * The main process reads and resizes the file; the renderer never touches an external
+   * volume, so webSecurity stays on.
+   */
+  async publishReadThumbnail(
+    itemId: string,
+    maxPx: number
+  ): Promise<PublishResult<ThumbnailPreview | null>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishReadThumbnail(itemId, maxPx);
+  }
+
+  /**
+   * Which channel a prompt set routes to. Answers only — nothing is written, so the
+   * panel decides whether to seed channelId from it.
+   */
+  async publishResolveChannel(promptSet: string): Promise<PublishResult<ChannelResolution>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishResolveChannel(promptSet);
   }
 
   async publishGetResolved(itemId: string): Promise<PublishResult<ResolvedMetadata>> {

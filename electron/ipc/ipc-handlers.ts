@@ -2428,6 +2428,9 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // Source filename drives draft matching. Read off the item's own recorded
         // source_path, not inferred from array alignment.
         sourceFilename: sourceFilenameOf(item),
+        // The full path, for the thumbnail proposal: only this can say which week's
+        // thumbnails/ folder to look in. Read off the item's own record, never inferred.
+        sourcePath: typeof item.source_path === 'string' ? item.source_path : null,
         // TODO: probe the source with ffprobe so the duration guard can verify the
         // match. Null is handled — it downgrades the match to 'filename' (unverified)
         // rather than failing.
@@ -2443,6 +2446,11 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     store: analytics.publishStore,
     readGenerated: readGeneratedForPublish,
     listRecentUploads: (channelId: string) => analytics.youtubeApi.listRecentUploads(channelId),
+    // Read fresh on every call, not captured: connecting a channel or editing its prompt
+    // sets has to take effect without a restart. ChannelRegistryEntry satisfies
+    // RoutableChannel structurally, which is what keeps publish/ free of an analytics
+    // import.
+    listChannels: () => analyticsStore.listChannels(),
   });
 
   // Expose the publish routes on the existing localhost ingest server so the companion
