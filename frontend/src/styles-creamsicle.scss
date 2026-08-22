@@ -101,6 +101,12 @@
       color: var(--text-primary) !important;
     }
 
+    // The one MDC text this block missed: a select showing its PLACEHOLDER (no agreed
+    // value — the routing modal's Custom state) fell back to MDC's near-black default.
+    .mat-mdc-select-placeholder {
+      color: var(--text-secondary) !important;
+    }
+
     .mat-mdc-select-arrow {
       color: var(--text-primary) !important;
     }
