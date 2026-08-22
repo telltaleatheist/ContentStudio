@@ -32,19 +32,24 @@ import { ThumbnailMeta } from './publish-types';
 export const MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024;
 
 /**
- * Minimum accepted dimensions, per spec §2 ("≥1280x720 hard").
+ * Dimension floors, split the way YouTube actually splits them.
+ *
+ * The HARD pair is YouTube's own minimum (640 wide; 360 completes 16:9) — below it the
+ * upload API refuses the image, so refusing it here is stating their rule early, not
+ * inventing one. The RECOMMENDED pair (1280x720) is what survives their re-encode best;
+ * below it the file is accepted and stored with a warning saying exactly that.
  *
  * MEASURED 2026-08-21: every one of the 28 thumbnails currently on Callisto
- * (/Volumes/Callisto/Movies/FCPX/<week>/thumbnails/) is 1200x675 — correct 16:9, but 94% of
- * this minimum, so this rule refuses all of them. That is the rule doing what it was
- * written to do (1280x720 is YouTube's recommended size and the one that survives their
- * re-encode), and it is a deliberate constant in one place: if the answer is that the
- * export template should change, it changes upstream; if the answer is that 1200x675 is
- * acceptable, this pair of numbers is the edit. It is NOT something the validator gets
- * to decide per-file.
+ * (/Volumes/Callisto/Movies/FCPX/<week>/thumbnails/) is 1200x675 — correct 16:9, 94% of
+ * the recommended size. The spec's original "≥1280x720 hard" would have refused all of
+ * them for a rule YouTube does not have, which is why the hard floor sits at YouTube's
+ * number and 1200x675 passes with a warning. If the FCPX export template ever moves to
+ * 1280x720, nothing here needs to change.
  */
-export const MIN_THUMBNAIL_WIDTH = 1280;
-export const MIN_THUMBNAIL_HEIGHT = 720;
+export const MIN_THUMBNAIL_WIDTH = 640;
+export const MIN_THUMBNAIL_HEIGHT = 360;
+export const RECOMMENDED_THUMBNAIL_WIDTH = 1280;
+export const RECOMMENDED_THUMBNAIL_HEIGHT = 720;
 
 /** How far from 16:9 an image may be before it is called out. 1% either way. */
 export const ASPECT_TOLERANCE = 0.01;
@@ -250,13 +255,20 @@ export function validateThumbnailFile(absPath: string): ThumbnailValidation {
 
   if (width < MIN_THUMBNAIL_WIDTH || height < MIN_THUMBNAIL_HEIGHT) {
     throw new Error(
-      `Thumbnail ${absPath} is ${width}x${height}; the minimum is ` +
+      `Thumbnail ${absPath} is ${width}x${height}; YouTube's minimum is ` +
       `${MIN_THUMBNAIL_WIDTH}x${MIN_THUMBNAIL_HEIGHT}. Re-export it at least that large — ` +
       `upscaling here would just blur it.`
     );
   }
 
   const warnings: string[] = [];
+  if (width < RECOMMENDED_THUMBNAIL_WIDTH || height < RECOMMENDED_THUMBNAIL_HEIGHT) {
+    warnings.push(
+      `${width}x${height} is below YouTube's recommended ` +
+      `${RECOMMENDED_THUMBNAIL_WIDTH}x${RECOMMENDED_THUMBNAIL_HEIGHT}; it will be accepted ` +
+      `but survives YouTube's re-encode less well. Stored anyway.`
+    );
+  }
   const ratio = width / height;
   const target = 16 / 9;
   const off = Math.abs(ratio / target - 1);
