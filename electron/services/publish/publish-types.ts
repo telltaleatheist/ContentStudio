@@ -270,6 +270,24 @@ export interface ChosenMetadata {
 
   /** null = not edited, fall back to the generated description. */
   descriptionOverride: string | null;
+
+  /**
+   * Does the chapter list go into the description that is pushed?
+   *
+   * TRUE for every record, old and new, because that is what the app has always done and a
+   * migration must never change what an existing item would publish. Switching it off is a
+   * deliberate act on one item, and it survives a reload because it lives here rather than
+   * in a component's signal.
+   *
+   * A STRICT BOOLEAN, NEVER ABSENT — same contract as `isPodcast`, written explicitly by
+   * emptyChosenMetadata and filled in by upgradeStoredMetadata.
+   *
+   * It governs the COMPOSED description only. `descriptionOverride` is the operator's own
+   * literal text and wins over composition entirely — chapters, hashtags, link block and
+   * all — so on an overridden item this flag changes nothing, and the reports page says so
+   * rather than offering a switch that does not move.
+   */
+  chaptersInDescription: boolean;
   /** null = not edited, fall back to the generated tags. Comma-separated, matching MetadataResult.tags. */
   tagsOverride: string | null;
 
@@ -650,6 +668,7 @@ export function emptyChosenMetadata(itemId: string, jobId: string): ChosenMetada
     jobId,
     chosenTitles: [],
     descriptionOverride: null,
+    chaptersInDescription: true,
     tagsOverride: null,
     channelId: null,
     // EVERY field is written explicitly, including the ones whose value is null and the
@@ -709,6 +728,10 @@ export function upgradeStoredMetadata(record: ChosenMetadata): ChosenMetadata {
   if (!('thumbnailPath' in stored)) upgraded.thumbnailPath = null;
   if (!('thumbnailMeta' in stored)) upgraded.thumbnailMeta = null;
   if (!('isPodcast' in stored)) upgraded.isPodcast = false;
+  // TRUE, not false. Every record written before 2026-08-22 published its chapters in its
+  // description, because that was the only behaviour there was. Reading absence as `false`
+  // would silently strip the chapter block off every existing item on its next push.
+  if (!('chaptersInDescription' in stored)) upgraded.chaptersInDescription = true;
   // Every record written before the Spreaker upload shipped gets null on all four —
   // no audio chosen, and no episode uploaded. Neither is an inference: a record that
   // predates the feature cannot have uploaded anything through it.

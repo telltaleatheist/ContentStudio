@@ -7,6 +7,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatSelectModule } from '@angular/material/select';
 import {
   ElectronService,
+  MetadataRoutingChapters,
   MetadataRoutingHost,
   MetadataRoutingOption,
   MetadataRoutingTask,
@@ -77,7 +78,7 @@ export type ModelRoutingDialogResult = boolean | undefined;
             }
           </div>
           <p class="apply-all-note">
-            Fields that don't offer that model (Chapters runs locally) keep their selection. Review below, then Save.
+            Fields that don't offer that model keep their selection. Review below, then Save.
           </p>
         }
         @for (task of tasks(); track task.id) {
@@ -125,6 +126,35 @@ export type ModelRoutingDialogResult = boolean | undefined;
               <p class="row-note unknown">{{ chosen.model }}: {{ chosen.availabilityNote }}.</p>
             }
           }
+        }
+
+        <!-- Chapters are not on this list because they are not a choice: one pipeline
+             runs on every item with a timestamped transcript. What IS still worth saying
+             is whether its two models are on the machine, because finding out mid-run
+             costs the run. -->
+        @if (chapters(); as chapter) {
+          <div class="chapters-note">
+            <mat-icon>auto_stories</mat-icon>
+            <div>
+              <p>
+                <strong>Chapters</strong> are not routed. Every item with a timestamped transcript is
+                chaptered by the embedding pipeline on {{ chapter.generationModel }} +
+                {{ chapter.embeddingModel }}.
+              </p>
+              @if (chapter.generationAvailability === 'not-installed') {
+                <p class="row-note missing">
+                  {{ chapter.generationModel }} is not installed on {{ localModels().host }} — no item will
+                  get chapters until it is pulled.
+                </p>
+              }
+              @if (chapter.embeddingAvailability === 'not-installed') {
+                <p class="row-note missing">
+                  {{ chapter.embeddingModel }} is not installed on {{ localModels().host }} — runs will fall
+                  to the weaker word-matching scorer and say so in their warnings.
+                </p>
+              }
+            </div>
+          </div>
         }
 
         @if (saveError(); as message) {
@@ -240,6 +270,20 @@ export type ModelRoutingDialogResult = boolean | undefined;
       &.unknown { color: var(--text-secondary); }
     }
 
+    .chapters-note {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border-color, rgba(128, 128, 128, 0.3));
+      color: var(--text-secondary);
+      font-size: 12px;
+
+      mat-icon { font-size: 18px; width: 18px; height: 18px; }
+      p { margin: 0 0 4px; }
+    }
+
     :host-context([data-theme="dark"]) .option-flag.missing,
     :host-context([data-theme="dark"]) .row-note.missing { color: #ff6b6b; }
   `]
@@ -258,18 +302,25 @@ export class ModelRoutingDialog implements OnInit {
    */
   readonly localModels = signal<MetadataRoutingHost>({ host: '', reachable: false, installedCount: 0 });
 
+  /**
+   * The always-on chapter pipeline's models. Null until the payload loads — never rendered
+   * as a guess, for the same reason `localModels` starts unreachable.
+   */
+  readonly chapters = signal<MetadataRoutingChapters | null>(null);
+
   /** Selections as they were when the payload loaded — Save stays off until this differs. */
   private initialSelections: Record<string, string> = {};
 
   /**
-   * The "set every field to X" shortcuts: options offered by every field task.
-   * Chapters is excluded from the requirement — its pipeline is local-only by
-   * design (hundreds of one-question calls per video), so demanding an option be
-   * offered there would leave this list permanently empty. Computed from the
-   * loaded payload, so a new universally-offered model shows up here on its own.
+   * The "set every field to X" shortcuts: options offered by every task.
+   *
+   * No task is excluded any more. Chapters used to be, because a local-only pipeline could
+   * never offer a cloud model and its presence made this list permanently empty; chapters
+   * are not a routable task at all now, so the list is simply every task's shared options.
+   * Computed from the loaded payload, so a new universally-offered model shows up on its own.
    */
   readonly applyAllOptions = computed(() => {
-    const fieldTasks = this.tasks().filter(task => task.id !== 'chapters');
+    const fieldTasks = this.tasks();
     if (fieldTasks.length === 0) return [];
     const [first, ...rest] = fieldTasks;
     return first.options.filter(option =>
@@ -311,6 +362,7 @@ export class ModelRoutingDialog implements OnInit {
       // Baseline first: hasChanges() must never see new selections against a stale baseline.
       this.initialSelections = { ...selections };
       this.localModels.set(routing.localModels);
+      this.chapters.set(routing.chapters);
       this.tasks.set(tasks);
       this.selections.set(selections);
       this.phase.set('ready');

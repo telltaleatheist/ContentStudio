@@ -91,14 +91,14 @@ TAGS (replaces the rules above):
    * Chapter subjects, prepended to the metadata prompt's subject block.
    *
    * Chapters are generated FIRST now, by the local pipeline in
-   * chapter-pipeline.service.ts, and each subject was written from that chapter's own
+   * chapter-embedding.service.ts, and each subject was written from that chapter's own
    * transcript span. So this block is not a hint — it is a measured table of contents,
    * and it is the most reliable statement of what the video actually contains that the
    * metadata model gets. Kept deliberately general: it says what the list IS and what
    * to do with it, and leaves the editorial judgement to the prompt set.
    *
    * Each entry may carry a second, indented line — the chapter's `detail`, written by
-   * the same pipeline call as its name (see chapter-pipeline.service.ts). The names
+   * the same pipeline call as its name (see chapter-embedding.service.ts). The names
    * alone say which subjects exist; the details say what happened in them, which is
    * what stops a description from being a list of topics.
    *

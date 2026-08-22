@@ -3,7 +3,7 @@
  *
  * Chapters themselves are no longer built here. The single "read the whole video and
  * return its chapters" call this file used to serve was replaced by the staged local
- * pipeline in chapter-pipeline.service.ts (see CHAPTERING.md), which does its own
+ * pipeline in chapter-embedding.service.ts (see CHAPTERING.md), which does its own
  * word-stream quote mapping against the full caption stream.
  *
  * What remains is what the EPISODE SPLITTER still needs — SRT time conversion, budget

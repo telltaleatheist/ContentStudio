@@ -16,6 +16,7 @@
     "build:preload": "tsc -p tsconfig.preload.json",
     "build:frontend": "cd frontend && npm run build",
     "build:all": "npm run build:electron && npm run build:preload && npm run build:frontend",
+    "check:pure": "node tools/routing-publish-checks.js",
     "start:angular": "cd frontend && npm start",
     "start:electron": "npm run build:electron && npm run build:preload && wait-on http://localhost:4200 && cross-env NODE_ENV=development electron .",
     "electron:dev": "concurrently --kill-others \"npm run start:angular\" \"npm run start:electron\"",

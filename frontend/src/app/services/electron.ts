@@ -39,6 +39,11 @@ export interface PublishFields {
   descriptionOverride?: string | null;
   /** null clears the override, restoring the generated tags. */
   tagsOverride?: string | null;
+  /**
+   * Whether the chapter block is prepended to the composed description. Strictly boolean —
+   * there is no "undecided" state, and no null.
+   */
+  chaptersInDescription?: boolean;
   /** Must be a registered channel id. null means "not routed yet". */
   channelId?: string | null;
   /** ISO-8601 with an explicit zone, ≥15 min out, ≤2 years out. null clears. */
@@ -287,9 +292,25 @@ export interface MetadataRoutingHost {
   installedCount: number;
 }
 
+/**
+ * The chapter pipeline, which is NOT a routable task and still has to be reported.
+ *
+ * Chapters run on every item that has a timestamped transcript, on a fixed pair of models
+ * nobody picks. The modal shows their state anyway, because the warning is the part that
+ * was worth keeping when the picker went: a missing generation model means no chapters at
+ * all, and a missing embedding model means measurably worse ones on a run that declares it.
+ */
+export interface MetadataRoutingChapters {
+  generationModel: string;
+  embeddingModel: string;
+  generationAvailability: MetadataRoutingAvailability;
+  embeddingAvailability: MetadataRoutingAvailability;
+}
+
 export interface MetadataRouting {
   tasks: MetadataRoutingTask[];
   localModels: MetadataRoutingHost;
+  chapters: MetadataRoutingChapters;
 }
 
 /**

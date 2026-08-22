@@ -1,27 +1,33 @@
 /**
  * Per-task metadata generation
  *
- * The metadata call used to be one request that returned every field at once. It is
- * being taken apart field by field, because the fields are migrating to local
- * fine-tuned adapters one at a time (headline-14b-titles, headline-14b-descriptions and
- * headline-14b-tags exist; thumbnail text, pinned comments and clips have no adapter).
- * A single call cannot migrate by halves, so generation is split into UNITS, and
- * metadata-routing.ts says which model each field's unit runs on.
+ * The metadata call used to be one request that returned every field at once. It is now
+ * split into UNITS, and metadata-routing.ts says which model each field's unit runs on.
  *
- * A run's units come out of the routing in two kinds:
+ * A run's units come out of the routing in two SHAPES. Note that the split is not
+ * local-vs-cloud — as of 2026-08-22 most fields default to a local base model, and a local
+ * base model takes the same shape a cloud model does:
  *
- *   local  — one adapter call per field (description, tags, titles). Plain text in,
- *            plain text out, no JSON anywhere.
- *   cloud  — the cloud-routed fields GROUPED BY MODEL: one call per distinct model,
- *            carrying exactly that group's prompt-set sections and an OUTPUT FORMAT
- *            naming exactly that group's keys. Two fields on Sonnet and one on Opus is
- *            two calls, not three — a model asked for three fields at once writes them
- *            as one coherent package, which is the whole reason packaging used to be a
- *            single call.
+ *   adapter    — a FINE-TUNED model with the brief in its weights (`promptStyle: 'adapter'`).
+ *                One call per field, a terse `task:`/`format:` turn in, plain text out, no
+ *                JSON anywhere, and only the three fields an adapter was ever trained for.
+ *                The last one left is the 32B titles model on its own MLX shim; the
+ *                headline-14b trio went when their base model was deleted.
+ *   prompt-set — everything else, local and cloud alike: the editorial preamble, the
+ *                channel yml's per-field `##` sections, the self-check, the abLearnings
+ *                block, and an OUTPUT FORMAT naming exactly that group's keys. GROUPED BY
+ *                MODEL — two fields on Sonnet and one on Opus is two calls, not three,
+ *                because a model asked for three fields at once writes them as one coherent
+ *                package, which is the whole reason packaging used to be a single call.
+ *
+ * The two prompt-set units differ ONLY in transport. CloudGroupUnit posts to a provider
+ * client; LocalGroupUnit posts to Ollama through ollama-json.ts, which is where the four
+ * thinking-model traps are handled once instead of being rediscovered per caller. They
+ * build their prompt with the same builder and parse their answer with the same parser.
  *
  * description and tags drop the transcript deliberately. Per CHAPTERING.md the adapters
- * condition on the curated subject list, so conditioning the cloud calls on the SAME
- * inputs means flipping a field to its adapter changes the model and nothing else. The
+ * condition on the curated subject list, so conditioning the group calls on the SAME
+ * inputs means flipping a field between models changes the model and nothing else. The
  * chapter `detail` prose exists precisely to carry the description-grade specifics the
  * transcript would otherwise have to supply.
  *
@@ -36,6 +42,7 @@ import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import { queueAITask } from '../queue-manager.service';
 import { JobCancelledError, isAbortError } from './cancellation';
+import { askOllamaJson, bucketNumCtx, estimateTokens, unloadOllamaModels } from './ollama-json';
 import {
   METADATA_ROUTING_OPTIONS,
   MetadataRoutingOption,
@@ -392,6 +399,192 @@ export class CloudGroupUnit implements MetadataUnit {
       picked[key] = (metadata as Record<string, unknown>)[key];
     }
     return picked;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The local groups
+// ---------------------------------------------------------------------------
+
+/**
+ * Output budget for a local group call.
+ *
+ * Sized for THINKING as much as for the answer. The answer is a JSON object with up to six
+ * keys (~600-900 tokens on a full YouTube set), but these models reason first and the
+ * chapter work measured ~1,900-2,900 tokens of reasoning per call. `think: false` is not an
+ * option — it relocates the reasoning into `response` and breaks the JSON (ollama-json.ts,
+ * trap 2) — so the budget has to hold both.
+ *
+ * Hitting it is a HARD failure for the call, not something to truncate around: half a JSON
+ * object is not a partial answer, it is an unparseable one.
+ */
+const LOCAL_GROUP_NUM_PREDICT = 8192;
+
+/**
+ * Hard refusal point for a local group's context window.
+ *
+ * A group carrying titles or clip suggestions gets the whole transcript, and a long
+ * livestream transcript does not fit in any local context this app is willing to ask for.
+ * Refusing names the fields that pulled the transcript in, because moving one of them to a
+ * cloud model is the actual fix.
+ */
+const LOCAL_GROUP_CTX_MAX = 40960;
+
+/** Long enough for one item's units to run back to back without the model being evicted. */
+const LOCAL_GROUP_KEEP_ALIVE = '10m';
+
+/** A group call is one big request on a big model; 10 minutes is generous, not tight. */
+const LOCAL_GROUP_TIMEOUT_MS = 600_000;
+
+/**
+ * Writing is not measuring.
+ *
+ * The chapter pipeline runs at temperature 0 because it is taking measurements — the same
+ * junction must resolve to the same sentence every time. A metadata group is being asked to
+ * WRITE, and at temperature 0 it writes the same title for every video whose subjects
+ * rhyme. 0.7 is the temperature this app's local generation has always used
+ * (AIManagerService's Ollama path), kept here rather than re-derived.
+ *
+ * No seed is sent, deliberately. A pinned seed would make "regenerate" return the identical
+ * package, which is the one thing the operator presses it for.
+ */
+const LOCAL_GROUP_TEMPERATURE = 0.7;
+
+/**
+ * A group of fields written by ONE LOCAL BASE MODEL, from the same prompt the cloud groups get.
+ *
+ * This is the unit that made 2026-08-22's rewiring possible. Before it, "local" meant one
+ * thing only — LocalAdapterUnit below, a fine-tuned model answering a terse `task:` turn
+ * with the brief baked into its weights — which is why three fields were stuck in the cloud:
+ * no adapter had been trained for them, and there was no local path that could carry a brief.
+ *
+ * A base model is the opposite case. It knows nothing about this channel, so it needs
+ * EVERYTHING: the editorial preamble, the per-field `##` sections from the channel's yml,
+ * the abLearnings block, the self-check, and the JSON output contract. That is exactly
+ * CloudGroupUnit's prompt, so this unit builds it with exactly CloudGroupUnit's builder
+ * (`aiManager.buildMetadataGroupPrompt`) and parses the answer with exactly
+ * CloudGroupUnit's parser (`aiManager.parseMetadataResponse`, including its JSON repair).
+ * The ONLY difference between the two units is the transport — and the transport is where
+ * the local traps live, which is why it is one shared implementation (ollama-json.ts) and
+ * not a second copy of the same four lessons.
+ *
+ * Grouping works the same way it does in the cloud, and for the same reason: fields pointed
+ * at the same model are written in ONE call, so the self-check's "the thumbnail text must
+ * not repeat a word from your titles" is a rule the model can actually follow.
+ */
+export class LocalGroupUnit implements MetadataUnit {
+  readonly label: string;
+  readonly fields: MetadataFieldId[];
+  private readonly client: AxiosInstance;
+  private readonly host: string;
+  /** Pinned on first use and reused for the unit's life — trap 4, one num_ctx per model. */
+  private numCtx?: number;
+  private loaded = false;
+
+  constructor(
+    private readonly aiManager: AIManagerService,
+    private readonly spec: MetadataGroupSpec,
+    private readonly option: MetadataRoutingOption,
+    defaultHost: string,
+    private readonly abortSignal?: AbortSignal
+  ) {
+    this.fields = spec.fields;
+    this.host = option.host || defaultHost;
+    this.label = `${spec.fields.join(' + ')} (local ${option.model} @ ${this.host})`;
+    this.client = axios.create({ baseURL: this.host });
+  }
+
+  describePrompt(ctx: MetadataRunContext): string {
+    return this.aiManager.buildMetadataGroupPrompt(this.spec, ctx);
+  }
+
+  async generate(ctx: MetadataRunContext): Promise<Record<string, unknown>> {
+    const prompt = this.describePrompt(ctx);
+    const expected = this.aiManager.metadataGroupKeys(this.spec);
+    const what = `the ${this.spec.fields.join(' + ')} group for ${ctx.sourceLabel}`;
+
+    // Sized ONCE per unit and reused, because Ollama fully reloads the model on any
+    // num_ctx change (trap 4). Bucketed to 4096 so two items whose transcripts differ by a
+    // few hundred words land on the same value and the model stays resident across them.
+    if (this.numCtx === undefined) {
+      this.numCtx = bucketNumCtx({
+        promptTokens: estimateTokens(prompt.length),
+        numPredict: LOCAL_GROUP_NUM_PREDICT,
+        max: LOCAL_GROUP_CTX_MAX,
+        logPrefix: `[MetadataTasks] ${this.label}`,
+        what:
+          `${what} (its prompt carries the transcript because ` +
+          `${this.spec.fields.filter((f) => METADATA_FIELD_SECTIONS[f].needsTranscript).join(', ') || 'no field'} ` +
+          `needs it)`,
+      });
+      log.info(`[MetadataTasks] ${this.label}: num_ctx pinned at ${this.numCtx} for this run`);
+    }
+
+    const result = await queueAITask(
+      `metadata-local-${this.option.model}-${ctx.sourceLabel}`,
+      `Metadata: ${this.label}`,
+      async () => {
+        if (this.abortSignal?.aborted) throw new JobCancelledError('cancelled before the local metadata group ran');
+        const answer = await askOllamaJson(this.client, {
+          model: this.option.model,
+          prompt,
+          numCtx: this.numCtx!,
+          numPredict: LOCAL_GROUP_NUM_PREDICT,
+          temperature: LOCAL_GROUP_TEMPERATURE,
+          keepAlive: LOCAL_GROUP_KEEP_ALIVE,
+          timeoutMs: LOCAL_GROUP_TIMEOUT_MS,
+          signal: this.abortSignal,
+          what,
+          logPrefix: `[MetadataTasks] ${this.label}`,
+        });
+        this.loaded = true;
+        return answer;
+      },
+      undefined,
+      LOCAL_GROUP_TIMEOUT_MS + 60_000
+    );
+
+    // A local group's unusable answer is FATAL, which is the opposite of the chapter
+    // pipeline's policy on the same result — and deliberately so. A chapter call that comes
+    // back truncated costs one chapter out of ten; a metadata group that comes back
+    // truncated costs every field it owns, and there is no partial version of a package.
+    // Nothing retries at a smaller size and nothing reroutes to another model: the user
+    // chose this model for these fields.
+    if (!result.ok) {
+      throw new Error(
+        `The local metadata group ${this.option.model} for ${ctx.sourceLabel} produced no usable answer ` +
+          `(${result.reason}): ${result.detail}` +
+          (result.reason === 'length'
+            ? ` — the ${LOCAL_GROUP_NUM_PREDICT}-token output budget was not enough for this prompt's ` +
+              `reasoning plus its answer, which usually means the group is carrying too many fields ` +
+              `for this model. Split them across models, or route one of them to the cloud.`
+            : '')
+      );
+    }
+
+    const { metadata, presentKeys } = this.aiManager.parseMetadataResponse(result.text);
+
+    // Take ONLY this group's keys, exactly as the cloud group does: a parsed response
+    // carries the whole registry (normalizeMetadataKeys fills it), and merging its empty
+    // entries over another unit's real answer would blank them.
+    const picked: Record<string, unknown> = {};
+    for (const key of expected) {
+      if (!presentKeys.has(key)) {
+        throw new Error(
+          `Local metadata group ${this.option.model} for ${ctx.sourceLabel} returned no "${key}" — the response ` +
+            `must contain every key named in that group's OUTPUT FORMAT ` +
+            `(got: ${Array.from(presentKeys).join(', ') || 'nothing'})`
+        );
+      }
+      picked[key] = (metadata as Record<string, unknown>)[key];
+    }
+    return picked;
+  }
+
+  /** Release the model. Only if this unit actually loaded one — a unit that never ran holds nothing. */
+  async unload(): Promise<void> {
+    if (!this.loaded) return;
+    await unloadOllamaModels(this.client, [this.option.model], `[MetadataTasks] ${this.label}`);
   }
 }
 
@@ -932,7 +1125,13 @@ export function normalizeAdapterTags(text: string, task: string, model: string, 
 // Planning a run
 // ---------------------------------------------------------------------------
 
-/** Fields with a trained adapter. Everything else is cloud-only until one exists. */
+/**
+ * Fields a trained adapter was ever trained for.
+ *
+ * Not a restriction on LOCAL models any more — a local base model runs the prompt-set shape
+ * and can write any field. This is a restriction on ADAPTERS: pointing the titles adapter at
+ * the description field would send it a turn its training never contained.
+ */
 const ADAPTER_FIELDS: Record<string, AdapterTask> = {
   description: 'description',
   tags: 'tags',
@@ -940,17 +1139,17 @@ const ADAPTER_FIELDS: Record<string, AdapterTask> = {
 };
 
 export interface MetadataRunPlan {
-  /** The units this run executes, in order: local adapters first, then cloud groups. */
+  /** The units this run executes, in order: trained adapters first, then the prompt-set groups. */
   units: MetadataUnit[];
   /**
    * Which unit writes the `hashtags` field, decided from the routing alone.
    *
-   * The description ADAPTER always ends with a hashtag line; the description CLOUD prompt
+   * The description ADAPTER always ends with a hashtag line; the prompt-set description
    * never does (the prompt set's own `## HASHTAGS` section is a separate section). So the
-   * field follows the description task's model: locally it is parsed out of the
-   * description adapter's own last line, and in the cloud the HASHTAGS section simply
-   * joins whichever group already carries DESCRIPTION. Two units writing one field would
-   * let the merge order decide the answer.
+   * field follows the description task's option: on an adapter it is parsed out of that
+   * adapter's own last line, and on a prompt-set model the HASHTAGS section simply joins
+   * whichever group already carries DESCRIPTION. Two units writing one field would let the
+   * merge order decide the answer.
    */
   hashtagsOwnedByDescription: boolean;
   /** One line for the job log: which model writes what, and how many calls that is. */
@@ -960,33 +1159,48 @@ export interface MetadataRunPlan {
 /**
  * Turn a resolved routing into the units that will run.
  *
- * The grouping rule is BY MODEL, not by field: every cloud-routed field that points at
- * the same model is written by one call. Splitting them would cost one request per field
- * and, worse, lose the coherence the prompt sets are written for — the self-check tells
- * the model its thumbnail text must not repeat words from its own titles, which is only
- * a rule it can follow if it wrote both.
+ * TWO SHAPES, not two transports. A field's unit is decided by the option's `promptStyle`
+ * (metadata-routing.ts), not by whether the model is local:
+ *
+ *   adapter    — a fine-tuned model with the brief in its weights. One call per field,
+ *                terse turn in, plain text out, and only the three fields an adapter was
+ *                ever trained for. LocalAdapterUnit.
+ *   prompt-set — everything else, cloud and local alike: the channel's yml sections, the
+ *                self-check, the abLearnings block and a JSON output contract. Grouped BY
+ *                MODEL, one call per distinct model. CloudGroupUnit / LocalGroupUnit.
+ *
+ * The grouping rule is BY MODEL, not by field, because splitting a model's fields would
+ * cost one request per field and, worse, lose the coherence the prompt sets are written for
+ * — the self-check tells the model its thumbnail text must not repeat words from its own
+ * titles, which is only a rule it can follow if it wrote both.
  *
  * Three things ride with exactly one group each, and this is where that is decided:
  *   FINAL SELF-CHECK — the group with titles, else the largest group. It is mostly a
  *     statement about titles and thumbnails, and it cannot check fields its group did not
  *     write.
- *   the insights block — the group with titles; if titles are local, the first cloud
- *     group; if nothing is in the cloud, nowhere, and the log says so. Channel performance
- *     data speaks to packaging, and the local adapters were never trained to read it.
+ *   the insights block — the group with titles, else the first group. Channel performance
+ *     data speaks to packaging, which is what titles are.
  *   unowned sections — the same group as the insights block. See buildGroupInstructions.
+ *
+ * All three now ride with LOCAL groups as readily as cloud ones. They did not before, and
+ * the reason they did not was the adapters: a trained adapter was never taught to read a
+ * self-check or a performance block, so a run with no cloud group had nowhere to put them.
+ * A base model reads them exactly as a cloud model does.
  */
 export function planMetadataUnits(
   routing: ResolvedMetadataRouting,
   defaultHost: string,
   aiManager: AIManagerService,
   hasInsights: boolean,
-  /** This run's cancel signal, threaded to the local adapters (the cloud groups get it
+  /** This run's cancel signal, threaded to the local units (the cloud groups get it
    *  from the AI manager's config). */
   abortSignal?: AbortSignal
 ): MetadataRunPlan {
-  const localPlans: Array<{ task: AdapterTask; option: MetadataRoutingOption }> = [];
+  const adapterPlans: Array<{ task: AdapterTask; option: MetadataRoutingOption }> = [];
   /** model -> fields, in first-appearance order (Map preserves insertion order). */
   const groupFields = new Map<string, MetadataFieldId[]>();
+  /** model -> the option that named it, so the unit knows its transport and its host. */
+  const groupOption = new Map<string, MetadataRoutingOption>();
 
   // A field the PROMPT SET does not define is not generated at all, whatever the routing
   // says. The Spreaker podcast set has no "## THUMBNAIL_TEXT" and never did — that is the
@@ -1005,20 +1219,31 @@ export function planMetadataUnits(
     if (!option) {
       throw new Error(`Metadata task "${task}" is routed to unknown option "${optionId}"`);
     }
-    if (option.kind === 'local') {
+    if (option.kind === 'local' && !option.promptStyle) {
+      // The registry requires it on every local option. A local option without one names a
+      // model but not how to talk to it, and the two shapes are not interchangeable.
+      throw new Error(
+        `Routing option "${optionId}" is local but declares no promptStyle, so there is no way to know ` +
+          `whether "${option.model}" wants the adapter turn or the prompt set's instructions`
+      );
+    }
+    if (option.promptStyle === 'adapter') {
       const adapterTask = ADAPTER_FIELDS[field];
       if (!adapterTask) {
         throw new Error(
-          `Metadata task "${task}" is routed to the local model "${option.model}", but no local adapter writes ` +
-            `"${field}" — only description, tags and titles have one`
+          `Metadata task "${task}" is routed to the trained adapter "${option.model}", but no adapter writes ` +
+            `"${field}" — only description, tags and titles have one. Route it to a base model or to the cloud.`
         );
       }
-      localPlans.push({ task: adapterTask, option });
+      adapterPlans.push({ task: adapterTask, option });
       continue;
     }
     const existing = groupFields.get(option.model);
     if (existing) existing.push(field);
-    else groupFields.set(option.model, [field]);
+    else {
+      groupFields.set(option.model, [field]);
+      groupOption.set(option.model, option);
+    }
   }
 
   if (skipped.length > 0) {
@@ -1027,16 +1252,16 @@ export function planMetadataUnits(
         `${skipped.length === 1 ? 'that field is' : 'those fields are'} not generated this run`
     );
   }
-  if (localPlans.length === 0 && groupFields.size === 0) {
+  if (adapterPlans.length === 0 && groupFields.size === 0) {
     throw new Error(
       `The loaded prompt set defines none of the metadata fields this app generates ` +
         `(${FIELD_TASKS.map((f) => f.field).join(', ')}), so there is nothing to run`
     );
   }
 
-  const hashtagsOwnedByDescription = localPlans.some((p) => p.task === 'description');
+  const hashtagsOwnedByDescription = adapterPlans.some((p) => p.task === 'description');
   if (!hashtagsOwnedByDescription && available.has(METADATA_FIELD_SECTIONS.hashtags.section)) {
-    // Cloud description: the HASHTAGS section joins the group that already has DESCRIPTION.
+    // Prompt-set description: the HASHTAGS section joins the group that already has DESCRIPTION.
     for (const fields of groupFields.values()) {
       if (fields.includes('description')) {
         fields.push('hashtags');
@@ -1055,44 +1280,48 @@ export function planMetadataUnits(
 
   if (models.length === 0) {
     log.info(
-      '[MetadataTasks] every metadata field is routed to a local adapter: no cloud call runs, so the prompt set\'s ' +
-        'self-check and the CHANNEL PERFORMANCE DATA block are unused this run (the adapters carry their own ' +
-        'trained instructions and were not trained to read either)'
+      '[MetadataTasks] every metadata field is routed to a trained adapter: no prompt-set group runs, so the ' +
+        "prompt set's self-check and the CHANNEL PERFORMANCE DATA block are unused this run (the adapters carry " +
+        'their own trained instructions and were not trained to read either)'
     );
   } else if (hasInsights && !titlesModel) {
     log.info(
-      `[MetadataTasks] titles are not in the cloud this run, so the CHANNEL PERFORMANCE DATA block rides with the ` +
-        `first cloud group (${primaryModel}) instead of the titles group`
+      `[MetadataTasks] titles are not in a prompt-set group this run, so the CHANNEL PERFORMANCE DATA block ` +
+        `rides with the first group (${primaryModel}) instead of the titles group`
     );
   }
 
   // Every field some OTHER unit owns, as canonical section keys, so a group never carries
   // instructions for a field it will not return.
   const ownerOf = new Map<string, string>();
-  for (const plan of localPlans) ownerOf.set(METADATA_FIELD_SECTIONS[plan.task].section, `local:${plan.task}`);
-  if (hashtagsOwnedByDescription) ownerOf.set(METADATA_FIELD_SECTIONS.hashtags.section, 'local:description');
+  for (const plan of adapterPlans) ownerOf.set(METADATA_FIELD_SECTIONS[plan.task].section, `adapter:${plan.task}`);
+  if (hashtagsOwnedByDescription) ownerOf.set(METADATA_FIELD_SECTIONS.hashtags.section, 'adapter:description');
   for (const [model, fields] of groupFields) {
-    for (const field of fields) ownerOf.set(METADATA_FIELD_SECTIONS[field].section, `cloud:${model}`);
+    for (const field of fields) ownerOf.set(METADATA_FIELD_SECTIONS[field].section, `group:${model}`);
   }
 
-  const units: MetadataUnit[] = localPlans.map(
+  const units: MetadataUnit[] = adapterPlans.map(
     (plan) => new LocalAdapterUnit(plan.task, plan.option, defaultHost, hashtagsOwnedByDescription, abortSignal)
   );
 
   for (const [model, fields] of groupFields) {
     const ownedElsewhere = new Set<string>();
     for (const [section, owner] of ownerOf) {
-      if (owner !== `cloud:${model}`) ownedElsewhere.add(section);
+      if (owner !== `group:${model}`) ownedElsewhere.add(section);
     }
+    const spec: MetadataGroupSpec = {
+      model,
+      fields,
+      ownedElsewhere,
+      absorbUnownedSections: model === primaryModel,
+      selfCheck: model === selfCheckModel,
+      insights: hasInsights && model === primaryModel,
+    };
+    const option = groupOption.get(model)!;
     units.push(
-      new CloudGroupUnit(aiManager, {
-        model,
-        fields,
-        ownedElsewhere,
-        absorbUnownedSections: model === primaryModel,
-        selfCheck: model === selfCheckModel,
-        insights: hasInsights && model === primaryModel,
-      })
+      option.kind === 'local'
+        ? new LocalGroupUnit(aiManager, spec, option, defaultHost, abortSignal)
+        : new CloudGroupUnit(aiManager, spec)
     );
   }
 

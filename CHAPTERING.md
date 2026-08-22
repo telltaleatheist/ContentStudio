@@ -607,3 +607,75 @@ substituted quietly.
 Implementation: `electron/services/metadata/chapter-embedding.service.ts`, prompts in
 `chapter-prompts.ts` as `CHAPTER_EMBEDDING_PROMPTS` (kept separate from the sealed five and
 from the single-call pair). The sealed pipeline remains the default.
+
+(Superseded within the day — see the next addendum.)
+
+---
+
+## 2026-08-22 (later the same day) — addendum: the embedding pipeline is the only pipeline
+
+Everything above this line is now HISTORY, not instructions. The sealed 14B method and the
+27B single call have been **deleted from the codebase**, and the embedding pipeline is not
+an option any more — it is what chaptering IS.
+
+### What changed
+
+- The `chapters` task is **gone from the routing table**. It is not selected, defaulted or
+  asked about. Every item that reaches generation with a timestamped transcript is
+  chaptered by `chapter-embedding.service.ts`; an item with no timeline (a text subject)
+  records the same truthful `chaptersSkipped` it always did.
+- **Deleted**: `chapter-pipeline.service.ts`'s `ChapterPipelineService` (the five stages),
+  `chapter-single-call.service.ts` in full, `CHAPTER_PROMPTS` (the sealed five) and
+  `CHAPTER_SINGLE_CALL_PROMPTS`. What survived the first file is its pure transcript
+  machinery — the cue reader, the word stream, the cadence table, the result shape — which
+  the embedding pipeline imports and which now lives in `chapter-transcript.ts`.
+- **Deleted routing options**: `cogito-14b`, `qwen25-14b`, `qwen3-14b`,
+  `chapters-qwen27b-single`, `chapters-embedding`.
+- The models are declared in code as `CHAPTER_PIPELINE_MODELS` (`qwen3.8:27b` +
+  `nomic-embed-text`). The routing modal still REPORTS whether they are installed, because
+  that warning was the useful half of the picker: without the generation model there are no
+  chapters at all, and without the embedding model the run declares the weaker lexical
+  scorer in its warnings.
+
+### Why the picker went
+
+Three architectures were offered because the third had just been ported and had one day of
+validation on this machine. It won on every axis that was measured — an order of magnitude
+fewer calls, better boundaries, an ad break the whole-transcript approach missed entirely
+— and the other two were left selectable out of caution rather than doubt.
+
+Caution that leaves two slower, worse implementations reachable from a dropdown is not
+caution. The default among the six chapter options shipped as `cogito-14b`, a model that is
+not installed on this machine, and that is how chaptering silently produced nothing for a
+period. A picker whose wrong answers cost an hour of a run is a trap.
+
+### Settings migration
+
+An existing store holds a `metadataRouting.chapters` entry naming an option that no longer
+exists, and `validateRoutingSelection` throws on unknown ids — which would have failed
+`metadata-routing:get`, the one screen where a user could have fixed it.
+
+`migrateStoredRouting` (metadata-routing.ts) drops exactly the ids listed in
+`REMOVED_ROUTING_TASKS` / `REMOVED_ROUTING_OPTIONS`, logs a notice per drop naming what went
+and why, and the IPC handler writes the migrated object back so the notice is logged once
+rather than on every read. An id this build never had still throws. Anyone removing an
+option in future adds it to those maps in the same commit.
+
+### The Ollama traps moved, they did not go
+
+All four are now in `ollama-json.ts`, shared with the metadata task units, which moved onto
+local base models on the same day. `chapter-embedding.service.ts` keeps its own POLICY (an
+unusable answer costs one boundary or one chapter name, and the stage warns and carries on)
+and no longer keeps its own copy of the mechanism.
+
+### One prompt change, and it is not cosmetic
+
+`SUMMARIZE_CHAPTER` and `SUMMARIZE_CHAPTER_TAGGED` now state a REGISTER: describe the
+content in topic and noun-phrase form, and never invent a subject ("the speaker", "the
+host", "the narrator", "this video", or a bare "he"). Left to itself the model wrote "The
+speaker discusses mainstream alien belief, Roswell, and Trump's UAP disclosure order" — a
+sentence whose subject it made up. It cannot know who is talking: on these channels the
+voice in any given second is either the creator or the footage he is reacting to. This is a
+register instruction, deliberately not a banned-word check on the output — pointed at the
+right grammar, the phrasing does not arise, and nothing has to police it afterwards. The
+same rule is in the prompt sets' `## DESCRIPTION` and `## CLIP_SUGGESTIONS` sections.
