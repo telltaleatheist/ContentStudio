@@ -309,9 +309,9 @@ export interface MetadataRoutingChapters {
 }
 
 /**
- * One slot: a single choice covering several tasks (big = the four packaging fields,
- * small = description and tags). `selectedOptionId` is null when the slot's tasks
- * disagree — a per-field override — and the modal shows MIXED rather than reconciling.
+ * The modal's single choice: which model writes the four packaging fields (local 27B or a
+ * Claude model). `selectedOptionId` is null when the store was hand-set per field and the
+ * tasks disagree — shown as Custom, never reconciled.
  */
 export interface MetadataRoutingSlot {
   id: string;

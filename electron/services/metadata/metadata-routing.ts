@@ -341,49 +341,41 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
 ];
 
 /**
- * The two-slot view of the same table: ONE choice for the four packaging fields, one for
- * the two mechanical ones.
+ * THE ONE CHOICE THE MODAL OFFERS: which model is the big one.
  *
- * The shipped roster is two models, and the operator's actual decision is almost never
- * "which model writes pinned comments" — it is "which model is the BIG model this run".
- * A slot names that decision: picking on a slot writes the same per-task entries the
- * per-field rows write, into the same store, resolved by the same code. Slots ADD no
- * state anywhere — they are a projection of `metadataRouting`, and a store whose four big
- * fields disagree (a per-field override, e.g. titles on the 32B adapter) simply renders
- * the slot as MIXED rather than being rewritten to agree.
+ * The operator's decision is not "which model writes pinned comments" — it is "does this
+ * run think on the local 27B or on a Claude model". This slot names that decision: the
+ * four packaging fields move together, and picking here writes the same per-task entries
+ * into the same store, resolved by the same code. It ADDS no state — it is a projection
+ * of `metadataRouting`, and a store whose four fields disagree (a hand-set per-field
+ * entry, e.g. titles on the 32B adapter) renders the slot as CUSTOM rather than being
+ * rewritten to agree.
  *
- * `optionIds` is the slot's own offer list, narrower than the tasks' union on purpose:
- * the big slot offers the 27B or a Claude model — the operator's stated choice — and the
- * small slot offers the 9B and its measured A/B rival the 4B. Everything else the tasks
- * offer (32B titles adapter, cloud on the mechanical fields) remains reachable through
- * the per-field rows, which stay authoritative.
+ * Description and tags are NOT in the slot and NOT in the modal: they are the mechanical
+ * fields and they run on the small local model (registry default qwen3.5:9b), whoever
+ * writes the packaging. Rerouting them — the 9b/4b A/B, cloud experiments — is a stored
+ * per-task entry set outside the modal, validated exactly like every other selection.
  */
 export interface MetadataRoutingSlot {
-  id: 'big' | 'small';
+  id: 'big';
   label: string;
-  /** The routed tasks this slot sets together. Every task is in exactly one slot. */
+  /** The routed tasks this slot sets together. */
   taskIds: MetadataRoutingTaskId[];
-  /** Offered on the slot's own picker. Each must be offered by EVERY task in `taskIds`. */
+  /** Offered on the slot's picker. Each must be offered by EVERY task in `taskIds`. */
   optionIds: string[];
 }
 
 export const METADATA_ROUTING_SLOTS: MetadataRoutingSlot[] = [
   {
     id: 'big',
-    label: 'Big model',
+    label: 'Model',
     taskIds: ['titles', 'thumbnail_text', 'pinned_comment', 'clip_suggestions'],
     optionIds: ['qwen38-27b', 'sonnet5', 'opus5'],
   },
-  {
-    id: 'small',
-    label: 'Small model',
-    taskIds: ['description', 'tags'],
-    optionIds: ['qwen35-9b', 'qwen35-4b'],
-  },
 ];
 
-// The slot table is a projection of the task table, so a mismatch between them is a
-// registry bug, and it fails HERE at load rather than as a phantom option in the modal.
+// The slot is a projection of the task table, so a mismatch between them is a registry
+// bug, and it fails HERE at load rather than as a phantom option in the modal.
 for (const slot of METADATA_ROUTING_SLOTS) {
   for (const taskId of slot.taskIds) {
     const task = METADATA_ROUTING_TASKS.find((t) => t.id === taskId);
@@ -396,14 +388,6 @@ for (const slot of METADATA_ROUTING_SLOTS) {
         );
       }
     }
-  }
-}
-for (const task of METADATA_ROUTING_TASKS) {
-  const owners = METADATA_ROUTING_SLOTS.filter((s) => s.taskIds.includes(task.id));
-  if (owners.length !== 1) {
-    throw new Error(
-      `Routing task "${task.id}" is in ${owners.length} slots; every task belongs to exactly one`
-    );
   }
 }
 
