@@ -39,6 +39,8 @@ import { Snapshot } from '../analytics/analytics-types';
 import { YouTubeAuthService } from './youtube-auth.service';
 
 const DATA_API = 'https://www.googleapis.com/youtube/v3';
+// Media uploads (thumbnails.set) go to the /upload host, not the plain Data API host.
+const UPLOAD_API = 'https://www.googleapis.com/upload/youtube/v3';
 const ANALYTICS_API = 'https://youtubeanalytics.googleapis.com/v2/reports';
 
 // filters=video==… allows up to 500 IDs; 200 keeps request URLs comfortably small.
@@ -93,6 +95,21 @@ export interface UploadStatusEntry {
   descriptionLength: number;
   tagCount: number;
   categoryId: string | null;
+}
+
+/**
+ * A video's `snippet` and `status` parts, exactly as the API returned them.
+ *
+ * Open records rather than declared fields ON PURPOSE. These objects exist to be handed
+ * BACK to videos.update with two or three values changed, and videos.update replaces the
+ * whole part: a field this app does not know about (a localization block, a field Google
+ * adds next year) has to survive the round trip, and it only survives if nothing along
+ * the way narrows the object to the fields someone thought to type out.
+ */
+export interface VideoParts {
+  id: string;
+  snippet: Record<string, any>;
+  status: Record<string, any>;
 }
 
 /** Core lifetime metrics for a video (Analytics API). */
@@ -362,6 +379,125 @@ export class YouTubeApiService {
       }
     }
     return entries;
+  }
+
+  // ==================== DATA API: WRITES ====================
+  //
+  // The three calls the "Push to YouTube" action needs. Everything above this line is a
+  // GET; these are the first writes in the file, so read the constraint that governs
+  // them before adding a fourth:
+  //
+  //   videos.update REPLACES the whole submitted part. A `snippet` body carrying only a
+  //   title CLEARS the description, the tags and the categoryId of a live video. There
+  //   is therefore no "update the title" method here and there never will be — the only
+  //   write is updateVideo(), it takes a WHOLE part, and the caller is expected to have
+  //   read that part with getVideoParts() first. See publish/youtube-push.ts, which is
+  //   the read-modify-write that does it.
+  //
+  // Quota (verified against Google's docs 2026-08-21): videos.list = 1 unit,
+  // videos.update = 50, thumbnails.set = 50, all from the shared 10,000/day pool.
+
+  /**
+   * The two mutable parts of a video, EXACTLY as the API returned them.
+   *
+   * Deliberately untyped record fields rather than a hand-written field list: the whole
+   * point of reading this is to hand every field back unchanged, and a typed subset would
+   * silently drop whatever the interface's author had not heard of (a new snippet field,
+   * a localization block). Anything this object does not carry is a field this app
+   * cannot promise to preserve, so it carries all of them.
+   */
+  async getVideoParts(channelId: string, videoId: string): Promise<VideoParts | null> {
+    const data = await this.dataGet<any>(channelId, 'videos', {
+      part: 'snippet,status',
+      id: videoId,
+    });
+    const item = data?.items?.[0];
+    if (!item) return null;
+    if (!item.snippet || !item.status) {
+      throw new YouTubeApiError(
+        `videos.list returned video ${videoId} without ` +
+        `${!item.snippet ? 'a snippet' : 'a status'} part — refusing to update a video ` +
+        `whose current values could not be read.`
+      );
+    }
+    return { id: item.id, snippet: item.snippet, status: item.status };
+  }
+
+  /**
+   * videos.update. `parts` names EVERY part in `body` — the API replaces each named part
+   * wholesale with what is sent, and silently ignores a part that is in the body but not
+   * in `part=`, which is how a "why did nothing change" bug happens.
+   */
+  async updateVideo(
+    channelId: string,
+    parts: Array<'snippet' | 'status'>,
+    body: { id: string; snippet?: Record<string, any>; status?: Record<string, any> }
+  ): Promise<VideoParts> {
+    if (parts.length === 0) {
+      throw new YouTubeApiError('updateVideo needs at least one part to update.');
+    }
+    for (const part of parts) {
+      if (!(part in body)) {
+        throw new YouTubeApiError(
+          `updateVideo was asked to update part "${part}" but the body has no "${part}" — ` +
+          `that request would replace the part with nothing.`
+        );
+      }
+    }
+    for (const key of Object.keys(body)) {
+      if (key !== 'id' && !parts.includes(key as 'snippet' | 'status')) {
+        throw new YouTubeApiError(
+          `updateVideo body carries "${key}" but part= does not name it, so the API would ` +
+          `ignore it and report success. Name it in parts or drop it from the body.`
+        );
+      }
+    }
+
+    const token = await this.auth.getAccessToken(channelId);
+    const data = await this.request<any>({
+      method: 'PUT',
+      url: `${DATA_API}/videos`,
+      params: { part: parts.join(',') },
+      data: body,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    });
+    if (!data?.id) {
+      throw new YouTubeApiError(
+        `videos.update for ${body.id} returned no video resource — the write cannot be confirmed.`
+      );
+    }
+    return { id: data.id, snippet: data.snippet || {}, status: data.status || {} };
+  }
+
+  /**
+   * thumbnails.set — a media upload, so it goes to the /upload endpoint with the image
+   * bytes as the raw body (NOT multipart: this endpoint takes media only).
+   *
+   * Takes the bytes and their mime rather than a path: reading and VALIDATING the file is
+   * the caller's job (publish/thumbnail-validate.ts owns every rule about what YouTube
+   * will take), and this client has no business deciding a file is good enough.
+   */
+  async setThumbnail(
+    channelId: string,
+    videoId: string,
+    image: Buffer,
+    mime: 'image/png' | 'image/jpeg'
+  ): Promise<{ videoId: string; defaultUrl: string | null }> {
+    const token = await this.auth.getAccessToken(channelId);
+    const data = await this.request<any>({
+      method: 'POST',
+      url: `${UPLOAD_API}/thumbnails/set`,
+      params: { videoId, uploadType: 'media' },
+      data: image,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': mime,
+        'Content-Length': String(image.length),
+      },
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+    });
+    return { videoId, defaultUrl: data?.items?.[0]?.default?.url ?? null };
   }
 
   // ==================== ANALYTICS API: CORE METRICS ====================

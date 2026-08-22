@@ -80,6 +80,41 @@ export interface ThumbnailSetResult {
   warnings: string[];
 }
 
+/**
+ * What one "Push to YouTube" actually did.
+ *
+ * Every part is named either in `updated` or in `skipped` with the reason it was not
+ * sent — there is no third state, so "did the thumbnail go?" always has an answer.
+ */
+export interface PushReceipt {
+  videoId: string;
+  /** The channel that video belongs to, as YouTube reported it at push time. */
+  channelId: string;
+  /** ISO. When the push completed. */
+  pushedAt: string;
+  updated: {
+    /** snippet.title as sent — chosenTitles[0]. */
+    title: string;
+    description: { chars: number; firstLine: string };
+    tags: { count: number };
+    /** Present only when this push set a schedule. */
+    publishAt?: string;
+    /** Present only when a thumbnail was uploaded; the file that was sent. */
+    thumbnail?: string;
+  };
+  /** The parts this push did not send, each with its reason. */
+  skipped: {
+    publishAt?: string;
+    thumbnail?: string;
+  };
+}
+
+/** What publish-push-youtube returns: the updated record plus the receipt stored on it. */
+export interface PushOutcome {
+  selection: ChosenMetadata;
+  receipt: PushReceipt;
+}
+
 export interface ChosenMetadata {
   /** The item's permanent id — the only thing that identifies it. */
   itemId: string;
@@ -103,6 +138,10 @@ export interface ChosenMetadata {
   isPodcast: boolean;
   /** Phase 2. Always present, null until an editor story is linked. */
   transcriptRef: TranscriptRef | null;
+  /** ISO. When metadata was last pushed to the linked video, or null for never. */
+  pushedAt: string | null;
+  /** What that push sent, part by part. null exactly when pushedAt is. Last push only. */
+  pushReceipt: PushReceipt | null;
   videoId: string | null;
   sourceFilename: string | null;
   sourceDurationSec: number | null;

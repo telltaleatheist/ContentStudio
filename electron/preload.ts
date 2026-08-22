@@ -199,6 +199,15 @@ const api = {
     ipcRenderer.invoke('transcript-export-stories', projectFolder),
   // ==================== END TRANSCRIPT LINK ====================
 
+  // Push the item's chosen metadata onto its LINKED video: title (chosenTitles[0]),
+  // description, tags, plus the schedule and thumbnail when the record has them. The main
+  // process reads the video's current snippet/status first and hands them back with only
+  // those fields replaced — videos.update replaces a whole part, so anything less would
+  // clear what it did not mention. Uploads nothing and creates nothing; a video must
+  // already be linked. Failures (auth, quota, "this video is public and cannot be
+  // scheduled") come back as text, verbatim.
+  publishPushYouTube: (itemId: string) => ipcRenderer.invoke('publish-push-youtube', itemId),
+
   // ==================== EDITOR ====================
   // The ported AutoCutStudio timeline editor. Every member of the editor's `EditorHost`
   // port has a method here with the SAME NAME, except where that name is already taken by

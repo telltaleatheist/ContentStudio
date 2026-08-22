@@ -4,6 +4,7 @@ import type {
   ChannelResolution,
   ChosenMetadata,
   PublishResult,
+  PushOutcome,
   ResolvedMetadata,
   ThumbnailPreview,
   ThumbnailProposal,
@@ -488,6 +489,7 @@ declare global {
         absPath?: string | null
       ) => Promise<PublishResult<ThumbnailPreview | null>>;
       publishResolveChannel: (promptSet: string) => Promise<PublishResult<ChannelResolution>>;
+      publishPushYouTube: (itemId: string) => Promise<PublishResult<PushOutcome>>;
 
       // ==================== TRANSCRIPT LINK (Phase 2) ====================
       transcriptFindCandidates: (videoPath: string) => Promise<PublishResult<CandidateScan>>;
@@ -1144,6 +1146,24 @@ export class ElectronService {
   async publishResolveChannel(promptSet: string): Promise<PublishResult<ChannelResolution>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.publishResolveChannel(promptSet);
+  }
+
+  /**
+   * Push the item's chosen metadata onto its LINKED video: title (chosenTitles[0]),
+   * description, tags, plus a schedule and a thumbnail when the record has them.
+   *
+   * The main process reads the video's current snippet and status first and hands them
+   * back with only those fields replaced — videos.update replaces a whole part, so a
+   * narrower write would clear everything it did not mention.
+   *
+   * Nothing is uploaded and nothing is created: the item must already be linked to a
+   * video. A failure — no title chosen, the video is on another channel, it is public and
+   * cannot be scheduled, the grant expired, the quota is spent — comes back as text and
+   * is shown verbatim, because that text is the operator's next action.
+   */
+  async publishPushYouTube(itemId: string): Promise<PublishResult<PushOutcome>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishPushYouTube(itemId);
   }
 
   async publishGetResolved(itemId: string): Promise<PublishResult<ResolvedMetadata>> {
