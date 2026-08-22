@@ -154,6 +154,58 @@
                   </p>
                 }
 
+                <!-- Carry forward. This video was generated before: the earlier run's
+                     record holds facts about the VIDEO (channel, thumbnail, podcast flag,
+                     transcript link) that a regeneration does not carry, because a new run
+                     is a new item id. Offered on one line, applied on one click, never
+                     inherited — source_key is a HINT (ITEM-ID-PLAN §3.2), and every value
+                     is re-read and re-validated in the main process when Apply is
+                     pressed. Titles and the schedule are deliberately absent: they belong
+                     to one run and one upload. -->
+                @if (publish.carryOffer(); as offer) {
+                  <div class="publish-carry">
+                    <mat-icon>history</mat-icon>
+                    <p class="publish-carry-text">
+                      This video was generated before ({{ localTime(offer.jobCreatedAt) }}) — carry
+                      forward {{ carryFieldList() }}?
+                    </p>
+                    <button class="copy-btn confirm"
+                            [disabled]="publish.carrying() || publish.saving()"
+                            (click)="publish.applyCarryForward()">
+                      @if (publish.carrying()) { Carrying… } @else { Apply }
+                    </button>
+                    <button class="copy-btn"
+                            [disabled]="publish.carrying()"
+                            (click)="publish.dismissCarryForward()">Dismiss</button>
+                  </div>
+                }
+
+                <!-- The receipt. All four fields, always: what was written, what had
+                     nothing to write (or was already set — a carry never overwrites), and
+                     what was REFUSED because it no longer validates. A vanished thumbnail
+                     file lands in the last group with its path named. -->
+                @if (publish.carryReceipt(); as receipt) {
+                  <div class="publish-carry-receipt">
+                    <div class="publish-proposal-head">
+                      <mat-icon>fact_check</mat-icon>
+                      <strong>Carried forward from the earlier run</strong>
+                      <button class="copy-btn" (click)="publish.dismissCarryReceipt()">Close</button>
+                    </div>
+                    @for (outcome of receipt.applied; track outcome.field) {
+                      <p class="publish-note applied">Applied {{ outcome.field }} — {{ outcome.detail }}</p>
+                    }
+                    @for (outcome of receipt.refused; track outcome.field) {
+                      <p class="publish-note warn">Not carried: {{ outcome.field }} — {{ outcome.detail }}</p>
+                    }
+                    @for (outcome of receipt.skipped; track outcome.field) {
+                      <p class="publish-note">Nothing to carry for {{ outcome.field }} — {{ outcome.detail }}</p>
+                    }
+                    @for (warning of receipt.warnings; track $index) {
+                      <p class="publish-note warn">{{ warning }}</p>
+                    }
+                  </div>
+                }
+
                 <!-- Channel. A suggestion is pre-selected but NOT stored: it is written
                      with the next save, and touching the picker replaces it for good. -->
                 <div class="publish-row">

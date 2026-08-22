@@ -203,6 +203,20 @@ export class MetadataReports implements OnInit {
     return basename(absPath);
   }
 
+  /**
+   * The offer's field list, read as a sentence: "channel, thumbnail and podcast flag".
+   *
+   * Built from what the earlier record ACTUALLY holds, not from the four field names —
+   * offering a thumbnail that the earlier run never had would be a promise the apply
+   * cannot keep, and the receipt would then have to explain a field nobody was owed.
+   */
+  carryFieldList(): string {
+    const fields = this.publish.carryOfferFields();
+    if (fields.length === 0) return 'nothing';
+    if (fields.length === 1) return fields[0];
+    return `${fields.slice(0, -1).join(', ')} and ${fields[fields.length - 1]}`;
+  }
+
   /** The picker's value, as a string the <select> can match. '' is "not routed". */
   channelSelectValue(): string {
     return this.publish.selectedChannelId() ?? '';

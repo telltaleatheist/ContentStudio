@@ -173,6 +173,16 @@ const api = {
   // call's side effect.
   publishResolveChannel: (promptSet: string) =>
     ipcRenderer.invoke('publish-resolve-channel', promptSet),
+  // Carry-forward on regenerate. `find` ANSWERS — was this video generated before, and
+  // does that run carry channel / thumbnail / podcast / transcript state? null is the
+  // ordinary answer. `apply` is the only half that writes, it happens on a click and
+  // never on a load, and it comes back with a per-field receipt: every one of the four
+  // fields either applied, skipped (nothing to carry, or the target already has a value —
+  // a carry never overwrites), or refused with the reason it did not validate NOW.
+  publishFindCarryForward: (itemId: string) =>
+    ipcRenderer.invoke('publish-find-carry-forward', itemId),
+  publishApplyCarryForward: (itemId: string, fromItemId: string) =>
+    ipcRenderer.invoke('publish-apply-carry-forward', itemId, fromItemId),
 
   // ==================== TRANSCRIPT LINK (Phase 2) ====================
   // Which editor story is this final export? These are ANSWERS — none of them links

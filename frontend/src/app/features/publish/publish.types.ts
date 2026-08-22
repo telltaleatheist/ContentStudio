@@ -109,6 +109,60 @@ export interface PushReceipt {
   };
 }
 
+/**
+ * The four fields that survive a regeneration, because each is a fact about the VIDEO
+ * rather than about the run that generated it. Mirrors carry-forward.ts's CarryField.
+ */
+export type CarryField = 'transcriptRef' | 'channelId' | 'thumbnail' | 'isPodcast';
+
+/** What an earlier run over the same source file holds that could be carried. */
+export interface CarryableState {
+  transcriptRef: TranscriptRef | null;
+  channelId: string | null;
+  thumbnailPath: string | null;
+  thumbnailMeta: ThumbnailMeta | null;
+  isPodcast: boolean;
+}
+
+/**
+ * The offer: this video was generated before, and that run carries publish state.
+ *
+ * A HINT, never an inheritance (ITEM-ID-PLAN §3.2). Nothing is applied until the operator
+ * clicks, and the main process re-reads and re-validates everything when they do.
+ */
+export interface CarryForwardCandidate {
+  fromItemId: string;
+  fromJobId: string;
+  /** ISO. When the earlier run happened — the DATE in "generated before (…)". */
+  jobCreatedAt: string;
+  state: CarryableState;
+  /** The normalized source basename that joins the two runs. */
+  sourceKey: string;
+  /** How many earlier items share it, whether or not they carry state. */
+  siblingCount: number;
+}
+
+/** One field's outcome in a carry-forward receipt. */
+export interface CarryFieldOutcome {
+  field: CarryField;
+  detail: string;
+}
+
+/**
+ * What one carry-forward actually did — every one of the four fields in exactly one
+ * bucket. `refused` is the loud half: a thumbnail whose file has vanished lands there
+ * with the path named, and nothing dead is stored.
+ */
+export interface CarryReceipt {
+  fromItemId: string;
+  toItemId: string;
+  applied: CarryFieldOutcome[];
+  skipped: CarryFieldOutcome[];
+  refused: CarryFieldOutcome[];
+  warnings: string[];
+  selection: ChosenMetadata | null;
+}
+
 /** What publish-push-youtube returns: the updated record plus the receipt stored on it. */
 export interface PushOutcome {
   selection: ChosenMetadata;

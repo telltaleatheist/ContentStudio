@@ -1,6 +1,8 @@
 import { Injectable, NgZone } from '@angular/core';
 import { Observable, Subject } from 'rxjs';
 import type {
+  CarryForwardCandidate,
+  CarryReceipt,
   ChannelResolution,
   ChosenMetadata,
   PublishResult,
@@ -489,6 +491,13 @@ declare global {
         absPath?: string | null
       ) => Promise<PublishResult<ThumbnailPreview | null>>;
       publishResolveChannel: (promptSet: string) => Promise<PublishResult<ChannelResolution>>;
+      publishFindCarryForward: (
+        itemId: string
+      ) => Promise<PublishResult<CarryForwardCandidate | null>>;
+      publishApplyCarryForward: (
+        itemId: string,
+        fromItemId: string
+      ) => Promise<PublishResult<CarryReceipt>>;
       publishPushYouTube: (itemId: string) => Promise<PublishResult<PushOutcome>>;
 
       // ==================== TRANSCRIPT LINK (Phase 2) ====================
@@ -1146,6 +1155,39 @@ export class ElectronService {
   async publishResolveChannel(promptSet: string): Promise<PublishResult<ChannelResolution>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.publishResolveChannel(promptSet);
+  }
+
+  /**
+   * Was this video generated before, and does the earlier run carry publish state worth
+   * carrying forward?
+   *
+   * ANSWERS ONLY — it writes nothing, and null is the ordinary reply (most items are the
+   * only run over their source). The panel turns a non-null answer into a one-line offer;
+   * the operator decides.
+   */
+  async publishFindCarryForward(
+    itemId: string
+  ): Promise<PublishResult<CarryForwardCandidate | null>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishFindCarryForward(itemId);
+  }
+
+  /**
+   * Carry the earlier run's channel / thumbnail / podcast flag / transcript link onto
+   * this item.
+   *
+   * The main process RE-READS that record and re-validates every value against the world
+   * as it is now — a thumbnail file that has vanished, a channel that has been
+   * disconnected, a transcript whose session was re-exported are each refused BY NAME.
+   * The receipt accounts for all four fields: applied, skipped (nothing to carry, or this
+   * item already has a value — a carry never overwrites), or refused.
+   */
+  async publishApplyCarryForward(
+    itemId: string,
+    fromItemId: string
+  ): Promise<PublishResult<CarryReceipt>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishApplyCarryForward(itemId, fromItemId);
   }
 
   /**

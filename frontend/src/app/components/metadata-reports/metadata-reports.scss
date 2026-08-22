@@ -1209,6 +1209,77 @@
   }
 }
 
+/* The regeneration offer: ONE LINE, and it only appears for an item nobody has set up
+   yet. It sits at the top of the panel because it is about every field below it, and it
+   is a row rather than a box (the thumbnail proposal's treatment) because there is
+   nothing to look at here — just a question with two answers. */
+.publish-carry {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px dashed var(--primary-orange);
+  border-radius: 8px;
+  background: rgba(255, 107, 53, 0.06);
+
+  mat-icon {
+    flex: none;
+    font-size: 1rem;
+    width: 1rem;
+    height: 1rem;
+    color: var(--primary-orange);
+  }
+
+  .publish-carry-text {
+    flex: 1;
+    margin: 0;
+    font-size: 0.75rem;
+    line-height: 1.45;
+    color: var(--text-primary);
+  }
+
+  .copy-btn {
+    flex: none;
+  }
+}
+
+/* What the carry actually did. Same green reporting box as the push receipt, and for the
+   same reason: all four fields are accounted for here, including the ones that were
+   refused — a carry that brought three of four is a result to read, not a success to
+   wave through. */
+.publish-carry-receipt {
+  margin-bottom: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--success-text);
+  border-radius: 8px;
+  background: var(--success-bg);
+
+  .publish-note {
+    margin-left: 0;
+
+    /* Applied lines are the ones the operator is looking for; the skipped ones stay in
+       the secondary colour they already have. */
+    &.applied {
+      color: var(--text-primary);
+    }
+  }
+
+  .publish-proposal-head {
+    color: var(--success-text);
+    gap: 0.5rem;
+    margin-bottom: 0.25rem;
+
+    mat-icon {
+      color: var(--success-text);
+    }
+
+    .copy-btn {
+      margin-left: auto;
+    }
+  }
+}
+
 /* Disabled actions inside the panel: Set with an empty box, Confirm before the offered
    image has been rendered, Push while one is in flight. Visibly unavailable rather than
    silently inert. */

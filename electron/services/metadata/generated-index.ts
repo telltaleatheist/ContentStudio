@@ -87,6 +87,10 @@ export function summarizeJob(job: any, fallbackJobId: string): GeneratedItemSumm
       createdAt,
       promptSet,
       sourceFilename,
+      // As the RUN recorded it, or null. Never recomputed from source_path: the item's
+      // own key is the join carry-forward matches on, and a key derived here would drift
+      // away from it the day normalizeForMatch changes.
+      sourceKey: typeof item?.source_key === 'string' && item.source_key ? item.source_key : null,
       titleCount: titles.length,
     };
   });

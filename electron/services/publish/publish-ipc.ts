@@ -13,28 +13,45 @@
  * The generated-metadata reader is INJECTED (`readGenerated`) rather than imported: that
  * is what keeps this module free of any services/metadata dependency, so publish/ can be
  * lifted into another host wholesale.
+ *
+ * The per-field validator table lives in field-validators.ts rather than here, because
+ * carry-forward.ts writes the same fields and has to face the same rules — and it cannot
+ * import this module, which pulls in `electron`.
  */
 
 import { ipcMain, nativeImage } from 'electron';
+import * as log from 'electron-log';
 import type { UploadStatusEntry } from '../youtube/youtube-api.service';
-import { PublishStoreService, GeneratedFallback, resolveChosenMetadata } from './publish-store.service';
+import {
+  PublishStoreService,
+  GeneratedFallback,
+  GeneratedItemSummary,
+  resolveChosenMetadata,
+} from './publish-store.service';
 import { matchDraft, toFillCandidates } from './video-matcher';
 import { YouTubePushApi, pushItemToYouTube } from './youtube-push';
-import { RoutableChannel, findChannelById, resolveChannelForPromptSet } from './channel-routing';
+import { RoutableChannel, resolveChannelForPromptSet } from './channel-routing';
+import { buildFieldPatch, describeValue } from './field-validators';
+import {
+  CarriedRefResolution,
+  applyCarryForward,
+  findCarryForward,
+} from './carry-forward';
 import {
   ThumbnailValidation,
   deriveProposedThumbnailPath,
   validateThumbnailFile,
 } from './thumbnail-validate';
 import {
-  ChosenMetadata,
+  TranscriptRef,
   MAX_AB_VARIANTS,
   emptyChosenMetadata,
   isItemId,
   validateChosenTitles,
-  validatePublishAt,
 } from './publish-types';
 import * as fs from 'fs';
+
+export { buildFieldPatch };
 
 export interface PublishIpcDeps {
   store: PublishStoreService;
@@ -57,6 +74,24 @@ export interface PublishIpcDeps {
    * without a restart, and a stale copy would reject an id that is in fact valid.
    */
   listChannels: () => RoutableChannel[];
+  /**
+   * The host's index of every generated item, newest-first.
+   *
+   * Injected for the same reason readGenerated is: knowing which report file an item
+   * lives in, and what `source_key` that report recorded, is format knowledge and it
+   * belongs to services/metadata. Carry-forward is the caller — it is the one thing here
+   * that has to look at OTHER items than the one it was asked about.
+   */
+  listGenerated: () => { items: GeneratedItemSummary[] };
+  /**
+   * Is a stored transcript ref still the file that was linked? Three states, ok /
+   * missing / changed (spec §3.1).
+   *
+   * Injected: the resolver is services/metadata/editor-transcript-link.ts. Carry-forward
+   * refuses to carry anything but `ok` — a link that resolves to a re-exported session
+   * would otherwise arrive on the new item looking exactly like a confirmed one.
+   */
+  resolveTranscriptRef: (ref: TranscriptRef) => CarriedRefResolution;
   /**
    * The three YouTube write calls "Push to YouTube" needs, injected exactly like
    * listRecentUploads — as a narrow surface rather than the whole client.
@@ -106,173 +141,28 @@ function requireItemId(value: unknown, name: string): string {
   return value;
 }
 
-/** A short, safe rendering of whatever the renderer actually sent. */
-function describeValue(value: unknown): string {
-  if (typeof value === 'string') {
-    return value.length > 60 ? `${JSON.stringify(value.slice(0, 60))}… (${value.length} chars)` : JSON.stringify(value);
-  }
-  if (value === null) return 'null';
-  if (Array.isArray(value)) return `an array of ${value.length}`;
-  if (typeof value === 'object') return 'an object';
-  return `${typeof value} ${JSON.stringify(value)}`;
-}
-
-/** What a field validator may write. Never the identity fields. */
-type FieldPatch = Partial<Omit<ChosenMetadata, 'itemId' | 'jobId'>>;
-
-/** What a validator is allowed to consult beyond the value itself. */
-interface FieldContext {
-  /** The channel registry, read at validation time. */
-  listChannels: () => RoutableChannel[];
-  /** "Now" for the time-relative rules, so they are testable. */
-  now: Date;
-}
-
-/**
- * The per-field validator table — Q7, and the reason this PR exists as much as the new
- * fields do.
- *
- * What was here before was a loop over a whitelist of key names that copied whatever
- * arrived as long as it was a string or null. That accepted `channelId: "UCnonsense"`,
- * and it would have accepted `publishAt: "next tuesday"` and `isPodcast: "false"` the
- * moment those fields existed — the last of which is truthy, which is exactly the
- * `_is_compilation` bug in a new place.
- *
- * Each entry OWNS its field: it decides the type, the rule, the message, AND what the
- * patch actually contains — which is why publishAt's entry can write two keys. A key
- * with no entry here is REFUSED rather than ignored, because a caller sending a field
- * this doesn't know is a caller whose write is not going to happen, and finding that out
- * silently is worse than being told.
- *
- * Every message names the offending value and the rule it broke. "Invalid field" would
- * be a bug report with no information in it.
- */
-const FIELD_VALIDATORS: Record<string, (value: unknown, ctx: FieldContext) => FieldPatch> = {
-  /** null clears the override, restoring the generated description. */
-  descriptionOverride(value) {
-    if (value !== null && typeof value !== 'string') {
-      throw new Error(
-        `descriptionOverride must be a string or null (null clears the override and ` +
-        `restores the generated description); got ${describeValue(value)}.`
-      );
-    }
-    return { descriptionOverride: value };
-  },
-
-  /** Comma-separated, matching MetadataResult.tags. null clears. */
-  tagsOverride(value) {
-    if (value !== null && typeof value !== 'string') {
-      throw new Error(
-        `tagsOverride must be a comma-separated string or null (null clears the override ` +
-        `and restores the generated tags); got ${describeValue(value)}.`
-      );
-    }
-    return { tagsOverride: value };
-  },
-
-  /**
-   * Must be a channel that actually exists in the registry.
-   *
-   * The check is membership, not shape: "looks like a UC… id" would pass a channel Owen
-   * does not own, and the whole point of the field is that a non-null channelId can be
-   * handed to the API without a second look. null is legal and means "not routed yet".
-   */
-  channelId(value, ctx) {
-    if (value === null) return { channelId: null };
-    if (typeof value !== 'string' || !value.trim()) {
-      throw new Error(
-        `channelId must be a registered channel id or null; got ${describeValue(value)}.`
-      );
-    }
-    const channels = ctx.listChannels();
-    if (!findChannelById(value, channels)) {
-      const known = channels.length
-        ? channels.map((c) => `${c.name} (${c.channelId})`).join(', ')
-        : 'none are registered';
-      throw new Error(
-        `channelId ${JSON.stringify(value)} is not a registered channel. Known channels: ${known}.`
-      );
-    }
-    return { channelId: value };
-  },
-
-  /**
-   * A schedule, or null to clear it. See validatePublishAt for the four rules.
-   *
-   * Writes publishAtSetAt ON EVERY SET, INCLUDING THE CLEAR. "When did this stop being
-   * scheduled" is as much a question as "when was it scheduled", and a provenance stamp
-   * that only exists on one branch answers neither reliably.
-   */
-  publishAt(value, ctx) {
-    const setAt = ctx.now.toISOString();
-    if (value === null) return { publishAt: null, publishAtSetAt: setAt };
-    if (typeof value !== 'string') {
-      throw new Error(
-        `publishAt must be an ISO-8601 timestamp with an explicit zone, or null to clear ` +
-        `the schedule; got ${describeValue(value)}.`
-      );
-    }
-    const error = validatePublishAt(value, ctx.now);
-    if (error) throw new Error(error);
-    return { publishAt: value.trim(), publishAtSetAt: setAt };
-  },
-
-  /**
-   * Strictly boolean. Not truthy, not "true", not 1.
-   *
-   * A coerced flag is how `_is_compilation` came to mean different things in different
-   * readers, and this one decides whether an item is treated as a podcast episode.
-   */
-  isPodcast(value) {
-    if (typeof value !== 'boolean') {
-      throw new Error(
-        `isPodcast must be exactly true or false; got ${describeValue(value)}. ` +
-        `It is never absent and never coerced.`
-      );
-    }
-    return { isPodcast: value };
-  },
-};
-
-/**
- * Turn a fields object into a patch, or throw naming the field and the rule.
- *
- * Exported for the same reason the validators are a table: this is testable without an
- * ipcMain, and it is the single place a set-fields write is decided.
- */
-export function buildFieldPatch(fields: Record<string, unknown>, ctx: FieldContext): FieldPatch {
-  if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
-    throw new Error(`fields must be an object of field names to values; got ${describeValue(fields)}.`);
-  }
-
-  const known = Object.keys(FIELD_VALIDATORS);
-  const patch: FieldPatch = {};
-
-  for (const key of Object.keys(fields)) {
-    const validator = FIELD_VALIDATORS[key];
-    if (!validator) {
-      // Not skipped. A field this handler cannot write is a write that is not going to
-      // happen, and the caller has to hear that rather than watch a success come back.
-      throw new Error(
-        `publish-set-fields cannot write ${JSON.stringify(key)}. It accepts: ${known.join(', ')}. ` +
-        `(thumbnailPath has its own channel, publish-set-thumbnail, because it is validated ` +
-        `against the file on disk.)`
-      );
-    }
-    Object.assign(patch, validator(fields[key], ctx));
-  }
-
-  if (Object.keys(patch).length === 0) {
-    throw new Error(`nothing to update: fields was empty. It accepts: ${known.join(', ')}.`);
-  }
-  return patch;
-}
 
 export function setupPublishIpc(deps: PublishIpcDeps): void {
-  const { store, readGenerated, listRecentUploads, listChannels, pushApi } = deps;
+  const {
+    store,
+    readGenerated,
+    listRecentUploads,
+    listChannels,
+    listGenerated,
+    resolveTranscriptRef,
+    pushApi,
+  } = deps;
 
   if (typeof listChannels !== 'function') {
     throw new Error('setupPublishIpc requires listChannels: channel routing cannot be faked.');
+  }
+
+  if (typeof listGenerated !== 'function' || typeof resolveTranscriptRef !== 'function') {
+    throw new Error(
+      'setupPublishIpc requires listGenerated and resolveTranscriptRef: carry-forward joins ' +
+      'items on the source_key their reports recorded and refuses a transcript link it ' +
+      'cannot re-resolve. Neither can be inferred here.'
+    );
   }
 
   if (!pushApi || typeof pushApi.getVideoParts !== 'function' || typeof pushApi.updateVideo !== 'function'
@@ -295,6 +185,13 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
     if (!generated) throw new Error(`No generated metadata for item ${itemId}`);
     return generated;
   }
+
+  /**
+   * What carry-forward reads and writes through. Bound once from this handler's own deps
+   * so the finder and the applier can never be looking at a different store, registry or
+   * index than the rest of this file.
+   */
+  const carryDeps = { store, listGenerated, readGenerated, listChannels, resolveTranscriptRef };
 
   /** One item's stored selection, or null when the operator has never touched it. */
   ipcMain.handle('publish-get-selection', async (_e, itemId: string) => {
@@ -640,6 +537,53 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
     try {
       return ok(store.listActionable());
     } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * Was this video generated before, and does that earlier run carry publish state?
+   *
+   * READ-ONLY, and it is the whole of the "hint" half of ITEM-ID-PLAN §3.2: it answers,
+   * the panel offers, the operator clicks. `null` is the ordinary answer — most items are
+   * the only run over their source, and an item whose source_key is null (a text subject,
+   * a compilation) has no regeneration join at all.
+   */
+  ipcMain.handle('publish-find-carry-forward', async (_e, itemId: string) => {
+    try {
+      const id = requireItemId(itemId, 'itemId');
+      return ok(findCarryForward(id, carryDeps));
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * Carry the earlier run's channel / thumbnail / podcast flag / transcript link onto
+   * this item. One click, and LOGGED with both ids — this is the one action in the
+   * publish panel that writes values the operator did not type, so the record of which
+   * item they came from is part of the action, not a nicety.
+   *
+   * Every field comes back accounted for in the receipt: applied, skipped, or refused
+   * with the validator's own message. A thumbnail whose file has since vanished is
+   * refused BY NAME and nothing dead is stored.
+   */
+  ipcMain.handle('publish-apply-carry-forward', async (_e, itemId: string, fromItemId: string) => {
+    try {
+      const id = requireItemId(itemId, 'itemId');
+      const from = requireItemId(fromItemId, 'fromItemId');
+      log.info(`[Publish] carry-forward: applying ${from} -> ${id}`);
+
+      const receipt = await applyCarryForward(id, from, carryDeps);
+      log.info(
+        `[Publish] carry-forward ${from} -> ${id}: ` +
+        `applied ${receipt.applied.map((o) => o.field).join(', ') || 'nothing'}; ` +
+        `skipped ${receipt.skipped.map((o) => o.field).join(', ') || 'nothing'}; ` +
+        `refused ${receipt.refused.map((o) => `${o.field} (${o.detail})`).join('; ') || 'nothing'}`
+      );
+      return ok(receipt);
+    } catch (err: any) {
+      log.error(`[Publish] carry-forward ${fromItemId} -> ${itemId} failed:`, err);
       return fail(err?.message || String(err));
     }
   });
