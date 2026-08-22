@@ -123,6 +123,191 @@
               <div class="ab-error" (click)="publish.dismissError()">{{ err }}</div>
             }
 
+            <!-- Publish Section
+                 The Phase-1 publish record for this item: which channel it goes to, when
+                 it should go live, its thumbnail, and whether it is a podcast episode.
+                 INTENT ONLY - nothing in this panel uploads, schedules or publishes
+                 anything; it records what the operator wants so the later phases have
+                 something to act on. Every write is validated in the main process, and a
+                 refusal comes back as text and lands in the banner above, verbatim. -->
+            <div class="metadata-section publish-section">
+              <div class="section-header">
+                <div class="section-title-row">
+                  <mat-icon>rocket_launch</mat-icon>
+                  <h3>Publish</h3>
+                  @if (publish.saving()) {
+                    <span class="publish-saving">saving…</span>
+                  }
+                </div>
+                <mat-checkbox class="publish-podcast"
+                              [checked]="publish.isPodcast()"
+                              (change)="onPodcastChange($event.checked)">
+                  Publish as podcast (Spreaker)
+                </mat-checkbox>
+              </div>
+
+              <div class="publish-body">
+                @if (!publish.selection()) {
+                  <p class="publish-note">
+                    Nothing is saved for this item yet — the record is created by your first
+                    change here.
+                  </p>
+                }
+
+                <!-- Channel. A suggestion is pre-selected but NOT stored: it is written
+                     with the next save, and touching the picker replaces it for good. -->
+                <div class="publish-row">
+                  <span class="publish-label">Channel</span>
+                  <div class="publish-control">
+                    <select class="publish-select"
+                            [disabled]="publish.saving()"
+                            (change)="onChannelChange($event)">
+                      <option value="" [selected]="channelSelectValue() === ''">— not routed —</option>
+                      @for (channel of publish.channels(); track channel.channelId) {
+                        <option [value]="channel.channelId"
+                                [selected]="channelSelectValue() === channel.channelId">
+                          {{ channel.name }}
+                        </option>
+                      }
+                    </select>
+                    @if (publish.channelIsSuggested()) {
+                      <span class="publish-badge">suggested</span>
+                    }
+                  </div>
+                </div>
+
+                @if (publish.channelIsSuggested()) {
+                  <p class="publish-note suggestion">
+                    {{ publish.channelNote() }} Pre-selected only — it is saved with your next
+                    change here, or right away if you pick it yourself.
+                  </p>
+                } @else if (publish.channelNote(); as note) {
+                  <p class="publish-note">{{ note }}</p>
+                }
+                @if (publish.unknownStoredChannel(); as unknown) {
+                  <p class="publish-note warn">
+                    This item is routed to {{ unknown }}, which is not in the channel registry —
+                    the picker cannot show it. Re-connect that channel or choose another.
+                  </p>
+                }
+
+                <!-- Schedule. Two local boxes plus the offset they will be composed with:
+                     the stored value is an instant, and an instant needs a zone. -->
+                <div class="publish-row">
+                  <span class="publish-label">Schedule</span>
+                  <div class="publish-control">
+                    <input type="date"
+                           class="publish-input"
+                           [value]="scheduleDate()"
+                           [disabled]="publish.saving()"
+                           (input)="scheduleDateDraft.set($any($event.target).value)" />
+                    <input type="time"
+                           class="publish-input"
+                           [value]="scheduleTime()"
+                           [disabled]="publish.saving()"
+                           (input)="scheduleTimeDraft.set($any($event.target).value)" />
+                    <span class="publish-zone"
+                          title="This Mac's zone, for that date. There is no zone picker in this release, so the offset is shown rather than assumed.">
+                      {{ scheduleOffset() }}
+                    </span>
+                    <button class="copy-btn"
+                            [disabled]="!scheduleComplete() || publish.saving()"
+                            (click)="saveSchedule()">Set</button>
+                    @if (publish.publishAt()) {
+                      <button class="copy-btn"
+                              [disabled]="publish.saving()"
+                              (click)="clearSchedule()">Clear</button>
+                    }
+                  </div>
+                </div>
+
+                @if (scheduleDescription(); as when) {
+                  <p class="publish-note" [class.warn]="when.isPast">
+                    {{ when.local }} ({{ when.localOffset }}) · {{ when.relative }}@if (when.isPast) { — this time has already passed.}
+                  </p>
+                  @if (!when.offsetsAgree) {
+                    <p class="publish-note warn">
+                      Stored as {{ when.raw }} ({{ when.storedOffset }}), which is not the offset
+                      in effect here now — the line above is that same moment read in
+                      {{ when.localOffset }}.
+                    </p>
+                  }
+                } @else {
+                  <p class="publish-note">No schedule set.</p>
+                }
+
+                <!-- Thumbnail. The image is decoded and downscaled in the main process;
+                     the renderer never reads the file, so webSecurity stays on. -->
+                <div class="publish-row">
+                  <span class="publish-label">Thumbnail</span>
+                  <div class="publish-control">
+                    @if (publish.thumbnailPreview(); as preview) {
+                      <img class="publish-thumb" [src]="preview.dataUrl" [alt]="fileName(preview.path)" />
+                      <div class="publish-thumb-facts">
+                        <span class="publish-filename" [title]="preview.path">{{ fileName(preview.path) }}</span>
+                        <span class="publish-dim">{{ thumbnailFacts(preview.meta) }}</span>
+                      </div>
+                      <button class="copy-btn" [disabled]="publish.saving()" (click)="changeThumbnail()">Change…</button>
+                      <button class="copy-btn" [disabled]="publish.saving()" (click)="publish.clearThumbnail()">Clear</button>
+                    } @else if (publish.thumbnailPath(); as path) {
+                      <!-- The record has one and the preview did not arrive. The banner
+                           above says why; the path is still what was chosen. -->
+                      <div class="publish-thumb-facts">
+                        <span class="publish-filename" [title]="path">{{ fileName(path) }}</span>
+                        @if (publish.thumbnailMeta(); as meta) {
+                          <span class="publish-dim">{{ thumbnailFacts(meta) }} — no preview</span>
+                        }
+                      </div>
+                      <button class="copy-btn" [disabled]="publish.saving()" (click)="changeThumbnail()">Change…</button>
+                      <button class="copy-btn" [disabled]="publish.saving()" (click)="publish.clearThumbnail()">Clear</button>
+                    } @else {
+                      <span class="publish-empty">None.</span>
+                      <button class="copy-btn" [disabled]="publish.saving()" (click)="changeThumbnail()">Choose…</button>
+                    }
+                  </div>
+                </div>
+
+                @for (warning of publish.thumbnailWarnings(); track $index) {
+                  <p class="publish-note warn">{{ warning }}</p>
+                }
+
+                <!-- A thumbnail found on disk next to this item's export. NEVER applied
+                     on its own: slots are renumbered between export and upload often
+                     enough (13 of 40 live exports) that a pre-applied proposal would be
+                     wrong routinely and invisibly. Confirm waits for the image. -->
+                @if (publish.proposal(); as proposal) {
+                  <div class="publish-proposal">
+                    <div class="publish-proposal-head">
+                      <mat-icon>help_outline</mat-icon>
+                      <strong>Proposed — not applied</strong>
+                    </div>
+                    <p class="publish-note">
+                      This image was exported alongside the video. Check that it is the right
+                      one: slot numbers get renumbered between export and upload.
+                    </p>
+                    <div class="publish-control">
+                      @if (publish.proposalPreview(); as preview) {
+                        <img class="publish-thumb" [src]="preview.dataUrl" [alt]="fileName(proposal.path)" />
+                      }
+                      <div class="publish-thumb-facts">
+                        <span class="publish-filename" [title]="proposal.path">{{ fileName(proposal.path) }}</span>
+                        <span class="publish-dim">{{ thumbnailFacts(proposal.meta) }}</span>
+                      </div>
+                      <button class="copy-btn confirm"
+                              [disabled]="!publish.proposalPreview() || publish.saving()"
+                              (click)="publish.confirmProposal()">Confirm</button>
+                      <button class="copy-btn"
+                              [disabled]="publish.saving()"
+                              (click)="publish.dismissProposal()">Not this one</button>
+                    </div>
+                    @for (warning of proposal.warnings; track $index) {
+                      <p class="publish-note warn">{{ warning }}</p>
+                    }
+                  </div>
+                }
+              </div>
+            </div>
+
             <!-- Titles Section -->
             @if (metadata()!.titles && metadata()!.titles.length > 0) {
               <div class="metadata-section">

@@ -164,9 +164,11 @@ const api = {
   publishProposeThumbnail: (itemId: string) =>
     ipcRenderer.invoke('publish-propose-thumbnail', itemId),
   // Downscaled in the MAIN process (nativeImage) so the preview never needs a file://
-  // read from the renderer — webSecurity stays on.
-  publishReadThumbnail: (itemId: string, maxPx: number) =>
-    ipcRenderer.invoke('publish-read-thumbnail', itemId, maxPx),
+  // read from the renderer — webSecurity stays on. `absPath` names a file that is NOT
+  // the stored one, which is how a proposal is previewed before it is confirmed; omit it
+  // for the item's own thumbnail.
+  publishReadThumbnail: (itemId: string, maxPx: number, absPath?: string | null) =>
+    ipcRenderer.invoke('publish-read-thumbnail', itemId, maxPx, absPath ?? null),
   // Answers only. Seeding channelId from the answer is the panel's decision, not this
   // call's side effect.
   publishResolveChannel: (promptSet: string) =>

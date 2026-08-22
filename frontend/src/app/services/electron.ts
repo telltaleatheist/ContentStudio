@@ -475,7 +475,8 @@ declare global {
       publishProposeThumbnail: (itemId: string) => Promise<PublishResult<ThumbnailProposal | null>>;
       publishReadThumbnail: (
         itemId: string,
-        maxPx: number
+        maxPx: number,
+        absPath?: string | null
       ) => Promise<PublishResult<ThumbnailPreview | null>>;
       publishResolveChannel: (promptSet: string) => Promise<PublishResult<ChannelResolution>>;
 
@@ -1088,17 +1089,22 @@ export class ElectronService {
   }
 
   /**
-   * A downscaled preview of the item's thumbnail as a data URL, or null when none is set.
+   * A downscaled preview as a data URL.
+   *
+   * With no `absPath` this previews the item's STORED thumbnail and answers null when it
+   * has none. With one it previews THAT file — how a proposal is shown before it is
+   * confirmed — and a file it cannot read is an error rather than a null.
    *
    * The main process reads and resizes the file; the renderer never touches an external
    * volume, so webSecurity stays on.
    */
   async publishReadThumbnail(
     itemId: string,
-    maxPx: number
+    maxPx: number,
+    absPath?: string | null
   ): Promise<PublishResult<ThumbnailPreview | null>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.publishReadThumbnail(itemId, maxPx);
+    return await this.ipcRenderer.publishReadThumbnail(itemId, maxPx, absPath ?? null);
   }
 
   /**

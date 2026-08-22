@@ -791,6 +791,9 @@
   color: #ff8a80;
   font-size: 0.8125rem;
   cursor: pointer;
+  /* Two independent failures in one load are two lines. The messages from the main
+     process are written to be read, so they are shown whole rather than truncated. */
+  white-space: pre-line;
 }
 
 .list-item.ab-selectable {
@@ -946,5 +949,216 @@
   &:focus {
     outline: none;
     box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.25);
+  }
+}
+
+
+/* ==================== Publish panel ====================
+   The Phase-1 publish record: channel, schedule, thumbnail, podcast flag. It sits above
+   Titles and wears the same .metadata-section chrome as every other section, so only the
+   controls inside it are new. Nothing here publishes anything — it records intent.
+
+   Label / control rows rather than a form grid: each row is one field, and the notes
+   underneath (the routing reason, the human schedule line, the thumbnail's warnings) are
+   full-width because they are sentences, not captions. */
+
+.publish-section {
+  .publish-saving {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--primary-orange);
+  }
+
+  .publish-podcast {
+    font-size: 0.8125rem;
+    white-space: nowrap;
+  }
+}
+
+.publish-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1rem 1.25rem 1.25rem;
+}
+
+.publish-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.publish-label {
+  flex: 0 0 5.5rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.publish-control {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+/* Native select and date/time inputs, dressed like .ab-title-input. Material's own
+   controls are not used here for the same reason the title editor doesn't: these sit
+   inside a dense list of sections and a form field's floating label would double the
+   height of every row. */
+.publish-select,
+.publish-input {
+  padding: 0.375rem 0.5rem;
+  font-size: 0.8125rem;
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+
+  &:focus {
+    outline: none;
+    border-color: var(--primary-orange);
+    box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.25);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+  }
+}
+
+.publish-select {
+  min-width: 14rem;
+}
+
+/* The offset the boxes will be composed with. Always visible: there is no zone picker in
+   this release, so the zone being used has to be readable rather than assumed. */
+.publish-zone {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* "suggested" — a channel that is pre-selected and NOT yet stored. Deliberately the same
+   shape as .edited-badge: both mean "what you are looking at is not what is on disk". */
+.publish-badge {
+  padding: 0.0625rem 0.375rem;
+  border-radius: 10px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--primary-orange);
+  background: rgba(255, 107, 53, 0.14);
+  border: 1px solid rgba(255, 107, 53, 0.4);
+}
+
+/* Full-width sentences under a row: why the channel is what it is, when the schedule
+   lands, what is wrong with the thumbnail. */
+.publish-note {
+  margin: 0 0 0.25rem 6.25rem;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+
+  &.suggestion {
+    color: var(--primary-orange);
+  }
+
+  /* A warning is a fact about a stored value, not a refusal — the image IS attached and
+     the schedule IS saved. Amber rather than the banner's red, which means refused. */
+  &.warn {
+    color: #ffb74d;
+  }
+}
+
+.publish-empty {
+  font-size: 0.8125rem;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+.publish-thumb {
+  width: 160px;
+  height: auto;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+}
+
+.publish-thumb-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.publish-filename {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.publish-dim {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+/* A thumbnail found on disk and OFFERED. Boxed and captioned so it can never be mistaken
+   for the item's thumbnail: it is not one until Confirm is clicked, and slot numbers
+   drift between export and upload often enough that the difference matters. */
+.publish-proposal {
+  margin-left: 6.25rem;
+  padding: 0.75rem;
+  border: 1px dashed var(--primary-orange);
+  border-radius: 8px;
+  background: rgba(255, 107, 53, 0.06);
+
+  .publish-note {
+    margin-left: 0;
+  }
+
+  .publish-control {
+    margin-top: 0.5rem;
+  }
+}
+
+.publish-proposal-head {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8125rem;
+  color: var(--primary-orange);
+
+  mat-icon {
+    font-size: 1rem;
+    width: 1rem;
+    height: 1rem;
+    color: var(--primary-orange);
+  }
+}
+
+/* Disabled actions inside the panel: Set with an empty box, Confirm before the offered
+   image has been rendered. Visibly unavailable rather than silently inert. */
+.publish-section .copy-btn,
+.publish-proposal .copy-btn {
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+
+    &:hover {
+      background: transparent;
+      border-color: var(--border-color);
+      color: var(--text-secondary);
+    }
+  }
+
+  &.confirm {
+    border-color: var(--primary-orange);
+    color: var(--primary-orange);
   }
 }
