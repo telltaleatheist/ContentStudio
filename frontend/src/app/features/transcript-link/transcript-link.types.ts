@@ -108,8 +108,10 @@ export interface StoryExportResult {
 /**
  * The operator's decision for one input, stored on the InputItem so it rides the queued job.
  *
- * ABSENT means undecided — which is what Start Queue refuses on when the item has
- * candidates. It is never a synonym for either branch below.
+ * ABSENT is the DEFAULT, not a missing answer: linking is optional, so an item nobody
+ * touched runs on the final export's own transcript. It is still not a synonym for the
+ * `final-only` branch below — that one is the operator saying so, and the run records
+ * which of the two it was (`FinalOnlyDeclaration.via`).
  */
 export type TranscriptChoice =
   | {
@@ -129,6 +131,23 @@ export type TranscriptChoice =
       reason: string;
     };
 
+/**
+ * Why an input is running on the final export's own transcript — mirror of
+ * editor-transcript-link.ts's FinalOnlyDeclaration.
+ *
+ * This is what crosses the IPC boundary for an unlinked input. It exists because "he
+ * declared final-export-only" and "he linked nothing" are different facts about a run,
+ * and the report has to be able to say which one happened.
+ */
+export interface FinalOnlyDeclaration {
+  kind: 'final-only';
+  via: 'declared' | 'default-unlinked';
+  reason: string;
+}
+
+/** What one input declares about its content transcript: a link, or why there isn't one. */
+export type TranscriptLink = TranscriptRef | FinalOnlyDeclaration;
+
 /** Past this, the row goes to warning styling and the confirm label says so. */
 export const DRIFT_WARN_PCT = 10;
 
@@ -147,8 +166,18 @@ export type ContentOrigin = 'editor-story-transcript' | 'final-export-whisper';
  * Optional on a report item, and only for one reason: items generated before this
  * existed have none. Every item this build writes has one.
  */
+/** How the content branch was chosen. Mirror of item-identity.ts's ContentDeclaration. */
+export type ContentDeclaration =
+  | 'linked'
+  | 'final-only-declared'
+  | 'final-only-default'
+  | 'final-only-unlinkable';
+
 export interface ItemProvenance {
   content_fields: ContentOrigin;
+  /** Absent only on items written before linking became optional. */
+  content_declaration?: ContentDeclaration;
+  content_declaration_reason?: string | null;
   timed_fields: 'final-export-whisper';
   transcript_ref: TranscriptRef | null;
   final_duration_sec: number | null;
@@ -171,8 +200,17 @@ export function describeProvenance(p: ItemProvenance | null | undefined): string
   if (!p || !p.content_fields) return null;
 
   if (p.content_fields === 'final-export-whisper') {
+    // The declaration clause is empty for a record written before it existed: an old item
+    // cannot answer why, and the likeliest answer is still an invented one.
+    const why = p.content_declaration === 'final-only-declared'
+      ? ' The operator declared final-export-only for this item.'
+      : p.content_declaration === 'final-only-default'
+        ? ' No editor story was linked — the default for an unlinked item.'
+        : p.content_declaration === 'final-only-unlinkable'
+          ? ' This input had no editor story to link.'
+          : '';
     return 'Content fields generated from the final export’s transcript — includes any ' +
-      'sponsor reads. Chapters from the same transcript.';
+      `sponsor reads. Chapters from the same transcript.${why}`;
   }
 
   const ref = p.transcript_ref;

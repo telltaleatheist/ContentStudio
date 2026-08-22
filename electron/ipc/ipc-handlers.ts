@@ -61,6 +61,7 @@ import { setupEditorIpc } from '../services/editor/editor-ipc';
 import { setupTranscriptLinkIpc } from '../services/metadata/transcript-link-ipc';
 import { resolveRef } from '../services/metadata/editor-transcript-link';
 import type { TranscriptRef } from '../services/publish/publish-types';
+import type { TranscriptLink } from '../services/metadata/editor-transcript-link';
 import { getMainWindow } from '../main';
 
 /**
@@ -455,15 +456,25 @@ async function runTranscription(job: PipelineJob): Promise<void> {
     // Process inputs (transcription happens here). Collect per-input failures so
     // skipped items surface in result.warnings instead of silently vanishing.
     const customNotesMap = new Map(Object.entries(job.metadataParams.inputNotes || {}));
-    // The operator's Phase-2 choice per input, keyed by the same absolute path
-    // `chapterFlags` uses. Entries whose value is null are the DECLARED final-only mode
-    // and must survive the trip as null, not be dropped to "absent" — the two mean
+    // The Phase-2 declaration per input, keyed by the same absolute path `chapterFlags`
+    // uses. Entries whose value is a FinalOnlyDeclaration are the DECLARED final-only
+    // mode and must survive the trip intact, not be dropped to "absent" — the two mean
     // different things downstream (spec §3.2).
-    const transcriptRefMap = new Map(Object.entries(job.metadataParams.inputTranscripts || {})) as
-      Map<string, TranscriptRef | null>;
+    const transcriptLinkMap = new Map(Object.entries(job.metadataParams.inputTranscripts || {})) as
+      Map<string, TranscriptLink>;
+    // A slot with no declaration in it is a renderer bug, not a mode. Say so here rather
+    // than let it read downstream as "never offered a link".
+    for (const [inputPath, link] of transcriptLinkMap) {
+      if (!link || typeof link !== 'object' || typeof (link as { kind?: unknown }).kind !== 'string') {
+        throw new Error(
+          `inputTranscripts["${inputPath}"] is not a transcript declaration. Every entry must ` +
+          `be a TranscriptRef or a FinalOnlyDeclaration; omit the key entirely for an input ` +
+          `that was never offered a link.`);
+      }
+    }
     const inputFailures: string[] = [];
     const contentItems = await inputHandler.processMultipleInputs(
-      normalizedInputs, customNotesMap, inputFailures, transcriptRefMap);
+      normalizedInputs, customNotesMap, inputFailures, transcriptLinkMap);
 
     if (job.cancelled) {
       job.resolve({ success: false, error: 'Job cancelled by user' });
@@ -1057,10 +1068,12 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         jobId: params.jobId,
         jobName: params.jobName,
         chapterFlags: params.chapterFlags || {},
-        // The operator's Phase-2 decision for each input, keyed by the same absolute path
+        // The Phase-2 declaration for each input, keyed by the same absolute path
         // `chapterFlags` is. A TranscriptRef means "generate content fields from this
-        // editor story"; an explicit null means "final export only", which is a DECLARED
-        // MODE, not a default (spec §3.2). The input stage resolves a ref into the item's
+        // editor story"; a FinalOnlyDeclaration means "final export only" and carries WHY
+        // — the operator said so, or he linked nothing and this is the default. Both are
+        // DECLARED MODES and both are recorded (spec §3.2). An absent key means the input
+        // was never offered a link at all. The input stage resolves a ref into the item's
         // `contentSource`, and a declared link it cannot honor fails that item rather
         // than quietly running final-only (§3.4 rule 4).
         inputTranscripts: params.inputTranscripts || {},

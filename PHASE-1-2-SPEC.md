@@ -91,18 +91,25 @@ alongside the path so a broken link can say what it lost. Resolution is three-st
 ok / missing / changed (file exists but sourceSession/storySlug/wordCount disagree —
 session re-exported → BLOCKS the run and asks re-confirm; silent reuse prohibited).
 
-### Link UX — hint then confirm, at the Inputs page (before generation, required decision)
+### Link UX — hint then offer, at the Inputs page (before generation, OPTIONAL)
 Candidates come purely from the .mov's own path: every story in every
 <week>/files/*/<session>_edits.json. MEASURED on all 40 live final exports:
 17 exact-title matches (43%), 13 label matches after stripping the slot prefix (33%,
 Owen renumbers slots per-channel), 1 ambiguous, 10 none (renames, one-story-becomes-two-
 videos splits, podcast compilations). 76% hint rate ⇒ auto-linking would be wrong ~1 in 4
-⇒ operator confirmation required, never silent. Per-item row next to the chapters toggle:
-radio [Link "<story>" (session, match kind) + drift line] / [Pick a different story…
-(week → all projects → file browser, one dialog, progressive scope)] / [Final export only].
-When candidates exist the choice is REQUIRED (Start Queue refuses naming the item); when
-none exist the row self-resolves showing the searched path. Drift >±10% flips to warning
-style ("Link anyway (14% shorter)"). New module
+⇒ operator confirmation required, never silent — a hint is offered, never taken.
+
+REVISED 2026-08-22 (Owen): linking is OPTIONAL and the control is ONE ROW. Nothing is
+pre-selected, nothing is refused, and an item nobody touches generates exactly as it did
+before Phase 2. Per-item line under the input row, beneath the chapters toggle:
+`Editor story: <state>` + a single "Change" menu holding every hinted candidate (title +
+session · match kind · drift as its second line), "Pick a different story…" (week → all
+projects → file browser, one dialog, progressive scope), "Final export only", and "Look
+again" (re-scan). "Export it now" for a candidate whose transcript was never exported is
+an entry on that candidate. States: linked ("<story> · <session> · −3.2% vs final"),
+declared ("final export only"), unlinked ("not linked — N stories match" /
+"— nothing matched"), scanning ("looking…"), lookup-failed ("not linked — the lookup did
+not run", with Look again in the menu). Drift >±10% tints the linked line amber. New module
 electron/services/metadata/editor-transcript-link.ts (metadata/, not publish/):
 findCandidates / probeDrift / resolveRef + three IPC channels.
 
@@ -118,22 +125,35 @@ driftPct}. One resolver contentTextOf(item) in the generator; the four
 summarizeTranscript call sites switch to it; resolveChapters/generateChapters UNTOUCHED
 (they already read only srtSegments = final export's Whisper). Threading mirrors
 chapterFlags exactly: inputs.ts → generate-metadata {inputTranscripts: {[path]:
-TranscriptRef|null}} → runTranscription → processVideo(…, ref?) → Whisper as today + if
+TranscriptLink}} → runTranscription → processVideo(…, link?) → Whisper as today + if
 ref: resolveRef → parseTranscriptImport → contentSource.text. Compilation mode: per-input
-refs allowed, no special case.
+links allowed, no special case.
+
+TranscriptLink = TranscriptRef | FinalOnlyDeclaration{kind:'final-only',
+via:'declared'|'default-unlinked', reason}. Three wire states, all distinguishable: a ref,
+a final-only declaration (with WHY), or NO KEY AT ALL — the input was never offered a link
+(text subject, imported transcript). Every linkable input sends one; the default is sent
+explicitly, because "he linked nothing" is a mode this run took, not an absence.
 
 ### No-link = a DECLARED MODE, not a fallback
 Behavior identical to today (everything from final export's Whisper — never wrong, only
-ad-polluted). Not a fallback because: (1) when candidates exist the path is CHOSEN, not
-defaulted into; (2) the choice is recorded in the report on BOTH branches; (3) the
+ad-polluted). Not a fallback because: (1) the mode is RECORDED, and recorded distinctly —
+`final-only-declared` (he picked it), `final-only-default` (he linked nothing, the
+ordinary case now that linking is optional), `final-only-unlinkable` (there was nothing to
+link) — so no report can imply a decision nobody made; (2) it is recorded on BOTH
+branches; (3) the
 consequence is stated where output is read ("Content fields generated from the final
 export's transcript — includes any sponsor reads"); (4) a declared link whose file is
 missing/changed FAILS the run — it never quietly runs final-only.
 
 ### Report records (content_provenance, written in writeItemToJob, ALWAYS present)
-{content_fields: 'editor-story-transcript'|'final-export-whisper', timed_fields:
-'final-export-whisper', transcript_ref|null, final_duration_sec, transcript_duration_sec,
-drift_sec, drift_pct, declared_at} + ItemProvenance shape-guard like ItemSource.
+{content_fields: 'editor-story-transcript'|'final-export-whisper', content_declaration:
+'linked'|'final-only-declared'|'final-only-default'|'final-only-unlinkable',
+content_declaration_reason|null, timed_fields: 'final-export-whisper', transcript_ref|null,
+final_duration_sec, transcript_duration_sec, drift_sec, drift_pct, declared_at} +
+ItemProvenance shape-guard like ItemSource. content_declaration is absent ONLY on items
+written before it existed — an old record cannot answer why, and defaulting it would
+invent the answer. describeProvenance() states it in the .txt and the reports pane.
 Report ref = immutable fact of the run; ChosenMetadata.transcriptRef = operator's durable
 choice, seeded from provenance, carried forward on regeneration via the source_key prompt.
 

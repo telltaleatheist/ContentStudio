@@ -226,160 +226,100 @@
               </div>
 
               <!--
-                Editor transcript link (Phase 2). A REQUIRED question for every video item
-                that has candidates: which editor story is this? Nothing is pre-selected —
-                the finder hints for 3 of every 4 exports and is wrong on about 1 of those,
-                so a pre-selected radio would be a silent guess. When nothing matched, the
-                row self-resolves and says what it searched. PHASE-1-2-SPEC.md §3.2.
+                Editor transcript link (Phase 2). An OFFER, never a question: one quiet
+                line stating which transcript will write the content fields, and one menu
+                holding every way to change it — the hinted stories, the picker, "final
+                export only", and a re-scan. Nothing is pre-selected and nothing blocks;
+                an item nobody touches runs on the final export, and the run records that
+                it did so BY DEFAULT rather than by declaration. PHASE-1-2-SPEC.md §3.2.
               -->
               @if (canLinkTranscript(item)) {
-                <div class="transcript-link-row"
-                     [class.warning]="rowIsWarning(item)"
-                     [class.undecided]="needsTranscriptChoice(item)">
+                <div class="tl-row" [class]="'is-' + transcriptState(item)"
+                     [class.is-warning]="rowIsWarning(item)">
+                  <mat-icon class="tl-glyph">{{ transcriptStateIcon(item) }}</mat-icon>
+                  <span class="tl-label">Editor story</span>
+                  <span class="tl-state"
+                        [matTooltip]="transcriptStateTooltip(item)"
+                        matTooltipShowDelay="350">{{ transcriptStateText(item) }}</span>
 
-                  @if (isScanningTranscript(item)) {
-                    <div class="tl-status">
-                      <mat-icon>search</mat-icon>
-                      <span>Looking for the editor story behind this export…</span>
-                    </div>
-                  } @else if (!scanFor(item)) {
-                    <div class="tl-status">
-                      <mat-icon>help_outline</mat-icon>
-                      <span>
-                        The editor story could not be looked up, so this item has no answer yet
-                        and Start Queue will refuse it. Try again, or declare final-only.
-                      </span>
-                    </div>
-                    <div class="tl-options">
-                      <div class="tl-option">
-                        <div class="tl-option-main">
-                          <div class="tl-option-title">Look again</div>
-                          <div class="tl-option-drift">Re-read this week's editor projects</div>
-                        </div>
-                        <button mat-stroked-button class="box-toggle"
-                                (click)="retryTranscriptScan(item)">
-                          Retry
-                        </button>
-                      </div>
-                      <div class="tl-option">
-                        <div class="tl-option-main">
-                          <div class="tl-option-title">Final export only (no editor transcript)</div>
-                          <div class="tl-option-drift">
-                            Content fields come from the final export's transcript, including any sponsor reads
-                          </div>
-                        </div>
-                        <button mat-stroked-button class="box-toggle"
-                                [class.active]="item.transcriptChoice?.mode === 'final-only'"
-                                (click)="chooseFinalOnly(item)">
-                          Final export only
-                        </button>
-                      </div>
-                    </div>
-                    @if (item.transcriptChoice) {
-                      <div class="tl-status resolved">
-                        <mat-icon>check_circle_outline</mat-icon>
-                        <span>{{ transcriptChoiceLabel(item) }}</span>
-                      </div>
-                    }
-                  } @else if (item.transcriptChoice && scanFor(item)!.candidates.length === 0) {
-                    <!-- Self-resolved: no candidate existed, so there was nothing to choose. -->
-                    <div class="tl-status resolved">
-                      <mat-icon>check_circle_outline</mat-icon>
-                      <span>{{ transcriptChoiceLabel(item) }}</span>
-                    </div>
-                  } @else {
-                    <div class="tl-header">
-                      <mat-icon>link</mat-icon>
-                      <span class="tl-title">Editor transcript</span>
-                      @if (scanFor(item)!.classification === 'ambiguous') {
-                        <span class="tl-ambiguous">
-                          {{ scanFor(item)!.candidates.length }} stories match this name — pick the right one
-                        </span>
-                      }
-                      @if (needsTranscriptChoice(item)) {
-                        <span class="tl-required">choice required</span>
-                      }
-                    </div>
+                  <button mat-button class="tl-trigger"
+                          [matMenuTriggerFor]="tlMenu"
+                          [attr.aria-label]="'Editor story for ' + item.displayName + ': '
+                            + transcriptStateText(item) + '. Change.'"
+                          [disabled]="isScanningTranscript(item) || pickingTranscriptFor() === item.path">
+                    Change
+                    <mat-icon class="tl-caret">arrow_drop_down</mat-icon>
+                  </button>
 
-                    <div class="tl-options">
-                      @for (c of scanFor(item)!.candidates; track c.transcriptPath) {
-                        <div class="tl-option"
-                             [class.selected]="item.transcriptChoice?.mode === 'linked'
-                               && item.transcriptChoice?.ref?.path === c.transcriptPath">
-                          <div class="tl-option-main">
-                            <div class="tl-option-title">
-                              Link "{{ c.storyTitle }}"
-                              <span class="tl-option-kind">
-                                {{ c.sourceSession }} &middot; {{ viaLabel(c) }}
+                  <mat-menu #tlMenu="matMenu" class="tl-menu-panel" xPosition="before">
+                    <ng-template matMenuContent>
+                      @for (c of candidatesFor(item); track c.transcriptPath) {
+                        @if (c.ref) {
+                          <button mat-menu-item (click)="chooseCandidate(item, c)">
+                            <mat-icon>{{ isChosenCandidate(item, c) ? 'check' : 'link' }}</mat-icon>
+                            <span class="tl-mi">
+                              <span class="tl-mi-title">{{ c.storyTitle }}</span>
+                              <span class="tl-mi-meta">{{ candidateMeta(item, c) }}</span>
+                            </span>
+                          </button>
+                        } @else if (!c.transcriptExists) {
+                          <!-- Found the story, but its transcript was never exported. -->
+                          <button mat-menu-item
+                                  [disabled]="exportingTranscriptsFor() !== null"
+                                  (click)="exportStoryTranscripts(item, c)">
+                            <mat-icon>file_download</mat-icon>
+                            <span class="tl-mi">
+                              <span class="tl-mi-title">
+                                @if (exportingTranscriptsFor() === item.path) {
+                                  Exporting "{{ c.storyTitle }}"…
+                                } @else {
+                                  Export "{{ c.storyTitle }}" now
+                                }
                               </span>
-                            </div>
-                            <div class="tl-option-drift">{{ driftLabel(item, c) }}</div>
-                          </div>
-
-                          @if (c.ref) {
-                            <button mat-stroked-button
-                                    class="box-toggle"
-                                    [class.active]="item.transcriptChoice?.mode === 'linked'
-                                      && item.transcriptChoice?.ref?.path === c.transcriptPath"
-                                    (click)="chooseCandidate(item, c)">
-                              {{ candidateActionLabel(item, c) }}
-                            </button>
-                          } @else if (!c.transcriptExists) {
-                            <button mat-stroked-button
-                                    class="box-toggle"
-                                    [disabled]="exportingTranscriptsFor() !== null"
-                                    matTooltip="Run the editor's story-transcript export for this project now"
-                                    (click)="exportStoryTranscripts(item, c)">
-                              @if (exportingTranscriptsFor() === item.path) {
-                                Exporting…
-                              } @else {
-                                Export it now
-                              }
-                            </button>
-                          }
-                        </div>
+                              <span class="tl-mi-meta">{{ candidateMeta(item, c) }}</span>
+                            </span>
+                          </button>
+                        } @else {
+                          <!-- Exported but unusable: re-exporting does not fix this one. -->
+                          <button mat-menu-item disabled>
+                            <mat-icon>block</mat-icon>
+                            <span class="tl-mi">
+                              <span class="tl-mi-title">{{ c.storyTitle }}</span>
+                              <span class="tl-mi-meta">{{ candidateMeta(item, c) }}</span>
+                            </span>
+                          </button>
+                        }
                       }
 
-                      <div class="tl-option">
-                        <div class="tl-option-main">
-                          <div class="tl-option-title">Pick a different story…</div>
-                          <div class="tl-option-drift">
-                            Search this week, then every registered project, then browse
-                          </div>
-                        </div>
-                        <button mat-stroked-button
-                                class="box-toggle"
-                                [class.active]="item.transcriptChoice?.mode === 'linked'
-                                  && item.transcriptChoice?.ref?.via === 'manual'"
-                                [disabled]="pickingTranscriptFor() === item.path"
-                                (click)="openStoryPicker(item)">
-                          Choose…
-                        </button>
-                      </div>
+                      @if (candidatesFor(item).length > 0) {
+                        <div class="tl-sep"></div>
+                      }
 
-                      <div class="tl-option">
-                        <div class="tl-option-main">
-                          <div class="tl-option-title">Final export only (no editor transcript)</div>
-                          <div class="tl-option-drift">
-                            Content fields come from the final export's transcript, including any sponsor reads
-                          </div>
-                        </div>
-                        <button mat-stroked-button
-                                class="box-toggle"
-                                [class.active]="item.transcriptChoice?.mode === 'final-only'"
-                                (click)="chooseFinalOnly(item)">
-                          Final export only
-                        </button>
-                      </div>
-                    </div>
+                      <button mat-menu-item (click)="openStoryPicker(item)">
+                        <mat-icon>search</mat-icon>
+                        <span class="tl-mi">
+                          <span class="tl-mi-title">Pick a different story…</span>
+                          <span class="tl-mi-meta">this week, then every registered project</span>
+                        </span>
+                      </button>
 
-                    @if (item.transcriptChoice) {
-                      <div class="tl-status resolved">
-                        <mat-icon>check_circle_outline</mat-icon>
-                        <span>{{ transcriptChoiceLabel(item) }}</span>
-                      </div>
-                    }
-                  }
+                      <button mat-menu-item (click)="chooseFinalOnly(item)">
+                        <mat-icon>{{ item.transcriptChoice?.mode === 'final-only' ? 'check' : 'movie' }}</mat-icon>
+                        <span class="tl-mi">
+                          <span class="tl-mi-title">Final export only</span>
+                          <span class="tl-mi-meta">its own transcript, sponsor reads included</span>
+                        </span>
+                      </button>
+
+                      <button mat-menu-item (click)="retryTranscriptScan(item)">
+                        <mat-icon>refresh</mat-icon>
+                        <span class="tl-mi">
+                          <span class="tl-mi-title">Look again</span>
+                          <span class="tl-mi-meta">re-read this week's editor projects</span>
+                        </span>
+                      </button>
+                    </ng-template>
+                  </mat-menu>
                 </div>
               }
             </mat-card-content>
@@ -524,15 +464,15 @@
                                 <span class="status-text" [class]="getItemStatusClass(job, i)">{{ getItemStatusText(job, i) }}</span>
                               </div>
                               <!--
-                                The editor-transcript decision, shown on the queue row so a
-                                queued job states which branch it will take. INFORMATIONAL:
-                                nothing generates differently from it in this release.
+                                The editor-transcript decision, shown on the queue row when
+                                one was made. An unlinked item says nothing here: that is
+                                the default every item ran on before Phase 2, and a queue
+                                that annotated it would be shouting the ordinary case.
                               -->
-                              @if (canLinkTranscript(input)) {
-                                <div class="item-transcript-choice"
-                                     [class.undecided]="!input.transcriptChoice">
-                                  <mat-icon>{{ input.transcriptChoice ? 'link' : 'help_outline' }}</mat-icon>
-                                  <span>{{ transcriptChoiceLabel(input) }}</span>
+                              @if (canLinkTranscript(input) && input.transcriptChoice) {
+                                <div class="item-transcript-choice">
+                                  <mat-icon>{{ input.transcriptChoice.mode === 'linked' ? 'link' : 'movie' }}</mat-icon>
+                                  <span>{{ transcriptStateText(input) }}</span>
                                 </div>
                               }
                             </div>
