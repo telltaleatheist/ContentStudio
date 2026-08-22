@@ -8,10 +8,26 @@ import * as path from 'path';
 import { MetadataResult } from './ai-manager.service';
 import { Chapter } from './chapter-generator.service';
 import { METADATA_FIELDS } from './metadata-fields';
-import { ItemIdentity, ItemSource, SCHEMA_VERSION, isItemId, mintItemId } from './item-identity';
+import {
+  ItemIdentity,
+  ItemProvenance,
+  ItemSource,
+  SCHEMA_VERSION,
+  describeProvenance,
+  isItemId,
+  mintItemId,
+} from './item-identity';
 
-/** An item as it is stored: the generator's result plus its identity. */
-export type StoredItem = MetadataResult & ItemIdentity;
+/**
+ * An item as it is stored: the generator's result, its identity, and what it was
+ * generated FROM.
+ *
+ * `content_provenance` is not optional here. Every item written by this build has one,
+ * on both branches of the two-source split; items written by earlier builds have none,
+ * and readers can tell those apart precisely because the key is absent rather than
+ * present-and-meaningless.
+ */
+export type StoredItem = MetadataResult & ItemIdentity & { content_provenance: ItemProvenance };
 
 export interface JobMetadata {
   job_id: string;
@@ -174,9 +190,11 @@ export class OutputHandlerService {
   addItemToJob(
     jobId: string,
     metadataItem: MetadataResult,
-    source: ItemSource
+    source: ItemSource,
+    provenance: ItemProvenance
   ): Promise<{ txtPath: string; itemId: string }> {
-    const run = this.writeQueue.then(() => this.writeItemToJob(jobId, metadataItem, source));
+    const run = this.writeQueue.then(
+      () => this.writeItemToJob(jobId, metadataItem, source, provenance));
     // Keep the chain alive even if this call rejects, so one failed item doesn't
     // poison the queue for subsequent items.
     this.writeQueue = run.then(() => undefined, () => undefined);
@@ -196,7 +214,8 @@ export class OutputHandlerService {
   private writeItemToJob(
     jobId: string,
     metadataItem: MetadataResult,
-    source: ItemSource
+    source: ItemSource,
+    provenance: ItemProvenance
   ): { txtPath: string; itemId: string } {
     // The generator is REQUIRED to say what this item came from, including saying "a
     // text subject, so nothing" explicitly. A missing argument is a caller bug: derived
@@ -206,6 +225,20 @@ export class OutputHandlerService {
       || !('source_key' in source) || !('source_path' in source)) {
       throw new Error(
         `addItemToJob requires an ItemSource ({ source_key, source_path }, null allowed) for job ${jobId}`
+      );
+    }
+
+    // Same rule, same reason, for the OTHER half of "what this came from". The generator
+    // is required to say which transcript wrote the words — including saying "the final
+    // export's own, as declared" explicitly. A missing argument is a caller bug: there is
+    // nothing on the item to derive it from after the fact, and a report that cannot
+    // answer the question is indistinguishable from one whose answer was final-only.
+    if (!provenance || typeof provenance !== 'object'
+      || !('content_fields' in provenance) || !('timed_fields' in provenance)
+      || !('transcript_ref' in provenance) || !('declared_at' in provenance)) {
+      throw new Error(
+        `addItemToJob requires an ItemProvenance ({ content_fields, timed_fields, ` +
+        `transcript_ref, ... }) for job ${jobId}`
       );
     }
 
@@ -224,7 +257,7 @@ export class OutputHandlerService {
     const rawName = (metadataItem as any)._title || `item_${ordinal}`;
     const cleanName = this.sanitizeFilename(rawName) || `item_${ordinal}`;
     const txtPath = this.resolveUniqueTxtPath(job.txt_folder, cleanName);
-    this.saveReadable(metadataItem, txtPath, job.prompt_set);
+    this.saveReadable(metadataItem, txtPath, job.prompt_set, provenance);
 
     // Add item to job, carrying its identity and the de-collided path just written.
     const itemId = mintItemId();
@@ -233,6 +266,7 @@ export class OutputHandlerService {
       txt_path: txtPath,
       source_key: source.source_key,
       source_path: source.source_path,
+      content_provenance: provenance,
     });
     job.items.push(stored);
     job.schema_version = SCHEMA_VERSION;
@@ -426,7 +460,12 @@ export class OutputHandlerService {
   /**
    * Save metadata as human-readable text file
    */
-  private saveReadable(metadata: MetadataResult, outputPath: string, promptSet: string): void {
+  private saveReadable(
+    metadata: MetadataResult,
+    outputPath: string,
+    promptSet: string,
+    provenance: ItemProvenance
+  ): void {
     try {
       const lines: string[] = [];
 
@@ -444,6 +483,12 @@ export class OutputHandlerService {
         contentLines.forEach((l) => lines.push(l));
         lines.push('');
       };
+
+      // SOURCES, first and always — the .txt is read on its own, months later, with no
+      // access to the report JSON, and the consequence of the split ("these words may
+      // describe material the final cut does not contain" / "these words include the
+      // sponsor read") belongs where the output is read (spec §3.4 rule 3).
+      emitSection('SOURCES', [describeProvenance(provenance)]);
 
       // Sections are driven by the field registry so adding a future field is a
       // single entry in metadata-fields.ts. Chapters are not in the registry

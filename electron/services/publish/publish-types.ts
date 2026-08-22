@@ -93,9 +93,9 @@ export interface ThumbnailMeta {
 /**
  * A link from a generated item to ONE story's editor transcript (Phase 2).
  *
- * THE TYPE ONLY. Nothing in this PR resolves, finds, or consumes one — that is PR 4.
- * It is declared here now so the record shape is settled in the same change that
- * settles the rest of ChosenMetadata, rather than migrating the file twice.
+ * Declared here because this is where the operator's DURABLE choice is stored; it is
+ * found and confirmed by services/metadata/editor-transcript-link.ts and honored by the
+ * input stage, which is also what records it in the report's content_provenance.
  *
  * The identity fields travel ALONGSIDE the path on purpose. A path that no longer
  * resolves can then say what it lost ("story 3 'jake lang' from session 2026-08-12"),
@@ -213,8 +213,9 @@ export interface ChosenMetadata {
    * The operator's durable choice of editor-story transcript for this item, or null for
    * "generate content fields from the final export's own transcript".
    *
-   * PHASE 2. Nothing in this PR sets, resolves or consumes it — the field exists so the
-   * record shape is settled once. null here is not a fallback: it is the declared
+   * PHASE 2. SEEDED ONCE, when the record is created, from the run's own
+   * `content_provenance.transcript_ref` — what the generator actually honored — and never
+   * overwritten from a report afterwards. null here is not a fallback: it is the declared
    * final-export-only mode (spec §3.4).
    */
   transcriptRef: TranscriptRef | null;

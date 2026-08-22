@@ -307,7 +307,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       }
 
       const generated = requireGenerated(id);
-      return ok(await store.update(id, generated.jobId, { chosenTitles: cleaned }));
+      return ok(await store.update(id, generated, { chosenTitles: cleaned }));
     } catch (err: any) {
       return fail(err?.message || String(err));
     }
@@ -332,7 +332,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
         const id = requireItemId(itemId, 'itemId');
         const patch = buildFieldPatch(fields, { listChannels, now: new Date() });
         const generated = requireGenerated(id);
-        return ok(await store.update(id, generated.jobId, patch));
+        return ok(await store.update(id, generated, patch));
       } catch (err: any) {
         return fail(err?.message || String(err));
       }
@@ -355,7 +355,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       const generated = requireGenerated(id);
 
       if (absPath === null) {
-        const cleared = await store.update(id, generated.jobId, {
+        const cleared = await store.update(id, generated, {
           thumbnailPath: null,
           thumbnailMeta: null,
         });
@@ -364,7 +364,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
 
       // Throws with the file, the value and the rule when it fails. Nothing is stored.
       const { meta, warnings }: ThumbnailValidation = validateThumbnailFile(absPath);
-      const selection = await store.update(id, generated.jobId, {
+      const selection = await store.update(id, generated, {
         thumbnailPath: absPath,
         thumbnailMeta: meta,
       });
@@ -571,7 +571,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
         const generated = requireGenerated(id);
 
         return ok(
-          await store.update(id, generated.jobId, {
+          await store.update(id, generated, {
             videoId: video,
             channelId: channel,
             status: 'linked',
@@ -588,7 +588,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
     try {
       const id = requireItemId(itemId, 'itemId');
       const generated = requireGenerated(id);
-      return ok(await store.update(id, generated.jobId, { videoId: null, status: 'ready' }));
+      return ok(await store.update(id, generated, { videoId: null, status: 'ready' }));
     } catch (err: any) {
       return fail(err?.message || String(err));
     }

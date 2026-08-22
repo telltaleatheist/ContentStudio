@@ -308,6 +308,16 @@
               </div>
             </div>
 
+            <!-- Provenance. One line, above the fields it is about: which transcript wrote
+                 the content fields, and (always) that chapters came from the final export.
+                 Absent for items generated before the run recorded it. -->
+            @if (provenanceLine(); as provenance) {
+              <p class="provenance-line" [class.linked]="provenanceIsLinked()">
+                <mat-icon>{{ provenanceIsLinked() ? 'link' : 'movie' }}</mat-icon>
+                <span>{{ provenance }}</span>
+              </p>
+            }
+
             <!-- Titles Section -->
             @if (metadata()!.titles && metadata()!.titles.length > 0) {
               <div class="metadata-section">

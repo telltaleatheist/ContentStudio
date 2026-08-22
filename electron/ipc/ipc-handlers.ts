@@ -1046,8 +1046,9 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // The operator's Phase-2 decision for each input, keyed by the same absolute path
         // `chapterFlags` is. A TranscriptRef means "generate content fields from this
         // editor story"; an explicit null means "final export only", which is a DECLARED
-        // MODE, not a default (spec §3.2). PR 4 carries and records the choice; PR 5 is
-        // what makes the generator read it.
+        // MODE, not a default (spec §3.2). The input stage resolves a ref into the item's
+        // `contentSource`, and a declared link it cannot honor fails that item rather
+        // than quietly running final-only (§3.4 rule 4).
         inputTranscripts: params.inputTranscripts || {},
         chapterStageModels: settings.chapterStageModels || undefined,
         chapterNumCtx: settings.chapterNumCtx || undefined,
@@ -2450,6 +2451,14 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // match. Null is handled — it downgrades the match to 'filename' (unverified)
         // rather than failing.
         sourceDurationSec: null,
+        // The editor-story link the RUN honored — the seed for the selection record's
+        // own transcriptRef, used only when that record is first created. Read off the
+        // item's recorded provenance and nothing else: an item written before provenance
+        // existed has no ref to seed from, and `undefined` says exactly that, where a
+        // null would claim the run declared final-only.
+        transcriptRef: item.content_provenance
+          ? (item.content_provenance.transcript_ref ?? null)
+          : undefined,
       };
     } catch (error) {
       log.error(`[Publish] readGenerated failed for ${itemId}:`, error);

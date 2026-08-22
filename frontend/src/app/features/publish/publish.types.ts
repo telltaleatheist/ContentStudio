@@ -25,9 +25,9 @@ export interface ThumbnailMeta {
 /**
  * A link to one story's editor transcript (Phase 2).
  *
- * As of PR 4 the Inputs page finds, confirms and stores one, and it rides the job. Nothing
- * CONSUMES it yet — content fields still come from the final export's Whisper transcript on
- * every path. The generation split is PR 5.
+ * The Inputs page finds, confirms and stores one, and it rides the job. As of PR 5 the
+ * generator CONSUMES it: content fields are written from the linked story's words, while
+ * chapters stay on the final export's Whisper transcript, always.
  */
 export interface TranscriptRef {
   kind: 'acs-story';

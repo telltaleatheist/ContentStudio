@@ -125,7 +125,7 @@ export class WhisperService extends EventEmitter {
   async transcribeVideo(
     videoPath: string,
     modelName?: string
-  ): Promise<{ jobId: string; srtPath: string; segments: SRTSegment[] }> {
+  ): Promise<{ jobId: string; srtPath: string; segments: SRTSegment[]; durationSec: number | null }> {
     // Generate unique job ID
     const jobId = crypto.randomBytes(8).toString('hex');
 
@@ -231,7 +231,13 @@ export class WhisperService extends EventEmitter {
       // Remove from active jobs
       this.activeJobs.delete(jobId);
 
-      return { jobId, srtPath: whisperResult.srtPath, segments };
+      // `durationSec` is REPORTED, not newly measured: the probe above already ran, for
+      // progress estimation, and the number was thrown away. It is the run's one source
+      // of truth for the final export's length (ItemProvenance.final_duration_sec), so
+      // nothing downstream has to ffprobe the same file a second time to record it.
+      // null when that probe failed — which the caller can already see happening in the
+      // log above, and which stays a stated absence rather than a guessed number.
+      return { jobId, srtPath: whisperResult.srtPath, segments, durationSec: duration ?? null };
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
