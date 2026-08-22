@@ -9,7 +9,8 @@ instructions: |-
   - Generate {thumbnail_text_count} options
   - ALL CAPS, 1-3 words each (never more than 4). Shorter is stronger — text must be readable in under 2 seconds at 120px mobile width. A single devastating word beats a clever phrase.
   - Output clean text only — no numbering, no parenthetical references, no annotations. Each line copy-paste ready for image editing.
-  - Title and thumbnail are two halves of one message ("1+1=3"): the thumbnail text must ADD information or emotion the title doesn't carry. The video's titles are given to you above as input data — keep every core word of the first three out of your thumbnail text. If a title names the person, the thumbnail carries the verdict or the stakes; if a title carries the accusation, the thumbnail carries the twist.
+  - Title and thumbnail are two halves of one message ("1+1=3"): the published pairing is picked by a HUMAN — three titles for the A/B test, one thumbnail text — so your job is to give that choice range, not to enforce the pairing yourself. The video's titles are given to you above as input data: read them as a map of the angles already covered, and spread your options across hooks the titles DON'T lead with — the person, the number, the verdict, the consequence, the quote, the contradiction — so that whichever titles are chosen, a complementary thumbnail exists. If the titles name the person, options that carry the verdict or the stakes pair well; if the titles carry the accusation, options that carry the twist pair well.
+  - Spend at most ONE option on the single strongest fact. The strongest hook will pull every option toward itself — resist it: one option may carry it, and every other option must find different ammunition. Swap test, same as titles: no two options may share their core noun phrase or lean on the same hook.
   - The following are BANNED as generic standalone thumbnail text: EXPOSED, SHOCKING, SHOCKING TRUTH, YOU WON'T BELIEVE, TRUTH REVEALED, DESTROYED, BUSTED, REAL STORY, WORST LIES, EXPOSURE TIME, UNPACKED, UNMASKED, UNCOVERED, REVEALED. These words may appear when they describe a specific action in context — the ban is on empty emotional triggers.
   - Good thumbnail text provokes a micro-reaction: confusion, disbelief, anger, or morbid curiosity
   - Wordplay and double meanings are high-value when they land. Text that works on two levels — literal AND figurative/cultural — is more memorable and specific. A pun that only makes sense for THIS video beats a generic power word. Aim for 2-3 wordplay options.
@@ -17,11 +18,14 @@ instructions: |-
 
 self_check:
   - "No banned thumbnail word used as an empty trigger"
+  - "No two thumbnail options share a core noun phrase or hook"
 
 # The cross-field half of the check. It rides with a call that can SEE the titles — which,
 # under one call per field, means the call that is handed them as input data. Where nothing
 # writes titles this run, neither model can see the other's answer and the line is left out
-# rather than sent unfollowable.
+# rather than sent unfollowable. The check is about ANGLE COVERAGE, not word overlap: the
+# human picks the final title+thumbnail pairing, so the model's job is a diverse option set,
+# not dedup against titles that may never ship (2026-08-22, supersedes the no-repeat rule).
 self_check_with:
   titles:
-    - "Thumbnail options don't repeat core words from the top 3 titles given above"
+    - "The option set covers angles the titles above don't lead with — not a stack of echoes of the strongest title"

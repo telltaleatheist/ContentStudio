@@ -632,12 +632,12 @@ check('the self-check is assembled per group and never asks for a field the grou
   }
 
   const both = assets.selfCheckBlock(telltale, ['titles', 'thumbnail_text']);
-  if (!/[Tt]humbnail options don't repeat core words/.test(both)) {
+  if (!/covers angles the titles above don't lead with/.test(both)) {
     throw new Error('a group holding BOTH fields lost the cross-field check:\n' + both);
   }
 
   const thumbOnly = assets.selfCheckBlock(telltale, ['thumbnail_text']);
-  if (/top 3 titles/.test(thumbOnly)) {
+  if (/top 3 titles|titles above/.test(thumbOnly)) {
     throw new Error('a thumbnail call was told to compare against titles it can neither write nor read:\n' + thumbOnly);
   }
 
@@ -645,7 +645,7 @@ check('the self-check is assembled per group and never asks for a field the grou
   // thumbnail text, and the titles reach it as INPUT DATA. The cross-field line has to come
   // back, or splitting the calls would have silently deleted the rule that ties them together.
   const thumbWithTitlesGiven = assets.selfCheckBlock(telltale, ['thumbnail_text'], ['titles']);
-  if (!/[Tt]humbnail options don't repeat core words/.test(thumbWithTitlesGiven)) {
+  if (!/covers angles the titles above don't lead with/.test(thumbWithTitlesGiven)) {
     throw new Error('a thumbnail call HANDED the titles lost the cross-field check:\n' + thumbWithTitlesGiven);
   }
   if (/hook inside the first 45 characters/.test(thumbWithTitlesGiven)) {

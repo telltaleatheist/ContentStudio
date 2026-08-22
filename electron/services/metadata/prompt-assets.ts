@@ -426,8 +426,8 @@ export class PromptAssets {
    * `alsoAvailable` is what keeps the cross-field lines alive under one call per field. A field
    * listed there is not WRITTEN by this call and contributes no lines of its own — it is handed
    * to the call as INPUT DATA (metadata-tasks.ts `inputFields`), which is all a cross-field
-   * check needs: the thumbnail call is given the titles, so "don't repeat their core words" is
-   * a rule it can perform. Without it, splitting titles and thumbnails into separate calls
+   * check needs: the thumbnail call is given the titles, so "cover angles the titles don't
+   * lead with" is a rule it can perform. Without it, splitting titles and thumbnails into separate calls
    * would have silently deleted the one line that ties them together.
    */
   selfCheckBlock(channel: ChannelData, fields: string[], alsoAvailable: string[] = []): string {
