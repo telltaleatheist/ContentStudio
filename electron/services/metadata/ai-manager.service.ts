@@ -658,7 +658,10 @@ export class AIManagerService {
       const prompt = this.createSummarizationPrompt(chunks[i], `${sourceName}_chunk_${i}`);
       let response: string | null;
       try {
-        response = await this.makeRequest(prompt, this.summaryModel, 120);
+        // 600s, matching LOCAL_GROUP_TIMEOUT_MS: this call's num_ctx differs from the
+        // chapter pipeline's, so Ollama fully reloads the 27b before generating and the
+        // window has to hold the reload as well as the summary.
+        response = await this.makeRequest(prompt, this.summaryModel, 600);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         throw new Error(`Summarization failed for ${sourceName} chunk ${i + 1}/${chunks.length}: ${reason}`);
@@ -680,7 +683,9 @@ export class AIManagerService {
    */
   private async summarizeSingleChunk(transcript: string, sourceName: string): Promise<string> {
     const prompt = this.createSummarizationPrompt(transcript, sourceName);
-    const response = await this.makeRequest(prompt, this.summaryModel, 120);
+    // 600s for the same reason as the chunked path above: the local model may need a
+    // full reload (num_ctx change) before it can start writing.
+    const response = await this.makeRequest(prompt, this.summaryModel, 600);
 
     // A trivially short/empty summary means the model produced nothing usable —
     // fail loudly rather than silently substituting truncated raw transcript.
