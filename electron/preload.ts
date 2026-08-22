@@ -47,7 +47,6 @@ const api = {
   isDirectory: (filePath: string) => ipcRenderer.invoke('is-directory', filePath),
   readDirectory: (dirPath: string) => ipcRenderer.invoke('read-directory', dirPath),
   readFile: (filePath: string) => ipcRenderer.invoke('read-file', filePath),
-  deleteDirectory: (dirPath: string) => ipcRenderer.invoke('delete-directory', dirPath),
   showInFolder: (filePath: string) => ipcRenderer.invoke('show-in-folder', filePath),
   checkDirectory: (dirPath: string) => ipcRenderer.invoke('check-directory', dirPath),
 
@@ -84,6 +83,15 @@ const api = {
   // App info
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   getAppPath: () => ipcRenderer.invoke('get-app-path'),
+
+  // Reports (generated metadata items)
+  //
+  // No paths cross this boundary: the renderer names an item, the main process decides
+  // which files that means. `deleteDirectory` — an unbounded recursive delete the reports
+  // page used to drive — was removed with the handler behind it.
+  ensureReportsMigrated: () => ipcRenderer.invoke('reports-ensure-migrated'),
+  deleteReportItem: (jobId: string, itemId: string) =>
+    ipcRenderer.invoke('reports-delete-item', jobId, itemId),
 
   // Job history
   getJobHistory: () => ipcRenderer.invoke('get-job-history'),

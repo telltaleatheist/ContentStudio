@@ -221,6 +221,60 @@ export class PublishStoreService {
     return run as Promise<void>;
   }
 
+  /**
+   * Forget the selection for a deleted item, and close the gap it leaves.
+   *
+   * Selections are still keyed by itemIndex (PR B moves them to item ids). An index-keyed
+   * map over an array that just had an element spliced out of it is wrong the instant
+   * the delete lands: every selection above the hole now names the item BELOW the one it
+   * was chosen for, and those chosen A/B titles are served to the extension. So the
+   * removal and the shift are one read-modify-write, not two — a crash between them
+   * would leave exactly the mis-pointing this exists to prevent.
+   *
+   * Every live job has one item, so the shift moves nothing today. It is written because
+   * the day it does move something, nothing will announce it.
+   */
+  removeIndexAndShift(jobId: string, itemIndex: number): Promise<{ removed: boolean; shifted: number }> {
+    const run = this.writeQueue.then(() => {
+      if (!Number.isInteger(itemIndex) || itemIndex < 0) {
+        throw new Error(`removeIndexAndShift requires a non-negative item index; got ${itemIndex}`);
+      }
+
+      const all = this.readJobFile(jobId);
+      const removed = Object.prototype.hasOwnProperty.call(all, String(itemIndex));
+      let shifted = 0;
+
+      const next: Record<string, ChosenMetadata> = {};
+      for (const [key, value] of Object.entries(all)) {
+        const idx = Number(key);
+        if (!Number.isInteger(idx)) {
+          // A non-numeric key in an index-keyed file is not something to route around.
+          throw new Error(`Selection file for ${jobId} has a non-numeric key: ${key}`);
+        }
+        if (idx === itemIndex) continue;
+        if (idx > itemIndex) {
+          const movedIndex = idx - 1;
+          next[String(movedIndex)] = { ...value, itemIndex: movedIndex };
+          shifted++;
+        } else {
+          next[key] = value;
+        }
+      }
+
+      if (Object.keys(next).length === 0) {
+        const file = this.jobPath(jobId);
+        if (fs.existsSync(file)) fs.unlinkSync(file);
+      } else {
+        this.writeJobFile(jobId, next);
+      }
+
+      return { removed, shifted };
+    });
+
+    this.writeQueue = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
   /** Forget every selection for a job (used when a job is deleted from history). */
   clearJob(jobId: string): Promise<void> {
     const run = this.writeQueue.then(() => {

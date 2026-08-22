@@ -246,6 +246,71 @@ export interface PromptAssetNotice {
   withheld: string[];
 }
 
+/**
+ * What the one-off report migration did, as the main process reports it.
+ *
+ * `ran` is false both when there was nothing to do and when the reports directory could
+ * not be reached — the two are told apart by `error`, which is present only for the
+ * second. A migration that could not look must never read as a migration that found
+ * nothing.
+ */
+export interface ReportMigrationReceipt {
+  metadataDir: string;
+  filesScanned: number;
+  filesMigrated: number;
+  filesAlreadyCurrent: number;
+  itemIdsMinted: number;
+  txtPathsResolved: number;
+  txtPathsUnresolved: number;
+  sourceKeysDerived: number;
+  sourceKeysNull: number;
+  failures: Array<{ file: string; error: string }>;
+}
+
+export interface ReportMigrationResponse {
+  ran: boolean;
+  receipt: ReportMigrationReceipt | null;
+  /** Operator-facing summary, present exactly when there is a receipt to summarise. */
+  message: string | null;
+  /** The reports directory is not there at all — nothing to migrate, nothing to report. */
+  notFound?: boolean;
+  /** The migration was attempted and could not be done. Never set together with notFound. */
+  error?: string;
+}
+
+/**
+ * The outcome of deleting a whole job from history.
+ *
+ * The counts are here because the delete is no longer "remove the folder": it removes the
+ * text files the job RECORDED, and a job written before item ids recorded none — so some
+ * deletes legitimately leave text behind, and `warning` says which and where.
+ */
+export interface DeleteJobHistoryResult {
+  success: boolean;
+  error?: string;
+  warning?: string;
+  alreadyGone?: boolean;
+  txtFilesDeleted?: number;
+  txtFilesMissing?: number;
+  txtFilesLeft?: number;
+  txtFolderRemoved?: boolean;
+}
+
+/** The outcome of deleting one generated item — facts, not intentions. */
+export interface DeleteItemReceipt {
+  jobId: string;
+  itemId: string;
+  itemIndex: number;
+  jobFileDeleted: boolean;
+  txtDeleted: boolean;
+  txtReason?: string;
+  txtFolderRemoved: boolean;
+  selectionDeleted: boolean;
+  selectionsShifted: number;
+  inputsSpliced: boolean;
+  inputTypesSpliced: boolean;
+}
+
 // Declare window.launchpad interface for TypeScript
 declare global {
   interface Window {
@@ -275,7 +340,6 @@ declare global {
       isDirectory: (filePath: string) => Promise<boolean>;
       readDirectory: (dirPath: string) => Promise<{ success: boolean; directories?: any[]; files?: any[] }>;
       readFile: (filePath: string) => Promise<string>;
-      deleteDirectory: (dirPath: string) => Promise<void>;
       showInFolder: (filePath: string) => Promise<void>;
       checkDirectory: (dirPath: string) => Promise<{ exists: boolean; writable: boolean }>;
 
@@ -307,9 +371,13 @@ declare global {
       getAppVersion: () => Promise<string>;
       getAppPath: () => Promise<string>;
 
+      // Reports (generated metadata items)
+      ensureReportsMigrated: () => Promise<ReportMigrationResponse>;
+      deleteReportItem: (jobId: string, itemId: string) => Promise<DeleteItemReceipt>;
+
       // Job history
       getJobHistory: () => Promise<any[]>;
-      deleteJobHistory: (jobId: string) => Promise<{ success: boolean; error?: string }>;
+      deleteJobHistory: (jobId: string) => Promise<DeleteJobHistoryResult>;
       openFolder: (folderPath: string) => Promise<{ success: boolean; error?: string }>;
 
       // File writing
@@ -667,11 +735,6 @@ export class ElectronService {
     return await this.ipcRenderer.readFile(filePath);
   }
 
-  async deleteDirectory(dirPath: string): Promise<void> {
-    if (!this.ipcRenderer) return;
-    return await this.ipcRenderer.deleteDirectory(dirPath);
-  }
-
   async showInFolder(filePath: string): Promise<void> {
     if (!this.ipcRenderer) return;
     return await this.ipcRenderer.showInFolder(filePath);
@@ -762,13 +825,34 @@ export class ElectronService {
     return await this.ipcRenderer.getAppPath();
   }
 
+  // Reports (generated metadata items)
+
+  /**
+   * Bring the reports on disk up to the current schema before listing them, and hand back
+   * whatever the migration did so the caller can say it out loud.
+   *
+   * Rejects rather than returning an empty receipt when the bridge is missing: a caller
+   * that cannot reach the main process has not migrated anything, and telling it "nothing
+   * to do" is the lie this whole change exists to stop telling.
+   */
+  async ensureReportsMigrated(): Promise<ReportMigrationResponse> {
+    if (!this.ipcRenderer) throw new Error('Electron bridge unavailable — cannot migrate reports.');
+    return await this.ipcRenderer.ensureReportsMigrated();
+  }
+
+  /** Delete one generated item by identity. Throws on any partial failure. */
+  async deleteReportItem(jobId: string, itemId: string): Promise<DeleteItemReceipt> {
+    if (!this.ipcRenderer) throw new Error('Electron bridge unavailable — cannot delete this report.');
+    return await this.ipcRenderer.deleteReportItem(jobId, itemId);
+  }
+
   // Job history
   async getJobHistory(): Promise<any[]> {
     if (!this.ipcRenderer) return [];
     return await this.ipcRenderer.getJobHistory();
   }
 
-  async deleteJobHistory(jobId: string): Promise<{ success: boolean; error?: string }> {
+  async deleteJobHistory(jobId: string): Promise<DeleteJobHistoryResult> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.deleteJobHistory(jobId);
   }

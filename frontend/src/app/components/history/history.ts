@@ -122,12 +122,20 @@ export class History implements OnInit {
       const jobIds = new Set(this.entries().map(e => e.jobId));
       let successCount = 0;
       const failures: string[] = [];
+      // A delete can succeed and still leave something behind — text files a pre-identity
+      // job never recorded a path for, or selections that would not clear. The main process
+      // has always said so; this used to read `result.success` and drop the rest.
+      const leftovers: string[] = [];
 
       for (const jobId of jobIds) {
         try {
           const result = await this.electron.deleteJobHistory(jobId);
-          if (result.success) successCount++;
-          else failures.push(`${jobId}: ${result.error || 'no reason given'}`);
+          if (result.success) {
+            successCount++;
+            if (result.warning) leftovers.push(result.warning);
+          } else {
+            failures.push(`${jobId}: ${result.error || 'no reason given'}`);
+          }
         } catch (error) {
           failures.push(`${jobId}: ${(error as Error).message}`);
         }
@@ -144,6 +152,11 @@ export class History implements OnInit {
         this.notificationService.error(
           successCount > 0 ? 'History Partly Cleared' : 'History Not Cleared',
           `${successCount} of ${jobIds.size} deleted. Failed: ${failures.join('; ')}`,
+        );
+      } else if (successCount > 0 && leftovers.length > 0) {
+        this.notificationService.warning(
+          'History Cleared, with leftovers',
+          `Deleted ${successCount} entries. ${leftovers.join(' ')}`,
         );
       } else if (successCount > 0) {
         this.notificationService.success('History Cleared', `Deleted ${successCount} entries`);
