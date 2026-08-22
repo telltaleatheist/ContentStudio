@@ -35,6 +35,13 @@ import {
   migrateReports,
   migrationIsNoteworthy,
 } from '../services/metadata/report-migration';
+import {
+  SelectionMigrationReceipt,
+  describeSelectionMigration,
+  migrateSelections,
+  selectionMigrationIsNoteworthy,
+} from '../services/publish/selection-migration';
+import { isItemId } from '../services/metadata/item-identity';
 import { composeDescription, composeTags } from '../services/metadata/description-composer';
 import {
   buildRoutingView,
@@ -121,9 +128,18 @@ let pendingPromptAssetNotice: PromptAssetNotice | null = null;
  * `pendingMigrationReceipt` is drained by the request that asks for it, in the same shape
  * as the prompt-asset notice above: a migration nobody was told about is a migration the
  * operator has to discover by noticing something missing.
+ *
+ * ONE PASS, TWO HALVES, IN ORDER. The reports sweep mints the item ids; the selections
+ * sweep can only turn a stored (jobId, itemIndex) into an id by asking the files the
+ * first half just wrote. So they run back to back inside `ensureReportsMigrated` below,
+ * under one flag, and both receipts ride back on the same response. Running them on two
+ * triggers would mean a window in which selections were migrated against reports that had
+ * no ids yet — every one of them would orphan, and the operator's chosen A/B titles would
+ * quietly move to a folder called `orphaned`.
  */
 let reportsMigrated = false;
 let pendingMigrationReceipt: ReportMigrationReceipt | null = null;
+let pendingSelectionReceipt: SelectionMigrationReceipt | null = null;
 
 /**
  * Where the provenance manifest lives. Deliberately OUTSIDE prompt_sets/: that directory
@@ -1504,12 +1520,71 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   });
 
   /**
-   * Bring the reports directory up to schema_version 2, once per session, on demand.
+   * Bring the reports directory up to schema_version 2, and the publish selections onto
+   * item ids, once per session.
    *
-   * Called by the reports page immediately before it lists the directory — lazily, and
-   * never at boot: with the output volume unmounted a boot-time sweep would report "0
-   * files migrated", which reads as success and is a statement about a directory it
+   * LAZY, never at boot: with the output volume unmounted a boot-time sweep would report
+   * "0 files migrated", which reads as success and is a statement about a directory it
    * never opened.
+   *
+   * BOTH HALVES, IN THIS ORDER, IN ONE PASS. `migrateSelections` turns a stored
+   * (jobId, itemIndex) into an item id by asking the report file what the item at that
+   * index is now called — which only has an answer once `migrateReports` has minted the
+   * ids. Splitting them across two triggers would give the selections sweep a window in
+   * which no report had an id yet: every selection would resolve to null and be moved,
+   * correctly by its own rules and disastrously in fact, to `selections/orphaned/`.
+   *
+   * Throws on failure rather than recording a migration that did not happen, so the next
+   * caller tries again. Both receipts are stashed for the request that asks for them.
+   */
+  const ensureReportsMigrated = (metadataDir: string): void => {
+    if (reportsMigrated) return;
+
+    const reports = migrateReports(metadataDir);
+    log.info('[ReportMigration]', reports);
+
+    // The resolver reads the files migrateReports just wrote. Report files are small and
+    // there are ~100 of them, so this reads each at most once and holds only the id map.
+    const idsByJob = new Map<string, string[]>();
+    const resolveItemId = (jobId: string, itemIndex: number): string | null => {
+      if (!idsByJob.has(jobId)) {
+        const file = path.join(metadataDir, `${jobId}.json`);
+        if (!fs.existsSync(file)) {
+          idsByJob.set(jobId, []);
+        } else {
+          // A report we cannot read is a report that cannot resolve anything. It is not a
+          // reason to guess, and the selection file it fails to resolve is moved intact
+          // to selections/orphaned/ rather than dropped.
+          try {
+            const job = JSON.parse(fs.readFileSync(file, 'utf8'));
+            const items = Array.isArray(job?.items) ? job.items : [];
+            idsByJob.set(jobId, items.map((i: any) => (isItemId(i?.item_id) ? i.item_id : '')));
+          } catch (error) {
+            log.error(`[SelectionMigration] Cannot read report ${file}:`, error);
+            idsByJob.set(jobId, []);
+          }
+        }
+      }
+      const id = idsByJob.get(jobId)![itemIndex];
+      return id ? id : null;
+    };
+
+    const selections = migrateSelections(
+      path.dirname(analytics.publishStore.selectionsItemsDir),
+      analytics.publishStore.selectionsItemsDir,
+      resolveItemId
+    );
+    log.info('[SelectionMigration]', selections);
+
+    // Only once BOTH halves have completed. A flag set between them would leave the
+    // selections un-migrated for the rest of the session with nothing to say so.
+    reportsMigrated = true;
+    if (migrationIsNoteworthy(reports)) pendingMigrationReceipt = reports;
+    if (selectionMigrationIsNoteworthy(selections)) pendingSelectionReceipt = selections;
+  };
+
+  /**
+   * The reports page's call site: run the pass and tell the operator what it did.
    *
    * The receipt rides back on this response rather than through a separate pull: the
    * request that caused the work is the one place where the work is guaranteed to have a
@@ -1531,29 +1606,31 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       return { ran: false, receipt: null, message: null, notFound: true };
     }
 
-    if (!reportsMigrated) {
-      try {
-        const receipt = migrateReports(metadataDir);
-        reportsMigrated = true;
-        log.info('[ReportMigration]', receipt);
-        if (migrationIsNoteworthy(receipt)) {
-          pendingMigrationReceipt = receipt;
-        }
-      } catch (error) {
-        // The sweep could not read the directory. Say so and stay un-migrated, so the
-        // next attempt tries again instead of trusting a run that never happened.
-        const message = error instanceof Error ? error.message : String(error);
-        log.error('[ReportMigration] Failed:', error);
-        return { ran: false, receipt: null, message: null, error: message };
-      }
+    try {
+      ensureReportsMigrated(metadataDir);
+    } catch (error) {
+      // The sweep could not read the directory. Say so and stay un-migrated, so the
+      // next attempt tries again instead of trusting a run that never happened.
+      const message = error instanceof Error ? error.message : String(error);
+      log.error('[ReportMigration] Failed:', error);
+      return { ran: false, receipt: null, message: null, error: message };
     }
 
     const receipt = pendingMigrationReceipt;
+    const selectionReceipt = pendingSelectionReceipt;
     pendingMigrationReceipt = null;
+    pendingSelectionReceipt = null;
+
+    const message = [
+      receipt ? describeMigration(receipt) : '',
+      selectionReceipt ? describeSelectionMigration(selectionReceipt) : '',
+    ].filter(Boolean).join(' ');
+
     return {
-      ran: receipt !== null,
+      ran: receipt !== null || selectionReceipt !== null,
       receipt,
-      message: receipt ? describeMigration(receipt) : null,
+      selectionReceipt,
+      message: message || null,
     };
   });
 
@@ -1580,9 +1657,9 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
 
     const handler = OutputHandlerService.forOutputDir(outputDirectory);
     const receipt = await handler.deleteItem(jobId, itemId, {
-      // Selections are still keyed by itemIndex until PR B repoints them at item ids, so
-      // removing one is a splice, not an unlink: see PublishStoreService.removeIndexAndShift.
-      removeSelection: (job, itemIndex) => analytics.publishStore.removeIndexAndShift(job, itemIndex),
+      // One unlink. Selections are per-item files keyed by this same id, so a sibling's
+      // deletion cannot move this record and there is nothing to renumber.
+      removeSelection: (id) => analytics.publishStore.clearItem(id),
     });
 
     // Deleting the last item deletes the job, and a held "Show prompt" transcript for a
@@ -1621,11 +1698,14 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         return { success: false, error: 'Metadata directory not found' };
       }
 
-      // The operator's publish selections go too. `clearJob` has existed since the publish
-      // store was written and had ZERO call sites: deleting a job left
-      // selections/<jobId>.json behind permanently, holding chosen A/B titles, description
-      // and tag overrides, and a videoId link for a job that no longer exists. Nothing ever
-      // read them again and nothing ever removed them.
+      // The operator's publish selections go too.
+      //
+      // `clearItemsOfJob` is a scan-and-match now, not an unlink: selections are one file
+      // per ITEM, and the job is no longer a directory entry. Each record carries the job
+      // it came from as a back-reference, and that is what is matched. A record that
+      // cannot be read is LEFT and NAMED below rather than deleted — a file we could not
+      // attribute to this job is not a file to delete on this job's behalf, which is the
+      // same rule the per-item text cleanup follows.
       //
       // AFTER the pre-flight guards and BEFORE the report files, and both halves of that are
       // deliberate. Before the files, because if a report delete fails partway the operator
@@ -1641,9 +1721,15 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       // tail wagging the dog — but it is reported rather than swallowed.
       let selectionsWarning: string | null = null;
       try {
-        await analytics.publishStore.clearJob(jobId);
+        const cleared = await analytics.publishStore.clearItemsOfJob(jobId);
+        log.info(`[JobHistory] Publish selections cleared for ${jobId}:`, cleared);
+        if (cleared.unreadable.length > 0) {
+          selectionsWarning =
+            `${cleared.unreadable.length} publish selection file${cleared.unreadable.length === 1 ? '' : 's'} ` +
+            `could not be read, so they were left in place: ${cleared.unreadable.join('; ')}`;
+        }
       } catch (err: any) {
-        selectionsWarning = err?.message || String(err);
+        selectionsWarning = `Its publish selections could not be removed: ${err?.message || String(err)}`;
         log.warn(`[JobHistory] Could not clear publish selections for ${jobId}:`, err);
       }
 
@@ -1688,7 +1774,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
                 notes.push(`${failure.path} could not be removed (${failure.error}).`);
               }
               if (selectionsWarning) {
-                notes.push(`Its publish selections could not be removed: ${selectionsWarning}`);
+                notes.push(selectionsWarning);
               }
 
               return {
@@ -1724,7 +1810,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         success: true,
         alreadyGone: true,
         ...(selectionsWarning
-          ? { warning: `No report file for this job (it was already gone), and its publish selections could not be removed: ${selectionsWarning}` }
+          ? { warning: `No report file for this job (it was already gone). ${selectionsWarning}` }
           : {}),
       };
     } catch (error) {
@@ -2283,6 +2369,19 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   const readGeneratedIndex = createGeneratedIndexReader(metadataReportsDir);
 
   const listGeneratedForPublish = (): GeneratedIndex => {
+    // The publish surface REQUIRES item_id on every item (generated-index.summarizeJob
+    // throws without one), so the migration that mints them has to have run before the
+    // index is read — and the extension can reach this without the reports page ever
+    // having been opened. Same lazy, once-per-session pass, from the other entry point.
+    // It throws rather than serving an index built from un-migrated files.
+    //
+    // A reports directory that does not EXIST is skipped, not migrated: nothing has been
+    // generated yet, and readGeneratedIndex below already reports that as an empty index.
+    // Only "the directory is there and cannot be read" is a fault, and migrateReports
+    // raises it.
+    const reportsDir = metadataReportsDir();
+    if (fs.existsSync(reportsDir)) ensureReportsMigrated(reportsDir);
+
     const result = readGeneratedIndex();
     // The COUNT travels to the shelf; the detail goes to the log, so an unreadable report
     // is both visible to the operator and diagnosable.
@@ -2294,32 +2393,48 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
 
   // Registered as a single seam. `readGenerated` is injected so the publish module
   // never imports from services/metadata — see electron/services/publish/README notes
-  // in publish-types.ts. It reads the same <jobId>.json that get-job-history reads.
-  const readGeneratedForPublish = (jobId: string, itemIndex: number): GeneratedFallback | null => {
+  // in publish-types.ts.
+  //
+  // Takes ONLY the item id. Which report file the item lives in is a fact about the item,
+  // looked up in the index (which is cached per file by mtime), not something a caller
+  // asserts alongside a position — the pair could disagree, and when it did the wrong
+  // item's titles were served. The jobId travels back out with the item so the selection
+  // record can keep its display back-reference.
+  const readGeneratedForPublish = (itemId: string): GeneratedFallback | null => {
+    // OUTSIDE the catch below. Listing the index can fail for reasons that are not "this
+    // item does not exist" — an unmounted output volume, a migration that could not run —
+    // and turning those into a null would tell the operator their report is gone. The
+    // catch below covers reading ONE report file, which is the only thing null describes.
+    const summary = listGeneratedForPublish().items.find((i) => i.itemId === itemId);
+    if (!summary) return null;
+
     try {
-      const jsonPath = path.join(metadataReportsDir(), `${jobId}.json`);
+      const jsonPath = path.join(metadataReportsDir(), `${summary.jobId}.json`);
       if (!fs.existsSync(jsonPath)) return null;
 
       const job = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
-      const item = job?.items?.[itemIndex];
+      const items = Array.isArray(job?.items) ? job.items : [];
+      const item = items.find((i: any) => i?.item_id === itemId);
       if (!item) return null;
 
       return {
+        jobId: summary.jobId,
         titles: Array.isArray(item.titles) ? item.titles : [],
         // COMPOSED, not raw: chapters at the top and hashtags before the link block, which
         // is what the reports page shows and therefore what has to reach YouTube. Sending
         // item.description alone silently dropped both.
         description: composeDescription(item),
         tags: composeTags(item),
-        // Source filename drives draft matching.
-        sourceFilename: sourceFilenameOf(job, itemIndex),
+        // Source filename drives draft matching. Read off the item's own recorded
+        // source_path, not inferred from array alignment.
+        sourceFilename: sourceFilenameOf(item),
         // TODO: probe the source with ffprobe so the duration guard can verify the
         // match. Null is handled — it downgrades the match to 'filename' (unverified)
         // rather than failing.
         sourceDurationSec: null,
       };
     } catch (error) {
-      log.error(`[Publish] readGenerated failed for ${jobId}[${itemIndex}]:`, error);
+      log.error(`[Publish] readGenerated failed for ${itemId}:`, error);
       return null;
     }
   };

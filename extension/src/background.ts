@@ -230,13 +230,13 @@ async function handlePublishMessage(message: PublishMessage): Promise<unknown> {
     case 'publish-resolve':
       return resolveForPage(message.videoId, message.filename);
     case 'publish-filled':
-      await reportFilled(message.jobId, message.itemIndex, message.videoId);
+      await reportFilled(message.itemId, message.videoId);
       return null;
     case 'publish-reports':
       return fetchReports(message.offset, message.limit, message.query);
     case 'publish-item':
-      return fetchItem(message.jobId, message.itemIndex);
+      return fetchItem(message.itemId);
     case 'publish-titles':
-      return saveTitles(message.jobId, message.itemIndex, message.titles);
+      return saveTitles(message.itemId, message.titles);
   }
 }

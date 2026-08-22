@@ -5,6 +5,11 @@
  * single seam rather than another few hundred lines inside ipc-handlers.ts. All channels
  * are namespaced `publish-*`.
  *
+ * Every channel names ONE item, by its permanent `itemId`. The (jobId, itemIndex) pair
+ * these used to take was not an identity — see publish-types.ts's note on ChosenMetadata.
+ * The jobId is no longer sent at all: it is a property OF the item, read back from the
+ * generated report, not something a caller gets to assert.
+ *
  * The generated-metadata reader is INJECTED (`readGenerated`) rather than imported: that
  * is what keeps this module free of any services/metadata dependency, so publish/ can be
  * lifted into another host wholesale.
@@ -18,16 +23,17 @@ import {
   ChosenMetadata,
   MAX_AB_VARIANTS,
   emptyChosenMetadata,
+  isItemId,
   validateChosenTitles,
 } from './publish-types';
 
 export interface PublishIpcDeps {
   store: PublishStoreService;
   /**
-   * Returns the generated titles/description/tags for one item, or null if the job or
-   * item no longer exists. Supplied by the host.
+   * Returns the generated titles/description/tags for one item (plus the job it came
+   * from), or null if the item no longer exists. Supplied by the host.
    */
-  readGenerated: (jobId: string, itemIndex: number) => GeneratedFallback | null;
+  readGenerated: (itemId: string) => GeneratedFallback | null;
   /**
    * Recent uploads (with status) for a channel. Injected as a narrow function rather
    * than the whole YouTubeApiService so this module stays independently testable.
@@ -52,9 +58,23 @@ function requireString(value: unknown, name: string): string {
   return value;
 }
 
-function requireIndex(value: unknown, name: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
-    throw new Error(`${name} must be a non-negative integer`);
+/**
+ * An item id, or a refusal.
+ *
+ * A NUMBER here is the old positional call shape. It is named as such and rejected — it
+ * is never translated into an id, because the translation is the bug: index 2 in a job
+ * that has since had an item deleted is a different item than the caller means, and the
+ * caller has no way to know that.
+ */
+function requireItemId(value: unknown, name: string): string {
+  if (typeof value === 'number') {
+    throw new Error(
+      `${name} must be an item id, not a position. This call is using the old ` +
+      `(jobId, itemIndex) shape, which named the wrong item whenever a sibling was deleted.`
+    );
+  }
+  if (!isItemId(value)) {
+    throw new Error(`${name} must be an item id of the form itm-<time>-<random>; got ${JSON.stringify(value)}`);
   }
   return value;
 }
@@ -62,10 +82,22 @@ function requireIndex(value: unknown, name: string): number {
 export function setupPublishIpc(deps: PublishIpcDeps): void {
   const { store, readGenerated, listRecentUploads } = deps;
 
-  /** All selections for a job, keyed by item index. */
-  ipcMain.handle('publish-get-selections', async (_e, jobId: string) => {
+  /**
+   * The generated values for an item, or a thrown refusal naming the item.
+   *
+   * Every write goes through here first, because the record's `jobId` back-reference has
+   * to come from the report rather than from the caller.
+   */
+  function requireGenerated(itemId: string): GeneratedFallback {
+    const generated = readGenerated(itemId);
+    if (!generated) throw new Error(`No generated metadata for item ${itemId}`);
+    return generated;
+  }
+
+  /** One item's stored selection, or null when the operator has never touched it. */
+  ipcMain.handle('publish-get-selection', async (_e, itemId: string) => {
     try {
-      return ok(store.getForJob(requireString(jobId, 'jobId')));
+      return ok(store.get(requireItemId(itemId, 'itemId')));
     } catch (err: any) {
       return fail(err?.message || String(err));
     }
@@ -77,10 +109,9 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
    * Order is meaningful and preserved exactly as sent: index 0 becomes the video's main
    * title and A/B variant 1, which is what YouTube falls back to on an inconclusive test.
    */
-  ipcMain.handle('publish-set-titles', async (_e, jobId: string, itemIndex: number, titles: string[]) => {
+  ipcMain.handle('publish-set-titles', async (_e, itemId: string, titles: string[]) => {
     try {
-      const job = requireString(jobId, 'jobId');
-      const idx = requireIndex(itemIndex, 'itemIndex');
+      const id = requireItemId(itemId, 'itemId');
       if (!Array.isArray(titles) || titles.some((t) => typeof t !== 'string')) {
         return fail('titles must be an array of strings');
       }
@@ -92,7 +123,8 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
         if (errors.length) return fail(errors.join(' '));
       }
 
-      return ok(await store.update(job, idx, { chosenTitles: cleaned }));
+      const generated = requireGenerated(id);
+      return ok(await store.update(id, generated.jobId, { chosenTitles: cleaned }));
     } catch (err: any) {
       return fail(err?.message || String(err));
     }
@@ -108,13 +140,11 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
     'publish-set-fields',
     async (
       _e,
-      jobId: string,
-      itemIndex: number,
+      itemId: string,
       fields: { descriptionOverride?: string | null; tagsOverride?: string | null; channelId?: string | null }
     ) => {
       try {
-        const job = requireString(jobId, 'jobId');
-        const idx = requireIndex(itemIndex, 'itemIndex');
+        const id = requireItemId(itemId, 'itemId');
         if (!fields || typeof fields !== 'object') return fail('fields object is required');
 
         const patch: Partial<ChosenMetadata> = {};
@@ -126,7 +156,8 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
         }
         if (Object.keys(patch).length === 0) return fail('nothing to update');
 
-        return ok(await store.update(job, idx, patch));
+        const generated = requireGenerated(id);
+        return ok(await store.update(id, generated.jobId, patch));
       } catch (err: any) {
         return fail(err?.message || String(err));
       }
@@ -136,17 +167,14 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
   /**
    * The item's metadata with generated fallbacks merged in -- what the extension fills.
    */
-  ipcMain.handle('publish-get-resolved', async (_e, jobId: string, itemIndex: number) => {
+  ipcMain.handle('publish-get-resolved', async (_e, itemId: string) => {
     try {
-      const job = requireString(jobId, 'jobId');
-      const idx = requireIndex(itemIndex, 'itemIndex');
-
-      const generated = readGenerated(job, idx);
-      if (!generated) return fail(`No generated metadata for ${job} item ${idx}`);
+      const id = requireItemId(itemId, 'itemId');
+      const generated = requireGenerated(id);
 
       // Nothing chosen yet is still resolvable -- resolveChosenMetadata falls back to
       // the generator's top-3, which the prompts already order as the A/B candidates.
-      const chosen = store.get(job, idx) ?? emptyChosenMetadata(job, idx);
+      const chosen = store.get(id) ?? emptyChosenMetadata(id, generated.jobId);
       return ok(resolveChosenMetadata(chosen, generated));
     } catch (err: any) {
       return fail(err?.message || String(err));
@@ -156,20 +184,16 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
   /**
    * Find the YouTube draft that belongs to an item.
    *
-   * Only ever returns TRUE drafts (private, never scheduled) — see isDraftCandidate.
-   * Returns the match plus the other drafts on the channel so the operator can
+   * Returns the match plus the other recent uploads on the channel so the operator can
    * override, and never auto-links: linking is a separate, explicit call.
    */
-  ipcMain.handle('publish-find-draft', async (_e, jobId: string, itemIndex: number, channelId: string) => {
+  ipcMain.handle('publish-find-draft', async (_e, itemId: string, channelId: string) => {
     try {
-      const job = requireString(jobId, 'jobId');
-      const idx = requireIndex(itemIndex, 'itemIndex');
+      const id = requireItemId(itemId, 'itemId');
       const channel = requireString(channelId, 'channelId');
 
-      const generated = readGenerated(job, idx);
-      if (!generated) return fail(`No generated metadata for ${job} item ${idx}`);
-
-      const chosen = store.get(job, idx) ?? emptyChosenMetadata(job, idx);
+      const generated = requireGenerated(id);
+      const chosen = store.get(id) ?? emptyChosenMetadata(id, generated.jobId);
       const resolved = resolveChosenMetadata(chosen, generated);
 
       const uploads = await listRecentUploads(channel);
@@ -196,15 +220,19 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
    */
   ipcMain.handle(
     'publish-link-video',
-    async (_e, jobId: string, itemIndex: number, videoId: string, channelId: string) => {
+    async (_e, itemId: string, videoId: string, channelId: string) => {
       try {
-        const job = requireString(jobId, 'jobId');
-        const idx = requireIndex(itemIndex, 'itemIndex');
+        const id = requireItemId(itemId, 'itemId');
         const video = requireString(videoId, 'videoId');
         const channel = requireString(channelId, 'channelId');
+        const generated = requireGenerated(id);
 
         return ok(
-          await store.update(job, idx, { videoId: video, channelId: channel, status: 'linked' })
+          await store.update(id, generated.jobId, {
+            videoId: video,
+            channelId: channel,
+            status: 'linked',
+          })
         );
       } catch (err: any) {
         return fail(err?.message || String(err));
@@ -213,11 +241,11 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
   );
 
   /** Undo a link, dropping the item back to 'ready'. */
-  ipcMain.handle('publish-unlink-video', async (_e, jobId: string, itemIndex: number) => {
+  ipcMain.handle('publish-unlink-video', async (_e, itemId: string) => {
     try {
-      const job = requireString(jobId, 'jobId');
-      const idx = requireIndex(itemIndex, 'itemIndex');
-      return ok(await store.update(job, idx, { videoId: null, status: 'ready' }));
+      const id = requireItemId(itemId, 'itemId');
+      const generated = requireGenerated(id);
+      return ok(await store.update(id, generated.jobId, { videoId: null, status: 'ready' }));
     } catch (err: any) {
       return fail(err?.message || String(err));
     }
@@ -233,9 +261,9 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
   });
 
   /** Forget one item's selection. */
-  ipcMain.handle('publish-clear', async (_e, jobId: string, itemIndex: number) => {
+  ipcMain.handle('publish-clear', async (_e, itemId: string) => {
     try {
-      await store.clear(requireString(jobId, 'jobId'), requireIndex(itemIndex, 'itemIndex'));
+      await store.clearItem(requireItemId(itemId, 'itemId'));
       return ok(true);
     } catch (err: any) {
       return fail(err?.message || String(err));

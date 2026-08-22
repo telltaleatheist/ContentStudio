@@ -18,6 +18,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { GeneratedIndex, GeneratedItemSummary } from '../publish/publish-store.service';
+import { isItemId } from './item-identity';
 
 /** Reasons a report file did not make it into the index. Counted, never silently dropped. */
 export interface IndexProblem {
@@ -31,21 +32,33 @@ export interface GeneratedIndexResult extends GeneratedIndex {
 }
 
 /**
- * Basename of the source file for one item, or null when there isn't a single one.
+ * Basename of the source file for one item, or null when it has none.
  *
- * In 'individual' mode items line up 1:1 with original_inputs; in compilation mode one
- * item is built from many inputs, so there is no single source file and matching has to
- * fall back to a manual pick. Only a value that looks like a real filename counts.
+ * Read off the ITEM's own `source_path`, which the generator records at write time (and
+ * the migration back-filled). It used to be inferred by indexing `original_inputs` at the
+ * item's position and hoping the two arrays lined up — an inference that was already
+ * wrong for 16 of the 111 live reports, and that silently attributed one item's source
+ * file to another whenever a mid-job item had been deleted.
+ *
+ * null is the honest answer for a text subject (there is no file) and for a compilation
+ * (many files, no single one), and it downgrades draft matching to a manual pick rather
+ * than to a wrong one.
  */
-export function sourceFilenameOf(job: any, itemIndex: number): string | null {
-  const inputs = Array.isArray(job?.original_inputs) ? job.original_inputs : [];
-  if (!Array.isArray(job?.items) || inputs.length !== job.items.length) return null;
-  const raw = inputs[itemIndex];
+export function sourceFilenameOf(item: any): string | null {
+  const raw = item?.source_path;
   if (typeof raw !== 'string' || !/\.[A-Za-z0-9]{2,5}$/.test(raw)) return null;
   return path.basename(raw);
 }
 
-/** Summaries for every item in one already-parsed report. */
+/**
+ * Summaries for every item in one already-parsed report.
+ *
+ * REQUIRES item_id on every item. After the report migration every item has one, so an
+ * item without is a corrupt or hand-edited record — and since the id is what every
+ * publish action is keyed by, listing such a row would put something on screen that
+ * nothing can act on. It throws, and the index reader counts the file as unreadable and
+ * names it (ITEM-ID-PLAN.md §3.4: "after migration, readers REQUIRE item_id").
+ */
 export function summarizeJob(job: any, fallbackJobId: string): GeneratedItemSummary[] {
   const jobId = typeof job?.job_id === 'string' && job.job_id ? job.job_id : fallbackJobId;
   const createdAt = typeof job?.created_at === 'string' ? job.created_at : '';
@@ -54,18 +67,23 @@ export function summarizeJob(job: any, fallbackJobId: string): GeneratedItemSumm
   const items = Array.isArray(job?.items) ? job.items : [];
 
   return items.map((item: any, itemIndex: number): GeneratedItemSummary => {
+    if (!isItemId(item?.item_id)) {
+      throw new Error(
+        `items[${itemIndex}] has no item_id (${JSON.stringify(item?.item_id)}) — the report has not been migrated, or has been edited by hand.`
+      );
+    }
     const titles: string[] = Array.isArray(item?.titles) ? item.titles : [];
-    const sourceFilename = sourceFilenameOf(job, itemIndex);
+    const sourceFilename = sourceFilenameOf(item);
     return {
+      itemId: item.item_id,
       jobId,
-      itemIndex,
       // Whatever the operator recognises it by, best first.
       label:
         sourceFilename ||
         jobName ||
         (typeof item?._title === 'string' ? item._title : '') ||
         titles[0] ||
-        `${jobId} item ${itemIndex}`,
+        `${jobId} item ${itemIndex + 1}`,
       createdAt,
       promptSet,
       sourceFilename,

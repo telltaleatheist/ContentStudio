@@ -33,8 +33,14 @@ export class PublishState {
    * is its output.
    */
   private readonly _resolved = signal<ResolvedMetadata | null>(null);
-  private readonly _jobId = signal<string | null>(null);
-  private readonly _itemIndex = signal<number | null>(null);
+  /**
+   * The item currently open, by its permanent id.
+   *
+   * This used to be a (jobId, itemIndex) pair. The index was not an identity — deleting a
+   * sibling item silently re-pointed it at the item below — so the whole publish wire now
+   * carries the id alone and the job is a fact the main process reads back off the item.
+   */
+  private readonly _itemId = signal<string | null>(null);
   private readonly _saving = signal(false);
   private readonly _error = signal<string | null>(null);
 
@@ -72,7 +78,7 @@ export class PublishState {
    * True when this state is pointed at an item. Every mutating method requires it, so the
    * UI can disable controls rather than let a click do nothing.
    */
-  readonly hasTarget = computed(() => this._jobId() !== null && this._itemIndex() !== null);
+  readonly hasTarget = computed(() => this._itemId() !== null);
 
   /**
    * Guard for every mutation.
@@ -82,49 +88,46 @@ export class PublishState {
    * a title did nothing, showed nothing, and saved nothing. A no-op that looks like
    * success is a bug, so it now says so.
    */
-  private target(action: string): { jobId: string; itemIndex: number } | null {
-    const jobId = this._jobId();
-    const itemIndex = this._itemIndex();
-    if (!jobId || itemIndex === null) {
+  private target(action: string): string | null {
+    const itemId = this._itemId();
+    if (!itemId) {
       this._error.set(`Cannot ${action}: no report is loaded. Reopen the report and try again.`);
       return null;
     }
-    return { jobId, itemIndex };
+    return itemId;
   }
 
   /**
    * Point the state at a report item. Safe to call repeatedly; clears any stale
    * selection first so the UI never briefly shows the previous item's picks.
    */
-  async load(jobId: string | null | undefined, itemIndex: number | null | undefined): Promise<void> {
+  async load(itemId: string | null | undefined): Promise<void> {
     this._error.set(null);
 
-    if (!jobId || itemIndex === null || itemIndex === undefined) {
-      this._jobId.set(null);
-      this._itemIndex.set(null);
+    if (!itemId) {
+      this._itemId.set(null);
       this._selection.set(null);
       this._resolved.set(null);
       return;
     }
 
-    this._jobId.set(jobId);
-    this._itemIndex.set(itemIndex);
+    this._itemId.set(itemId);
     this._selection.set(null);
     this._resolved.set(null);
 
-    const [selections, resolved] = await Promise.all([
-      this.electron.publishGetSelections(jobId),
-      this.electron.publishGetResolved(jobId, itemIndex),
+    const [selection, resolved] = await Promise.all([
+      this.electron.publishGetSelection(itemId),
+      this.electron.publishGetResolved(itemId),
     ]);
 
     // Ignore responses that arrived after the operator moved to another item.
-    if (this._jobId() !== jobId || this._itemIndex() !== itemIndex) return;
+    if (this._itemId() !== itemId) return;
 
-    if (!selections.success) {
-      this._error.set(selections.error ?? 'Failed to load selections');
+    if (!selection.success) {
+      this._error.set(selection.error ?? 'Failed to load selections');
       return;
     }
-    this._selection.set(selections.data?.[itemIndex] ?? null);
+    this._selection.set(selection.data ?? null);
 
     // A failure here means the description and tags on screen would be blank, which reads
     // as "this item has none". Say what happened instead.
@@ -144,12 +147,11 @@ export class PublishState {
    * are only correct once they come back from there.
    */
   private async refreshResolved(): Promise<void> {
-    const jobId = this._jobId();
-    const itemIndex = this._itemIndex();
-    if (!jobId || itemIndex === null) return;
+    const itemId = this._itemId();
+    if (!itemId) return;
 
-    const res = await this.electron.publishGetResolved(jobId, itemIndex);
-    if (this._jobId() !== jobId || this._itemIndex() !== itemIndex) return;
+    const res = await this.electron.publishGetResolved(itemId);
+    if (this._itemId() !== itemId) return;
     if (!res.success || !res.data) {
       this._error.set(res.error ?? 'Saved, but could not re-read the item.');
       return;
@@ -198,7 +200,7 @@ export class PublishState {
       next = current.filter((_, i) => i !== idx);
     }
 
-    await this.persistTitles(t.jobId, t.itemIndex, next);
+    await this.persistTitles(t, next);
   }
 
   /**
@@ -246,8 +248,7 @@ export class PublishState {
 
     if (wasChosen) {
       await this.persistTitles(
-        t.jobId,
-        t.itemIndex,
+        t,
         current.map((title, i) => (i === index ? trimmed : title))
       );
       return;
@@ -257,14 +258,14 @@ export class PublishState {
       this._error.set(`You can test at most ${MAX_AB_VARIANTS} titles. Deselect one first.`);
       return;
     }
-    await this.persistTitles(t.jobId, t.itemIndex, [...current, trimmed]);
+    await this.persistTitles(t, [...current, trimmed]);
   }
 
-  private async persistTitles(jobId: string, itemIndex: number, titles: string[]): Promise<void> {
+  private async persistTitles(itemId: string, titles: string[]): Promise<void> {
     this._saving.set(true);
     this._error.set(null);
     try {
-      const res = await this.electron.publishSetTitles(jobId, itemIndex, titles);
+      const res = await this.electron.publishSetTitles(itemId, titles);
       if (!res.success || !res.data) {
         this._error.set(res.error ?? 'Failed to save titles');
         return;
@@ -290,7 +291,7 @@ export class PublishState {
     this._saving.set(true);
     this._error.set(null);
     try {
-      const res = await this.electron.publishSetFields(t.jobId, t.itemIndex, fields);
+      const res = await this.electron.publishSetFields(t, fields);
       if (!res.success || !res.data) {
         this._error.set(res.error ?? 'Failed to save changes');
         return;
@@ -310,7 +311,7 @@ export class PublishState {
 
     this._saving.set(true);
     try {
-      const res = await this.electron.publishClear(t.jobId, t.itemIndex);
+      const res = await this.electron.publishClear(t);
       if (!res.success) {
         this._error.set(res.error ?? 'Failed to clear selection');
         return;

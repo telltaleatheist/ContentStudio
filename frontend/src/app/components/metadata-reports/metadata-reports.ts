@@ -443,9 +443,21 @@ export class MetadataReports implements OnInit {
       }
 
       if (outcome.ran && outcome.message) {
-        const failed = (outcome.receipt?.failures.length ?? 0) > 0;
+        // Both halves of the pass are reported, and a failure in EITHER is a failure:
+        // reports that could not be migrated and publish selections that could not be
+        // moved are the same kind of fact, and burying the second under the first's
+        // success is how the operator would learn about it by missing something.
+        const failed =
+          (outcome.receipt?.failures.length ?? 0) > 0 ||
+          (outcome.selectionReceipt?.failures.length ?? 0) > 0;
+        const orphaned = (outcome.selectionReceipt?.filesOrphaned ?? 0) > 0;
+
         if (failed) {
           this.notificationService.error('Reports updated, with failures', outcome.message);
+        } else if (orphaned) {
+          // Nothing broke, but chosen A/B titles were set aside rather than carried over,
+          // and the operator has to know where they went to get them back.
+          this.notificationService.warning('Reports updated, some selections set aside', outcome.message);
         } else {
           this.notificationService.success('Reports updated', outcome.message);
         }
@@ -587,9 +599,14 @@ export class MetadataReports implements OnInit {
       this.cancelEditDescription();
       this.cancelEditTags();
 
-      // Load any previously chosen A/B titles for this item. Deliberately not awaited
-      // with the metadata read above — a failure here must not blank the report.
-      void this.publish.load(report.jobId, report.itemIndex);
+      // Load any previously chosen A/B titles for this item, BY ITS ID. The row's
+      // itemIndex is only ever a position into the array read above; it has never been
+      // an identity, and passing it here is what re-pointed selections at the wrong item
+      // when a sibling was deleted.
+      //
+      // Deliberately not awaited with the metadata read — a failure here must not blank
+      // the report.
+      void this.publish.load(report.itemId);
     } catch (error) {
       console.error('[MetadataReports] Error loading report:', error);
       this.notificationService.error('Read Error', 'Failed to read report: ' + (error as Error).message);

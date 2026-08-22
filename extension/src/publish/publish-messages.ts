@@ -23,10 +23,10 @@ import type {
 export type PublishMessage =
   | { type: 'publish-pending' }
   | { type: 'publish-resolve'; videoId: string; filename: string | null }
-  | { type: 'publish-filled'; jobId: string; itemIndex: number; videoId: string }
+  | { type: 'publish-filled'; itemId: string; videoId: string }
   | { type: 'publish-reports'; offset: number; limit: number; query: string }
-  | { type: 'publish-item'; jobId: string; itemIndex: number }
-  | { type: 'publish-titles'; jobId: string; itemIndex: number; titles: string[] };
+  | { type: 'publish-item'; itemId: string }
+  | { type: 'publish-titles'; itemId: string; titles: string[] };
 
 export type PublishResponse<T> =
   | { ok: true; data: T }
@@ -129,22 +129,18 @@ export function requestResolve(videoId: string, filename: string | null): Promis
   return send<ResolveOutcome>({ type: 'publish-resolve', videoId, filename });
 }
 
-export function requestFilled(jobId: string, itemIndex: number, videoId: string): Promise<void> {
-  return send<void>({ type: 'publish-filled', jobId, itemIndex, videoId });
+export function requestFilled(itemId: string, videoId: string): Promise<void> {
+  return send<void>({ type: 'publish-filled', itemId, videoId });
 }
 
 export function requestReports(offset: number, limit: number, query: string): Promise<BrowsePage> {
   return send<BrowsePage>({ type: 'publish-reports', offset, limit, query });
 }
 
-export function requestItem(jobId: string, itemIndex: number): Promise<ItemDetail> {
-  return send<ItemDetail>({ type: 'publish-item', jobId, itemIndex });
+export function requestItem(itemId: string): Promise<ItemDetail> {
+  return send<ItemDetail>({ type: 'publish-item', itemId });
 }
 
-export function requestSaveTitles(
-  jobId: string,
-  itemIndex: number,
-  titles: string[],
-): Promise<SetTitlesResult> {
-  return send<SetTitlesResult>({ type: 'publish-titles', jobId, itemIndex, titles });
+export function requestSaveTitles(itemId: string, titles: string[]): Promise<SetTitlesResult> {
+  return send<SetTitlesResult>({ type: 'publish-titles', itemId, titles });
 }

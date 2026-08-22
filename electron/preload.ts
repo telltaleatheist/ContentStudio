@@ -133,21 +133,20 @@ const api = {
   youtubeGetCollectorState: () => ipcRenderer.invoke('youtube-get-collector-state'),
 
   // Publish (chosen titles / A-B test setup)
-  publishGetSelections: (jobId: string) => ipcRenderer.invoke('publish-get-selections', jobId),
+  // Every channel names ONE item, by its permanent id. The (jobId, itemIndex) pair these
+  // used to take was not an identity: the index moved whenever a sibling was deleted.
+  publishGetSelection: (itemId: string) => ipcRenderer.invoke('publish-get-selection', itemId),
   // titles order is meaningful: index 0 becomes the main title AND A/B variant 1
-  publishSetTitles: (jobId: string, itemIndex: number, titles: string[]) =>
-    ipcRenderer.invoke('publish-set-titles', jobId, itemIndex, titles),
+  publishSetTitles: (itemId: string, titles: string[]) =>
+    ipcRenderer.invoke('publish-set-titles', itemId, titles),
   // pass null for a field to clear the override and fall back to the generated value
   publishSetFields: (
-    jobId: string,
-    itemIndex: number,
+    itemId: string,
     fields: { descriptionOverride?: string | null; tagsOverride?: string | null; channelId?: string | null }
-  ) => ipcRenderer.invoke('publish-set-fields', jobId, itemIndex, fields),
-  publishGetResolved: (jobId: string, itemIndex: number) =>
-    ipcRenderer.invoke('publish-get-resolved', jobId, itemIndex),
+  ) => ipcRenderer.invoke('publish-set-fields', itemId, fields),
+  publishGetResolved: (itemId: string) => ipcRenderer.invoke('publish-get-resolved', itemId),
   publishListActionable: () => ipcRenderer.invoke('publish-list-actionable'),
-  publishClear: (jobId: string, itemIndex: number) =>
-    ipcRenderer.invoke('publish-clear', jobId, itemIndex),
+  publishClear: (itemId: string) => ipcRenderer.invoke('publish-clear', itemId),
 
   // ==================== EDITOR ====================
   // The ported AutoCutStudio timeline editor. Every member of the editor's `EditorHost`
