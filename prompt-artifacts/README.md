@@ -15,6 +15,22 @@ committed rather than gitignored so the change can be read line by line in the P
 
 Regenerate either side with `prompt-harness/run.js` — see that directory's README.
 
+## The per-field split (2026-08-22), which supersedes the grouping described below
+
+The `AFTER-*` files above are the THREE-CALL shape: fields pointed at the same model were still
+written in one call. That grouping is gone. Every field now gets its **own** call, titles run
+first, and the thumbnail call is handed the ten titles as input data. The `PERFIELD-*` files are
+that shape, measured live.
+
+| file | what it is |
+| --- | --- |
+| `PERFIELD-timings.md` | per-CALL timing table over 3 live runs, plus what the samples show |
+| `PERFIELD-samples.json` | the live outputs: every field, every run, with the declared warnings |
+| `PERFIELD-assembled-prompts.txt` | this branch's SIX unit prompts, banner-labelled, 73,516 chars total |
+
+Everything below this line describes the three-call shape and is kept as the record of how the
+prompts were cut down, which still holds — the sections a call no longer carries are the same.
+
 ## What the shape change is
 
 BEFORE: one call, one model, thirteen editorial sections plus **seven** field sections, one
