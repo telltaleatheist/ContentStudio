@@ -11,7 +11,7 @@ import { Chapter } from './chapter-generator.service';
 import { ChapterPipelineResult } from './chapter-transcript';
 import { ChapterEmbeddingService } from './chapter-embedding.service';
 import { OutputHandlerService } from './output-handler.service';
-import { ContentOrigin, ItemProvenance, ItemSource, sourceKeyOf } from './item-identity';
+import { ContentDeclaration, ContentOrigin, ItemProvenance, ItemSource, sourceKeyOf } from './item-identity';
 import {
   MetadataTaskRun,
   buildTaskPromptsForDisplay,
@@ -1121,10 +1121,35 @@ export class MetadataGeneratorService {
    * Written on BOTH branches (spec §3.5). The unlinked branch is not an absence of a
    * record — it is the record of a declared mode, and it says so with the same fields.
    */
+  /**
+   * WHY this item took the branch it did, in the vocabulary the report stores.
+   *
+   * The unlinked branch has three ways in and they are not interchangeable: he declared
+   * final-only, he left an item he could have linked unlinked (the default now that
+   * linking is optional), or there was never a link to make. Reading them off the item's
+   * own recorded declaration keeps this from being a guess made at write time.
+   */
+  private static declarationOf(item: ContentItem): { declaration: ContentDeclaration; reason: string | null } {
+    if (item.contentSource) return { declaration: 'linked', reason: null };
+    if (item.finalOnly) {
+      return {
+        declaration: item.finalOnly.via === 'declared' ? 'final-only-declared' : 'final-only-default',
+        reason: item.finalOnly.reason,
+      };
+    }
+    return {
+      declaration: 'final-only-unlinkable',
+      reason: 'this input had no final export to link an editor story to',
+    };
+  }
+
   private static itemProvenanceOf(item: ContentItem): ItemProvenance {
     const source = item.contentSource;
+    const declared = this.declarationOf(item);
     return {
       content_fields: this.contentTextOf(item).origin,
+      content_declaration: declared.declaration,
+      content_declaration_reason: declared.reason,
       // Structurally constant. See ItemProvenance.timed_fields.
       timed_fields: 'final-export-whisper',
       transcript_ref: source ? source.ref : null,
@@ -1161,8 +1186,26 @@ export class MetadataGeneratorService {
       );
     }
 
+    // N inputs, one declaration. Where they disagree the STRONGEST claim wins — an
+    // explicit declaration outranks a default, which outranks "there was nothing to
+    // link" — and the reason names the mix rather than letting the winner speak for
+    // inputs it does not describe.
+    const declarations = items.map((item) => this.declarationOf(item));
+    const kinds = new Set(declarations.map((d) => d.declaration));
+    const rank: ContentDeclaration[] =
+      ['linked', 'final-only-declared', 'final-only-default', 'final-only-unlinkable'];
+    const declaration = rank.find((k) => kinds.has(k)) || 'final-only-unlinkable';
+    const reason = kinds.size > 1
+      ? `${items.length} inputs, mixed declarations: ` +
+        rank.filter((k) => kinds.has(k))
+          .map((k) => `${declarations.filter((d) => d.declaration === k).length} ${k}`)
+          .join(', ')
+      : declarations[0]?.reason ?? null;
+
     return {
       content_fields: linked.length > 0 ? 'editor-story-transcript' : 'final-export-whisper',
+      content_declaration: declaration,
+      content_declaration_reason: declaration === 'linked' && kinds.size === 1 ? null : reason,
       timed_fields: 'final-export-whisper',
       transcript_ref: null,
       final_duration_sec: null,

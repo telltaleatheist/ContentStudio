@@ -25,6 +25,7 @@ import type {
   StoryExportResult,
   StoryList,
   StoryScope,
+  TranscriptLink,
 } from '../features/transcript-link/transcript-link.types';
 
 /**
@@ -895,14 +896,15 @@ export class ElectronService {
     jobName?: string;
     chapterFlags?: { [path: string]: boolean };
     /**
-     * The operator's Phase-2 link decision per input, keyed by the same `item.path`
-     * `chapterFlags` is. A ref means "this video's content came from that editor story";
-     * an explicit null means "final export only", which is a DECLARED mode — which is why
-     * null is sent rather than the key being omitted.
+     * What each linkable input declares about its content transcript, keyed by the same
+     * `item.path` `chapterFlags` is. A ref means "this video's content comes from that
+     * editor story"; a FinalOnlyDeclaration means "the final export's own transcript",
+     * and says whether the operator declared it or simply linked nothing.
      *
-     * PR 4 carries it; nothing generates differently because of it yet.
+     * Both are DECLARED modes, which is why an unlinked video sends one rather than
+     * having its key omitted — an omitted key means the input was never offered a link.
      */
-    inputTranscripts?: { [path: string]: TranscriptRef | null };
+    inputTranscripts?: { [path: string]: TranscriptLink };
     showPrompt?: boolean;
   }): Promise<any> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };

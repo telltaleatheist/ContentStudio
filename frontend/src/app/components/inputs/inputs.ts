@@ -6,6 +6,7 @@ import { MatChipsModule } from '@angular/material/chips';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatSelectModule } from '@angular/material/select';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
+import { MatMenuModule } from '@angular/material/menu';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatCardModule } from '@angular/material/card';
@@ -26,13 +27,13 @@ import {
   StoryPickerDialogData,
   StoryPickerDialogResult,
 } from '../story-picker-dialog/story-picker-dialog';
-import type { TranscriptRef } from '../../features/publish/publish.types';
 import {
   isDriftWarning,
   type CandidateScan,
   type DriftProbe,
   type TranscriptCandidate,
   type TranscriptChoice,
+  type TranscriptLink,
 } from '../../features/transcript-link/transcript-link.types';
 import { InputsStateService, InputItem } from '../../services/inputs-state';
 import { JobQueueService, QueuedJob } from '../../services/job-queue';
@@ -56,6 +57,7 @@ interface PromptSetOption {
     MatFormFieldModule,
     MatSelectModule,
     MatDialogModule,
+    MatMenuModule,
     MatProgressBarModule,
     MatCheckboxModule,
     MatCardModule,
@@ -428,11 +430,15 @@ export class Inputs implements OnInit, OnDestroy {
 
   // ==================== Editor transcript link (Phase 2) ====================
   //
-  // Every video item is asked one question before it can run: which editor story is this?
-  // The finder hints (75% of the 40 live exports get a candidate) but never decides,
-  // because the hint is the wrong story about 1 time in 4. The operator answers; the answer
-  // rides the job, and the generator writes the content fields from the story he named
-  // while chapters stay on the final export. See PHASE-1-2-SPEC.md §3.2/§3.3.
+  // An OFFER, not a question. A video item may be linked to the editor story it was cut
+  // from, and then the content fields are written from that story's ad-free transcript
+  // instead of the final export's; chapters never move. Nothing blocks on it, nothing is
+  // pre-selected, and an item nobody touched runs exactly as it did before Phase 2.
+  //
+  // The finder still only hints — 75% of the 40 live exports get a candidate and about 1
+  // in 4 of those is the wrong story — so a hint is offered in the menu and never taken
+  // on the operator's behalf. What IS recorded, on every run, is which branch it took and
+  // why: linked, declared final-only, or unlinked by default. See PHASE-1-2-SPEC.md §3.2.
 
   /** Scan results keyed by item.path. Not persisted: it is a fact about disk, re-read each session. */
   transcriptScans = signal<Record<string, CandidateScan>>({});
@@ -474,16 +480,17 @@ export class Inputs implements OnInit, OnDestroy {
   /**
    * Find the candidates for every video item that has not been scanned yet.
    *
-   * Called after each of the four ways an item can arrive. An item whose scan finds nothing
-   * SELF-RESOLVES to final-only right here, recording what was searched — the row still
-   * shows the decision and the report still records which path the run took, which is what
-   * makes final-only a declared mode rather than a fallback (spec §3.2).
+   * Called after each of the four ways an item can arrive. Finding nothing is not a
+   * decision and is not written onto the item: the row simply says nothing matched and
+   * what was searched, and the run records the default-unlinked mode with that same
+   * description attached — which is what keeps final-only a declared mode rather than a
+   * fallback (spec §3.2).
    */
   private async scanTranscriptCandidates(): Promise<void> {
-    // Every video the operator could be asked about: the ones on the page AND the ones
-    // already sitting in a pending job. A queued item that was cleared off the Inputs list
-    // still needs a scan, or the row that reports its decision has nothing to report and
-    // Start Queue refuses an item nothing can answer for.
+    // Every video the operator could be offered a link for: the ones on the page AND the
+    // ones already sitting in a pending job. A queued item that was cleared off the Inputs
+    // list still needs a scan, or its row has no candidates to offer and the run records a
+    // default with nothing to say about what was searched.
     const byPath = new Map<string, InputItem>();
     for (const item of this.inputsState.inputItems()) byPath.set(item.path, item);
     for (const job of this.jobQueue.getPendingJobs()) {
@@ -521,13 +528,9 @@ export class Inputs implements OnInit, OnDestroy {
         this.notificationService.warning('Editor transcript', problem);
       }
 
-      if (scan.candidates.length === 0) {
-        this.setTranscriptChoice(item.path, {
-          mode: 'final-only',
-          reason: `no editor story matched — ${scan.searchedDescription}`,
-        });
-      } else {
-        // Drift is part of the question, so measure it before the operator answers.
+      // Drift is part of the offer, so measure it before the menu is opened. Nothing to
+      // measure when nothing matched, and nothing is decided either way.
+      if (scan.candidates.length > 0) {
         void this.probeCandidateDrift(item.path, scan);
       }
     }
@@ -556,10 +559,10 @@ export class Inputs implements OnInit, OnDestroy {
    * Write a decision onto the item, by path — an index goes stale across an await.
    *
    * ALSO writes it onto the same input inside any job already waiting in the queue.
-   * `addJob` snapshots the items, so without this a video queued before the operator
-   * answered could never be satisfied: Start Queue would name it, he would answer on the
-   * Inputs row, and the queued snapshot would still say undecided. The queue is where the
-   * answer has to land, because the queue is what runs.
+   * `addJob` snapshots the items, so without this a link made after queueing would never
+   * reach the run: the operator would pick a story on the Inputs row and the queued
+   * snapshot would still be unlinked. The queue is where the decision has to land,
+   * because the queue is what runs.
    */
   private setTranscriptChoice(itemPath: string, choice: TranscriptChoice): void {
     const items = this.inputsState.inputItems();
@@ -695,67 +698,107 @@ export class Inputs implements OnInit, OnDestroy {
 
   exportingTranscriptsFor = signal<string | null>(null);
 
-  /** Is this item still waiting for an answer it must give? */
-  needsTranscriptChoice(item: InputItem): boolean {
-    if (!this.canLinkTranscript(item)) return false;
-    if (item.transcriptChoice) return false;
-    const scan = this.scanFor(item);
-    // No scan yet means the question has not been asked, so it cannot be answered — and a
-    // run must not start on an unasked question either.
-    return scan === null || scan.candidates.length > 0;
-  }
-
-  /** One line summarising the decision, for the row and the queue. */
-  transcriptChoiceLabel(item: InputItem): string {
+  /** Which of the five things the row can be saying. Drives the icon and the tint. */
+  transcriptState(item: InputItem): 'linked' | 'declared' | 'unlinked' | 'scanning' | 'unavailable' {
     const choice = item.transcriptChoice;
-    if (!choice) return 'No editor story chosen yet';
-    if (choice.mode === 'final-only') return `Final export only — ${choice.reason}`;
-    const drift = choice.driftPct === null
-      ? 'drift not measured'
-      : `${choice.driftPct > 0 ? '+' : ''}${choice.driftPct.toFixed(1)}% vs the final cut`;
-    return `Linked to "${choice.ref.storyTitle}" (${choice.ref.sourceSession}, ${choice.ref.via}) — ${drift}`;
+    if (choice) return choice.mode === 'linked' ? 'linked' : 'declared';
+    if (this.isScanningTranscript(item)) return 'scanning';
+    return this.scanFor(item) ? 'unlinked' : 'unavailable';
   }
 
-  /** Match-kind wording for the radio label. */
-  viaLabel(candidate: TranscriptCandidate): string {
-    return candidate.via === 'exact-title' ? 'exact title' : 'label match';
+  /** The one line the row shows. Short enough to sit beside the trigger without wrapping. */
+  transcriptStateText(item: InputItem): string {
+    const choice = item.transcriptChoice;
+    if (choice && choice.mode === 'linked') {
+      const drift = choice.driftPct === null
+        ? 'drift not measured'
+        : `${choice.driftPct > 0 ? '+' : ''}${choice.driftPct.toFixed(1)}% vs final`;
+      return `${choice.ref.storyTitle} · ${choice.ref.sourceSession} · ${drift}`;
+    }
+    if (choice) return 'final export only';
+    if (this.isScanningTranscript(item)) return 'looking…';
+
+    const scan = this.scanFor(item);
+    // No scan at all is NOT "nothing matched": the lookup never ran, and saying it did
+    // would be the row asserting a search it did not perform.
+    if (!scan) return 'not linked — the lookup did not run';
+    if (scan.candidates.length === 0) return 'not linked — nothing matched';
+    return scan.candidates.length === 1
+      ? 'not linked — 1 story matches'
+      : `not linked — ${scan.candidates.length} stories match`;
   }
 
-  /** The drift line under a candidate, or the reason there isn't one. */
-  driftLabel(item: InputItem, candidate: TranscriptCandidate): string {
+  /** The whole account, for the operator who wants to know why the line says that. */
+  transcriptStateTooltip(item: InputItem): string {
+    const choice = item.transcriptChoice;
+    if (choice && choice.mode === 'linked') {
+      const drift = choice.driftPct === null
+        ? 'drift could not be measured'
+        : `${Math.abs(choice.driftPct).toFixed(1)}% ${choice.driftPct < 0 ? 'shorter' : 'longer'} ` +
+          'than the story';
+      return `Content fields come from story ${choice.ref.storyNumber} "${choice.ref.storyTitle}" ` +
+        `of session ${choice.ref.sourceSession} (${choice.ref.via}). The final cut is ${drift}. ` +
+        'Chapters still come from the final export.';
+    }
+
+    const tail = 'Content fields come from the final export\'s own transcript, sponsor reads ' +
+      'included. Chapters come from the same transcript, as they always do.';
+    if (choice) return `Declared final export only. ${tail}`;
+
+    const scan = this.scanFor(item);
+    const searched = scan ? ` Searched ${scan.searchedDescription}.` : '';
+    return `No editor story is linked, which is the default.${searched} ${tail}`;
+  }
+
+  /** The leading glyph. One icon per state, no second meaning loaded onto colour alone. */
+  transcriptStateIcon(item: InputItem): string {
+    switch (this.transcriptState(item)) {
+      case 'linked': return 'link';
+      case 'declared': return 'movie';
+      case 'scanning': return 'search';
+      case 'unavailable': return 'help_outline';
+      default: return 'link_off';
+    }
+  }
+
+  /** The candidates the menu offers, or none — the template must not unwrap the scan. */
+  candidatesFor(item: InputItem): TranscriptCandidate[] {
+    const scan = this.scanFor(item);
+    return scan ? scan.candidates : [];
+  }
+
+  /** Is this the candidate the item is currently linked to? */
+  isChosenCandidate(item: InputItem, candidate: TranscriptCandidate): boolean {
+    const choice = item.transcriptChoice;
+    return !!choice && choice.mode === 'linked' && choice.ref.path === candidate.transcriptPath;
+  }
+
+  /** The secondary line under a menu entry: where the story came from, and how far apart. */
+  candidateMeta(item: InputItem, candidate: TranscriptCandidate): string {
+    const via = candidate.via === 'exact-title' ? 'exact title' : 'label match';
+    const head = `${candidate.sourceSession} · ${via}`;
     if (!candidate.ref) {
-      return candidate.refUnavailableReason || 'this story has no usable transcript';
+      return `${head} · ${candidate.refUnavailableReason || 'no usable transcript'}`;
     }
     const failure = this.driftFailures()[this.driftKey(item.path, candidate.transcriptPath)];
-    if (failure) return `drift could not be measured: ${failure}`;
+    if (failure) return `${head} · drift not measured: ${failure}`;
     const drift = this.driftFor(item, candidate);
-    if (!drift) return 'measuring drift against the final export…';
-    const sign = drift.driftSec > 0 ? '+' : '';
+    if (!drift) return `${head} · measuring drift…`;
     const shorter = drift.driftSec < 0 ? 'shorter' : 'longer';
-    return `final cut is ${sign}${drift.driftSec.toFixed(1)}s ` +
-      `(${Math.abs(drift.driftPct).toFixed(1)}% ${shorter}) than the story`;
+    return `${head} · final cut ${Math.abs(drift.driftPct).toFixed(1)}% ${shorter} ` +
+      `(${drift.driftSec > 0 ? '+' : ''}${drift.driftSec.toFixed(1)}s)`;
   }
 
-  /** The confirm wording, which says so when drift is past ±10%. */
-  candidateActionLabel(item: InputItem, candidate: TranscriptCandidate): string {
-    const drift = this.driftFor(item, candidate);
-    if (drift && isDriftWarning(drift.driftPct)) {
-      const shorter = drift.driftSec < 0 ? 'shorter' : 'longer';
-      return `Link anyway (${Math.abs(drift.driftPct).toFixed(0)}% ${shorter})`;
-    }
-    return 'Link this story';
-  }
-
-  /** Does this row paint as a warning? */
+  /**
+   * Does this row paint as a warning?
+   *
+   * Only for a link the operator actually made. An unlinked row is the ordinary case now
+   * and has nothing to warn about — drift is a fact about a link, not about a candidate
+   * nobody chose.
+   */
   rowIsWarning(item: InputItem): boolean {
     const choice = item.transcriptChoice;
-    if (choice && choice.mode === 'linked') return isDriftWarning(choice.driftPct);
-    const scan = this.scanFor(item);
-    if (!scan) return false;
-    return scan.candidates.some(c => {
-      const d = this.driftFor(item, c);
-      return d ? isDriftWarning(d.driftPct) : false;
-    });
+    return !!choice && choice.mode === 'linked' && isDriftWarning(choice.driftPct);
   }
 
   // ==================== Split episode ====================
@@ -973,24 +1016,10 @@ export class Inputs implements OnInit, OnDestroy {
       return;
     }
 
-    // REFUSE while any queued video item still owes an editor-transcript answer.
-    //
-    // The choice is required, not defaulted, because the finder is wrong about one time in
-    // four; starting without it would silently pick a branch on the operator's behalf. The
-    // refusal names the items so he knows exactly which rows to look at.
-    const undecided = this.jobQueue.getPendingJobs()
-      .flatMap(job => job.inputs.map(item => ({ job, item })))
-      .filter(({ item }) => this.needsTranscriptChoice(item));
-
-    if (undecided.length > 0) {
-      const names = undecided.map(({ job, item }) => `• ${item.displayName} (in "${job.name}")`).join('\n');
-      this.notificationService.error(
-        'Editor transcript choice required',
-        `${undecided.length} video ${undecided.length === 1 ? 'item has' : 'items have'} no ` +
-        `editor-story decision yet. Choose a story or "Final export only" on each row first:\n${names}`);
-      this.queueStarted.set(false);
-      return;
-    }
+    // NOTHING is refused for lacking an editor-story link. Linking is optional: an item
+    // nobody linked runs on the final export's own transcript, which is what every item
+    // did before Phase 2, and the run records that it took that branch by default rather
+    // than by declaration (see `inputTranscripts` below).
 
     // RE-VALIDATE every declared link before the run starts.
     //
@@ -1350,16 +1379,49 @@ export class Inputs implements OnInit, OnDestroy {
 
       console.log('Chapter flags being sent:', chapterFlags, '(YouTube:', isYouTube, ', Individual:', isIndividual, ')');
 
-      // The operator's editor-transcript decision per input, keyed the same way
-      // chapterFlags is. Both branches are SENT: a ref for a link, an explicit null for
-      // "final export only". null rather than an omitted key, because the choice is a
-      // declared mode and the report has to be able to say which branch ran (spec §3.2).
-      // Compilation mode gets per-input refs like any other — no special case.
-      const inputTranscripts: { [path: string]: TranscriptRef | null } = {};
+      // What each input declares about its content transcript, keyed the same way
+      // chapterFlags is. EVERY linkable input gets an entry, including the ones nobody
+      // touched: linking is optional, and "he left it unlinked" is a mode this run took,
+      // not an absence. The three values are distinct on purpose (spec §3.2) —
+      //
+      //   a TranscriptRef              he linked this story
+      //   via: 'declared'              he picked "Final export only" on the row
+      //   via: 'default-unlinked'      he linked nothing; the final export writes the
+      //                                content fields, as it did before Phase 2
+      //   no entry at all              nothing to link (subject, imported transcript)
+      //
+      // so the report can say which branch ran and why, and can never imply a decision
+      // nobody made. Compilation mode gets per-input entries like any other.
+      const inputTranscripts: { [path: string]: TranscriptLink } = {};
       nextJob.inputs.forEach(item => {
+        if (!this.canLinkTranscript(item)) return;
+
         const choice = item.transcriptChoice;
-        if (!choice) return;   // never offered a choice (subject, imported transcript, …)
-        inputTranscripts[item.path] = choice.mode === 'linked' ? choice.ref : null;
+        if (choice) {
+          // Nested, not chained: this compilation unit runs without `strict`, so a union
+          // only narrows on a bare discriminant test — `choice && choice.mode === ...`
+          // leaves the other branch un-narrowed and `choice.reason` fails to compile.
+          if (choice.mode === 'linked') {
+            inputTranscripts[item.path] = choice.ref;
+          } else {
+            inputTranscripts[item.path] = {
+              kind: 'final-only', via: 'declared', reason: choice.reason,
+            };
+          }
+          return;
+        }
+
+        // The default. It carries what the scan searched when there was a scan, so the
+        // report can state that nothing matched rather than merely that nothing was
+        // chosen — and says so plainly when the lookup never ran at all.
+        const scan = this.transcriptScans()[item.path];
+        inputTranscripts[item.path] = {
+          kind: 'final-only',
+          via: 'default-unlinked',
+          reason: scan
+            ? `no editor story was linked — ${scan.searchedDescription}`
+            : 'no editor story was linked; the lookup did not run for this item',
+        };
       });
 
       console.log('Input transcripts being sent:', inputTranscripts);

@@ -13,7 +13,8 @@ import {
   buildImportedContentItem,
   isTranscriptImportPath,
 } from './transcript-import.service';
-import { resolveRef, probeDrift } from './editor-transcript-link';
+import { resolveRef, probeDrift, isTranscriptRefLink } from './editor-transcript-link';
+import type { FinalOnlyDeclaration, TranscriptLink } from './editor-transcript-link';
 import type { TranscriptRef } from '../publish/publish-types';
 
 /**
@@ -60,6 +61,18 @@ export interface ContentItem {
    * final-only. The three states are not interchangeable.
    */
   transcriptRef?: TranscriptRef | null;
+  /**
+   * WHY this input is running on the final export's own transcript, when it is.
+   *
+   * The companion to `transcriptRef === null`: the null says which branch, this says how
+   * it was arrived at — declared on the row, or simply never linked. Linking is optional,
+   * so the second is the ordinary case, and it is recorded rather than assumed because a
+   * report that cannot tell the two apart cannot say whether anyone looked.
+   *
+   * Absent whenever `transcriptRef` is a ref, and whenever the input was never offered a
+   * link at all (`transcriptRef` undefined).
+   */
+  finalOnly?: FinalOnlyDeclaration;
   /**
    * The linked story's words, when a declared link was honored (spec §3.3).
    *
@@ -227,7 +240,7 @@ export class InputHandlerService {
     input: string,
     customNotes?: string,
     itemIndex?: number,
-    transcriptRef?: TranscriptRef | null
+    link?: TranscriptLink
   ): Promise<ContentItem> {
     console.log(`[InputHandler] Processing input: ${input}`);
 
@@ -244,7 +257,7 @@ export class InputHandlerService {
     if (inputType === 'subject') {
       return this.processSubject(input, customNotes);
     } else if (inputType === 'video') {
-      return await this.processVideo(input, customNotes, itemIndex, transcriptRef);
+      return await this.processVideo(input, customNotes, itemIndex, link);
     } else if (inputType === 'transcript_file') {
       return this.processTranscriptFile(input, customNotes);
     } else if (inputType === 'directory') {
@@ -282,8 +295,15 @@ export class InputHandlerService {
     videoPath: string,
     customNotes?: string,
     itemIndex?: number,
-    transcriptRef?: TranscriptRef | null
+    link?: TranscriptLink
   ): Promise<ContentItem> {
+    // Split the one wire value into the two things the item records: the ref that gets
+    // honored, and — when there is none — the declaration that says why not. An absent
+    // `link` is the third state and stays absent: this input was never offered one.
+    const transcriptRef: TranscriptRef | null | undefined =
+      link ? (isTranscriptRefLink(link) ? link : null) : undefined;
+    const finalOnly: FinalOnlyDeclaration | undefined =
+      link && !isTranscriptRefLink(link) ? link : undefined;
     log.info(`[InputHandler] Processing video: ${videoPath}`);
 
     // Whisper the FINAL EXPORT, exactly as before — on both branches, unconditionally.
@@ -345,6 +365,7 @@ export class InputHandlerService {
       // The declaration, carried onto the item so the generator can record what was
       // asked for as well as what was done.
       transcriptRef,
+      finalOnly,
       finalDurationSec: result.durationSec,
       contentSource,
     };
@@ -539,7 +560,7 @@ export class InputHandlerService {
     inputs: string[],
     customNotesMap?: Map<string, string>,
     failures?: string[],
-    transcriptRefMap?: Map<string, TranscriptRef | null>
+    transcriptLinkMap?: Map<string, TranscriptLink>
   ): Promise<ContentItem[]> {
     console.log(`[InputHandler] Processing ${inputs.length} inputs (max 5 concurrent transcriptions)`);
 
@@ -559,13 +580,11 @@ export class InputHandlerService {
           return dirItems[0] || null; // Return first item (directories processed separately)
         } else {
           const customNotes = customNotesMap?.get(input);
-          // `has` rather than `get`: an entry whose value is null is the operator having
-          // DECLARED final-only, which is not the same as no entry at all (never offered
-          // a choice). Collapsing them would erase the declaration.
-          const transcriptRef = transcriptRefMap?.has(input)
-            ? transcriptRefMap.get(input)
-            : undefined;
-          return await this.processInput(input, customNotes, index, transcriptRef);
+          // An entry whose value is a FinalOnlyDeclaration is the final-export-only mode
+          // with its reason attached, which is not the same as no entry at all (never
+          // offered a link). Collapsing them would erase the declaration.
+          const link = transcriptLinkMap?.get(input);
+          return await this.processInput(input, customNotes, index, link);
         }
       } catch (error) {
         console.error(`[InputHandler] Failed to process input ${input}:`, error);
