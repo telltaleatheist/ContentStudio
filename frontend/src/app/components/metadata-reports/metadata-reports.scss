@@ -1,4 +1,15 @@
-// Creamsicle Theme - Metadata Reports Viewer
+// Metadata Reports — three panes: list | decide | dispatch (PHASE-4-DESIGN §1.2).
+//
+// The page never scrolls. Each pane owns its own scrollbar, and inside the decide column
+// the titles list and the description each have a capped viewport, so the vertical budget
+// stops being a queue and becomes a set of panes: a 30-chapter report and a 5-chapter one
+// present identically.
+//
+// Section chrome follows the analytics page's `.card` convention rather than the
+// full-bleed gradient headers this page used to wear (§1.8): it costs ~60px less per
+// section, it survives dark mode without `!important` overrides, and it puts orange back
+// to meaning "interactive/accent" instead of "this is a header". No new tokens.
+
 :host {
   display: flex;
   flex: 1;
@@ -22,739 +33,809 @@
   height: 100%;
 }
 
+/* ─────────────────────────────── the three panes ─────────────────────────────── */
+
 .page-content {
   flex: 1;
   display: grid;
-  grid-template-columns: 350px 1fr;
-  gap: 1rem;
-  padding: 1.5rem;
+  grid-template-columns: var(--left-w, 280px) 8px minmax(560px, 1fr) 400px;
+  grid-template-areas: 'list handle work rail';
+  gap: 0.75rem;
+  padding: 1rem;
   overflow: hidden;
   min-height: 0;
 }
 
-// Panels
-.panel {
+/* Nothing selected: the dispatch rail has nothing to dispatch, so it is not there. */
+.page-content.no-item {
+  grid-template-columns: var(--left-w, 280px) 8px minmax(0, 1fr);
+  grid-template-areas: 'list handle work';
+}
+
+.list-pane { grid-area: list; }
+.work-pane { grid-area: work; }
+.rail-pane { grid-area: rail; }
+
+.pane {
   background: var(--bg-card);
-  box-shadow: var(--shadow-md);
   border: 1px solid var(--border-color);
-  border-radius: 12px;
+  border-radius: var(--border-radius-large, 12px);
+  box-shadow: var(--shadow-sm);
   display: flex;
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
-  transition: all 0.3s ease;
-
-  &:hover {
-    box-shadow: var(--shadow-lg), 0 0 0 1px rgba(255, 107, 53, 0.1);
-  }
+  min-width: 0;
 }
 
-.panel-header {
-  background: var(--gradient-primary);
-  padding: 1rem 1.25rem;
-  border-bottom: none;
+/* Flat header with a bottom border — the analytics convention, not a gradient bleed. */
+.pane-head {
   flex-shrink: 0;
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 0.5rem;
-
-  // All text and icons in header should be white
-  color: white !important;
-
-  * {
-    color: white !important;
-  }
-
-  mat-icon, .mat-icon {
-    color: white !important;
-  }
-
-  .mat-mdc-icon-button {
-    color: white !important;
-
-    mat-icon {
-      color: white !important;
-    }
-
-    &:hover {
-      background: rgba(255, 255, 255, 0.2) !important;
-    }
-  }
-
-  // Checkbox in header
-  .mat-mdc-checkbox {
-    .mdc-checkbox__background {
-      border-color: white !important;
-    }
-
-    .mdc-form-field label,
-    .mdc-label {
-      color: white !important;
-    }
-  }
+  padding: 0.625rem 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
 }
 
-.panel-title {
-  font-weight: 600;
-  color: white !important;
-  margin: 0;
-  font-size: 1.25rem;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
-}
-
-.panel-subtitle {
-  color: rgba(255, 255, 255, 0.85) !important;
-  margin: 0.25rem 0 0 0;
-  font-size: 0.85rem;
-}
-
-.panel-actions {
+.pane-head-line {
   display: flex;
-  gap: 0.5rem;
   align-items: center;
-
-  button, .mat-mdc-icon-button, .mat-mdc-button {
-    color: white !important;
-
-    mat-icon {
-      color: white !important;
-    }
-
-    &:hover {
-      background: rgba(255, 255, 255, 0.2) !important;
-    }
-  }
+  gap: 0.5rem;
+  min-width: 0;
 }
 
-.panel-content {
+.pane-head-spacer { flex: 1; }
+
+.pane-icon {
+  color: var(--primary-orange);
+  font-size: 1.125rem;
+  width: 1.125rem;
+  height: 1.125rem;
+  flex-shrink: 0;
+}
+
+.pane-heading {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.pane-count {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  white-space: nowrap;
+
+  .pane-count-of { color: var(--text-muted); }
+}
+
+.selected-count {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: var(--primary-orange);
+  background: rgba(255, 107, 53, 0.14);
+  border: 1px solid rgba(255, 107, 53, 0.4);
+  border-radius: 10px;
+  padding: 0.0625rem 0.375rem;
+  white-space: nowrap;
+}
+
+.pane-body {
   flex: 1;
   overflow-y: auto;
-  padding: 1rem;
+  overflow-x: hidden;
   min-height: 0;
 }
 
-// File Browser Panel
-.file-browser-panel {
-  .panel-content {
-    padding: 0;
-  }
+.list-body { padding: 0; }
 
-  .header-actions {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  .selected-count {
-    color: white;
-    font-weight: 600;
-    background: rgba(255, 255, 255, 0.2);
-    padding: 0.25rem 0.75rem;
-    border-radius: 20px;
-    font-size: 0.85rem;
-  }
-}
-
-.select-all-container {
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--border-color);
-  background: var(--bg-secondary);
-
-  mat-checkbox {
-    font-size: 0.875rem;
-  }
-}
-
-// Reports List - Simple Custom Layout
-.reports-list {
+.work-body,
+.rail-body {
   display: flex;
   flex-direction: column;
-  padding: 0;
-  margin: 0;
+  gap: 0.75rem;
+  padding: 0.75rem;
+}
 
-  .report-item {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.75rem 1rem;
-    cursor: pointer;
-    transition: all 0.2s;
-    border-bottom: 1px solid var(--border-color);
-    min-height: 60px;
+/* The split. Draggable, and the width it lands on is written to localStorage. */
+.split-handle {
+  grid-area: handle;
+  align-self: stretch;
+  cursor: col-resize;
+  border-radius: 999px;
+  background: transparent;
+  transition: background 0.15s ease;
+  touch-action: none;
 
-    &:hover {
-      background: var(--bg-secondary);
-    }
-
-    &.selected {
-      background: rgba(255, 107, 53, 0.1);
-      border-left: 3px solid var(--primary-orange);
-    }
-
-    &.checked {
-      background: rgba(255, 107, 53, 0.05);
-    }
-
-    .report-checkbox {
-      flex-shrink: 0;
-    }
-
-    .report-content {
-      flex: 1;
-      min-width: 0;
-      display: flex;
-      flex-direction: column;
-      gap: 0.25rem;
-    }
-
-    .report-title {
-      font-weight: 500;
-      color: var(--text-primary);
-      font-size: 0.875rem;
-      line-height: 1.3;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-      word-break: break-word;
-    }
-
-    .report-meta {
-      display: flex;
-      gap: 0.5rem;
-      align-items: center;
-      font-size: 0.7rem;
-      color: var(--text-secondary);
-
-      .report-date {
-        white-space: nowrap;
-      }
-
-      .prompt-set-badge {
-        background: var(--gradient-primary);
-        color: white;
-        padding: 0.2rem 0.5rem;
-        border-radius: 10px;
-        font-size: 0.65rem;
-        font-weight: 600;
-        white-space: nowrap;
-        box-shadow: 0 1px 3px rgba(255, 107, 53, 0.3);
-      }
-    }
-
-    .delete-button {
-      color: var(--text-secondary);
-      width: 32px !important;
-      height: 32px !important;
-      min-width: 32px !important;
-      min-height: 32px !important;
-      max-width: 32px !important;
-      max-height: 32px !important;
-      padding: 0 !important;
-      margin: 0 !important;
-      flex-shrink: 0;
-      display: flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      position: relative !important;
-
-      // Override Material button internals to center the ripple
-      ::ng-deep {
-        .mat-mdc-button-persistent-ripple {
-          border-radius: 50% !important;
-          background: rgba(255, 255, 255, 0.1) !important;
-        }
-
-        .mat-mdc-button-touch-target {
-          position: absolute !important;
-          top: 50% !important;
-          left: 50% !important;
-          transform: translate(-50%, -50%) !important;
-          width: 100% !important;
-          height: 100% !important;
-        }
-
-        .mdc-icon-button__ripple {
-          border-radius: 50% !important;
-        }
-      }
-
-      mat-icon {
-        font-size: 1.125rem !important;
-        width: 1.125rem !important;
-        height: 1.125rem !important;
-        line-height: 1.125rem !important;
-        display: flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        margin: 0 !important;
-        padding: 0 !important;
-        position: relative !important;
-        z-index: 1 !important;
-      }
-
-      &:hover {
-        color: var(--error-color) !important;
-        background: rgba(255, 82, 82, 0.2) !important;
-      }
-    }
+  &:hover,
+  &.dragging {
+    background: var(--primary-orange);
   }
 }
 
-// Loading and Empty States
-.loading-container, .empty-state, .empty-viewer, .empty-report {
+/* ─────────────────────────────── ① the report list ─────────────────────────────── */
+
+.list-search {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 3rem 1rem;
-  color: var(--text-secondary);
-  text-align: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-primary);
+
+  &:focus-within {
+    border-color: var(--primary-orange);
+    box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.2);
+  }
 
   mat-icon {
-    font-size: 3rem;
-    width: 3rem;
-    height: 3rem;
-    margin-bottom: 1rem;
-    opacity: 0.5;
-  }
-
-  p {
-    margin: 0.5rem 0;
+    flex-shrink: 0;
     font-size: 1rem;
+    width: 1rem;
+    height: 1rem;
+    color: var(--text-muted);
+  }
+}
+
+.list-search-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 0.8125rem;
+  padding: 0.25rem 0;
+
+  &::-webkit-search-cancel-button { display: none; }
+}
+
+.list-search-clear {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.75rem;
+  line-height: 1;
+  padding: 0.125rem 0.25rem;
+
+  &:hover { color: var(--primary-orange); }
+}
+
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.filter-chip {
+  padding: 0.125rem 0.5rem;
+  font-family: inherit;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+
+  &:hover {
+    border-color: var(--primary-orange);
+    color: var(--primary-orange);
   }
 
-  small {
-    font-size: 0.875rem;
+  &.on {
+    color: var(--primary-orange);
+    border-color: var(--primary-orange);
+    background: rgba(255, 107, 53, 0.14);
+  }
+
+  /* The unrouted state is the majority one, and it is a state — not a missing value. */
+  &.unrouted { border-style: dashed; }
+
+  /* The failed runs: 11 of 111 on this install, and indistinguishable until now. */
+  &.danger.on {
+    color: var(--danger-text);
+    border-color: var(--danger-text);
+    background: color-mix(in srgb, var(--danger-text) 14%, transparent);
+  }
+
+  .filter-count {
+    font-variant-numeric: tabular-nums;
     opacity: 0.7;
   }
 }
 
-// Report Viewer Panel
-.report-viewer-panel {
-  .panel-content {
-    padding: 0;
-  }
+.select-all-container {
+  mat-checkbox { font-size: 0.8125rem; }
 }
 
-.viewer-content {
-  height: 100%;
-}
-
-.metadata-content {
-  padding: 1.5rem;
+.reports-list {
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
 }
 
-// Metadata Sections - Creamsicle Style
-.metadata-section {
-  background: var(--bg-secondary);
-  border-radius: 12px;
-  border: 1px solid var(--border-color);
-  overflow: hidden;
-  transition: all 0.3s ease;
+.report-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  border-bottom: 1px solid var(--border-color);
+  border-left: 3px solid transparent;
 
-  &:hover {
-    border-color: rgba(255, 107, 53, 0.3);
-    box-shadow: var(--shadow-md);
+  &:hover { background: var(--bg-secondary); }
+
+  &.selected {
+    background: rgba(255, 107, 53, 0.1);
+    border-left-color: var(--primary-orange);
   }
 
-  .section-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    padding: 1rem 1.25rem;
-    background: var(--bg-tertiary);
-    border-bottom: 1px solid var(--border-color);
-    margin-bottom: 0;
+  &.checked { background: rgba(255, 107, 53, 0.05); }
 
-    .section-title-row {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
+  /* An older run of a source, shown because its group is open. Indented so it reads as
+     belonging to the row above rather than competing with it. */
+  &.is-rerun {
+    padding-left: 1.75rem;
+    background: var(--bg-secondary);
 
-    mat-icon {
-      color: var(--primary-orange);
-      font-size: 1.25rem;
-      width: 1.25rem;
-      height: 1.25rem;
-    }
-
-    h3 {
-      margin: 0;
-      font-size: 1rem;
-      font-weight: 600;
-      color: var(--text-primary);
-    }
-
-    .count-badge {
-      background: var(--primary-orange);
-      color: white;
-      padding: 2px 8px;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 600;
-      min-width: 20px;
-      text-align: center;
-    }
-
-    .char-count {
-      font-size: 0.75rem;
-      color: var(--text-tertiary);
-      font-weight: 500;
-    }
+    .report-title { color: var(--text-secondary); }
   }
 
-  // Copy button - creamsicle style
-  .copy-btn {
-    padding: 0.375rem 0.75rem;
-    background: transparent;
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    color: var(--text-secondary);
-    font-size: 0.75rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s ease;
+  .report-checkbox { flex-shrink: 0; }
 
-    &:hover {
-      background: rgba(255, 107, 53, 0.1);
-      border-color: var(--primary-orange);
-      color: var(--primary-orange);
-    }
-
-    &.copied {
-      background: rgba(255, 107, 53, 0.15);
-      border-color: var(--primary-orange);
-      color: var(--primary-orange);
-    }
-  }
-
-  .list-container {
+  .report-content {
+    flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
-    padding: 1rem;
+    gap: 0.125rem;
   }
 
-  // Title/list items - card style with numbered badge (creamsicle style)
-  .list-item {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    padding: 1rem;
-    background: var(--bg-card);
-    border-radius: 12px;
-    border: 1px solid var(--border-color);
-    transition: all 0.2s ease;
-    cursor: pointer;
-
-    &:hover {
-      border-color: var(--primary-orange);
-
-      .copy-hint {
-        opacity: 1;
-      }
-    }
-
-    &.copied {
-      border-color: var(--primary-orange);
-      background: rgba(255, 107, 53, 0.08);
-
-      .copy-hint {
-        opacity: 1;
-        color: var(--primary-orange);
-        font-weight: 600;
-      }
-    }
-
-    .item-number {
-      width: 28px;
-      height: 28px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: var(--primary-orange);
-      color: white;
-      border-radius: 50%;
-      font-size: 0.875rem;
-      font-weight: 700;
-      flex-shrink: 0;
-    }
-
-    .list-item-text {
-      flex: 1;
-      font-size: 0.9375rem;
-      color: var(--text-primary);
-      line-height: 1.5;
-      word-break: break-word;
-    }
-
-    .copy-hint {
-      opacity: 0;
-      font-size: 1rem;
-      transition: opacity 0.2s ease;
-      color: var(--text-secondary);
-    }
-  }
-
-  // Description box - creamsicle style
-  .description-box {
-    padding: 1rem;
-  }
-
-  .description-card {
-    background: var(--bg-card);
-    border-radius: 12px;
-    padding: 1rem;
-    border: 1px solid var(--border-color);
-    transition: border-color 0.2s ease;
-
-    &:focus-within {
-      border-color: var(--primary-orange);
-    }
-  }
-
-  .description-textarea {
-    width: 100%;
-    min-height: 300px;
-    background: transparent;
-    border: none;
+  /* Two dense lines, not a three-line card. */
+  .report-title {
+    font-weight: 500;
     color: var(--text-primary);
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-    font-size: 0.9375rem;
-    line-height: 1.7;
-    resize: vertical;
-    outline: none;
-    padding: 0;
-
-    /* Editable state has to LOOK editable — the readonly view is the same element. */
-    &:not([readonly]) {
-      padding: 0.5rem 0.625rem;
-      background: var(--bg-primary);
-      border: 1px solid var(--primary-orange);
-      border-radius: 6px;
-
-      &:focus {
-        box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.25);
-      }
-    }
+    font-size: 0.8125rem;
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  // Tags - creamsicle style (simpler hover)
-  .tags-container {
+  .report-meta {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    padding: 1rem;
-  }
+    gap: 0.375rem;
+    align-items: center;
+    font-size: 0.6875rem;
+    color: var(--text-secondary);
+    min-width: 0;
 
-  .tag-chip {
-    background: var(--bg-card) !important;
-    color: var(--text-primary) !important;
-    border: 1px solid var(--border-color) !important;
-    font-size: 0.875rem !important;
-    padding: 0.5rem 1rem !important;
-    height: auto !important;
-    transition: all 0.2s ease !important;
-    border-radius: 999px !important;
-    cursor: pointer !important;
+    .report-date { white-space: nowrap; }
 
-    // Pierce Material's encapsulation to set text color
-    ::ng-deep {
-      .mdc-evolution-chip__text-label,
-      .mat-mdc-chip-action-label {
-        color: var(--text-primary) !important;
-      }
-    }
-
-    &:hover {
-      border-color: var(--primary-orange) !important;
-      color: var(--primary-orange) !important;
-      background: rgba(255, 107, 53, 0.08) !important;
-
-      ::ng-deep {
-        .mdc-evolution-chip__text-label,
-        .mat-mdc-chip-action-label {
-          color: var(--primary-orange) !important;
-        }
-      }
-    }
-
-    &.copied {
-      border-color: var(--primary-orange) !important;
-      color: var(--primary-orange) !important;
-      background: rgba(255, 107, 53, 0.15) !important;
-
-      ::ng-deep {
-        .mdc-evolution-chip__text-label,
-        .mat-mdc-chip-action-label {
-          color: var(--primary-orange) !important;
-        }
-      }
+    .prompt-set-badge {
+      background: rgba(255, 107, 53, 0.14);
+      color: var(--primary-orange);
+      border: 1px solid rgba(255, 107, 53, 0.35);
+      padding: 0 0.3125rem;
+      border-radius: 999px;
+      font-size: 0.625rem;
+      font-weight: 600;
+      white-space: nowrap;
     }
   }
 
-  // Chapters list - creamsicle style
-  .chapters-list {
-    padding: 1rem;
-  }
-
-  // Stands in for the list when the run recorded why there is none.
-  .chapters-missing {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.75rem;
-    margin: 1rem;
-    padding: 1rem;
-    background: var(--bg-card);
-    border: 1px solid var(--border-color);
-    border-radius: 12px;
+  .delete-button {
+    color: var(--text-secondary);
+    width: 28px !important;
+    height: 28px !important;
+    min-width: 28px !important;
+    min-height: 28px !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    flex-shrink: 0;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    opacity: 0;
+    transition: opacity 0.15s ease;
 
     mat-icon {
-      flex-shrink: 0;
-      color: var(--text-secondary);
-    }
-
-    &.failed mat-icon {
-      color: var(--danger-text, #d32f2f);
-    }
-
-    .chapters-missing-headline {
-      font-size: 0.9375rem;
-      font-weight: 600;
-      color: var(--text-primary);
-    }
-
-    .chapters-missing-reason {
-      margin-top: 0.25rem;
-      font-size: 0.875rem;
-      color: var(--text-secondary);
-      line-height: 1.4;
-    }
-  }
-
-  .chapter-item {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    padding: 1rem;
-    background: var(--bg-card);
-    border-radius: 12px;
-    border: 1px solid var(--border-color);
-    transition: all 0.2s ease;
-    cursor: pointer;
-    margin-bottom: 0.5rem;
-
-    &:last-child {
-      margin-bottom: 0;
+      font-size: 1rem !important;
+      width: 1rem !important;
+      height: 1rem !important;
+      line-height: 1rem !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
     }
 
     &:hover {
-      border-color: var(--primary-orange);
+      color: var(--danger-text) !important;
+      background: color-mix(in srgb, var(--danger-text) 14%, transparent) !important;
+    }
+  }
 
-      .copy-hint {
-        opacity: 1;
-      }
+  &:hover .delete-button,
+  &.selected .delete-button { opacity: 1; }
+}
+
+/* A run state that is a landmine if unstated: no titles at all, or a publish record the
+   index could not read. Words rather than a dot, because they are exceptions. */
+.row-flag {
+  padding: 0 0.3125rem;
+  border-radius: 999px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  white-space: nowrap;
+
+  &.danger {
+    color: var(--danger-text);
+    background: color-mix(in srgb, var(--danger-text) 14%, transparent);
+  }
+
+  &.warn {
+    color: var(--warning-text);
+    background: color-mix(in srgb, var(--warning-text) 14%, transparent);
+  }
+}
+
+/* The same five facts as the readiness strip, as ≤5 dots. Only what IS recorded gets a
+   dot — an untouched row shows none, which is the honest reading. */
+.row-dots {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.row-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: block;
+
+  &.dot-channel { background: var(--primary-orange); }
+  &.dot-schedule { background: var(--info-text); }
+  &.dot-ab { background: var(--success-text); }
+  &.dot-thumbnail { background: var(--text-secondary); }
+  &.dot-podcast { background: var(--warning-text); }
+}
+
+.run-toggle {
+  flex-shrink: 0;
+  padding: 0.0625rem 0.375rem;
+  font-family: inherit;
+  font-size: 0.625rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+
+  &:hover {
+    color: var(--primary-orange);
+    border-color: var(--primary-orange);
+  }
+}
+
+/* ─────────────────────────────── ② the decide column ─────────────────────────────── */
+
+/* One line under the report's title: five facts and the push that depends on them. */
+.readiness-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.ready-chip {
+  padding: 0.125rem 0.5rem;
+  font-family: inherit;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.5;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: all 0.15s ease;
+
+  /* Hollow = nothing recorded. Never a plausible-looking value in place of an answer. */
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px dashed var(--border-color);
+
+  &:hover { border-color: var(--primary-orange); color: var(--primary-orange); }
+
+  &.set {
+    color: var(--primary-orange);
+    background: rgba(255, 107, 53, 0.12);
+    border: 1px solid rgba(255, 107, 53, 0.45);
+  }
+
+  /* Recorded but suspect: a past schedule, an offset disagreement, a thumbnail warning,
+     a channel that is only suggested. */
+  &.warn {
+    color: var(--warning-text);
+    background: color-mix(in srgb, var(--warning-text) 14%, transparent);
+    border: 1px solid var(--warning-text);
+  }
+
+  &.push {
+    margin-left: auto;
+    border-style: solid;
+
+    &:not(:disabled) {
+      color: var(--success-text);
+      border-color: var(--success-text);
+      background: color-mix(in srgb, var(--success-text) 14%, transparent);
     }
 
-    &.copied {
-      border-color: var(--primary-orange);
-      background: rgba(255, 107, 53, 0.08);
-
-      .copy-hint {
-        opacity: 1;
-        color: var(--primary-orange);
-        font-weight: 600;
-      }
+    &:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
     }
+  }
+}
 
-    .chapter-time {
-      font-family: 'SF Mono', Monaco, monospace;
-      font-size: 0.9375rem;
-      font-weight: 700;
+/* One line between the report title and the fields it is about. Deliberately not a card:
+   it is a caption, not a field. */
+.provenance-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.375rem;
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+
+  mat-icon {
+    font-size: 1rem;
+    width: 1rem;
+    height: 1rem;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+
+  /* Words from the editor story are the departure from what the video says, so that is
+     the one that gets the accent. */
+  &.linked { color: var(--primary-orange); }
+}
+
+/* One banner for every publish action. It lives in the pane's fixed head, so a refusal
+   cannot scroll out of view. Click to dismiss. */
+.ab-error {
+  padding: 0.5rem 0.625rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger-text) 14%, transparent);
+  border: 1px solid var(--danger-text);
+  color: var(--danger-text);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  /* Two independent failures in one load are two lines. The messages from the main
+     process are written to be read, so they are shown whole rather than truncated. */
+  white-space: pre-line;
+}
+
+/* ─────────────────────────────── cards ─────────────────────────────── */
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-large, 12px);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+  flex-wrap: wrap;
+
+  mat-icon {
+    color: var(--primary-orange);
+    font-size: 1.125rem;
+    width: 1.125rem;
+    height: 1.125rem;
+    flex-shrink: 0;
+  }
+
+  h3 {
+    margin: 0;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+}
+
+.card-head-spacer { flex: 1; }
+
+.count-badge {
+  background: rgba(255, 107, 53, 0.14);
+  color: var(--primary-orange);
+  border: 1px solid rgba(255, 107, 53, 0.4);
+  padding: 0 0.375rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.char-count {
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  font-weight: 500;
+
+  /* Past YouTube's description limit — said before the paste, not after. */
+  &.over {
+    color: var(--danger-text);
+    font-weight: 700;
+  }
+}
+
+.copy-btn {
+  padding: 0.1875rem 0.5rem;
+  font-family: inherit;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+
+  &:hover {
+    background: rgba(255, 107, 53, 0.1);
+    border-color: var(--primary-orange);
+    color: var(--primary-orange);
+  }
+
+  &.copied {
+    background: rgba(255, 107, 53, 0.15);
+    border-color: var(--primary-orange);
+    color: var(--primary-orange);
+  }
+}
+
+/* ─────────────────────────── titles: slate + list ─────────────────────────── */
+
+/* The three slots, always rendered. A VIEW of publish.chosenTitles() in the store's own
+   order — which is click order, which is variant order. Slot 1 is annotated because it is
+   a different kind of choice: it becomes the video's title and is what YouTube keeps when
+   a test comes back inconclusive. */
+.ab-slate {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.slate-slot {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 30px;
+  padding: 0.1875rem 0.5rem;
+  border-radius: 8px;
+  border: 1px dashed var(--border-color);
+  background: transparent;
+  cursor: default;
+
+  &.filled {
+    border-style: solid;
+    border-color: rgba(255, 107, 53, 0.45);
+    background: rgba(255, 107, 53, 0.08);
+    cursor: pointer;
+
+    &:hover { border-color: var(--primary-orange); }
+  }
+
+  /* An inline-edited variant. It is a real variant and it is NOT one of the generated
+     rows below, because the report file is never rewritten — so there is nothing to
+     scroll to, and the slot says so instead of pretending. */
+  &.orphan { cursor: default; }
+}
+
+.slate-number {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--primary-orange);
+  color: white;
+  font-size: 0.6875rem;
+  font-weight: 800;
+}
+
+.slate-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.slate-empty {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.75rem;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.slate-chars {
+  flex-shrink: 0;
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+
+  &.over {
+    color: var(--danger-text);
+    font-weight: 700;
+  }
+}
+
+.slate-note {
+  flex-shrink: 0;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  white-space: nowrap;
+
+  &.orphan-note {
+    color: var(--primary-orange);
+    text-transform: uppercase;
+  }
+}
+
+.ab-hint {
+  margin: 0;
+  padding: 0.5rem 0.75rem 0;
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: var(--text-secondary);
+
+  .ab-keys {
+    display: block;
+    margin-top: 0.125rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.list-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0.75rem 0.75rem;
+}
+
+/* The titles list gets its own capped viewport, which is what stops a ten-title report
+   from pushing the description off the screen. */
+.titles-scroll {
+  max-height: 44vh;
+  overflow-y: auto;
+  outline: none;
+
+  &:focus-visible {
+    box-shadow: inset 0 0 0 2px rgba(255, 107, 53, 0.35);
+    border-radius: 8px;
+  }
+}
+
+/* 36px rows, single line. The variant badge keeps its cell so nothing shifts between
+   chosen and unchosen, and the row actions fade in on hover — twenty always-lit glyphs
+   is what made this list feel noisy. */
+.list-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 36px;
+  padding: 0.25rem 0.5rem;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  transition: border-color 0.15s ease, background 0.15s ease;
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--primary-orange);
+
+    .copy-hint { opacity: 1; }
+    .row-action { opacity: 1; }
+  }
+
+  &.copied {
+    border-color: var(--primary-orange);
+    background: rgba(255, 107, 53, 0.08);
+
+    .copy-hint {
+      opacity: 1;
       color: var(--primary-orange);
-      min-width: 60px;
-      flex-shrink: 0;
-    }
-
-    .chapter-title {
-      flex: 1;
-      font-size: 0.9375rem;
-      color: var(--text-primary);
-      line-height: 1.4;
-    }
-
-    .copy-hint {
-      opacity: 0;
-      font-size: 1rem;
-      transition: opacity 0.2s ease;
-      color: var(--text-secondary);
+      font-weight: 600;
     }
   }
 
-  // Thumbnail text - creamsicle style
-  .thumbnail-list {
-    padding: 1rem;
-  }
-
-  .thumbnail-item {
+  .item-number,
+  .ab-variant-badge {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
     display: flex;
     align-items: center;
-    gap: 1rem;
-    padding: 1rem;
-    background: var(--bg-card);
-    border-radius: 12px;
-    border: 1px solid var(--border-color);
-    transition: all 0.2s ease;
-    cursor: pointer;
-    margin-bottom: 0.5rem;
+    justify-content: center;
+    border-radius: 50%;
+    font-weight: 700;
+  }
 
-    &:last-child {
-      margin-bottom: 0;
-    }
+  .item-number {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 0.6875rem;
+  }
 
-    &:hover {
-      border-color: var(--primary-orange);
+  .list-item-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.8125rem;
+    color: var(--text-primary);
+    line-height: 1.35;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
-      .copy-hint {
-        opacity: 1;
-      }
-    }
+  .copy-hint {
+    opacity: 0;
+    font-size: 0.875rem;
+    transition: opacity 0.15s ease;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+  }
+}
 
-    &.copied {
-      border-color: var(--primary-orange);
-      background: rgba(255, 107, 53, 0.08);
+/* Pinned comments and clip suggestions are prose, not one-liners — they wrap. */
+.assets-card .list-item {
+  align-items: flex-start;
 
-      .copy-hint {
-        opacity: 1;
-        color: var(--primary-orange);
-        font-weight: 600;
-      }
-    }
-
-    .thumbnail-text {
-      flex: 1;
-      font-size: 1.125rem;
-      font-weight: 700;
-      color: var(--text-primary);
-      text-transform: uppercase;
-      letter-spacing: 0.02em;
-    }
-
-    .copy-hint {
-      opacity: 0;
-      font-size: 1rem;
-      transition: opacity 0.2s ease;
-      color: var(--text-secondary);
-    }
+  .list-item-text {
+    white-space: normal;
+    overflow: visible;
+    word-break: break-word;
   }
 }
 
@@ -764,36 +845,12 @@
    comes back inconclusive, so the number is the important affordance here. */
 
 .ab-progress {
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   font-weight: 600;
   color: var(--text-secondary);
   white-space: nowrap;
 
-  &.complete {
-    color: var(--primary-orange);
-  }
-}
-
-.ab-hint {
-  margin: 0;
-  padding: 0.75rem 1.25rem 0;
-  font-size: 0.75rem;
-  line-height: 1.4;
-  color: var(--text-secondary);
-}
-
-.ab-error {
-  margin: 0.75rem 1.25rem 0;
-  padding: 0.5rem 0.75rem;
-  border-radius: 8px;
-  background: rgba(229, 57, 53, 0.12);
-  border: 1px solid rgba(229, 57, 53, 0.4);
-  color: #ff8a80;
-  font-size: 0.8125rem;
-  cursor: pointer;
-  /* Two independent failures in one load are two lines. The messages from the main
-     process are written to be read, so they are shown whole rather than truncated. */
-  white-space: pre-line;
+  &.complete { color: var(--primary-orange); }
 }
 
 .list-item.ab-selectable {
@@ -809,26 +866,23 @@
   &.ab-blocked {
     opacity: 0.45;
 
-    &:hover {
-      border-color: var(--border-color);
-    }
+    &:hover { border-color: var(--border-color); }
+  }
+
+  /* Where the keyboard is. Additive: the pointer never puts a row in this state. */
+  &.kb-focus {
+    box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.45);
+
+    .row-action { opacity: 1; }
   }
 }
 
-/* The big variant number. Replaces the plain index once a title is picked. */
+/* The variant number. Replaces the plain index once a title is picked. */
 .ab-variant-badge {
-  width: 38px;
-  height: 38px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   background: var(--primary-orange);
   color: white;
-  border-radius: 50%;
-  font-size: 1.25rem;
-  font-weight: 800;
-  flex-shrink: 0;
-  box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.25);
+  font-size: 0.75rem;
+  box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.25);
 }
 
 /* Row buttons: edit and copy, side by side at the end of every title row, and the same
@@ -837,35 +891,36 @@
    back down to what you want is fewer controls for the same result. */
 .row-action {
   flex-shrink: 0;
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 0;
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1;
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  opacity: 0;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
 
   &:hover {
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(255, 107, 53, 0.1);
     border-color: var(--border-color);
     color: var(--text-primary);
   }
 
-  &.save:hover {
-    border-color: #7ddc7d;
-    color: #7ddc7d;
+  &.save {
+    opacity: 1;
+    &:hover { border-color: var(--success-text); color: var(--success-text); }
   }
 
-  &.cancel:hover {
-    border-color: #ff8a80;
-    color: #ff8a80;
+  &.cancel {
+    opacity: 1;
+    &:hover { border-color: var(--danger-text); color: var(--danger-text); }
   }
 }
 
@@ -878,14 +933,13 @@
 .list-item.ab-editing {
   border-color: var(--primary-orange);
   background: rgba(255, 107, 53, 0.10);
-  gap: 0.5rem;
 }
 
 .ab-title-input {
   flex: 1;
   min-width: 0;
-  padding: 0.5rem 0.625rem;
-  font-size: 0.9375rem;
+  padding: 0.25rem 0.375rem;
+  font-size: 0.8125rem;
   font-family: inherit;
   color: var(--text-primary);
   background: var(--bg-primary);
@@ -900,13 +954,13 @@
 
 .ab-charcount {
   flex-shrink: 0;
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
 
   /* Over YouTube's hard limit — the save will be refused, so say so before the click. */
   &.over {
-    color: #ff8a80;
+    color: var(--danger-text);
     font-weight: 700;
   }
 }
@@ -914,16 +968,16 @@
 /* Shown while the composed description/tags are being read from the main process. An empty
    textarea would read as "this item has no description", which is a different claim. */
 .resolving {
-  padding: 0.75rem 1.25rem;
-  font-size: 0.875rem;
+  padding: 0.75rem;
+  font-size: 0.8125rem;
   font-style: italic;
   color: var(--text-secondary);
 }
 
 .edited-badge {
-  padding: 0.0625rem 0.375rem;
+  padding: 0 0.375rem;
   border-radius: 10px;
-  font-size: 0.6875rem;
+  font-size: 0.625rem;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -932,12 +986,107 @@
   border: 1px solid rgba(255, 107, 53, 0.4);
 }
 
-.tags-textarea {
+/* ─────────────────────────── description and tags ─────────────────────────── */
+
+.description-box { padding: 0.625rem 0.75rem; }
+
+.description-card {
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--border-color);
+
+  &:focus-within { border-color: var(--primary-orange); }
+}
+
+/* A capped viewport with its own scrollbar, not a 300px block that pushes everything
+   below it off the page. */
+.description-textarea {
+  display: block;
   width: 100%;
-  min-height: 90px;
-  margin: 0 1.25rem 1rem;
+  height: 14.5rem;
+  overflow-y: auto;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+  padding: 0;
+
+  /* Editable state has to LOOK editable — the readonly view is the same element. */
+  &:not([readonly]) {
+    padding: 0.375rem 0.5rem;
+    background: var(--bg-primary);
+    border: 1px solid var(--primary-orange);
+    border-radius: 6px;
+
+    &:focus { box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.25); }
+  }
+}
+
+.tags-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
   padding: 0.625rem 0.75rem;
-  font-size: 0.875rem;
+
+  /* Two rows, then a Show all. The chips stay individually click-to-copy either way. */
+  &.clamped {
+    max-height: 4.25rem;
+    overflow: hidden;
+  }
+}
+
+.tag-chip {
+  background: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border-color) !important;
+  font-size: 0.75rem !important;
+  padding: 0.1875rem 0.5rem !important;
+  min-height: 0 !important;
+  height: auto !important;
+  border-radius: 999px !important;
+  cursor: pointer !important;
+
+  // Pierce Material's encapsulation to set text color
+  ::ng-deep {
+    .mdc-evolution-chip__text-label,
+    .mat-mdc-chip-action-label {
+      color: var(--text-primary) !important;
+      font-size: 0.75rem !important;
+    }
+  }
+
+  &:hover {
+    border-color: var(--primary-orange) !important;
+    background: rgba(255, 107, 53, 0.08) !important;
+
+    ::ng-deep {
+      .mdc-evolution-chip__text-label,
+      .mat-mdc-chip-action-label { color: var(--primary-orange) !important; }
+    }
+  }
+
+  &.copied {
+    border-color: var(--primary-orange) !important;
+    background: rgba(255, 107, 53, 0.15) !important;
+
+    ::ng-deep {
+      .mdc-evolution-chip__text-label,
+      .mat-mdc-chip-action-label { color: var(--primary-orange) !important; }
+    }
+  }
+}
+
+.tags-textarea {
+  width: calc(100% - 1.5rem);
+  min-height: 80px;
+  margin: 0 0.75rem 0.75rem;
+  padding: 0.5rem 0.625rem;
+  font-size: 0.8125rem;
   font-family: inherit;
   line-height: 1.5;
   resize: vertical;
@@ -952,11 +1101,180 @@
   }
 }
 
+/* ─────────────────────────── ③ the assets accordion ─────────────────────────── */
+
+/* Pure clipboard sources. Collapsed headers carry their counts, so nothing is hidden —
+   the count IS the information until the text is wanted. */
+.asset {
+  border-bottom: 1px solid var(--border-color);
+
+  &:last-child { border-bottom: none; }
+}
+
+.asset-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4375rem 0.75rem;
+  font-family: inherit;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-primary);
+
+  &:hover { background: var(--bg-secondary); }
+
+  /* The chaptersSkipped slot: expanded and non-collapsible, so there is nothing to click. */
+  &.static { cursor: default; }
+
+  mat-icon {
+    color: var(--primary-orange);
+    font-size: 1rem;
+    width: 1rem;
+    height: 1rem;
+    flex-shrink: 0;
+  }
+
+  .asset-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.8125rem;
+    font-weight: 600;
+  }
+
+  .asset-chevron {
+    flex-shrink: 0;
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+  }
+}
+
+.asset-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 0.75rem;
+}
+
+.thumbnail-list,
+.chapters-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.375rem 0.75rem 0.625rem;
+}
+
+.chapter-item,
+.thumbnail-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3125rem 0.5rem;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  transition: border-color 0.15s ease, background 0.15s ease;
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--primary-orange);
+    .copy-hint { opacity: 1; }
+  }
+
+  &.copied {
+    border-color: var(--primary-orange);
+    background: rgba(255, 107, 53, 0.08);
+
+    .copy-hint {
+      opacity: 1;
+      color: var(--primary-orange);
+      font-weight: 600;
+    }
+  }
+
+  .copy-hint {
+    opacity: 0;
+    font-size: 0.875rem;
+    transition: opacity 0.15s ease;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+  }
+}
+
+.chapter-item {
+  .chapter-time {
+    font-family: 'SF Mono', Monaco, monospace;
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--primary-orange);
+    min-width: 48px;
+    flex-shrink: 0;
+  }
+
+  .chapter-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.8125rem;
+    color: var(--text-primary);
+    line-height: 1.35;
+    word-break: break-word;
+  }
+}
+
+.thumbnail-item {
+  .thumbnail-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.875rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    word-break: break-word;
+  }
+}
+
+/* Stands in for the list when the run recorded why there is none. */
+.chapters-missing {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0 0.75rem 0.625rem;
+  padding: 0.625rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+
+  mat-icon {
+    flex-shrink: 0;
+    font-size: 1.125rem;
+    width: 1.125rem;
+    height: 1.125rem;
+    color: var(--text-secondary);
+  }
+
+  &.failed mat-icon { color: var(--danger-text); }
+
+  .chapters-missing-headline {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .chapters-missing-reason {
+    margin-top: 0.125rem;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+  }
+}
 
 /* ==================== Publish panel ====================
-   The Phase-1 publish record: channel, schedule, thumbnail, podcast flag. It sits above
-   Titles and wears the same .metadata-section chrome as every other section, so only the
-   controls inside it are new. Nothing here publishes anything — it records intent.
+   The Phase-1 publish record: channel, schedule, thumbnail, podcast flag. It now lives in
+   the dispatch rail rather than above Titles — it is reference and dispatch, consulted at
+   the end, but it has to stay visible while the titles are picked, because "which channel
+   is this?" changes which titles are right. Nothing here publishes anything.
 
    Label / control rows rather than a form grid: each row is one field, and the notes
    underneath (the routing reason, the human schedule line, the thumbnail's warnings) are
@@ -964,53 +1282,55 @@
 
 .publish-section {
   .publish-saving {
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     font-weight: 600;
     color: var(--primary-orange);
   }
 
-  .publish-podcast {
-    font-size: 0.8125rem;
-    white-space: nowrap;
-  }
+  .publish-podcast { font-size: 0.75rem; }
 }
 
 .publish-body {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  padding: 1rem 1.25rem 1.25rem;
+  gap: 0.375rem;
+  padding: 0.625rem 0.75rem 0.75rem;
 }
 
+/* In a 400px rail a label gutter would leave nothing for the control, so the label sits
+   above its row and the notes hang under it flush. */
 .publish-row {
   display: flex;
-  align-items: center;
-  gap: 0.75rem;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
 }
 
 .publish-label {
-  flex: 0 0 5.5rem;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--text-secondary);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
 }
 
 .publish-control {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 0.375rem;
   min-width: 0;
+  width: 100%;
 }
 
 /* Native select and date/time inputs, dressed like .ab-title-input. Material's own
    controls are not used here for the same reason the title editor doesn't: these sit
-   inside a dense list of sections and a form field's floating label would double the
-   height of every row. */
+   inside a dense stack of rows and a form field's floating label would double the
+   height of every one. */
 .publish-select,
 .publish-input {
-  padding: 0.375rem 0.5rem;
-  font-size: 0.8125rem;
+  padding: 0.25rem 0.375rem;
+  font-size: 0.75rem;
   font-family: inherit;
   color: var(--text-primary);
   background: var(--bg-primary);
@@ -1023,19 +1343,18 @@
     box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.25);
   }
 
-  &:disabled {
-    opacity: 0.5;
-  }
+  &:disabled { opacity: 0.5; }
 }
 
 .publish-select {
-  min-width: 14rem;
+  flex: 1;
+  min-width: 0;
 }
 
 /* The offset the boxes will be composed with. Always visible: there is no zone picker in
    this release, so the zone being used has to be readable rather than assumed. */
 .publish-zone {
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
   white-space: nowrap;
@@ -1044,9 +1363,9 @@
 /* "suggested" — a channel that is pre-selected and NOT yet stored. Deliberately the same
    shape as .edited-badge: both mean "what you are looking at is not what is on disk". */
 .publish-badge {
-  padding: 0.0625rem 0.375rem;
+  padding: 0 0.375rem;
   border-radius: 10px;
-  font-size: 0.6875rem;
+  font-size: 0.625rem;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1058,56 +1377,26 @@
 /* Full-width sentences under a row: why the channel is what it is, when the schedule
    lands, what is wrong with the thumbnail. */
 .publish-note {
-  margin: 0 0 0.25rem 6.25rem;
-  font-size: 0.75rem;
+  margin: 0;
+  font-size: 0.6875rem;
   line-height: 1.45;
   color: var(--text-secondary);
 
-  &.suggestion {
-    color: var(--primary-orange);
-  }
+  &.suggestion { color: var(--primary-orange); }
 
   /* A warning is a fact about a stored value, not a refusal — the image IS attached and
      the schedule IS saved. Amber rather than the banner's red, which means refused. */
-  &.warn {
-    color: #ffb74d;
-  }
-}
-
-/* One line between the Publish panel and Titles. Deliberately NOT a .metadata-section:
-   it is a caption for the fields below it, not a field of its own. */
-.provenance-line {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.375rem;
-  margin: 0;
-  padding: 0 0.25rem;
-  font-size: 0.75rem;
-  line-height: 1.45;
-  color: var(--text-secondary);
-
-  mat-icon {
-    font-size: 1rem;
-    width: 1rem;
-    height: 1rem;
-    line-height: 1;
-  }
-
-  /* Words from the editor story are the departure from what the video says, so that is
-     the one that gets the accent. */
-  &.linked {
-    color: var(--primary-orange);
-  }
+  &.warn { color: var(--warning-text); }
 }
 
 .publish-empty {
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
   font-style: italic;
   color: var(--text-secondary);
 }
 
 .publish-thumb {
-  width: 160px;
+  width: 120px;
   height: auto;
   border-radius: 6px;
   border: 1px solid var(--border-color);
@@ -1117,47 +1406,43 @@
 .publish-thumb-facts {
   display: flex;
   flex-direction: column;
-  gap: 0.125rem;
+  gap: 0.0625rem;
   min-width: 0;
+  flex: 1;
 }
 
 .publish-filename {
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-primary);
   overflow-wrap: anywhere;
 }
 
 .publish-dim {
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
+  overflow-wrap: anywhere;
 }
 
 /* A thumbnail found on disk and OFFERED. Boxed and captioned so it can never be mistaken
    for the item's thumbnail: it is not one until Confirm is clicked, and slot numbers
    drift between export and upload often enough that the difference matters. */
 .publish-proposal {
-  margin-left: 6.25rem;
-  padding: 0.75rem;
+  padding: 0.5rem;
   border: 1px dashed var(--primary-orange);
   border-radius: 8px;
   background: rgba(255, 107, 53, 0.06);
-
-  .publish-note {
-    margin-left: 0;
-  }
-
-  .publish-control {
-    margin-top: 0.5rem;
-  }
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
 }
 
 .publish-proposal-head {
   display: flex;
   align-items: center;
   gap: 0.375rem;
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
   color: var(--primary-orange);
 
   mat-icon {
@@ -1165,14 +1450,17 @@
     width: 1rem;
     height: 1rem;
     color: var(--primary-orange);
+    flex-shrink: 0;
   }
+
+  strong { min-width: 0; }
 }
 
 /* The linked video's id, shown next to the push button. Monospaced because it is an
    identifier the operator compares against a Studio URL, character by character. */
 .publish-video {
   font-family: 'SF Mono', Menlo, monospace;
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   padding: 0.125rem 0.375rem;
   border-radius: 4px;
   background: var(--bg-tertiary);
@@ -1182,31 +1470,33 @@
 /* What a push actually did. Same box as the proposal above it, in green rather than
    orange: that one is asking, this one is reporting. Every part of the push has a line
    here — the ones that were sent and the ones that were not, with the reason. */
-.publish-receipt {
-  margin-left: 6.25rem;
-  margin-top: 0.75rem;
-  padding: 0.75rem;
+.publish-receipt,
+.publish-carry-receipt {
+  padding: 0.5rem;
   border: 1px solid var(--success-text);
   border-radius: 8px;
-  background: var(--success-bg);
+  background: color-mix(in srgb, var(--success-text) 14%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
 
-  .publish-note {
-    margin-left: 0;
-  }
+  .publish-note { color: var(--text-secondary); }
 
   .publish-proposal-head {
     color: var(--success-text);
-    gap: 0.5rem;
-    margin-bottom: 0.25rem;
+    gap: 0.375rem;
+    margin-bottom: 0.125rem;
 
-    mat-icon {
-      color: var(--success-text);
-    }
+    mat-icon { color: var(--success-text); }
 
-    .copy-btn {
-      margin-left: auto;
-    }
+    .copy-btn { margin-left: auto; }
   }
+}
+
+.publish-carry-receipt {
+  /* Applied lines are the ones the operator is looking for; the skipped ones stay in
+     the secondary colour they already have. */
+  .publish-note.applied { color: var(--text-primary); }
 }
 
 /* The regeneration offer: ONE LINE, and it only appears for an item nobody has set up
@@ -1216,9 +1506,9 @@
 .publish-carry {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.75rem;
-  padding: 0.5rem 0.75rem;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  padding: 0.5rem;
   border: 1px dashed var(--primary-orange);
   border-radius: 8px;
   background: rgba(255, 107, 53, 0.06);
@@ -1232,52 +1522,14 @@
   }
 
   .publish-carry-text {
-    flex: 1;
+    flex: 1 1 100%;
     margin: 0;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     line-height: 1.45;
     color: var(--text-primary);
   }
 
-  .copy-btn {
-    flex: none;
-  }
-}
-
-/* What the carry actually did. Same green reporting box as the push receipt, and for the
-   same reason: all four fields are accounted for here, including the ones that were
-   refused — a carry that brought three of four is a result to read, not a success to
-   wave through. */
-.publish-carry-receipt {
-  margin-bottom: 0.75rem;
-  padding: 0.75rem;
-  border: 1px solid var(--success-text);
-  border-radius: 8px;
-  background: var(--success-bg);
-
-  .publish-note {
-    margin-left: 0;
-
-    /* Applied lines are the ones the operator is looking for; the skipped ones stay in
-       the secondary colour they already have. */
-    &.applied {
-      color: var(--text-primary);
-    }
-  }
-
-  .publish-proposal-head {
-    color: var(--success-text);
-    gap: 0.5rem;
-    margin-bottom: 0.25rem;
-
-    mat-icon {
-      color: var(--success-text);
-    }
-
-    .copy-btn {
-      margin-left: auto;
-    }
-  }
+  .copy-btn { flex: none; }
 }
 
 /* Disabled actions inside the panel: Set with an empty box, Confirm before the offered
@@ -1307,36 +1559,95 @@
    a YouTube video, everything inside it is about a podcast episode. It appears only for an
    item marked as a podcast. */
 .publish-spreaker {
-  margin-top: 1rem;
-  padding: 0.75rem;
+  margin-top: 0.5rem;
+  padding: 0.5rem;
   border: 1px solid var(--border-color);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
 
   .publish-proposal-head {
     color: var(--text-primary);
-    margin-bottom: 0.5rem;
 
-    mat-icon {
-      color: var(--text-primary);
-    }
-  }
-
-  /* Inside the box there is no 6.25rem label gutter to hang off, so the children that
-     assume one outside it are pulled back flush. */
-  .publish-note,
-  .publish-proposal,
-  .publish-receipt {
-    margin-left: 0;
-  }
-
-  .publish-row {
-    margin-top: 0.5rem;
+    mat-icon { color: var(--text-primary); }
   }
 
   code {
     font-family: 'SF Mono', Menlo, monospace;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     word-break: break-all;
   }
+}
+
+/* ─────────────────────────── loading and empty states ─────────────────────────── */
+
+.loading-container, .empty-state, .empty-viewer, .empty-report {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem 1rem;
+  color: var(--text-secondary);
+  text-align: center;
+
+  mat-icon {
+    font-size: 2.5rem;
+    width: 2.5rem;
+    height: 2.5rem;
+    margin-bottom: 0.75rem;
+    opacity: 0.5;
+  }
+
+  p {
+    margin: 0.375rem 0;
+    font-size: 0.9375rem;
+  }
+
+  small {
+    font-size: 0.8125rem;
+    opacity: 0.7;
+  }
+}
+
+/* ─────────────────────────── how it degrades ───────────────────────────
+   The three columns want ~1290px of pane, and the sidenav takes 250. Above roughly a
+   1600px window everything is at its designed width. Below that the rail narrows before
+   it moves, and below ~1360px it stops being a column and becomes a band under the work
+   column — still its own scroll pane, so the page still never scrolls. */
+
+@media (max-width: 1500px) {
+  .page-content {
+    grid-template-columns: var(--left-w, 280px) 8px minmax(420px, 1fr) 340px;
+  }
+}
+
+@media (max-width: 1360px) {
+  .page-content {
+    grid-template-columns: var(--left-w, 280px) 8px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 320px);
+    grid-template-areas:
+      'list handle work'
+      'list handle rail';
+  }
+
+  .page-content.no-item {
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: 'list handle work';
+  }
+
+  /* Two columns of rail content, because the band is wide and short. */
+  .rail-body {
+    flex-direction: row;
+    align-items: flex-start;
+
+    > .card {
+      flex: 1 1 0;
+      min-width: 0;
+    }
+  }
+
+  .titles-scroll { max-height: 32vh; }
+  .description-textarea { height: 10rem; }
 }

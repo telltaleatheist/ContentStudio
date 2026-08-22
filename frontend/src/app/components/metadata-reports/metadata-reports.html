@@ -1,23 +1,28 @@
-<!-- Metadata Reports Viewer -->
+<!-- Metadata Reports — three panes: list | decide | dispatch (PHASE-4-DESIGN §1.2).
+     The page itself never scrolls. Each pane scrolls on its own, and inside the decide
+     column the titles list and the description each have their own capped viewport, so a
+     30-chapter report and a 5-chapter one are the same height. -->
 <div class="reports-container">
-  <div class="page-content">
+  <div class="page-content"
+       [class.no-item]="!selectedReport()"
+       [style.--left-w.px]="leftWidth()">
 
-    <!-- File Browser (Left Panel) -->
-    <div class="panel file-browser-panel">
-      <div class="panel-header">
-        <div>
-          <h4 class="panel-title">📝 Metadata Reports</h4>
-          <p class="panel-subtitle">
-            {{ reports().length }} report{{ reports().length !== 1 ? 's' : '' }} found
-            @if (hasSelectedReports()) {
-              <span class="selected-count"> • {{ getSelectedReports().length }} selected</span>
-            }
-          </p>
-        </div>
-        <div class="header-actions">
+    <!-- ═══════════════════════════════ ① LIST ═══════════════════════════════ -->
+    <section class="pane list-pane">
+      <div class="pane-head">
+        <div class="pane-head-line">
+          <mat-icon class="pane-icon">description</mat-icon>
+          <h2 class="pane-heading">Reports</h2>
+          <span class="pane-count"
+                [title]="reports().length + ' report(s) indexed'">
+            {{ visibleReports().length }}<span class="pane-count-of">/{{ reports().length }}</span>
+          </span>
           @if (hasSelectedReports()) {
-            <button mat-raised-button color="primary" (click)="exportSelectedAsTxt()" title="Export selected as TXT">
-              <mat-icon>download</mat-icon>
+            <span class="selected-count">{{ getSelectedReports().length }} selected</span>
+          }
+          <span class="pane-head-spacer"></span>
+          @if (hasSelectedReports()) {
+            <button class="copy-btn" (click)="exportSelectedAsTxt()" title="Export selected as TXT">
               Export
             </button>
           }
@@ -30,9 +35,63 @@
             <mat-icon>refresh</mat-icon>
           </button>
         </div>
+
+        <!-- Search. With 111 rows this is the affordance that matters most (§1.7). -->
+        <div class="list-search">
+          <mat-icon>search</mat-icon>
+          <input #searchBox
+                 type="search"
+                 class="list-search-input"
+                 placeholder="Search titles and sources (⌘F)"
+                 [value]="searchQuery()"
+                 (input)="searchQuery.set($any($event.target).value)" />
+          @if (searchQuery()) {
+            <button class="list-search-clear" (click)="searchQuery.set('')" title="Clear search">✕</button>
+          }
+        </div>
+
+        <!-- Filter chips: channel (including the unrouted state, which is the majority
+             one) and run state. Counts come from the index, never from a guess. -->
+        @if (channelFilterChips().length > 0) {
+          <div class="filter-row">
+            <button class="filter-chip" [class.on]="channelFilter() === ''"
+                    (click)="channelFilter.set('')">All channels</button>
+            @for (chip of channelFilterChips(); track chip.value) {
+              <button class="filter-chip"
+                      [class.on]="channelFilter() === chip.value"
+                      [class.unrouted]="chip.value === 'unrouted'"
+                      (click)="channelFilter.set(chip.value)">
+                {{ chip.label }} <span class="filter-count">{{ chip.count }}</span>
+              </button>
+            }
+          </div>
+        }
+        <div class="filter-row">
+          <button class="filter-chip" [class.on]="stateFilter() === 'all'"
+                  (click)="stateFilter.set('all')">All</button>
+          <button class="filter-chip" [class.on]="stateFilter() === 'scheduled'"
+                  (click)="stateFilter.set('scheduled')">Scheduled</button>
+          <button class="filter-chip" [class.on]="stateFilter() === 'unscheduled'"
+                  (click)="stateFilter.set('unscheduled')">Unscheduled</button>
+          <button class="filter-chip" [class.on]="stateFilter() === 'ab'"
+                  (click)="stateFilter.set('ab')">A/B picked</button>
+          <button class="filter-chip danger" [class.on]="stateFilter() === 'no-titles'"
+                  (click)="stateFilter.set('no-titles')">No titles</button>
+        </div>
+
+        @if (reports().length > 0) {
+          <div class="select-all-container">
+            <mat-checkbox
+              [checked]="allReportsSelected()"
+              [indeterminate]="hasSelectedReports() && !allReportsSelected()"
+              (change)="toggleSelectAll()">
+              Select all shown
+            </mat-checkbox>
+          </div>
+        }
       </div>
 
-      <div class="panel-content">
+      <div class="pane-body list-body">
         @if (isLoading() && reports().length === 0) {
           <div class="loading-container">
             <mat-spinner diameter="40"></mat-spinner>
@@ -48,63 +107,182 @@
           </div>
         }
 
-        @if (reports().length > 0) {
-          <div class="select-all-container">
-            <mat-checkbox
-              [checked]="allReportsSelected()"
-              [indeterminate]="hasSelectedReports() && !allReportsSelected()"
-              (change)="toggleSelectAll()">
-              Select All
-            </mat-checkbox>
+        @if (reports().length > 0 && visibleGroups().length === 0) {
+          <div class="empty-state">
+            <mat-icon>filter_alt_off</mat-icon>
+            <p>Nothing matches</p>
+            <small>{{ reports().length }} reports are indexed; none match the search and filters.</small>
           </div>
+        }
 
+        @if (visibleGroups().length > 0) {
           <div class="reports-list">
-            @for (report of reports(); track report.path) {
-              <div
-                (click)="selectReport(report)"
-                [class.selected]="selectedReport()?.path === report.path"
-                [class.checked]="report.selected"
-                class="report-item">
-                <mat-checkbox
-                  [checked]="report.selected || false"
-                  (click)="toggleSelection(report, $event)"
-                  (change)="$event.stopPropagation()"
-                  class="report-checkbox">
-                </mat-checkbox>
-                <div class="report-content">
-                  <div class="report-title">{{ report.displayTitle || report.name }}</div>
-                  <div class="report-meta">
-                    <span class="report-date">{{ formatDate(report.date) }}</span>
-                    @if (report.promptSet) {
-                      <span class="prompt-set-badge">{{ report.promptSet }}</span>
-                    }
+            @for (group of visibleGroups(); track group.key) {
+              <!-- The newest run for this source. Older runs collapse under it: six
+                   stale runs of one source must not compete with the good one (§1.7). -->
+              <ng-container>
+                <div
+                  (click)="selectReport(group.head)"
+                  [class.selected]="selectedReport()?.path === group.head.path"
+                  [class.checked]="group.head.selected"
+                  class="report-item">
+                  <mat-checkbox
+                    [checked]="group.head.selected || false"
+                    (click)="toggleSelection(group.head, $event)"
+                    (change)="$event.stopPropagation()"
+                    class="report-checkbox">
+                  </mat-checkbox>
+                  <div class="report-content">
+                    <div class="report-title" [title]="group.head.displayTitle || group.head.name">
+                      {{ group.head.displayTitle || group.head.name }}
+                    </div>
+                    <div class="report-meta">
+                      <span class="report-date">{{ formatDate(group.head.date) }}</span>
+                      @if (group.head.promptSet) {
+                        <span class="prompt-set-badge">{{ group.head.promptSet }}</span>
+                      }
+                      @if (group.head.titleCount === 0) {
+                        <span class="row-flag danger" title="This run produced no titles.">no titles</span>
+                      }
+                      @if (group.head.publishFault; as fault) {
+                        <span class="row-flag warn" [title]="fault">record unreadable</span>
+                      }
+                      <span class="row-dots">
+                        @for (dot of rowDots(group.head); track dot.key) {
+                          <span class="row-dot" [class]="'dot-' + dot.key" [title]="dot.label"></span>
+                        }
+                      </span>
+                    </div>
                   </div>
+                  @if (group.runs.length > 0) {
+                    <button class="run-toggle"
+                            (click)="toggleGroup(group.key, $event)"
+                            [title]="isGroupExpanded(group.key)
+                                       ? 'Hide the earlier runs of this source'
+                                       : 'Show the earlier runs of this source'">
+                      {{ group.runs.length + 1 }} runs {{ isGroupExpanded(group.key) ? '▴' : '▾' }}
+                    </button>
+                  }
+                  <button mat-icon-button (click)="deleteReport(group.head, $event)" color="warn" class="delete-button">
+                    <mat-icon>close</mat-icon>
+                  </button>
                 </div>
-                <button mat-icon-button (click)="deleteReport(report, $event)" color="warn" class="delete-button">
-                  <mat-icon>close</mat-icon>
-                </button>
-              </div>
+
+                @if (isGroupExpanded(group.key)) {
+                  @for (run of group.runs; track run.path) {
+                    <div
+                      (click)="selectReport(run)"
+                      [class.selected]="selectedReport()?.path === run.path"
+                      [class.checked]="run.selected"
+                      class="report-item is-rerun">
+                      <mat-checkbox
+                        [checked]="run.selected || false"
+                        (click)="toggleSelection(run, $event)"
+                        (change)="$event.stopPropagation()"
+                        class="report-checkbox">
+                      </mat-checkbox>
+                      <div class="report-content">
+                        <div class="report-title" [title]="run.displayTitle || run.name">
+                          {{ run.displayTitle || run.name }}
+                        </div>
+                        <div class="report-meta">
+                          <span class="report-date">{{ formatDate(run.date) }}</span>
+                          @if (run.promptSet) {
+                            <span class="prompt-set-badge">{{ run.promptSet }}</span>
+                          }
+                          @if (run.titleCount === 0) {
+                            <span class="row-flag danger" title="This run produced no titles.">no titles</span>
+                          }
+                          @if (run.publishFault; as fault) {
+                            <span class="row-flag warn" [title]="fault">record unreadable</span>
+                          }
+                          <span class="row-dots">
+                            @for (dot of rowDots(run); track dot.key) {
+                              <span class="row-dot" [class]="'dot-' + dot.key" [title]="dot.label"></span>
+                            }
+                          </span>
+                        </div>
+                      </div>
+                      <button mat-icon-button (click)="deleteReport(run, $event)" color="warn" class="delete-button">
+                        <mat-icon>close</mat-icon>
+                      </button>
+                    </div>
+                  }
+                }
+              </ng-container>
             }
           </div>
         }
       </div>
-    </div>
+    </section>
 
-    <!-- Report Viewer (Right Panel) -->
-    <div class="panel report-viewer-panel">
+    <!-- The split. Persisted in localStorage, like the other panes in this app. -->
+    <div class="split-handle"
+         [class.dragging]="draggingSplit()"
+         title="Drag to resize the report list"
+         (pointerdown)="onSplitPointerDown($event)"
+         (pointermove)="onSplitPointerMove($event)"
+         (pointerup)="onSplitPointerUp($event)"
+         (pointercancel)="onSplitPointerUp($event)"></div>
+
+    <!-- ═══════════════════════════ ② DECIDE ═══════════════════════════ -->
+    <section class="pane work-pane">
       @if (selectedReport()) {
-        <div class="panel-header">
-          <h4 class="panel-title">{{ metadata()?._title || selectedReport()!.name }}</h4>
-          <div class="panel-actions">
-            <button mat-raised-button color="primary" (click)="showInFolder(selectedReport()!)">
-              <mat-icon>folder</mat-icon>
-              Show in Folder
-            </button>
+        <div class="pane-head">
+          <div class="pane-head-line">
+            <h2 class="pane-heading" [title]="metadata()?._title || selectedReport()!.name">
+              {{ metadata()?._title || selectedReport()!.name }}
+            </h2>
+            <span class="pane-head-spacer"></span>
+            <button class="copy-btn" (click)="showInFolder(selectedReport()!)">Show in Folder</button>
           </div>
+
+          <!-- Provenance. One line, above the fields it is about: which transcript wrote
+               the content fields, and (always) that chapters came from the final export.
+               Absent for items generated before the run recorded it. -->
+          @if (provenanceLine(); as provenance) {
+            <p class="provenance-line" [class.linked]="provenanceIsLinked()">
+              <mat-icon>{{ provenanceIsLinked() ? 'link' : 'movie' }}</mat-icon>
+              <span>{{ provenance }}</span>
+            </p>
+          }
+
+          <!-- ① The readiness strip. Five facts about this item and the push that
+               depends on them, from the record already loaded — a field with nothing in
+               it renders hollow and says so, never as a plausible value. Each chip
+               focuses the control in the rail that sets it. -->
+          @if (metadata()) {
+            <div class="readiness-strip">
+              @for (chip of readinessChips(); track chip.key) {
+                <button class="ready-chip"
+                        [class.set]="chip.state === 'set'"
+                        [class.warn]="chip.state === 'warn'"
+                        [title]="chip.hint"
+                        (click)="focusReadiness(chip.key)">
+                  {{ chip.label }}
+                </button>
+              }
+              <!-- Disabled with the reason as its tooltip, which makes the strip a
+                   checklist rather than a dead end. -->
+              <button class="ready-chip push"
+                      [disabled]="!!publish.pushBlockedReason() || publish.pushing() || publish.saving()"
+                      [title]="publish.pushBlockedReason() ?? 'Push this item to its linked YouTube video.'"
+                      (click)="pushToYouTube()">
+                @if (publish.pushing()) { Pushing… } @else { Push ▸ }
+              </button>
+            </div>
+          }
+
+          <!-- One banner for every publish action (picking, reordering, editing), so a
+               rejected save is never silent and never reported in the wrong section.
+               It sits in the pane's fixed head so a refusal cannot scroll out of view. -->
+          @if (publish.error(); as err) {
+            <div class="ab-error" (click)="publish.dismissError()">{{ err }}</div>
+          }
         </div>
       }
 
-      <div class="panel-content viewer-content">
+      <div class="pane-body work-body">
         @if (!selectedReport()) {
           <div class="empty-viewer">
             <mat-icon>touch_app</mat-icon>
@@ -121,37 +299,280 @@
         }
 
         @if (!isLoading() && selectedReport() && metadata()) {
-          <div class="metadata-content">
-            <!-- One banner for every publish action (picking, reordering, editing), so a
-                 rejected save is never silent and never reported in the wrong section. -->
-            @if (publish.error(); as err) {
-              <div class="ab-error" (click)="publish.dismissError()">{{ err }}</div>
-            }
+          <!-- ② The A/B slate + ③ the titles list. One card: the slate is a VIEW of the
+               same chosenTitles() the list writes, in the same order, and removing a
+               variant is still done by clicking its row below. -->
+          @if (metadata()!.titles && metadata()!.titles.length > 0) {
+            <section class="card titles-card">
+              <div class="card-head">
+                <mat-icon>title</mat-icon>
+                <h3>Titles</h3>
+                <span class="count-badge">{{ metadata()!.titles.length }}</span>
+                <span class="card-head-spacer"></span>
+                <span class="ab-progress"
+                      [class.complete]="publish.chosenCount() === MAX_AB_VARIANTS">
+                  {{ publish.chosenCount() }}/{{ MAX_AB_VARIANTS }} picked for A/B test
+                </span>
+                @if (publish.chosenCount() > 0) {
+                  <button class="copy-btn" (click)="publish.clear()">Clear</button>
+                }
+              </div>
 
-            <!-- Publish Section
+              <div class="ab-slate">
+                @for (slot of slate(); track slot.index) {
+                  <div class="slate-slot"
+                       [class.filled]="slot.title !== null"
+                       [class.orphan]="slot.title !== null && slot.rowIndex === null"
+                       (click)="revealSlateSlot(slot)"
+                       [title]="slot.title === null
+                                  ? 'Nothing picked for this variant yet.'
+                                  : (slot.rowIndex === null
+                                      ? slot.title + ' — an edited variant; it is not one of the rows below.'
+                                      : 'Show this title in the list below.')">
+                    <span class="slate-number">{{ slot.index + 1 }}</span>
+                    @if (slot.title !== null) {
+                      <span class="slate-text">{{ slot.title }}</span>
+                      @if (slot.rowIndex === null) {
+                        <span class="slate-note orphan-note">edited</span>
+                      }
+                      <span class="slate-chars" [class.over]="slot.chars > 100">{{ slot.chars }}/100</span>
+                    } @else {
+                      <span class="slate-empty">⌀ empty — click a title below</span>
+                    }
+                    @if (slot.index === 0) {
+                      <span class="slate-note">main · YouTube's fallback</span>
+                    }
+                  </div>
+                }
+              </div>
+
+              <p class="ab-hint">
+                Click titles in the order you want them tested. #1 becomes the video's
+                main title and is what YouTube keeps if the test is inconclusive.
+                <span class="ab-keys">↑↓ move · Space toggles · e edits · c copies · 1–9,0 pick</span>
+              </p>
+
+              <!-- The keyboard layer is scoped to this container: none of it fires
+                   unless this pane has focus, so every pointer gesture is untouched. -->
+              <div #titlesScroll
+                   class="list-container titles-scroll"
+                   tabindex="0"
+                   (keydown)="onTitlesKeydown($event)">
+                @for (title of metadata()!.titles; track $index; let i = $index) {
+                  @if (isEditingTitle(i)) {
+                    <!-- Enter saves, Escape cancels, and the pencil/copy pair becomes
+                         ✓/✕ in the same place so nothing shifts under the cursor. The
+                         edit is stored as an A/B variant; the generated report is never
+                         rewritten. -->
+                    <div class="list-item ab-editing" [attr.data-title-row]="i">
+                      @if (titleVariantNumber(title); as variant) {
+                        <span class="ab-variant-badge">{{ variant }}</span>
+                      } @else {
+                        <span class="item-number">{{ i + 1 }}</span>
+                      }
+
+                      <input #titleInput
+                             class="ab-title-input"
+                             [value]="titleDraft()"
+                             (input)="titleDraft.set($any($event.target).value)"
+                             (keydown.enter)="saveEditTitle(title, $event)"
+                             (keydown.escape)="cancelEditTitle()" />
+
+                      <span class="ab-charcount"
+                            [class.over]="titleDraft().trim().length > 100">
+                        {{ titleDraft().trim().length }}/100
+                      </span>
+
+                      <button class="row-action save"
+                              (click)="saveEditTitle(title, $event)"
+                              title="Save (Enter)">✓</button>
+                      <button class="row-action cancel"
+                              (click)="cancelEditTitle($event)"
+                              title="Cancel (Esc)">✕</button>
+                    </div>
+                  } @else {
+                    <div class="list-item ab-selectable"
+                         [attr.data-title-row]="i"
+                         [class.copied]="isCopied('title-' + i)"
+                         [class.ab-chosen]="isTitleChosen(title)"
+                         [class.ab-blocked]="isTitleBlocked(title)"
+                         [class.kb-focus]="focusedTitleIndex() === i"
+                         (click)="toggleChosenTitle(title, $event)"
+                         [title]="isTitleChosen(title)
+                                    ? 'Click to remove from the A/B test'
+                                    : (isTitleBlocked(title)
+                                        ? 'Deselect one first — YouTube allows 3 variants'
+                                        : 'Click to add to the A/B test')">
+
+                      @if (titleVariantNumber(title); as variant) {
+                        <span class="ab-variant-badge">{{ variant }}</span>
+                      } @else {
+                        <span class="item-number">{{ i + 1 }}</span>
+                      }
+
+                      <span class="list-item-text">{{ getTitleText(title) }}</span>
+
+                      <button class="row-action"
+                              (click)="startEditTitle(title, i, $event)"
+                              title="Edit this title">✎</button>
+
+                      <button class="row-action"
+                              (click)="copyToClipboard(getTitleText(title), 'title-' + i); $event.stopPropagation()"
+                              title="Copy to clipboard">{{ isCopied('title-' + i) ? '✓' : '📋' }}</button>
+                    </div>
+                  }
+                }
+              </div>
+            </section>
+          }
+
+          <!-- ④ Description. Whatever publish-get-resolved composed in the MAIN PROCESS —
+               never recomposed here, and never an empty box while it is being read. -->
+          <section class="card description-card-section">
+            <div class="card-head">
+              <mat-icon>description</mat-icon>
+              <h3>Description</h3>
+              @if (publish.descriptionOverride() !== null) {
+                <span class="edited-badge" title="You edited this. The generated text is kept and can be restored.">edited</span>
+              }
+              <span class="card-head-spacer"></span>
+              <span class="char-count" [class.over]="descriptionOverLimit()">
+                {{ publish.hasResolved() ? descriptionCountLabel() : 'loading…' }}
+              </span>
+              @if (editingDescription()) {
+                <button class="copy-btn" (click)="saveDescription()">Save</button>
+                <button class="copy-btn" (click)="cancelEditDescription()">Cancel</button>
+              } @else if (publish.hasResolved()) {
+                <button class="copy-btn" (click)="startEditDescription()">Edit</button>
+                @if (publish.descriptionOverride() !== null) {
+                  <button class="copy-btn"
+                          (click)="revertDescription()"
+                          title="Discard your edit and use the generated description">Revert</button>
+                }
+                <button class="copy-btn"
+                        [class.copied]="isCopied('description')"
+                        (click)="copyToClipboard(descriptionValue(), 'description')">
+                  {{ isCopied('description') ? '✓ Copied!' : 'Copy' }}
+                </button>
+              }
+            </div>
+            <div class="description-box">
+              <div class="description-card">
+                @if (editingDescription()) {
+                  <textarea class="description-textarea"
+                            [value]="descriptionDraft()"
+                            (input)="descriptionDraft.set($any($event.target).value)"></textarea>
+                } @else if (publish.hasResolved()) {
+                  <textarea class="description-textarea" readonly [value]="descriptionValue()"></textarea>
+                } @else {
+                  <!-- Never render an empty box here: blank reads as "no description". -->
+                  <div class="resolving">Reading the composed description…</div>
+                }
+              </div>
+            </div>
+          </section>
+
+          <!-- ⑤ Tags. Stored comma-separated, exactly as the extension types them. -->
+          <section class="card tags-card">
+            <div class="card-head">
+              <mat-icon>local_offer</mat-icon>
+              <h3>Tags</h3>
+              <span class="count-badge">{{ editedTagsArray().length }}</span>
+              @if (publish.tagsOverride() !== null) {
+                <span class="edited-badge" title="You edited these. The generated tags are kept and can be restored.">edited</span>
+              }
+              <span class="card-head-spacer"></span>
+              @if (editingTags()) {
+                <button class="copy-btn" (click)="saveTags()">Save</button>
+                <button class="copy-btn" (click)="cancelEditTags()">Cancel</button>
+              } @else if (publish.hasResolved()) {
+                @if (editedTagsArray().length > TAGS_CLAMP_THRESHOLD) {
+                  <button class="copy-btn" (click)="tagsExpanded.set(!tagsExpanded())">
+                    {{ tagsExpanded() ? 'Show fewer' : 'Show all ' + editedTagsArray().length }}
+                  </button>
+                }
+                <button class="copy-btn" (click)="startEditTags()">Edit</button>
+                @if (publish.tagsOverride() !== null) {
+                  <button class="copy-btn"
+                          (click)="revertTags()"
+                          title="Discard your edit and use the generated tags">Revert</button>
+                }
+                <button class="copy-btn"
+                        [class.copied]="isCopied('tags-all')"
+                        (click)="copyToClipboard(tagsValue(), 'tags-all')">
+                  {{ isCopied('tags-all') ? '✓ Copied!' : 'Copy All' }}
+                </button>
+              }
+            </div>
+            @if (editingTags()) {
+              <!-- Comma-separated, exactly as the extension types them into Studio. -->
+              <textarea class="tags-textarea"
+                        [value]="tagsDraft()"
+                        (input)="tagsDraft.set($any($event.target).value)"
+                        placeholder="tag one, tag two, tag three"></textarea>
+            } @else if (publish.hasResolved()) {
+              <div class="tags-container"
+                   [class.clamped]="!tagsExpanded() && editedTagsArray().length > TAGS_CLAMP_THRESHOLD">
+                @for (tag of editedTagsArray(); track $index; let i = $index) {
+                  <mat-chip class="tag-chip"
+                            [class.copied]="isCopied('tag-' + i)"
+                            (click)="copyToClipboard(tag, 'tag-' + i)">
+                    {{ isCopied('tag-' + i) ? '✓ Copied!' : tag }}
+                  </mat-chip>
+                }
+              </div>
+            } @else {
+              <div class="resolving">Reading the tags…</div>
+            }
+          </section>
+        }
+
+        @if (!isLoading() && selectedReport() && !metadata()) {
+          <div class="empty-report">
+            <mat-icon>info</mat-icon>
+            <p>Failed to load metadata</p>
+            <small>The metadata file may be missing or malformed</small>
+          </div>
+        }
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════ ③ DISPATCH ═══════════════════════════ -->
+    @if (selectedReport()) {
+      <aside class="pane rail-pane">
+        <div class="pane-body rail-body">
+          @if (!isLoading() && metadata()) {
+
+            <!-- Publish.
                  The Phase-1 publish record for this item: which channel it goes to, when
                  it should go live, its thumbnail, and whether it is a podcast episode.
                  INTENT ONLY - nothing in this panel uploads, schedules or publishes
                  anything; it records what the operator wants so the later phases have
                  something to act on. Every write is validated in the main process, and a
-                 refusal comes back as text and lands in the banner above, verbatim. -->
-            <div class="metadata-section publish-section">
-              <div class="section-header">
-                <div class="section-title-row">
-                  <mat-icon>rocket_launch</mat-icon>
-                  <h3>Publish</h3>
-                  @if (publish.saving()) {
-                    <span class="publish-saving">saving…</span>
-                  }
-                </div>
-                <mat-checkbox class="publish-podcast"
-                              [checked]="publish.isPodcast()"
-                              (change)="onPodcastChange($event.checked)">
-                  Publish as podcast (Spreaker)
-                </mat-checkbox>
+                 refusal comes back as text and lands in the banner in the decide column,
+                 verbatim. -->
+            <section class="card publish-section">
+              <div class="card-head">
+                <mat-icon>rocket_launch</mat-icon>
+                <h3>Publish</h3>
+                @if (publish.saving()) {
+                  <span class="publish-saving">saving…</span>
+                }
+                <span class="card-head-spacer"></span>
               </div>
 
               <div class="publish-body">
+                <div class="publish-row" #podcastRow>
+                  <span class="publish-label">Podcast</span>
+                  <div class="publish-control">
+                    <mat-checkbox class="publish-podcast"
+                                  [checked]="publish.isPodcast()"
+                                  (change)="onPodcastChange($event.checked)">
+                      Publish as podcast (Spreaker)
+                    </mat-checkbox>
+                  </div>
+                </div>
+
                 @if (!publish.selection()) {
                   <p class="publish-note">
                     Nothing is saved for this item yet — the record is created by your first
@@ -216,7 +637,8 @@
                 <div class="publish-row">
                   <span class="publish-label">Channel</span>
                   <div class="publish-control">
-                    <select class="publish-select"
+                    <select #channelSelect
+                            class="publish-select"
                             [disabled]="publish.saving()"
                             (change)="onChannelChange($event)">
                       <option value="" [selected]="channelSelectValue() === ''">— not routed —</option>
@@ -284,7 +706,8 @@
                 <div class="publish-row">
                   <span class="publish-label">Schedule</span>
                   <div class="publish-control">
-                    <input type="date"
+                    <input #scheduleDateInput
+                           type="date"
                            class="publish-input"
                            [value]="scheduleDate()"
                            [disabled]="publish.saving()"
@@ -326,7 +749,7 @@
 
                 <!-- Thumbnail. The image is decoded and downscaled in the main process;
                      the renderer never reads the file, so webSecurity stays on. -->
-                <div class="publish-row">
+                <div class="publish-row" #thumbnailRow>
                   <span class="publish-label">Thumbnail</span>
                   <div class="publish-control">
                     @if (publish.thumbnailPreview(); as preview) {
@@ -339,7 +762,8 @@
                       <button class="copy-btn" [disabled]="publish.saving()" (click)="publish.clearThumbnail()">Clear</button>
                     } @else if (publish.thumbnailPath(); as path) {
                       <!-- The record has one and the preview did not arrive. The banner
-                           above says why; the path is still what was chosen. -->
+                           in the decide column says why; the path is still what was
+                           chosen. -->
                       <div class="publish-thumb-facts">
                         <span class="publish-filename" [title]="path">{{ fileName(path) }}</span>
                         @if (publish.thumbnailMeta(); as meta) {
@@ -502,7 +926,8 @@
                           <button class="copy-btn" [disabled]="publish.saving()" (click)="publish.clearAudio()">Clear</button>
                         } @else if (publish.spreakerAudioPath(); as path) {
                           <!-- The record names a file and the file did not answer. The
-                               banner above says why; the path is still what was chosen. -->
+                               banner in the decide column says why; the path is still
+                               what was chosen. -->
                           <div class="publish-thumb-facts">
                             <span class="publish-filename" [title]="path">{{ fileName(path) }}</span>
                             <span class="publish-dim">could not be measured</span>
@@ -620,340 +1045,155 @@
                   </div>
                 }
               </div>
-            </div>
+            </section>
 
-            <!-- Provenance. One line, above the fields it is about: which transcript wrote
-                 the content fields, and (always) that chapters came from the final export.
-                 Absent for items generated before the run recorded it. -->
-            @if (provenanceLine(); as provenance) {
-              <p class="provenance-line" [class.linked]="provenanceIsLinked()">
-                <mat-icon>{{ provenanceIsLinked() ? 'link' : 'movie' }}</mat-icon>
-                <span>{{ provenance }}</span>
-              </p>
-            }
-
-            <!-- Titles Section -->
-            @if (metadata()!.titles && metadata()!.titles.length > 0) {
-              <div class="metadata-section">
-                <div class="section-header">
-                  <div class="section-title-row">
-                    <mat-icon>title</mat-icon>
-                    <h3>Titles</h3>
-                    <span class="count-badge">{{ metadata()!.titles.length }}</span>
-                  </div>
-                  <span class="ab-progress"
-                        [class.complete]="publish.chosenCount() === MAX_AB_VARIANTS">
-                    {{ publish.chosenCount() }}/{{ MAX_AB_VARIANTS }} picked for A/B test
-                  </span>
-                  @if (publish.chosenCount() > 0) {
-                    <button class="copy-btn" (click)="publish.clear()">Clear</button>
-                  }
-                </div>
-
-                <p class="ab-hint">
-                  Click titles in the order you want them tested. #1 becomes the video's
-                  main title and is what YouTube keeps if the test is inconclusive.
-                </p>
-
-                <div class="list-container">
-                  @for (title of metadata()!.titles; track $index; let i = $index) {
-                    @if (isEditingTitle(i)) {
-                      <!-- Enter saves, Escape cancels, and the pencil/copy pair becomes
-                           ✓/✕ in the same place so nothing shifts under the cursor. The
-                           edit is stored as an A/B variant; the generated report is never
-                           rewritten. -->
-                      <div class="list-item ab-editing">
-                        @if (titleVariantNumber(title); as variant) {
-                          <span class="ab-variant-badge">{{ variant }}</span>
-                        } @else {
-                          <span class="item-number">{{ i + 1 }}</span>
-                        }
-
-                        <input #titleInput
-                               class="ab-title-input"
-                               [value]="titleDraft()"
-                               (input)="titleDraft.set($any($event.target).value)"
-                               (keydown.enter)="saveEditTitle(title, $event)"
-                               (keydown.escape)="cancelEditTitle()" />
-
-                        <span class="ab-charcount"
-                              [class.over]="titleDraft().trim().length > 100">
-                          {{ titleDraft().trim().length }}/100
-                        </span>
-
-                        <button class="row-action save"
-                                (click)="saveEditTitle(title, $event)"
-                                title="Save (Enter)">✓</button>
-                        <button class="row-action cancel"
-                                (click)="cancelEditTitle($event)"
-                                title="Cancel (Esc)">✕</button>
-                      </div>
-                    } @else {
-                      <div class="list-item ab-selectable"
-                           [class.copied]="isCopied('title-' + i)"
-                           [class.ab-chosen]="isTitleChosen(title)"
-                           [class.ab-blocked]="isTitleBlocked(title)"
-                           (click)="toggleChosenTitle(title, $event)"
-                           [title]="isTitleChosen(title)
-                                      ? 'Click to remove from the A/B test'
-                                      : (isTitleBlocked(title)
-                                          ? 'Deselect one first — YouTube allows 3 variants'
-                                          : 'Click to add to the A/B test')">
-
-                        @if (titleVariantNumber(title); as variant) {
-                          <span class="ab-variant-badge">{{ variant }}</span>
-                        } @else {
-                          <span class="item-number">{{ i + 1 }}</span>
-                        }
-
-                        <span class="list-item-text">{{ getTitleText(title) }}</span>
-
-                        <button class="row-action"
-                                (click)="startEditTitle(title, i, $event)"
-                                title="Edit this title">✎</button>
-
-                        <button class="row-action"
-                                (click)="copyToClipboard(getTitleText(title), 'title-' + i); $event.stopPropagation()"
-                                title="Copy to clipboard">{{ isCopied('title-' + i) ? '✓' : '📋' }}</button>
-                      </div>
-                    }
-                  }
-                </div>
+            <!-- Assets. Pure clipboard sources, so they collapse to their counts: the
+                 count IS the information until the text is wanted. Chapters open by
+                 default because they are pasted almost every time. -->
+            @if (hasAssets()) {
+            <section class="card assets-card">
+              <div class="card-head">
+                <mat-icon>content_paste</mat-icon>
+                <h3>Assets</h3>
+                <span class="card-head-spacer"></span>
               </div>
-            }
 
-            <!-- Description Section -->
-            <div class="metadata-section">
-              <div class="section-header">
-                <div class="section-title-row">
-                  <mat-icon>description</mat-icon>
-                  <h3>Description</h3>
-                  @if (publish.descriptionOverride() !== null) {
-                    <span class="edited-badge" title="You edited this. The generated text is kept and can be restored.">edited</span>
-                  }
-                </div>
-                <span class="char-count">
-                  {{ publish.hasResolved() ? descriptionValue().length + ' chars' : 'loading…' }}
-                </span>
-                @if (editingDescription()) {
-                  <button class="copy-btn" (click)="saveDescription()">Save</button>
-                  <button class="copy-btn" (click)="cancelEditDescription()">Cancel</button>
-                } @else if (publish.hasResolved()) {
-                  <button class="copy-btn" (click)="startEditDescription()">Edit</button>
-                  @if (publish.descriptionOverride() !== null) {
-                    <button class="copy-btn"
-                            (click)="revertDescription()"
-                            title="Discard your edit and use the generated description">Revert</button>
-                  }
-                  <button class="copy-btn"
-                          [class.copied]="isCopied('description')"
-                          (click)="copyToClipboard(descriptionValue(), 'description')">
-                    {{ isCopied('description') ? '✓ Copied!' : 'Copy' }}
-                  </button>
-                }
-              </div>
-              <div class="description-box">
-                <div class="description-card">
-                  @if (editingDescription()) {
-                    <textarea class="description-textarea"
-                              [value]="descriptionDraft()"
-                              (input)="descriptionDraft.set($any($event.target).value)"></textarea>
-                  } @else if (publish.hasResolved()) {
-                    <textarea class="description-textarea" readonly [value]="descriptionValue()"></textarea>
-                  } @else {
-                    <!-- Never render an empty box here: blank reads as "no description". -->
-                    <div class="resolving">Reading the composed description…</div>
-                  }
-                </div>
-              </div>
-            </div>
-
-            <!-- Tags Section -->
-            <div class="metadata-section">
-              <div class="section-header">
-                <div class="section-title-row">
-                  <mat-icon>local_offer</mat-icon>
-                  <h3>Tags</h3>
-                  <span class="count-badge">{{ editedTagsArray().length }}</span>
-                  @if (publish.tagsOverride() !== null) {
-                    <span class="edited-badge" title="You edited these. The generated tags are kept and can be restored.">edited</span>
-                  }
-                </div>
-                @if (editingTags()) {
-                  <button class="copy-btn" (click)="saveTags()">Save</button>
-                  <button class="copy-btn" (click)="cancelEditTags()">Cancel</button>
-                } @else if (publish.hasResolved()) {
-                  <button class="copy-btn" (click)="startEditTags()">Edit</button>
-                  @if (publish.tagsOverride() !== null) {
-                    <button class="copy-btn"
-                            (click)="revertTags()"
-                            title="Discard your edit and use the generated tags">Revert</button>
-                  }
-                  <button class="copy-btn"
-                          [class.copied]="isCopied('tags-all')"
-                          (click)="copyToClipboard(tagsValue(), 'tags-all')">
-                    {{ isCopied('tags-all') ? '✓ Copied!' : 'Copy All' }}
-                  </button>
-                }
-              </div>
-              @if (editingTags()) {
-                <!-- Comma-separated, exactly as the extension types them into Studio. -->
-                <textarea class="tags-textarea"
-                          [value]="tagsDraft()"
-                          (input)="tagsDraft.set($any($event.target).value)"
-                          placeholder="tag one, tag two, tag three"></textarea>
-              } @else if (publish.hasResolved()) {
-                <div class="tags-container">
-                  @for (tag of editedTagsArray(); track $index; let i = $index) {
-                    <mat-chip class="tag-chip"
-                              [class.copied]="isCopied('tag-' + i)"
-                              (click)="copyToClipboard(tag, 'tag-' + i)">
-                      {{ isCopied('tag-' + i) ? '✓ Copied!' : tag }}
-                    </mat-chip>
-                  }
-                </div>
-              } @else {
-                <div class="resolving">Reading the tags…</div>
-              }
-            </div>
-
-            <!-- Thumbnail Text Section -->
-            @if (metadata()!.thumbnail_text && metadata()!.thumbnail_text.length > 0) {
-              <div class="metadata-section">
-                <div class="section-header">
-                  <div class="section-title-row">
+              <!-- Thumbnail Text -->
+              @if (metadata()!.thumbnail_text && metadata()!.thumbnail_text.length > 0) {
+                <div class="asset">
+                  <button class="asset-head" (click)="toggleAsset('thumbnail-text')">
                     <mat-icon>image</mat-icon>
-                    <h3>Thumbnail Text</h3>
+                    <span class="asset-name">Thumbnail Text</span>
                     <span class="count-badge">{{ metadata()!.thumbnail_text.length }}</span>
-                  </div>
-                </div>
-                <div class="thumbnail-list">
-                  @for (text of metadata()!.thumbnail_text; track $index; let i = $index) {
-                    <div class="thumbnail-item"
-                         [class.copied]="isCopied('thumb-' + i)"
-                         (click)="copyToClipboard(getThumbnailText(text), 'thumb-' + i)"
-                         title="Click to copy">
-                      <span class="thumbnail-text">{{ getThumbnailText(text) }}</span>
-                      <span class="copy-hint">{{ isCopied('thumb-' + i) ? '✓ Copied!' : '📋' }}</span>
-                    </div>
-                  }
-                </div>
-              </div>
-            }
-
-            <!-- Chapters Section (if present) -->
-            @if (metadata()!.chapters && metadata()!.chapters.length > 0) {
-              <div class="metadata-section">
-                <div class="section-header">
-                  <div class="section-title-row">
-                    <mat-icon>list</mat-icon>
-                    <h3>Chapters</h3>
-                    <span class="count-badge">{{ metadata()!.chapters.length }}</span>
-                  </div>
-                  <button class="copy-btn"
-                          [class.copied]="isCopied('chapters-all')"
-                          (click)="copyChaptersToClipboard()">
-                    {{ isCopied('chapters-all') ? '✓ Copied!' : 'Copy All' }}
+                    <span class="asset-chevron">{{ isAssetOpen('thumbnail-text') ? '▴' : '▾' }}</span>
                   </button>
-                </div>
-                <div class="chapters-list">
-                  @for (chapter of metadata()!.chapters; track $index; let i = $index) {
-                    <div class="chapter-item"
-                         [class.copied]="isCopied('chapter-' + i)"
-                         (click)="copyToClipboard(getChapterTimestamp(chapter) + ' ' + getChapterTitle(chapter), 'chapter-' + i)"
-                         title="Click to copy">
-                      <span class="chapter-time">{{ getChapterTimestamp(chapter) }}</span>
-                      <span class="chapter-title">{{ getChapterTitle(chapter) }}</span>
-                      <span class="copy-hint">{{ isCopied('chapter-' + i) ? '✓ Copied!' : '📋' }}</span>
+                  @if (isAssetOpen('thumbnail-text')) {
+                    <div class="thumbnail-list">
+                      @for (text of metadata()!.thumbnail_text; track $index; let i = $index) {
+                        <div class="thumbnail-item"
+                             [class.copied]="isCopied('thumb-' + i)"
+                             (click)="copyToClipboard(getThumbnailText(text), 'thumb-' + i)"
+                             title="Click to copy">
+                          <span class="thumbnail-text">{{ getThumbnailText(text) }}</span>
+                          <span class="copy-hint">{{ isCopied('thumb-' + i) ? '✓ Copied!' : '📋' }}</span>
+                        </div>
+                      }
                     </div>
                   }
                 </div>
-              </div>
-            }
+              }
 
-            <!-- Chapters that were asked for and did not happen. Takes the chapter
-                 section's place so the reason sits where the list would have been. -->
-            @if (chaptersMissing(); as skipped) {
-              <div class="metadata-section">
-                <div class="section-header">
-                  <div class="section-title-row">
+              <!-- Chapters -->
+              @if (metadata()!.chapters && metadata()!.chapters.length > 0) {
+                <div class="asset">
+                  <button class="asset-head" (click)="toggleAsset('chapters')">
                     <mat-icon>list</mat-icon>
-                    <h3>Chapters</h3>
-                  </div>
-                </div>
-                <div class="chapters-missing" [class.failed]="skipped.outcome === 'failed'">
-                  <mat-icon>{{ skipped.outcome === 'failed' ? 'error_outline' : 'info_outline' }}</mat-icon>
-                  <div>
-                    <div class="chapters-missing-headline">
-                      {{ skipped.outcome === 'failed' ? 'Chapter generation failed — no chapters were added.' : 'No chapters were added.' }}
+                    <span class="asset-name">Chapters</span>
+                    <span class="count-badge">{{ metadata()!.chapters.length }}</span>
+                    <span class="asset-chevron">{{ isAssetOpen('chapters') ? '▴' : '▾' }}</span>
+                  </button>
+                  @if (isAssetOpen('chapters')) {
+                    <div class="asset-actions">
+                      <button class="copy-btn"
+                              [class.copied]="isCopied('chapters-all')"
+                              (click)="copyChaptersToClipboard()">
+                        {{ isCopied('chapters-all') ? '✓ Copied!' : 'Copy All' }}
+                      </button>
                     </div>
-                    <div class="chapters-missing-reason">{{ skipped.reason }}</div>
+                    <div class="chapters-list">
+                      @for (chapter of metadata()!.chapters; track $index; let i = $index) {
+                        <div class="chapter-item"
+                             [class.copied]="isCopied('chapter-' + i)"
+                             (click)="copyToClipboard(getChapterTimestamp(chapter) + ' ' + getChapterTitle(chapter), 'chapter-' + i)"
+                             title="Click to copy">
+                          <span class="chapter-time">{{ getChapterTimestamp(chapter) }}</span>
+                          <span class="chapter-title">{{ getChapterTitle(chapter) }}</span>
+                          <span class="copy-hint">{{ isCopied('chapter-' + i) ? '✓ Copied!' : '📋' }}</span>
+                        </div>
+                      }
+                    </div>
+                  }
+                </div>
+              }
+
+              <!-- Chapters that were asked for and did not happen. Takes the chapter
+                   slot, expanded and NOT collapsible: the reason is the whole content,
+                   and a collapsed reason is a reason nobody reads. -->
+              @if (chaptersMissing(); as skipped) {
+                <div class="asset">
+                  <div class="asset-head static">
+                    <mat-icon>list</mat-icon>
+                    <span class="asset-name">Chapters</span>
+                  </div>
+                  <div class="chapters-missing" [class.failed]="skipped.outcome === 'failed'">
+                    <mat-icon>{{ skipped.outcome === 'failed' ? 'error_outline' : 'info_outline' }}</mat-icon>
+                    <div>
+                      <div class="chapters-missing-headline">
+                        {{ skipped.outcome === 'failed' ? 'Chapter generation failed — no chapters were added.' : 'No chapters were added.' }}
+                      </div>
+                      <div class="chapters-missing-reason">{{ skipped.reason }}</div>
+                    </div>
                   </div>
                 </div>
-              </div>
-            }
+              }
 
-            <!-- Pinned Comment Section (if present) -->
-            @if (metadata()!.pinned_comment && metadata()!.pinned_comment.length > 0) {
-              <div class="metadata-section">
-                <div class="section-header">
-                  <div class="section-title-row">
+              <!-- Pinned Comment -->
+              @if (metadata()!.pinned_comment && metadata()!.pinned_comment!.length > 0) {
+                <div class="asset">
+                  <button class="asset-head" (click)="toggleAsset('pinned-comment')">
                     <mat-icon>push_pin</mat-icon>
-                    <h3>Pinned Comment</h3>
-                    <span class="count-badge">{{ metadata()!.pinned_comment.length }}</span>
-                  </div>
-                </div>
-                <div class="list-container">
-                  @for (comment of metadata()!.pinned_comment; track $index; let i = $index) {
-                    <div class="list-item"
-                         [class.copied]="isCopied('comment-' + i)"
-                         (click)="copyToClipboard(comment, 'comment-' + i)"
-                         title="Click to copy">
-                      <span class="item-number">{{ i + 1 }}</span>
-                      <span class="list-item-text">{{ comment }}</span>
-                      <span class="copy-hint">{{ isCopied('comment-' + i) ? '✓ Copied!' : '📋' }}</span>
+                    <span class="asset-name">Pinned Comment</span>
+                    <span class="count-badge">{{ metadata()!.pinned_comment!.length }}</span>
+                    <span class="asset-chevron">{{ isAssetOpen('pinned-comment') ? '▴' : '▾' }}</span>
+                  </button>
+                  @if (isAssetOpen('pinned-comment')) {
+                    <div class="list-container">
+                      @for (comment of metadata()!.pinned_comment!; track $index; let i = $index) {
+                        <div class="list-item"
+                             [class.copied]="isCopied('comment-' + i)"
+                             (click)="copyToClipboard(comment, 'comment-' + i)"
+                             title="Click to copy">
+                          <span class="item-number">{{ i + 1 }}</span>
+                          <span class="list-item-text">{{ comment }}</span>
+                          <span class="copy-hint">{{ isCopied('comment-' + i) ? '✓ Copied!' : '📋' }}</span>
+                        </div>
+                      }
                     </div>
                   }
                 </div>
-              </div>
-            }
+              }
 
-            <!-- Clip Suggestions Section (if present) -->
-            @if (metadata()!.clip_suggestions && metadata()!.clip_suggestions.length > 0) {
-              <div class="metadata-section">
-                <div class="section-header">
-                  <div class="section-title-row">
+              <!-- Clip Suggestions -->
+              @if (metadata()!.clip_suggestions && metadata()!.clip_suggestions!.length > 0) {
+                <div class="asset">
+                  <button class="asset-head" (click)="toggleAsset('clip-suggestions')">
                     <mat-icon>content_cut</mat-icon>
-                    <h3>Clip Suggestions</h3>
-                    <span class="count-badge">{{ metadata()!.clip_suggestions.length }}</span>
-                  </div>
-                </div>
-                <div class="list-container">
-                  @for (clip of metadata()!.clip_suggestions; track $index; let i = $index) {
-                    <div class="list-item"
-                         [class.copied]="isCopied('clip-' + i)"
-                         (click)="copyToClipboard(clip, 'clip-' + i)"
-                         title="Click to copy">
-                      <span class="item-number">{{ i + 1 }}</span>
-                      <span class="list-item-text">{{ clip }}</span>
-                      <span class="copy-hint">{{ isCopied('clip-' + i) ? '✓ Copied!' : '📋' }}</span>
+                    <span class="asset-name">Clip Suggestions</span>
+                    <span class="count-badge">{{ metadata()!.clip_suggestions!.length }}</span>
+                    <span class="asset-chevron">{{ isAssetOpen('clip-suggestions') ? '▴' : '▾' }}</span>
+                  </button>
+                  @if (isAssetOpen('clip-suggestions')) {
+                    <div class="list-container">
+                      @for (clip of metadata()!.clip_suggestions!; track $index; let i = $index) {
+                        <div class="list-item"
+                             [class.copied]="isCopied('clip-' + i)"
+                             (click)="copyToClipboard(clip, 'clip-' + i)"
+                             title="Click to copy">
+                          <span class="item-number">{{ i + 1 }}</span>
+                          <span class="list-item-text">{{ clip }}</span>
+                          <span class="copy-hint">{{ isCopied('clip-' + i) ? '✓ Copied!' : '📋' }}</span>
+                        </div>
+                      }
                     </div>
                   }
                 </div>
-              </div>
+              }
+            </section>
             }
-          </div>
-        }
-
-        @if (!isLoading() && selectedReport() && !metadata()) {
-          <div class="empty-report">
-            <mat-icon>info</mat-icon>
-            <p>Failed to load metadata</p>
-            <small>The metadata file may be missing or malformed</small>
-          </div>
-        }
-      </div>
-    </div>
+          }
+        </div>
+      </aside>
+    }
 
   </div>
 </div>
