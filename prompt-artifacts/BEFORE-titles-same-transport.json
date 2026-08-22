@@ -1,0 +1,83 @@
+{
+  "note": "main's legacy whole-metadata prompt, sent through the routed group transport",
+  "runs": [
+    {
+      "run": 1,
+      "secs": 105.3,
+      "fields": {
+        "titles": [
+          "Marcus Wray Told His Congregation God Wants a Fourth Private Jet",
+          "Preacher Calls Critics of His Private Jet 'Demonic Trolls'",
+          "You're Not Robbing Me, You're Robbing God - Marcus Wray",
+          "The Prosperity Gospel Jet Collection Just Got Stupid",
+          "Marcus Wray's Church Is a Fundraising Op That Meets Sundays",
+          "Fourth Jet. Twelve Seats. God's Will. Marcus Wray Explains.",
+          "He Called Questioning His Jet a Demon Attack. The Crowd Cheered.",
+          "Faith Doesn't Come With a Tail Number - Marcus Wray Proves It",
+          "Marcus Wray's Prosperity Sermon: Robbing God or Robbing You",
+          "The Preacher Who Turned a Private Jet Into a Theological Test"
+        ],
+        "thumbnail_text": [
+          "FOURTH JET",
+          "ROB GOD",
+          "12 SEATS",
+          "DEMON TROLL",
+          "SUNDAY FUNDRAISER",
+          "TAIL NUMBER",
+          "GOD TOLD ME",
+          "CHEERED",
+          "SHEEP AND JETS",
+          "NOT FAITH"
+        ]
+      }
+    },
+    {
+      "run": 2,
+      "secs": 63.5,
+      "fields": {
+        "titles": [
+          "Marcus Wray Told His Congregation God Wants a Fourth Private Jet",
+          "Preacher Calls Jet Critics Demonically Influenced Trolls",
+          "God Told Me We Need a Fourth Jet, Says Marcus Wray",
+          "If You Don't Pay for the Jet, You're Robbing God",
+          "Marcus Wray's Fourth Jet Demand and the Shame Collection Machine",
+          "The Preacher Who Called His Donors Demons for Asking Questions",
+          "Marcus Wray: Hold Your Money Back and You Rob God",
+          "A Fundraising Operation That Happens to Meet on Sundays",
+          "Fourth Private Jet and a Bible Verse, That's the Whole Grift",
+          "Marcus Wray's Jet Sermon in Ten Words"
+        ]
+      }
+    },
+    {
+      "run": 3,
+      "secs": 116,
+      "fields": {
+        "titles": [
+          "Marcus Wray Told His Congregation God Wants A Fourth Private Jet",
+          "Preacher Says Your Money Is God's, Then Buys Jet Number Four",
+          "If You Don't Fund My Jet, You're Robbing God - Marcus Wray",
+          "Marcus Wray Calls His Critics Demonically Influenced Trolls",
+          "A Fourth Private Jet Is What God Told Marcus Wray To Buy",
+          "Televangelist Marcus Wray: Your Donations Are God's, The Jet Isn't",
+          "Prosperity Gospel Preacher Told Congregation God Demands A New Jet",
+          "Marcus Wray's Fourth Jet And The Demonic Troll Defense",
+          "Preacher Needs A 12-Seat Jet, Says God Ordered It, Crowd Cheered",
+          "FOURTH JET"
+        ],
+        "thumbnail_text": [
+          "FOURTH JET",
+          "GOD SAID SO",
+          "ROBBING GOD",
+          "12 SEATS",
+          "DEMON TROLL",
+          "TAIL NUMBER",
+          "SUNDAY FUNDRAISER",
+          "CHEERED",
+          "JETS NOT FAITH",
+          "SHEER AUDACITY"
+        ]
+      }
+    }
+  ]
+}
