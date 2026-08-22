@@ -146,6 +146,37 @@ export interface GeneratedIndex {
   unreadable: number;
 }
 
+/**
+ * One row of the HOST's report index: the summary above plus the facts a browse list
+ * needs — which file the item lives in, where in it, and what to print.
+ *
+ * Declared here, beside GeneratedItemSummary, for the reason that type is here: the
+ * report FORMAT is the host's business (services/metadata/report-index.ts), and publish/
+ * receives the result through an injected function rather than importing the reader. The
+ * host's row satisfies this structurally.
+ */
+export interface HostReportRow extends GeneratedItemSummary {
+  /** Absolute path of the job JSON this item lives in. */
+  jobPath: string;
+  jobSizeBytes: number;
+  /** Position within items[] — for reading the array, never an identity. */
+  itemIndex: number;
+  /** What the list prints for this item. */
+  displayTitle: string;
+  txtFolder: string | null;
+  txtFilePath: string | null;
+  /** ISO. What the list sorts and prints by. */
+  dateIso: string;
+}
+
+/** The host's whole report index, with the files it could not read named. */
+export interface HostReportIndex {
+  rows: HostReportRow[];
+  problems: Array<{ file: string; message: string }>;
+  directoryMissing: boolean;
+  directory: string;
+}
+
 /** What clearing a whole job's selections actually did. */
 export interface JobSelectionClear {
   /** Files unlinked. */
@@ -255,6 +286,36 @@ export class PublishStoreService {
       if (record && actionable.includes(record.status)) out.push(record);
     }
     return out;
+  }
+
+  /**
+   * EVERY selection on disk, plus the ones that could not be read.
+   *
+   * The calendar's source. Deliberately not `listActionable()`, which filters to
+   * `ready|linked|filled` for the extension's pending-work endpoint: the calendar's whole
+   * left rail is the items the operator has NOT finished with, and those sit in
+   * `selecting`. Filtering them out would have made the unscheduled tray permanently
+   * empty and the omission invisible.
+   *
+   * A record that will not parse is returned as a FAULT, named, rather than thrown or
+   * skipped. Throwing would blank a calendar of forty rows because one file is corrupt;
+   * skipping would show thirty-nine rows that look like all of them. The caller renders
+   * the fault beside the grid.
+   */
+  listAllRecords(): { records: ChosenMetadata[]; faults: Array<{ itemId: string; message: string }> } {
+    const records: ChosenMetadata[] = [];
+    const faults: Array<{ itemId: string; message: string }> = [];
+    for (const itemId of this.listItemIds()) {
+      let record: ChosenMetadata | null;
+      try {
+        record = this.readItemFile(itemId);
+      } catch (err) {
+        faults.push({ itemId, message: err instanceof Error ? err.message : String(err) });
+        continue;
+      }
+      if (record) records.push(record);
+    }
+    return { records, faults };
   }
 
   // ------------------------------------------------------------------- writing

@@ -360,3 +360,65 @@ export interface PublishResult<T> {
   data?: T;
   error?: string;
 }
+
+/**
+ * What one item's selection record says, for a list that shows many items at once.
+ *
+ * Mirror of PublishFacts in electron/services/publish/publish-ipc.ts. A projection, not
+ * the record: a list needs to know WHETHER there is a thumbnail and HOW MANY variants are
+ * picked, not the path or the strings.
+ */
+export interface PublishFacts {
+  /** null = not routed yet. A real state, and the majority one today. */
+  channelId: string | null;
+  publishAt: string | null;
+  publishAtSetAt: string | null;
+  status: PublishStatus;
+  videoId: string | null;
+  isPodcast: boolean;
+  pushedAt: string | null;
+  filledAt: string | null;
+  hasThumbnail: boolean;
+  abCount: number;
+  /** The first chosen title — the video's title — or null when none is picked yet. */
+  mainTitle: string | null;
+}
+
+/**
+ * One generated item joined to what the operator has decided about it.
+ *
+ * Mirror of ReportIndexEntry in electron/services/publish/publish-ipc.ts. `publish` is
+ * null when the operator has never touched the item — the unstarted state, not missing
+ * data.
+ */
+export interface ReportIndexEntry {
+  itemId: string;
+  jobId: string;
+  label: string;
+  displayTitle: string;
+  createdAt: string;
+  dateIso: string;
+  promptSet: string | null;
+  sourceFilename: string | null;
+  sourceKey: string | null;
+  titleCount: number;
+  jobPath: string;
+  jobSizeBytes: number;
+  itemIndex: number;
+  txtFolder: string | null;
+  txtFilePath: string | null;
+  publish: PublishFacts | null;
+  /** Why this item's selection record could not be read, or null. The row still exists. */
+  publishFault: string | null;
+}
+
+/** Mirror of ReportIndexResponse. Every kind of trouble travels in its own field. */
+export interface ReportIndexResponse {
+  entries: ReportIndexEntry[];
+  problems: Array<{ file: string; message: string }>;
+  /** The reports directory does not exist at all — not the same as "it is empty". */
+  directoryMissing: boolean;
+  directory: string;
+  /** Selection records whose report is gone. Named, never rendered or dropped. */
+  orphanedSelections: string[];
+}

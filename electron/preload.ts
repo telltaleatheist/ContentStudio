@@ -135,6 +135,10 @@ const api = {
   // Publish (chosen titles / A-B test setup)
   // Every channel names ONE item, by its permanent id. The (jobId, itemIndex) pair these
   // used to take was not an identity: the index moved whenever a sibling was deleted.
+  // Every generated item joined to its publish record, in one call. What the reports list
+  // and the publish calendar both read; it replaced the renderer's per-mount scan of the
+  // whole metadata directory.
+  publishListIndex: () => ipcRenderer.invoke('publish-list-index'),
   publishGetSelection: (itemId: string) => ipcRenderer.invoke('publish-get-selection', itemId),
   // titles order is meaningful: index 0 becomes the main title AND A/B variant 1
   publishSetTitles: (itemId: string, titles: string[]) =>

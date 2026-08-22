@@ -33,6 +33,10 @@
               <mat-icon matListItemIcon>description</mat-icon>
               <span matListItemTitle>Metadata Reports</span>
             </a>
+            <a mat-list-item routerLink="/publish-calendar" routerLinkActive="active-link">
+              <mat-icon matListItemIcon>event</mat-icon>
+              <span matListItemTitle>Calendar</span>
+            </a>
             <!-- Not a routerLink: the editor is a SECOND WINDOW, not a view in this one. -->
             <a mat-list-item (click)="openEditor()" matTooltip="Open the timeline editor in its own window">
               <mat-icon matListItemIcon>movie_edit</mat-icon>

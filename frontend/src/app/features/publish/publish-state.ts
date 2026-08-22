@@ -1090,6 +1090,59 @@ export class PublishState {
     await this.setFields({ publishAt: null });
   }
 
+  /**
+   * Schedule an item this state does NOT have open — the publish calendar's write.
+   *
+   * The calendar shows every item at once, so it cannot `load()` one to schedule it: that
+   * would tear down the report the operator has open in the other view. It writes by id
+   * instead, through the exact same composition and the exact same channel:
+   * `composePublishAt` turns the two boxes into an instant with an explicit offset, and
+   * `publish-set-fields` applies the same per-field validators (≥15 minutes out, ≤2 years
+   * out, explicit zone) as the panel. There is deliberately no second set of rules — a
+   * calendar that could schedule something the panel would refuse is a calendar that
+   * writes a value the rest of the app does not believe in.
+   *
+   * THROWS rather than filling the panel's error banner. The refusal belongs to the
+   * popover the operator typed into, which stays open with the value they typed; the
+   * banner here belongs to the one report the panel has open, and putting another item's
+   * refusal in it would attribute the failure to the wrong video.
+   *
+   * The pending channel suggestion is NOT carried here (`withChannelSeed` is not
+   * applied): the suggestion belongs to the item the panel has open, and this call is
+   * about a different one.
+   */
+  async setPublishAtOn(itemId: string, date: string, time: string): Promise<ChosenMetadata> {
+    // Throws on an incomplete pair, or on the hour that does not exist on a
+    // spring-forward morning. Nothing is sent in either case.
+    const iso = composePublishAt(date, time);
+    return await this.writeFieldsOn(itemId, { publishAt: iso });
+  }
+
+  /** Drop another item's schedule. Same channel, same record of when it was dropped. */
+  async clearPublishAtOn(itemId: string): Promise<ChosenMetadata> {
+    return await this.writeFieldsOn(itemId, { publishAt: null });
+  }
+
+  /**
+   * Write fields to an item by id, returning the stored record or throwing the main
+   * process's refusal verbatim.
+   *
+   * Keeps the panel honest when the two views name the same item: if this wrote the item
+   * the panel currently has open, the panel's copy is replaced with what was actually
+   * stored, so the report page cannot go on showing a schedule that has just changed
+   * underneath it.
+   */
+  private async writeFieldsOn(itemId: string, fields: PublishFields): Promise<ChosenMetadata> {
+    const res = await this.electron.publishSetFields(itemId, fields);
+    if (!res.success || !res.data) {
+      throw new Error(res.error ?? 'The main process refused the change and gave no reason.');
+    }
+    if (this._itemId() === itemId) {
+      this._selection.set(res.data);
+    }
+    return res.data;
+  }
+
   /** Podcast episode or not. Strictly boolean — the main process refuses anything else. */
   async setPodcast(isPodcast: boolean): Promise<void> {
     await this.setFields({ isPodcast });

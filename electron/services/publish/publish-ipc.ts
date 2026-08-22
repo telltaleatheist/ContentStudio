@@ -26,6 +26,7 @@ import {
   PublishStoreService,
   GeneratedFallback,
   GeneratedItemSummary,
+  HostReportIndex,
   resolveChosenMetadata,
 } from './publish-store.service';
 import { matchDraft, toFillCandidates } from './video-matcher';
@@ -63,6 +64,103 @@ import * as fs from 'fs';
 
 export { buildFieldPatch };
 
+/**
+ * What one item's selection record says, for a list that shows many items at once.
+ *
+ * A projection, not the record: the calendar and the reports list need to know WHETHER
+ * there is a thumbnail and HOW MANY A/B variants are picked, not the path or the strings.
+ * Sending the whole record for 111 items would put every chosen title and every
+ * description override on the wire for a view that renders none of them.
+ */
+export interface PublishFacts {
+  /** null means "not routed yet" — a real state, and the majority one today. */
+  channelId: string | null;
+  /** ISO with an explicit offset, or null for "no schedule". */
+  publishAt: string | null;
+  /** ISO. When publishAt was last set, including the set that cleared it. */
+  publishAtSetAt: string | null;
+  status: string;
+  videoId: string | null;
+  /** Strict boolean; never absent (upgradeStoredMetadata fills it on read). */
+  isPodcast: boolean;
+  /** ISO. When metadata was last pushed to the linked video, or null for never. */
+  pushedAt: string | null;
+  /** ISO. When the extension last filled Studio's form, or null for never. */
+  filledAt: string | null;
+  hasThumbnail: boolean;
+  /** How many A/B variants are chosen. 0..MAX_AB_VARIANTS. */
+  abCount: number;
+  /**
+   * The first chosen title — the one that becomes the video's title — or null when the
+   * operator has not picked yet.
+   *
+   * The one string from the record worth sending to a list: a calendar chip that says
+   * "Item 1" is useless, and the item's generated `_title` is the source's name, not the
+   * video's. Variants 2 and 3 are not sent; nothing in a list renders them.
+   */
+  mainTitle: string | null;
+}
+
+/**
+ * One generated item plus what the operator has decided about it.
+ *
+ * The join the reports list and the publish calendar both wanted and neither could do:
+ * the display facts live in the job JSON on the output volume, the publish facts live in
+ * `<userData>/publish/selections/items/<itemId>.json`, and joining them in the renderer
+ * meant reading both trees from a sandboxed process on every mount.
+ *
+ * `publish` is null when the operator has never touched the item. That is not missing
+ * data — it is the unstarted state, and the calendar renders it as such.
+ */
+export interface ReportIndexEntry {
+  itemId: string;
+  jobId: string;
+  /** Source filename, else job name, else title — what the operator recognises it by. */
+  label: string;
+  /** The item's own `_title`, else `Item <n>`. What the reports list prints. */
+  displayTitle: string;
+  createdAt: string;
+  /** ISO the list sorts and prints by (job `created_at`, else the file's mtime). */
+  dateIso: string;
+  promptSet: string | null;
+  sourceFilename: string | null;
+  sourceKey: string | null;
+  titleCount: number;
+  jobPath: string;
+  jobSizeBytes: number;
+  itemIndex: number;
+  txtFolder: string | null;
+  txtFilePath: string | null;
+  publish: PublishFacts | null;
+  /**
+   * Why this item's selection record could not be read, or null.
+   *
+   * The row is still returned. A calendar that silently dropped the one item whose
+   * record is corrupt would look exactly like a calendar of everything, and the operator
+   * would find out by missing an upload.
+   */
+  publishFault: string | null;
+}
+
+export interface ReportIndexResponse {
+  entries: ReportIndexEntry[];
+  /** Report files that could not be indexed, each named with its reason. */
+  problems: Array<{ file: string; message: string }>;
+  /** True when the reports directory does not exist at all — not the same as empty. */
+  directoryMissing: boolean;
+  /** The reports directory that was read. */
+  directory: string;
+  /**
+   * Selection records whose item is not in the report index, by item id.
+   *
+   * A record for a report that has been deleted. It cannot be rendered — there is no
+   * title, no date and nothing to open — so it is NAMED rather than rendered or dropped:
+   * the calendar shows the count, and the operator can see that a schedule they set is
+   * no longer attached to anything.
+   */
+  orphanedSelections: string[];
+}
+
 export interface PublishIpcDeps {
   store: PublishStoreService;
   /**
@@ -93,6 +191,15 @@ export interface PublishIpcDeps {
    * that has to look at OTHER items than the one it was asked about.
    */
   listGenerated: () => { items: GeneratedItemSummary[] };
+  /**
+   * The host's BROWSE index of every generated item — the same files `listGenerated`
+   * reads, projected for a list rather than for a join (services/metadata/report-index.ts).
+   *
+   * Injected for the same reason as everything else here: the report format is the
+   * host's. This is what `publish-list-index` joins the selection records onto, and it
+   * is the reason the reports page no longer parses 111 job files in the renderer.
+   */
+  listReportRows: () => HostReportIndex;
   /**
    * Is a stored transcript ref still the file that was linked? Three states, ok /
    * missing / changed (spec §3.1).
@@ -178,6 +285,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
     listRecentUploads,
     listChannels,
     listGenerated,
+    listReportRows,
     resolveTranscriptRef,
     pushApi,
     spreakerApi,
@@ -194,6 +302,14 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       'setupPublishIpc requires listGenerated and resolveTranscriptRef: carry-forward joins ' +
       'items on the source_key their reports recorded and refuses a transcript link it ' +
       'cannot re-resolve. Neither can be inferred here.'
+    );
+  }
+
+  if (typeof listReportRows !== 'function') {
+    throw new Error(
+      'setupPublishIpc requires listReportRows: publish-list-index is the reports page\'s ' +
+      'and the calendar\'s only source of rows, and there is nothing here that could ' +
+      'read the report files itself.'
     );
   }
 
@@ -233,6 +349,86 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
    * index than the rest of this file.
    */
   const carryDeps = { store, listGenerated, readGenerated, listChannels, resolveTranscriptRef };
+
+  /**
+   * Every generated item, joined to what the operator has decided about it.
+   *
+   * ONE call, for two pages. The reports list gets its rows from here instead of reading
+   * and parsing 111 job files in the renderer on every mount, and the publish calendar
+   * gets the join it could not do at all — display facts live on the output volume,
+   * publish facts live under userData, and nothing before this had both.
+   *
+   * The selections are read ONCE into a map rather than per row: 111 rows against 44
+   * records is 111 file reads the other way around, for a page that is meant to have
+   * stopped doing exactly that.
+   *
+   * Three kinds of trouble are reported rather than swallowed, each in its own field: a
+   * report file that will not parse (`problems`), a selection record that will not parse
+   * (`publishFault` on its row), and a selection whose report is gone
+   * (`orphanedSelections`). None of them shortens the list silently.
+   */
+  ipcMain.handle('publish-list-index', async () => {
+    try {
+      const index = listReportRows();
+      const { records, faults } = store.listAllRecords();
+
+      const byItem = new Map(records.map((r) => [r.itemId, r]));
+      const faultByItem = new Map(faults.map((f) => [f.itemId, f.message]));
+
+      const entries: ReportIndexEntry[] = index.rows.map((row): ReportIndexEntry => {
+        const record = byItem.get(row.itemId) ?? null;
+        return {
+          itemId: row.itemId,
+          jobId: row.jobId,
+          label: row.label,
+          displayTitle: row.displayTitle,
+          createdAt: row.createdAt,
+          dateIso: row.dateIso,
+          promptSet: row.promptSet,
+          sourceFilename: row.sourceFilename,
+          sourceKey: row.sourceKey,
+          titleCount: row.titleCount,
+          jobPath: row.jobPath,
+          jobSizeBytes: row.jobSizeBytes,
+          itemIndex: row.itemIndex,
+          txtFolder: row.txtFolder,
+          txtFilePath: row.txtFilePath,
+          publish: record
+            ? {
+                channelId: record.channelId,
+                publishAt: record.publishAt,
+                publishAtSetAt: record.publishAtSetAt,
+                status: record.status,
+                videoId: record.videoId,
+                isPodcast: record.isPodcast,
+                pushedAt: record.pushedAt,
+                filledAt: record.filledAt,
+                hasThumbnail: record.thumbnailPath !== null,
+                abCount: record.chosenTitles.length,
+                mainTitle: record.chosenTitles.length > 0 ? record.chosenTitles[0] : null,
+              }
+            : null,
+          publishFault: faultByItem.get(row.itemId) ?? null,
+        };
+      });
+
+      const known = new Set(index.rows.map((r) => r.itemId));
+      const orphanedSelections = [
+        ...records.filter((r) => !known.has(r.itemId)).map((r) => r.itemId),
+        ...faults.filter((f) => !known.has(f.itemId)).map((f) => f.itemId),
+      ];
+
+      return ok<ReportIndexResponse>({
+        entries,
+        problems: index.problems,
+        directoryMissing: index.directoryMissing,
+        directory: index.directory,
+        orphanedSelections,
+      });
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
 
   /** One item's stored selection, or null when the operator has never touched it. */
   ipcMain.handle('publish-get-selection', async (_e, itemId: string) => {
