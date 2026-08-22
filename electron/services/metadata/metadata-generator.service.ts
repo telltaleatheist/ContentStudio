@@ -374,10 +374,18 @@ export class MetadataGeneratorService {
         };
       }
 
-      // Initialize the job (creates job metadata file with empty items)
+      // Initialize the job (creates job metadata file with empty items).
+      //
+      // The channel is recorded on the job, so a report a week from now says which channel's
+      // brief produced it. It has no default here: the caller resolved it before anything ran
+      // (ipc-handlers), and writing "sample-youtube" — a prompt set this repo has not shipped
+      // in a very long time — onto a real job would be recording a channel that never existed.
+      if (!params.promptSet) {
+        throw new Error('A metadata run must name the channel it is generating for; none was given');
+      }
       const jobInfo = outputHandler.initializeJob(
         jobName,
-        params.promptSet || 'sample-youtube',
+        params.promptSet,
         params.jobId
       );
 

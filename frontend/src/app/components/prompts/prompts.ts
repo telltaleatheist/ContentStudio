@@ -17,6 +17,17 @@ interface PromptSet {
   editorial_prompt?: string;
   instructions_prompt?: string;
   description_links?: string;
+  /**
+   * Set by the main process for every channel this build ships.
+   *
+   * A channel is no longer one editable YAML: what this page shows is ASSEMBLED from the
+   * shared editorial core, the shared per-field instruction blocks and the channel data file.
+   * There is no way to take an edited copy of the assembled string and work out which of those
+   * files the operator meant to change — so the page shows the assembly and says where to edit,
+   * rather than offering a Save that would write somewhere nothing reads.
+   */
+  readOnly?: boolean;
+  readOnlyReason?: string;
 }
 
 interface PromptSetListItem {
@@ -46,6 +57,9 @@ export class Prompts implements OnInit {
   promptSets = signal<PromptSetListItem[]>([]);
   selectedPromptSetId = signal<string | null>(null);
   currentPromptSet = signal<PromptSet | null>(null);
+  /** True for every shipped channel. See PromptSet.readOnly. */
+  readOnly = signal(false);
+  readOnlyReason = signal('');
 
   // Edit mode signals (Metadata)
   editName = signal('');
@@ -104,6 +118,8 @@ export class Prompts implements OnInit {
       this.editEditorialPrompt.set(result.promptSet.editorial_prompt || '');
       this.editInstructionsPrompt.set(result.promptSet.instructions_prompt || '');
       this.editDescriptionLinks.set(result.promptSet.description_links || '');
+      this.readOnly.set(Boolean(result.promptSet.readOnly));
+      this.readOnlyReason.set(result.promptSet.readOnlyReason || '');
     }
   }
 

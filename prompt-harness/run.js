@@ -1,49 +1,61 @@
 #!/usr/bin/env node
 /* eslint-disable no-console */
 /**
- * Prompt Harness — battery-test metadata prompt variants against a local model.
+ * Prompt Harness — run the REAL metadata pipeline against a local model.
  *
- * WHY: iterating on prompt wording by running the full Electron app + a cloud
- * model is slow and costs money. This drives the REAL compiled AIManagerService
- * against a local Ollama model (default cogito:32b) so the assembled prompt is
- * byte-identical to production, but the round-trip is free and fast. Cogito is
- * NOT the final model — it's a cheap stand-in for rapid A/B on prompt wording.
- * Once a variant's wording wins here, port it into electron/assets/*.yml and the
- * live userData prompt_sets, then confirm on the real cloud model.
+ * WHY: iterating on prompt wording by running the whole Electron app against a paid cloud
+ * model is slow and costs money. This drives the REAL compiled services — AIManagerService,
+ * planMetadataUnits, runMetadataTasks — so the assembled prompts are byte-identical to
+ * production, but the round trip is free.
  *
- * It calls generateMetadata() directly with the transcript as-is (no summarizer),
- * which mirrors the short-video production path exactly. Long transcripts get
- * summarized first in the real app; keep harness transcripts short so you're
- * testing the titling prompt, not the summarizer.
+ * WHAT CHANGED, AND WHY THE OLD FLAGS ARE GONE. This used to call `generateMetadata()`, which
+ * was the LEGACY single whole-metadata call, and its "variants" were whole per-channel YAML
+ * prompt sets dropped in prompt-harness/variants/. Neither exists any more: every field is
+ * written by a routed UNIT, and a channel is a small data file inside a shared prompt tree
+ * (electron/assets/prompts/). So the harness now takes an ASSETS ROOT and a CHANNEL, plans the
+ * same units a real run plans, and prints the same prompts a real run sends.
  *
- * PREREQ: build the electron TS once (and after any electron/ change):
- *   npm run build:electron
- * Ollama must be running with the model pulled (e.g. `ollama pull cogito:32b`).
+ * A/B'ING A PROMPT CHANGE is therefore a directory copy rather than a file copy:
  *
- * USAGE:
- *   node prompt-harness/run.js                      # all variants, cogito:32b, 1 run each
- *   node prompt-harness/run.js --runs 3             # 3 runs per variant (see consistency)
- *   node prompt-harness/run.js --variant baseline   # just one variant
- *   node prompt-harness/run.js --model ollama:cogito:14b   # faster/smaller while iterating
- *   node prompt-harness/run.js --no-insights        # test without the analytics block
- *   node prompt-harness/run.js --transcript path.txt --insights path.txt
+ *   cp -R electron/assets/prompts /tmp/prompts-idea && $EDITOR /tmp/prompts-idea/...
+ *   node prompt-harness/run.js --assets electron/assets/prompts --out before.json
+ *   node prompt-harness/run.js --assets /tmp/prompts-idea    --out after.json
+ *
+ * NO CHAPTERS, deliberately: the fixture is a raw transcript with no timings, so this
+ * exercises the TEXT-SUBJECT path — the one that used to fall through to the legacy call and
+ * now plans routed units like everything else.
+ *
+ * PREREQ:
+ *   npm run build:electron        # once, and after any change under electron/
+ *   ollama pull qwen3.8:27b       # or pass --units none to only print prompts
  */
 
 const path = require('path');
 const fs = require('fs');
+const Module = require('module');
 
 const HARNESS_DIR = __dirname;
 const REPO_ROOT = path.join(HARNESS_DIR, '..');
-const AI_MANAGER_PATH = path.join(REPO_ROOT, 'dist', 'main', 'services', 'metadata', 'ai-manager.service.js');
+const DIST = path.join(REPO_ROOT, 'dist', 'main');
+
+// The compiled main process imports electron and electron-log, neither of which exists
+// outside an Electron runtime. Same stub the pure-check tool uses.
+const STUB = path.join(REPO_ROOT, 'tools', '_electron-stub.js');
+const originalResolve = Module._resolveFilename;
+Module._resolveFilename = function (request, ...rest) {
+  if (request === 'electron' || request === 'electron-log') return require.resolve(STUB);
+  return originalResolve.call(this, request, ...rest);
+};
 
 function fail(msg) {
   console.error(`\n✖ ${msg}\n`);
   process.exit(1);
 }
 
-// Resolve a fixture: prefer the local working copy (<base>.txt — gitignored, may
-// hold real/private transcripts or analytics), else the committed <base>.example.txt
-// template so the harness runs out of the box on a fresh clone.
+/**
+ * Prefer the local working copy (<base>.txt — gitignored, may hold real or private material),
+ * else the committed <base>.example.txt so the harness runs out of the box on a fresh clone.
+ */
 function defaultFixture(dir, base) {
   const working = path.join(dir, `${base}.txt`);
   return fs.existsSync(working) ? working : path.join(dir, `${base}.example.txt`);
@@ -51,146 +63,76 @@ function defaultFixture(dir, base) {
 
 function printHelp() {
   console.log(`
-Prompt Harness — battery-test metadata prompt variants against a local model.
+Prompt Harness — run the real metadata pipeline against a local model.
 
   node prompt-harness/run.js [options]
 
 Options:
-  --model <provider:model>  AI model (default: ollama:cogito:32b)
-  --runs <n>                Runs per variant, to see consistency (default: 1)
-  --variant <name>          Only run this variant (basename, no .yml)
-  --source <filename>       Source filename context fed to the prompt
-                            (default: marcus-wray-prosperity-sermon.mp4)
-  --transcript <path>       Override the transcript fixture
-  --insights <path>         Override the insights fixture
-  --no-insights             Run without the CHANNEL PERFORMANCE DATA block
-  --help, -h                This help
-
-Variants live in prompt-harness/variants/*.yml (same schema as a real prompt set).
-Drop a new .yml in there to add a variant. Full output is saved to prompt-harness/out/.
+  --assets <dir>      Prompt assets root (default: electron/assets/prompts)
+  --channel <id>      Channel id from channels/*.yml (default: youtube-telltale)
+  --runs <n>          Runs, to see consistency (default: 1)
+  --units <spec>      Which planned units to actually RUN:
+                        all      every unit (default)
+                        titles   only the unit that writes the titles
+                        none     print the prompts and send nothing
+  --source <filename> Source filename context fed to the prompt
+  --transcript <path> Override the transcript fixture
+  --insights <path>   Override the insights fixture
+  --no-insights       Run without the CHANNEL PERFORMANCE DATA block
+  --out <path>        Write prompts + results as JSON here (also always saved to out/)
+  --prompts <path>    Write the assembled prompts as plain text here
+  --help, -h          This help
 `);
 }
 
 function parseArgs(argv) {
   const args = {
-    model: 'ollama:cogito:32b',
+    assets: path.join(REPO_ROOT, 'electron', 'assets', 'prompts'),
+    channel: 'youtube-telltale',
     runs: 1,
-    variant: null,
+    units: 'all',
     source: 'marcus-wray-prosperity-sermon.mp4',
     transcript: null,
     insights: null,
     noInsights: false,
+    out: null,
+    prompts: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--model') args.model = argv[++i];
-    else if (a === '--runs') args.runs = parseInt(argv[++i], 10);
-    else if (a === '--variant') args.variant = argv[++i];
+    if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
+    else if (a === '--assets') args.assets = path.resolve(argv[++i]);
+    else if (a === '--channel') args.channel = argv[++i];
+    else if (a === '--runs') args.runs = Math.max(1, parseInt(argv[++i], 10) || 1);
+    else if (a === '--units') args.units = argv[++i];
     else if (a === '--source') args.source = argv[++i];
-    else if (a === '--transcript') args.transcript = argv[++i];
-    else if (a === '--insights') args.insights = argv[++i];
+    else if (a === '--transcript') args.transcript = path.resolve(argv[++i]);
+    else if (a === '--insights') args.insights = path.resolve(argv[++i]);
     else if (a === '--no-insights') args.noInsights = true;
-    else if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
-    else fail(`Unknown argument: ${a}  (try --help)`);
+    else if (a === '--out') args.out = path.resolve(argv[++i]);
+    else if (a === '--prompts') args.prompts = path.resolve(argv[++i]);
+    else fail(`Unknown option: ${a}  (--help for usage)`);
   }
-  if (!args.model || !args.model.includes(':')) {
-    fail(`--model must be provider-prefixed, e.g. ollama:cogito:32b (got "${args.model}")`);
+  if (!['all', 'titles', 'none'].includes(args.units)) {
+    fail(`--units must be all, titles or none (got "${args.units}")`);
   }
-  if (!Number.isInteger(args.runs) || args.runs < 1) fail(`--runs must be a positive integer`);
   return args;
 }
 
-function discoverVariants(variantsDir, only) {
-  if (!fs.existsSync(variantsDir)) fail(`No variants directory: ${variantsDir}`);
-  let files = fs.readdirSync(variantsDir).filter((f) => /\.ya?ml$/.test(f)).sort();
-  if (only) {
-    const want = only.replace(/\.ya?ml$/, '');
-    files = files.filter((f) => f.replace(/\.ya?ml$/, '') === want);
-    if (files.length === 0) fail(`Variant "${only}" not found in ${variantsDir}`);
-  }
-  if (files.length === 0) fail(`No .yml variants found in ${variantsDir}`);
-  return files;
-}
-
-async function runVariant(AIManagerService, name, variantsDir, args, transcript, insightsBlock) {
-  const mgr = new AIManagerService({
-    provider: 'ollama',
-    // Both models point at the test model. Summary model is unused for a short
-    // transcript (generateMetadata is called directly), but must be a valid
-    // ollama: model so provider detection initializes Ollama.
-    summarizationModel: args.model,
-    metadataModel: args.model,
-    promptSet: name,
-    promptSetsDir: variantsDir,
-    insightsBlock: insightsBlock || undefined,
-  });
-
-  const ok = await mgr.initialize();
-  if (!ok) {
-    console.error(`  ✖ [${name}] init failed: ${mgr.lastInitError}`);
-    return { variant: name, error: mgr.lastInitError, runs: [] };
-  }
-
-  const runs = [];
-  for (let r = 1; r <= args.runs; r++) {
-    process.stderr.write(`  → [${name}] run ${r}/${args.runs} ... `);
-    const t0 = Date.now();
-    try {
-      const meta = await mgr.generateMetadata(transcript, args.source);
-      const secs = Number(((Date.now() - t0) / 1000).toFixed(1));
-      console.error(`ok (${secs}s, ${meta.titles ? meta.titles.length : 0} titles)`);
-      runs.push({ ok: true, secs, meta });
-    } catch (e) {
-      const secs = Number(((Date.now() - t0) / 1000).toFixed(1));
-      console.error(`FAILED (${secs}s): ${e.message}`);
-      runs.push({ ok: false, secs, error: e.message });
-    }
-  }
-  return { variant: name, runs };
-}
-
-function printReport(results, args) {
-  const bar = '='.repeat(74);
-  console.log(`\n${bar}`);
-  console.log('RESULTS — read the titles: which variant stays faithful to who said what,');
-  console.log('and reads the sarcasm as sarcasm rather than a sincere claim?');
-  console.log(bar);
-  for (const res of results) {
-    console.log(`\n### ${res.variant}`);
-    if (res.error) { console.log(`  (init error: ${res.error})`); continue; }
-    res.runs.forEach((run, i) => {
-      const tag = args.runs > 1 ? ` [run ${i + 1}]` : '';
-      if (!run.ok) { console.log(`  ✖${tag} ${run.error}`); return; }
-      const meta = run.meta;
-      console.log(`  titles${tag} (${run.secs}s):`);
-      (meta.titles || []).forEach((t, idx) => console.log(`    ${String(idx + 1).padStart(2)}. ${t}`));
-      if (meta.thumbnail_text && meta.thumbnail_text.length) {
-        console.log(`  thumbnail_text: ${meta.thumbnail_text.slice(0, 6).join('  ·  ')}`);
-      }
-    });
-  }
-  console.log(`\n${'-'.repeat(74)}`);
-}
-
-function saveReport(results, args, fixtures) {
-  const outDir = path.join(HARNESS_DIR, 'out');
-  fs.mkdirSync(outDir, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const outPath = path.join(outDir, `run-${stamp}.json`);
-  fs.writeFileSync(outPath, JSON.stringify({ args, fixtures, results }, null, 2));
-  console.log(`Full output (all fields, all runs) saved: ${path.relative(process.cwd(), outPath)}\n`);
-}
-
 async function main() {
-  if (!fs.existsSync(AI_MANAGER_PATH)) {
-    fail(`Compiled service not found at ${AI_MANAGER_PATH}\n  Build it first:  npm run build:electron`);
+  if (!fs.existsSync(DIST)) {
+    fail(`Compiled main process not found at ${DIST}\n  Build it first:  npm run build:electron`);
   }
-  const { AIManagerService } = require(AI_MANAGER_PATH);
-
   const args = parseArgs(process.argv.slice(2));
-  const variantsDir = path.join(HARNESS_DIR, 'variants');
-  const fixturesDir = path.join(HARNESS_DIR, 'fixtures');
 
+  const { AIManagerService } = require(path.join(DIST, 'services/metadata/ai-manager.service.js'));
+  const tasks = require(path.join(DIST, 'services/metadata/metadata-tasks.js'));
+  const routing = require(path.join(DIST, 'services/metadata/metadata-routing.js'));
+  const entities = require(path.join(DIST, 'services/metadata/entity-extraction.js'));
+
+  if (!fs.existsSync(args.assets)) fail(`Prompt assets not found: ${args.assets}`);
+
+  const fixturesDir = path.join(HARNESS_DIR, 'fixtures');
   const transcriptPath = args.transcript || defaultFixture(fixturesDir, 'transcript');
   if (!fs.existsSync(transcriptPath)) fail(`Transcript fixture not found: ${transcriptPath}`);
   const transcript = fs.readFileSync(transcriptPath, 'utf-8').trim();
@@ -198,34 +140,117 @@ async function main() {
   const insightsPath = args.insights || defaultFixture(fixturesDir, 'insights');
   let insightsBlock = '';
   if (!args.noInsights) {
-    if (!fs.existsSync(insightsPath)) fail(`Insights fixture not found: ${insightsPath}  (use --no-insights to skip)`);
+    if (!fs.existsSync(insightsPath)) fail(`Insights fixture not found: ${insightsPath}  (--no-insights to skip)`);
     insightsBlock = fs.readFileSync(insightsPath, 'utf-8').trim();
   }
 
-  const variantFiles = discoverVariants(variantsDir, args.variant);
+  /**
+   * `promptSetsDir` is the PARENT of the assets root, because AIManagerService looks for
+   * `<promptSetsDir>/prompts` — exactly as it does against userData in the app.
+   */
+  const mgr = new AIManagerService({
+    provider: 'ollama',
+    summarizationModel: routing.SUMMARIZATION_MODEL,
+    promptSet: args.channel,
+    promptSetsDir: path.dirname(args.assets),
+    insightsBlock: insightsBlock || undefined,
+  });
+  const ok = await mgr.initialize();
+  if (!ok) fail(`AIManagerService init failed: ${mgr.lastInitError}`);
+
+  // The text-subject path: no chapters, so the transcript IS the subject every unit reads.
+  const plan = tasks.planMetadataUnits(
+    routing.resolveMetadataRouting(undefined),
+    'http://localhost:11434',
+    mgr,
+    Boolean(insightsBlock),
+    /* hasChapters */ false
+  );
+
+  const warnings = [];
+  const ctx = {
+    content: transcript,
+    sourceLabel: args.source,
+    chapterSubjects: [],
+    chapterDetails: [],
+    videoTitle: args.source,
+    promptSetName: args.channel,
+    entities: entities.topEntities(transcript, 12),
+    keyPhrases: entities.candidateKeyPhrases(transcript).slice(0, 40),
+    contentText: transcript,
+    warn: (m) => { warnings.push(m); console.error(`  ! ${m}`); },
+  };
 
   console.error(`\nPrompt Harness`);
-  console.error(`  model:      ${args.model}`);
+  console.error(`  assets:     ${path.relative(REPO_ROOT, args.assets)}`);
+  console.error(`  channel:    ${args.channel}`);
   console.error(`  transcript: ${path.relative(REPO_ROOT, transcriptPath)} (${transcript.length} chars)`);
   console.error(`  insights:   ${args.noInsights ? '(disabled)' : path.relative(REPO_ROOT, insightsPath)}`);
-  console.error(`  variants:   ${variantFiles.map((f) => f.replace(/\.ya?ml$/, '')).join(', ')}`);
-  console.error(`  runs each:  ${args.runs}\n`);
+  console.error(`  plan:       ${plan.summary}`);
+  console.error(`  running:    ${args.units}\n`);
 
-  const results = [];
-  for (const file of variantFiles) {
-    const name = file.replace(/\.ya?ml$/, '');
-    // eslint-disable-next-line no-await-in-loop
-    results.push(await runVariant(AIManagerService, name, variantsDir, args, transcript, insightsBlock));
+  const prompts = tasks.buildTaskPromptsForDisplay({ plan, ctx });
+  const promptText = prompts.join('\n\n\n');
+  if (args.prompts) {
+    fs.writeFileSync(args.prompts, promptText, 'utf8');
+    console.error(`  prompts written: ${args.prompts} (${promptText.length} chars)`);
   }
 
-  printReport(results, args);
-  saveReport(results, args, {
-    transcript: path.relative(REPO_ROOT, transcriptPath),
-    insights: args.noInsights ? null : path.relative(REPO_ROOT, insightsPath),
+  const wanted = plan.units.filter((u) => {
+    if (args.units === 'none') return false;
+    if (args.units === 'titles') return u.fields.includes('titles');
+    return true;
   });
 
-  // AIManagerService (via electron-log / queue-manager) leaves handles open that
-  // keep the event loop alive; force a clean exit.
+  const runs = [];
+  for (let r = 1; r <= args.runs && wanted.length > 0; r++) {
+    process.stderr.write(`  → run ${r}/${args.runs} ... `);
+    const t0 = Date.now();
+    const merged = {};
+    let error = null;
+    try {
+      for (const unit of wanted) {
+        Object.assign(merged, await unit.generate(ctx));
+      }
+      // The grounding check, run exactly as production runs it, so the harness reports the
+      // same declared warnings the app would.
+      const grounding = tasks.titleGroundingText(ctx);
+      const ungrounded = tasks.ungroundedTitles(merged.titles, grounding);
+      if (ungrounded.length > 0) merged._ungrounded = ungrounded;
+    } catch (e) {
+      error = e.message;
+    }
+    const secs = Number(((Date.now() - t0) / 1000).toFixed(1));
+    console.error(error ? `FAILED (${secs}s): ${error}` : `ok (${secs}s, ${(merged.titles || []).length} titles)`);
+    runs.push({ run: r, secs, error, fields: merged });
+  }
+  for (const unit of plan.units) {
+    if (typeof unit.unload === 'function') await unit.unload();
+  }
+
+  const bar = '='.repeat(74);
+  console.log(`\n${bar}`);
+  console.log(`TITLES — ${args.channel} via ${path.relative(REPO_ROOT, args.assets)}`);
+  console.log(bar);
+  for (const run of runs) {
+    console.log(`\n--- run ${run.run} (${run.secs}s)`);
+    if (run.error) { console.log(`  ✖ ${run.error}`); continue; }
+    (run.fields.titles || []).forEach((t, i) => console.log(`  ${String(i + 1).padStart(2)}. ${t}  [${t.length}]`));
+    if (run.fields.thumbnail_text) console.log(`  thumbnail: ${run.fields.thumbnail_text.slice(0, 6).join('  ·  ')}`);
+    if (run.fields._ungrounded) {
+      console.log(`  ungrounded: ${run.fields._ungrounded.map((u) => u.invented.join(', ')).join(' | ')}`);
+    }
+  }
+
+  const payload = { args: { ...args }, plan: plan.summary, prompts, runs, warnings };
+  const outDir = path.join(HARNESS_DIR, 'out');
+  fs.mkdirSync(outDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  fs.writeFileSync(path.join(outDir, `run-${stamp}.json`), JSON.stringify(payload, null, 2));
+  if (args.out) fs.writeFileSync(args.out, JSON.stringify(payload, null, 2));
+  console.log(`\nFull output saved: ${path.relative(process.cwd(), path.join(outDir, `run-${stamp}.json`))}\n`);
+
+  // The compiled services keep handles open (queue manager timers); force a clean exit.
   process.exit(0);
 }
 

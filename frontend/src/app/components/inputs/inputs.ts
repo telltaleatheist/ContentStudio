@@ -145,6 +145,7 @@ export class Inputs implements OnInit, OnDestroy {
           this.inputsState.masterPromptSet.set(settings.promptSet);
         }
         this.inputsState.markSettingsLoaded();
+        this.ensureRealPromptSetSelected();
       } catch (error) {
         this.notificationService.error('Settings Error', 'Failed to load settings: ' + (error as Error).message);
       }
@@ -156,10 +157,27 @@ export class Inputs implements OnInit, OnDestroy {
       const result = await this.electron.listPromptSets();
       if (result.success) {
         this.availablePromptSets.set(result.promptSets);
+        this.ensureRealPromptSetSelected();
       }
     } catch (error) {
       this.notificationService.error('Prompt Sets Error', 'Failed to load prompt sets: ' + (error as Error).message);
     }
+  }
+
+  /**
+   * Make sure the selected channel is one that EXISTS.
+   *
+   * A stored selection can name a channel a later build removed, and a fresh install has no
+   * stored selection at all. Either way the picker must show what will actually be used: the
+   * first channel the main process listed, chosen here and visible in the dropdown, rather than
+   * an id that quietly resolves to nothing when the run starts.
+   */
+  private ensureRealPromptSetSelected(): void {
+    const available = this.availablePromptSets();
+    if (available.length === 0) return;
+    const current = this.inputsState.masterPromptSet();
+    if (current && available.some((set) => set.id === current)) return;
+    this.inputsState.masterPromptSet.set(available[0].id);
   }
 
   get selectedItems(): InputItem[] {

@@ -1,73 +1,96 @@
 # Prompt Harness
 
-A fast, free rig for iterating on the metadata-generation **prompt wording**.
+A fast, free rig for iterating on the metadata **prompt wording**.
 
-Instead of running the whole Electron app against a paid cloud model every time you
-tweak a prompt, this sends a fixed test transcript + sample analytics data through
-the **real** `AIManagerService` (so the assembled prompt is byte-identical to
-production) to a **local** Ollama model — by default `cogito:32b`. You get titles
-back in seconds, for free, and can A/B prompt variants side by side.
+Instead of running the whole Electron app against a paid cloud model every time you tweak a
+prompt, this drives the **real** compiled services — `AIManagerService`, `planMetadataUnits`,
+`runMetadataTasks` — against local Ollama. The prompts it prints are byte-identical to the ones
+production sends, because they are assembled by the same code.
 
-`cogito:32b` is **not** the final model. It's a cheap stand-in for rapid iteration.
-Once a variant wins here, port its wording into the real prompt sets
-(`electron/assets/youtube-*.yml` and `~/Library/Application Support/contentstudio/prompt_sets/`),
-then confirm the win on the actual cloud model in the app.
+## What changed
+
+This used to call `generateMetadata()`, which was the **legacy single whole-metadata call**, and
+its "variants" were whole per-channel YAML prompt sets in `prompt-harness/variants/`. Neither
+exists any more:
+
+- every field is written by a routed **unit** (`metadata-tasks.ts`), and
+- a channel is a small **data** file inside one shared prompt tree
+  (`electron/assets/prompts/`).
+
+So the harness takes an **assets root** and a **channel**, plans the same units a real run
+plans, and prints the same prompts a real run sends. `prompt-harness/variants/` is gone; a
+variant is now a copy of the prompt tree.
 
 ## Prerequisites
 
 ```bash
 npm run build:electron        # once, and after any change under electron/
-ollama pull cogito:32b        # once (or use --model with a model you have)
+ollama pull qwen3.8:27b       # the shipped default for the packaging fields
+ollama pull qwen3.5:9b        # the shipped default for the description and tags
 ```
-Ollama must be running (`http://localhost:11434`).
+
+Ollama must be running (`http://localhost:11434`). `--units none` needs neither model — it
+assembles the prompts and sends nothing.
 
 ## Run
 
 ```bash
-node prompt-harness/run.js                    # all variants, cogito:32b, 1 run each
-node prompt-harness/run.js --runs 3           # 3 runs per variant (check consistency)
-node prompt-harness/run.js --variant baseline # one variant only
-node prompt-harness/run.js --model ollama:cogito:14b   # smaller/faster while iterating
-node prompt-harness/run.js --no-insights      # test without the analytics block
+node prompt-harness/run.js                                  # plan, print, run every unit once
+node prompt-harness/run.js --units none --prompts out.txt   # assemble only; write the prompts
+node prompt-harness/run.js --units titles --runs 3          # just the packaging call, 3 times
+node prompt-harness/run.js --channel youtube-unfiltered     # a different channel
+node prompt-harness/run.js --no-insights                    # without the analytics block
 node prompt-harness/run.js --help
 ```
 
-Titles print side by side; the full metadata (every field, every run) is saved to
-`prompt-harness/out/run-<timestamp>.json`.
+Titles print with their character counts. The full output — every assembled prompt, every
+field, every run, plus any declared warnings — is saved to `prompt-harness/out/`.
 
-## How to iterate on a prompt
+## A/B'ing a prompt change
 
-1. Copy a variant: `cp prompt-harness/variants/baseline.yml prompt-harness/variants/my-idea.yml`
-2. Edit `my-idea.yml` (same schema as any real prompt set: `name`, `editorial_prompt`,
-   `instructions_prompt`, `description_links`).
-3. `node prompt-harness/run.js` and compare `my-idea` against `baseline`.
-4. Keep the wording that produces more accurate titles; discard the rest.
+A variant is a **directory copy** now, which is the honest shape: the thing under test might be
+one field's instruction block, the shared editorial core, or a channel's own data.
+
+```bash
+cp -R electron/assets/prompts /tmp/prompts-idea
+$EDITOR /tmp/prompts-idea/shared/fields/titles.yml
+
+node prompt-harness/run.js --assets electron/assets/prompts --units titles --runs 3 \
+  --out before.json --prompts before-prompt.txt
+node prompt-harness/run.js --assets /tmp/prompts-idea      --units titles --runs 3 \
+  --out after.json  --prompts after-prompt.txt
+
+diff before-prompt.txt after-prompt.txt
+```
+
+Keep the wording that produces more accurate titles; discard the rest. Then port the winner
+into `electron/assets/prompts/` — the app installs it into
+`~/Library/Application Support/contentstudio/prompt_sets/prompts/` on next start, and refuses to
+overwrite a file you have edited there.
 
 ## What's in the box
 
-- `fixtures/transcript.example.txt` — a short test transcript built with deliberate
-  **traps**: a jet-grift quote that belongs to the preacher (not the host), and a
-  sarcastic line. A faithful prompt attributes the quote correctly and doesn't turn the
-  sarcasm into a sincere claim; a shallow one misattributes or takes the mockery
-  literally. This is the exact failure mode that made Sonnet's titles catchy-but-wrong.
-- `fixtures/insights.example.txt` — sample `CHANNEL PERFORMANCE DATA` block, byte-format
+- `fixtures/transcript.example.txt` — a short test transcript built with deliberate **traps**: a
+  jet-grift quote that belongs to the preacher (not the host), and a sarcastic line. A faithful
+  prompt attributes the quote correctly and doesn't turn the sarcasm into a sincere claim; a
+  shallow one misattributes or takes the mockery literally.
+- `fixtures/insights.example.txt` — a sample `CHANNEL PERFORMANCE DATA` block, byte-format
   identical to what the live analytics loop injects.
 
-> **Fixtures:** the harness reads `fixtures/transcript.txt` / `fixtures/insights.txt` if
-> present, else the committed `*.example.txt`. Drop your **own** transcript or real channel
-> analytics into the plain `.txt` names to test against real content — those are gitignored,
-> so private data never lands in the repo.
-- `variants/baseline.yml` — an exact copy of the current `youtube-telltale.yml` prompt.
-- `variants/general-fidelity.yml` — baseline + one **general** fidelity principle
-  (faithful to *who said what and what they meant*, not just the facts). A candidate fix
-  for the misattribution problem, written as a general rule rather than a list of specific
-  patches. Evaluate it here; keep or discard.
+> **Fixtures:** the harness reads `fixtures/transcript.txt` / `fixtures/insights.txt` if present,
+> else the committed `*.example.txt`. Drop your **own** transcript or real channel analytics into
+> the plain `.txt` names to test against real content — those are gitignored, so private data
+> never lands in the repo.
 
 ## Notes
 
-- The harness calls `generateMetadata()` directly with the transcript as-is (no
-  summarizer), which mirrors the **short-video** production path. Keep test transcripts
-  short so you're testing the titling prompt, not the summarizer.
-- Ollama temperature is fixed at 0.7 (same as production). Use `--runs N` to see how much
-  a variant's output varies run to run.
+- **No chapters, deliberately.** The fixture is a raw transcript with no timings, so this
+  exercises the **text-subject** path — the one that used to fall through to the legacy
+  whole-metadata call and now plans routed units like everything else. That also means its tags
+  are written by a model rather than assembled from pools, and the run says so.
+- The **grounding check** runs here exactly as it runs in the app: any title naming a proper
+  noun the inputs do not contain is reported under `ungrounded`. The harness reports it and
+  moves on — it never drops or rewrites a title, and neither does production.
+- Sampling matches production (temperature 0.7, no pinned seed). Use `--runs N` to see how much
+  a variant varies run to run.
 - `out/` is gitignored.

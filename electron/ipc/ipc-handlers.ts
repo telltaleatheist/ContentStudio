@@ -53,7 +53,7 @@ import {
   resolveMetadataRouting,
   validateRoutingSelections,
 } from '../services/metadata/metadata-routing';
-import { PROMPTS_SUBDIR, initPromptAssets } from '../services/metadata/prompt-assets';
+import { PROMPTS_SUBDIR, initPromptAssets, promptAssets } from '../services/metadata/prompt-assets';
 import { setupPublishIpc } from '../services/publish/publish-ipc';
 import { SpreakerConfigService } from '../services/spreaker/spreaker-config.service';
 import { SpreakerApiService } from '../services/spreaker/spreaker-api.service';
@@ -1198,7 +1198,22 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       // registered analytics channel that has computed insights, append the
       // "CHANNEL PERFORMANCE DATA" block to the generation prompt. null = no
       // mapping / no insights yet — expected state, block simply omitted.
-      const activePromptSet = params.promptSet || settings.promptSet || 'sample-youtube';
+      /**
+       * The channel this run publishes to. NO DEFAULT.
+       *
+       * This used to end `|| 'sample-youtube'`, which named a prompt set that has not existed
+       * in this repo for as long as anyone can check — so a run with no channel selected went
+       * looking for a file that was never there and failed later, somewhere else, saying
+       * something unrelated. A missing channel is a missing decision and it fails here, naming
+       * the channels that do exist.
+       */
+      const activePromptSet = params.promptSet || settings.promptSet;
+      if (!activePromptSet) {
+        const known = promptAssets().channelIds().join(', ');
+        throw new Error(
+          `No channel selected for this run: neither the request nor Settings names one. Pick one of: ${known}`
+        );
+      }
       const insightsBlock = resolveInsightsBlockForPromptSet(analytics.analyticsStore, activePromptSet);
 
       // Prepare metadata generation parameters
@@ -1457,39 +1472,31 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     return { success: true, path: promptSetsDir };
   });
 
-  // List all prompt sets
+  /**
+   * List the channels, for the channel picker.
+   *
+   * IT READS THE ASSETS NOW, not the directory. It used to `readdirSync` the prompt-sets
+   * folder and treat every .yml in it as a selectable channel, which stopped being true when a
+   * channel became a small data file inside prompts/channels/ — and which would otherwise have
+   * listed whatever superseded or hand-edited files happen to be lying around beside them.
+   *
+   * `instructions_prompt` is still returned because the analytics screen reads it to work out
+   * which fields a channel publishes. It is the assembled one.
+   */
   ipcMain.handle('list-prompt-sets', async () => {
     try {
-      const promptSetsDir = getPromptSetsDirectory();
-
-      // Ensure directory exists (creates if missing)
-      if (!fs.existsSync(promptSetsDir)) {
-        fs.mkdirSync(promptSetsDir, { recursive: true });
-        log.info(`Created prompt sets directory: ${promptSetsDir}`);
-      }
-
-      const files = fs.readdirSync(promptSetsDir);
-      const promptSets = [];
-
-      for (const file of files) {
-        // summarization_prompts.yml is pipeline config, not a selectable prompt set
-        if (file.startsWith('summarization_prompts')) {
-          continue;
-        }
-        if (file.endsWith('.yml') || file.endsWith('.yaml')) {
-          const filePath = path.join(promptSetsDir, file);
-          const content = fs.readFileSync(filePath, 'utf8');
-          const parsed: any = yaml.load(content);
-
-          promptSets.push({
-            id: file.replace(/\.(yml|yaml)$/, ''),
-            name: parsed.name || file,
-            platform: parsed.platform || 'youtube', // Default to youtube for backward compat
-            instructions_prompt: parsed.instructions_prompt || parsed.generation_instructions || ''
-          });
-        }
-      }
-
+      const assets = promptAssets();
+      const promptSets = assets.channelIds().map((id: string) => {
+        const channel = assets.channel(id);
+        return {
+          id: channel.id,
+          name: channel.name,
+          platform: id.startsWith('podcast-') ? 'podcast' : 'youtube',
+          instructions_prompt: channel.fields
+            .map((field: string) => assets.fieldSection(channel, field))
+            .join('\n\n'),
+        };
+      });
       return { success: true, promptSets };
     } catch (error) {
       log.error('Error listing prompt sets:', error);
@@ -1497,28 +1504,38 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     }
   });
 
-  // Get a specific prompt set
+  /** One channel, assembled exactly as generation assembles it. Read-only — see below. */
   ipcMain.handle('get-prompt-set', async (_event, promptSetId: string) => {
     try {
-      const promptSetsDir = getPromptSetsDirectory();
-      const filePath = path.join(promptSetsDir, `${promptSetId}.yml`);
-
-      if (!fs.existsSync(filePath)) {
-        return { success: false, error: 'Prompt set not found' };
+      const assets = promptAssets();
+      if (!assets.hasChannel(promptSetId)) {
+        return { success: false, error: `No channel "${promptSetId}" (known: ${assets.channelIds().join(', ')})` };
       }
-
-      const content = fs.readFileSync(filePath, 'utf8');
-      const parsed: any = yaml.load(content);
-
+      const channel = assets.channel(promptSetId);
       return {
         success: true,
         promptSet: {
-          id: promptSetId,
-          name: parsed.name || promptSetId,
-          editorial_prompt: parsed.editorial_prompt || parsed.editorial_guidelines || '',
-          instructions_prompt: parsed.instructions_prompt || parsed.generation_instructions || '',
-          description_links: parsed.description_links || ''
-        }
+          id: channel.id,
+          name: channel.name,
+          editorial_prompt: assets.editorialPrompt(channel),
+          instructions_prompt: channel.fields
+            .map((field: string) => assets.fieldSection(channel, field))
+            .join('\n\n'),
+          description_links: channel.descriptionLinks,
+          /**
+           * Read-only, and the renderer is TOLD so rather than left to discover it by having a
+           * save silently do nothing. What is returned above is ASSEMBLED from several files —
+           * the shared editorial core, the shared per-field blocks, this channel's data — and
+           * there is no way to take an edited copy of the assembled string and work out which
+           * of those the operator meant to change.
+           */
+          readOnly: true,
+          readOnlyReason:
+            'Prompts live in ' + path.join(getPromptSetsDirectory(), PROMPTS_SUBDIR) + '. This view shows what ' +
+            'that assembles to for this channel; edit the files there — shared/editorial-core.yml for the voice ' +
+            'and doctrine, shared/fields/*.yml for a single field, channels/*.yml for what this channel is and ' +
+            'publishes.',
+        },
       };
     } catch (error) {
       log.error('Error getting prompt set:', error);
@@ -1526,108 +1543,28 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     }
   });
 
-  // Create a new prompt set
-  ipcMain.handle('create-prompt-set', async (_event, promptSet: any) => {
-    try {
-      const promptSetsDir = getPromptSetsDirectory();
-
-      // Create a safe filename from the name
-      const safeId = promptSet.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      const filePath = path.join(promptSetsDir, `${safeId}.yml`);
-
-      // Check if already exists
-      if (fs.existsSync(filePath)) {
-        return { success: false, error: 'A prompt set with this name already exists' };
-      }
-
-      // Auto-append {subject} to editorial_prompt if not present
-      let editorialPrompt = promptSet.editorial_prompt || '';
-      if (!editorialPrompt.includes('{subject}')) {
-        editorialPrompt = editorialPrompt + '\n\n{subject}';
-      }
-
-      // Create the YAML content
-      const yamlContent = {
-        name: promptSet.name,
-        editorial_prompt: editorialPrompt,
-        instructions_prompt: promptSet.instructions_prompt || '',
-        description_links: promptSet.description_links || ''
-      };
-
-      const yamlStr = yaml.dump(yamlContent, { lineWidth: -1, noRefs: true });
-      fs.writeFileSync(filePath, yamlStr, 'utf8');
-
-      log.info(`Created new prompt set: ${safeId}`);
-      return { success: true, id: safeId };
-    } catch (error) {
-      log.error('Error creating prompt set:', error);
-      return { success: false, error: String(error) };
-    }
+  /**
+   * Creating, editing and deleting a channel from inside the app is NOT SUPPORTED, and says so.
+   *
+   * These three used to write a flat YAML into the prompt-sets directory. Nothing reads those
+   * files any more, so leaving the handlers in place would let the operator write a prompt set,
+   * see it saved, and have it never once reach a model — which is the exact failure mode this
+   * whole change exists to remove. They refuse, and the refusal names where the prompts
+   * actually are.
+   */
+  const promptEditingUnsupported = (verb: string) => ({
+    success: false,
+    error:
+      `${verb} a channel from inside the app is not supported in this build. Prompts live in ` +
+      `${path.join(getPromptSetsDirectory(), PROMPTS_SUBDIR)} as a set of files — shared/editorial-core.yml for ` +
+      `the voice and doctrine, shared/fields/*.yml for one field's instructions, channels/*.yml for what a ` +
+      `channel is and which fields it publishes. Edit those. (Anything saved here would be written and never ` +
+      `read, which is worse than this message.)`,
   });
 
-  // Update an existing prompt set
-  ipcMain.handle('update-prompt-set', async (_event, promptSetId: string, promptSet: any) => {
-    try {
-      const promptSetsDir = getPromptSetsDirectory();
-      const filePath = path.join(promptSetsDir, `${promptSetId}.yml`);
-
-      if (!fs.existsSync(filePath)) {
-        return { success: false, error: 'Prompt set not found' };
-      }
-
-      // Validate that {subject} is present in editorial_prompt
-      const editorialPrompt = promptSet.editorial_prompt || '';
-      if (!editorialPrompt.includes('{subject}')) {
-        return { success: false, error: 'Editorial prompt must contain {subject} placeholder' };
-      }
-
-      // Read existing file
-      const content = fs.readFileSync(filePath, 'utf8');
-      const existingData: any = yaml.load(content) || {};
-
-      // Update the fields
-      existingData.name = promptSet.name || existingData.name;
-      existingData.editorial_prompt = editorialPrompt;
-      existingData.instructions_prompt = promptSet.instructions_prompt || '';
-      existingData.description_links = promptSet.description_links || '';
-
-      // Remove old fields if they exist
-      delete existingData.platform;
-      delete existingData.editorial_guidelines;
-      delete existingData.generation_instructions;
-
-      // Write back
-      const yamlStr = yaml.dump(existingData, { lineWidth: -1, noRefs: true });
-      fs.writeFileSync(filePath, yamlStr, 'utf8');
-
-      log.info(`Updated prompt set: ${promptSetId}`);
-      return { success: true };
-    } catch (error) {
-      log.error('Error updating prompt set:', error);
-      return { success: false, error: String(error) };
-    }
-  });
-
-  // Delete a prompt set
-  ipcMain.handle('delete-prompt-set', async (_event, promptSetId: string) => {
-    try {
-      const promptSetsDir = getPromptSetsDirectory();
-      const filePath = path.join(promptSetsDir, `${promptSetId}.yml`);
-
-      if (!fs.existsSync(filePath)) {
-        return { success: false, error: 'Prompt set not found' };
-      }
-
-      fs.unlinkSync(filePath);
-
-      log.info(`Deleted prompt set: ${promptSetId}`);
-      return { success: true };
-    } catch (error) {
-      log.error('Error deleting prompt set:', error);
-      return { success: false, error: String(error) };
-    }
-  });
-
+  ipcMain.handle('create-prompt-set', async () => promptEditingUnsupported('Creating'));
+  ipcMain.handle('update-prompt-set', async () => promptEditingUnsupported('Editing'));
+  ipcMain.handle('delete-prompt-set', async () => promptEditingUnsupported('Deleting'));
   // Get job history
   // Returns only text/subject-input jobs from the last 4 weeks.
   // Auto-prunes older job metadata files.

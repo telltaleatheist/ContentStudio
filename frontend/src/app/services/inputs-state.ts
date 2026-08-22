@@ -53,7 +53,15 @@ export class InputsStateService {
 
   // Master controls
   compilationMode = signal(false); // If true, all items use the same prompt set
-  masterPromptSet = signal('sample-youtube'); // Default prompt set
+  /**
+   * The channel every item in this batch publishes to.
+   *
+   * EMPTY until something real sets it — the persisted setting, or the first channel the main
+   * process actually lists. It used to be seeded with 'sample-youtube', a prompt set this repo
+   * has not shipped in a very long time, so a fresh install would send a channel id that
+   * resolves to nothing.
+   */
+  masterPromptSet = signal('');
 
   // Generation state
   generationState = signal<GenerationState>({
