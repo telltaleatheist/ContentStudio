@@ -341,6 +341,17 @@
     }
   }
 
+  .ab-window {
+    margin: 0 0 0.5rem;
+    color: var(--text-secondary, #666);
+    font-size: 0.85rem;
+  }
+
+  .ab-observation {
+    margin-right: 0.5rem;
+    color: var(--text-secondary, #666);
+  }
+
   .term-chips {
     display: flex;
     flex-wrap: wrap;

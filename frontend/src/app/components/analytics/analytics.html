@@ -317,13 +317,33 @@
           </div>
         }
 
-        @if (insights.abLearnings.length > 0) {
-          <h4 class="table-heading">A/B learnings</h4>
+        @if (insights.abTitleRules; as ab) {
+          <h4 class="table-heading">A/B title evidence</h4>
+          <p class="ab-window">
+            @if (ab.decidedTests > 0) {
+              {{ ab.decidedTests }} decided tests, {{ ab.earliestDecidedAt }} to {{ ab.latestDecidedAt }}
+            } @else {
+              No decided tests yet
+            }
+          </p>
           <ul class="ab-list">
-            @for (ab of insights.abLearnings; track ab.winner) {
-              <li>Winner: "{{ ab.winner }}" (+{{ ab.liftPct }}% lift) of {{ ab.variants.length }} variants</li>
+            @for (rule of ab.rules; track rule.id) {
+              <li>{{ rule.directive }} <em>(won {{ rule.wonAlone }} / lost {{ rule.lostAlone }}, {{ rule.confidence }})</em></li>
+            } @empty {
+              <li>No rule cleared the evidence threshold. Observed, not asserted:
+                @for (obs of ab.observations; track obs.id) {
+                  <span class="ab-observation">{{ obs.id }} won {{ obs.wonAlone }} / lost {{ obs.lostAlone }}</span>
+                }
+              </li>
             }
           </ul>
+          @if (ab.exemplars.length > 0) {
+            <ul class="ab-list">
+              @for (ex of ab.exemplars; track ex.winner) {
+                <li>Winner: "{{ ex.winner }}" (+{{ ex.liftPts }} pts watch-time share) beat "{{ ex.beat }}"</li>
+              }
+            </ul>
+          }
         }
 
         @if (insights.topSearchTerms.length > 0) {
