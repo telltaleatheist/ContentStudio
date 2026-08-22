@@ -137,7 +137,7 @@ export interface ChapterPipelineResult {
 /** Stage 1 cuts the transcript into stretches this long; also the accuracy of a raw junction. */
 const STRETCH_SECONDS = 45;
 /** YouTube refuses a chapter list with fewer than 3 entries; also the over-collapse floor. */
-const MIN_CHAPTERS = 3;
+export const MIN_CHAPTERS = 3;
 const DEFAULT_NUM_CTX = 16384;
 /** Post-placement dedupe: boundaries closer together than this collide. */
 const MIN_BOUNDARY_GAP = 5;
@@ -158,8 +158,12 @@ const QUOTE_MATCH_THRESHOLD = 0.5;
 /**
  * Cadence measured across 3,000+ published chapters. Drives both the target chapter
  * count and the minimum spacing between selected boundaries.
+ *
+ * EXPORTED because the 27B single-call path (chapter-single-call.service.ts) derives its
+ * chapter-count budget and its minimum gap from this same table. There is one cadence
+ * policy in this app and this is it — a second copy of these numbers would drift.
  */
-function targetSecondsFor(durationSeconds: number): number {
+export function targetSecondsFor(durationSeconds: number): number {
   if (durationSeconds < 10 * 60) return 2.2 * 60;
   if (durationSeconds < 30 * 60) return 3.5 * 60;
   if (durationSeconds < 60 * 60) return 5.6 * 60;
@@ -167,7 +171,7 @@ function targetSecondsFor(durationSeconds: number): number {
 }
 
 /** Lowercase, drop apostrophes, split on anything else. Contractions stay one word. */
-function normalizeWords(text: string): string[] {
+export function normalizeWords(text: string): string[] {
   return text
     .toLowerCase()
     .replace(/['’]/g, '')
@@ -212,7 +216,7 @@ function speakerRoleOf(segment: SRTSegment): SpeakerRole | null {
 }
 
 /** One caption cue, with its slice of the flattened word stream. */
-interface Cue {
+export interface Cue {
   startSec: number;
   endSec: number;
   text: string;
@@ -239,10 +243,67 @@ interface Stretch {
  * ~7-word wrapped fragments, so a quoted sentence straddles cues and per-cue matching
  * fails outright.
  */
-interface WordStream {
+export interface WordStream {
   words: string[];
   /** times[i] is the start time of the cue word i came from. */
   times: number[];
+}
+
+/**
+ * Cues, with auto-caption rolling-window repeats removed.
+ *
+ * Auto-captions repeat the previous line as they scroll. The dedupe rule is the one
+ * from the sealed method: drop a line that equals the previous line, or that the
+ * previous line ends with.
+ *
+ * Module-level and EXPORTED (it was a private method until 2026-08-21) because the
+ * single-call path has to read the transcript through exactly the same de-duplication
+ * and the same word cursor. Two transcript readers would mean two word streams, and a
+ * quote measured against the wrong one points at the wrong moment.
+ */
+export function buildCues(srtSegments: SRTSegment[]): Cue[] {
+  const cues: Cue[] = [];
+  let previous = '';
+  let wordCursor = 0;
+
+  for (const segment of srtSegments) {
+    const text = (segment.text || '').trim();
+    if (text.length === 0) continue;
+    if (text === previous || (previous.length > 0 && previous.endsWith(text))) {
+      continue;
+    }
+    previous = text;
+
+    const wordCount = normalizeWords(text).length;
+    if (wordCount === 0) continue;
+
+    cues.push({
+      startSec: TimeUtils.srtTimeToSeconds(segment.start),
+      endSec: TimeUtils.srtTimeToSeconds(segment.end),
+      text,
+      wordStart: wordCursor,
+      wordEnd: wordCursor + wordCount,
+      role: speakerRoleOf(segment),
+    });
+    wordCursor += wordCount;
+  }
+
+  if (cues.length === 0) {
+    throw new Error('Chapter pipeline found no usable caption text after de-duplication');
+  }
+  return cues;
+}
+
+export function buildWordStream(cues: Cue[]): WordStream {
+  const words: string[] = [];
+  const times: number[] = [];
+  for (const cue of cues) {
+    for (const word of normalizeWords(cue.text)) {
+      words.push(word);
+      times.push(cue.startSec);
+    }
+  }
+  return { words, times };
 }
 
 interface StretchLabel {
@@ -331,8 +392,8 @@ export class ChapterPipelineService {
       throw new Error('Chapter pipeline needs caption segments; none were supplied');
     }
 
-    const cues = this.buildCues(srtSegments);
-    const stream = this.buildWordStream(cues);
+    const cues = buildCues(srtSegments);
+    const stream = buildWordStream(cues);
     const stretches = this.buildStretches(cues);
     const durationSeconds = cues[cues.length - 1].endSec;
 
@@ -397,58 +458,6 @@ export class ChapterPipelineService {
   }
 
   // ---------------------------------------------------------------- transcript prep
-
-  /**
-   * Cues, with auto-caption rolling-window repeats removed.
-   *
-   * Auto-captions repeat the previous line as they scroll. The dedupe rule is the one
-   * from the sealed method: drop a line that equals the previous line, or that the
-   * previous line ends with.
-   */
-  private buildCues(srtSegments: SRTSegment[]): Cue[] {
-    const cues: Cue[] = [];
-    let previous = '';
-    let wordCursor = 0;
-
-    for (const segment of srtSegments) {
-      const text = (segment.text || '').trim();
-      if (text.length === 0) continue;
-      if (text === previous || (previous.length > 0 && previous.endsWith(text))) {
-        continue;
-      }
-      previous = text;
-
-      const wordCount = normalizeWords(text).length;
-      if (wordCount === 0) continue;
-
-      cues.push({
-        startSec: TimeUtils.srtTimeToSeconds(segment.start),
-        endSec: TimeUtils.srtTimeToSeconds(segment.end),
-        text,
-        wordStart: wordCursor,
-        wordEnd: wordCursor + wordCount,
-        role: speakerRoleOf(segment),
-      });
-      wordCursor += wordCount;
-    }
-
-    if (cues.length === 0) {
-      throw new Error('Chapter pipeline found no usable caption text after de-duplication');
-    }
-    return cues;
-  }
-
-  private buildWordStream(cues: Cue[]): WordStream {
-    const words: string[] = [];
-    const times: number[] = [];
-    for (const cue of cues) {
-      for (const word of normalizeWords(cue.text)) {
-        words.push(word);
-        times.push(cue.startSec);
-      }
-    }
-    return { words, times };
-  }
 
   private buildStretches(cues: Cue[]): Stretch[] {
     const stretches: Stretch[] = [];

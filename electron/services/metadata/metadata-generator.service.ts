@@ -9,6 +9,7 @@ import { WhisperService } from './whisper.service';
 import { InputHandlerService, ContentItem } from './input-handler.service';
 import { Chapter } from './chapter-generator.service';
 import { ChapterPipelineService, ChapterStage, ChapterPipelineResult } from './chapter-pipeline.service';
+import { ChapterSingleCallService } from './chapter-single-call.service';
 import { OutputHandlerService } from './output-handler.service';
 import {
   MetadataTaskRun,
@@ -17,6 +18,7 @@ import {
   runMetadataTasks,
 } from './metadata-tasks';
 import {
+  CHAPTERS_SINGLE_CALL_OPTION_ID,
   MetadataRoutingSelections,
   ResolvedMetadataRouting,
   resolveMetadataRouting,
@@ -873,12 +875,19 @@ export class MetadataGeneratorService {
   }
 
   /**
-   * Generate chapters with the sealed 14B pipeline (CHAPTERING.md).
+   * Generate chapters — with the sealed 14B pipeline (CHAPTERING.md), or, when the
+   * routing says so, with the 27B single call.
    *
-   * This replaced a single "here is the whole video, give me the chapters" call. That
-   * shape cannot work on a 14B: asked to pick K boundaries out of N candidates it
+   * The pipeline replaced a single "here is the whole video, give me the chapters" call.
+   * That shape cannot work on a 14B: asked to pick K boundaries out of N candidates it
    * returns the first few and stops, which produces mega-chapters and lost stories.
    * The pipeline asks one local question at a time and does the selection in code.
+   *
+   * The single-call option (2026-08-21) is that shape brought back for one model class
+   * that measurably does not fail this way, fenced by a code-enforced budget and quote
+   * resolution. It is opt-in and never a recovery path: if it fails validation the
+   * chapter stage fails, and resolveChapters records `chaptersSkipped` exactly as it does
+   * for any other chapter failure. It does NOT retry and it does NOT drop back here.
    *
    * The WHOLE run holds the single AI queue slot rather than queueing each of its
    * hundreds of calls separately: the method requires one model resident at a time,
@@ -904,15 +913,28 @@ export class MetadataGeneratorService {
     const host = option.host || params.aiHost || 'http://localhost:11434';
     const label = item.source || `item_${itemIndex + 1}`;
 
+    // WHICH ARCHITECTURE. Every other chapter option in the routing table names a model
+    // for the sealed 5-stage pipeline; this one selects a different code path entirely —
+    // ONE call over the whole transcript, validated in code (chapter-single-call.service.ts
+    // explains what was measured and what is fenced). Chosen by option id, so the picker
+    // is the only place it can be turned on.
+    const singleCall = routing.chapters === CHAPTERS_SINGLE_CALL_OPTION_ID;
+
     // Chapter work is 0-60% of this item's "generating" phase; the metadata call that
     // follows takes it from there. Weighted by the real call counts: labelling and
     // rating are ~2 x (duration/45s) calls, the rest are ~3 x chapter_count.
-    const stageWeights: Record<ChapterStage, [number, number]> = {
+    //
+    // The single-call path has one stage that spans the whole allowance. It reports once
+    // at the start and once at the end and says nothing in between — which is what the
+    // stall notice below exists for, and on this path a long silence is the normal case
+    // rather than a symptom.
+    const stageWeights: Record<string, [number, number]> = {
       label: [0, 22],
       rate: [22, 44],
       place: [44, 50],
       summarize: [50, 55],
       consolidate: [55, 60],
+      'single-call': [0, 60],
     };
 
     // A stage that reports every ~3s and then says nothing for minutes is
@@ -928,8 +950,8 @@ export class MetadataGeneratorService {
     // queue rejects this promise while the closure is still running, and the closure's
     // next onProgress would put a stall notice on a job that already ended.
     let stallDone = false;
-    let lastProgress: { stage: ChapterStage; percent: number; at: number } = {
-      stage: 'label',
+    let lastProgress: { stage: string; percent: number; at: number } = {
+      stage: singleCall ? 'single-call' : 'label',
       percent: 0,
       at: Date.now(),
     };
@@ -963,29 +985,46 @@ export class MetadataGeneratorService {
       stallTimer = undefined;
     };
 
-    const pipeline = new ChapterPipelineService({
-      host,
-      model,
-      stageModels: params.chapterStageModels,
-      numCtx: params.chapterNumCtx,
-      cancelCallback: params.cancelCallback,
-      abortSignal: params.cancelSignal,
-      onProgress: (stage, done, total) => {
-        const [from, to] = stageWeights[stage];
-        const percent = Math.round(from + ((to - from) * done) / Math.max(1, total));
-        lastProgress = { stage, percent, at: Date.now() };
-        armStallNotice();
-        params.progressCallback?.(
-          'generating',
-          `Chapters (${stage} ${done}/${total}) ${itemIndex + 1}/${itemCount}...`,
-          percent,
-          undefined,
-          itemIndex
-        );
-      },
-    });
+    const reportProgress = (stage: string, done: number, total: number) => {
+      const [from, to] = stageWeights[stage];
+      const percent = Math.round(from + ((to - from) * done) / Math.max(1, total));
+      lastProgress = { stage, percent, at: Date.now() };
+      armStallNotice();
+      params.progressCallback?.(
+        'generating',
+        `Chapters (${stage} ${done}/${total}) ${itemIndex + 1}/${itemCount}...`,
+        percent,
+        undefined,
+        itemIndex
+      );
+    };
 
-    log.info(`[MetadataGenerator] Chapter pipeline starting for ${label} on ${model} @ ${host}`);
+    const chapterer = singleCall
+      ? new ChapterSingleCallService({
+          host,
+          model,
+          // The single call sizes its own context from the transcript it is about to
+          // send; the configured value can only raise that, never lower it below what
+          // the prompt needs.
+          numCtx: params.chapterNumCtx,
+          cancelCallback: params.cancelCallback,
+          abortSignal: params.cancelSignal,
+          onProgress: reportProgress,
+        })
+      : new ChapterPipelineService({
+          host,
+          model,
+          stageModels: params.chapterStageModels,
+          numCtx: params.chapterNumCtx,
+          cancelCallback: params.cancelCallback,
+          abortSignal: params.cancelSignal,
+          onProgress: reportProgress,
+        });
+
+    log.info(
+      `[MetadataGenerator] ${singleCall ? 'Single-call chaptering' : 'Chapter pipeline'} starting for ` +
+        `${label} on ${model} @ ${host}`
+    );
 
     // The AI pool's default 30-minute watchdog is sized for ONE stalled request. This
     // task is hundreds of short requests in a row: CHAPTERING.md clocks a 2h10m
@@ -999,10 +1038,10 @@ export class MetadataGeneratorService {
         `chapters-${params.jobId || 'job'}-${itemIndex}`,
         `Chapters: ${label}`,
         () => {
-          // Armed only once the pipeline actually starts. Time spent waiting for the AI
+          // Armed only once the run actually starts. Time spent waiting for the AI
           // queue slot is not a stall, and the UI already says the job is queued.
           armStallNotice();
-          return pipeline.generate(item.srtSegments!);
+          return chapterer.generate(item.srtSegments!);
         },
         undefined,
         CHAPTER_TASK_TIMEOUT_MS
