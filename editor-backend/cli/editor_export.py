@@ -38,6 +38,16 @@
 #     success: {"type":"export_result","path":"/abs/.../<name>_HYBRID_edited.fcpxml",
 #               "cutsApplied":N,"newDurationSeconds":float[,"micMuteBlocks":int]}
 #     failure: {"type":"error","message":"..."}  + exit code 1
+# With 'stories', instead:
+#     success: {"type":"story_export_result","path":"/abs/...","storiesEmitted":N,
+#               "stories":[{"number","title","slug","durationSeconds","emitted","scrap"
+#                           [,"transcriptPath","wordCount"]}, ...]
+#               [,"micMuteBlocks":int][,"transcripts":"exported"|"no sidecar"]
+#               [,"transcriptsDir":"/abs/.../<name>_stories_transcripts"]}
+# On output:'fcpxml' the story transcripts are written TOO whenever the session has a
+# <name>_transcript.json sidecar — 'transcripts' says which happened, and "no sidecar" is
+# the only reason they can be absent. output:'transcripts' writes them alone and REQUIRES
+# the sidecar.
 # All diagnostics go to stderr only.
 #
 # DOCTRINE (from CLAUDE.md + editor_manifest): numbers are sacred. Every offset/start/
@@ -1672,7 +1682,17 @@ def _parse_master_tree(zip_path):
 def export_stories(zip_path, cuts_raw, stories_raw, sequence_raw=None,
                    mute_mic_during_screen=False):
     """Master FCPXML split by stories: one <project> per story + a Scrap project of the
-    unclaimed remainder. Writes ONLY the fcpxml (transcripts are a separate export)."""
+    unclaimed remainder, PLUS the per-story Content Studio transcripts whenever the session
+    has a transcript sidecar.
+
+    The two artifacts used to be an either/or the operator chose in a modal, and he always
+    chose the fcpxml — so the transcripts, which cost nothing extra to derive from a
+    sidecar that is already on disk, almost never got written. They ship together now.
+
+    Sidecar ABSENT is a stated fact, not a silent skip: the export is fcpxml-only and the
+    result says transcripts='no sidecar'. Sidecar PRESENT but the transcript pass failing
+    fails the WHOLE export — the transcripts are written BEFORE the fcpxml precisely so a
+    failure leaves no half-export behind claiming success."""
     zp, entry, tree = _parse_master_tree(zip_path)
     # Mic muting first, on the untouched tree: it is stated in ORIGINAL timeline
     # coordinates, which is what the pristine spines still describe. The story surgery below
@@ -1685,6 +1705,11 @@ def export_stories(zip_path, cuts_raw, stories_raw, sequence_raw=None,
     # name would drop the stories next to previously imported part-projects — confusing.
     event = tree.getroot().find('.//event')
     event.set('name', f"{_session_name(zip_path)} Stories")
+
+    # Transcripts FIRST, before a byte of fcpxml is written: this call raises on anything
+    # wrong with the sidecar, and an export that fails must not have left an fcpxml on disk
+    # for the operator to import in the belief that it succeeded.
+    tx = _write_story_transcripts(zip_path, cuts_raw, stories_raw, sequence_raw)
 
     # ONE consolidated edited artifact for the session (same name as the cuts-only path):
     # with stories it holds the story projects + Scrap; without, the cut parts. The
@@ -1704,19 +1729,54 @@ def export_stories(zip_path, cuts_raw, stories_raw, sequence_raw=None,
     }
     if mic_mute_blocks is not None:
         result['micMuteBlocks'] = mic_mute_blocks   # 0 is a real answer, not "nothing happened"
+
+    # 'transcripts' is ALWAYS present so the caller never has to infer why files are missing.
+    if tx is None:
+        result['transcripts'] = 'no sidecar'
+        print(f"[editor_export] no {_session_name(zip_path)}_transcript.json — fcpxml only, "
+              "no story transcripts written", file=sys.stderr)
+    else:
+        result['transcripts'] = 'exported'
+        result['transcriptsDir'] = tx['transcriptsDir']
+        # Fold each story's transcript onto the SAME story dict the fcpxml pass produced,
+        # matched by number. Both passes derive 'emitted' from the identical stories/cuts
+        # math, so an emitted non-scrap story with no transcript means the two passes
+        # disagreed — an internal contradiction, never something to paper over.
+        by_number = {t['number']: t for t in tx['stories']}
+        for r in results:
+            if r['scrap']:
+                continue    # Scrap is spare picture, not a story anyone imports into CS
+            t = by_number.get(r['number'])
+            if t is None or bool(t['emitted']) != bool(r['emitted']):
+                raise ManifestError(
+                    f"story {r['title']!r} (number {r['number']}): the fcpxml and transcript "
+                    f"passes disagree about whether it keeps content "
+                    f"(fcpxml emitted={r['emitted']}, transcript={'absent' if t is None else t['emitted']})")
+            if r['emitted']:
+                r['transcriptPath'] = t['transcriptPath']
+                r['wordCount'] = t['wordCount']
+        print(f"[editor_export] wrote {tx['wrote']} story transcripts to {tx['transcriptsDir']}",
+              file=sys.stderr)
     return result
 
 
-def export_transcripts(zip_path, cuts_raw, stories_raw, sequence_raw=None):
-    """Per-story Content Studio transcript files ONLY (no fcpxml). The transcript sidecar is
-    REQUIRED — exporting transcripts without one is a caller error, not a silent no-op."""
+def _write_story_transcripts(zip_path, cuts_raw, stories_raw, sequence_raw=None):
+    """Write the per-story Content Studio transcript files and return
+    {'transcriptsDir', 'stories', 'wrote'} — or None when the session has NO transcript
+    sidecar. None is the ONE non-error outcome and it means exactly one thing: the session
+    was never transcribed. Every other problem (unreadable sidecar, frameSeconds mismatch,
+    no story keeping any content) raises, here as everywhere else.
+
+    Shared by both callers so the words can never be rebased by different math than the
+    picture: export_transcripts (transcripts only, sidecar REQUIRED) and export_stories
+    (fcpxml + transcripts, sidecar OPTIONAL). It re-parses the zip rather than borrowing
+    export_stories' tree on purpose — that tree has already been cut apart into story
+    projects, and _collect_parts needs the pristine part spines."""
     zp, entry, tree = _parse_master_tree(zip_path)
     _parts, frame_seconds, total_declared = _collect_parts(tree.getroot(), entry)
     sidecar = _load_transcript_sidecar(zip_path, frame_seconds)
     if sidecar is None:
-        raise ManifestError(
-            f"no transcript sidecar ({_session_name(zip_path)}_transcript.json) next to the zip — "
-            "transcribe the session before exporting story transcripts")
+        return None
     speaker_map = _speaker_map(sidecar['tracks'])
 
     cuts = _validate_cuts(cuts_raw, frame_seconds, total_declared)
@@ -1760,12 +1820,27 @@ def export_transcripts(zip_path, cuts_raw, stories_raw, sequence_raw=None):
     if wrote == 0:
         raise ManifestError("no story keeps any content: nothing to export")
 
+    return {'transcriptsDir': str(tx_dir), 'stories': results, 'wrote': wrote}
+
+
+def export_transcripts(zip_path, cuts_raw, stories_raw, sequence_raw=None):
+    """Per-story Content Studio transcript files ONLY (no fcpxml). The transcript sidecar is
+    REQUIRED — exporting transcripts without one is a caller error, not a silent no-op."""
+    tx = _write_story_transcripts(zip_path, cuts_raw, stories_raw, sequence_raw)
+    if tx is None:
+        raise ManifestError(
+            f"no transcript sidecar ({_session_name(zip_path)}_transcript.json) next to the zip — "
+            "transcribe the session before exporting story transcripts")
+
     return {
         'type': 'story_export_result',
-        'path': str(tx_dir),
-        'storiesEmitted': wrote,
-        'stories': results,
-        'transcriptsDir': str(tx_dir),
+        'path': tx['transcriptsDir'],
+        'storiesEmitted': tx['wrote'],
+        'stories': tx['stories'],
+        # Stated on this path too, so 'transcripts' is present on EVERY story export and a
+        # reader never has to know which of the two commands produced the result.
+        'transcripts': 'exported',
+        'transcriptsDir': tx['transcriptsDir'],
     }
 
 

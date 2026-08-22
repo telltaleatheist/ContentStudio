@@ -26,6 +26,16 @@ export class ExportModalsComponent {
   @Input() error: string | null = null;
   /** Mic blocks disabled under screen audio; null when the pass did not run. 0 is meaningful. */
   @Input() micMuteBlocks: number | null = null;
+  /**
+   * What became of the per-story Content Studio transcripts on THIS export, straight from
+   * Python. 'no sidecar' is a reported outcome, not a silent skip — the whole point of the
+   * field is that the operator learns the transcripts are missing here, at the export, and
+   * not later when Content Studio has nothing to import. Null on a plain-cuts export, where
+   * stories (and so story transcripts) do not exist.
+   */
+  @Input() transcripts: 'exported' | 'no sidecar' | null = null;
+  /** Where they landed; set only alongside transcripts === 'exported'. */
+  @Input() transcriptsDir: string | null = null;
 
   @Input() cutCount = 0;
   @Input() storyCount = 0;

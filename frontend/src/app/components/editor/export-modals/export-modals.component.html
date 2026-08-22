@@ -4,12 +4,24 @@
   <div class="modal export-chooser" (click)="$event.stopPropagation()">
     <div class="modal-title">Export</div>
     <div class="chooser-options">
+      <!-- With stories AND a transcript this export writes BOTH artifacts — the transcripts
+           are free once the sidecar exists, and making them an either/or is why they almost
+           never got written. The title changes with what will actually be produced; it never
+           promises transcripts the session cannot supply. -->
       <button class="chooser-opt"
               (click)="choice.emit('fcpxml')">
-        <span class="chooser-opt-title">Master FCPXML</span>
-        <span class="chooser-opt-desc" *ngIf="hasStories">
+        <span class="chooser-opt-title">
+          Master FCPXML<ng-container *ngIf="hasStories && transcriptReady"> + story transcripts</ng-container>
+        </span>
+        <span class="chooser-opt-desc" *ngIf="hasStories && transcriptReady">
           One project per story ({{ storyCount }}) plus a Scrap project for unmarked
-          sections<ng-container *ngIf="cutCount > 0"> — {{ cutCount }} {{ cutCount === 1 ? 'cut' : 'cuts' }} applied</ng-container>
+          sections<ng-container *ngIf="cutCount > 0"> — {{ cutCount }} {{ cutCount === 1 ? 'cut' : 'cuts' }} applied</ng-container>,
+          and a Content Studio transcript for every story
+        </span>
+        <span class="chooser-opt-desc" *ngIf="hasStories && !transcriptReady">
+          One project per story ({{ storyCount }}) plus a Scrap project for unmarked
+          sections<ng-container *ngIf="cutCount > 0"> — {{ cutCount }} {{ cutCount === 1 ? 'cut' : 'cuts' }} applied</ng-container>.
+          No transcripts: this session has not been transcribed
         </span>
         <span class="chooser-opt-desc" *ngIf="!hasStories && cutCount > 0">
           The whole timeline with your {{ cutCount }} {{ cutCount === 1 ? 'cut' : 'cuts' }} applied
@@ -69,6 +81,14 @@
         {{ micMuteBlocks }} mic
         {{ micMuteBlocks === 1 ? 'block' : 'blocks' }} disabled under screen audio<ng-container
           *ngIf="micMuteBlocks === 0"> — the mic was live everywhere the screen spoke</ng-container>
+      </div>
+      <!-- Whether the story transcripts came out is REPORTED, never left to be inferred from
+           the absence of a folder. Null only on a plain-cuts export, where they never apply. -->
+      <div class="modal-note" *ngIf="transcripts === 'exported'">
+        Story transcripts written to {{ transcriptsDir }}
+      </div>
+      <div class="modal-note" *ngIf="transcripts === 'no sidecar'">
+        No story transcripts — this session has not been transcribed
       </div>
       <div class="modal-actions">
         <button class="modal-btn primary" (click)="showInFolder.emit()">Show in Folder</button>

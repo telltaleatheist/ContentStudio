@@ -582,6 +582,12 @@ function setupEditorSessionHandlers(): void {
   // Validate loudly per the cut contract before spawning Python: a bad payload is
   // a caller bug, never a silent no-op. Rejections propagate the Python error
   // message verbatim; the export result is never fabricated.
+  //
+  // `output` still names the PRIMARY artifact, but 'fcpxml' is no longer exclusive: with
+  // stories, Python also writes the per-story Content Studio transcripts whenever the
+  // session has a _transcript.json sidecar, and reports which happened in the result's
+  // `transcripts` field ('exported' | 'no sidecar'). No signature change is needed here —
+  // this handler forwards the payload and returns Python's result untouched.
   ipcMain.handle('editor:export', async (_event, payload: {
     zipPath: string;
     cuts: Array<{ startFrame: number; endFrame: number }>;
