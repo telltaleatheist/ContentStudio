@@ -29,6 +29,29 @@ const types = require(path.join(ROOT, 'services/publish/publish-types.js'));
 const composer = require(path.join(ROOT, 'services/metadata/description-composer.js'));
 const validators = require(path.join(ROOT, 'services/publish/field-validators.js'));
 
+/**
+ * The release-cadence rules live in the RENDERER, which has no dist/main to require, so
+ * they are transpiled straight from their own source here rather than mirrored into a
+ * second copy of the arithmetic. A mirror is a rule you can change in one place and still
+ * pass in the other; this cannot drift, because it IS the shipped file.
+ */
+const slots = (() => {
+  const fs = require('fs');
+  const ts = require('typescript');
+  const src = path.join(
+    __dirname,
+    '..',
+    'frontend/src/app/features/publish/publish-slots.ts',
+  );
+  const out = ts.transpileModule(fs.readFileSync(src, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+    fileName: src,
+  });
+  const mod = { exports: {} };
+  new Function('exports', 'module', 'require', out.outputText)(mod.exports, mod, require);
+  return mod.exports;
+})();
+
 let failures = 0;
 function check(name, fn) {
   try {
@@ -174,6 +197,98 @@ check('publish-set-fields accepts the flag and refuses anything but a boolean', 
     validators.buildFieldPatch({ chaptersInDescription: 'no' }, { listChannels: () => [], now: () => new Date() });
   } catch { threw = true; }
   if (!threw) throw new Error('a string should be refused, not coerced');
+});
+
+// ------------------------------------------------- release cadences (publish-slots.ts)
+//
+// Wall-clock rules, so every date below is built with the local-time constructor and
+// every expectation is read back the same way. `slotKeyOf` is the comparison — an epoch
+// millisecond would make these assertions true only in one time zone.
+
+const slotKey = slots.slotKeyOf;
+const NONE = new Set();
+
+check('a channel name names its cadence, and an unknown one names none', () => {
+  eq(slots.cadenceKeyFor('Owen Morgan (Telltale)'), 'telltale');
+  eq(slots.cadenceKeyFor("Owen's Fireside Chat"), 'fireside');
+  eq(slots.cadenceKeyFor('Owen Unfiltered'), 'unfiltered');
+  eq(slots.cadenceKeyFor('TELLTALE'), 'telltale', 'matching is case-insensitive');
+  eq(slots.cadenceKeyFor('Some Other Channel'), null, 'no cadence is invented');
+  eq(slots.cadenceKeyFor(null), null);
+});
+
+check('Telltale releases only on Sundays and Thursdays at 13:00', () => {
+  // Sat 22 Aug 2026, 09:00 local.
+  const from = new Date(2026, 7, 22, 9, 0);
+  const next = slots.slotsAfter('telltale', from, 21).slice(0, 4).map(slotKey);
+  eq(next, [
+    '2026-08-23T13:00', // Sunday
+    '2026-08-27T13:00', // Thursday
+    '2026-08-30T13:00',
+    '2026-09-03T13:00',
+  ]);
+});
+
+check('Unfiltered releases every day at 16:00', () => {
+  const from = new Date(2026, 7, 22, 9, 0);
+  const next = slots.slotsAfter('unfiltered', from, 7).slice(0, 3).map(slotKey);
+  eq(next, ['2026-08-22T16:00', '2026-08-23T16:00', '2026-08-24T16:00']);
+});
+
+check('Fireside moves to 14:00 on Sundays and Thursdays so it clears the main channel', () => {
+  const from = new Date(2026, 7, 21, 9, 0); // Friday
+  const next = slots.slotsAfter('fireside', from, 7).slice(0, 7).map(slotKey);
+  eq(next, [
+    '2026-08-21T13:00', // Fri
+    '2026-08-22T13:00', // Sat
+    '2026-08-23T14:00', // Sun — after Telltale's 13:00
+    '2026-08-24T13:00', // Mon
+    '2026-08-25T13:00', // Tue
+    '2026-08-26T13:00', // Wed
+    '2026-08-27T14:00', // Thu — after Telltale's 13:00
+  ]);
+  // The whole point of the rule: neither of those two ever equals a Telltale slot.
+  const telltale = new Set(slots.slotsAfter('telltale', from, 21).map(slotKey));
+  for (const at of slots.slotsAfter('fireside', from, 21)) {
+    if (telltale.has(slotKey(at))) throw new Error('Fireside collided with the main channel at ' + slotKey(at));
+  }
+});
+
+check('a slot exactly now is passed over — "next" means strictly after', () => {
+  const from = new Date(2026, 7, 23, 13, 0); // Sunday 13:00 on the nose
+  eq(slotKey(slots.nextOpenSlot('telltale', from, NONE)), '2026-08-27T13:00');
+});
+
+check('the next OPEN slot skips the ones another item on that channel already holds', () => {
+  const from = new Date(2026, 7, 22, 9, 0);
+  const taken = new Set(['2026-08-23T13:00', '2026-08-27T13:00']);
+  eq(slotKey(slots.nextOpenSlot('telltale', from, taken)), '2026-08-30T13:00');
+});
+
+check('every slot taken inside the horizon is reported as none, never as a busy one', () => {
+  const from = new Date(2026, 7, 22, 9, 0);
+  const all = new Set(slots.slotsAfter('telltale', from, 30).map(slotKey));
+  eq(slots.nextOpenSlot('telltale', from, all, 30), null);
+});
+
+check('a collision is reported, and a cadence slot is told from a hand-typed time', () => {
+  const taken = new Set(['2026-08-23T13:00']);
+  if (!slots.collidesWith(new Date(2026, 7, 23, 13, 0), taken)) throw new Error('collision missed');
+  if (slots.collidesWith(new Date(2026, 7, 23, 13, 30), taken)) throw new Error('half past is not the slot');
+  if (!slots.isCadenceSlot('telltale', new Date(2026, 7, 23, 13, 0))) throw new Error('Sunday 13:00 is a Telltale slot');
+  if (slots.isCadenceSlot('telltale', new Date(2026, 7, 24, 13, 0))) throw new Error('Monday is not');
+});
+
+check('an unknown cadence key throws rather than answering for some other channel', () => {
+  let threw = false;
+  try { slots.slotsAfter('nightly', new Date(2026, 7, 22, 9, 0), 7); } catch { threw = true; }
+  if (!threw) throw new Error('an unknown cadence should be refused, not guessed at');
+});
+
+check('a horizon that cannot hold a day is refused rather than silently returning nothing', () => {
+  let threw = false;
+  try { slots.slotsAfter('telltale', new Date(2026, 7, 22, 9, 0), 0); } catch { threw = true; }
+  if (!threw) throw new Error('a zero-day horizon should be refused');
 });
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);

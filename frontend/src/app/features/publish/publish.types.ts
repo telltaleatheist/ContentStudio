@@ -18,6 +18,18 @@ export const MAX_TITLE_LENGTH = 100;
  */
 export const SPREAKER_MAX_TITLE_LENGTH = 140;
 
+/**
+ * The destination picker's value for "this goes to the podcast feed".
+ *
+ * Not a channel id and never stored as one: it is the UI's name for `isPodcast === true`,
+ * which is the field that already carries this fact. Kept as a constant so the template,
+ * the picker's handler and the manifest all say the same word.
+ */
+export const SPREAKER_DESTINATION = 'spreaker';
+
+/** How the podcast destination reads in the picker and the manifest. */
+export const SPREAKER_DESTINATION_LABEL = 'Spreaker (podcast)';
+
 export type PublishStatus = 'selecting' | 'ready' | 'linked' | 'filled' | 'published';
 
 /** What a thumbnail file measured when it was accepted. */
@@ -389,6 +401,10 @@ export interface PublishFacts {
   pushedAt: string | null;
   filledAt: string | null;
   hasThumbnail: boolean;
+  /** Three-valued exactly as the record holds it: true, false, or null for "not decided". */
+  monetize: boolean | null;
+  /** Spreaker's episode id once uploaded, or null for never — the podcast half of "sent". */
+  spreakerEpisodeId: number | null;
   abCount: number;
   /** The first chosen title — the video's title — or null when none is picked yet. */
   mainTitle: string | null;

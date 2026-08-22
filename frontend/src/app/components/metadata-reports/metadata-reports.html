@@ -1,7 +1,19 @@
-<!-- Metadata Reports — three panes: list | decide | dispatch (PHASE-4-DESIGN §1.2).
-     The page itself never scrolls. Each pane scrolls on its own, and inside the decide
-     column the titles list and the description each have their own capped viewport, so a
-     30-chapter report and a 5-chapter one are the same height. -->
+<!-- Metadata Reports — the copy desk: list | decide | dispatch.
+     Three panes, each with its own scroll, and a page that never scrolls. The rules this
+     template is built to, in one place:
+
+       · ONE status vocabulary, six facts, one order — TITLES · CHANNEL · MONEY · WHEN ·
+         THUMB · LINK. The list rows dot them and the item header names them. Three values:
+         filled = recorded, hollow ring = nothing recorded (a FACT, not a fault), amber =
+         this needs you.
+       · NO RESIDENT PROSE. A paragraph is on screen only when it reports a real problem
+         that needs the operator. Everything else is a tooltip or the inside of an opened
+         accordion row. This page used to carry 41 standing paragraphs.
+       · THE ONLY FILLED ORANGE ON SCREEN IS THE NEXT THING TO DO. When nothing is held it
+         is the dispatch button; when something is, that button goes quiet and the one rail
+         row that needs answering wears it instead. Never both.
+       · ONE DESTINATION. Three YouTube channels and Spreaker in one picker, one manifest,
+         one button — an item goes to one place. -->
 <div class="reports-container">
   <div class="page-content"
        [class.no-item]="!selectedReport()"
@@ -11,91 +23,94 @@
     <section class="pane list-pane">
       <div class="pane-head">
         <div class="pane-head-line">
-          <mat-icon class="pane-icon">description</mat-icon>
           <h2 class="pane-heading">Reports</h2>
-          <span class="pane-count"
+          <span class="pane-count num"
                 [title]="reports().length + ' report(s) indexed'">
             {{ visibleReports().length }}<span class="pane-count-of">/{{ reports().length }}</span>
           </span>
-          @if (hasSelectedReports()) {
-            <span class="selected-count">{{ getSelectedReports().length }} selected</span>
-          }
           <span class="pane-head-spacer"></span>
           @if (hasSelectedReports()) {
-            <button class="copy-btn" (click)="exportSelectedAsTxt()" title="Export selected as TXT">
-              Export
+            <button class="ghost" (click)="exportSelectedAsTxt()"
+                    [title]="'Export ' + getSelectedReports().length + ' selected report(s) as TXT'">
+              Export <span class="num">{{ getSelectedReports().length }}</span>
             </button>
           }
           <!-- The other half of the round trip: every chip on the calendar links back
                here with ?item=<itemId>. -->
-          <button mat-icon-button routerLink="/publish-calendar" title="Publish calendar">
+          <button class="icon-btn" routerLink="/publish-calendar" title="Publish calendar">
             <mat-icon>event</mat-icon>
           </button>
-          <button mat-icon-button (click)="loadReports()" [disabled]="isLoading()" title="Refresh reports">
+          <button class="icon-btn" (click)="loadReports()" [disabled]="isLoading()" title="Refresh reports">
             <mat-icon>refresh</mat-icon>
           </button>
         </div>
 
-        <!-- Search. With 111 rows this is the affordance that matters most (§1.7). -->
+        <!-- Search. With 111 rows this is the affordance that matters most. -->
         <div class="list-search">
           <mat-icon>search</mat-icon>
           <input #searchBox
                  type="search"
                  class="list-search-input"
-                 placeholder="Search titles and sources (⌘F)"
+                 placeholder="Search titles and sources"
                  [value]="searchQuery()"
                  (input)="searchQuery.set($any($event.target).value)" />
           @if (searchQuery()) {
             <button class="list-search-clear" (click)="searchQuery.set('')" title="Clear search">✕</button>
+          } @else {
+            <span class="kbd">⌘F</span>
           }
         </div>
 
-        <!-- Filter chips: channel (including the unrouted state, which is the majority
-             one) and run state. Counts come from the index, never from a guess. -->
-        @if (channelFilterChips().length > 0) {
-          <div class="filter-row">
-            <button class="filter-chip" [class.on]="channelFilter() === ''"
-                    (click)="channelFilter.set('')">All channels</button>
-            @for (chip of channelFilterChips(); track chip.value) {
-              <button class="filter-chip"
-                      [class.on]="channelFilter() === chip.value"
-                      [class.unrouted]="chip.value === 'unrouted'"
-                      (click)="channelFilter.set(chip.value)">
-                {{ chip.label }} <span class="filter-count">{{ chip.count }}</span>
-              </button>
-            }
-          </div>
-        }
-        <div class="filter-row">
-          <button class="filter-chip" [class.on]="stateFilter() === 'all'"
-                  (click)="stateFilter.set('all')">All</button>
-          <button class="filter-chip" [class.on]="stateFilter() === 'scheduled'"
-                  (click)="stateFilter.set('scheduled')">Scheduled</button>
-          <button class="filter-chip" [class.on]="stateFilter() === 'unscheduled'"
-                  (click)="stateFilter.set('unscheduled')">Unscheduled</button>
-          <button class="filter-chip" [class.on]="stateFilter() === 'ab'"
-                  (click)="stateFilter.set('ab')">A/B picked</button>
-          <button class="filter-chip danger" [class.on]="stateFilter() === 'no-titles'"
-                  (click)="stateFilter.set('no-titles')">No titles</button>
+        <!-- One 2×2 segmented control where two rows of chips used to be. "Needs you" is
+             the triage view: every row with at least one amber fact. -->
+        <div class="seg">
+          @for (segment of segmentFilters(); track segment.value) {
+            <button class="seg-btn"
+                    [class.on]="stateFilter() === segment.value"
+                    (click)="stateFilter.set(segment.value)">
+              {{ segment.label }}<span class="num n">{{ segment.count }}</span>
+            </button>
+          }
         </div>
 
-        @if (reports().length > 0) {
-          <div class="select-all-container">
-            <mat-checkbox
-              [checked]="allReportsSelected()"
-              [indeterminate]="hasSelectedReports() && !allReportsSelected()"
-              (change)="toggleSelectAll()">
-              Select all shown
-            </mat-checkbox>
-          </div>
-        }
+        <!-- Channel, and the three narrower states. One value, two entry points: picking
+             here un-highlights the segments above, because only one filter is ever on. -->
+        <div class="list-sub">
+          <select class="quiet-select"
+                  [value]="channelFilter()"
+                  (change)="channelFilter.set($any($event.target).value)"
+                  title="Filter by the channel each item is routed to">
+            <option value="">All channels</option>
+            @for (chip of channelFilterChips(); track chip.value) {
+              <option [value]="chip.value">{{ chip.label }} · {{ chip.count }}</option>
+            }
+          </select>
+          <select class="quiet-select"
+                  [value]="refineValue()"
+                  (change)="onRefineChange($event)"
+                  title="Narrower states, sharing the one filter with the segments above">
+            <option value="">Also…</option>
+            @for (refine of REFINE_FILTERS; track refine.value) {
+              <option [value]="refine.value">{{ refine.label }}</option>
+            }
+          </select>
+          @if (reports().length > 0) {
+            <label class="select-all" title="Select every row the search and filters have left on screen">
+              <input type="checkbox"
+                     [checked]="allReportsSelected()"
+                     [indeterminate]="hasSelectedReports() && !allReportsSelected()"
+                     (change)="toggleSelectAll()" />
+              <span>Select</span>
+            </label>
+          }
+        </div>
       </div>
 
       <div class="pane-body list-body">
         @if (isLoading() && reports().length === 0) {
           <div class="loading-container">
-            <mat-spinner diameter="40"></mat-spinner>
-            <p>Loading reports...</p>
+            <mat-spinner diameter="28"></mat-spinner>
+            <p>Loading reports…</p>
           </div>
         }
 
@@ -119,93 +134,81 @@
           <div class="reports-list">
             @for (group of visibleGroups(); track group.key) {
               <!-- The newest run for this source. Older runs collapse under it: six
-                   stale runs of one source must not compete with the good one (§1.7). -->
+                   stale runs of one source must not compete with the good one. -->
               <ng-container>
                 <div
                   (click)="selectReport(group.head)"
-                  [class.selected]="selectedReport()?.path === group.head.path"
+                  [class.on]="selectedReport()?.path === group.head.path"
                   [class.checked]="group.head.selected"
-                  class="report-item">
-                  <mat-checkbox
-                    [checked]="group.head.selected || false"
-                    (click)="toggleSelection(group.head, $event)"
-                    (change)="$event.stopPropagation()"
-                    class="report-checkbox">
-                  </mat-checkbox>
-                  <div class="report-content">
-                    <div class="report-title" [title]="group.head.displayTitle || group.head.name">
-                      {{ group.head.displayTitle || group.head.name }}
-                    </div>
-                    <div class="report-meta">
-                      <span class="report-date">{{ formatDate(group.head.date) }}</span>
-                      @if (group.head.promptSet) {
-                        <span class="prompt-set-badge">{{ group.head.promptSet }}</span>
-                      }
-                      @if (group.head.titleCount === 0) {
-                        <span class="row-flag danger" title="This run produced no titles.">no titles</span>
-                      }
-                      @if (group.head.publishFault; as fault) {
-                        <span class="row-flag warn" [title]="fault">record unreadable</span>
-                      }
-                      <span class="row-dots">
-                        @for (dot of rowDots(group.head); track dot.key) {
-                          <span class="row-dot" [class]="'dot-' + dot.key" [title]="dot.label"></span>
-                        }
-                      </span>
-                    </div>
-                  </div>
+                  class="row">
+                  <input type="checkbox"
+                         class="row-check"
+                         [checked]="group.head.selected || false"
+                         (click)="toggleSelection(group.head, $event)"
+                         title="Select for export" />
+                  <span class="row-name" [title]="group.head.displayTitle || group.head.name">
+                    {{ group.head.displayTitle || group.head.name }}
+                  </span>
                   @if (group.runs.length > 0) {
-                    <button class="run-toggle"
+                    <button class="row-runs num"
                             (click)="toggleGroup(group.key, $event)"
                             [title]="isGroupExpanded(group.key)
                                        ? 'Hide the earlier runs of this source'
-                                       : 'Show the earlier runs of this source'">
-                      {{ group.runs.length + 1 }} runs {{ isGroupExpanded(group.key) ? '▴' : '▾' }}
+                                       : (group.runs.length + 1) + ' runs of this source — show the earlier ones'">
+                      {{ group.runs.length + 1 }}{{ isGroupExpanded(group.key) ? '▴' : '▾' }}
                     </button>
                   }
-                  <button mat-icon-button (click)="deleteReport(group.head, $event)" color="warn" class="delete-button">
+                  <button class="row-del" (click)="deleteReport(group.head, $event)" title="Delete this report">
                     <mat-icon>close</mat-icon>
                   </button>
+                  <span class="row-meta">
+                    <span class="num">{{ formatDate(group.head.date) }}</span>
+                    @if (group.head.promptSet) {
+                      <span class="row-src" [title]="'Prompt set ' + group.head.promptSet">{{ group.head.promptSet }}</span>
+                    }
+                    @if (group.head.publishFault; as fault) {
+                      <span class="row-flag" [title]="fault">record unreadable</span>
+                    }
+                    <span class="dots">
+                      @for (dot of rowDots(group.head); track dot.key) {
+                        <span class="dot" [class]="'dot ' + dot.state" [title]="dot.label"></span>
+                      }
+                    </span>
+                  </span>
                 </div>
 
                 @if (isGroupExpanded(group.key)) {
                   @for (run of group.runs; track run.path) {
                     <div
                       (click)="selectReport(run)"
-                      [class.selected]="selectedReport()?.path === run.path"
+                      [class.on]="selectedReport()?.path === run.path"
                       [class.checked]="run.selected"
-                      class="report-item is-rerun">
-                      <mat-checkbox
-                        [checked]="run.selected || false"
-                        (click)="toggleSelection(run, $event)"
-                        (change)="$event.stopPropagation()"
-                        class="report-checkbox">
-                      </mat-checkbox>
-                      <div class="report-content">
-                        <div class="report-title" [title]="run.displayTitle || run.name">
-                          {{ run.displayTitle || run.name }}
-                        </div>
-                        <div class="report-meta">
-                          <span class="report-date">{{ formatDate(run.date) }}</span>
-                          @if (run.promptSet) {
-                            <span class="prompt-set-badge">{{ run.promptSet }}</span>
-                          }
-                          @if (run.titleCount === 0) {
-                            <span class="row-flag danger" title="This run produced no titles.">no titles</span>
-                          }
-                          @if (run.publishFault; as fault) {
-                            <span class="row-flag warn" [title]="fault">record unreadable</span>
-                          }
-                          <span class="row-dots">
-                            @for (dot of rowDots(run); track dot.key) {
-                              <span class="row-dot" [class]="'dot-' + dot.key" [title]="dot.label"></span>
-                            }
-                          </span>
-                        </div>
-                      </div>
-                      <button mat-icon-button (click)="deleteReport(run, $event)" color="warn" class="delete-button">
+                      class="row is-rerun">
+                      <input type="checkbox"
+                             class="row-check"
+                             [checked]="run.selected || false"
+                             (click)="toggleSelection(run, $event)"
+                             title="Select for export" />
+                      <span class="row-name" [title]="run.displayTitle || run.name">
+                        {{ run.displayTitle || run.name }}
+                      </span>
+                      <button class="row-del" (click)="deleteReport(run, $event)" title="Delete this report">
                         <mat-icon>close</mat-icon>
                       </button>
+                      <span class="row-meta">
+                        <span class="num">{{ formatDate(run.date) }}</span>
+                        @if (run.promptSet) {
+                          <span class="row-src" [title]="'Prompt set ' + run.promptSet">{{ run.promptSet }}</span>
+                        }
+                        @if (run.publishFault; as fault) {
+                          <span class="row-flag" [title]="fault">record unreadable</span>
+                        }
+                        <span class="dots">
+                          @for (dot of rowDots(run); track dot.key) {
+                            <span class="dot" [class]="'dot ' + dot.state" [title]="dot.label"></span>
+                          }
+                        </span>
+                      </span>
                     </div>
                   }
                 }
@@ -228,197 +231,195 @@
     <!-- ═══════════════════════════ ② DECIDE ═══════════════════════════ -->
     <section class="pane work-pane">
       @if (selectedReport()) {
-        <div class="pane-head">
-          <div class="pane-head-line">
-            <h2 class="pane-heading" [title]="metadata()?._title || selectedReport()!.name">
-              {{ metadata()?._title || selectedReport()!.name }}
-            </h2>
+        <div class="pane-head work-head">
+          <div class="crumb">
+            <span class="kicker">Report</span>
+            @if (selectedReport()!.promptSet; as promptSet) {
+              <span class="crumb-src num">{{ promptSet }}</span>
+            }
+            <span class="crumb-src num">{{ formatDate(selectedReport()!.date) }}</span>
+            <!-- Provenance: which transcript wrote these words, and (always) that chapters
+                 came from the final export. Absent for items generated before the run
+                 recorded it — the crumb then simply says nothing. -->
+            @if (provenanceLine(); as provenance) {
+              <span class="crumb-prov" [class.linked]="provenanceIsLinked()" [title]="provenance">
+                <mat-icon>{{ provenanceIsLinked() ? 'link' : 'movie' }}</mat-icon>
+                <span>{{ provenance }}</span>
+              </span>
+            }
             <span class="pane-head-spacer"></span>
-            <button class="copy-btn" (click)="showInFolder(selectedReport()!)">Show in Folder</button>
+            <button class="ghost" (click)="showInFolder(selectedReport()!)">Show in Folder</button>
           </div>
 
-          <!-- Provenance. One line, above the fields it is about: which transcript wrote
-               the content fields, and (always) that chapters came from the final export.
-               Absent for items generated before the run recorded it. -->
-          @if (provenanceLine(); as provenance) {
-            <p class="provenance-line" [class.linked]="provenanceIsLinked()">
-              <mat-icon>{{ provenanceIsLinked() ? 'link' : 'movie' }}</mat-icon>
-              <span>{{ provenance }}</span>
-            </p>
-          }
+          <h2 class="work-title" [title]="metadata()?._title || selectedReport()!.name">
+            {{ metadata()?._title || selectedReport()!.name }}
+          </h2>
 
-          <!-- ① The readiness strip. Five facts about this item and the push that
-               depends on them, from the record already loaded — a field with nothing in
-               it renders hollow and says so, never as a plausible value. Each chip
-               focuses the control in the rail that sets it. -->
+          <!-- The readiness meter: six named ticks and one word. Every tick is a jump
+               target — it opens the rail row that sets that fact. -->
           @if (metadata()) {
-            <div class="readiness-strip">
-              @for (chip of readinessChips(); track chip.key) {
-                <button class="ready-chip"
-                        [class.set]="chip.state === 'set'"
-                        [class.warn]="chip.state === 'warn'"
-                        [title]="chip.hint"
-                        (click)="focusReadiness(chip.key)">
-                  {{ chip.label }}
-                </button>
-              }
-              <!-- Disabled with the reason as its tooltip, which makes the strip a
-                   checklist rather than a dead end. -->
-              <button class="ready-chip push"
-                      [disabled]="!!publish.pushBlockedReason() || publish.pushing() || publish.saving()"
-                      [title]="publish.pushBlockedReason() ?? 'Push this item to its linked YouTube video.'"
-                      (click)="pushToYouTube()">
-                @if (publish.pushing()) { Pushing… } @else { Push ▸ }
-              </button>
+            <div class="meter">
+              <span class="meter-word"
+                    [class.ready]="heldCount() === 0"
+                    [class.held]="heldCount() > 0"
+                    [title]="dispatchBlockedReason() ?? 'Everything this item needs is recorded.'">
+                {{ readinessWord() }}
+              </span>
+              <div class="ticks">
+                @for (tick of readinessTicks(); track tick.key) {
+                  <button class="tk" [class]="'tk ' + tick.state"
+                          [title]="tick.label + ' — ' + tick.value + '. ' + tick.hint"
+                          (click)="focusTick(tick.key)">
+                    <span class="tk-bar"></span>
+                    <span class="tk-label">{{ tick.label }}</span>
+                    <span class="tk-value">{{ tick.value }}</span>
+                  </button>
+                }
+              </div>
             </div>
           }
 
-          <!-- One banner for every publish action (picking, reordering, editing), so a
-               rejected save is never silent and never reported in the wrong section.
-               It sits in the pane's fixed head so a refusal cannot scroll out of view. -->
+          <!-- One banner for every publish action, so a rejected save is never silent and
+               never reported in the wrong section. It sits in the pane's fixed head so a
+               refusal cannot scroll out of view. This is prose that reports a real
+               problem, which is the only kind that stays on screen. -->
           @if (publish.error(); as err) {
-            <div class="ab-error" (click)="publish.dismissError()">{{ err }}</div>
+            <div class="banner stop" (click)="publish.dismissError()">
+              <mat-icon>error_outline</mat-icon>
+              <span>{{ err }}</span>
+              <span class="banner-dismiss">dismiss</span>
+            </div>
           }
         </div>
       }
 
       <div class="pane-body work-body">
         @if (!selectedReport()) {
-          <div class="empty-viewer">
+          <div class="empty-state tall">
             <mat-icon>touch_app</mat-icon>
             <p>Select a report to view</p>
-            <small>Click on a report from the list on the left</small>
+            <small>Click a report in the list on the left</small>
           </div>
         }
 
         @if (isLoading() && selectedReport()) {
           <div class="loading-container">
-            <mat-spinner diameter="40"></mat-spinner>
-            <p>Loading report...</p>
+            <mat-spinner diameter="28"></mat-spinner>
+            <p>Loading report…</p>
           </div>
         }
 
         @if (!isLoading() && selectedReport() && metadata()) {
-          <!-- ② The A/B slate + ③ the titles list. One card: the slate is a VIEW of the
-               same chosenTitles() the list writes, in the same order, and removing a
-               variant is still done by clicking its row below. -->
+
+          <!-- ═════ TITLES — the editorial act, and the loudest thing on this page ═════
+               The slate is a VIEW of the same chosenTitles() the list below writes, in the
+               same order; removing a variant is still done by clicking its row. -->
           @if (metadata()!.titles && metadata()!.titles.length > 0) {
-            <section class="card titles-card">
-              <div class="card-head">
-                <mat-icon>title</mat-icon>
-                <h3>Titles</h3>
-                <span class="count-badge">{{ metadata()!.titles.length }}</span>
-                <span class="card-head-spacer"></span>
-                <span class="ab-progress"
-                      [class.complete]="publish.chosenCount() === MAX_AB_VARIANTS">
-                  {{ publish.chosenCount() }}/{{ MAX_AB_VARIANTS }} picked for A/B test
+            <section class="block titles-block">
+              <div class="bhead">
+                <h3>A/B test — three variants</h3>
+                <span class="cnt num">{{ metadata()!.titles.length }} generated</span>
+                <span class="pane-head-spacer"></span>
+                <span class="ab-progress num" [class.complete]="publish.chosenCount() === MAX_AB_VARIANTS">
+                  {{ publish.chosenCount() }}/{{ MAX_AB_VARIANTS }}
+                </span>
+                <!-- The keyboard legend moved off the page and into a hover popover. -->
+                <span class="keys">
+                  <button class="ghost">Keys ⌘</button>
+                  <span class="keys-pop">
+                    <span><span>Move</span><kbd>↑ ↓</kbd></span>
+                    <span><span>Pick / unpick</span><kbd>space</kbd></span>
+                    <span><span>Pick by number</span><kbd>1–9, 0</kbd></span>
+                    <span><span>Edit in place</span><kbd>e</kbd></span>
+                    <span><span>Copy</span><kbd>c</kbd></span>
+                  </span>
                 </span>
                 @if (publish.chosenCount() > 0) {
-                  <button class="copy-btn" (click)="publish.clear()">Clear</button>
+                  <button class="ghost" (click)="publish.clear()"
+                          title="Unpick all three variants. The generated list is untouched.">Clear</button>
                 }
               </div>
 
-              <div class="ab-slate">
+              <div class="slate">
                 @for (slot of slate(); track slot.index) {
-                  <div class="slate-slot"
+                  <div class="slot"
                        [class.filled]="slot.title !== null"
                        [class.orphan]="slot.title !== null && slot.rowIndex === null"
                        (click)="revealSlateSlot(slot)"
                        [title]="slot.title === null
-                                  ? 'Nothing picked for this variant yet.'
+                                  ? 'Nothing picked for this variant yet — click a title below, or press ' + (slot.index + 1) + '.'
                                   : (slot.rowIndex === null
                                       ? slot.title + ' — an edited variant; it is not one of the rows below.'
                                       : 'Show this title in the list below.')">
-                    <span class="slate-number">{{ slot.index + 1 }}</span>
+                    <span class="slot-n">{{ slot.index + 1 }}</span>
                     @if (slot.title !== null) {
-                      <span class="slate-text">{{ slot.title }}</span>
+                      <span class="slot-t">{{ slot.title }}</span>
                       @if (slot.rowIndex === null) {
-                        <span class="slate-note orphan-note">edited</span>
+                        <span class="slot-tag">edited</span>
                       }
-                      <span class="slate-chars" [class.over]="slot.chars > 100">{{ slot.chars }}/100</span>
+                      <span class="slot-c num" [class.over]="slot.chars > 100">{{ slot.chars }}/100</span>
+                      @if (slot.index === 0) {
+                        <span class="slot-tag main"
+                              title="Variant 1 becomes the video's title, and it is what YouTube keeps if the test is inconclusive.">main</span>
+                      }
                     } @else {
-                      <span class="slate-empty">⌀ empty — click a title below</span>
-                    }
-                    @if (slot.index === 0) {
-                      <span class="slate-note">main · YouTube's fallback</span>
+                      <span class="slot-empty">nothing picked</span>
                     }
                   </div>
                 }
               </div>
 
-              <p class="ab-hint">
-                Click titles in the order you want them tested. #1 becomes the video's
-                main title and is what YouTube keeps if the test is inconclusive.
-                <span class="ab-keys">↑↓ move · Space toggles · e edits · c copies · 1–9,0 pick</span>
-              </p>
-
-              <!-- The keyboard layer is scoped to this container: none of it fires
-                   unless this pane has focus, so every pointer gesture is untouched. -->
+              <!-- The keyboard layer is scoped to this container: none of it fires unless
+                   this pane has focus, so every pointer gesture is untouched. -->
               <div #titlesScroll
-                   class="list-container titles-scroll"
+                   class="sug"
                    tabindex="0"
                    (keydown)="onTitlesKeydown($event)">
                 @for (title of metadata()!.titles; track $index; let i = $index) {
                   @if (isEditingTitle(i)) {
-                    <!-- Enter saves, Escape cancels, and the pencil/copy pair becomes
-                         ✓/✕ in the same place so nothing shifts under the cursor. The
-                         edit is stored as an A/B variant; the generated report is never
-                         rewritten. -->
-                    <div class="list-item ab-editing" [attr.data-title-row]="i">
-                      @if (titleVariantNumber(title); as variant) {
-                        <span class="ab-variant-badge">{{ variant }}</span>
-                      } @else {
-                        <span class="item-number">{{ i + 1 }}</span>
-                      }
-
+                    <!-- Enter saves, Escape cancels, and the pencil/copy pair becomes ✓/✕
+                         in the same place so nothing shifts under the cursor. The edit is
+                         stored as an A/B variant; the generated report is never rewritten. -->
+                    <div class="s editing" [attr.data-title-row]="i">
+                      <span class="s-n num" [class.picked]="!!titleVariantNumber(title)">
+                        {{ titleVariantNumber(title) ?? i + 1 }}
+                      </span>
                       <input #titleInput
-                             class="ab-title-input"
+                             class="s-input"
                              [value]="titleDraft()"
                              (input)="titleDraft.set($any($event.target).value)"
                              (keydown.enter)="saveEditTitle(title, $event)"
                              (keydown.escape)="cancelEditTitle()" />
-
-                      <span class="ab-charcount"
-                            [class.over]="titleDraft().trim().length > 100">
+                      <span class="s-len num" [class.over]="titleDraft().trim().length > 100">
                         {{ titleDraft().trim().length }}/100
                       </span>
-
-                      <button class="row-action save"
-                              (click)="saveEditTitle(title, $event)"
-                              title="Save (Enter)">✓</button>
-                      <button class="row-action cancel"
-                              (click)="cancelEditTitle($event)"
-                              title="Cancel (Esc)">✕</button>
+                      <button class="s-act save" (click)="saveEditTitle(title, $event)" title="Save (Enter)">✓</button>
+                      <button class="s-act" (click)="cancelEditTitle($event)" title="Cancel (Esc)">✕</button>
                     </div>
                   } @else {
-                    <div class="list-item ab-selectable"
+                    <div class="s"
                          [attr.data-title-row]="i"
                          [class.copied]="isCopied('title-' + i)"
-                         [class.ab-chosen]="isTitleChosen(title)"
-                         [class.ab-blocked]="isTitleBlocked(title)"
-                         [class.kb-focus]="focusedTitleIndex() === i"
+                         [class.picked]="isTitleChosen(title)"
+                         [class.blocked]="isTitleBlocked(title)"
+                         [class.kbfocus]="focusedTitleIndex() === i"
                          (click)="toggleChosenTitle(title, $event)"
                          [title]="isTitleChosen(title)
                                     ? 'Click to remove from the A/B test'
                                     : (isTitleBlocked(title)
                                         ? 'Deselect one first — YouTube allows 3 variants'
                                         : 'Click to add to the A/B test')">
-
-                      @if (titleVariantNumber(title); as variant) {
-                        <span class="ab-variant-badge">{{ variant }}</span>
-                      } @else {
-                        <span class="item-number">{{ i + 1 }}</span>
-                      }
-
-                      <span class="list-item-text">{{ getTitleText(title) }}</span>
-
-                      <button class="row-action"
-                              (click)="startEditTitle(title, i, $event)"
-                              title="Edit this title">✎</button>
-
-                      <button class="row-action"
-                              (click)="copyToClipboard(getTitleText(title), 'title-' + i); $event.stopPropagation()"
-                              title="Copy to clipboard">{{ isCopied('title-' + i) ? '✓' : '📋' }}</button>
+                      <span class="s-n num" [class.picked]="!!titleVariantNumber(title)">
+                        {{ titleVariantNumber(title) ?? i + 1 }}
+                      </span>
+                      <span class="s-t">{{ getTitleText(title) }}</span>
+                      <span class="s-len num">{{ getTitleText(title).length }}</span>
+                      <span class="s-acts">
+                        <button class="s-act" (click)="startEditTitle(title, i, $event)" title="Edit this title">✎</button>
+                        <button class="s-act"
+                                (click)="copyToClipboard(getTitleText(title), 'title-' + i); $event.stopPropagation()"
+                                title="Copy to clipboard">{{ isCopied('title-' + i) ? '✓' : '⧉' }}</button>
+                      </span>
                     </div>
                   }
                 }
@@ -426,105 +427,102 @@
             </section>
           }
 
-          <!-- ④ Description. Whatever publish-get-resolved composed in the MAIN PROCESS —
-               never recomposed here, and never an empty box while it is being read. -->
-          <section class="card description-card-section">
-            <div class="card-head">
-              <mat-icon>description</mat-icon>
+          <!-- ═════ DESCRIPTION ═════
+               Whatever publish-get-resolved composed in the MAIN PROCESS — never
+               recomposed here, and never an empty box while it is being read. -->
+          <section class="block">
+            <div class="bhead">
               <h3>Description</h3>
+              <span class="cnt num" [class.over]="descriptionOverLimit()">
+                {{ publish.hasResolved() ? descriptionCountLabel() : 'reading…' }}
+              </span>
               @if (publish.descriptionOverride() !== null) {
-                <span class="edited-badge" title="You edited this. The generated text is kept and can be restored.">edited</span>
+                <span class="tag" title="You edited this. The generated text is kept and can be restored.">edited</span>
               }
-              <span class="card-head-spacer"></span>
+              <span class="pane-head-spacer"></span>
               <!-- The chapter block is composed into this description by the main process.
                    The switch says whether it should be — for THIS item, persisted on its
                    selection record, and honoured by the YouTube push. Hidden entirely when
                    the item has no chapters: a control that cannot change anything is worse
-                   than no control. -->
+                   than no control. Inert (with the reason on the control itself, not in a
+                   standing paragraph) once the description has been edited by hand. -->
               @if (hasChapters() && publish.hasResolved()) {
-                <label class="chapters-toggle"
+                <label class="chk"
                        [class.inert]="publish.descriptionOverride() !== null"
                        [title]="chaptersToggleHint()">
                   <input type="checkbox"
                          [checked]="publish.chaptersInDescription()"
                          [disabled]="publish.descriptionOverride() !== null || publish.saving()"
                          (change)="setChaptersInDescription($any($event.target).checked)">
-                  Chapters
+                  <span>Chapters</span>
+                  <span class="chk-sub num">{{ metadata()!.chapters!.length }}</span>
                 </label>
               }
-              <span class="char-count" [class.over]="descriptionOverLimit()">
-                {{ publish.hasResolved() ? descriptionCountLabel() : 'loading…' }}
-              </span>
-              @if (editingDescription()) {
-                <button class="copy-btn" (click)="saveDescription()">Save</button>
-                <button class="copy-btn" (click)="cancelEditDescription()">Cancel</button>
-              } @else if (publish.hasResolved()) {
-                <button class="copy-btn" (click)="startEditDescription()">Edit</button>
-                @if (publish.descriptionOverride() !== null) {
-                  <button class="copy-btn"
-                          (click)="revertDescription()"
-                          title="Discard your edit and use the generated description">Revert</button>
-                }
-                <button class="copy-btn"
-                        [class.copied]="isCopied('description')"
-                        (click)="copyToClipboard(descriptionValue(), 'description')">
-                  {{ isCopied('description') ? '✓ Copied!' : 'Copy' }}
-                </button>
-              }
-            </div>
-            @if (hasChapters() && publish.descriptionOverride() !== null) {
-              <p class="chapters-toggle-note">
-                This description was edited by hand, so it is pushed exactly as saved — the
-                chapters switch does not apply to it. Revert to compose it again.
-              </p>
-            }
-            <div class="description-box">
-              <div class="description-card">
+              <div class="acts">
                 @if (editingDescription()) {
-                  <textarea class="description-textarea"
-                            [value]="descriptionDraft()"
-                            (input)="descriptionDraft.set($any($event.target).value)"></textarea>
+                  <button class="ghost" (click)="saveDescription()">Save</button>
+                  <button class="ghost" (click)="cancelEditDescription()">Cancel</button>
                 } @else if (publish.hasResolved()) {
-                  <textarea class="description-textarea" readonly [value]="descriptionValue()"></textarea>
-                } @else {
-                  <!-- Never render an empty box here: blank reads as "no description". -->
-                  <div class="resolving">Reading the composed description…</div>
+                  <button class="ghost" (click)="startEditDescription()">Edit</button>
+                  @if (publish.descriptionOverride() !== null) {
+                    <button class="ghost"
+                            (click)="revertDescription()"
+                            title="Discard your edit and use the generated description">Revert</button>
+                  }
+                  <button class="ghost"
+                          [class.copied]="isCopied('description')"
+                          (click)="copyToClipboard(descriptionValue(), 'description')">
+                    {{ isCopied('description') ? '✓ Copied' : 'Copy' }}
+                  </button>
                 }
               </div>
             </div>
+            <div class="desc">
+              @if (editingDescription()) {
+                <textarea class="desc-text"
+                          [value]="descriptionDraft()"
+                          (input)="descriptionDraft.set($any($event.target).value)"></textarea>
+              } @else if (publish.hasResolved()) {
+                <textarea class="desc-text" readonly [value]="descriptionValue()"></textarea>
+              } @else {
+                <!-- Never render an empty box here: blank reads as "no description". -->
+                <div class="resolving">Reading the composed description…</div>
+              }
+            </div>
           </section>
 
-          <!-- ⑤ Tags. Stored comma-separated, exactly as the extension types them. -->
-          <section class="card tags-card">
-            <div class="card-head">
-              <mat-icon>local_offer</mat-icon>
+          <!-- ═════ TAGS ═════ Stored comma-separated, exactly as the extension types them. -->
+          <section class="block">
+            <div class="bhead">
               <h3>Tags</h3>
-              <span class="count-badge">{{ editedTagsArray().length }}</span>
+              <span class="cnt num">{{ editedTagsArray().length }}</span>
               @if (publish.tagsOverride() !== null) {
-                <span class="edited-badge" title="You edited these. The generated tags are kept and can be restored.">edited</span>
+                <span class="tag" title="You edited these. The generated tags are kept and can be restored.">edited</span>
               }
-              <span class="card-head-spacer"></span>
-              @if (editingTags()) {
-                <button class="copy-btn" (click)="saveTags()">Save</button>
-                <button class="copy-btn" (click)="cancelEditTags()">Cancel</button>
-              } @else if (publish.hasResolved()) {
-                @if (editedTagsArray().length > TAGS_CLAMP_THRESHOLD) {
-                  <button class="copy-btn" (click)="tagsExpanded.set(!tagsExpanded())">
-                    {{ tagsExpanded() ? 'Show fewer' : 'Show all ' + editedTagsArray().length }}
+              <span class="pane-head-spacer"></span>
+              <div class="acts">
+                @if (editingTags()) {
+                  <button class="ghost" (click)="saveTags()">Save</button>
+                  <button class="ghost" (click)="cancelEditTags()">Cancel</button>
+                } @else if (publish.hasResolved()) {
+                  @if (editedTagsArray().length > TAGS_CLAMP_THRESHOLD) {
+                    <button class="ghost" (click)="tagsExpanded.set(!tagsExpanded())">
+                      {{ tagsExpanded() ? 'Fewer' : 'All ' + editedTagsArray().length }}
+                    </button>
+                  }
+                  <button class="ghost" (click)="startEditTags()">Edit</button>
+                  @if (publish.tagsOverride() !== null) {
+                    <button class="ghost"
+                            (click)="revertTags()"
+                            title="Discard your edit and use the generated tags">Revert</button>
+                  }
+                  <button class="ghost"
+                          [class.copied]="isCopied('tags-all')"
+                          (click)="copyToClipboard(tagsValue(), 'tags-all')">
+                    {{ isCopied('tags-all') ? '✓ Copied' : 'Copy all' }}
                   </button>
                 }
-                <button class="copy-btn" (click)="startEditTags()">Edit</button>
-                @if (publish.tagsOverride() !== null) {
-                  <button class="copy-btn"
-                          (click)="revertTags()"
-                          title="Discard your edit and use the generated tags">Revert</button>
-                }
-                <button class="copy-btn"
-                        [class.copied]="isCopied('tags-all')"
-                        (click)="copyToClipboard(tagsValue(), 'tags-all')">
-                  {{ isCopied('tags-all') ? '✓ Copied!' : 'Copy All' }}
-                </button>
-              }
+              </div>
             </div>
             @if (editingTags()) {
               <!-- Comma-separated, exactly as the extension types them into Studio. -->
@@ -533,13 +531,14 @@
                         (input)="tagsDraft.set($any($event.target).value)"
                         placeholder="tag one, tag two, tag three"></textarea>
             } @else if (publish.hasResolved()) {
-              <div class="tags-container"
+              <div class="tags"
                    [class.clamped]="!tagsExpanded() && editedTagsArray().length > TAGS_CLAMP_THRESHOLD">
                 @for (tag of editedTagsArray(); track $index; let i = $index) {
                   <mat-chip class="tag-chip"
                             [class.copied]="isCopied('tag-' + i)"
+                            title="Click to copy"
                             (click)="copyToClipboard(tag, 'tag-' + i)">
-                    {{ isCopied('tag-' + i) ? '✓ Copied!' : tag }}
+                    {{ isCopied('tag-' + i) ? '✓' : tag }}
                   </mat-chip>
                 }
               </div>
@@ -547,10 +546,149 @@
               <div class="resolving">Reading the tags…</div>
             }
           </section>
+
+          <!-- ═════ ASSETS ═════ Pure clipboard sources, so they collapse to their counts:
+               the count IS the information until the text is wanted. Chapters open by
+               default because they are pasted almost every time. -->
+          @if (hasAssets()) {
+            <section class="block">
+              <div class="bhead">
+                <h3>Assets</h3>
+                <span class="pane-head-spacer"></span>
+                <span class="cnt">click any line to copy it</span>
+              </div>
+
+              @if (metadata()!.thumbnail_text && metadata()!.thumbnail_text.length > 0) {
+                <div class="asset">
+                  <button class="asset-head" (click)="toggleAsset('thumbnail-text')">
+                    <mat-icon>image</mat-icon>
+                    <span class="asset-name">Thumbnail text</span>
+                    <span class="cnt num">{{ metadata()!.thumbnail_text.length }}</span>
+                    <span class="chev">{{ isAssetOpen('thumbnail-text') ? '▴' : '▾' }}</span>
+                  </button>
+                  @if (isAssetOpen('thumbnail-text')) {
+                    <div class="asset-body">
+                      @for (text of metadata()!.thumbnail_text; track $index; let i = $index) {
+                        <div class="asset-line"
+                             [class.copied]="isCopied('thumb-' + i)"
+                             (click)="copyToClipboard(getThumbnailText(text), 'thumb-' + i)"
+                             title="Click to copy">
+                          <span class="asset-n num">{{ i + 1 }}</span>
+                          <span>{{ getThumbnailText(text) }}</span>
+                          <span class="asset-copy">{{ isCopied('thumb-' + i) ? '✓' : '⧉' }}</span>
+                        </div>
+                      }
+                    </div>
+                  }
+                </div>
+              }
+
+              @if (metadata()!.chapters && metadata()!.chapters.length > 0) {
+                <div class="asset">
+                  <button class="asset-head" (click)="toggleAsset('chapters')">
+                    <mat-icon>list</mat-icon>
+                    <span class="asset-name">Chapters</span>
+                    <span class="cnt num">{{ metadata()!.chapters.length }}</span>
+                    <span class="chev">{{ isAssetOpen('chapters') ? '▴' : '▾' }}</span>
+                  </button>
+                  @if (isAssetOpen('chapters')) {
+                    <div class="asset-body">
+                      <div class="asset-actions">
+                        <button class="ghost"
+                                [class.copied]="isCopied('chapters-all')"
+                                (click)="copyChaptersToClipboard()">
+                          {{ isCopied('chapters-all') ? '✓ Copied' : 'Copy all' }}
+                        </button>
+                      </div>
+                      @for (chapter of metadata()!.chapters; track $index; let i = $index) {
+                        <div class="asset-line"
+                             [class.copied]="isCopied('chapter-' + i)"
+                             (click)="copyToClipboard(getChapterTimestamp(chapter) + ' ' + getChapterTitle(chapter), 'chapter-' + i)"
+                             title="Click to copy">
+                          <span class="asset-n num">{{ getChapterTimestamp(chapter) }}</span>
+                          <span>{{ getChapterTitle(chapter) }}</span>
+                          <span class="asset-copy">{{ isCopied('chapter-' + i) ? '✓' : '⧉' }}</span>
+                        </div>
+                      }
+                    </div>
+                  }
+                </div>
+              }
+
+              <!-- Chapters that were asked for and did not happen. Takes the chapter slot,
+                   expanded and NOT collapsible: the reason is the whole content, and it is
+                   prose that reports a real problem, so it stays on screen. -->
+              @if (chaptersMissing(); as skipped) {
+                <div class="asset">
+                  <div class="asset-head static">
+                    <mat-icon>list</mat-icon>
+                    <span class="asset-name">Chapters</span>
+                  </div>
+                  <div class="banner" [class.stop]="skipped.outcome === 'failed'" [class.warn]="skipped.outcome !== 'failed'">
+                    <mat-icon>{{ skipped.outcome === 'failed' ? 'error_outline' : 'info_outline' }}</mat-icon>
+                    <span>
+                      <b>{{ skipped.outcome === 'failed' ? 'Chapter generation failed — no chapters were added.' : 'No chapters were added.' }}</b>
+                      {{ skipped.reason }}
+                    </span>
+                  </div>
+                </div>
+              }
+
+              @if (metadata()!.pinned_comment && metadata()!.pinned_comment!.length > 0) {
+                <div class="asset">
+                  <button class="asset-head" (click)="toggleAsset('pinned-comment')">
+                    <mat-icon>push_pin</mat-icon>
+                    <span class="asset-name">Pinned comment</span>
+                    <span class="cnt num">{{ metadata()!.pinned_comment!.length }}</span>
+                    <span class="chev">{{ isAssetOpen('pinned-comment') ? '▴' : '▾' }}</span>
+                  </button>
+                  @if (isAssetOpen('pinned-comment')) {
+                    <div class="asset-body">
+                      @for (comment of metadata()!.pinned_comment!; track $index; let i = $index) {
+                        <div class="asset-line"
+                             [class.copied]="isCopied('comment-' + i)"
+                             (click)="copyToClipboard(comment, 'comment-' + i)"
+                             title="Click to copy">
+                          <span class="asset-n num">{{ i + 1 }}</span>
+                          <span>{{ comment }}</span>
+                          <span class="asset-copy">{{ isCopied('comment-' + i) ? '✓' : '⧉' }}</span>
+                        </div>
+                      }
+                    </div>
+                  }
+                </div>
+              }
+
+              @if (metadata()!.clip_suggestions && metadata()!.clip_suggestions!.length > 0) {
+                <div class="asset">
+                  <button class="asset-head" (click)="toggleAsset('clip-suggestions')">
+                    <mat-icon>content_cut</mat-icon>
+                    <span class="asset-name">Clip suggestions</span>
+                    <span class="cnt num">{{ metadata()!.clip_suggestions!.length }}</span>
+                    <span class="chev">{{ isAssetOpen('clip-suggestions') ? '▴' : '▾' }}</span>
+                  </button>
+                  @if (isAssetOpen('clip-suggestions')) {
+                    <div class="asset-body">
+                      @for (clip of metadata()!.clip_suggestions!; track $index; let i = $index) {
+                        <div class="asset-line"
+                             [class.copied]="isCopied('clip-' + i)"
+                             (click)="copyToClipboard(clip, 'clip-' + i)"
+                             title="Click to copy">
+                          <span class="asset-n num">{{ i + 1 }}</span>
+                          <span>{{ clip }}</span>
+                          <span class="asset-copy">{{ isCopied('clip-' + i) ? '✓' : '⧉' }}</span>
+                        </div>
+                      }
+                    </div>
+                  }
+                </div>
+              }
+            </section>
+          }
         }
 
         @if (!isLoading() && selectedReport() && !metadata()) {
-          <div class="empty-report">
+          <div class="empty-state tall">
             <mat-icon>info</mat-icon>
             <p>Failed to load metadata</p>
             <small>The metadata file may be missing or malformed</small>
@@ -559,661 +697,653 @@
       </div>
     </section>
 
-    <!-- ═══════════════════════════ ③ DISPATCH ═══════════════════════════ -->
+    <!-- ═══════════════════════════ ③ PUBLISH RECORD ═══════════════════════════
+         The record for this item: where it goes, when it goes live, its thumbnail, and
+         (for a podcast) its audio. INTENT ONLY — nothing in this column uploads,
+         schedules or publishes anything except the ONE dispatch button at the bottom.
+         Every write is validated in the main process, and a refusal comes back as text
+         and lands in the banner in the decide column, verbatim. -->
     @if (selectedReport()) {
       <aside class="pane rail-pane">
-        <div class="pane-body rail-body">
-          @if (!isLoading() && metadata()) {
+        @if (!isLoading() && metadata()) {
+          <div class="rail-head">
+            <span class="kicker">Publish record</span>
+            @if (publish.saving()) { <span class="saving">saving…</span> }
+          </div>
 
-            <!-- Publish.
-                 The Phase-1 publish record for this item: which channel it goes to, when
-                 it should go live, its thumbnail, and whether it is a podcast episode.
-                 INTENT ONLY - nothing in this panel uploads, schedules or publishes
-                 anything; it records what the operator wants so the later phases have
-                 something to act on. Every write is validated in the main process, and a
-                 refusal comes back as text and lands in the banner in the decide column,
-                 verbatim. -->
-            <section class="card publish-section">
-              <div class="card-head">
-                <mat-icon>rocket_launch</mat-icon>
-                <h3>Publish</h3>
-                @if (publish.saving()) {
-                  <span class="publish-saving">saving…</span>
-                }
-                <span class="card-head-spacer"></span>
+          <div class="pane-body rail-body">
+
+            <!-- Carry forward. This video was generated before: the earlier run's record
+                 holds facts about the VIDEO that a regeneration does not carry, because a
+                 new run is a new item id. Offered on one line, applied on one click, never
+                 inherited — every value is re-read and re-validated in the main process
+                 when Apply is pressed. -->
+            @if (publish.carryOffer(); as offer) {
+              <div class="carry">
+                <mat-icon>history</mat-icon>
+                <span>
+                  Generated before ({{ localTime(offer.jobCreatedAt) }}) — carry forward
+                  {{ carryFieldList() }}?
+                </span>
+                <button class="ghost"
+                        [disabled]="publish.carrying() || publish.saving()"
+                        (click)="publish.applyCarryForward()">
+                  @if (publish.carrying()) { Carrying… } @else { Apply }
+                </button>
+                <button class="ghost"
+                        [disabled]="publish.carrying()"
+                        (click)="publish.dismissCarryForward()">Dismiss</button>
               </div>
+            }
 
-              <div class="publish-body">
-                <div class="publish-row" #podcastRow>
-                  <span class="publish-label">Podcast</span>
-                  <div class="publish-control">
-                    <mat-checkbox class="publish-podcast"
-                                  [checked]="publish.isPodcast()"
-                                  (change)="onPodcastChange($event.checked)">
-                      Publish as podcast (Spreaker)
-                    </mat-checkbox>
-                  </div>
+            <!-- The receipt. All four fields, always: what was written, what had nothing to
+                 write, and what was REFUSED because it no longer validates. -->
+            @if (publish.carryReceipt(); as receipt) {
+              <div class="receipt">
+                <div class="receipt-head">
+                  <mat-icon>fact_check</mat-icon>
+                  <strong>Carried forward from the earlier run</strong>
+                  <span class="pane-head-spacer"></span>
+                  <button class="ghost" (click)="publish.dismissCarryReceipt()">Close</button>
                 </div>
-
-                @if (!publish.selection()) {
-                  <p class="publish-note">
-                    Nothing is saved for this item yet — the record is created by your first
-                    change here.
-                  </p>
+                <dl class="manifest">
+                  @for (outcome of receipt.applied; track outcome.field) {
+                    <div><span>{{ outcome.field }}</span><span>{{ outcome.detail }}</span></div>
+                  }
+                  @for (outcome of receipt.refused; track outcome.field) {
+                    <div class="miss"><span>{{ outcome.field }}</span><span>not carried — {{ outcome.detail }}</span></div>
+                  }
+                  @for (outcome of receipt.skipped; track outcome.field) {
+                    <div class="miss"><span>{{ outcome.field }}</span><span>nothing to carry — {{ outcome.detail }}</span></div>
+                  }
+                </dl>
+                @for (warning of receipt.warnings; track $index) {
+                  <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ warning }}</span></div>
                 }
+              </div>
+            }
 
-                <!-- Carry forward. This video was generated before: the earlier run's
-                     record holds facts about the VIDEO (channel, thumbnail, podcast flag,
-                     transcript link) that a regeneration does not carry, because a new run
-                     is a new item id. Offered on one line, applied on one click, never
-                     inherited — source_key is a HINT (ITEM-ID-PLAN §3.2), and every value
-                     is re-read and re-validated in the main process when Apply is
-                     pressed. Titles and the schedule are deliberately absent: they belong
-                     to one run and one upload. -->
-                @if (publish.carryOffer(); as offer) {
-                  <div class="publish-carry">
-                    <mat-icon>history</mat-icon>
-                    <p class="publish-carry-text">
-                      This video was generated before ({{ localTime(offer.jobCreatedAt) }}) — carry
-                      forward {{ carryFieldList() }}?
-                    </p>
-                    <button class="copy-btn confirm"
-                            [disabled]="publish.carrying() || publish.saving()"
-                            (click)="publish.applyCarryForward()">
-                      @if (publish.carrying()) { Carrying… } @else { Apply }
-                    </button>
-                    <button class="copy-btn"
-                            [disabled]="publish.carrying()"
-                            (click)="publish.dismissCarryForward()">Dismiss</button>
-                  </div>
-                }
+            <div class="facts">
 
-                <!-- The receipt. All four fields, always: what was written, what had
-                     nothing to write (or was already set — a carry never overwrites), and
-                     what was REFUSED because it no longer validates. A vanished thumbnail
-                     file lands in the last group with its path named. -->
-                @if (publish.carryReceipt(); as receipt) {
-                  <div class="publish-carry-receipt">
-                    <div class="publish-proposal-head">
-                      <mat-icon>fact_check</mat-icon>
-                      <strong>Carried forward from the earlier run</strong>
-                      <button class="copy-btn" (click)="publish.dismissCarryReceipt()">Close</button>
-                    </div>
-                    @for (outcome of receipt.applied; track outcome.field) {
-                      <p class="publish-note applied">Applied {{ outcome.field }} — {{ outcome.detail }}</p>
-                    }
-                    @for (outcome of receipt.refused; track outcome.field) {
-                      <p class="publish-note warn">Not carried: {{ outcome.field }} — {{ outcome.detail }}</p>
-                    }
-                    @for (outcome of receipt.skipped; track outcome.field) {
-                      <p class="publish-note">Nothing to carry for {{ outcome.field }} — {{ outcome.detail }}</p>
-                    }
-                    @for (warning of receipt.warnings; track $index) {
-                      <p class="publish-note warn">{{ warning }}</p>
-                    }
-                  </div>
-                }
-
-                <!-- Channel. A suggestion is pre-selected but NOT stored: it is written
-                     with the next save, and touching the picker replaces it for good. -->
-                <div class="publish-row">
-                  <span class="publish-label">Channel</span>
-                  <div class="publish-control">
+              <!-- ── DESTINATION ── One question with four answers. The three YouTube
+                   channels come from the registry; Spreaker is what `isPodcast` means. -->
+              <button class="fact"
+                      [class.open]="isFactOpen('destination')"
+                      [class.next]="isNextAction('destination')"
+                      (click)="toggleFact('destination')">
+                <span class="dot" [class]="'dot ' + (tickFor('destination')?.state ?? 'unset')"></span>
+                <span class="fact-l">Destination</span>
+                <span class="fact-v" [class.warn]="tickFor('destination')?.state === 'warn'">{{ destinationLabel() }}</span>
+                @if (isNextAction('destination')) { <span class="fact-do">set it</span> }
+                <span class="chev">{{ isFactOpen('destination') ? '▴' : '▾' }}</span>
+              </button>
+              @if (isFactOpen('destination')) {
+                <div class="editor">
+                  <div class="fld">
                     <select #channelSelect
-                            class="publish-select"
+                            class="control"
                             [disabled]="publish.saving()"
-                            (change)="onChannelChange($event)">
-                      <option value="" [selected]="channelSelectValue() === ''">— not routed —</option>
+                            (change)="onDestinationChange($event)">
+                      <option value="" [selected]="publish.destination() === ''">— not routed —</option>
                       @for (channel of publish.channels(); track channel.channelId) {
                         <option [value]="channel.channelId"
-                                [selected]="channelSelectValue() === channel.channelId">
+                                [selected]="publish.destination() === channel.channelId">
                           {{ channel.name }}
                         </option>
                       }
+                      <option [value]="SPREAKER_DESTINATION"
+                              [selected]="publish.destination() === SPREAKER_DESTINATION">
+                        {{ SPREAKER_DESTINATION_LABEL }}
+                      </option>
                     </select>
+                  </div>
+                  <p class="why">
+                    This is the routing decision: the dispatch at the foot of this column
+                    follows it.
                     @if (publish.channelIsSuggested()) {
-                      <span class="publish-badge">suggested</span>
+                      {{ publish.channelNote() }} Pre-selected only — it is saved with your next
+                      change here, or right away if you pick it yourself.
+                    } @else if (publish.channelNote(); as note) {
+                      {{ note }}
                     }
-                  </div>
+                  </p>
+                  @if (publish.unknownStoredChannel(); as unknown) {
+                    <div class="banner warn">
+                      <mat-icon>warning_amber</mat-icon>
+                      <span>
+                        <b>Routed to a channel the registry does not have</b>
+                        This item points at {{ unknown }}, so the picker cannot show it.
+                        Re-connect that channel, or choose another.
+                      </span>
+                    </div>
+                  }
                 </div>
+              }
 
-                @if (publish.channelIsSuggested()) {
-                  <p class="publish-note suggestion">
-                    {{ publish.channelNote() }} Pre-selected only — it is saved with your next
-                    change here, or right away if you pick it yourself.
-                  </p>
-                } @else if (publish.channelNote(); as note) {
-                  <p class="publish-note">{{ note }}</p>
-                }
-                @if (publish.unknownStoredChannel(); as unknown) {
-                  <p class="publish-note warn">
-                    This item is routed to {{ unknown }}, which is not in the channel registry —
-                    the picker cannot show it. Re-connect that channel or choose another.
-                  </p>
-                }
-
-                <!-- Monetization. INTENT ONLY, and the one publish field the YouTube
-                     Data API cannot write at all (PUBLISH-PIPELINE-PLAN Phase 5): the
-                     companion extension fills it in Studio's Monetization tab, on the
-                     operator's click. Three options because "not decided" is a real
-                     answer — it is what tells the extension to leave the control alone,
-                     and it is what every record written before this field says. -->
-                <div class="publish-row">
-                  <span class="publish-label">Monetization</span>
-                  <div class="publish-control">
-                    <select class="publish-select"
-                            [disabled]="publish.saving()"
-                            (change)="onMonetizeChange($event)">
-                      <option value="" [selected]="monetizeSelectValue() === ''">— not decided —</option>
-                      <option value="on" [selected]="monetizeSelectValue() === 'on'">Monetize (on)</option>
-                      <option value="off" [selected]="monetizeSelectValue() === 'off'">Do not monetize (off)</option>
-                    </select>
+              <!-- ── MONETIZATION ── Intent only, and the one publish field the YouTube
+                   Data API cannot write at all: the companion extension fills it in
+                   Studio's Monetization tab, on the operator's click. Three options,
+                   because "not decided" is a real answer. Hidden for a Spreaker item —
+                   a control that cannot change anything is worse than no control. -->
+              @if (!publish.isPodcast()) {
+                <button class="fact"
+                        [class.open]="isFactOpen('money')"
+                        [class.next]="isNextAction('money')"
+                        (click)="toggleFact('money')">
+                  <span class="dot" [class]="'dot ' + (tickFor('money')?.state ?? 'unset')"></span>
+                  <span class="fact-l">Monetization</span>
+                  <span class="fact-v">{{ tickFor('money')?.value }}</span>
+                  <span class="chev">{{ isFactOpen('money') ? '▴' : '▾' }}</span>
+                </button>
+                @if (isFactOpen('money')) {
+                  <div class="editor">
+                    <div class="fld">
+                      <select class="control"
+                              [disabled]="publish.saving()"
+                              (change)="onMonetizeChange($event)">
+                        <option value="" [selected]="monetizeSelectValue() === ''">— not decided —</option>
+                        <option value="on" [selected]="monetizeSelectValue() === 'on'">Monetize (on)</option>
+                        <option value="off" [selected]="monetizeSelectValue() === 'off'">Do not monetize (off)</option>
+                      </select>
+                    </div>
+                    <p class="why">
+                      @if (publish.monetize() === null) {
+                        Nothing is recorded, so the extension leaves Studio's monetization
+                        control exactly as it finds it. That is a real answer, not a gap.
+                      } @else {
+                        The extension sets this in Studio's Monetization tab when you click
+                        it there. Nothing here changes YouTube on its own.
+                      }
+                    </p>
                   </div>
-                </div>
-
-                @if (publish.monetize() === null) {
-                  <p class="publish-note">
-                    Not decided — the extension will leave Studio's monetization control
-                    untouched.
-                  </p>
-                } @else {
-                  <p class="publish-note">
-                    The extension sets this in Studio's Monetization tab when you click it
-                    there. Nothing here changes YouTube on its own.
-                  </p>
                 }
+              }
 
-                <!-- Schedule. Two local boxes plus the offset they will be composed with:
-                     the stored value is an instant, and an instant needs a zone. -->
-                <div class="publish-row">
-                  <span class="publish-label">Schedule</span>
-                  <div class="publish-control">
+              <!-- ── SCHEDULE ── A calendar, not a bare date box: the month is drawn from
+                   the same index this page already read, so the other pending items are on
+                   it, and the channel's own release cadence suggests the next open slot.
+                   Any day and any time is allowed; a clash is flagged, never blocked. -->
+              <button class="fact"
+                      [class.open]="isFactOpen('when')"
+                      [class.next]="isNextAction('when')"
+                      (click)="toggleFact('when')">
+                <span class="dot" [class]="'dot ' + (tickFor('when')?.state ?? 'unset')"></span>
+                <span class="fact-l">Schedule</span>
+                <span class="fact-v" [class.warn]="tickFor('when')?.state === 'warn'">{{ tickFor('when')?.value }}</span>
+                @if (isNextAction('when')) { <span class="fact-do">fix it</span> }
+                <span class="chev">{{ isFactOpen('when') ? '▴' : '▾' }}</span>
+              </button>
+              @if (isFactOpen('when')) {
+                <div class="editor">
+                  @if (suggestedSlotLabel(); as suggestion) {
+                    <div class="suggest">
+                      <span class="suggest-l">Next open slot</span>
+                      <span class="suggest-v">{{ suggestion }}</span>
+                      <button class="ghost" (click)="useSuggestedSlot()"
+                              [title]="cadenceNote() ?? ''">Use it</button>
+                    </div>
+                  } @else if (publish.isPodcast()) {
+                    <p class="why">
+                      Spreaker has no release cadence recorded, so there is no slot to
+                      suggest. Pick any day and time.
+                    </p>
+                  } @else if (publish.selectedChannelId()) {
+                    <p class="why">
+                      No release cadence is recorded for this channel, so there is no slot to
+                      suggest. Pick any day and time.
+                    </p>
+                  } @else {
+                    <p class="why">Route this item to a destination and it will suggest that channel's next open slot.</p>
+                  }
+
+                  <div class="cal">
+                    <div class="cal-top">
+                      <button class="icon-btn" (click)="stepCalendar(-1)" title="Previous month">‹</button>
+                      <span class="cal-month">{{ calendarMonthLabel() }}</span>
+                      <button class="icon-btn" (click)="stepCalendar(1)" title="Next month">›</button>
+                    </div>
+                    <div class="cal-grid">
+                      @for (initial of WEEKDAY_INITIALS; track $index) {
+                        <span class="cal-wd">{{ initial }}</span>
+                      }
+                      @for (week of calendarWeeks(); track $index) {
+                        @for (day of week; track day.dateKey) {
+                          <button class="cal-day"
+                                  [class.out]="!day.inMonth"
+                                  [class.today]="day.isToday"
+                                  [class.past]="day.isPast"
+                                  [class.release]="day.isReleaseDay"
+                                  [class.selected]="day.selected"
+                                  (click)="pickCalendarDay(day)"
+                                  [title]="day.dateKey
+                                             + (day.isReleaseDay ? ' · a release day for this channel' : '')
+                                             + (day.count ? ' · ' + day.count + ' already scheduled' : '')">
+                            <span class="num">{{ day.dayOfMonth }}</span>
+                            @if (day.count > 0) {
+                              <span class="cal-mark" [class.mine]="day.onThisChannel"></span>
+                            }
+                          </button>
+                        }
+                      }
+                    </div>
+                  </div>
+
+                  <!-- The stored value is an instant, and an instant needs a zone — which
+                       is why the offset is printed rather than assumed. -->
+                  <div class="fld">
                     <input #scheduleDateInput
                            type="date"
-                           class="publish-input"
+                           class="control"
                            [value]="scheduleDate()"
                            [disabled]="publish.saving()"
                            (input)="scheduleDateDraft.set($any($event.target).value)" />
                     <input type="time"
-                           class="publish-input"
+                           class="control"
                            [value]="scheduleTime()"
                            [disabled]="publish.saving()"
                            (input)="scheduleTimeDraft.set($any($event.target).value)" />
-                    <span class="publish-zone"
+                    <span class="zone num"
                           title="This Mac's zone, for that date. There is no zone picker in this release, so the offset is shown rather than assumed.">
                       {{ scheduleOffset() }}
                     </span>
-                    <button class="copy-btn"
+                  </div>
+                  <div class="fld">
+                    <button class="ghost"
                             [disabled]="!scheduleComplete() || publish.saving()"
                             (click)="saveSchedule()">Set</button>
                     @if (publish.publishAt()) {
-                      <button class="copy-btn"
+                      <button class="ghost"
                               [disabled]="publish.saving()"
                               (click)="clearSchedule()">Clear</button>
                     }
+                    @if (dayCount() > 0) {
+                      <span class="zone" [title]="daySummary() ?? ''">
+                        {{ dayCount() }} already on that day
+                      </span>
+                    }
                   </div>
-                </div>
 
-                @if (scheduleDescription(); as when) {
-                  <p class="publish-note" [class.warn]="when.isPast">
-                    {{ when.local }} ({{ when.localOffset }}) · {{ when.relative }}@if (when.isPast) { — this time has already passed.}
-                  </p>
-                  @if (!when.offsetsAgree) {
-                    <p class="publish-note warn">
-                      Stored as {{ when.raw }} ({{ when.storedOffset }}), which is not the offset
-                      in effect here now — the line above is that same moment read in
-                      {{ when.localOffset }}.
-                    </p>
-                  }
-                } @else {
-                  <p class="publish-note">No schedule set.</p>
-                }
-
-                <!-- Thumbnail. The image is decoded and downscaled in the main process;
-                     the renderer never reads the file, so webSecurity stays on. -->
-                <div class="publish-row" #thumbnailRow>
-                  <span class="publish-label">Thumbnail</span>
-                  <div class="publish-control">
-                    @if (publish.thumbnailPreview(); as preview) {
-                      <img class="publish-thumb" [src]="preview.dataUrl" [alt]="fileName(preview.path)" />
-                      <div class="publish-thumb-facts">
-                        <span class="publish-filename" [title]="preview.path">{{ fileName(preview.path) }}</span>
-                        <span class="publish-dim">{{ thumbnailFacts(preview.meta) }}</span>
+                  <!-- Prose that reports a real problem: the two things about a schedule
+                       that cost an upload if nobody says them. -->
+                  @if (scheduleDescription(); as when) {
+                    @if (when.isPast) {
+                      <div class="banner warn">
+                        <mat-icon>warning_amber</mat-icon>
+                        <span>
+                          <b>This time has passed</b>
+                          It was due {{ when.relative }}. Pushing now would publish the video
+                          immediately. Set a new time, or clear the schedule.
+                        </span>
                       </div>
-                      <button class="copy-btn" [disabled]="publish.saving()" (click)="changeThumbnail()">Change…</button>
-                      <button class="copy-btn" [disabled]="publish.saving()" (click)="publish.clearThumbnail()">Clear</button>
-                    } @else if (publish.thumbnailPath(); as path) {
-                      <!-- The record has one and the preview did not arrive. The banner
-                           in the decide column says why; the path is still what was
-                           chosen. -->
-                      <div class="publish-thumb-facts">
-                        <span class="publish-filename" [title]="path">{{ fileName(path) }}</span>
+                    }
+                    @if (!when.offsetsAgree) {
+                      <div class="banner warn">
+                        <mat-icon>warning_amber</mat-icon>
+                        <span>
+                          <b>Stored in a different offset</b>
+                          Stored as {{ when.raw }} ({{ when.storedOffset }}), which is not the
+                          offset in effect here now — the row above is that same moment read
+                          in {{ when.localOffset }}.
+                        </span>
+                      </div>
+                    }
+                  }
+                  @if (scheduleCollision(); as clash) {
+                    <div class="banner warn">
+                      <mat-icon>warning_amber</mat-icon>
+                      <span><b>Two releases at once</b>{{ clash }}</span>
+                    </div>
+                  }
+                </div>
+              }
+
+              <!-- ── THUMBNAIL ── The image is decoded and downscaled in the main process;
+                   the renderer never reads the file, so webSecurity stays on. The image,
+                   the name and the measurements are one row and the buttons are the next,
+                   so the facts column is never asked to be one character wide. -->
+              <button class="fact"
+                      [class.open]="isFactOpen('thumb')"
+                      [class.next]="isNextAction('thumb')"
+                      (click)="toggleFact('thumb')">
+                <span class="dot" [class]="'dot ' + (tickFor('thumb')?.state ?? 'unset')"></span>
+                <span class="fact-l">Thumbnail</span>
+                <span class="fact-v" [class.warn]="tickFor('thumb')?.state === 'warn'">{{ tickFor('thumb')?.value }}</span>
+                @if (isNextAction('thumb')) { <span class="fact-do">check it</span> }
+                <span class="chev">{{ isFactOpen('thumb') ? '▴' : '▾' }}</span>
+              </button>
+              @if (isFactOpen('thumb')) {
+                <div class="editor" #thumbnailRow>
+                  @if (publish.thumbnailPreview(); as preview) {
+                    <div class="thumb">
+                      <img class="thumb-img" [src]="preview.dataUrl" [alt]="fileName(preview.path)" />
+                      <div class="thumb-facts">
+                        <span class="thumb-fn" [title]="preview.path">{{ fileName(preview.path) }}</span>
+                        <span class="thumb-dim num">{{ thumbnailFacts(preview.meta) }}</span>
+                      </div>
+                    </div>
+                    <div class="fld">
+                      <button class="ghost" [disabled]="publish.saving()" (click)="changeThumbnail()">Change…</button>
+                      <button class="ghost" [disabled]="publish.saving()" (click)="publish.clearThumbnail()">Clear</button>
+                    </div>
+                  } @else if (publish.thumbnailPath(); as path) {
+                    <!-- The record has one and the preview did not arrive. The banner in
+                         the decide column says why; the path is still what was chosen. -->
+                    <div class="thumb">
+                      <div class="thumb-img missing">no preview</div>
+                      <div class="thumb-facts">
+                        <span class="thumb-fn" [title]="path">{{ fileName(path) }}</span>
                         @if (publish.thumbnailMeta(); as meta) {
-                          <span class="publish-dim">{{ thumbnailFacts(meta) }} — no preview</span>
+                          <span class="thumb-dim num">{{ thumbnailFacts(meta) }}</span>
                         }
                       </div>
-                      <button class="copy-btn" [disabled]="publish.saving()" (click)="changeThumbnail()">Change…</button>
-                      <button class="copy-btn" [disabled]="publish.saving()" (click)="publish.clearThumbnail()">Clear</button>
-                    } @else {
-                      <span class="publish-empty">None.</span>
-                      <button class="copy-btn" [disabled]="publish.saving()" (click)="changeThumbnail()">Choose…</button>
-                    }
-                  </div>
-                </div>
-
-                @for (warning of publish.thumbnailWarnings(); track $index) {
-                  <p class="publish-note warn">{{ warning }}</p>
-                }
-
-                <!-- A thumbnail found on disk next to this item's export. NEVER applied
-                     on its own: slots are renumbered between export and upload often
-                     enough (13 of 40 live exports) that a pre-applied proposal would be
-                     wrong routinely and invisibly. Confirm waits for the image. -->
-                @if (publish.proposal(); as proposal) {
-                  <div class="publish-proposal">
-                    <div class="publish-proposal-head">
-                      <mat-icon>help_outline</mat-icon>
-                      <strong>Proposed — not applied</strong>
                     </div>
-                    <p class="publish-note">
-                      This image was exported alongside the video. Check that it is the right
-                      one: slot numbers get renumbered between export and upload.
-                    </p>
-                    <div class="publish-control">
-                      @if (publish.proposalPreview(); as preview) {
-                        <img class="publish-thumb" [src]="preview.dataUrl" [alt]="fileName(proposal.path)" />
-                      }
-                      <div class="publish-thumb-facts">
-                        <span class="publish-filename" [title]="proposal.path">{{ fileName(proposal.path) }}</span>
-                        <span class="publish-dim">{{ thumbnailFacts(proposal.meta) }}</span>
+                    <div class="fld">
+                      <button class="ghost" [disabled]="publish.saving()" (click)="changeThumbnail()">Change…</button>
+                      <button class="ghost" [disabled]="publish.saving()" (click)="publish.clearThumbnail()">Clear</button>
+                    </div>
+                  } @else {
+                    <div class="fld">
+                      <span class="why">Nothing chosen — the video keeps whatever thumbnail it has.</span>
+                      <button class="ghost" [disabled]="publish.saving()" (click)="changeThumbnail()">Choose…</button>
+                    </div>
+                  }
+
+                  @for (warning of publish.thumbnailWarnings(); track $index) {
+                    <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ warning }}</span></div>
+                  }
+
+                  <!-- A thumbnail found on disk next to this item's export. NEVER applied
+                       on its own: slots are renumbered between export and upload often
+                       enough (13 of 40 live exports) that a pre-applied proposal would be
+                       wrong routinely and invisibly. Confirm waits for the image. -->
+                  @if (publish.proposal(); as proposal) {
+                    <div class="proposal">
+                      <div class="receipt-head">
+                        <mat-icon>help_outline</mat-icon>
+                        <strong>Proposed — not applied</strong>
                       </div>
-                      <button class="copy-btn confirm"
-                              [disabled]="!publish.proposalPreview() || publish.saving()"
-                              (click)="publish.confirmProposal()">Confirm</button>
-                      <button class="copy-btn"
-                              [disabled]="publish.saving()"
-                              (click)="publish.dismissProposal()">Not this one</button>
+                      <div class="thumb">
+                        @if (publish.proposalPreview(); as preview) {
+                          <img class="thumb-img" [src]="preview.dataUrl" [alt]="fileName(proposal.path)" />
+                        } @else {
+                          <div class="thumb-img missing">reading…</div>
+                        }
+                        <div class="thumb-facts">
+                          <span class="thumb-fn" [title]="proposal.path">{{ fileName(proposal.path) }}</span>
+                          <span class="thumb-dim num">{{ thumbnailFacts(proposal.meta) }}</span>
+                        </div>
+                      </div>
+                      <div class="banner warn">
+                        <mat-icon>warning_amber</mat-icon>
+                        <span>
+                          <b>Check the slot number</b>
+                          This image was exported alongside the video, but slots get
+                          renumbered between export and upload.
+                        </span>
+                      </div>
+                      @for (warning of proposal.warnings; track $index) {
+                        <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ warning }}</span></div>
+                      }
+                      <div class="fld">
+                        <button class="ghost primary-ghost"
+                                [disabled]="!publish.proposalPreview() || publish.saving()"
+                                (click)="publish.confirmProposal()">Use this one</button>
+                        <button class="ghost"
+                                [disabled]="publish.saving()"
+                                (click)="publish.dismissProposal()">Not this one</button>
+                      </div>
                     </div>
-                    @for (warning of proposal.warnings; track $index) {
-                      <p class="publish-note warn">{{ warning }}</p>
-                    }
-                  </div>
-                }
-
-                <!-- Push to YouTube. The ONE control on this page that writes to a live
-                     video, and it writes only to the video this item is already linked
-                     to: it uploads nothing and creates nothing (the API audit is still
-                     pending, so drafts are uploaded in the browser). It always asks
-                     first, listing exactly what will be sent. -->
-                <div class="publish-row">
-                  <span class="publish-label">YouTube</span>
-                  <div class="publish-control">
-                    @if (publish.videoId(); as videoId) {
-                      <code class="publish-video" title="The linked video">{{ videoId }}</code>
-                    } @else {
-                      <span class="publish-empty">No video linked.</span>
-                    }
-                    <button class="copy-btn confirm"
-                            [disabled]="!!publish.pushBlockedReason() || publish.pushing() || publish.saving()"
-                            (click)="pushToYouTube()">
-                      @if (publish.pushing()) { Pushing… } @else { Push to YouTube }
-                    </button>
-                  </div>
+                  }
                 </div>
+              }
 
-                <!-- A disabled button with no account of itself is a dead end. -->
-                @if (publish.pushBlockedReason(); as why) {
-                  <p class="publish-note">{{ why }}</p>
-                } @else if (publish.lastPushReceipt(); as last) {
-                  <p class="publish-note">
-                    Last pushed {{ localTime(last.pushedAt) }} — "{{ last.updated.title }}".
-                  </p>
-                }
-
-                <!-- The receipt for the push made just now: every part either sent, with
-                     what was sent, or named with the reason it was not. -->
-                @if (publish.receipt(); as receipt) {
-                  <div class="publish-receipt">
-                    <div class="publish-proposal-head">
-                      <mat-icon>task_alt</mat-icon>
-                      <strong>Pushed to {{ receipt.videoId }}</strong>
-                      <button class="copy-btn" (click)="publish.dismissReceipt()">Dismiss</button>
-                    </div>
-                    <p class="publish-note">Title — {{ receipt.updated.title }}</p>
-                    <p class="publish-note">
-                      Description — {{ receipt.updated.description.chars }} characters, starting
-                      "{{ receipt.updated.description.firstLine }}"
-                    </p>
-                    <p class="publish-note">Tags — {{ receipt.updated.tags.count }} sent</p>
-                    @if (receipt.updated.publishAt) {
-                      <p class="publish-note">
-                        Schedule — {{ localTime(receipt.updated.publishAt) }}, video kept private until then
-                      </p>
-                    } @else if (receipt.skipped.publishAt) {
-                      <p class="publish-note">Schedule — {{ receipt.skipped.publishAt }}</p>
-                    }
-                    @if (receipt.updated.thumbnail) {
-                      <p class="publish-note">Thumbnail — {{ fileName(receipt.updated.thumbnail) }} uploaded</p>
-                    } @else if (receipt.skipped.thumbnail) {
-                      <p class="publish-note">Thumbnail — {{ receipt.skipped.thumbnail }}</p>
-                    }
-                  </div>
-                }
-
-                <!-- Spreaker. The podcast half, and it exists only for an item the
-                     operator has marked as an episode — the checkbox at the top of this
-                     panel is what makes this section appear. One account, one show, so
-                     there is no picker: the show is configured once, in Settings.
-
-                     The difference from Push to YouTube, said on screen because it is the
-                     thing people assume wrongly: this CREATES. Spreaker has no draft
-                     state, so an upload is a publication unless the item is scheduled, and
-                     a second upload is a second episode in the feed rather than an edit of
-                     the first. -->
-                @if (publish.isPodcast()) {
-                  <div class="publish-spreaker">
-                    <div class="publish-proposal-head">
-                      <mat-icon>podcasts</mat-icon>
-                      <strong>Spreaker episode</strong>
-                    </div>
-
-                    <!-- Not a disabled button with nothing to say for itself: the
-                         unconfigured state names what is missing and where it goes. -->
+              <!-- ── EPISODE AUDIO ── Only for an item routed to Spreaker: an episode IS
+                   the audio. Measured every time this panel opens rather than remembered —
+                   a size and a duration are facts about a file at a moment. -->
+              @if (publish.isPodcast()) {
+                <button class="fact"
+                        [class.open]="isFactOpen('audio')"
+                        [class.next]="isNextAction('audio')"
+                        (click)="toggleFact('audio')">
+                  <span class="dot" [class]="'dot ' + (tickFor('audio')?.state ?? 'unset')"></span>
+                  <span class="fact-l">Episode audio</span>
+                  <span class="fact-v" [class.warn]="tickFor('audio')?.state === 'warn'">{{ tickFor('audio')?.value }}</span>
+                  @if (isNextAction('audio')) { <span class="fact-do">choose it</span> }
+                  <span class="chev">{{ isFactOpen('audio') ? '▴' : '▾' }}</span>
+                </button>
+                @if (isFactOpen('audio')) {
+                  <div class="editor" #podcastRow>
                     @if (publish.spreakerStatus(); as status) {
                       @if (!status.configured) {
-                        <p class="publish-note warn">
-                          Spreaker is not configured — {{ status.reason }} Add the access token
-                          and the show id in Settings → Spreaker. They are stored on this machine
-                          only, in <code>{{ status.credentialsPath }}</code>.
-                        </p>
-                      } @else {
-                        <p class="publish-note">Uploads to {{ spreakerShowLabel() }}.</p>
+                        <div class="banner warn">
+                          <mat-icon>warning_amber</mat-icon>
+                          <span>
+                            <b>Spreaker is not configured</b>
+                            {{ status.reason }} Add the access token and the show id in
+                            Settings → Spreaker. They are stored on this machine only, in
+                            <code>{{ status.credentialsPath }}</code>.
+                          </span>
+                        </div>
                       }
-                    } @else {
-                      <p class="publish-note">Checking whether Spreaker is set up…</p>
                     }
-
-                    <!-- The audio file. Measured every time this panel opens rather than
-                         remembered: a size and a duration are facts about a file on
-                         Callisto at a moment. -->
-                    <div class="publish-row">
-                      <span class="publish-label">Episode audio</span>
-                      <div class="publish-control">
-                        @if (publish.audio(); as audio) {
-                          <div class="publish-thumb-facts">
-                            <span class="publish-filename" [title]="audio.path">{{ fileName(audio.path) }}</span>
-                            <span class="publish-dim">{{ audioFacts(audio.meta) }}</span>
-                          </div>
-                          <button class="copy-btn" [disabled]="publish.saving()" (click)="chooseAudio()">Change…</button>
-                          <button class="copy-btn" [disabled]="publish.saving()" (click)="publish.clearAudio()">Clear</button>
-                        } @else if (publish.spreakerAudioPath(); as path) {
-                          <!-- The record names a file and the file did not answer. The
-                               banner in the decide column says why; the path is still
-                               what was chosen. -->
-                          <div class="publish-thumb-facts">
-                            <span class="publish-filename" [title]="path">{{ fileName(path) }}</span>
-                            <span class="publish-dim">could not be measured</span>
-                          </div>
-                          <button class="copy-btn" [disabled]="publish.saving()" (click)="chooseAudio()">Change…</button>
-                          <button class="copy-btn" [disabled]="publish.saving()" (click)="publish.clearAudio()">Clear</button>
-                        } @else {
-                          <span class="publish-empty">None.</span>
-                          <button class="copy-btn" [disabled]="publish.saving()" (click)="chooseAudio()">Choose…</button>
-                        }
-                      </div>
-                    </div>
 
                     @if (publish.audio(); as audio) {
+                      <div class="thumb">
+                        <div class="thumb-facts">
+                          <span class="thumb-fn" [title]="audio.path">{{ fileName(audio.path) }}</span>
+                          <span class="thumb-dim num">{{ audioFacts(audio.meta) }}</span>
+                        </div>
+                      </div>
+                      <div class="fld">
+                        <button class="ghost" [disabled]="publish.saving()" (click)="chooseAudio()">Change…</button>
+                        <button class="ghost" [disabled]="publish.saving()" (click)="publish.clearAudio()">Clear</button>
+                      </div>
                       @for (warning of audio.warnings; track $index) {
-                        <p class="publish-note warn">{{ warning }}</p>
+                        <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ warning }}</span></div>
                       }
+                    } @else if (publish.spreakerAudioPath(); as path) {
+                      <!-- The record names a file and the file did not answer. -->
+                      <div class="thumb">
+                        <div class="thumb-facts">
+                          <span class="thumb-fn" [title]="path">{{ fileName(path) }}</span>
+                          <span class="thumb-dim num">could not be measured</span>
+                        </div>
+                      </div>
+                      <div class="fld">
+                        <button class="ghost" [disabled]="publish.saving()" (click)="chooseAudio()">Change…</button>
+                        <button class="ghost" [disabled]="publish.saving()" (click)="publish.clearAudio()">Clear</button>
+                      </div>
+                    } @else {
+                      <div class="fld">
+                        <span class="why">An episode is the audio, so this is required.</span>
+                        <button class="ghost" [disabled]="publish.saving()" (click)="chooseAudio()">Choose…</button>
+                      </div>
                     }
 
-                    <!-- The sibling export: `podcast 1.mp3` beside `podcast 1.mov`. Offered,
-                         never applied — the convention says where a file is, not that this
-                         item is that episode. -->
+                    <!-- The sibling export: `podcast 1.mp3` beside `podcast 1.mov`.
+                         Offered, never applied — the convention says where a file is, not
+                         that this item is that episode. -->
                     @if (publish.audioProposal(); as proposal) {
-                      <div class="publish-proposal">
-                        <div class="publish-proposal-head">
+                      <div class="proposal">
+                        <div class="receipt-head">
                           <mat-icon>help_outline</mat-icon>
                           <strong>Proposed — not applied</strong>
                         </div>
-                        <p class="publish-note">
-                          This audio file was exported beside the video. Check that it is the
-                          right one — it is going to a public feed.
-                        </p>
-                        <div class="publish-control">
-                          <div class="publish-thumb-facts">
-                            <span class="publish-filename" [title]="proposal.path">{{ fileName(proposal.path) }}</span>
-                            <span class="publish-dim">{{ audioFacts(proposal.meta) }}</span>
+                        <div class="thumb">
+                          <div class="thumb-facts">
+                            <span class="thumb-fn" [title]="proposal.path">{{ fileName(proposal.path) }}</span>
+                            <span class="thumb-dim num">{{ audioFacts(proposal.meta) }}</span>
                           </div>
-                          <button class="copy-btn confirm"
+                        </div>
+                        <div class="banner warn">
+                          <mat-icon>warning_amber</mat-icon>
+                          <span>
+                            <b>Check that this is the right file</b>
+                            It was exported beside the video, and it is going to a public feed.
+                          </span>
+                        </div>
+                        @for (warning of proposal.warnings; track $index) {
+                          <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ warning }}</span></div>
+                        }
+                        <div class="fld">
+                          <button class="ghost primary-ghost"
                                   [disabled]="publish.saving()"
-                                  (click)="publish.confirmAudioProposal()">Confirm</button>
-                          <button class="copy-btn"
+                                  (click)="publish.confirmAudioProposal()">Use this one</button>
+                          <button class="ghost"
                                   [disabled]="publish.saving()"
                                   (click)="publish.dismissAudioProposal()">Not this one</button>
                         </div>
-                        @for (warning of proposal.warnings; track $index) {
-                          <p class="publish-note warn">{{ warning }}</p>
-                        }
-                      </div>
-                    }
-
-                    <!-- The upload. Always asks first, listing exactly what will be sent
-                         and what happens when it lands. -->
-                    <div class="publish-row">
-                      <span class="publish-label">Upload</span>
-                      <div class="publish-control">
-                        @if (publish.spreakerEpisodeId(); as episodeId) {
-                          <code class="publish-video" title="The episode created from this item">episode {{ episodeId }}</code>
-                          <button class="copy-btn"
-                                  [disabled]="publish.saving() || publish.uploading()"
-                                  (click)="forgetSpreakerEpisode()">Forget episode</button>
-                        } @else {
-                          <button class="copy-btn confirm"
-                                  [disabled]="!!publish.spreakerBlockedReason() || publish.uploading() || publish.saving()"
-                                  (click)="uploadToSpreaker()">
-                            @if (publish.uploading()) { Uploading… } @else { Upload to Spreaker }
-                          </button>
-                          <span class="publish-dim">{{ publish.spreakerPublicationNote() }}</span>
-                        }
-                      </div>
-                    </div>
-
-                    @if (publish.spreakerBlockedReason(); as why) {
-                      <p class="publish-note">{{ why }}</p>
-                    } @else if (publish.lastSpreakerReceipt(); as last) {
-                      <p class="publish-note">
-                        Last uploaded {{ localTime(last.pushedAt) }} — "{{ last.uploaded.title }}".
-                      </p>
-                    }
-
-                    <!-- The receipt for the upload made just now. `encodingStatus` is in it
-                         deliberately: a fresh upload is PENDING or PROCESSING and never
-                         READY, so this must not read as "the episode is live". -->
-                    @if (publish.spreakerReceipt(); as receipt) {
-                      <div class="publish-receipt">
-                        <div class="publish-proposal-head">
-                          <mat-icon>task_alt</mat-icon>
-                          <strong>Uploaded as episode {{ receipt.episodeId }}</strong>
-                          <button class="copy-btn" (click)="publish.dismissSpreakerReceipt()">Dismiss</button>
-                        </div>
-                        <p class="publish-note">Title — {{ receipt.uploaded.title }}</p>
-                        <p class="publish-note">
-                          Description — {{ receipt.uploaded.description.chars }} characters, starting
-                          "{{ receipt.uploaded.description.firstLine }}"
-                        </p>
-                        <p class="publish-note">Tags — {{ receipt.uploaded.tags.count }} sent</p>
-                        <p class="publish-note">Audio — {{ fileName(receipt.uploaded.audio.path) }} uploaded</p>
-                        @if (receipt.uploaded.autoPublishedAt) {
-                          <p class="publish-note">
-                            Publication — scheduled for {{ receipt.uploaded.autoPublishedAt }} UTC
-                          </p>
-                        } @else if (receipt.skipped.autoPublishedAt) {
-                          <p class="publish-note">Publication — {{ receipt.skipped.autoPublishedAt }}</p>
-                        }
-                        @if (receipt.encodingStatus) {
-                          <p class="publish-note">
-                            Spreaker says {{ receipt.encodingStatus }} — it re-encodes every upload,
-                            so the episode is not playable until that finishes.
-                          </p>
-                        }
-                        @if (receipt.siteUrl) {
-                          <p class="publish-note"><code>{{ receipt.siteUrl }}</code></p>
-                        }
                       </div>
                     }
                   </div>
                 }
-              </div>
-            </section>
-
-            <!-- Assets. Pure clipboard sources, so they collapse to their counts: the
-                 count IS the information until the text is wanted. Chapters open by
-                 default because they are pasted almost every time. -->
-            @if (hasAssets()) {
-            <section class="card assets-card">
-              <div class="card-head">
-                <mat-icon>content_paste</mat-icon>
-                <h3>Assets</h3>
-                <span class="card-head-spacer"></span>
-              </div>
-
-              <!-- Thumbnail Text -->
-              @if (metadata()!.thumbnail_text && metadata()!.thumbnail_text.length > 0) {
-                <div class="asset">
-                  <button class="asset-head" (click)="toggleAsset('thumbnail-text')">
-                    <mat-icon>image</mat-icon>
-                    <span class="asset-name">Thumbnail Text</span>
-                    <span class="count-badge">{{ metadata()!.thumbnail_text.length }}</span>
-                    <span class="asset-chevron">{{ isAssetOpen('thumbnail-text') ? '▴' : '▾' }}</span>
-                  </button>
-                  @if (isAssetOpen('thumbnail-text')) {
-                    <div class="thumbnail-list">
-                      @for (text of metadata()!.thumbnail_text; track $index; let i = $index) {
-                        <div class="thumbnail-item"
-                             [class.copied]="isCopied('thumb-' + i)"
-                             (click)="copyToClipboard(getThumbnailText(text), 'thumb-' + i)"
-                             title="Click to copy">
-                          <span class="thumbnail-text">{{ getThumbnailText(text) }}</span>
-                          <span class="copy-hint">{{ isCopied('thumb-' + i) ? '✓ Copied!' : '📋' }}</span>
-                        </div>
-                      }
-                    </div>
-                  }
-                </div>
               }
+            </div>
 
-              <!-- Chapters -->
-              @if (metadata()!.chapters && metadata()!.chapters.length > 0) {
-                <div class="asset">
-                  <button class="asset-head" (click)="toggleAsset('chapters')">
-                    <mat-icon>list</mat-icon>
-                    <span class="asset-name">Chapters</span>
-                    <span class="count-badge">{{ metadata()!.chapters.length }}</span>
-                    <span class="asset-chevron">{{ isAssetOpen('chapters') ? '▴' : '▾' }}</span>
-                  </button>
-                  @if (isAssetOpen('chapters')) {
-                    <div class="asset-actions">
-                      <button class="copy-btn"
-                              [class.copied]="isCopied('chapters-all')"
-                              (click)="copyChaptersToClipboard()">
-                        {{ isCopied('chapters-all') ? '✓ Copied!' : 'Copy All' }}
-                      </button>
-                    </div>
-                    <div class="chapters-list">
-                      @for (chapter of metadata()!.chapters; track $index; let i = $index) {
-                        <div class="chapter-item"
-                             [class.copied]="isCopied('chapter-' + i)"
-                             (click)="copyToClipboard(getChapterTimestamp(chapter) + ' ' + getChapterTitle(chapter), 'chapter-' + i)"
-                             title="Click to copy">
-                          <span class="chapter-time">{{ getChapterTimestamp(chapter) }}</span>
-                          <span class="chapter-title">{{ getChapterTitle(chapter) }}</span>
-                          <span class="copy-hint">{{ isCopied('chapter-' + i) ? '✓ Copied!' : '📋' }}</span>
-                        </div>
-                      }
-                    </div>
-                  }
+            <!-- The receipt for the dispatch made just now: every part either sent, with
+                 what was sent, or named with the reason it was not. -->
+            @if (publish.receipt(); as receipt) {
+              <div class="receipt">
+                <div class="receipt-head">
+                  <mat-icon>task_alt</mat-icon>
+                  <strong>Pushed to {{ receipt.videoId }}</strong>
+                  <span class="pane-head-spacer"></span>
+                  <button class="ghost" (click)="publish.dismissReceipt()">Dismiss</button>
                 </div>
-              }
-
-              <!-- Chapters that were asked for and did not happen. Takes the chapter
-                   slot, expanded and NOT collapsible: the reason is the whole content,
-                   and a collapsed reason is a reason nobody reads. -->
-              @if (chaptersMissing(); as skipped) {
-                <div class="asset">
-                  <div class="asset-head static">
-                    <mat-icon>list</mat-icon>
-                    <span class="asset-name">Chapters</span>
+                <dl class="manifest">
+                  <div><span>Title</span><span>{{ receipt.updated.title }}</span></div>
+                  <div>
+                    <span>Description</span>
+                    <span>{{ receipt.updated.description.chars }} chars — “{{ receipt.updated.description.firstLine }}”</span>
                   </div>
-                  <div class="chapters-missing" [class.failed]="skipped.outcome === 'failed'">
-                    <mat-icon>{{ skipped.outcome === 'failed' ? 'error_outline' : 'info_outline' }}</mat-icon>
-                    <div>
-                      <div class="chapters-missing-headline">
-                        {{ skipped.outcome === 'failed' ? 'Chapter generation failed — no chapters were added.' : 'No chapters were added.' }}
-                      </div>
-                      <div class="chapters-missing-reason">{{ skipped.reason }}</div>
-                    </div>
-                  </div>
-                </div>
-              }
-
-              <!-- Pinned Comment -->
-              @if (metadata()!.pinned_comment && metadata()!.pinned_comment!.length > 0) {
-                <div class="asset">
-                  <button class="asset-head" (click)="toggleAsset('pinned-comment')">
-                    <mat-icon>push_pin</mat-icon>
-                    <span class="asset-name">Pinned Comment</span>
-                    <span class="count-badge">{{ metadata()!.pinned_comment!.length }}</span>
-                    <span class="asset-chevron">{{ isAssetOpen('pinned-comment') ? '▴' : '▾' }}</span>
-                  </button>
-                  @if (isAssetOpen('pinned-comment')) {
-                    <div class="list-container">
-                      @for (comment of metadata()!.pinned_comment!; track $index; let i = $index) {
-                        <div class="list-item"
-                             [class.copied]="isCopied('comment-' + i)"
-                             (click)="copyToClipboard(comment, 'comment-' + i)"
-                             title="Click to copy">
-                          <span class="item-number">{{ i + 1 }}</span>
-                          <span class="list-item-text">{{ comment }}</span>
-                          <span class="copy-hint">{{ isCopied('comment-' + i) ? '✓ Copied!' : '📋' }}</span>
-                        </div>
-                      }
-                    </div>
+                  <div><span>Tags</span><span>{{ receipt.updated.tags.count }} sent</span></div>
+                  @if (receipt.updated.publishAt) {
+                    <div><span>Schedule</span><span>{{ localTime(receipt.updated.publishAt) }} — private until then</span></div>
+                  } @else if (receipt.skipped.publishAt) {
+                    <div class="miss"><span>Schedule</span><span>{{ receipt.skipped.publishAt }}</span></div>
                   }
-                </div>
-              }
-
-              <!-- Clip Suggestions -->
-              @if (metadata()!.clip_suggestions && metadata()!.clip_suggestions!.length > 0) {
-                <div class="asset">
-                  <button class="asset-head" (click)="toggleAsset('clip-suggestions')">
-                    <mat-icon>content_cut</mat-icon>
-                    <span class="asset-name">Clip Suggestions</span>
-                    <span class="count-badge">{{ metadata()!.clip_suggestions!.length }}</span>
-                    <span class="asset-chevron">{{ isAssetOpen('clip-suggestions') ? '▴' : '▾' }}</span>
-                  </button>
-                  @if (isAssetOpen('clip-suggestions')) {
-                    <div class="list-container">
-                      @for (clip of metadata()!.clip_suggestions!; track $index; let i = $index) {
-                        <div class="list-item"
-                             [class.copied]="isCopied('clip-' + i)"
-                             (click)="copyToClipboard(clip, 'clip-' + i)"
-                             title="Click to copy">
-                          <span class="item-number">{{ i + 1 }}</span>
-                          <span class="list-item-text">{{ clip }}</span>
-                          <span class="copy-hint">{{ isCopied('clip-' + i) ? '✓ Copied!' : '📋' }}</span>
-                        </div>
-                      }
-                    </div>
+                  @if (receipt.updated.thumbnail) {
+                    <div><span>Thumbnail</span><span>{{ fileName(receipt.updated.thumbnail) }} uploaded</span></div>
+                  } @else if (receipt.skipped.thumbnail) {
+                    <div class="miss"><span>Thumbnail</span><span>{{ receipt.skipped.thumbnail }}</span></div>
                   }
-                </div>
-              }
-            </section>
+                </dl>
+              </div>
             }
-          }
-        </div>
+
+            <!-- `encodingStatus` is in this one deliberately: a fresh upload is PENDING or
+                 PROCESSING and never READY, so it must not read as "the episode is live". -->
+            @if (publish.spreakerReceipt(); as receipt) {
+              <div class="receipt">
+                <div class="receipt-head">
+                  <mat-icon>task_alt</mat-icon>
+                  <strong>Uploaded as episode {{ receipt.episodeId }}</strong>
+                  <span class="pane-head-spacer"></span>
+                  <button class="ghost" (click)="publish.dismissSpreakerReceipt()">Dismiss</button>
+                </div>
+                <dl class="manifest">
+                  <div><span>Title</span><span>{{ receipt.uploaded.title }}</span></div>
+                  <div>
+                    <span>Description</span>
+                    <span>{{ receipt.uploaded.description.chars }} chars — “{{ receipt.uploaded.description.firstLine }}”</span>
+                  </div>
+                  <div><span>Tags</span><span>{{ receipt.uploaded.tags.count }} sent</span></div>
+                  <div><span>Audio</span><span>{{ fileName(receipt.uploaded.audio.path) }} uploaded</span></div>
+                  @if (receipt.uploaded.autoPublishedAt) {
+                    <div><span>Publication</span><span>scheduled for {{ receipt.uploaded.autoPublishedAt }} UTC</span></div>
+                  } @else if (receipt.skipped.autoPublishedAt) {
+                    <div class="miss"><span>Publication</span><span>{{ receipt.skipped.autoPublishedAt }}</span></div>
+                  }
+                  @if (receipt.encodingStatus) {
+                    <div class="miss">
+                      <span>Encoding</span>
+                      <span>{{ receipt.encodingStatus }} — not playable until that finishes</span>
+                    </div>
+                  }
+                  @if (receipt.siteUrl) {
+                    <div><span>URL</span><span>{{ receipt.siteUrl }}</span></div>
+                  }
+                </dl>
+              </div>
+            }
+          </div>
+
+          <!-- ═════ DISPATCH ═════
+               ONE section, following the destination. The manifest states the exact payload
+               so nobody has to be told about it in advance, and the button under it is the
+               only control on this page that changes something an audience can see. It
+               always asks first, listing the same values again. -->
+          <div class="dispatch">
+            <div class="dl">
+              <span class="kicker">Dispatch</span>
+              <span class="pane-head-spacer"></span>
+              <span class="dl-id num">
+                @if (publish.isPodcast()) {
+                  @if (publish.spreakerEpisodeId(); as episodeId) { episode {{ episodeId }} }
+                  @else { no episode yet }
+                } @else {
+                  @if (publish.videoId(); as videoId) { {{ videoId }} }
+                  @else { no video linked }
+                }
+              </span>
+            </div>
+
+            <div class="dl-dest">{{ destinationLabel() }}</div>
+
+            @if (dispatchManifest().length > 0) {
+              <dl class="manifest">
+                @for (row of dispatchManifest(); track row.label) {
+                  <div [class.miss]="row.missing"><span>{{ row.label }}</span><span>{{ row.value }}</span></div>
+                }
+              </dl>
+            }
+
+            @if (publish.isPodcast()) {
+              @if (publish.spreakerEpisodeId()) {
+                <button class="ghost wide"
+                        [disabled]="publish.saving() || publish.uploading()"
+                        (click)="forgetSpreakerEpisode()"
+                        title="Lets this item be uploaded again. It does NOT delete the episode.">
+                  Forget episode
+                </button>
+              } @else {
+                <button class="dispatch-btn"
+                        [class.go]="!dispatchBlockedReason()"
+                        [disabled]="!!dispatchBlockedReason() || publish.uploading() || publish.saving()"
+                        [title]="dispatchBlockedReason() ?? publish.spreakerPublicationNote()"
+                        (click)="uploadToSpreaker()">
+                  @if (publish.uploading()) { Uploading… } @else { Upload to Spreaker }
+                </button>
+              }
+            } @else {
+              <button class="dispatch-btn"
+                      [class.go]="!dispatchBlockedReason()"
+                      [disabled]="!!dispatchBlockedReason() || publish.pushing() || publish.saving()"
+                      [title]="dispatchBlockedReason() ?? 'Writes this manifest to the linked video. It asks first.'"
+                      (click)="pushToYouTube()">
+                @if (publish.pushing()) { Pushing… } @else { Push to YouTube }
+              </button>
+            }
+
+            <div class="dispatch-foot">
+              @if (dispatchBlockedReason(); as why) {
+                <span class="held" [title]="why">Held · {{ heldCount() }} — hover for why</span>
+              } @else if (publish.isPodcast()) {
+                <span [title]="publish.spreakerPublicationNote()">
+                  Spreaker has no draft state ⓘ
+                </span>
+              } @else if (publish.lastPushReceipt(); as last) {
+                <span [title]="'&quot;' + last.updated.title + '&quot;'">
+                  Last pushed {{ localTime(last.pushedAt) }}
+                </span>
+              } @else {
+                <span title="Nothing is created. This writes to the draft you already linked, and asks for confirmation with the exact payload before it sends.">
+                  It asks first ⓘ
+                </span>
+              }
+            </div>
+          </div>
+        }
       </aside>
     }
 
