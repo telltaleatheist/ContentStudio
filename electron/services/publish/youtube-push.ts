@@ -363,7 +363,7 @@ export async function pushItemToYouTube(itemId: string, deps: PushDeps): Promise
   // Status is NOT advanced to 'published'. This push put metadata on a video; whether
   // that video is live is YouTube's fact, not ours, and claiming it here would make the
   // panel state a thing nobody observed.
-  const selection = await store.update(itemId, generated.jobId, {
+  const selection = await store.update(itemId, generated, {
     pushedAt: receipt.pushedAt,
     pushReceipt: receipt,
   });
