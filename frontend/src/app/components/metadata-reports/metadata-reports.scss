@@ -1,14 +1,30 @@
-// Metadata Reports — three panes: list | decide | dispatch (PHASE-4-DESIGN §1.2).
+// Metadata Reports — the copy desk.
 //
-// The page never scrolls. Each pane owns its own scrollbar, and inside the decide column
-// the titles list and the description each have a capped viewport, so the vertical budget
-// stops being a queue and becomes a set of panes: a 30-chapter report and a 5-chapter one
-// present identically.
+// Three panes, each with its own scroll, and a page that never scrolls: a 30-chapter
+// report and a 5-chapter one present identically.
 //
-// Section chrome follows the analytics page's `.card` convention rather than the
-// full-bleed gradient headers this page used to wear (§1.8): it costs ~60px less per
-// section, it survives dark mode without `!important` overrides, and it puts orange back
-// to meaning "interactive/accent" instead of "this is a header". No new tokens.
+// THE THREE RULES THIS FILE EXISTS TO KEEP
+//
+// 1. ONE ACCENT, THREE PLACES. `--primary-orange` used to appear 59 times in here — as
+//    the pane icon, the active chip, the count badge, the variant badge, the scrollbar
+//    thumb, the push button and the selected row at once. When orange means "header",
+//    "selected", "count" and "act now" simultaneously it means nothing. It now appears in
+//    exactly three: the selected row's marker, the picked A/B numerals, and THE ONE
+//    CONTROL THAT IS THE NEXT THING TO DO. Everything else is neutral or a status colour.
+//
+// 2. STATUS IS THREE VALUES, NEVER A FOURTH. filled = recorded, hollow ring = nothing
+//    recorded (a fact, not a fault), amber = this needs you. Plus `na` for a question this
+//    destination does not have. Four chip vocabularies collapsed into this one.
+//
+// 3. NO RESIDENT PROSE. Explanation lives on `title` tooltips and inside opened accordion
+//    rows. `.banner` is the ONLY standing paragraph style, and it is only ever used for
+//    something that actually needs the operator.
+//
+// THEMING. Every colour is a local token declared on `:host` with the LIGHT values, and
+// re-declared under `:host-context([data-theme='dark'])` — the attribute app.ts sets on
+// <body>, and the app's only theme switch. Where a local token is just the app's own, it
+// is defined as that `var()` so it keeps tracking it. Nothing here is a hardcoded colour
+// outside those two blocks, and there is not one `!important`.
 
 :host {
   display: flex;
@@ -17,9 +33,78 @@
   overflow: hidden;
   min-height: 0;
   height: 100%;
+
+  // ── surfaces ──────────────────────────────────────────────────────────────
+  --rp-page: var(--bg-primary);
+  --rp-pane: var(--bg-card);
+  --rp-raised: var(--bg-secondary);
+  --rp-hover: var(--bg-tertiary);
+  --rp-line: var(--border-color);
+  --rp-line-soft: var(--border-color);
+
+  // ── ink ───────────────────────────────────────────────────────────────────
+  --rp-ink: var(--text-primary);
+  --rp-ink-2: var(--text-secondary);
+  --rp-ink-3: var(--text-muted);
+
+  // ── status: three values, never a fourth ──────────────────────────────────
+  // Light-mode values, picked to hold their meaning on white: the sage has to read as
+  // "done" without becoming a success banner, and the amber has to be legible as text.
+  --rp-ok: #3f7d43;
+  --rp-wait: #b3b9bf;
+  --rp-warn: #b4741a;
+  --rp-stop: var(--danger-text);
+  --rp-warn-bg: rgba(180, 116, 26, 0.09);
+  --rp-warn-line: rgba(180, 116, 26, 0.3);
+  --rp-stop-bg: var(--danger-bg);
+  --rp-stop-line: rgba(220, 38, 38, 0.35);
+
+  // ── type ──────────────────────────────────────────────────────────────────
+  // No display face: the owner asked for a clean familiar sans, so hierarchy is carried
+  // by weight and size alone. Mono is for numbers, paths and ids only, where the fixed
+  // advance is doing real work.
+  --rp-mono: 'SF Mono', 'JetBrains Mono', Menlo, ui-monospace, monospace;
+
+  --rp-fs-body: 14px;
+  --rp-fs-small: 12.5px;
+  --rp-fs-cap: 11.5px;
+  --rp-fs-kicker: 10.5px;
+
+  --rp-radius: 8px;
+
+  font-family: var(--font-family);
 }
 
-:host *, :host *::before, :host *::after {
+// Dark. Deliberately NOT the app's #0f0f0f page + #1e1e1e card: read next to each other
+// at this density that pair is pitch black, and the owner asked for it lifted a notch.
+// The ink goes the other way — brighter than a mockup grey, because this page is read for
+// twenty minutes at a time.
+:host-context([data-theme='dark']),
+:host-context(.dark-theme) {
+  --rp-page: #16171a;
+  --rp-pane: #1d1f23;
+  --rp-raised: #24262b;
+  --rp-hover: #2c2f35;
+  --rp-line: #383b42;
+  --rp-line-soft: #2b2e34;
+
+  --rp-ink: #f6f7f9;
+  --rp-ink-2: #c3c9d2;
+  --rp-ink-3: #949ba6;
+
+  --rp-ok: #7fb083;
+  --rp-wait: #5c626b;
+  --rp-warn: #e5aa4c;
+  --rp-stop: #e8756a;
+  --rp-warn-bg: rgba(229, 170, 76, 0.1);
+  --rp-warn-line: rgba(229, 170, 76, 0.28);
+  --rp-stop-bg: rgba(232, 117, 106, 0.1);
+  --rp-stop-line: rgba(232, 117, 106, 0.3);
+}
+
+:host *,
+:host *::before,
+:host *::after {
   box-sizing: border-box;
 }
 
@@ -27,7 +112,9 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: var(--bg-primary);
+  background: var(--rp-page);
+  color: var(--rp-ink);
+  font-size: var(--rp-fs-body);
   overflow: hidden;
   min-height: 0;
   height: 100%;
@@ -38,15 +125,14 @@
 .page-content {
   flex: 1;
   display: grid;
-  grid-template-columns: var(--left-w, 280px) 8px minmax(560px, 1fr) 400px;
+  grid-template-columns: var(--left-w, 280px) 8px minmax(520px, 1fr) 404px;
   grid-template-areas: 'list handle work rail';
-  gap: 0.75rem;
-  padding: 1rem;
+  gap: 0;
   overflow: hidden;
   min-height: 0;
 }
 
-/* Nothing selected: the dispatch rail has nothing to dispatch, so it is not there. */
+/* Nothing selected: the rail has nothing to dispatch, so it is not there. */
 .page-content.no-item {
   grid-template-columns: var(--left-w, 280px) 8px minmax(0, 1fr);
   grid-template-areas: 'list handle work';
@@ -57,10 +143,7 @@
 .rail-pane { grid-area: rail; }
 
 .pane {
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: var(--border-radius-large, 12px);
-  box-shadow: var(--shadow-sm);
+  background: var(--rp-page);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -68,15 +151,16 @@
   min-width: 0;
 }
 
-/* Flat header with a bottom border — the analytics convention, not a gradient bleed. */
+.list-pane { border-right: 1px solid var(--rp-line-soft); }
+.rail-pane { background: var(--rp-pane); border-left: 1px solid var(--rp-line-soft); }
+
 .pane-head {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  padding: 0.625rem 0.75rem;
-  border-bottom: 1px solid var(--border-color);
-  background: var(--bg-secondary);
+  padding: 0.85rem 0.85rem 0.7rem;
+  border-bottom: 1px solid var(--rp-line-soft);
 }
 
 .pane-head-line {
@@ -86,1603 +170,1338 @@
   min-width: 0;
 }
 
-.pane-head-spacer { flex: 1; }
-
-.pane-icon {
-  color: var(--primary-orange);
-  font-size: 1.125rem;
-  width: 1.125rem;
-  height: 1.125rem;
-  flex-shrink: 0;
-}
+.pane-head-spacer { flex: 1; min-width: 0; }
 
 .pane-heading {
   margin: 0;
-  font-size: 0.9375rem;
+  font-size: 16px;
   font-weight: 600;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
+  letter-spacing: 0.005em;
+  color: var(--rp-ink);
 }
 
 .pane-count {
-  font-size: 0.75rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
-  white-space: nowrap;
-
-  .pane-count-of { color: var(--text-muted); }
+  font-size: var(--rp-fs-cap);
+  color: var(--rp-ink-2);
 }
-
-.selected-count {
-  font-size: 0.6875rem;
-  font-weight: 700;
-  color: var(--primary-orange);
-  background: rgba(255, 107, 53, 0.14);
-  border: 1px solid rgba(255, 107, 53, 0.4);
-  border-radius: 10px;
-  padding: 0.0625rem 0.375rem;
-  white-space: nowrap;
-}
+.pane-count-of { color: var(--rp-ink-3); }
 
 .pane-body {
   flex: 1;
   overflow-y: auto;
-  overflow-x: hidden;
   min-height: 0;
 }
 
-.list-body { padding: 0; }
-
-.work-body,
-.rail-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  padding: 0.75rem;
+.kicker {
+  font-size: var(--rp-fs-kicker);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--rp-ink-3);
 }
 
-/* The split. Draggable, and the width it lands on is written to localStorage. */
+.num {
+  font-family: var(--rp-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.kbd {
+  font-family: var(--rp-mono);
+  font-size: 10.5px;
+  color: var(--rp-ink-3);
+  border: 1px solid var(--rp-line);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
 .split-handle {
   grid-area: handle;
-  align-self: stretch;
   cursor: col-resize;
-  border-radius: 999px;
+  position: relative;
   background: transparent;
-  transition: background 0.15s ease;
-  touch-action: none;
 
-  &:hover,
-  &.dragging {
-    background: var(--primary-orange);
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0 3px;
+    border-radius: 2px;
+    background: transparent;
+    transition: background 0.15s ease;
+  }
+  &:hover::after,
+  &.dragging::after { background: var(--rp-line); }
+}
+
+/* ───────────────────────────────── shared controls ───────────────────────────── */
+
+.ghost {
+  font: 500 var(--rp-fs-cap) / 1 var(--font-family);
+  color: var(--rp-ink-2);
+  background: transparent;
+  border: 1px solid var(--rp-line);
+  border-radius: 6px;
+  padding: 6px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.13s ease, border-color 0.13s ease, background 0.13s ease;
+
+  &:hover:not(:disabled) {
+    color: var(--rp-ink);
+    background: var(--rp-hover);
+  }
+  &:disabled {
+    color: var(--rp-ink-3);
+    border-color: var(--rp-line-soft);
+    cursor: not-allowed;
+  }
+  &.copied { color: var(--rp-ok); border-color: var(--rp-ok); }
+  &.wide { width: 100%; }
+}
+
+/* An outline, never a fill — the fill belongs to the one next thing to do. */
+.primary-ghost {
+  color: var(--rp-ok);
+  border-color: var(--rp-ok);
+  &:hover:not(:disabled) { color: var(--rp-ok); background: transparent; border-color: var(--rp-ok); }
+}
+
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rp-ink-3);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  transition: color 0.13s ease, background 0.13s ease;
+
+  &:hover:not(:disabled) { color: var(--rp-ink); background: var(--rp-hover); }
+  &:disabled { color: var(--rp-ink-3); opacity: 0.45; cursor: not-allowed; }
+
+  mat-icon {
+    font-size: 17px;
+    width: 17px;
+    height: 17px;
   }
 }
 
-/* ─────────────────────────────── ① the report list ─────────────────────────────── */
+.control {
+  background: var(--rp-raised);
+  border: 1px solid var(--rp-line);
+  border-radius: 6px;
+  color: var(--rp-ink);
+  font: 400 var(--rp-fs-small) / 1.3 var(--font-family);
+  padding: 6px 7px;
+  outline: none;
+  min-width: 0;
+
+  &:focus { border-color: var(--rp-ink-3); }
+  &:disabled { color: var(--rp-ink-3); cursor: not-allowed; }
+}
+select.control { flex: 1; }
+input[type='date'].control { width: 122px; flex: none; }
+input[type='time'].control { width: 92px; flex: none; }
+
+.quiet-select {
+  flex: 1;
+  min-width: 0;
+  background: var(--rp-raised);
+  border: 1px solid var(--rp-line-soft);
+  border-radius: 6px;
+  color: var(--rp-ink-2);
+  font: 400 var(--rp-fs-cap) / 1.2 var(--font-family);
+  padding: 5px 6px;
+  outline: none;
+  &:focus { border-color: var(--rp-ink-3); }
+}
+
+/* The three status values, in one shape. */
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  display: inline-block;
+
+  &.set { background: var(--rp-ok); }
+  &.unset { background: transparent; box-shadow: inset 0 0 0 1.5px var(--rp-wait); }
+  &.warn { background: var(--rp-warn); }
+  &.na { background: transparent; box-shadow: inset 0 0 0 1.5px var(--rp-wait); opacity: 0.45; }
+}
+
+/* The ONLY standing paragraph on this page, and only for something that needs answering. */
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 11px;
+  margin-top: 8px;
+  border-radius: 7px;
+  background: var(--rp-warn-bg);
+  border: 1px solid var(--rp-warn-line);
+  font-size: var(--rp-fs-cap);
+  line-height: 1.55;
+  color: var(--rp-ink-2);
+
+  b {
+    display: block;
+    color: var(--rp-warn);
+    font-weight: 600;
+    margin-bottom: 2px;
+  }
+  code {
+    font-family: var(--rp-mono);
+    font-size: 10.5px;
+    color: var(--rp-ink-2);
+    overflow-wrap: anywhere;
+  }
+  mat-icon {
+    flex: none;
+    font-size: 15px;
+    width: 15px;
+    height: 15px;
+    color: var(--rp-warn);
+  }
+  &.stop {
+    background: var(--rp-stop-bg);
+    border-color: var(--rp-stop-line);
+    cursor: pointer;
+    b, mat-icon { color: var(--rp-stop); }
+  }
+  &.stop .banner-dismiss {
+    margin-left: auto;
+    flex: none;
+    font-size: var(--rp-fs-kicker);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--rp-ink-3);
+  }
+}
+
+.resolving {
+  padding: 12px 0;
+  font-size: var(--rp-fs-small);
+  color: var(--rp-ink-3);
+}
+
+.loading-container,
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 2.5rem 1rem;
+  color: var(--rp-ink-3);
+  text-align: center;
+
+  p { margin: 0; font-size: var(--rp-fs-small); color: var(--rp-ink-2); }
+  small { font-size: var(--rp-fs-cap); }
+  mat-icon { font-size: 28px; width: 28px; height: 28px; opacity: 0.5; }
+}
+.empty-state.tall { padding-top: 20vh; }
+
+/* ══════════════════════════════════ ① LIST ══════════════════════════════════ */
 
 .list-search {
   display: flex;
   align-items: center;
-  gap: 0.375rem;
-  padding: 0.25rem 0.5rem;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-primary);
+  gap: 7px;
+  height: 32px;
+  padding: 0 8px;
+  background: var(--rp-raised);
+  border: 1px solid var(--rp-line-soft);
+  border-radius: 7px;
+  color: var(--rp-ink-3);
 
-  &:focus-within {
-    border-color: var(--primary-orange);
-    box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.2);
-  }
+  &:focus-within { border-color: var(--rp-ink-3); }
 
-  mat-icon {
-    flex-shrink: 0;
-    font-size: 1rem;
-    width: 1rem;
-    height: 1rem;
-    color: var(--text-muted);
-  }
+  mat-icon { font-size: 16px; width: 16px; height: 16px; flex: none; }
 }
-
 .list-search-input {
   flex: 1;
   min-width: 0;
+  background: none;
   border: none;
   outline: none;
-  background: transparent;
-  color: var(--text-primary);
-  font-family: inherit;
-  font-size: 0.8125rem;
-  padding: 0.25rem 0;
+  color: var(--rp-ink);
+  font: 400 var(--rp-fs-small) var(--font-family);
 
+  &::placeholder { color: var(--rp-ink-3); }
   &::-webkit-search-cancel-button { display: none; }
 }
-
 .list-search-clear {
-  flex-shrink: 0;
   border: none;
-  background: transparent;
-  color: var(--text-muted);
+  background: none;
+  color: var(--rp-ink-3);
   cursor: pointer;
-  font-size: 0.75rem;
-  line-height: 1;
-  padding: 0.125rem 0.25rem;
-
-  &:hover { color: var(--primary-orange); }
+  font-size: 12px;
+  padding: 2px;
+  &:hover { color: var(--rp-ink); }
 }
 
-.filter-row {
+/* One 2×2 segmented control where two rows of chips used to be. */
+.seg {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  background: var(--rp-raised);
+  border: 1px solid var(--rp-line-soft);
+  border-radius: 7px;
+  padding: 2px;
+}
+.seg-btn {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem;
-}
-
-.filter-chip {
-  padding: 0.125rem 0.5rem;
-  font-family: inherit;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  line-height: 1.5;
-  color: var(--text-secondary);
-  background: transparent;
-  border: 1px solid var(--border-color);
-  border-radius: 999px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font: 600 var(--rp-fs-cap) / 1 var(--font-family);
+  color: var(--rp-ink-3);
+  background: none;
+  border: none;
+  border-radius: 5px;
+  padding: 7px 4px;
   cursor: pointer;
   white-space: nowrap;
-  transition: all 0.15s ease;
+  transition: color 0.13s ease, background 0.13s ease;
 
-  &:hover {
-    border-color: var(--primary-orange);
-    color: var(--primary-orange);
-  }
-
+  &:hover { color: var(--rp-ink-2); }
+  .n { font-size: 10.5px; color: var(--rp-ink-3); font-weight: 400; }
   &.on {
-    color: var(--primary-orange);
-    border-color: var(--primary-orange);
-    background: rgba(255, 107, 53, 0.14);
-  }
-
-  /* The unrouted state is the majority one, and it is a state — not a missing value. */
-  &.unrouted { border-style: dashed; }
-
-  /* The failed runs: 11 of 111 on this install, and indistinguishable until now. */
-  &.danger.on {
-    color: var(--danger-text);
-    border-color: var(--danger-text);
-    background: color-mix(in srgb, var(--danger-text) 14%, transparent);
-  }
-
-  .filter-count {
-    font-variant-numeric: tabular-nums;
-    opacity: 0.7;
+    background: var(--rp-hover);
+    color: var(--rp-ink);
+    .n { color: var(--rp-ink-2); }
   }
 }
 
-.select-all-container {
-  mat-checkbox { font-size: 0.8125rem; }
-}
-
-.reports-list {
-  display: flex;
-  flex-direction: column;
-}
-
-.report-item {
+.list-sub {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.625rem;
-  cursor: pointer;
-  transition: background 0.15s ease;
-  border-bottom: 1px solid var(--border-color);
-  border-left: 3px solid transparent;
-
-  &:hover { background: var(--bg-secondary); }
-
-  &.selected {
-    background: rgba(255, 107, 53, 0.1);
-    border-left-color: var(--primary-orange);
-  }
-
-  &.checked { background: rgba(255, 107, 53, 0.05); }
-
-  /* An older run of a source, shown because its group is open. Indented so it reads as
-     belonging to the row above rather than competing with it. */
-  &.is-rerun {
-    padding-left: 1.75rem;
-    background: var(--bg-secondary);
-
-    .report-title { color: var(--text-secondary); }
-  }
-
-  .report-checkbox { flex-shrink: 0; }
-
-  .report-content {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.125rem;
-  }
-
-  /* Two dense lines, not a three-line card. */
-  .report-title {
-    font-weight: 500;
-    color: var(--text-primary);
-    font-size: 0.8125rem;
-    line-height: 1.3;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .report-meta {
-    display: flex;
-    gap: 0.375rem;
-    align-items: center;
-    font-size: 0.6875rem;
-    color: var(--text-secondary);
-    min-width: 0;
-
-    .report-date { white-space: nowrap; }
-
-    .prompt-set-badge {
-      background: rgba(255, 107, 53, 0.14);
-      color: var(--primary-orange);
-      border: 1px solid rgba(255, 107, 53, 0.35);
-      padding: 0 0.3125rem;
-      border-radius: 999px;
-      font-size: 0.625rem;
-      font-weight: 600;
-      white-space: nowrap;
-    }
-  }
-
-  .delete-button {
-    color: var(--text-secondary);
-    width: 28px !important;
-    height: 28px !important;
-    min-width: 28px !important;
-    min-height: 28px !important;
-    padding: 0 !important;
-    margin: 0 !important;
-    flex-shrink: 0;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    opacity: 0;
-    transition: opacity 0.15s ease;
-
-    mat-icon {
-      font-size: 1rem !important;
-      width: 1rem !important;
-      height: 1rem !important;
-      line-height: 1rem !important;
-      display: flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-    }
-
-    &:hover {
-      color: var(--danger-text) !important;
-      background: color-mix(in srgb, var(--danger-text) 14%, transparent) !important;
-    }
-  }
-
-  &:hover .delete-button,
-  &.selected .delete-button { opacity: 1; }
+  gap: 6px;
 }
-
-/* A run state that is a landmine if unstated: no titles at all, or a publish record the
-   index could not read. Words rather than a dot, because they are exceptions. */
-.row-flag {
-  padding: 0 0.3125rem;
-  border-radius: 999px;
-  font-size: 0.625rem;
-  font-weight: 700;
-  white-space: nowrap;
-
-  &.danger {
-    color: var(--danger-text);
-    background: color-mix(in srgb, var(--danger-text) 14%, transparent);
-  }
-
-  &.warn {
-    color: var(--warning-text);
-    background: color-mix(in srgb, var(--warning-text) 14%, transparent);
-  }
-}
-
-/* The same five facts as the readiness strip, as ≤5 dots. Only what IS recorded gets a
-   dot — an untouched row shows none, which is the honest reading. */
-.row-dots {
-  margin-left: auto;
+.select-all {
   display: flex;
   align-items: center;
-  gap: 3px;
-  flex-shrink: 0;
-}
-
-.row-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  display: block;
-
-  &.dot-channel { background: var(--primary-orange); }
-  &.dot-schedule { background: var(--info-text); }
-  &.dot-ab { background: var(--success-text); }
-  &.dot-thumbnail { background: var(--text-secondary); }
-  &.dot-podcast { background: var(--warning-text); }
-}
-
-.run-toggle {
-  flex-shrink: 0;
-  padding: 0.0625rem 0.375rem;
-  font-family: inherit;
-  font-size: 0.625rem;
-  font-weight: 700;
-  color: var(--text-secondary);
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border-color);
-  border-radius: 999px;
-  cursor: pointer;
-  white-space: nowrap;
-
-  &:hover {
-    color: var(--primary-orange);
-    border-color: var(--primary-orange);
-  }
-}
-
-/* ─────────────────────────────── ② the decide column ─────────────────────────────── */
-
-/* One line under the report's title: five facts and the push that depends on them. */
-.readiness-strip {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.ready-chip {
-  padding: 0.125rem 0.5rem;
-  font-family: inherit;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  line-height: 1.5;
-  border-radius: 999px;
-  cursor: pointer;
-  white-space: nowrap;
-  max-width: 16rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  transition: all 0.15s ease;
-
-  /* Hollow = nothing recorded. Never a plausible-looking value in place of an answer. */
-  color: var(--text-muted);
-  background: transparent;
-  border: 1px dashed var(--border-color);
-
-  &:hover { border-color: var(--primary-orange); color: var(--primary-orange); }
-
-  &.set {
-    color: var(--primary-orange);
-    background: rgba(255, 107, 53, 0.12);
-    border: 1px solid rgba(255, 107, 53, 0.45);
-  }
-
-  /* Recorded but suspect: a past schedule, an offset disagreement, a thumbnail warning,
-     a channel that is only suggested. */
-  &.warn {
-    color: var(--warning-text);
-    background: color-mix(in srgb, var(--warning-text) 14%, transparent);
-    border: 1px solid var(--warning-text);
-  }
-
-  &.push {
-    margin-left: auto;
-    border-style: solid;
-
-    &:not(:disabled) {
-      color: var(--success-text);
-      border-color: var(--success-text);
-      background: color-mix(in srgb, var(--success-text) 14%, transparent);
-    }
-
-    &:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
-  }
-}
-
-/* One line between the report title and the fields it is about. Deliberately not a card:
-   it is a caption, not a field. */
-.provenance-line {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.375rem;
-  margin: 0;
-  font-size: 0.75rem;
-  line-height: 1.45;
-  color: var(--text-secondary);
-
-  mat-icon {
-    font-size: 1rem;
-    width: 1rem;
-    height: 1rem;
-    line-height: 1;
-    flex-shrink: 0;
-  }
-
-  /* Words from the editor story are the departure from what the video says, so that is
-     the one that gets the accent. */
-  &.linked { color: var(--primary-orange); }
-}
-
-/* One banner for every publish action. It lives in the pane's fixed head, so a refusal
-   cannot scroll out of view. Click to dismiss. */
-.ab-error {
-  padding: 0.5rem 0.625rem;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--danger-text) 14%, transparent);
-  border: 1px solid var(--danger-text);
-  color: var(--danger-text);
-  font-size: 0.8125rem;
-  cursor: pointer;
-  /* Two independent failures in one load are two lines. The messages from the main
-     process are written to be read, so they are shown whole rather than truncated. */
-  white-space: pre-line;
-}
-
-/* ─────────────────────────────── cards ─────────────────────────────── */
-
-.card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: var(--border-radius-large, 12px);
-  overflow: hidden;
-  flex-shrink: 0;
-}
-
-.card-head {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid var(--border-color);
-  flex-wrap: wrap;
-
-  mat-icon {
-    color: var(--primary-orange);
-    font-size: 1.125rem;
-    width: 1.125rem;
-    height: 1.125rem;
-    flex-shrink: 0;
-  }
-
-  h3 {
-    margin: 0;
-    font-size: 0.9375rem;
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-}
-
-.card-head-spacer { flex: 1; }
-
-.count-badge {
-  background: rgba(255, 107, 53, 0.14);
-  color: var(--primary-orange);
-  border: 1px solid rgba(255, 107, 53, 0.4);
-  padding: 0 0.375rem;
-  border-radius: 999px;
-  font-size: 0.6875rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-/* The per-item chapters switch, on the description card's toolbar row. Sits with the
-   character count rather than the buttons: it changes what the description IS, not what
-   you do with it. */
-.chapters-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  color: var(--text-muted);
+  gap: 5px;
+  flex: none;
+  font-size: var(--rp-fs-cap);
+  color: var(--rp-ink-3);
   cursor: pointer;
   user-select: none;
-
-  input {
-    margin: 0;
-    cursor: pointer;
-  }
-
-  /* An override is in force, so the switch cannot move the pushed text. Shown greyed
-     rather than hidden — vanishing controls read as bugs. */
-  &.inert {
-    opacity: 0.45;
-    cursor: default;
-
-    input { cursor: default; }
-  }
+  input { accent-color: var(--rp-ink-3); margin: 0; }
+  &:hover { color: var(--rp-ink-2); }
 }
 
-.chapters-toggle-note {
-  margin: 0 0 0.5rem;
-  font-size: 0.6875rem;
-  line-height: 1.4;
-  color: var(--text-muted);
-}
+.list-body { padding-bottom: 2rem; }
 
-.char-count {
-  font-size: 0.6875rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-muted);
-  font-weight: 500;
-
-  /* Past YouTube's description limit — said before the paste, not after. */
-  &.over {
-    color: var(--danger-text);
-    font-weight: 700;
-  }
-}
-
-.copy-btn {
-  padding: 0.1875rem 0.5rem;
-  font-family: inherit;
-  background: transparent;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  color: var(--text-secondary);
-  font-size: 0.6875rem;
-  font-weight: 600;
+.row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 2px 7px;
+  padding: 8px 10px 8px 8px;
+  border-left: 2px solid transparent;
   cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.15s ease;
-
-  &:hover {
-    background: rgba(255, 107, 53, 0.1);
-    border-color: var(--primary-orange);
-    color: var(--primary-orange);
-  }
-
-  &.copied {
-    background: rgba(255, 107, 53, 0.15);
-    border-color: var(--primary-orange);
-    color: var(--primary-orange);
-  }
-}
-
-/* ─────────────────────────── titles: slate + list ─────────────────────────── */
-
-/* The three slots, always rendered. A VIEW of publish.chosenTitles() in the store's own
-   order — which is click order, which is variant order. Slot 1 is annotated because it is
-   a different kind of choice: it becomes the video's title and is what YouTube keeps when
-   a test comes back inconclusive. */
-.ab-slate {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  padding: 0.5rem 0.75rem;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-color);
-}
-
-.slate-slot {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  min-height: 30px;
-  padding: 0.1875rem 0.5rem;
-  border-radius: 8px;
-  border: 1px dashed var(--border-color);
-  background: transparent;
-  cursor: default;
-
-  &.filled {
-    border-style: solid;
-    border-color: rgba(255, 107, 53, 0.45);
-    background: rgba(255, 107, 53, 0.08);
-    cursor: pointer;
-
-    &:hover { border-color: var(--primary-orange); }
-  }
-
-  /* An inline-edited variant. It is a real variant and it is NOT one of the generated
-     rows below, because the report file is never rewritten — so there is nothing to
-     scroll to, and the slot says so instead of pretending. */
-  &.orphan { cursor: default; }
-}
-
-.slate-number {
-  flex-shrink: 0;
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: var(--primary-orange);
-  color: white;
-  font-size: 0.6875rem;
-  font-weight: 800;
-}
-
-.slate-text {
-  flex: 1;
   min-width: 0;
-  font-size: 0.8125rem;
-  color: var(--text-primary);
+
+  &:hover { background: var(--rp-raised); }
+  /* ORANGE 1 of 3 — the selected row's marker. */
+  &.on {
+    background: var(--rp-raised);
+    border-left-color: var(--primary-orange);
+  }
+  &.is-rerun { padding-left: 22px; }
+  &.checked { background: var(--rp-hover); }
+}
+
+.row-check {
+  grid-column: 1;
+  grid-row: 1;
+  flex: none;
+  margin: 0;
+  accent-color: var(--rp-ink-3);
+  opacity: 0;
+  transition: opacity 0.13s ease;
+}
+.row:hover .row-check,
+.row:focus-within .row-check,
+.row.checked .row-check { opacity: 1; }
+
+.row-name {
+  grid-column: 2;
+  grid-row: 1;
+  font-size: var(--rp-fs-body);
+  line-height: 1.35;
+  color: var(--rp-ink-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.slate-empty {
-  flex: 1;
   min-width: 0;
-  font-size: 0.75rem;
-  font-style: italic;
-  color: var(--text-muted);
+}
+.row.on .row-name { color: var(--rp-ink); font-weight: 500; }
+
+.row-runs {
+  grid-column: 3;
+  grid-row: 1;
+  flex: none;
+  font-size: 10.5px;
+  color: var(--rp-ink-3);
+  background: none;
+  border: 1px solid var(--rp-line-soft);
+  border-radius: 4px;
+  padding: 1px 4px;
+  cursor: pointer;
+  &:hover { color: var(--rp-ink); border-color: var(--rp-line); }
 }
 
-.slate-chars {
-  flex-shrink: 0;
-  font-size: 0.6875rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-muted);
+.row-del {
+  grid-column: 4;
+  grid-row: 1;
+  flex: none;
+  border: none;
+  background: none;
+  color: var(--rp-ink-3);
+  cursor: pointer;
+  padding: 0;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  transition: opacity 0.13s ease, color 0.13s ease;
 
-  &.over {
-    color: var(--danger-text);
-    font-weight: 700;
-  }
+  mat-icon { font-size: 14px; width: 14px; height: 14px; }
+  &:hover { color: var(--rp-stop); }
 }
+.row:hover .row-del,
+.row:focus-within .row-del { opacity: 1; }
 
-.slate-note {
-  flex-shrink: 0;
-  font-size: 0.625rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  color: var(--text-muted);
-  white-space: nowrap;
-
-  &.orphan-note {
-    color: var(--primary-orange);
-    text-transform: uppercase;
-  }
-}
-
-.ab-hint {
-  margin: 0;
-  padding: 0.5rem 0.75rem 0;
-  font-size: 0.6875rem;
-  line-height: 1.4;
-  color: var(--text-secondary);
-
-  .ab-keys {
-    display: block;
-    margin-top: 0.125rem;
-    color: var(--text-muted);
-    font-variant-numeric: tabular-nums;
-  }
-}
-
-.list-container {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  padding: 0.5rem 0.75rem 0.75rem;
-}
-
-/* The titles list gets its own capped viewport, which is what stops a ten-title report
-   from pushing the description off the screen. */
-.titles-scroll {
-  max-height: 44vh;
-  overflow-y: auto;
-  outline: none;
-
-  &:focus-visible {
-    box-shadow: inset 0 0 0 2px rgba(255, 107, 53, 0.35);
-    border-radius: 8px;
-  }
-}
-
-/* 36px rows, single line. The variant badge keeps its cell so nothing shifts between
-   chosen and unchosen, and the row actions fade in on hover — twenty always-lit glyphs
-   is what made this list feel noisy. */
-.list-item {
+.row-meta {
+  grid-column: 2 / -1;
+  grid-row: 2;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  min-height: 36px;
-  padding: 0.25rem 0.5rem;
-  background: var(--bg-secondary);
-  border-radius: 8px;
-  border: 1px solid var(--border-color);
-  transition: border-color 0.15s ease, background 0.15s ease;
-  cursor: pointer;
+  gap: 7px;
+  min-width: 0;
+  font-size: var(--rp-fs-cap);
+  color: var(--rp-ink-3);
 
-  &:hover {
-    border-color: var(--primary-orange);
+  /* Everything on this line is fixed-width except the source name, which takes the slack
+     and ellipsises. Stated by exclusion rather than by out-shouting a blanket rule with
+     !important — there is not one in this file. */
+  > span:not(.row-src) { flex: none; white-space: nowrap; }
+}
+.row-src {
+  flex: 1 1 auto;
+  color: var(--rp-ink-3);
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.row-flag {
+  font-size: var(--rp-fs-kicker);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--rp-warn);
+}
+.dots {
+  display: flex;
+  gap: 3.5px;
+  margin-left: auto;
+}
 
-    .copy-hint { opacity: 1; }
-    .row-action { opacity: 1; }
-  }
+/* ══════════════════════════════════ ② DECIDE ═════════════════════════════════ */
 
-  &.copied {
-    border-color: var(--primary-orange);
-    background: rgba(255, 107, 53, 0.08);
+.work-head { padding: 0.9rem 1.5rem 0.75rem; gap: 0.55rem; }
 
-    .copy-hint {
-      opacity: 1;
-      color: var(--primary-orange);
-      font-weight: 600;
-    }
-  }
+.crumb {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  font-size: var(--rp-fs-cap);
+}
+.crumb-src { color: var(--rp-ink-3); flex: none; }
+.crumb-prov {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--rp-ink-3);
 
-  .item-number,
-  .ab-variant-badge {
-    flex-shrink: 0;
-    width: 22px;
-    height: 22px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 50%;
-    font-weight: 700;
-  }
-
-  .item-number {
-    background: var(--bg-tertiary);
-    color: var(--text-secondary);
-    font-size: 0.6875rem;
-  }
-
-  .list-item-text {
-    flex: 1;
-    min-width: 0;
-    font-size: 0.8125rem;
-    color: var(--text-primary);
-    line-height: 1.35;
-    white-space: nowrap;
+  span {
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
   }
-
-  .copy-hint {
-    opacity: 0;
-    font-size: 0.875rem;
-    transition: opacity 0.15s ease;
-    color: var(--text-secondary);
-    flex-shrink: 0;
-  }
+  mat-icon { flex: none; font-size: 13px; width: 13px; height: 13px; }
+  &.linked { color: var(--rp-ok); }
 }
 
-/* Pinned comments and clip suggestions are prose, not one-liners — they wrap. */
-.assets-card .list-item {
-  align-items: flex-start;
-
-  .list-item-text {
-    white-space: normal;
-    overflow: visible;
-    word-break: break-word;
-  }
-}
-
-/* ==================== A/B title selection ====================
-   Picking titles for YouTube's native A/B test. Click order IS variant order —
-   variant 1 becomes the video's main title and is what YouTube keeps when a test
-   comes back inconclusive, so the number is the important affordance here. */
-
-.ab-progress {
-  font-size: 0.6875rem;
+.work-title {
+  margin: 0;
+  font-size: 23px;
   font-weight: 600;
-  color: var(--text-secondary);
+  line-height: 1.25;
+  letter-spacing: -0.008em;
+  color: var(--rp-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-
-  &.complete { color: var(--primary-orange); }
 }
 
-.list-item.ab-selectable {
-  /* The whole row toggles selection; edit and copy are the secondary affordances and
-     stop propagation so neither of them also picks the title. */
-
-  &.ab-chosen {
-    border-color: var(--primary-orange);
-    background: rgba(255, 107, 53, 0.10);
-  }
-
-  /* Cap reached and this one isn't picked — still readable, clearly not available. */
-  &.ab-blocked {
-    opacity: 0.45;
-
-    &:hover { border-color: var(--border-color); }
-  }
-
-  /* Where the keyboard is. Additive: the pointer never puts a row in this state. */
-  &.kb-focus {
-    box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.45);
-
-    .row-action { opacity: 1; }
-  }
-}
-
-/* The variant number. Replaces the plain index once a title is picked. */
-.ab-variant-badge {
-  background: var(--primary-orange);
-  color: white;
-  font-size: 0.75rem;
-  box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.25);
-}
-
-/* Row buttons: edit and copy, side by side at the end of every title row, and the same
-   two slots become save/cancel while editing so nothing moves under the cursor.
-   Reorder arrows are deliberately gone — variant order is click order, and deselecting
-   back down to what you want is fewer controls for the same result. */
-.row-action {
-  flex-shrink: 0;
-  width: 22px;
-  height: 22px;
+/* The readiness meter: six named ticks and one word. */
+.meter {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  font-size: 12px;
-  line-height: 1;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  opacity: 0;
-  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
-
-  &:hover {
-    background: rgba(255, 107, 53, 0.1);
-    border-color: var(--border-color);
-    color: var(--text-primary);
-  }
-
-  &.save {
-    opacity: 1;
-    &:hover { border-color: var(--success-text); color: var(--success-text); }
-  }
-
-  &.cancel {
-    opacity: 1;
-    &:hover { border-color: var(--danger-text); color: var(--danger-text); }
-  }
-}
-
-/* ---------------------------------------------------------------- editing ----
-   Edits are stored as OVERRIDES in the selection store, never written back into
-   the job's report — that file stays the pristine generator output. The "edited"
-   badge exists so an override is never invisible: without it, a stale edit looks
-   exactly like freshly generated text. */
-
-.list-item.ab-editing {
-  border-color: var(--primary-orange);
-  background: rgba(255, 107, 53, 0.10);
-}
-
-.ab-title-input {
-  flex: 1;
-  min-width: 0;
-  padding: 0.25rem 0.375rem;
-  font-size: 0.8125rem;
-  font-family: inherit;
-  color: var(--text-primary);
-  background: var(--bg-primary);
-  border: 1px solid var(--primary-orange);
-  border-radius: 6px;
-
-  &:focus {
-    outline: none;
-    box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.25);
-  }
-}
-
-.ab-charcount {
-  flex-shrink: 0;
-  font-size: 0.6875rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
-
-  /* Over YouTube's hard limit — the save will be refused, so say so before the click. */
-  &.over {
-    color: var(--danger-text);
-    font-weight: 700;
-  }
-}
-
-/* Shown while the composed description/tags are being read from the main process. An empty
-   textarea would read as "this item has no description", which is a different claim. */
-.resolving {
-  padding: 0.75rem;
-  font-size: 0.8125rem;
-  font-style: italic;
-  color: var(--text-secondary);
-}
-
-.edited-badge {
-  padding: 0 0.375rem;
-  border-radius: 10px;
-  font-size: 0.625rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--primary-orange);
-  background: rgba(255, 107, 53, 0.14);
-  border: 1px solid rgba(255, 107, 53, 0.4);
-}
-
-/* ─────────────────────────── description and tags ─────────────────────────── */
-
-.description-box { padding: 0.625rem 0.75rem; }
-
-.description-card {
-  background: var(--bg-secondary);
-  border-radius: 8px;
-  padding: 0.5rem 0.625rem;
-  border: 1px solid var(--border-color);
-
-  &:focus-within { border-color: var(--primary-orange); }
-}
-
-/* A capped viewport with its own scrollbar, not a 300px block that pushes everything
-   below it off the page. */
-.description-textarea {
-  display: block;
-  width: 100%;
-  height: 14.5rem;
-  overflow-y: auto;
-  background: transparent;
-  border: none;
-  color: var(--text-primary);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  font-size: 0.8125rem;
-  line-height: 1.6;
-  resize: vertical;
-  outline: none;
-  padding: 0;
-
-  /* Editable state has to LOOK editable — the readonly view is the same element. */
-  &:not([readonly]) {
-    padding: 0.375rem 0.5rem;
-    background: var(--bg-primary);
-    border: 1px solid var(--primary-orange);
-    border-radius: 6px;
-
-    &:focus { box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.25); }
-  }
-}
-
-.tags-container {
-  display: flex;
+  align-items: flex-end;
+  gap: 16px;
   flex-wrap: wrap;
-  gap: 0.25rem;
-  padding: 0.625rem 0.75rem;
-
-  /* Two rows, then a Show all. The chips stay individually click-to-copy either way. */
-  &.clamped {
-    max-height: 4.25rem;
-    overflow: hidden;
-  }
 }
-
-.tag-chip {
-  background: var(--bg-secondary) !important;
-  color: var(--text-primary) !important;
-  border: 1px solid var(--border-color) !important;
-  font-size: 0.75rem !important;
-  padding: 0.1875rem 0.5rem !important;
-  min-height: 0 !important;
-  height: auto !important;
-  border-radius: 999px !important;
-  cursor: pointer !important;
-
-  // Pierce Material's encapsulation to set text color
-  ::ng-deep {
-    .mdc-evolution-chip__text-label,
-    .mat-mdc-chip-action-label {
-      color: var(--text-primary) !important;
-      font-size: 0.75rem !important;
-    }
-  }
-
-  &:hover {
-    border-color: var(--primary-orange) !important;
-    background: rgba(255, 107, 53, 0.08) !important;
-
-    ::ng-deep {
-      .mdc-evolution-chip__text-label,
-      .mat-mdc-chip-action-label { color: var(--primary-orange) !important; }
-    }
-  }
-
-  &.copied {
-    border-color: var(--primary-orange) !important;
-    background: rgba(255, 107, 53, 0.15) !important;
-
-    ::ng-deep {
-      .mdc-evolution-chip__text-label,
-      .mat-mdc-chip-action-label { color: var(--primary-orange) !important; }
-    }
-  }
+.meter-word {
+  flex: none;
+  font-size: var(--rp-fs-body);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding-bottom: 2px;
+  &.ready { color: var(--rp-ok); }
+  &.held { color: var(--rp-warn); }
 }
-
-.tags-textarea {
-  width: calc(100% - 1.5rem);
-  min-height: 80px;
-  margin: 0 0.75rem 0.75rem;
-  padding: 0.5rem 0.625rem;
-  font-size: 0.8125rem;
-  font-family: inherit;
-  line-height: 1.5;
-  resize: vertical;
-  color: var(--text-primary);
-  background: var(--bg-primary);
-  border: 1px solid var(--primary-orange);
-  border-radius: 6px;
-
-  &:focus {
-    outline: none;
-    box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.25);
-  }
+.ticks { display: flex; gap: 7px; min-width: 0; }
+.tk {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  max-width: 132px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
 }
+.tk-bar {
+  width: 100%;
+  min-width: 46px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--rp-line);
+}
+.tk.set .tk-bar { background: var(--rp-ok); }
+.tk.warn .tk-bar { background: var(--rp-warn); }
+.tk.na .tk-bar { background: var(--rp-line-soft); }
+.tk-label {
+  font-size: var(--rp-fs-kicker);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--rp-ink-3);
+}
+.tk.set .tk-label { color: var(--rp-ink-2); }
+.tk.warn .tk-label { color: var(--rp-warn); }
+.tk-value {
+  font-size: var(--rp-fs-cap);
+  color: var(--rp-ink-3);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tk.set .tk-value { color: var(--rp-ink-2); }
+.tk:hover .tk-value { color: var(--rp-ink); }
 
-/* ─────────────────────────── ③ the assets accordion ─────────────────────────── */
+.work-body { padding: 0 1.5rem 5rem; }
 
-/* Pure clipboard sources. Collapsed headers carry their counts, so nothing is hidden —
-   the count IS the information until the text is wanted. */
-.asset {
-  border-bottom: 1px solid var(--border-color);
+.block {
+  padding: 1.35rem 0;
+  border-bottom: 1px solid var(--rp-line-soft);
+  max-width: 1020px;
+  margin-inline: auto;
 
   &:last-child { border-bottom: none; }
 }
 
-.asset-head {
-  width: 100%;
+.bhead {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.4375rem 0.75rem;
-  font-family: inherit;
+  gap: 10px;
+  margin-bottom: 0.85rem;
+  flex-wrap: wrap;
+
+  h3 {
+    margin: 0;
+    font-size: var(--rp-fs-kicker);
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--rp-ink-3);
+  }
+}
+.cnt {
+  font-size: var(--rp-fs-cap);
+  color: var(--rp-ink-3);
+  &.over { color: var(--rp-stop); }
+}
+.tag {
+  font-size: var(--rp-fs-kicker);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--rp-ink-3);
+  border: 1px solid var(--rp-line-soft);
+  border-radius: 3px;
+  padding: 2px 5px;
+}
+.acts {
+  display: flex;
+  gap: 5px;
+  opacity: 0.6;
+  transition: opacity 0.18s ease;
+}
+.block:hover .acts,
+.block:focus-within .acts { opacity: 1; }
+
+.ab-progress {
+  font-size: var(--rp-fs-cap);
+  color: var(--rp-ink-3);
+  &.complete { color: var(--rp-ok); }
+}
+
+/* The keyboard legend, off the page and into a hover popover. */
+.keys { position: relative; }
+.keys-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 7px);
+  z-index: 40;
+  width: 232px;
+  display: flex;
+  flex-direction: column;
+  background: var(--rp-pane);
+  border: 1px solid var(--rp-line);
+  border-radius: 8px;
+  padding: 9px 11px;
+  box-shadow: var(--shadow-lg);
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+
+  > span {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    padding: 3px 0;
+    font-size: var(--rp-fs-cap);
+    color: var(--rp-ink-2);
+  }
+  kbd {
+    font-family: var(--rp-mono);
+    font-size: 10.5px;
+    color: var(--rp-ink-2);
+    background: var(--rp-raised);
+    border: 1px solid var(--rp-line);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+}
+.keys:hover .keys-pop,
+.keys:focus-within .keys-pop { opacity: 1; transform: none; pointer-events: auto; }
+
+/* — the A/B slate — */
+.slate {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--rp-line-soft);
+  border: 1px solid var(--rp-line-soft);
+  border-radius: var(--rp-radius);
+  overflow: hidden;
+  margin-bottom: 1rem;
+}
+.slot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+  background: var(--rp-pane);
+  cursor: pointer;
+  min-width: 0;
+  transition: background 0.13s ease;
+
+  &:hover { background: var(--rp-raised); }
+}
+.slot-n {
+  flex: none;
+  width: 18px;
+  text-align: center;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--rp-ink-3);
+}
+/* ORANGE 2 of 3 — the picked A/B numerals, on the slate and in the list below. */
+.slot.filled .slot-n { color: var(--primary-orange); }
+.slot-t {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--rp-ink);
+}
+.slot-empty {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--rp-fs-small);
+  font-style: italic;
+  color: var(--rp-ink-3);
+}
+.slot-c {
+  flex: none;
+  font-size: var(--rp-fs-cap);
+  color: var(--rp-ink-3);
+  &.over { color: var(--rp-stop); }
+}
+.slot-tag {
+  flex: none;
+  font-size: var(--rp-fs-kicker);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--rp-ink-3);
+  border: 1px solid var(--rp-line);
+  border-radius: 3px;
+  padding: 2px 5px;
+}
+.slot.orphan .slot-tag { color: var(--rp-warn); border-color: var(--rp-warn-line); }
+
+/* — the generated titles — */
+.sug {
+  border-top: 1px solid var(--rp-line-soft);
+  outline: none;
+
+  &:focus-visible { box-shadow: inset 3px 0 0 var(--rp-ink-3); }
+}
+.s {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px 9px 4px;
+  border-bottom: 1px solid var(--rp-line-soft);
+  cursor: pointer;
+  min-width: 0;
+  transition: background 0.12s ease;
+
+  &:hover { background: var(--rp-raised); }
+  &.kbfocus { box-shadow: inset 3px 0 0 var(--rp-ink-3); }
+  &.blocked { opacity: 0.55; }
+  &.copied { background: var(--rp-raised); }
+}
+.s-n {
+  flex: none;
+  width: 22px;
+  text-align: right;
+  font-size: var(--rp-fs-cap);
+  color: var(--rp-ink-3);
+
+  &.picked {
+    width: 18px;
+    height: 18px;
+    line-height: 18px;
+    text-align: center;
+    border-radius: 50%;
+    font-weight: 700;
+    font-size: 11px;
+    /* ORANGE 2 of 3, continued. */
+    background: var(--primary-orange);
+    color: #2a1004;
+  }
+}
+.s-t {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--rp-ink-2);
+}
+.s:hover .s-t,
+.s.picked .s-t { color: var(--rp-ink); }
+.s-len {
+  flex: none;
+  font-size: var(--rp-fs-cap);
+  color: var(--rp-ink-3);
+  opacity: 0;
+  transition: opacity 0.13s ease;
+  &.over { color: var(--rp-stop); opacity: 1; }
+}
+.s:hover .s-len,
+.s.picked .s-len { opacity: 1; }
+.s-acts {
+  display: flex;
+  gap: 2px;
+  flex: none;
+  opacity: 0;
+  transition: opacity 0.13s ease;
+}
+.s:hover .s-acts,
+.s:focus-within .s-acts { opacity: 1; }
+.s-act {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: var(--rp-ink-3);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+
+  &:hover { background: var(--rp-hover); color: var(--rp-ink); }
+  &.save { color: var(--rp-ok); }
+}
+.s-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--rp-raised);
+  border: 1px solid var(--rp-line);
+  border-radius: 6px;
+  color: var(--rp-ink);
+  font: 400 15px / 1.4 var(--font-family);
+  padding: 6px 8px;
+  outline: none;
+  &:focus { border-color: var(--rp-ink-3); }
+}
+
+/* — description — */
+.desc {
+  background: var(--rp-pane);
+  border: 1px solid var(--rp-line-soft);
+  border-radius: var(--rp-radius);
+  padding: 4px;
+}
+.desc-text {
+  display: block;
+  width: 100%;
+  min-height: 190px;
+  max-height: 340px;
+  resize: vertical;
   background: transparent;
   border: none;
+  outline: none;
+  color: var(--rp-ink-2);
+  font: 400 var(--rp-fs-body) / 1.68 var(--font-family);
+  padding: 12px 14px;
+
+  &:read-only { cursor: text; }
+}
+
+.chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   cursor: pointer;
-  text-align: left;
-  color: var(--text-primary);
+  user-select: none;
+  font-size: var(--rp-fs-cap);
+  color: var(--rp-ink-2);
 
-  &:hover { background: var(--bg-secondary); }
-
-  /* The chaptersSkipped slot: expanded and non-collapsible, so there is nothing to click. */
-  &.static { cursor: default; }
-
-  mat-icon {
-    color: var(--primary-orange);
-    font-size: 1rem;
-    width: 1rem;
-    height: 1rem;
-    flex-shrink: 0;
-  }
-
-  .asset-name {
-    flex: 1;
-    min-width: 0;
-    font-size: 0.8125rem;
-    font-weight: 600;
-  }
-
-  .asset-chevron {
-    flex-shrink: 0;
-    font-size: 0.6875rem;
-    color: var(--text-muted);
-  }
+  input { margin: 0; accent-color: var(--rp-ok); }
+  .chk-sub { color: var(--rp-ink-3); }
+  &.inert { opacity: 0.5; cursor: not-allowed; }
 }
 
-.asset-actions {
+/* — tags — */
+.tags {
   display: flex;
-  justify-content: flex-end;
-  padding: 0 0.75rem;
+  flex-wrap: wrap;
+  gap: 6px;
+
+  &.clamped { max-height: 76px; overflow: hidden; }
+}
+.tags-textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  background: var(--rp-pane);
+  border: 1px solid var(--rp-line-soft);
+  border-radius: var(--rp-radius);
+  color: var(--rp-ink);
+  font: 400 var(--rp-fs-small) / 1.6 var(--font-family);
+  padding: 10px 12px;
+  outline: none;
+  &:focus { border-color: var(--rp-ink-3); }
 }
 
-.thumbnail-list,
-.chapters-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  padding: 0.375rem 0.75rem 0.625rem;
+/* Material chips, restyled flat rather than fought. */
+.tag-chip {
+  --mdc-chip-container-height: 26px;
+  --mdc-chip-container-shape-radius: 5px;
+  background: var(--rp-pane);
+  border: 1px solid var(--rp-line-soft);
+  border-radius: 5px;
+  color: var(--rp-ink-2);
+  font-size: var(--rp-fs-cap);
+  cursor: pointer;
+  min-height: 26px;
+  transition: color 0.12s ease, border-color 0.12s ease;
+
+  &:hover { color: var(--rp-ink); border-color: var(--rp-line); }
+  &.copied { color: var(--rp-ok); border-color: var(--rp-ok); }
+
+  ::ng-deep .mdc-evolution-chip__text-label { color: inherit; font-size: inherit; }
+  ::ng-deep .mat-mdc-chip-focus-overlay { background: transparent; }
 }
 
-.chapter-item,
-.thumbnail-item {
+/* — assets — */
+.asset { border-bottom: 1px solid var(--rp-line-soft); }
+.asset:last-child { border-bottom: none; }
+.asset-head {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.3125rem 0.5rem;
-  background: var(--bg-secondary);
-  border-radius: 8px;
-  border: 1px solid var(--border-color);
-  transition: border-color 0.15s ease, background 0.15s ease;
+  gap: 9px;
+  width: 100%;
+  padding: 10px 4px;
+  background: none;
+  border: none;
   cursor: pointer;
+  color: var(--rp-ink-2);
+  text-align: left;
 
-  &:hover {
-    border-color: var(--primary-orange);
-    .copy-hint { opacity: 1; }
-  }
-
-  &.copied {
-    border-color: var(--primary-orange);
-    background: rgba(255, 107, 53, 0.08);
-
-    .copy-hint {
-      opacity: 1;
-      color: var(--primary-orange);
-      font-weight: 600;
-    }
-  }
-
-  .copy-hint {
-    opacity: 0;
-    font-size: 0.875rem;
-    transition: opacity 0.15s ease;
-    color: var(--text-secondary);
-    flex-shrink: 0;
-  }
+  &:hover { color: var(--rp-ink); }
+  &.static { cursor: default; }
+  mat-icon { flex: none; font-size: 15px; width: 15px; height: 15px; color: var(--rp-ink-3); }
 }
-
-.chapter-item {
-  .chapter-time {
-    font-family: 'SF Mono', Monaco, monospace;
-    font-size: 0.75rem;
-    font-weight: 700;
-    color: var(--primary-orange);
-    min-width: 48px;
-    flex-shrink: 0;
-  }
-
-  .chapter-title {
-    flex: 1;
-    min-width: 0;
-    font-size: 0.8125rem;
-    color: var(--text-primary);
-    line-height: 1.35;
-    word-break: break-word;
-  }
-}
-
-.thumbnail-item {
-  .thumbnail-text {
-    flex: 1;
-    min-width: 0;
-    font-size: 0.875rem;
-    font-weight: 700;
-    color: var(--text-primary);
-    text-transform: uppercase;
-    letter-spacing: 0.02em;
-    word-break: break-word;
-  }
-}
-
-/* Stands in for the list when the run recorded why there is none. */
-.chapters-missing {
+.asset-name { flex: 1; min-width: 0; font-size: var(--rp-fs-small); }
+.chev { flex: none; font-size: 10px; color: var(--rp-ink-3); }
+.asset-body { padding: 0 0 10px; }
+.asset-actions { display: flex; justify-content: flex-end; padding-bottom: 6px; }
+.asset-line {
   display: flex;
-  align-items: flex-start;
-  gap: 0.5rem;
-  margin: 0 0.75rem 0.625rem;
-  padding: 0.625rem;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
+  align-items: baseline;
+  gap: 9px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: var(--rp-fs-small);
+  line-height: 1.5;
+  color: var(--rp-ink-2);
 
-  mat-icon {
-    flex-shrink: 0;
-    font-size: 1.125rem;
-    width: 1.125rem;
-    height: 1.125rem;
-    color: var(--text-secondary);
-  }
+  &:hover { background: var(--rp-raised); color: var(--rp-ink); }
+  &.copied { color: var(--rp-ok); }
 
-  &.failed mat-icon { color: var(--danger-text); }
-
-  .chapters-missing-headline {
-    font-size: 0.8125rem;
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-
-  .chapters-missing-reason {
-    margin-top: 0.125rem;
-    font-size: 0.75rem;
-    color: var(--text-secondary);
-    line-height: 1.4;
-  }
+  > span:nth-child(2) { flex: 1; min-width: 0; }
 }
+.asset-n { flex: none; font-size: var(--rp-fs-cap); color: var(--rp-ink-3); }
+.asset-copy { flex: none; font-size: var(--rp-fs-cap); color: var(--rp-ink-3); opacity: 0; }
+.asset-line:hover .asset-copy,
+.asset-line.copied .asset-copy { opacity: 1; }
 
-/* ==================== Publish panel ====================
-   The Phase-1 publish record: channel, schedule, thumbnail, podcast flag. It now lives in
-   the dispatch rail rather than above Titles — it is reference and dispatch, consulted at
-   the end, but it has to stay visible while the titles are picked, because "which channel
-   is this?" changes which titles are right. Nothing here publishes anything.
+/* ═══════════════════════════════ ③ PUBLISH RECORD ═══════════════════════════ */
 
-   Label / control rows rather than a form grid: each row is one field, and the notes
-   underneath (the routing reason, the human schedule line, the thumbnail's warnings) are
-   full-width because they are sentences, not captions. */
-
-.publish-section {
-  .publish-saving {
-    font-size: 0.6875rem;
-    font-weight: 600;
-    color: var(--primary-orange);
-  }
-
-  .publish-podcast { font-size: 0.75rem; }
-}
-
-.publish-body {
+.rail-head {
+  flex: none;
   display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-  padding: 0.625rem 0.75rem 0.75rem;
+  align-items: center;
+  gap: 8px;
+  padding: 0.9rem 1rem 0.65rem;
+  border-bottom: 1px solid var(--rp-line-soft);
 }
+.saving { font-size: var(--rp-fs-cap); color: var(--rp-ink-3); }
 
-/* In a 400px rail a label gutter would leave nothing for the control, so the label sits
-   above its row and the notes hang under it flush. */
-.publish-row {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.25rem;
-}
+.rail-body { padding: 0 0 1rem; }
 
-.publish-label {
-  font-size: 0.6875rem;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
-.publish-control {
+.carry {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.375rem;
-  min-width: 0;
-  width: 100%;
+  gap: 7px;
+  margin: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--rp-line);
+  border-radius: 7px;
+  background: var(--rp-raised);
+  font-size: var(--rp-fs-cap);
+  line-height: 1.5;
+  color: var(--rp-ink-2);
+
+  > span { flex: 1 1 100%; min-width: 0; }
+  mat-icon { flex: none; font-size: 15px; width: 15px; height: 15px; color: var(--rp-ink-3); }
 }
 
-/* Native select and date/time inputs, dressed like .ab-title-input. Material's own
-   controls are not used here for the same reason the title editor doesn't: these sit
-   inside a dense stack of rows and a form field's floating label would double the
-   height of every one. */
-.publish-select,
-.publish-input {
-  padding: 0.25rem 0.375rem;
-  font-size: 0.75rem;
-  font-family: inherit;
-  color: var(--text-primary);
-  background: var(--bg-primary);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
+.receipt {
+  margin: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--rp-line-soft);
+  border-radius: 7px;
+  background: var(--rp-raised);
+}
+.receipt-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 7px;
+  font-size: var(--rp-fs-cap);
+  color: var(--rp-ink-2);
 
-  &:focus {
-    outline: none;
-    border-color: var(--primary-orange);
-    box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.25);
+  strong { font-weight: 600; color: var(--rp-ink); }
+  mat-icon { flex: none; font-size: 15px; width: 15px; height: 15px; color: var(--rp-ink-3); }
+}
+
+/* The manifest: the exact payload, as a table nobody has to read unless they want to. */
+.manifest {
+  display: grid;
+  gap: 0;
+  margin: 0;
+
+  > div {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--rp-line-soft);
+    font-size: var(--rp-fs-cap);
+    color: var(--rp-ink-3);
+    min-width: 0;
+
+    &:last-child { border-bottom: none; }
+    > span:last-child {
+      color: var(--rp-ink-2);
+      font-family: var(--rp-mono);
+      font-size: 10.5px;
+      text-align: right;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    &.miss > span:last-child { color: var(--rp-ink-3); opacity: 0.75; }
   }
-
-  &:disabled { opacity: 0.5; }
 }
 
-.publish-select {
+/* — the accordion — */
+.facts { padding: 4px 0; }
+.fact {
+  display: grid;
+  grid-template-columns: 9px 1fr auto auto;
+  gap: 0 10px;
+  align-items: center;
+  width: 100%;
+  padding: 10px 14px;
+  background: none;
+  border: none;
+  border-left: 2px solid transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+
+  &:hover { background: var(--rp-raised); }
+  &.open { background: var(--rp-raised); border-left-color: var(--rp-line); }
+}
+.fact .dot { grid-column: 1; grid-row: 1; }
+.fact-l {
+  grid-column: 2;
+  grid-row: 1;
+  font-size: var(--rp-fs-kicker);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--rp-ink-3);
+}
+.fact-v {
+  grid-column: 2;
+  grid-row: 2;
+  margin-top: 3px;
+  font-size: var(--rp-fs-small);
+  line-height: 1.4;
+  color: var(--rp-ink);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  &.warn { color: var(--rp-warn); }
+}
+/* ORANGE 3 of 3 — and only when the dispatch button is NOT wearing it. */
+.fact-do {
+  grid-column: 3;
+  grid-row: 1 / 3;
+  flex: none;
+  font-size: var(--rp-fs-kicker);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #2a1004;
+  background: var(--primary-orange);
+  border-radius: 5px;
+  padding: 4px 7px;
+}
+.fact .chev { grid-column: 4; grid-row: 1 / 3; }
+
+.editor {
+  padding: 4px 14px 14px 25px;
+  background: var(--rp-raised);
+  border-left: 2px solid var(--rp-line);
+}
+.fld {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 7px;
+  min-width: 0;
+}
+.why {
+  margin: 0 0 7px;
+  font-size: var(--rp-fs-cap);
+  line-height: 1.55;
+  color: var(--rp-ink-3);
+}
+.zone {
+  flex: none;
+  font-size: var(--rp-fs-cap);
+  color: var(--rp-ink-3);
+}
+
+.suggest {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 9px;
+  padding: 8px 10px;
+  border: 1px solid var(--rp-line);
+  border-radius: 7px;
+  background: var(--rp-pane);
+}
+.suggest-l {
+  flex: none;
+  font-size: var(--rp-fs-kicker);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--rp-ink-3);
+}
+.suggest-v {
   flex: 1;
   min-width: 0;
-}
-
-/* The offset the boxes will be composed with. Always visible: there is no zone picker in
-   this release, so the zone being used has to be readable rather than assumed. */
-.publish-zone {
-  font-size: 0.6875rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
+  font-size: var(--rp-fs-small);
+  color: var(--rp-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* "suggested" — a channel that is pre-selected and NOT yet stored. Deliberately the same
-   shape as .edited-badge: both mean "what you are looking at is not what is on disk". */
-.publish-badge {
-  padding: 0 0.375rem;
-  border-radius: 10px;
-  font-size: 0.625rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--primary-orange);
-  background: rgba(255, 107, 53, 0.14);
-  border: 1px solid rgba(255, 107, 53, 0.4);
+/* — the calendar — */
+.cal {
+  margin-bottom: 10px;
+  border: 1px solid var(--rp-line-soft);
+  border-radius: 7px;
+  background: var(--rp-pane);
+  padding: 7px;
 }
-
-/* Full-width sentences under a row: why the channel is what it is, when the schedule
-   lands, what is wrong with the thumbnail. */
-.publish-note {
-  margin: 0;
-  font-size: 0.6875rem;
-  line-height: 1.45;
-  color: var(--text-secondary);
-
-  &.suggestion { color: var(--primary-orange); }
-
-  /* A warning is a fact about a stored value, not a refusal — the image IS attached and
-     the schedule IS saved. Amber rather than the banner's red, which means refused. */
-  &.warn { color: var(--warning-text); }
-}
-
-.publish-empty {
-  font-size: 0.75rem;
-  font-style: italic;
-  color: var(--text-secondary);
-}
-
-.publish-thumb {
-  width: 120px;
-  height: auto;
-  border-radius: 6px;
-  border: 1px solid var(--border-color);
-  background: var(--bg-primary);
-}
-
-.publish-thumb-facts {
+.cal-top {
   display: flex;
-  flex-direction: column;
-  gap: 0.0625rem;
-  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+.cal-month {
   flex: 1;
-}
-
-.publish-filename {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  overflow-wrap: anywhere;
-}
-
-.publish-dim {
-  font-size: 0.6875rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
-  overflow-wrap: anywhere;
-}
-
-/* A thumbnail found on disk and OFFERED. Boxed and captioned so it can never be mistaken
-   for the item's thumbnail: it is not one until Confirm is clicked, and slot numbers
-   drift between export and upload often enough that the difference matters. */
-.publish-proposal {
-  padding: 0.5rem;
-  border: 1px dashed var(--primary-orange);
-  border-radius: 8px;
-  background: rgba(255, 107, 53, 0.06);
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.publish-proposal-head {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  font-size: 0.75rem;
-  color: var(--primary-orange);
-
-  mat-icon {
-    font-size: 1rem;
-    width: 1rem;
-    height: 1rem;
-    color: var(--primary-orange);
-    flex-shrink: 0;
-  }
-
-  strong { min-width: 0; }
-}
-
-/* The linked video's id, shown next to the push button. Monospaced because it is an
-   identifier the operator compares against a Studio URL, character by character. */
-.publish-video {
-  font-family: 'SF Mono', Menlo, monospace;
-  font-size: 0.6875rem;
-  padding: 0.125rem 0.375rem;
-  border-radius: 4px;
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-}
-
-/* What a push actually did. Same box as the proposal above it, in green rather than
-   orange: that one is asking, this one is reporting. Every part of the push has a line
-   here — the ones that were sent and the ones that were not, with the reason. */
-.publish-receipt,
-.publish-carry-receipt {
-  padding: 0.5rem;
-  border: 1px solid var(--success-text);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--success-text) 14%, transparent);
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-
-  .publish-note { color: var(--text-secondary); }
-
-  .publish-proposal-head {
-    color: var(--success-text);
-    gap: 0.375rem;
-    margin-bottom: 0.125rem;
-
-    mat-icon { color: var(--success-text); }
-
-    .copy-btn { margin-left: auto; }
-  }
-}
-
-.publish-carry-receipt {
-  /* Applied lines are the ones the operator is looking for; the skipped ones stay in
-     the secondary colour they already have. */
-  .publish-note.applied { color: var(--text-primary); }
-}
-
-/* The regeneration offer: ONE LINE, and it only appears for an item nobody has set up
-   yet. It sits at the top of the panel because it is about every field below it, and it
-   is a row rather than a box (the thumbnail proposal's treatment) because there is
-   nothing to look at here — just a question with two answers. */
-.publish-carry {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.375rem;
-  padding: 0.5rem;
-  border: 1px dashed var(--primary-orange);
-  border-radius: 8px;
-  background: rgba(255, 107, 53, 0.06);
-
-  mat-icon {
-    flex: none;
-    font-size: 1rem;
-    width: 1rem;
-    height: 1rem;
-    color: var(--primary-orange);
-  }
-
-  .publish-carry-text {
-    flex: 1 1 100%;
-    margin: 0;
-    font-size: 0.6875rem;
-    line-height: 1.45;
-    color: var(--text-primary);
-  }
-
-  .copy-btn { flex: none; }
-}
-
-/* Disabled actions inside the panel: Set with an empty box, Confirm before the offered
-   image has been rendered, Push while one is in flight. Visibly unavailable rather than
-   silently inert. */
-.publish-section .copy-btn,
-.publish-proposal .copy-btn {
-  &:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-
-    &:hover {
-      background: transparent;
-      border-color: var(--border-color);
-      color: var(--text-secondary);
-    }
-  }
-
-  &.confirm {
-    border-color: var(--primary-orange);
-    color: var(--primary-orange);
-  }
-}
-
-/* The Spreaker section. Boxed rather than run in with the rest of the panel because it is
-   a different DESTINATION, not another field of the same one: everything above it is about
-   a YouTube video, everything inside it is about a podcast episode. It appears only for an
-   item marked as a podcast. */
-.publish-spreaker {
-  margin-top: 0.5rem;
-  padding: 0.5rem;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-secondary);
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-
-  .publish-proposal-head {
-    color: var(--text-primary);
-
-    mat-icon { color: var(--text-primary); }
-  }
-
-  code {
-    font-family: 'SF Mono', Menlo, monospace;
-    font-size: 0.6875rem;
-    word-break: break-all;
-  }
-}
-
-/* ─────────────────────────── loading and empty states ─────────────────────────── */
-
-.loading-container, .empty-state, .empty-viewer, .empty-report {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 3rem 1rem;
-  color: var(--text-secondary);
   text-align: center;
+  font-size: var(--rp-fs-cap);
+  font-weight: 600;
+  color: var(--rp-ink-2);
+}
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px;
+}
+.cal-wd {
+  text-align: center;
+  font-size: var(--rp-fs-kicker);
+  font-weight: 700;
+  color: var(--rp-ink-3);
+  padding-bottom: 3px;
+}
+.cal-day {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  min-height: 26px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: none;
+  color: var(--rp-ink-2);
+  font-size: var(--rp-fs-cap);
+  cursor: pointer;
+  transition: background 0.11s ease, color 0.11s ease;
 
-  mat-icon {
-    font-size: 2.5rem;
-    width: 2.5rem;
-    height: 2.5rem;
-    margin-bottom: 0.75rem;
-    opacity: 0.5;
-  }
-
-  p {
-    margin: 0.375rem 0;
-    font-size: 0.9375rem;
-  }
-
-  small {
-    font-size: 0.8125rem;
-    opacity: 0.7;
+  &:hover { background: var(--rp-hover); color: var(--rp-ink); }
+  &.out { color: var(--rp-ink-3); opacity: 0.4; }
+  &.past { opacity: 0.55; }
+  &.today { border-color: var(--rp-line); font-weight: 700; }
+  /* A release day for this channel, per its own cadence. */
+  &.release { background: var(--rp-hover); }
+  &.selected {
+    background: var(--rp-ok);
+    color: var(--rp-page);
+    font-weight: 700;
+    opacity: 1;
   }
 }
+.cal-mark {
+  position: absolute;
+  bottom: 3px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--rp-wait);
 
-/* ─────────────────────────── how it degrades ───────────────────────────
-   The three columns want ~1290px of pane, and the sidenav takes 250. Above roughly a
-   1600px window everything is at its designed width. Below that the rail narrows before
-   it moves, and below ~1360px it stops being a column and becomes a band under the work
-   column — still its own scroll pane, so the page still never scrolls. */
+  &.mine { background: var(--rp-warn); }
+}
+.cal-day.selected .cal-mark { background: var(--rp-page); }
 
-@media (max-width: 1500px) {
-  .page-content {
-    grid-template-columns: var(--left-w, 280px) 8px minmax(420px, 1fr) 340px;
+/* — the thumbnail row, restructured —
+   The image, the filename and the measurements are ONE row; the buttons are the next.
+   The old layout put all four in a single flex row inside a 400px rail, so the facts
+   column (flex:1; min-width:0) was crushed by three non-shrinking siblings and rendered
+   the filename one character per line. There is nothing left to crush it. */
+.thumb {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  margin-bottom: 8px;
+}
+.thumb:has(> .thumb-facts:only-child) { grid-template-columns: minmax(0, 1fr); }
+.thumb-img {
+  width: 104px;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 5px;
+  background: var(--rp-hover);
+  flex: none;
+
+  &.missing {
+    display: grid;
+    place-items: center;
+    font-size: var(--rp-fs-kicker);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--rp-ink-3);
   }
 }
-
-@media (max-width: 1360px) {
-  .page-content {
-    grid-template-columns: var(--left-w, 280px) 8px minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) minmax(0, 320px);
-    grid-template-areas:
-      'list handle work'
-      'list handle rail';
-  }
-
-  .page-content.no-item {
-    grid-template-rows: minmax(0, 1fr);
-    grid-template-areas: 'list handle work';
-  }
-
-  /* Two columns of rail content, because the band is wide and short. */
-  .rail-body {
-    flex-direction: row;
-    align-items: flex-start;
-
-    > .card {
-      flex: 1 1 0;
-      min-width: 0;
-    }
-  }
-
-  .titles-scroll { max-height: 32vh; }
-  .description-textarea { height: 10rem; }
+.thumb-facts { min-width: 0; }
+.thumb-fn {
+  display: block;
+  font-size: var(--rp-fs-small);
+  line-height: 1.4;
+  color: var(--rp-ink);
+  /* Wrapping at word boundaries, with a break only for a path segment that has none. */
+  overflow-wrap: break-word;
+  word-break: normal;
 }
+.thumb-dim {
+  display: block;
+  margin-top: 3px;
+  font-size: var(--rp-fs-cap);
+  color: var(--rp-ink-3);
+}
+
+.proposal {
+  margin-top: 9px;
+  padding: 9px 10px;
+  border: 1px solid var(--rp-line);
+  border-radius: 7px;
+  background: var(--rp-pane);
+}
+
+/* — dispatch — */
+.dispatch {
+  flex: none;
+  margin-top: auto;
+  padding: 0.85rem 1rem 1rem;
+  border-top: 1px solid var(--rp-line-soft);
+  background: var(--rp-raised);
+}
+.dl {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  margin-bottom: 4px;
+  min-width: 0;
+}
+.dl-id {
+  flex: none;
+  font-size: var(--rp-fs-cap);
+  color: var(--rp-ink-3);
+}
+.dl-dest {
+  font-size: var(--rp-fs-small);
+  font-weight: 500;
+  color: var(--rp-ink);
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dispatch-btn {
+  width: 100%;
+  margin-top: 10px;
+  padding: 11px;
+  border: 1px solid var(--rp-line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--rp-ink-3);
+  font: 600 var(--rp-fs-small) / 1 var(--font-family);
+  letter-spacing: 0.02em;
+  cursor: not-allowed;
+
+  /* ORANGE 3 of 3 — the next thing to do, when there is nothing in its way. */
+  &.go {
+    cursor: pointer;
+    border: none;
+    color: #2a1004;
+    background: linear-gradient(180deg, var(--light-orange), var(--dark-orange));
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.18) inset;
+
+    &:hover:not(:disabled) { filter: brightness(1.06); }
+  }
+  &:disabled { cursor: not-allowed; }
+}
+
+.dispatch-foot {
+  margin-top: 8px;
+  text-align: center;
+  font-size: var(--rp-fs-cap);
+  line-height: 1.5;
+  color: var(--rp-ink-3);
+
+  .held { color: var(--rp-warn); cursor: help; }
+  span { cursor: help; }
+}
+
+/* ─────────────────────────────── scrollbars ─────────────────────────────── */
+
+.pane-body::-webkit-scrollbar { width: 9px; height: 9px; }
+.pane-body::-webkit-scrollbar-track { background: transparent; }
+.pane-body::-webkit-scrollbar-thumb {
+  background: var(--rp-line);
+  border-radius: 9px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.pane-body::-webkit-scrollbar-thumb:hover { background: var(--rp-ink-3); background-clip: content-box; }

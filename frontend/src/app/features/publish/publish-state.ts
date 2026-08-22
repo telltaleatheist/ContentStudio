@@ -25,6 +25,7 @@ import {
   MAX_TITLE_LENGTH,
   PushReceipt,
   ResolvedMetadata,
+  SPREAKER_DESTINATION,
   SPREAKER_MAX_TITLE_LENGTH,
   SpreakerReceipt,
   SpreakerStatus,
@@ -1074,6 +1075,55 @@ export class PublishState {
     this._channelSuggestion.set(null);
     await this.setFields({ channelId });
   }
+
+  /**
+   * Route the item to ONE destination: a YouTube channel, or Spreaker.
+   *
+   * The reports page asks the question once — "where does this go?" — and the record
+   * answers it with the two fields it already has: `channelId` names the YouTube channel,
+   * and `isPodcast` is what makes the destination Spreaker. There is no third field and no
+   * new schema; `isPodcast === true` IS the Spreaker destination.
+   *
+   * Both halves go in ONE `publish-set-fields` write rather than two, because a routing
+   * decision that half-succeeded would leave the record claiming a destination nobody
+   * picked — an item on Spreaker AND on a YouTube channel, or on neither.
+   *
+   * Choosing Spreaker deliberately LEAVES `channelId` alone. A Fireside episode is a
+   * Spreaker episode and a YouTube channel's video; forgetting which channel it belonged
+   * to because the operator sent this run to the podcast feed would throw away a fact the
+   * operator recorded.
+   */
+  async chooseDestination(destination: string | null): Promise<void> {
+    const toSpreaker = destination === SPREAKER_DESTINATION;
+
+    if (toSpreaker) {
+      // The channel is untouched, so a pending suggestion still rides along with this
+      // write exactly as it would with any other — see withChannelSeed.
+      await this.setFields({ isPodcast: true });
+    } else {
+      this._channelTouched.set(true);
+      this._channelSuggestion.set(null);
+      await this.setFields({ channelId: destination, isPodcast: false });
+    }
+    if (this._error()) return;
+
+    // The Spreaker half of the panel appears or disappears with this flag, so what it
+    // needs to describe itself is read now rather than on the next load.
+    const itemId = this._itemId();
+    if (itemId) await this.refreshSpreaker(itemId);
+  }
+
+  /**
+   * The destination the picker shows: `SPREAKER_DESTINATION`, a channel id, or '' for
+   * "not routed".
+   *
+   * One value for one control. `isPodcast` wins over the channel because it is the more
+   * specific statement: an item can carry a channel id and still be going to the feed,
+   * and the feed is where it is going.
+   */
+  readonly destination = computed<string>(() =>
+    this.isPodcast() ? SPREAKER_DESTINATION : (this.selectedChannelId() ?? ''),
+  );
 
   /**
    * Set the go-live time from the two local boxes the panel offers.

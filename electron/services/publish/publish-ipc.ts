@@ -88,6 +88,22 @@ export interface PublishFacts {
   /** ISO. When the extension last filled Studio's form, or null for never. */
   filledAt: string | null;
   hasThumbnail: boolean;
+  /**
+   * The monetization decision, three-valued exactly as the record holds it: true, false,
+   * or null for "nobody has decided".
+   *
+   * Projected for the reports list, whose six-fact row vocabulary has to be able to
+   * ANSWER this rather than send the reader to open the item. Three states of one field —
+   * not the record, and not a string.
+   */
+  monetize: boolean | null;
+  /**
+   * Spreaker's episode id once uploaded, or null for never.
+   *
+   * The podcast half of "has this been dispatched", and the same size as `videoId` next
+   * to it: a list needs to know WHETHER an episode exists, and the id is what says so.
+   */
+  spreakerEpisodeId: number | null;
   /** How many A/B variants are chosen. 0..MAX_AB_VARIANTS. */
   abCount: number;
   /**
@@ -404,6 +420,8 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
                 pushedAt: record.pushedAt,
                 filledAt: record.filledAt,
                 hasThumbnail: record.thumbnailPath !== null,
+                monetize: record.monetize,
+                spreakerEpisodeId: record.spreakerEpisodeId,
                 abCount: record.chosenTitles.length,
                 mainTitle: record.chosenTitles.length > 0 ? record.chosenTitles[0] : null,
               }

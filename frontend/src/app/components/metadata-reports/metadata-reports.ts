@@ -10,13 +10,9 @@ import {
 } from '@angular/core';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
-import { MatCardModule } from '@angular/material/card';
-import { MatListModule } from '@angular/material/list';
 import { MatIconModule } from '@angular/material/icon';
-import { MatButtonModule } from '@angular/material/button';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
-import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { AnalyticsChannel, ElectronService } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
@@ -28,9 +24,23 @@ import {
 } from '../../features/publish/spreaker-upload-dialog';
 import {
   MAX_AB_VARIANTS,
+  SPREAKER_DESTINATION,
+  SPREAKER_DESTINATION_LABEL,
   type PublishFacts,
   type ReportIndexEntry,
 } from '../../features/publish/publish.types';
+import {
+  CADENCE_NOTES,
+  cadenceKeyFor,
+  collidesWith,
+  isCadenceSlot,
+  nextOpenSlot,
+  slotKeyOf,
+  splitSlot,
+  type CadenceKey,
+} from '../../features/publish/publish-slots';
+// The calendar's pure day arithmetic, reused rather than written a second time.
+import { dateKeyOf, startOfMonth } from '../publish-calendar/calendar-states';
 import {
   basename,
   describePublishAt,
@@ -121,18 +131,37 @@ function readStoredLeftWidth(): number {
 }
 
 /**
- * The five publish facts the readiness strip states and the list rows dot.
+ * The six publish facts the readiness meter names and the list rows dot.
  *
- * One vocabulary for both surfaces on purpose: a row's dots and the open report's strip
- * are the same five answers, so learning one teaches the other.
+ * ONE vocabulary for both surfaces, in one order, so learning either teaches the other:
+ * TITLES · CHANNEL · MONEY · WHEN · THUMB · LINK. A row's six dots and the open item's
+ * six ticks answer the same six questions about the same record.
+ *
+ * The old five (channel, schedule, ab, thumbnail, podcast) are all still here — "podcast"
+ * stopped being a fact of its own when it became half of CHANNEL, which is now the one
+ * routing decision: three YouTube channels or Spreaker.
  */
-type ReadinessKey = 'channel' | 'schedule' | 'ab' | 'thumbnail' | 'podcast';
+type TickKey = 'titles' | 'channel' | 'money' | 'when' | 'thumb' | 'link';
 
-interface ReadinessChip {
-  key: ReadinessKey;
+/**
+ * Three values, never a fourth — plus `na` for a fact this destination does not have.
+ *
+ * set  — recorded.
+ * unset— nothing recorded. A FACT, not a fault, and never counted as held.
+ * warn  — recorded and suspect, or missing and blocking. This is the only one that asks
+ *         anything of the operator, and the only one that is ever amber.
+ * na    — the question does not apply to where this item is going (monetization on a
+ *         Spreaker episode). Said, rather than shown as an unanswered question.
+ */
+type TickState = 'set' | 'unset' | 'warn' | 'na';
+
+interface ReadinessTick {
+  key: TickKey;
+  /** The tick's short name, as the meter prints it. */
   label: string;
-  /** set = recorded; unset = nothing recorded, said as such; warn = recorded and suspect. */
-  state: 'set' | 'unset' | 'warn';
+  state: TickState;
+  /** What the record actually says, for the item header. Never a plausible stand-in. */
+  value: string;
   hint: string;
 }
 
@@ -163,12 +192,94 @@ interface ChannelFilterChip {
   count: number;
 }
 
-type StateFilter = 'all' | 'scheduled' | 'unscheduled' | 'ab' | 'no-titles';
+/**
+ * One value, two entry points: the four headline states are the segmented control, the
+ * three narrower ones live in the "also" picker beside the channel filter. Exactly one is
+ * ever active, which is why they are one signal and not two.
+ */
+type StateFilter =
+  | 'all'
+  | 'needs-you'
+  | 'scheduled'
+  | 'ready'
+  | 'unscheduled'
+  | 'ab'
+  | 'no-titles';
 
-/** One dot on a list row — a publish fact that is recorded. */
+/** The four states the segmented control offers, in its 2x2 order. */
+const SEGMENT_FILTERS: ReadonlyArray<{ value: StateFilter; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'needs-you', label: 'Needs you' },
+  { value: 'scheduled', label: 'Scheduled' },
+  { value: 'ready', label: 'Ready' },
+];
+
+/** The narrower states, kept because they are the ones that answer a specific question. */
+const REFINE_FILTERS: ReadonlyArray<{ value: StateFilter; label: string }> = [
+  { value: 'unscheduled', label: 'Unscheduled' },
+  { value: 'ab', label: 'A/B picked' },
+  { value: 'no-titles', label: 'No titles' },
+];
+
+/** One dot on a list row: the same six facts the meter names, at list resolution. */
 interface RowDot {
-  key: string;
+  key: TickKey;
+  state: TickState;
   label: string;
+}
+
+/** Which rail fact a tick opens. `titles` is in the work column and opens nothing here. */
+type FactKey = 'destination' | 'money' | 'when' | 'thumb' | 'audio';
+
+/**
+ * Which rail row answers which tick, and back again.
+ *
+ * Declared as one pair of tables rather than as two switch statements, because the ONE
+ * thing that must never drift is that a tick and the row it opens describe the same fact.
+ * `titles` maps to null: it is the editorial act, and it lives in the work column.
+ */
+const FACT_FOR_TICK: Readonly<Record<TickKey, FactKey | null>> = {
+  titles: null,
+  channel: 'destination',
+  money: 'money',
+  when: 'when',
+  thumb: 'thumb',
+  // The Spreaker link IS the episode audio; for a YouTube item there is no rail row that
+  // sets it, because nothing in this app uploads video or links a draft.
+  link: 'audio',
+};
+
+const TICK_FOR_FACT: Readonly<Record<FactKey, TickKey | null>> = {
+  destination: 'channel',
+  money: 'money',
+  when: 'when',
+  thumb: 'thumb',
+  audio: 'link',
+};
+
+/** One line of the dispatch manifest: exactly what this button would send. */
+interface ManifestRow {
+  label: string;
+  value: string;
+  /** True when this part will NOT be sent — rendered quiet, never as a value. */
+  missing: boolean;
+}
+
+/** A day cell in the schedule row's calendar. */
+interface CalendarDay {
+  dateKey: string;
+  date: Date;
+  dayOfMonth: number;
+  inMonth: boolean;
+  isToday: boolean;
+  isPast: boolean;
+  /** How many OTHER items are already scheduled on this day, on any channel. */
+  count: number;
+  /** True when at least one of those is on this item's own channel. */
+  onThisChannel: boolean;
+  /** True when this day carries one of this channel's cadence slots. */
+  isReleaseDay: boolean;
+  selected: boolean;
 }
 
 interface ParsedMetadata {
@@ -196,16 +307,16 @@ interface ParsedMetadata {
 @Component({
   selector: 'app-metadata-reports',
   standalone: true,
+  // Four Material pieces earn their keep here and the rest were dropped with the chrome
+  // they used to carry: icons, the spinner, the tag chips (restyled flat, not fought) and
+  // the dialog service the two confirmations open. Cards, lists, buttons and checkboxes
+  // are plain elements now — they were being overridden into plain elements anyway.
   imports: [
-    MatCardModule,
-    MatListModule,
     MatIconModule,
-    MatButtonModule,
     MatProgressSpinnerModule,
     MatChipsModule,
-    MatCheckboxModule,
     MatDialogModule,
-    RouterLink
+    RouterLink,
   ],
   templateUrl: './metadata-reports.html',
   styleUrl: './metadata-reports.scss'
@@ -343,8 +454,16 @@ export class MetadataReports implements OnInit {
     return chips;
   });
 
-  /** Does this row survive the search box and the two filter chip rows? */
-  private matchesFilters(report: MetadataReport): boolean {
+  /**
+   * Does this row survive the search box, the channel picker and one state filter?
+   *
+   * The state is a PARAMETER rather than a read of the signal, because the segmented
+   * control has to be able to count what each of its four segments would leave on screen
+   * without becoming that segment first. Writing the signal to ask the question — which is
+   * what the first draft of this did — is a write inside a computed, and Angular is right
+   * to refuse it.
+   */
+  private matchesFilters(report: MetadataReport, state: StateFilter = this.stateFilter()): boolean {
     const query = this.searchQuery().trim().toLowerCase();
     if (query) {
       const haystack = [report.displayTitle, report.name, report.sourceFilename]
@@ -364,7 +483,7 @@ export class MetadataReports implements OnInit {
       }
     }
 
-    switch (this.stateFilter()) {
+    switch (state) {
       case 'scheduled':
         return !!report.facts?.publishAt;
       case 'unscheduled':
@@ -375,9 +494,67 @@ export class MetadataReports implements OnInit {
         // Only rows whose run RECORDED a title count answer this. A legacy row has no
         // count, which is not the same claim as "it produced none".
         return report.titleCount === 0;
+      // The triage view: at least one of this row's six facts is amber. Read from the
+      // SAME rowDots() the row draws, so what the filter selects is exactly what the eye
+      // would have picked out of the list by hand.
+      case 'needs-you':
+        return this.rowDots(report).some((dot) => dot.state === 'warn');
+      // Nothing amber and every fact that can be recorded is. Deliberately stricter than
+      // "not held": a row here needs no further decision at list resolution.
+      case 'ready':
+        return this.rowDots(report).every((dot) => dot.state === 'set' || dot.state === 'na');
       case 'all':
         return true;
     }
+  }
+
+  /**
+   * The four segments, each with how many rows it would leave on screen.
+   *
+   * Counted with the SAME predicate the list runs, so the number on a segment and the
+   * number of rows you get when you press it can never be two different rules. Sources are
+   * counted, not rows, so a source with six re-runs counts once — which is what the list
+   * shows when its group is collapsed.
+   */
+  readonly segmentFilters = computed(() => {
+    const counts = new Map<StateFilter, Set<string>>(
+      SEGMENT_FILTERS.map((f) => [f.value, new Set<string>()]),
+    );
+    for (const report of this.reports()) {
+      const key = report.sourceKey ?? ` row:${report.itemId ?? report.path}`;
+      for (const f of SEGMENT_FILTERS) {
+        if (this.matchesFilters(report, f.value)) counts.get(f.value)!.add(key);
+      }
+    }
+    return SEGMENT_FILTERS.map((f) => ({ ...f, count: counts.get(f.value)!.size }));
+  });
+
+  readonly REFINE_FILTERS = REFINE_FILTERS;
+
+  /** '' when the segmented control owns the current value — the picker then reads "also". */
+  refineValue(): string {
+    const current = this.stateFilter();
+    return REFINE_FILTERS.some((f) => f.value === current) ? current : '';
+  }
+
+  onRefineChange(event: Event): void {
+    const value = (event.target as HTMLSelectElement).value;
+    if (value === '') {
+      this.stateFilter.set('all');
+      return;
+    }
+    const known = REFINE_FILTERS.find((f) => f.value === value);
+    if (!known) {
+      // The template owns these options; anything else means the two have drifted, and
+      // filtering by a state nobody defined would quietly show the wrong rows.
+      this.notificationService.error(
+        'Unknown filter',
+        `The filter picker offered "${value}", which this handler does not know. The list ` +
+          'was left as it was.',
+      );
+      return;
+    }
+    this.stateFilter.set(known.value);
   }
 
   /**
@@ -446,146 +623,375 @@ export class MetadataReports implements OnInit {
   }
 
   /**
-   * The publish facts this row has recorded, one dot each.
+   * This row's six facts, in the meter's order and the meter's vocabulary.
    *
-   * Only facts that ARE recorded get a dot — an unrouted, unscheduled item shows none,
-   * which is the honest reading of a row nobody has touched.
+   * Read from the INDEX's projection of the record, which is a smaller thing than the
+   * record: it knows whether there is a thumbnail, not whether that thumbnail is small,
+   * and it knows nothing at all about monetization. Every fact the index cannot answer is
+   * `unset` here rather than guessed at, and the open item's meter — which reads the whole
+   * record — is where the finer answer lives. A row never claims more than the index said.
+   *
+   * A row with NO record at all still gets six dots, all hollow. "Nobody has touched this"
+   * is an answer, and six hollow rings say it in the same shape as every other row.
    */
   rowDots(report: MetadataReport): RowDot[] {
     const facts = report.facts;
-    if (!facts) return [];
-    const dots: RowDot[] = [];
-    if (facts.channelId) dots.push({ key: 'channel', label: 'Routed to a channel' });
-    if (facts.publishAt) dots.push({ key: 'schedule', label: 'Scheduled' });
-    if (facts.abCount > 0) {
-      dots.push({
-        key: 'ab',
-        label: `${facts.abCount} of ${MAX_AB_VARIANTS} A/B variants picked`,
-      });
-    }
-    if (facts.hasThumbnail) dots.push({ key: 'thumbnail', label: 'Thumbnail attached' });
-    if (facts.isPodcast) dots.push({ key: 'podcast', label: 'Podcast episode' });
-    return dots;
+    const ab = facts?.abCount ?? 0;
+    const titleCount = report.titleCount;
+
+    // A run that produced NOTHING to pick from is the one row-level warning that is about
+    // the generator rather than about a decision the operator has not made yet.
+    const titles: RowDot =
+      titleCount === 0
+        ? { key: 'titles', state: 'warn', label: 'This run produced no titles.' }
+        : ab >= MAX_AB_VARIANTS
+          ? { key: 'titles', state: 'set', label: `All ${MAX_AB_VARIANTS} A/B variants picked` }
+          : ab === 0
+            ? { key: 'titles', state: 'warn', label: 'No title picked — variant 1 is the video title.' }
+            : { key: 'titles', state: 'unset', label: `${ab} of ${MAX_AB_VARIANTS} A/B variants picked` };
+
+    const channel: RowDot = facts?.isPodcast
+      ? { key: 'channel', state: 'set', label: `Routed to ${SPREAKER_DESTINATION_LABEL}` }
+      : facts?.channelId
+        ? { key: 'channel', state: 'set', label: `Routed to ${this.channelNameFor(facts.channelId)}` }
+        : { key: 'channel', state: 'warn', label: 'Not routed to a destination yet.' };
+
+    // Three-valued, and null is an ANSWER — "nobody has decided" is what tells the
+    // extension to leave Studio's monetization control alone. It is never a fault.
+    const money: RowDot = facts?.isPodcast
+      ? { key: 'money', state: 'na', label: 'Monetization is a YouTube setting; this goes to Spreaker.' }
+      : facts?.monetize === true
+        ? { key: 'money', state: 'set', label: 'Monetize — on' }
+        : facts?.monetize === false
+          ? { key: 'money', state: 'set', label: 'Do not monetize — off' }
+          : { key: 'money', state: 'unset', label: 'Monetization not decided.' };
+
+    const when: RowDot = facts?.publishAt
+      ? new Date(facts.publishAt).getTime() < Date.now()
+        ? { key: 'when', state: 'warn', label: 'The scheduled time has already passed.' }
+        : { key: 'when', state: 'set', label: 'Scheduled' }
+      : { key: 'when', state: 'unset', label: 'No publish time recorded.' };
+
+    const thumb: RowDot = facts?.hasThumbnail
+      ? { key: 'thumb', state: 'set', label: 'Thumbnail attached' }
+      : { key: 'thumb', state: 'unset', label: 'No thumbnail chosen.' };
+
+    const link: RowDot = facts?.isPodcast
+      ? facts.spreakerEpisodeId !== null
+        ? { key: 'link', state: 'set', label: `Uploaded as episode ${facts.spreakerEpisodeId}` }
+        : { key: 'link', state: 'warn', label: 'No Spreaker episode yet.' }
+      : facts?.videoId
+        ? { key: 'link', state: 'set', label: `Linked to video ${facts.videoId}` }
+        : { key: 'link', state: 'warn', label: 'Not linked to a YouTube video yet.' };
+
+    return [titles, channel, money, when, thumb, link];
   }
 
-  // ---------------------------------------------- readiness strip (§1.3, 4.4)
+  /** A channel's registry name, or its raw id when the registry has no name for it. */
+  private channelNameFor(channelId: string): string {
+    const known = this.registryChannels().find((c) => c.channelId === channelId);
+    return known ? known.name : channelId;
+  }
+
+  // -------------------------------------------- the readiness meter (§1.3, 4.4)
 
   /**
-   * The one line that answers "is this ready", built ONLY from the record already on
-   * screen. Nothing here is inferred: a field with nothing in it renders as a hollow chip
-   * saying so, never as a plausible value.
+   * The six ticks that answer "is this ready", built ONLY from the record already on
+   * screen. Nothing here is inferred: a field with nothing in it reads as an unanswered
+   * question, never as a plausible value.
+   *
+   * Every reason the dispatch button can be held maps to exactly ONE amber tick, which is
+   * what keeps `HELD - n` and the button's own refusal from ever disagreeing.
    */
-  readonly readinessChips = computed<ReadinessChip[]>(() => {
-    const chips: ReadinessChip[] = [];
+  readonly readinessTicks = computed<ReadinessTick[]>(() => {
+    const toSpreaker = this.publish.isPodcast();
+    const ticks: ReadinessTick[] = [];
 
-    const unknown = this.publish.unknownStoredChannel();
-    const channelId = this.publish.selectedChannelId();
-    if (unknown) {
-      chips.push({
-        key: 'channel',
-        label: `channel ${unknown}`,
-        state: 'warn',
-        hint: `Routed to ${unknown}, which is not in the channel registry.`,
-      });
-    } else if (channelId) {
-      const known = this.publish.channels().find((c) => c.channelId === channelId);
-      const suggested = this.publish.channelIsSuggested();
-      chips.push({
-        key: 'channel',
-        label: known ? known.name : channelId,
-        state: suggested ? 'warn' : 'set',
-        hint: suggested
-          ? 'Suggested only — not stored until your next change here.'
-          : 'The channel this item is routed to.',
-      });
-    } else {
-      chips.push({
-        key: 'channel',
-        label: 'no channel',
-        state: 'unset',
-        hint: 'Not routed to a channel.',
-      });
-    }
-
-    const when = this.scheduleDescription();
-    if (when) {
-      chips.push({
-        key: 'schedule',
-        label: when.local,
-        state: when.isPast || !when.offsetsAgree ? 'warn' : 'set',
-        hint: when.isPast
-          ? 'This time has already passed.'
-          : !when.offsetsAgree
-            ? `Stored as ${when.raw} (${when.storedOffset}), read here in ${when.localOffset}.`
-            : `${when.localOffset} · ${when.relative}`,
-      });
-    } else {
-      chips.push({
-        key: 'schedule',
-        label: 'no schedule',
-        state: 'unset',
-        hint: 'No publish time recorded.',
-      });
-    }
-
+    // -- TITLES -- variant 1 is the video's title, so zero picked is what blocks a push.
     const chosen = this.publish.chosenCount();
-    chips.push({
-      key: 'ab',
-      label: `A/B ${chosen}/${MAX_AB_VARIANTS}`,
-      state: chosen === MAX_AB_VARIANTS ? 'set' : 'unset',
+    ticks.push({
+      key: 'titles',
+      label: 'Titles',
+      state: chosen === MAX_AB_VARIANTS ? 'set' : chosen === 0 ? 'warn' : 'unset',
+      value: `${chosen}/${MAX_AB_VARIANTS}`,
       hint:
         chosen === 0
-          ? 'No titles picked yet.'
-          : `${chosen} picked, in click order — #1 is the video's title.`,
+          ? 'No titles picked. Variant 1 is what goes on the video, so nothing can be sent yet.'
+          : `${chosen} picked, in click order — #1 is the video's title and YouTube's fallback.`,
     });
 
-    const warnings = this.publish.thumbnailWarnings();
-    if (this.publish.thumbnailPath()) {
-      chips.push({
-        key: 'thumbnail',
-        label: warnings.length
-          ? `thumbnail · ${warnings.length} warning${warnings.length === 1 ? '' : 's'}`
-          : 'thumbnail ✓',
-        state: warnings.length ? 'warn' : 'set',
-        hint: warnings.length ? warnings.join(' ') : 'A thumbnail is attached.',
+    // -- CHANNEL -- one routing decision: a YouTube channel, or Spreaker.
+    const unknown = this.publish.unknownStoredChannel();
+    const storedChannel = this.publish.channelId();
+    if (toSpreaker) {
+      ticks.push({
+        key: 'channel',
+        label: 'Channel',
+        state: 'set',
+        value: SPREAKER_DESTINATION_LABEL,
+        hint: 'This item is routed to the podcast feed. Its dispatch is a Spreaker upload.',
+      });
+    } else if (unknown) {
+      ticks.push({
+        key: 'channel',
+        label: 'Channel',
+        state: 'warn',
+        value: unknown,
+        hint:
+          `Routed to ${unknown}, which is not in the channel registry — the picker cannot ` +
+          'show it. Re-connect that channel or choose another.',
+      });
+    } else if (storedChannel) {
+      ticks.push({
+        key: 'channel',
+        label: 'Channel',
+        state: 'set',
+        value: this.channelNameFor(storedChannel),
+        hint: 'The channel this item is routed to.',
+      });
+    } else if (this.publish.channelIsSuggested()) {
+      ticks.push({
+        key: 'channel',
+        label: 'Channel',
+        state: 'warn',
+        value: 'suggested only',
+        hint:
+          `${this.publish.channelNote() ?? ''} It is pre-selected but NOT stored, so ` +
+          'nothing can be dispatched until you confirm it.',
       });
     } else {
-      chips.push({
-        key: 'thumbnail',
-        label: 'no thumbnail',
+      ticks.push({
+        key: 'channel',
+        label: 'Channel',
+        state: 'warn',
+        value: 'not routed',
+        hint: 'No destination is recorded. Pick a channel, or Spreaker.',
+      });
+    }
+
+    // -- MONEY -- null is an ANSWER, and the only one that leaves Studio's control alone.
+    const monetize = this.publish.monetize();
+    ticks.push(
+      toSpreaker
+        ? {
+            key: 'money',
+            label: 'Money',
+            state: 'na',
+            value: '—',
+            hint: 'Monetization is a YouTube Studio setting. This item goes to Spreaker.',
+          }
+        : {
+            key: 'money',
+            label: 'Money',
+            state: monetize === null ? 'unset' : 'set',
+            value: monetize === null ? 'not decided' : monetize ? 'on' : 'off',
+            hint:
+              monetize === null
+                ? "Not decided — the extension leaves Studio's monetization control untouched."
+                : "The extension sets this in Studio's Monetization tab when you click it there.",
+          },
+    );
+
+    // -- WHEN -- a lapsed schedule is the one that needs saying out loud.
+    const when = this.scheduleDescription();
+    ticks.push(
+      when
+        ? {
+            key: 'when',
+            label: 'When',
+            state: when.isPast || !when.offsetsAgree ? 'warn' : 'set',
+            value: when.local,
+            hint: when.isPast
+              ? `This time passed ${when.relative}. Pushing now would publish immediately.`
+              : !when.offsetsAgree
+                ? `Stored as ${when.raw} (${when.storedOffset}), read here in ${when.localOffset}.`
+                : `${when.localOffset} · ${when.relative}`,
+          }
+        : {
+            key: 'when',
+            label: 'When',
+            state: 'unset',
+            value: 'no schedule',
+            hint: 'No publish time recorded. Open this for the next open slot on the channel.',
+          },
+    );
+
+    // -- THUMB -- destination-independent: the record holds one either way.
+    const warnings = this.publish.thumbnailWarnings();
+    const proposal = this.publish.proposal();
+    const thumbnailPath = this.publish.thumbnailPath();
+    if (thumbnailPath) {
+      ticks.push({
+        key: 'thumb',
+        label: 'Thumb',
+        state: warnings.length ? 'warn' : 'set',
+        value: this.fileName(thumbnailPath),
+        hint: warnings.length ? warnings.join(' ') : 'A thumbnail is attached.',
+      });
+    } else if (proposal) {
+      ticks.push({
+        key: 'thumb',
+        label: 'Thumb',
+        state: 'warn',
+        value: 'proposed — not applied',
+        hint: 'An image was exported beside this video. Check the slot number, then confirm it.',
+      });
+    } else {
+      ticks.push({
+        key: 'thumb',
+        label: 'Thumb',
         state: 'unset',
+        value: 'none',
         hint: 'No thumbnail chosen.',
       });
     }
 
-    const podcast = this.publish.isPodcast();
-    chips.push({
-      key: 'podcast',
-      label: podcast ? 'podcast' : 'podcast —',
-      state: podcast ? 'set' : 'unset',
-      hint: podcast ? 'Marked as a Spreaker episode.' : 'Not a podcast episode.',
-    });
+    // -- LINK -- what "the thing this dispatches to" is, per destination.
+    if (toSpreaker) {
+      const episodeId = this.publish.spreakerEpisodeId();
+      const audio = this.publish.spreakerAudioPath();
+      ticks.push({
+        key: 'link',
+        label: 'Link',
+        state: episodeId !== null || audio ? 'set' : 'warn',
+        value:
+          episodeId !== null ? `episode ${episodeId}` : audio ? this.fileName(audio) : 'no audio',
+        hint:
+          episodeId !== null
+            ? `Already uploaded as episode ${episodeId}. A second upload is a second episode.`
+            : audio
+              ? 'The episode audio this upload would send.'
+              : 'No episode audio is chosen, and an episode is the audio.',
+      });
+    } else {
+      const videoId = this.publish.videoId();
+      ticks.push({
+        key: 'link',
+        label: 'Link',
+        state: videoId ? 'set' : 'warn',
+        value: videoId ?? 'no video',
+        hint: videoId
+          ? `Writes to video ${videoId}. Nothing here uploads video.`
+          : 'Not linked to a YouTube video yet. Upload the draft in the browser and link it.',
+      });
+    }
 
-    return chips;
+    // The meter and the dispatch button must never disagree. Every refusal the button can
+    // give is meant to land on exactly one amber tick above — but the two rules live in
+    // two places (this method, and PublishState's blocked-reason computeds), and a rule
+    // added to one and not the other would show READY over a button that will not go.
+    //
+    // So the disagreement is checked rather than assumed: if something is refusing the
+    // dispatch and nothing here is amber, the refusal is put on the LINK tick verbatim.
+    // A meter that says READY over a dead button is the one failure this cannot have.
+    const blocked = toSpreaker
+      ? this.publish.spreakerBlockedReason()
+      : this.publish.pushBlockedReason();
+    if (blocked && !this.dispatchDone() && !ticks.some((t) => t.state === 'warn')) {
+      const link = ticks[ticks.length - 1];
+      link.state = 'warn';
+      link.hint = blocked;
+    }
+
+    return ticks;
   });
 
-  /** A chip is a jump target: it focuses the control in the rail that sets that fact. */
-  focusReadiness(key: ReadinessKey): void {
-    if (key === 'ab') {
+  /** How many of the six ticks are actually asking for something. */
+  readonly heldCount = computed(
+    () => this.readinessTicks().filter((t) => t.state === 'warn').length,
+  );
+
+  /**
+   * True when this item's dispatch has already happened and cannot honestly be repeated.
+   *
+   * Only Spreaker: a YouTube push REWRITES the linked video, so pushing again is a
+   * legitimate thing to do and "sent" would be the wrong word for it. A Spreaker upload
+   * CREATES, and a second one is a second episode in a public feed.
+   */
+  readonly dispatchDone = computed(
+    () => this.publish.isPodcast() && this.publish.spreakerEpisodeId() !== null,
+  );
+
+  /** One word: Sent, Ready, or Held - n. */
+  readonly readinessWord = computed(() => {
+    if (this.dispatchDone()) return 'Sent';
+    const held = this.heldCount();
+    return held === 0 ? 'Ready' : `Held · ${held}`;
+  });
+
+  /**
+   * The single next thing to do, or null when there is nothing left.
+   *
+   * This is what carries the whole colour scheme: THE ONLY FILLED ORANGE ON SCREEN IS THE
+   * NEXT THING TO DO. When this is null the dispatch button is that orange; when it is
+   * not, the dispatch button is grey and this one fact row wears it instead. There is
+   * never a second one, because there is never a second answer here.
+   */
+  readonly nextAction = computed<{ tick: ReadinessTick; fact: FactKey | null } | null>(() => {
+    if (this.dispatchDone()) return null;
+    const tick = this.readinessTicks().find((t) => t.state === 'warn');
+    if (!tick) return null;
+    return { tick, fact: FACT_FOR_TICK[tick.key] };
+  });
+
+  /**
+   * A tick is a jump target: it opens the rail row that sets that fact, or focuses the
+   * titles pane for the one fact the rail does not own.
+   */
+  focusTick(key: TickKey): void {
+    if (key === 'titles') {
       this.titlesScroll?.nativeElement.focus();
       return;
     }
-    const el =
-      key === 'channel'
-        ? this.channelSelect?.nativeElement
-        : key === 'schedule'
-          ? this.scheduleDateInput?.nativeElement
-          : key === 'thumbnail'
-            ? this.thumbnailRow?.nativeElement
-            : this.podcastRow?.nativeElement;
-    if (!el) return;
-    el.scrollIntoView({ block: 'nearest' });
-    if (el instanceof HTMLSelectElement || el instanceof HTMLInputElement) el.focus();
+    const fact = FACT_FOR_TICK[key];
+    if (fact === null) return;
+    // LINK on a YouTube item has no rail row, because nothing in this app uploads a video
+    // or links a draft — that happens in the browser. Collapsing whatever the operator had
+    // open in order to show them nothing would be worse than doing nothing.
+    if (fact === 'audio' && !this.publish.isPodcast()) return;
+    this.openFact.set(fact);
+    // After the row expands. The control inside it is what the operator came for.
+    setTimeout(() => {
+      const el =
+        fact === 'destination'
+          ? this.channelSelect?.nativeElement
+          : fact === 'when'
+            ? this.scheduleDateInput?.nativeElement
+            : fact === 'thumb'
+              ? this.thumbnailRow?.nativeElement
+              : this.podcastRow?.nativeElement;
+      if (!el) return;
+      el.scrollIntoView({ block: 'nearest' });
+      if (el instanceof HTMLSelectElement || el instanceof HTMLInputElement) el.focus();
+    });
+  }
+
+  // ------------------------------------------------- the publish record accordion
+  //
+  // One card, five label/value rows, one open at a time. The control that SETS a fact
+  // lives inside the row that STATES it, so nothing has to be explained in advance —
+  // which is what replaced the 41 resident paragraphs this panel used to carry.
+
+  readonly openFact = signal<FactKey | null>(null);
+
+  isFactOpen(key: FactKey): boolean {
+    return this.openFact() === key;
+  }
+
+  toggleFact(key: FactKey): void {
+    this.openFact.set(this.openFact() === key ? null : key);
+  }
+
+  /** The tick that describes a rail row, so the row's dot and the meter never disagree. */
+  tickFor(fact: FactKey): ReadinessTick | null {
+    const key = TICK_FOR_FACT[fact];
+    if (key === null) return null;
+    return this.readinessTicks().find((t) => t.key === key) ?? null;
+  }
+
+  /** True when this row is the one thing left to do — the single filled orange. */
+  isNextAction(fact: FactKey): boolean {
+    return this.nextAction()?.fact === fact;
   }
 
   // ------------------------------------------------------ the A/B slate (§1.4)
@@ -839,6 +1245,351 @@ export class MetadataReports implements OnInit {
     return this.publish.selectedChannelId() ?? '';
   }
 
+  // ------------------------------------------------------------ one destination
+  //
+  // The routing decision is asked ONCE and has four answers: the three YouTube channels
+  // the registry holds, and Spreaker. There is no second "publish as podcast" checkbox and
+  // no second dispatch section, because an item goes to one place.
+  //
+  // Nothing new is stored for this. `channelId` names the YouTube channel and `isPodcast`
+  // is what makes the destination Spreaker — the two fields the record has always had. The
+  // mapping is written down once, in PublishState.chooseDestination.
+
+  readonly SPREAKER_DESTINATION = SPREAKER_DESTINATION;
+  readonly SPREAKER_DESTINATION_LABEL = SPREAKER_DESTINATION_LABEL;
+
+  /** An explicit choice, including the empty option — see PublishState.chooseDestination. */
+  async onDestinationChange(event: Event) {
+    const value = (event.target as HTMLSelectElement).value;
+    await this.publish.chooseDestination(value === '' ? null : value);
+  }
+
+  /** How the chosen destination reads on one line. */
+  destinationLabel(): string {
+    if (this.publish.isPodcast()) return SPREAKER_DESTINATION_LABEL;
+    const id = this.publish.selectedChannelId();
+    if (!id) return 'not routed';
+    return this.channelNameFor(id);
+  }
+
+  /** The registry name of the channel this item is routed to, or null when it has none. */
+  private currentChannelName(): string | null {
+    const id = this.publish.selectedChannelId();
+    if (!id) return null;
+    const known = this.publish.channels().find((c) => c.channelId === id);
+    return known ? known.name : null;
+  }
+
+  /**
+   * The release cadence this item's channel publishes on, or null when this app has none
+   * recorded for it.
+   *
+   * NULL IS SAID OUT LOUD in the schedule row rather than filled in with somebody else's
+   * schedule. A channel nobody has told this app about gets a calendar with no suggestion,
+   * which is the truth; a guessed release day would be an upload at the wrong hour that
+   * looked exactly like an intentional one.
+   */
+  readonly cadence = computed<CadenceKey | null>(() => {
+    if (this.publish.isPodcast()) return null;
+    return cadenceKeyFor(this.currentChannelName());
+  });
+
+  /** The one line that explains what "next open slot" means for this channel. */
+  cadenceNote(): string | null {
+    const key = this.cadence();
+    return key === null ? null : CADENCE_NOTES[key];
+  }
+
+  // ---------------------------------------------------------------- the calendar
+  //
+  // The schedule row opens a month, not a bare date box, and the month is populated from
+  // the SAME publish-list-index this page already read for its list — the call that also
+  // powers /publish-calendar. There is no second index and no second IPC read.
+
+  /** Which month the calendar is showing. Local midnight on the first. */
+  readonly calendarMonth = signal<Date>(startOfMonth(new Date()));
+
+  /** Recomputed when the panel opens a different item, so "today" is not last week's. */
+  private readonly calendarNow = signal<Date>(new Date());
+
+  stepCalendar(months: number): void {
+    const at = this.calendarMonth();
+    this.calendarMonth.set(new Date(at.getFullYear(), at.getMonth() + months, 1));
+  }
+
+  calendarMonthLabel(): string {
+    return this.calendarMonth().toLocaleDateString([], { month: 'long', year: 'numeric' });
+  }
+
+  readonly WEEKDAY_INITIALS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+
+  /**
+   * Every OTHER item's schedule, by local day.
+   *
+   * "Other" is doing real work: an item's own schedule is not a clash with itself, and
+   * showing it as one would make every already-scheduled item look like a conflict.
+   */
+  private readonly schedulesByDay = computed<Map<string, ReportIndexEntry[]>>(() => {
+    const openItemId = this.selectedReport()?.itemId ?? null;
+    const byDay = new Map<string, ReportIndexEntry[]>();
+    for (const entry of this.reportIndex()) {
+      const at = entry.publish?.publishAt;
+      if (!at || entry.itemId === openItemId) continue;
+      const when = new Date(at);
+      if (Number.isNaN(when.getTime())) continue; // said by the calendar page, not here
+      const key = dateKeyOf(when);
+      const list = byDay.get(key);
+      if (list) list.push(entry);
+      else byDay.set(key, [entry]);
+    }
+    return byDay;
+  });
+
+  /**
+   * The slots already taken ON THIS ITEM'S CHANNEL, as `slotKeyOf` strings.
+   *
+   * Per channel, not global: Unfiltered at 4pm and Fireside at 1pm on the same Tuesday are
+   * two releases on two channels, which is the schedule working, not a collision.
+   */
+  private readonly occupiedSlots = computed<ReadonlySet<string>>(() => {
+    const channelId = this.publish.selectedChannelId();
+    const openItemId = this.selectedReport()?.itemId ?? null;
+    const taken = new Set<string>();
+    if (!channelId) return taken;
+    for (const entry of this.reportIndex()) {
+      const at = entry.publish?.publishAt;
+      if (!at || entry.itemId === openItemId) continue;
+      if (entry.publish?.channelId !== channelId) continue;
+      const when = new Date(at);
+      if (Number.isNaN(when.getTime())) continue;
+      taken.add(slotKeyOf(when));
+    }
+    return taken;
+  });
+
+  /**
+   * The earliest future slot for this channel that nothing else on it holds.
+   *
+   * A SUGGESTION. Any day and any time is allowed, including an occupied one — the
+   * calendar flags a clash and never blocks it.
+   */
+  readonly suggestedSlot = computed<Date | null>(() => {
+    const key = this.cadence();
+    if (key === null) return null;
+    return nextOpenSlot(key, this.calendarNow(), this.occupiedSlots());
+  });
+
+  suggestedSlotLabel(): string | null {
+    const at = this.suggestedSlot();
+    if (at === null) return null;
+    return at.toLocaleString([], {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  }
+
+  /** Put the suggestion in the two boxes. It is not saved until Set is pressed. */
+  useSuggestedSlot(): void {
+    const at = this.suggestedSlot();
+    if (at === null) return;
+    const { date, time } = splitSlot(at);
+    this.scheduleDateDraft.set(date);
+    this.scheduleTimeDraft.set(time);
+    this.calendarMonth.set(startOfMonth(at));
+  }
+
+  /** Six weeks of day cells, Sunday-first — the same shape the calendar page renders. */
+  readonly calendarWeeks = computed<CalendarDay[][]>(() => {
+    const first = this.calendarMonth();
+    const now = this.calendarNow();
+    const todayKey = dateKeyOf(now);
+    const selectedKey = this.scheduleDate();
+    const channelId = this.publish.selectedChannelId();
+    const cadence = this.cadence();
+    const byDay = this.schedulesByDay();
+
+    const gridStart = new Date(first.getFullYear(), first.getMonth(), 1 - first.getDay());
+    const weeks: CalendarDay[][] = [];
+    for (let w = 0; w < 6; w++) {
+      const row: CalendarDay[] = [];
+      for (let d = 0; d < 7; d++) {
+        const date = new Date(
+          gridStart.getFullYear(),
+          gridStart.getMonth(),
+          gridStart.getDate() + w * 7 + d,
+        );
+        const key = dateKeyOf(date);
+        const onDay = byDay.get(key) ?? [];
+        row.push({
+          dateKey: key,
+          date,
+          dayOfMonth: date.getDate(),
+          inMonth: date.getMonth() === first.getMonth(),
+          isToday: key === todayKey,
+          isPast: key < todayKey,
+          count: onDay.length,
+          onThisChannel:
+            channelId !== null && onDay.some((e) => e.publish?.channelId === channelId),
+          // "Is this a release day for this channel" — the cadence's own answer, so the
+          // dot and the suggestion can never disagree about which days are release days.
+          isReleaseDay:
+            cadence !== null &&
+            this.cadenceSlotsOn(cadence, date).length > 0,
+          selected: key === selectedKey,
+        });
+      }
+      weeks.push(row);
+    }
+    return weeks;
+  });
+
+  /** The cadence slots that fall on one day. Empty for a day this channel does not use. */
+  private cadenceSlotsOn(cadence: CadenceKey, day: Date): Date[] {
+    const out: Date[] = [];
+    for (let hour = 0; hour < 24; hour++) {
+      const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hour, 0, 0, 0);
+      if (isCadenceSlot(cadence, at)) out.push(at);
+    }
+    return out;
+  }
+
+  /**
+   * Pick a day. The time comes from the channel's cadence when that day has one, and is
+   * otherwise left exactly as it was for the operator to type.
+   *
+   * Nothing is saved here — this fills the two boxes, and Set is what writes. A past day
+   * is pickable: the boxes are the operator's, and the refusal that matters (a schedule
+   * less than 15 minutes out) belongs to the main process and arrives verbatim.
+   */
+  pickCalendarDay(day: CalendarDay): void {
+    this.scheduleDateDraft.set(day.dateKey);
+    const cadence = this.cadence();
+    if (cadence === null) return;
+    const slots = this.cadenceSlotsOn(cadence, day.date);
+    if (slots.length === 0) return;
+    // The first slot of the day that is still free, else the first slot at all — an
+    // occupied one is offered rather than withheld, and flagged below.
+    const taken = this.occupiedSlots();
+    const open = slots.find((at) => !taken.has(slotKeyOf(at)));
+    this.scheduleTimeDraft.set(splitSlot(open ?? slots[0]).time);
+  }
+
+  /**
+   * Whether the two boxes name a moment something else on this channel already holds.
+   *
+   * Reported, never enforced. A deliberate double release is the operator's call, and the
+   * only thing this app is entitled to do about it is say so.
+   */
+  scheduleCollision(): string | null {
+    if (!this.scheduleComplete()) return null;
+    const at = new Date(`${this.scheduleDate()}T${this.scheduleTime()}:00`);
+    if (Number.isNaN(at.getTime())) return null;
+    if (!collidesWith(at, this.occupiedSlots())) return null;
+    const name = this.currentChannelName() ?? 'this channel';
+    return `Another item on ${name} is already scheduled for that exact time. That is ` +
+      'allowed — this is only saying so.';
+  }
+
+  /** What is already on the day the boxes name, for the line under the calendar. */
+  daySummary(): string | null {
+    const date = this.scheduleDate();
+    if (!date) return null;
+    const onDay = this.schedulesByDay().get(date) ?? [];
+    if (onDay.length === 0) return null;
+    return onDay
+      .map((e) => {
+        const at = new Date(e.publish!.publishAt!);
+        const time = at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        const channel = e.publish?.channelId ? this.channelNameFor(e.publish.channelId) : 'unrouted';
+        return `${time} · ${e.publish?.mainTitle ?? e.displayTitle} (${channel})`;
+      })
+      .join('\n');
+  }
+
+  dayCount(): number {
+    const date = this.scheduleDate();
+    if (!date) return 0;
+    return (this.schedulesByDay().get(date) ?? []).length;
+  }
+
+  // ------------------------------------------------------------- dispatch manifest
+  //
+  // The exact payload, stated above the button that sends it. This replaced four resident
+  // paragraphs with a table nobody has to read unless they want to — and every value in it
+  // is the value that will actually go, read from the same resolved record the confirm
+  // dialog assembles its own copy from. Nothing here is recomposed for display.
+
+  readonly dispatchManifest = computed<ManifestRow[]>(() => {
+    if (!this.publish.hasResolved()) return [];
+    const rows: ManifestRow[] = [];
+
+    const title = this.publish.pushTitle();
+    rows.push({
+      label: 'Title',
+      value: title ? `variant 1 of ${this.publish.chosenCount()}` : 'none picked',
+      missing: !title,
+    });
+
+    const description = this.publish.resolvedDescription();
+    const chapters =
+      this.publish.descriptionOverride() !== null
+        ? 'edited by hand'
+        : this.publish.chaptersInDescription() && this.hasChapters()
+          ? 'with chapters'
+          : 'no chapters';
+    rows.push({
+      label: 'Description',
+      value: `${description.length.toLocaleString()} chars · ${chapters}`,
+      missing: description.length === 0,
+    });
+
+    const tagCount = this.editedTagsArray().length;
+    rows.push({ label: 'Tags', value: String(tagCount), missing: tagCount === 0 });
+
+    if (this.publish.isPodcast()) {
+      const audio = this.publish.audio();
+      rows.push({
+        label: 'Audio',
+        value: audio ? `${this.fileName(audio.path)} · ${this.audioFacts(audio.meta)}` : 'none',
+        missing: !audio,
+      });
+      rows.push({ label: 'Show', value: this.spreakerShowLabel(), missing: false });
+      rows.push({
+        label: 'Publication',
+        value: this.publish.publishAt() ? 'held until the schedule' : 'immediate',
+        missing: !this.publish.publishAt(),
+      });
+      return rows;
+    }
+
+    const when = this.scheduleDescription();
+    rows.push({
+      label: 'Schedule',
+      value: when ? (when.isPast ? `${when.local} — in the past` : when.local) : 'none — publishes on push',
+      missing: !when || when.isPast,
+    });
+
+    const thumbnailPath = this.publish.thumbnailPath();
+    rows.push({
+      label: 'Thumbnail',
+      value: thumbnailPath ? this.fileName(thumbnailPath) : 'none — the video keeps its own',
+      missing: !thumbnailPath,
+    });
+
+    rows.push({ label: 'Channel', value: this.destinationLabel(), missing: !this.publish.channelId() });
+    return rows;
+  });
+
+  /** Why the one dispatch button is unavailable, for whichever destination is chosen. */
+  dispatchBlockedReason(): string | null {
+    return this.publish.isPodcast()
+      ? this.publish.spreakerBlockedReason()
+      : this.publish.pushBlockedReason();
+  }
+
   /** An explicit choice, including the empty option — see PublishState.chooseChannel. */
   async onChannelChange(event: Event) {
     const value = (event.target as HTMLSelectElement).value;
@@ -862,10 +1613,6 @@ export class MetadataReports implements OnInit {
   private clearScheduleDrafts() {
     this.scheduleDateDraft.set(null);
     this.scheduleTimeDraft.set(null);
-  }
-
-  async onPodcastChange(checked: boolean) {
-    await this.publish.setPodcast(checked);
   }
 
   /**
@@ -1622,6 +2369,13 @@ export class MetadataReports implements OnInit {
       this.focusedTitleIndex.set(null);
       this.tagsExpanded.set(false);
       this.openAssets.set(new Set<string>(['chapters']));
+      // The rail's accordion and its calendar are both about the item that was open. A
+      // month scrolled to December and a Schedule row left expanded belong to that item,
+      // and "now" is re-read here so a session left open overnight does not go on
+      // suggesting yesterday's next slot.
+      this.openFact.set(null);
+      this.calendarNow.set(new Date());
+      this.calendarMonth.set(startOfMonth(new Date()));
 
       // Load any previously chosen A/B titles for this item, BY ITS ID. The row's
       // itemIndex is only ever a position into the array read above; it has never been
