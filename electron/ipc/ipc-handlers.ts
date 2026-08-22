@@ -54,6 +54,7 @@ import { setupPublishIpc } from '../services/publish/publish-ipc';
 import { PublishBridge } from '../services/publish/publish-bridge';
 import { setupEditorIpc } from '../services/editor/editor-ipc';
 import { setupTranscriptLinkIpc } from '../services/metadata/transcript-link-ipc';
+import { resolveRef } from '../services/metadata/editor-transcript-link';
 import type { TranscriptRef } from '../services/publish/publish-types';
 import { getMainWindow } from '../main';
 
@@ -2475,6 +2476,15 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     // RoutableChannel structurally, which is what keeps publish/ free of an analytics
     // import.
     listChannels: () => analyticsStore.listChannels(),
+    // The same index the shelf pages through, including each item's recorded source_key —
+    // which is what carry-forward joins two runs of one video on. Injected rather than
+    // imported, exactly like readGenerated: the report FORMAT is services/metadata's
+    // business and publish/ never learns it.
+    listGenerated: listGeneratedForPublish,
+    // And the resolver that decides whether a stored transcript link still names the file
+    // it was made against. Carry-forward carries only 'ok'; 'missing' and 'changed' are
+    // refused with this function's own reason, which names the path and the disagreement.
+    resolveTranscriptRef: resolveRef,
     // The three YouTube WRITES the push action needs, bound one by one rather than by
     // handing publish/ the whole client. Same reason as listRecentUploads above, with a
     // sharper edge: these are the only calls in the app that modify a live video, so the

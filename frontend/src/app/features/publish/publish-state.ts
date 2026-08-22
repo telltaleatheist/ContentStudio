@@ -16,6 +16,8 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { AnalyticsChannel, ElectronService, PublishFields } from '../../services/electron';
 import {
+  CarryForwardCandidate,
+  CarryReceipt,
   ChannelResolution,
   ChosenMetadata,
   MAX_AB_VARIANTS,
@@ -110,6 +112,41 @@ export class PublishState {
   /** The proposal's own preview, so Confirm is a decision about an image, not a path. */
   private readonly _proposalPreview = signal<ThumbnailPreview | null>(null);
 
+  /**
+   * The earlier run of this same video whose publish state is on offer, or null.
+   *
+   * Read when the panel opens and ONLY for an item nobody has touched yet (see
+   * carryOffer). Nothing about it is stored, and nothing is applied until the operator
+   * clicks — ITEM-ID-PLAN §3.2 is explicit that source_key is a hint driving an explicit
+   * action, never an implicit join.
+   */
+  private readonly _carryCandidate = signal<CarryForwardCandidate | null>(null);
+
+  /**
+   * The items whose offer has been dismissed in THIS sitting.
+   *
+   * Deliberately in memory and deliberately not on the record. There is no "declined"
+   * field, and inventing one would be a claim the record cannot make — the earlier run
+   * still exists and this item still has nothing set. Reopening the app offers again,
+   * which is honest, and is exactly how the thumbnail proposal already behaves.
+   *
+   * Keyed by item id rather than a single flag because the operator moves between
+   * reports: dismissing one item's offer must not silence another's.
+   */
+  private readonly _carryDismissed = signal<ReadonlySet<string>>(new Set<string>());
+
+  /** True while a carry-forward apply is in flight. */
+  private readonly _carrying = signal(false);
+
+  /**
+   * The receipt from the carry-forward applied in this sitting, or null.
+   *
+   * Every one of the four fields is in it — applied, skipped or refused — because a
+   * partial carry is a legitimate outcome and the operator has to be able to see which
+   * part did not happen. Cleared when the panel moves to another item.
+   */
+  private readonly _carryReceipt = signal<CarryReceipt | null>(null);
+
   /** True while a push is in flight. Separate from _saving: it is a REMOTE write. */
   private readonly _pushing = signal(false);
 
@@ -196,6 +233,67 @@ export class PublishState {
   readonly lastPushReceipt = computed<PushReceipt | null>(
     () => this._selection()?.pushReceipt ?? null
   );
+
+  /**
+   * Is this item's record still untouched in every way carry-forward cares about?
+   *
+   * The offer is for a REGENERATED video nobody has set up yet. An item that is already
+   * routed, has a thumbnail, is linked to a video, has been pushed, or carries a
+   * transcript link this run declared for itself is an item with decisions on it, and
+   * putting "carry the old one forward?" in front of those decisions invites undoing
+   * them by reflex.
+   *
+   * Chosen titles are deliberately NOT part of this. They belong to this run's title
+   * list, nothing carried touches them, and an operator who has picked titles but not a
+   * channel is precisely who the offer is for.
+   */
+  readonly recordIsFresh = computed(() => {
+    const record = this._selection();
+    if (!record) return true;  // never touched at all
+    return (
+      record.channelId === null &&
+      record.thumbnailPath === null &&
+      record.transcriptRef === null &&
+      record.isPodcast === false &&
+      record.videoId === null &&
+      record.pushedAt === null
+    );
+  });
+
+  /**
+   * The offer to show, or null for "say nothing".
+   *
+   * Three things have to be true at once: there IS an earlier run carrying state, this
+   * item is still fresh, and the operator has not waved it away this sitting. Anything
+   * else and the panel shows nothing at all — a permanently visible offer would be
+   * clutter on every report the operator has already dealt with.
+   */
+  readonly carryOffer = computed<CarryForwardCandidate | null>(() => {
+    const candidate = this._carryCandidate();
+    if (!candidate) return null;
+    if (!this.recordIsFresh()) return null;
+    const itemId = this._itemId();
+    if (itemId && this._carryDismissed().has(itemId)) return null;
+    return candidate;
+  });
+
+  /** Which of the four fields the offer would actually bring, in the panel's words. */
+  readonly carryOfferFields = computed<string[]>(() => {
+    const offer = this.carryOffer();
+    if (!offer) return [];
+    const fields: string[] = [];
+    if (offer.state.channelId) fields.push('channel');
+    if (offer.state.thumbnailPath) fields.push('thumbnail');
+    if (offer.state.isPodcast) fields.push('podcast flag');
+    if (offer.state.transcriptRef) fields.push('transcript link');
+    return fields;
+  });
+
+  /** True while the carry-forward write is in flight. */
+  readonly carrying = this._carrying.asReadonly();
+
+  /** The receipt from the carry-forward applied in this sitting, or null. */
+  readonly carryReceipt = this._carryReceipt.asReadonly();
 
   /** True while the push is in flight. */
   readonly pushing = this._pushing.asReadonly();
@@ -360,10 +458,43 @@ export class PublishState {
     await this.refreshChannelSuggestion(itemId, promptSet ?? null);
     if (this._itemId() !== itemId) return;
     await this.refreshThumbnail(itemId);
+    if (this._itemId() !== itemId) return;
+    await this.refreshCarryForward(itemId);
+  }
+
+  /**
+   * Ask whether this video was generated before.
+   *
+   * Only for a FRESH record. An item that already has a channel, a thumbnail, a link or a
+   * push has been dealt with, and the answer would be shown to nobody — asking anyway
+   * would walk the whole report index for an offer that carryOffer discards.
+   *
+   * A failure is REPORTED, not swallowed. "No earlier run" and "we could not look" are
+   * different facts, and only one of them means there is nothing to carry.
+   */
+  private async refreshCarryForward(itemId: string): Promise<void> {
+    this._carryCandidate.set(null);
+    if (!this.recordIsFresh()) return;
+
+    const res = await this.electron.publishFindCarryForward(itemId);
+    if (this._itemId() !== itemId) return;
+    if (!res.success) {
+      this.reportError(
+        res.error ?? 'Could not check whether this video was generated before.'
+      );
+      return;
+    }
+    // null is the ordinary answer: most items are the only run over their source.
+    this._carryCandidate.set(res.data ?? null);
   }
 
   /** Everything the panel derives, back to "nothing is open". */
   private resetPanel(): void {
+    // The offer and its receipt belong to the item they were about. The DISMISSALS do
+    // not: they are keyed by item id and survive moving between reports, which is the
+    // whole point of remembering them for the sitting.
+    this._carryCandidate.set(null);
+    this._carryReceipt.set(null);
     this._channelSuggestion.set(null);
     this._channelTouched.set(false);
     this._thumbnailPreview.set(null);
@@ -822,6 +953,82 @@ export class PublishState {
   dismissProposal(): void {
     this._proposal.set(null);
     this._proposalPreview.set(null);
+  }
+
+  // ------------------------------------------------------------------- carry forward
+  //
+  // The regeneration hint, and the only place it turns into a write. Everything below
+  // happens because the operator clicked: nothing here runs off a load, and the offer
+  // itself (refreshCarryForward) writes nothing at all.
+
+  /**
+   * Take the earlier run's channel / thumbnail / podcast flag / transcript link.
+   *
+   * The main process re-reads that record and re-validates every value NOW, so this is
+   * not a copy of what the offer displayed — a thumbnail file that has vanished since the
+   * panel opened is refused by name rather than carried as a dead path. The receipt names
+   * all four fields either way, and it stays on screen until dismissed: a carry that
+   * brought three of four fields is a result the operator has to be able to read.
+   */
+  async applyCarryForward(): Promise<CarryReceipt | null> {
+    const t = this.target('carry forward the earlier run');
+    if (!t) return null;
+
+    const offer = this.carryOffer();
+    if (!offer) {
+      this._error.set('There is no earlier run on offer for this item.');
+      return null;
+    }
+
+    this._carrying.set(true);
+    this._error.set(null);
+    try {
+      const res = await this.electron.publishApplyCarryForward(t, offer.fromItemId);
+      if (this._itemId() !== t) return null;
+      if (!res.success || !res.data) {
+        this._error.set(res.error ?? 'The carry-forward failed and the main process gave no reason.');
+        return null;
+      }
+
+      const receipt = res.data;
+      this._carryReceipt.set(receipt);
+      // null means nothing was applied, so no record was created — the item is exactly as
+      // it was, and saying so is the receipt's job, not this signal's.
+      if (receipt.selection) this._selection.set(receipt.selection);
+
+      // The offer is spent either way. When fields were applied the record is no longer
+      // fresh and carryOffer would drop it anyway; when everything was refused, the
+      // receipt below the panel is now the answer, and re-offering the same click that
+      // just refused four fields would be asking the operator to try again in the hope of
+      // a different result.
+      this._carryCandidate.set(null);
+      // The thumbnail half of the panel is now describing a different record.
+      await this.refreshThumbnail(t);
+      return receipt;
+    } finally {
+      this._carrying.set(false);
+    }
+  }
+
+  /**
+   * Wave the offer away for this sitting.
+   *
+   * Stores NOTHING, for the same reason dismissProposal does: there is no "declined"
+   * field on the record, and inventing one would be a claim the record cannot make. The
+   * earlier run still exists and this item still has nothing set, so reopening the app
+   * offers again — which is the honest answer, not a nag.
+   */
+  dismissCarryForward(): void {
+    const itemId = this._itemId();
+    if (!itemId) return;
+    const next = new Set(this._carryDismissed());
+    next.add(itemId);
+    this._carryDismissed.set(next);
+  }
+
+  /** Put the carry-forward receipt away. Nothing on the record changes. */
+  dismissCarryReceipt(): void {
+    this._carryReceipt.set(null);
   }
 
   /** Drop every pick for the current item. */

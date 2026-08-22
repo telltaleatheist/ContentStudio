@@ -116,6 +116,20 @@ export interface GeneratedItemSummary {
   promptSet: string | null;
   /** Basename of the analyzed source file, used for filename matching. */
   sourceFilename: string | null;
+  /**
+   * The regeneration join key: `normalizeForMatch(basename)` of the source file, recorded
+   * by the RUN (item-identity.ts §sourceKeyOf), or null for a text subject or a
+   * compilation — inputs that have no single source file.
+   *
+   * Carried on the summary because it is what tells two items apart from two runs of the
+   * same video, and carry-forward.ts is the only thing that needs it. Never derived here:
+   * a key computed on read would disagree with the one the run recorded the moment the
+   * normalization changed, and the join would quietly stop matching.
+   *
+   * null NEVER matches null. Every text subject in the app records null, and treating
+   * that as equality would join all of them to each other.
+   */
+  sourceKey: string | null;
   /** How many titles the generator produced. */
   titleCount: number;
 }
