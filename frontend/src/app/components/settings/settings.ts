@@ -83,6 +83,40 @@ export class Settings implements OnInit, OnDestroy {
   private removeComponentProgressListener?: () => void;
   private routeSubscription?: Subscription;
 
+  // ------------------------------------------------------------------------ Spreaker
+  //
+  // Deliberately NOT part of `saveSettings()`. The show id and the token live in their own
+  // 0600 file in userData (spreaker-credentials.json), they are validated together in the
+  // main process, and a save that rejects an unparseable show id must not also fail to
+  // save the output directory. Same reasoning as the API keys, which have never gone
+  // through update-settings either.
+
+  /** What the main process says about this machine's Spreaker setup. null until asked. */
+  spreakerStatus = signal<{
+    configured: boolean;
+    hasToken: boolean;
+    showId: string | null;
+    showName: string | null;
+    savedAt: string | null;
+    credentialsPath: string;
+    reason: string | null;
+  } | null>(null);
+
+  /** The boxes. Seeded from the status for the two that are not secrets. */
+  spreakerShowId = signal('');
+  spreakerShowName = signal('');
+
+  /**
+   * The token box, and it is ALWAYS EMPTY on load.
+   *
+   * The stored token is never read back — `status` carries only whether one exists — so
+   * there is nothing to prefill it with. Leaving it blank and saving keeps the stored
+   * token: that is what the main process does with an omitted token, and it is what makes
+   * "fix the show id" a one-field edit.
+   */
+  spreakerToken = signal('');
+  spreakerSaving = signal(false);
+
   // Model options for dropdown - filtered by configured providers
   modelOptions = computed<ModelOption[]>(() => {
     const options: ModelOption[] = [];
@@ -186,6 +220,11 @@ export class Settings implements OnInit, OnDestroy {
 
       // Check which AI providers are configured and fetch available models from APIs
       await this.checkProviderAvailability();
+
+      // The Spreaker credentials, from their own file. Not fatal to the rest of this
+      // method — a settings page that failed to load entirely because a podcast
+      // integration is unset would be a worse bug than the one it reported.
+      await this.loadSpreakerStatus();
 
       // Now load AI model (after we have the available models)
       let savedModel = '';
@@ -329,6 +368,94 @@ export class Settings implements OnInit, OnDestroy {
     const result = await this.electron.selectOutputDirectory();
     if (result.success && result.directory) {
       this.outputDirectory.set(result.directory);
+    }
+  }
+
+  /**
+   * Read this machine's Spreaker setup and seed the two non-secret boxes.
+   *
+   * The token box is never seeded — there is nothing to seed it with, by design. A
+   * failure is REPORTED: "not configured" and "we could not tell" are different, and only
+   * the first one is something the operator can act on by typing.
+   */
+  private async loadSpreakerStatus(): Promise<void> {
+    const res = await this.electron.spreakerGetStatus();
+    if (!res.success || !res.data) {
+      this.notificationService.error(
+        'Spreaker',
+        res.error ?? 'Could not read the Spreaker settings on this machine.',
+        false
+      );
+      return;
+    }
+    this.spreakerStatus.set(res.data);
+    this.spreakerShowId.set(res.data.showId ?? '');
+    this.spreakerShowName.set(res.data.showName ?? '');
+  }
+
+  /**
+   * Save the show id, and the token when one has been typed.
+   *
+   * An EMPTY token box means "leave the stored one alone", which is why it is omitted
+   * rather than sent as ''. Sending '' would be indistinguishable from asking to remove
+   * the token, and the main process refuses that on purpose — removing it is Clear, which
+   * says what it does.
+   */
+  async saveSpreaker(): Promise<void> {
+    this.spreakerSaving.set(true);
+    try {
+      const token = this.spreakerToken().trim();
+      const res = await this.electron.spreakerSaveCredentials({
+        showId: this.spreakerShowId().trim(),
+        showName: this.spreakerShowName().trim() || null,
+        ...(token ? { accessToken: token } : {}),
+      });
+
+      if (!res.success || !res.data) {
+        // Verbatim: the main process names the value and the rule ("…is not a number. It
+        // is the numeric id in your show's URL"), which is the whole of the fix.
+        this.notificationService.error('Spreaker', res.error ?? 'Failed to save', false);
+        return;
+      }
+
+      this.spreakerStatus.set(res.data);
+      // The typed token has been stored and is never displayed again.
+      this.spreakerToken.set('');
+      this.notificationService.success(
+        'Spreaker',
+        res.data.configured
+          ? `Saved — uploads will go to show ${res.data.showId}.`
+          : `Saved, but ${res.data.reason}`,
+        false
+      );
+    } finally {
+      this.spreakerSaving.set(false);
+    }
+  }
+
+  /** Remove the stored credentials entirely. Confirmed, because it disconnects uploads. */
+  async clearSpreaker(): Promise<void> {
+    const ok = window.confirm(
+      'Remove the stored Spreaker access token and show id from this machine?\n\n' +
+      'Nothing on Spreaker changes. Podcast items will refuse to upload until a token is ' +
+      'pasted again.'
+    );
+    if (!ok) return;
+
+    this.spreakerSaving.set(true);
+    try {
+      const res = await this.electron.spreakerClearCredentials();
+      if (!res.success || !res.data) {
+        this.notificationService.error('Spreaker', res.error ?? 'Failed to clear', false);
+        return;
+      }
+      this.spreakerStatus.set(res.data);
+      this.spreakerShowId.set('');
+      this.spreakerShowName.set('');
+      this.spreakerToken.set('');
+      this.notificationService.success('Spreaker', 'Credentials removed from this machine.', false);
+    } finally {
+      this.spreakerSaving.set(false);
     }
   }
 

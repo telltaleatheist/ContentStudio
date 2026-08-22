@@ -145,6 +145,26 @@
       margin-bottom: 1rem;
     }
 
+    /* The Spreaker card states its own status above the fields, outside the info-card
+       that owns the existing `.small` rule — so the same treatment is given here rather
+       than a second class invented for it. */
+    > mat-card-content > p.small {
+      margin: 0 0 1rem 0;
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      line-height: 1.4;
+    }
+
+    /* Its own Save sits inside the card, next to the fields it saves — the page's global
+       Save button does not write these, and a second button that looked like the global
+       one would be a promise the card cannot keep. */
+    .spreaker-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+
     .card-header-content {
       display: flex;
       justify-content: space-between;

@@ -448,6 +448,172 @@
                     }
                   </div>
                 }
+
+                <!-- Spreaker. The podcast half, and it exists only for an item the
+                     operator has marked as an episode — the checkbox at the top of this
+                     panel is what makes this section appear. One account, one show, so
+                     there is no picker: the show is configured once, in Settings.
+
+                     The difference from Push to YouTube, said on screen because it is the
+                     thing people assume wrongly: this CREATES. Spreaker has no draft
+                     state, so an upload is a publication unless the item is scheduled, and
+                     a second upload is a second episode in the feed rather than an edit of
+                     the first. -->
+                @if (publish.isPodcast()) {
+                  <div class="publish-spreaker">
+                    <div class="publish-proposal-head">
+                      <mat-icon>podcasts</mat-icon>
+                      <strong>Spreaker episode</strong>
+                    </div>
+
+                    <!-- Not a disabled button with nothing to say for itself: the
+                         unconfigured state names what is missing and where it goes. -->
+                    @if (publish.spreakerStatus(); as status) {
+                      @if (!status.configured) {
+                        <p class="publish-note warn">
+                          Spreaker is not configured — {{ status.reason }} Add the access token
+                          and the show id in Settings → Spreaker. They are stored on this machine
+                          only, in <code>{{ status.credentialsPath }}</code>.
+                        </p>
+                      } @else {
+                        <p class="publish-note">Uploads to {{ spreakerShowLabel() }}.</p>
+                      }
+                    } @else {
+                      <p class="publish-note">Checking whether Spreaker is set up…</p>
+                    }
+
+                    <!-- The audio file. Measured every time this panel opens rather than
+                         remembered: a size and a duration are facts about a file on
+                         Callisto at a moment. -->
+                    <div class="publish-row">
+                      <span class="publish-label">Episode audio</span>
+                      <div class="publish-control">
+                        @if (publish.audio(); as audio) {
+                          <div class="publish-thumb-facts">
+                            <span class="publish-filename" [title]="audio.path">{{ fileName(audio.path) }}</span>
+                            <span class="publish-dim">{{ audioFacts(audio.meta) }}</span>
+                          </div>
+                          <button class="copy-btn" [disabled]="publish.saving()" (click)="chooseAudio()">Change…</button>
+                          <button class="copy-btn" [disabled]="publish.saving()" (click)="publish.clearAudio()">Clear</button>
+                        } @else if (publish.spreakerAudioPath(); as path) {
+                          <!-- The record names a file and the file did not answer. The
+                               banner above says why; the path is still what was chosen. -->
+                          <div class="publish-thumb-facts">
+                            <span class="publish-filename" [title]="path">{{ fileName(path) }}</span>
+                            <span class="publish-dim">could not be measured</span>
+                          </div>
+                          <button class="copy-btn" [disabled]="publish.saving()" (click)="chooseAudio()">Change…</button>
+                          <button class="copy-btn" [disabled]="publish.saving()" (click)="publish.clearAudio()">Clear</button>
+                        } @else {
+                          <span class="publish-empty">None.</span>
+                          <button class="copy-btn" [disabled]="publish.saving()" (click)="chooseAudio()">Choose…</button>
+                        }
+                      </div>
+                    </div>
+
+                    @if (publish.audio(); as audio) {
+                      @for (warning of audio.warnings; track $index) {
+                        <p class="publish-note warn">{{ warning }}</p>
+                      }
+                    }
+
+                    <!-- The sibling export: `podcast 1.mp3` beside `podcast 1.mov`. Offered,
+                         never applied — the convention says where a file is, not that this
+                         item is that episode. -->
+                    @if (publish.audioProposal(); as proposal) {
+                      <div class="publish-proposal">
+                        <div class="publish-proposal-head">
+                          <mat-icon>help_outline</mat-icon>
+                          <strong>Proposed — not applied</strong>
+                        </div>
+                        <p class="publish-note">
+                          This audio file was exported beside the video. Check that it is the
+                          right one — it is going to a public feed.
+                        </p>
+                        <div class="publish-control">
+                          <div class="publish-thumb-facts">
+                            <span class="publish-filename" [title]="proposal.path">{{ fileName(proposal.path) }}</span>
+                            <span class="publish-dim">{{ audioFacts(proposal.meta) }}</span>
+                          </div>
+                          <button class="copy-btn confirm"
+                                  [disabled]="publish.saving()"
+                                  (click)="publish.confirmAudioProposal()">Confirm</button>
+                          <button class="copy-btn"
+                                  [disabled]="publish.saving()"
+                                  (click)="publish.dismissAudioProposal()">Not this one</button>
+                        </div>
+                        @for (warning of proposal.warnings; track $index) {
+                          <p class="publish-note warn">{{ warning }}</p>
+                        }
+                      </div>
+                    }
+
+                    <!-- The upload. Always asks first, listing exactly what will be sent
+                         and what happens when it lands. -->
+                    <div class="publish-row">
+                      <span class="publish-label">Upload</span>
+                      <div class="publish-control">
+                        @if (publish.spreakerEpisodeId(); as episodeId) {
+                          <code class="publish-video" title="The episode created from this item">episode {{ episodeId }}</code>
+                          <button class="copy-btn"
+                                  [disabled]="publish.saving() || publish.uploading()"
+                                  (click)="forgetSpreakerEpisode()">Forget episode</button>
+                        } @else {
+                          <button class="copy-btn confirm"
+                                  [disabled]="!!publish.spreakerBlockedReason() || publish.uploading() || publish.saving()"
+                                  (click)="uploadToSpreaker()">
+                            @if (publish.uploading()) { Uploading… } @else { Upload to Spreaker }
+                          </button>
+                          <span class="publish-dim">{{ publish.spreakerPublicationNote() }}</span>
+                        }
+                      </div>
+                    </div>
+
+                    @if (publish.spreakerBlockedReason(); as why) {
+                      <p class="publish-note">{{ why }}</p>
+                    } @else if (publish.lastSpreakerReceipt(); as last) {
+                      <p class="publish-note">
+                        Last uploaded {{ localTime(last.pushedAt) }} — "{{ last.uploaded.title }}".
+                      </p>
+                    }
+
+                    <!-- The receipt for the upload made just now. `encodingStatus` is in it
+                         deliberately: a fresh upload is PENDING or PROCESSING and never
+                         READY, so this must not read as "the episode is live". -->
+                    @if (publish.spreakerReceipt(); as receipt) {
+                      <div class="publish-receipt">
+                        <div class="publish-proposal-head">
+                          <mat-icon>task_alt</mat-icon>
+                          <strong>Uploaded as episode {{ receipt.episodeId }}</strong>
+                          <button class="copy-btn" (click)="publish.dismissSpreakerReceipt()">Dismiss</button>
+                        </div>
+                        <p class="publish-note">Title — {{ receipt.uploaded.title }}</p>
+                        <p class="publish-note">
+                          Description — {{ receipt.uploaded.description.chars }} characters, starting
+                          "{{ receipt.uploaded.description.firstLine }}"
+                        </p>
+                        <p class="publish-note">Tags — {{ receipt.uploaded.tags.count }} sent</p>
+                        <p class="publish-note">Audio — {{ fileName(receipt.uploaded.audio.path) }} uploaded</p>
+                        @if (receipt.uploaded.autoPublishedAt) {
+                          <p class="publish-note">
+                            Publication — scheduled for {{ receipt.uploaded.autoPublishedAt }} UTC
+                          </p>
+                        } @else if (receipt.skipped.autoPublishedAt) {
+                          <p class="publish-note">Publication — {{ receipt.skipped.autoPublishedAt }}</p>
+                        }
+                        @if (receipt.encodingStatus) {
+                          <p class="publish-note">
+                            Spreaker says {{ receipt.encodingStatus }} — it re-encodes every upload,
+                            so the episode is not playable until that finishes.
+                          </p>
+                        }
+                        @if (receipt.siteUrl) {
+                          <p class="publish-note"><code>{{ receipt.siteUrl }}</code></p>
+                        }
+                      </div>
+                    }
+                  </div>
+                }
               </div>
             </div>
 

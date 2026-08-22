@@ -12,15 +12,21 @@ import { ElectronService } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
 import { PublishState } from '../../features/publish/publish-state';
 import { YouTubePushDialog, YouTubePushDialogData } from '../../features/publish/youtube-push-dialog';
+import {
+  SpreakerUploadDialog,
+  SpreakerUploadDialogData,
+} from '../../features/publish/spreaker-upload-dialog';
 import { MAX_AB_VARIANTS } from '../../features/publish/publish.types';
 import {
   basename,
   describePublishAt,
   formatBytes,
+  formatDuration,
   offsetLabel,
   offsetStringFor,
   splitPublishAt,
 } from '../../features/publish/publish-schedule';
+import type { AudioMeta } from '../../features/publish/publish.types';
 import {
   describeProvenance,
   type ItemProvenance,
@@ -375,6 +381,115 @@ export class MetadataReports implements OnInit {
   private describeScheduleForPush(iso: string): string {
     const when = describePublishAt(iso);
     return `${when.local} (${when.localOffset}) — stored as ${when.raw}`;
+  }
+
+  // ------------------------------------------------------------ upload to Spreaker
+  //
+  // The other control that changes something an audience can see, and the one that
+  // CREATES: after it there is an episode in a public podcast feed. Two steps, always —
+  // a dialog listing exactly what will be sent and saying that Spreaker has no draft
+  // state, then the call. No batch upload, and nothing here retries.
+
+  /** `1:04:12 · 126.6 MB · mp3` for whichever audio file the row is describing. */
+  audioFacts(meta: AudioMeta): string {
+    return `${formatDuration(meta.durationSec)} · ${formatBytes(meta.bytes)} · ${meta.extension.replace(/^\./, '')}`;
+  }
+
+  /** The show as the dialog names it: the operator's label, else the bare show id. */
+  spreakerShowLabel(): string {
+    const status = this.publish.spreakerStatus();
+    if (!status || !status.showId) return 'the configured show';
+    return status.showName ? `${status.showName} (show ${status.showId})` : `show ${status.showId}`;
+  }
+
+  /** Pick an episode audio file. Unfiltered dialog; the main process decides usability. */
+  async chooseAudio() {
+    const picked = await this.electron.selectFiles();
+    // Cancelling is not a failure and has nothing to report.
+    if (!picked.success || picked.files.length === 0) return;
+    if (picked.files.length > 1) {
+      this.publish.showError(
+        `An episode is one audio file; you picked ${picked.files.length}. Choose one.`
+      );
+      return;
+    }
+    await this.publish.setAudio(picked.files[0]);
+  }
+
+  /**
+   * Confirm, then upload.
+   *
+   * Everything shown is the value that will actually be sent: the title is chosen variant
+   * 1, the description and tags are the RESOLVED ones — the same values the YouTube push
+   * would send and the extension would type into Studio. Nothing is recomposed here.
+   */
+  async uploadToSpreaker() {
+    const blocked = this.publish.spreakerBlockedReason();
+    if (blocked) {
+      this.publish.showError(`Cannot upload: ${blocked}`);
+      return;
+    }
+
+    const audio = this.publish.audio();
+    if (!audio) {
+      // spreakerBlockedReason already covers this; the guard is here because the dialog
+      // below cannot describe a file it does not have, and a dialog with blanks in it is
+      // worse than no dialog.
+      this.publish.showError('The episode audio has not been measured, so there is nothing to confirm.');
+      return;
+    }
+
+    const description = this.publish.resolvedDescription();
+    const tags = this.publish.resolvedTags()
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+
+    const data: SpreakerUploadDialogData = {
+      showLabel: this.spreakerShowLabel(),
+      title: this.publish.pushTitle()!,
+      descriptionFirstLine: description.split('\n')[0].trim(),
+      descriptionChars: description.length,
+      tagCount: tags.length,
+      tagsPreview: tags.slice(0, 8).join(', ') + (tags.length > 8 ? `, +${tags.length - 8} more` : ''),
+      audioName: this.fileName(audio.path),
+      audioPath: audio.path,
+      audioFacts: this.audioFacts(audio.meta),
+      publicationNote: this.publish.spreakerPublicationNote(),
+      warnings: audio.warnings,
+    };
+
+    const confirmed = await firstValueFrom(
+      this.dialog.open(SpreakerUploadDialog, { data, width: '640px' }).afterClosed()
+    );
+    if (!confirmed) return;
+
+    const receipt = await this.publish.uploadToSpreaker();
+    if (!receipt) return; // the failure is in the banner, verbatim
+    this.notificationService.success(
+      'Uploaded to Spreaker',
+      `"${receipt.uploaded.title}" — episode ${receipt.episodeId}, ` +
+      `${(receipt.encodingStatus ?? 'queued').toLowerCase()}.`
+    );
+  }
+
+  /**
+   * Forget the recorded episode so the item can be uploaded again.
+   *
+   * Confirmed in plain words, because the thing people will assume it does — delete the
+   * episode — is the one thing it cannot do.
+   */
+  async forgetSpreakerEpisode() {
+    const episodeId = this.publish.spreakerEpisodeId();
+    if (episodeId === null) return;
+    const ok = window.confirm(
+      `Forget Spreaker episode ${episodeId}?\n\n` +
+      `This does NOT delete the episode — it still exists on your show. It only lets this ` +
+      `item be uploaded again, which will create a SECOND episode unless you have already ` +
+      `deleted the first one on Spreaker.`
+    );
+    if (!ok) return;
+    await this.publish.forgetSpreakerEpisode();
   }
 
   // ------------------------------------------------------------------- editing

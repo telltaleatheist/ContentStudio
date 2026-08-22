@@ -10,6 +10,7 @@ import { YouTubeAuthService } from './services/youtube/youtube-auth.service';
 import { YouTubeApiService } from './services/youtube/youtube-api.service';
 import { ApiCollectorService } from './services/youtube/api-collector.service';
 import { PublishStoreService } from './services/publish/publish-store.service';
+import { SpreakerConfigService } from './services/spreaker/spreaker-config.service';
 import { stopArchiveSyncOnQuit } from './services/editor/editor-ipc';
 
 /**
@@ -192,8 +193,23 @@ app.whenReady().then(async () => {
     // than inside analytics/ so the whole feature can be lifted out cleanly.
     const publishStore = new PublishStoreService(path.join(userDataPath, 'publish'));
 
+    // Spreaker credentials (one account, one show). Constructed here rather than inside
+    // the service for the same reason YouTubeAuthService takes userDataPath as an
+    // argument: it makes the whole thing runnable against a temp directory. Nothing is
+    // read from disk yet — the file may not exist, and "not configured" is an answer the
+    // status call gives, not a startup failure.
+    const spreakerConfig = new SpreakerConfigService(userDataPath);
+
     // Set up IPC handlers
-    setupIpcHandlers(store, { analyticsStore, ingestServer, youtubeAuth, youtubeApi, apiCollector, publishStore });
+    setupIpcHandlers(store, {
+      analyticsStore,
+      ingestServer,
+      youtubeAuth,
+      youtubeApi,
+      apiCollector,
+      publishStore,
+      spreakerConfig,
+    });
 
     // Collection is manual (user clicks "Refresh data" on the Analytics page).
     // At startup we only clear stale per-channel errors from a prior session.

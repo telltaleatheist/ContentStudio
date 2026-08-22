@@ -12,6 +12,12 @@ export const MAX_AB_VARIANTS = 3;
 /** YouTube enforces a 100-character title limit. */
 export const MAX_TITLE_LENGTH = 100;
 
+/**
+ * Spreaker's episode title limit — a DIFFERENT limit from YouTube's 100, on the same
+ * string. Whichever destination is being pushed to is the one that binds.
+ */
+export const SPREAKER_MAX_TITLE_LENGTH = 140;
+
 export type PublishStatus = 'selecting' | 'ready' | 'linked' | 'filled' | 'published';
 
 /** What a thumbnail file measured when it was accepted. */
@@ -72,6 +78,104 @@ export interface ThumbnailPreview {
   meta: ThumbnailMeta;
   warnings: string[];
   previewSize: { width: number; height: number };
+}
+
+/**
+ * What an episode audio file measured when it was last looked at.
+ *
+ * Deliberately NOT stored on the record, unlike ThumbnailMeta: a duration and a size are
+ * facts about a file on an external volume at a moment, and the panel re-reads them
+ * (publish-inspect-audio) every time it opens rather than showing what was true in July.
+ */
+export interface AudioMeta {
+  bytes: number;
+  /** Seconds, as ffprobe reports it. Always finite and > 0. */
+  durationSec: number;
+  /** Lower-case, with the dot: '.mp3'. */
+  extension: string;
+  audioCodec: string;
+  /** True when the file also carries a video stream — legal, and worth saying. */
+  hasVideo: boolean;
+}
+
+/**
+ * An audio file this item could be, or already is, uploaded as.
+ *
+ * One type for both the PROPOSAL (the sibling export found on disk, never applied on its
+ * own) and the INSPECTION (the file already chosen, re-measured). They carry the same
+ * three things and the difference is entirely which question was asked.
+ */
+export interface AudioFile {
+  path: string;
+  meta: AudioMeta;
+  /** Non-fatal notes — an undocumented extension, a file that still has video in it. */
+  warnings: string[];
+}
+
+/** What publish-set-audio returns: the updated record, the measurements, any notes. */
+export interface AudioSetResult {
+  selection: ChosenMetadata;
+  /** null exactly when the audio was CLEARED. */
+  meta: AudioMeta | null;
+  warnings: string[];
+}
+
+/**
+ * What one "Upload to Spreaker" actually did.
+ *
+ * Same discipline as PushReceipt — every part either in `uploaded` or in `skipped` with
+ * its reason — plus the identifiers Spreaker minted, which are the only way back to the
+ * episode from here.
+ */
+export interface SpreakerReceipt {
+  episodeId: number;
+  showId: string;
+  showTitle: string | null;
+  /** ISO. When the upload completed. */
+  pushedAt: string;
+  uploaded: {
+    title: string;
+    description: { chars: number; firstLine: string };
+    tags: { count: number };
+    audio: { path: string; bytes: number; durationSec: number };
+    /** Present only when the upload asked Spreaker to schedule publication. */
+    autoPublishedAt?: string;
+  };
+  skipped: {
+    autoPublishedAt?: string;
+  };
+  siteUrl: string | null;
+  /**
+   * PENDING | PROCESSING | READY | ERROR at the moment of the reply.
+   *
+   * A fresh upload is never READY — Spreaker re-encodes first — so this is what keeps the
+   * receipt from being read as "the episode is live".
+   */
+  encodingStatus: string | null;
+}
+
+/** What publish-push-spreaker returns: the updated record plus the receipt stored on it. */
+export interface SpreakerPushOutcome {
+  selection: ChosenMetadata;
+  receipt: SpreakerReceipt;
+}
+
+/**
+ * Whether this machine can upload to Spreaker, and if not, what is missing.
+ *
+ * NEVER CARRIES THE TOKEN — only whether one is stored. `credentialsPath` is here so the
+ * unconfigured state can say where the token goes instead of being a disabled button with
+ * nothing to say for itself.
+ */
+export interface SpreakerStatus {
+  configured: boolean;
+  hasToken: boolean;
+  showId: string | null;
+  showName: string | null;
+  savedAt: string | null;
+  credentialsPath: string;
+  /** Why `configured` is false, in the words to show. null when it is true. */
+  reason: string | null;
 }
 
 /** What publish-set-thumbnail returns: the updated record plus any non-fatal notes. */
@@ -190,6 +294,22 @@ export interface ChosenMetadata {
   thumbnailMeta: ThumbnailMeta | null;
   /** Strictly boolean and never absent — see the _is_compilation lesson. */
   isPodcast: boolean;
+  /**
+   * Absolute path to the episode audio, or null. Proposed from the export's sibling
+   * (`podcast 1.mp3` beside `podcast 1.mov`), never applied without confirmation, and
+   * re-validated at upload time.
+   */
+  spreakerAudioPath: string | null;
+  /**
+   * Spreaker's episode id once uploaded, or null for never — AND the duplicate guard.
+   * A Spreaker push is a CREATE, so pushing twice publishes a second episode rather than
+   * replacing the first; a non-null value here refuses the next upload by name.
+   */
+  spreakerEpisodeId: number | null;
+  /** ISO of that upload. null exactly when spreakerEpisodeId is. */
+  spreakerPushedAt: string | null;
+  /** What that upload sent, part by part. Last upload only. */
+  spreakerReceipt: SpreakerReceipt | null;
   /**
    * Monetization intent. Never absent, and three-valued: true / false / null, where null
    * means nobody has decided and the extension leaves Studio's control alone. Mirrors

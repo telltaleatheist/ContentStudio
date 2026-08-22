@@ -30,6 +30,16 @@ import {
 } from './publish-store.service';
 import { matchDraft, toFillCandidates } from './video-matcher';
 import { YouTubePushApi, pushItemToYouTube } from './youtube-push';
+import {
+  SpreakerTarget,
+  SpreakerUploadApi,
+  pushEpisodeToSpreaker,
+} from './spreaker-push';
+import {
+  AudioProbe,
+  deriveProposedAudioPaths,
+  validateAudioFile,
+} from './audio-validate';
 import { RoutableChannel, resolveChannelForPromptSet } from './channel-routing';
 import { buildFieldPatch, describeValue } from './field-validators';
 import {
@@ -101,6 +111,25 @@ export interface PublishIpcDeps {
    * a live video. Nothing in publish/ constructs a YouTube client.
    */
   pushApi: YouTubePushApi;
+  /**
+   * The ONE Spreaker write, injected exactly like pushApi and for a sharper version of
+   * the same reason: an episode upload is a CREATE against a live podcast feed, so the
+   * only acceptable way to exercise it is against a fixture.
+   */
+  spreakerApi: SpreakerUploadApi;
+  /**
+   * The configured show, or a throw naming what is missing and where to put it.
+   *
+   * Returns NO TOKEN. publish/ never handles the credential — this function's caller has
+   * already established that one exists, which is what makes "Spreaker is not configured"
+   * a refusal before the file is read rather than a 401 after it was uploaded.
+   */
+  requireSpreakerTarget: () => SpreakerTarget;
+  /**
+   * ffprobe, as one function. The host owns the binary path (lib/bridges/runtime-paths);
+   * publish/ owns the rules about what the answer has to say.
+   */
+  probeAudio: (file: string) => Promise<AudioProbe>;
 }
 
 /** Uniform envelope so the renderer can branch on success without try/catch everywhere. */
@@ -151,6 +180,9 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
     listGenerated,
     resolveTranscriptRef,
     pushApi,
+    spreakerApi,
+    requireSpreakerTarget,
+    probeAudio,
   } = deps;
 
   if (typeof listChannels !== 'function') {
@@ -171,6 +203,15 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       'setupPublishIpc requires pushApi with getVideoParts, updateVideo and setThumbnail. ' +
       'A push that could not read the video first would replace its snippet with whatever ' +
       'this app happened to know.'
+    );
+  }
+
+  if (!spreakerApi || typeof spreakerApi.createEpisode !== 'function'
+      || typeof requireSpreakerTarget !== 'function' || typeof probeAudio !== 'function') {
+    throw new Error(
+      'setupPublishIpc requires spreakerApi.createEpisode, requireSpreakerTarget and ' +
+      'probeAudio. An episode upload creates a public episode from a file on an external ' +
+      'volume: none of the three can be inferred here.'
     );
   }
 
@@ -527,6 +568,168 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       const id = requireItemId(itemId, 'itemId');
       const outcome = await pushItemToYouTube(id, { store, readGenerated, api: pushApi });
       return ok(outcome);
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  // ------------------------------------------------------------------ Spreaker
+  //
+  // The podcast half. An item marked `isPodcast` gets an audio file (proposed from the
+  // export's sibling, confirmed by the operator) and then one upload, which CREATES a
+  // public episode. The shape mirrors the thumbnail channels above deliberately: propose,
+  // inspect, set — because it is the same problem (a file on an external volume that this
+  // app must never pick on the operator's behalf) and a second idiom for it would be a
+  // second set of rules to keep in agreement.
+
+  /**
+   * Where this item's episode audio would be, by the naming convention. READ-ONLY: it
+   * stores nothing and changes nothing.
+   *
+   * `null` is a FACT, not a failure — most items are videos with no exported audio beside
+   * them. A file that IS there and is not usable still throws, naming it.
+   *
+   * Never applied automatically, for the same reason the thumbnail proposal is not: the
+   * convention (`podcast 1.mp3` beside `podcast 1.mov`) is a good guess about the file
+   * and no guess at all about whether this item is that episode.
+   */
+  ipcMain.handle('publish-propose-audio', async (_e, itemId: string) => {
+    try {
+      const id = requireItemId(itemId, 'itemId');
+      const generated = requireGenerated(id);
+
+      for (const candidate of deriveProposedAudioPaths(generated.sourcePath ?? null)) {
+        if (!fs.existsSync(candidate)) continue;
+        const { meta, warnings } = await validateAudioFile(candidate, probeAudio);
+        return ok({ path: candidate, meta, warnings });
+      }
+      return ok(null);
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * Re-measure the audio file this item already has, or null when it has none.
+   *
+   * The panel calls this on every load rather than reading measurements off the record,
+   * and that is why no AudioMeta is stored: a duration and a size are facts about a file
+   * on Callisto AT A MOMENT, and the only honest moment is now. A stored path whose file
+   * has gone is an ERROR here, not a null — null means "nothing chosen", and the two must
+   * not look alike.
+   */
+  ipcMain.handle('publish-inspect-audio', async (_e, itemId: string) => {
+    try {
+      const id = requireItemId(itemId, 'itemId');
+      const stored = store.get(id)?.spreakerAudioPath ?? null;
+      if (!stored) return ok(null);
+
+      const { meta, warnings } = await validateAudioFile(stored, probeAudio);
+      return ok({ path: stored, meta, warnings });
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * Attach (or clear) the episode audio file.
+   *
+   * Its own channel rather than a field in publish-set-fields for the same reason
+   * publish-set-thumbnail is: the path is only half the value. The file is validated
+   * against the bytes AND probed before anything is stored, so a .mov picked by mistake,
+   * a 400 MB export or a file with no audio stream is refused by name and nothing dead is
+   * written.
+   *
+   * Warnings travel WITH the success — an .m4a is stored and used, and the panel says
+   * that Spreaker does not document that extension.
+   */
+  ipcMain.handle('publish-set-audio', async (_e, itemId: string, absPath: string | null) => {
+    try {
+      const id = requireItemId(itemId, 'itemId');
+      const generated = requireGenerated(id);
+
+      if (absPath === null) {
+        const cleared = await store.update(id, generated, { spreakerAudioPath: null });
+        return ok({ selection: cleared, meta: null, warnings: [] as string[] });
+      }
+
+      const { meta, warnings } = await validateAudioFile(absPath, probeAudio);
+      const selection = await store.update(id, generated, { spreakerAudioPath: absPath });
+      return ok({ selection, meta, warnings });
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * Upload the item as an episode of the configured Spreaker show.
+   *
+   * The second channel in this file that writes to the outside world, and the only one
+   * that CREATES something: after this there is an episode in a public podcast feed that
+   * did not exist before, published immediately unless the item carries a schedule.
+   *
+   * Everything that can refuse it — not a podcast, no title, no audio, audio that no
+   * longer validates, an item already uploaded, Spreaker not configured — refuses BEFORE
+   * the request. Failures arrive verbatim: a 401 from an expired token and a 404 from a
+   * wrong show id are different next actions, and "upload failed" is neither.
+   */
+  ipcMain.handle('publish-push-spreaker', async (_e, itemId: string) => {
+    try {
+      const id = requireItemId(itemId, 'itemId');
+      log.info(`[Publish] Spreaker upload requested for ${id}`);
+      const outcome = await pushEpisodeToSpreaker(id, {
+        store,
+        readGenerated,
+        api: spreakerApi,
+        requireTarget: requireSpreakerTarget,
+        probeAudio,
+      });
+      log.info(
+        `[Publish] Spreaker episode ${outcome.receipt.episodeId} created for ${id} ` +
+        `("${outcome.receipt.uploaded.title}", ${outcome.receipt.encodingStatus ?? 'no status'})`
+      );
+      return ok(outcome);
+    } catch (err: any) {
+      log.error(`[Publish] Spreaker upload for ${itemId} failed:`, err);
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * Forget that this item was uploaded, so it can be uploaded again.
+   *
+   * DELETES NOTHING ON SPREAKER — it cannot, and pretending otherwise would be the worst
+   * possible lie here. It exists because the duplicate guard would otherwise be a dead
+   * end: an operator who deleted the episode on Spreaker's site has no way to tell this
+   * app so, and an unclearable refusal is a bug with a good reason attached.
+   *
+   * The episode id it drops is LOGGED, because after this call nothing else remembers it.
+   */
+  ipcMain.handle('publish-forget-spreaker-episode', async (_e, itemId: string) => {
+    try {
+      const id = requireItemId(itemId, 'itemId');
+      const record = store.get(id);
+      if (!record) {
+        throw new Error(`Nothing has been saved for item ${id}, so there is no episode to forget.`);
+      }
+      if (record.spreakerEpisodeId === null) {
+        throw new Error(
+          `Item ${id} has no Spreaker episode recorded, so there is nothing to forget.`
+        );
+      }
+      log.warn(
+        `[Publish] forgetting Spreaker episode ${record.spreakerEpisodeId} on item ${id} — ` +
+        `the episode itself is NOT deleted and still exists on the show.`
+      );
+
+      const generated = requireGenerated(id);
+      return ok(
+        await store.update(id, generated, {
+          spreakerEpisodeId: null,
+          spreakerPushedAt: null,
+          spreakerReceipt: null,
+        })
+      );
     } catch (err: any) {
       return fail(err?.message || String(err));
     }

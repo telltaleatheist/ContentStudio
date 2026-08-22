@@ -51,6 +51,10 @@ import {
   validateRoutingSelections,
 } from '../services/metadata/metadata-routing';
 import { setupPublishIpc } from '../services/publish/publish-ipc';
+import { SpreakerConfigService } from '../services/spreaker/spreaker-config.service';
+import { SpreakerApiService } from '../services/spreaker/spreaker-api.service';
+import { setupSpreakerIpc } from '../services/spreaker/spreaker-ipc';
+import { FfprobeBridge, getRuntimePaths } from '../lib/bridges';
 import { PublishBridge } from '../services/publish/publish-bridge';
 import { setupEditorIpc } from '../services/editor/editor-ipc';
 import { setupTranscriptLinkIpc } from '../services/metadata/transcript-link-ipc';
@@ -68,6 +72,14 @@ export interface AnalyticsServices {
   youtubeApi: YouTubeApiService;
   apiCollector: ApiCollectorService;
   publishStore: PublishStoreService;
+  /**
+   * The Spreaker access token + show id, on disk in userData.
+   *
+   * Here rather than constructed in this file for the reason every other service in this
+   * struct is: the userData path is resolved once, in main.ts, and handed down. It is the
+   * only thing in the app that reads the token, and it hands publish/ a show WITHOUT it.
+   */
+  spreakerConfig: SpreakerConfigService;
 }
 
 /**
@@ -2504,7 +2516,38 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         mime: 'image/png' | 'image/jpeg'
       ) => analytics.youtubeApi.setThumbnail(channelId, videoId, image, mime),
     },
+    // The ONE Spreaker write, bound the same way the YouTube writes are: a narrow
+    // function, not the client. A mistake here creates a public episode on a live
+    // podcast feed, so this is the seam an upload can be exercised across without one.
+    spreakerApi: new SpreakerApiService({
+      // Read fresh on every call, never captured: a token saved in Settings has to work
+      // without a restart, and an expired one has to fail as an expired one.
+      requireCredentials: () => analytics.spreakerConfig.requireCredentials(),
+    }),
+    // The show, WITHOUT the token. publish/ never sees the credential; what it needs is
+    // the id to post to and a name to put in a confirmation, plus the assurance —
+    // carried by this call throwing — that there is a token to authenticate with.
+    requireSpreakerTarget: () => analytics.spreakerConfig.requireTarget(),
+    // ffprobe. Constructed per call, exactly as editor-transcript-link's probeDrift does
+    // it: the bridge holds nothing but a path string, and resolving the path at call time
+    // means a component installed after launch is picked up without a restart.
+    probeAudio: async (file: string) => {
+      const ffprobe = new FfprobeBridge(getRuntimePaths().ffprobe);
+      const info = await ffprobe.getMediaInfo(file);
+      return {
+        durationSec: info.duration,
+        hasAudio: info.hasAudio,
+        hasVideo: info.hasVideo,
+        audioCodec: info.audioCodec ?? null,
+      };
+    },
   });
+
+  // The Spreaker credentials themselves: read by the settings page and by the publish
+  // panel (which shows "not configured" with the file path rather than a dead button).
+  // Its own seam, like publish/ and editor/ — these channels are about the machine's
+  // connection to Spreaker, not about any one item.
+  setupSpreakerIpc(analytics.spreakerConfig);
 
   // Expose the publish routes on the existing localhost ingest server so the companion
   // extension has one port to talk to. The server only knows a structural interface, so
