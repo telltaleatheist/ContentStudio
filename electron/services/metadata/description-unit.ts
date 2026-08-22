@@ -20,9 +20,20 @@
  * answering, while constraining a JUDGMENT task measurably destroys it. These two calls are
  * mechanical. Chapter summarization is not, and nothing here is copied there.
  *
- * WHAT THEY READ, AND WHAT THEY DO NOT. Inputs are the chapter titles and summaries, the
- * entity pool and the key-phrase pool. NOT the raw transcript — the whole point of §2 is that
- * this layer runs on already-extracted inputs, which is what makes it viable on a 4b at all.
+ * WHAT THEY READ. The chapter titles and summaries, the entity pool, the key-phrase pool —
+ * AND THE RAW TRANSCRIPT.
+ *
+ * The transcript is new, and it SUPERSEDES the summaries-only input contract §2 laid down. That
+ * contract was a context-window concession dressed as a design: it said the description layer
+ * runs on already-extracted inputs, which is what made it viable on a 4b. The operator's call
+ * (2026-08-22) is that a description written from a précis of the video reads like one — the
+ * specifics that make an opening line worth reading are exactly what a chapter summary drops.
+ * The chapter block STAYS beside it: it is a measured table of contents that says what the
+ * video spends its time on, which a transcript does not, and the entity scaffold still applies.
+ *
+ * The cost is stated rather than hidden: these two calls now carry a transcript-sized prompt,
+ * so they share their model's one pinned num_ctx with every other call on it (metadata-tasks.ts
+ * ModelRunContextBudget) instead of sizing themselves against a small private ceiling.
  *
  * AND WHERE THERE ARE NO CHAPTERS. This unit used to be planned only for chaptered items;
  * everything else took a whole-metadata call on whatever the Settings page named, and got its
@@ -47,13 +58,14 @@
 
 import axios, { AxiosInstance } from 'axios';
 import * as log from 'electron-log';
-import { askOllamaJson, bucketNumCtx, estimateTokens, unloadOllamaModels } from './ollama-json';
+import { askOllamaJson, estimateTokens, unloadOllamaModels } from './ollama-json';
 import { MetadataRoutingOption } from './metadata-routing';
 import { queueAITask } from '../queue-manager.service';
 import { JobCancelledError } from './cancellation';
 import { narratesAnActor } from './chapter-title-quality';
 import { promptAssets } from './prompt-assets';
 import type { MetadataFieldId, MetadataRunContext, MetadataUnit } from './metadata-tasks';
+import type { ModelRunContextBudget } from './metadata-tasks';
 import type { AIManagerService } from './ai-manager.service';
 
 /**
@@ -102,9 +114,6 @@ const BODY_TEMPERATURE = 0.2;
  * that a model which reasons anyway still finishes.
  */
 const NUM_PREDICT = 4096;
-
-/** Inputs are summaries, so the prompt is small; the ceiling is generous, not tight. */
-const CTX_MAX = 16384;
 
 const CALL_TIMEOUT_MS = 300_000;
 const KEEP_ALIVE = '10m';
@@ -179,22 +188,51 @@ const DESCRIPTION_FIELDS: MetadataFieldId[] = ['description_hook', 'description'
 export class DescriptionUnit implements MetadataUnit {
   readonly label: string;
   readonly fields = DESCRIPTION_FIELDS;
+  /** These two calls read the coverage block, the pools and the transcript — no other field. */
+  readonly inputFields: MetadataFieldId[] = [];
 
   private readonly client?: AxiosInstance;
   private readonly host?: string;
-  private numCtx?: number;
   private loaded = false;
 
   constructor(
     private readonly aiManager: AIManagerService,
     private readonly option: MetadataRoutingOption,
     defaultHost: string,
+    /**
+     * The ONE context budget every call on this model shares, on the local path.
+     *
+     * These two calls used to size a private num_ctx against their own small ceiling, which was
+     * safe while they read summaries and nothing else. They read the transcript now, and they
+     * routinely share the 9B with the tags call — and Ollama fully reloads a model on any
+     * num_ctx change, so a private value here would reload it between the description and the
+     * tags. Absent on the cloud path, where there is no window to pin.
+     */
+    private readonly budget?: ModelRunContextBudget,
     private readonly abortSignal?: AbortSignal
   ) {
     if (option.kind === 'local') {
+      if (!budget) {
+        throw new Error(
+          `The description unit for local model "${option.model}" was constructed with no context budget. ` +
+            `Every local call on a model shares one pinned num_ctx (metadata-tasks.ts) because changing it ` +
+            `reloads the model; there is no per-unit sizing to fall back on.`
+        );
+      }
       this.host = option.host || defaultHost;
       this.client = axios.create({ baseURL: this.host });
       this.label = `description hook + body (local ${option.model} @ ${this.host})`;
+      // The larger of the two prompts is what this unit needs of the window. They differ by a
+      // few hundred characters — both carry the same transcript — so this is nearly the same
+      // number twice, and taking the max means it cannot be the smaller one by accident.
+      budget.register('description', (ctx) =>
+        estimateTokens(
+          Math.max(
+            this.buildPrompt(DESCRIPTION_PROMPTS.HOOK, ctx).length,
+            this.buildPrompt(DESCRIPTION_PROMPTS.BODY, ctx).length
+          )
+        ) + NUM_PREDICT
+      );
     } else {
       this.label = `description hook + body (cloud ${option.model})`;
     }
@@ -330,17 +368,10 @@ export class DescriptionUnit implements MetadataUnit {
     temperature: number,
     ctx: MetadataRunContext
   ): Promise<Record<string, unknown>> {
-    // One num_ctx for this unit's life (ollama-json trap 4). Both prompts are the same size
-    // to within a few hundred characters, so the first one sizes both.
-    if (this.numCtx === undefined) {
-      this.numCtx = bucketNumCtx({
-        promptTokens: estimateTokens(prompt.length),
-        numPredict: NUM_PREDICT,
-        max: CTX_MAX,
-        logPrefix: `[Description] ${this.label}`,
-        what: `the description calls for ${ctx.sourceLabel}`,
-      });
-    }
+    // One num_ctx for the whole MODEL for the whole RUN (ollama-json trap 4) — not one per
+    // unit. Resolved by the first call on this model to run, from the largest prompt it will
+    // send, and shared from there.
+    const numCtx = this.budget!.resolve(ctx);
 
     const result = await queueAITask(
       `description-${this.option.model}-${ctx.sourceLabel}-${what}`,
@@ -350,7 +381,7 @@ export class DescriptionUnit implements MetadataUnit {
         const answer = await askOllamaJson(this.client!, {
           model: this.option.model,
           prompt,
-          numCtx: this.numCtx!,
+          numCtx,
           numPredict: NUM_PREDICT,
           temperature,
           schema,
@@ -386,13 +417,31 @@ export class DescriptionUnit implements MetadataUnit {
       .filter(Boolean)
       .join('\n');
 
-    // `coverage` and `pools` are substituted before the free text they contain can be read as
-    // a placeholder, and nothing after them re-runs the substitution.
+    // `coverage`, `transcript` and `pools` are substituted before the free text they contain
+    // can be read as a placeholder, and nothing after them re-runs the substitution.
     return template
       .replace(/\{channel\}/g, () => ctx.promptSetName)
       .replace(/\{video\}/g, () => ctx.videoTitle || ctx.sourceLabel)
       .replace(/\{coverage\}/g, () => this.coverageBlock(ctx))
+      .replace(/\{transcript\}/g, () => this.transcriptBlock(ctx))
       .replace(/\{pools\}/g, () => pools || '(none)');
+  }
+
+  /**
+   * The video's own words, beside the chapter list rather than instead of it.
+   *
+   * ONLY ON THE CHAPTERED PATH, and that is not a condition to be defended against — it is the
+   * two shapes `coverageBlock` already distinguishes. Where there ARE chapters, the coverage
+   * block is a measured table of contents and this is the transcript it was measured from, so
+   * both belong. Where there are NOT, the coverage block IS `ctx.content` — the operator's text
+   * subject — and rendering it again under a second heading would hand the model the same
+   * paragraph twice and call one of them a transcript.
+   */
+  private transcriptBlock(ctx: MetadataRunContext): string {
+    if (ctx.chapterSubjects.length === 0) return '';
+    const content = (ctx.content || '').trim();
+    if (content.length === 0) return '';
+    return promptAssets().pipeline(DESCRIPTION_FILE, 'transcript_block').replace(/\{items\}/g, () => content);
   }
 
   /**

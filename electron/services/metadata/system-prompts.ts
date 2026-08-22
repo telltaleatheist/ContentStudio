@@ -61,13 +61,27 @@ export const SYSTEM_PROMPTS = {
   },
 
   /**
-   * Fills the {subject} content slot for a group conditioned on the chapter list INSTEAD of
-   * the transcript. Without it the "is this a transcript or a one-line topic" instruction
-   * resolves the wrong way: the chapter block is short, so the model treats it as a bare topic
-   * and refuses to be specific.
+   * The titles this run already wrote, handed to a later call as INPUT DATA.
+   *
+   * This is what replaced grouping. The thumbnail text has to avoid repeating a core word from
+   * the top 3 titles, which was only followable while one call wrote both; now the titles call
+   * runs first and this block puts its answer in front of the thumbnail call.
+   *
+   * Placeholder: {titles}
    */
-  get TASK_CHAPTERS_ONLY_INPUT(): string {
-    return promptAssets().pipeline(SYSTEM_FILE, 'task_chapters_only_input');
+  get TASK_TITLES_INPUT(): string {
+    return promptAssets().pipeline(SYSTEM_FILE, 'task_titles_input');
+  },
+
+  /**
+   * The same block in the "Show prompt" preview, where the titles call has not run yet.
+   *
+   * NEVER SENT TO A MODEL. The preview is assembled before the run, and a preview that quietly
+   * dropped the block would show a prompt the app does not send; one that invented ten titles
+   * would be worse. It says which call fills it instead.
+   */
+  get TASK_TITLES_INPUT_PENDING(): string {
+    return promptAssets().pipeline(SYSTEM_FILE, 'task_titles_input_pending');
   },
 
   /** Episode boundaries in a multi-hour stream. Placeholders: {transcript}, {duration}, {episodeCount} */

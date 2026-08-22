@@ -114,16 +114,33 @@ task_output_format: |2
   {keyLines}
   }
 
-# Fills the {subject} content slot for a group whose fields are conditioned on the chapter
-# list INSTEAD of the transcript.
-task_chapters_only_input: |2
+# The titles this run already wrote, handed to a later call as INPUT DATA.
+#
+# WHY IT EXISTS. One call used to write the titles and the thumbnail text together, which is
+# what made "the thumbnail must not repeat a core word from the top 3 titles" followable. Now
+# every field is its own call, titles run first, and their answer is put in front of the
+# thumbnail call as data. The rule is unchanged; what changed is that the model READS the
+# titles rather than having happened to write them.
+#
+# Placeholder: {titles}
+task_titles_input: |2
 
-  === WHAT YOU ARE WORKING FROM ===
-  The chapter list above IS the content for this task. It was worked out from the full
-  transcript, chapter by chapter, so treat it as transcript-grade evidence and be as
-  specific as it lets you be - the indented lines are there to be used.
-  Stay inside it: write nothing the list does not support, and invent no quote, moment or
-  event that is not in it.
+  === THE VIDEO'S TITLES ===
+  These titles were written for this video a moment ago, from the same transcript. They are
+  input data for the task below - finished work to write ALONGSIDE, not something to rewrite,
+  extend or comment on.
+
+  {titles}
+
+  The first three go to YouTube's Test & Compare, so they are the ones that matter most for
+  anything asked to sit beside them.
+  ===
+
+# The same block in the "Show prompt" preview, before the titles call has run. Never sent.
+task_titles_input_pending: |2
+
+  === THE VIDEO'S TITLES ===
+  (the titles call runs first; the titles it writes are inserted here when this call is sent)
   ===
 
 # Episode boundaries in a multi-hour livestream.

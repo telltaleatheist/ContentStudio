@@ -22,8 +22,10 @@ import {
   CHAPTER_PIPELINE_MODELS,
   MetadataRoutingSelections,
   ResolvedMetadataRouting,
+  SUMMARIZATION_MODEL,
   resolveMetadataRouting,
 } from './metadata-routing';
+import type { ModelRosterEntry } from './metadata-tasks';
 import { excludePromoChapters } from './promo-chapters';
 import { topEntities, transcriptCasing } from './entity-extraction';
 import { rankKeyPhrases } from './key-phrases';
@@ -744,14 +746,36 @@ export class MetadataGeneratorService {
     const subjects = chapterSubjects || [];
     const hasChapters = subjects.length > 0;
 
-    const plan = planMetadataUnits(
-      this.routing(params),
-      params.aiHost || 'http://localhost:11434',
+    // The pools the description prompts, the assembled tags and the derived hashtags all read
+    // (spec §2). Both are measured from the app's CONTENT text — the ad-free editor transcript
+    // when one is linked, the final export's otherwise — which is the same resolution every
+    // content field in this service goes through and never the timed final export by accident.
+    const contentText = this.contentTextOf(item).text;
+
+    /**
+     * The local models this run loads OUTSIDE the metadata calls, so the two-model budget counts
+     * what the run actually costs rather than only the part of it planMetadataUnits can see.
+     *
+     * CHAPTERS: the pipeline made its generation model resident whenever it produced subjects.
+     * SUMMARIZATION: only when it FIRED, which since the raw-transcript change means only when
+     * the transcript was over ai-manager's direct-pass ceiling — and `summary !== contentText`
+     * is exactly that fact, measured rather than assumed.
+     */
+    const alsoLoads: ModelRosterEntry[] = [];
+    if (hasChapters) alsoLoads.push({ model: CHAPTER_PIPELINE_MODELS.generation, what: 'chapters' });
+    if (summary !== contentText) {
+      alsoLoads.push({ model: SUMMARIZATION_MODEL.replace(/^ollama:/, ''), what: 'summarization' });
+    }
+
+    const plan = planMetadataUnits({
+      routing: this.routing(params),
+      defaultHost: params.aiHost || 'http://localhost:11434',
       aiManager,
-      Boolean(params.insightsBlock),
+      hasInsights: Boolean(params.insightsBlock),
       hasChapters,
-      params.cancelSignal
-    );
+      alsoLoads,
+      abortSignal: params.cancelSignal,
+    });
     console.log(
       `[MetadataGenerator] ${sourceLabel}: ` +
         (hasChapters
@@ -760,11 +784,6 @@ export class MetadataGeneratorService {
         ` — ${plan.units.length} unit(s): ${plan.summary}`
     );
 
-    // The pools the description prompts, the assembled tags and the derived hashtags all read
-    // (spec §2). Both are measured from the app's CONTENT text — the ad-free editor transcript
-    // when one is linked, the final export's otherwise — which is the same resolution every
-    // content field in this service goes through and never the timed final export by accident.
-    const contentText = this.contentTextOf(item).text;
     const pools = await this.extractPools(contentText, params, sourceLabel, warnings);
 
     return {
@@ -779,6 +798,10 @@ export class MetadataGeneratorService {
         entities: pools.entities,
         keyPhrases: pools.keyPhrases,
         contentText,
+        // Filled by runMetadataTasks as each call returns, and read by the calls that take an
+        // earlier field as input data — the thumbnail call reading the titles. It starts empty
+        // on every item: nothing carries over from the last one.
+        generated: {},
         // A unit's DECLARED degradation lands in the run's warnings beside the chapter
         // pipeline's, which is the only place the operator reads them after the fact.
         warn: (message: string) => {

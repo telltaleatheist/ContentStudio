@@ -1,0 +1,311 @@
+{
+  "what": "Live per-field run against local Ollama. Three runs, two processes, shipped routing defaults, no chapters (text-subject path).",
+  "channel": "youtube-telltale",
+  "assets": "electron/assets/prompts",
+  "transcript": "prompt-harness/fixtures/transcript.example.txt (1083 chars, direct-passed raw)",
+  "plan": "titles (local qwen3.8:27b @ http://localhost:11434) | thumbnail_text (local qwen3.8:27b @ http://localhost:11434) | pinned_comment (local qwen3.8:27b @ http://localhost:11434) | clip_suggestions (local qwen3.8:27b @ http://localhost:11434) | tags (local qwen3.5:9b @ http://localhost:11434) | description hook + body (local qwen3.5:9b @ http://localhost:11434) | hashtags (code)",
+  "roster": {
+    "models": [
+      "qwen3.8:27b",
+      "qwen3.5:9b"
+    ],
+    "byModel": {
+      "qwen3.8:27b": [
+        "titles",
+        "thumbnail_text",
+        "pinned_comment",
+        "clip_suggestions"
+      ],
+      "qwen3.5:9b": [
+        "tags",
+        "description"
+      ]
+    },
+    "overBudget": false,
+    "summary": "qwen3.8:27b (titles, thumbnail_text, pinned_comment, clip_suggestions) | qwen3.5:9b (tags, description)"
+  },
+  "numCtxPins": {
+    "qwen3.8:27b": {
+      "numCtx": 16384,
+      "calls": 4,
+      "largest": "thumbnail_text 12717t"
+    },
+    "qwen3.5:9b": {
+      "numCtx": 12288,
+      "calls": 2,
+      "largest": "tags 11765t"
+    }
+  },
+  "runs": [
+    {
+      "id": "A1",
+      "process": "A (--runs 1)",
+      "secs": 123.3,
+      "calls": [
+        {
+          "field": "titles",
+          "model": "qwen3.8:27b",
+          "secs": 47.2
+        },
+        {
+          "field": "thumbnail_text",
+          "model": "qwen3.8:27b",
+          "secs": 24.2
+        },
+        {
+          "field": "pinned_comment",
+          "model": "qwen3.8:27b",
+          "secs": 15.1
+        },
+        {
+          "field": "clip_suggestions",
+          "model": "qwen3.8:27b",
+          "secs": 21.2
+        },
+        {
+          "field": "tags",
+          "model": "qwen3.5:9b",
+          "secs": 10.4
+        },
+        {
+          "field": "description_hook+description",
+          "model": "qwen3.5:9b",
+          "secs": 5.2
+        }
+      ],
+      "fields": {
+        "titles": [
+          "Marcus Wray: God Told Me To Get A Fourth Private Jet",
+          "A Preacher Says Your Money Is God's, Not Yours",
+          "The Fourth Jet And The Demon Trolls",
+          "He Called His Critics Demons For Asking About The Jet",
+          "This Isn't Faith. It's A Fundraiser With A Bible Verse",
+          "Marcus Wray's Jet Sermon: Robbing God Or Robbing You?",
+          "The Preacher Who Needs A Twelve-Seat Plane For God",
+          "Stop Paying. See What The Church Actually Is.",
+          "Prosperity Grift: The Jet, The Verse, The Shame",
+          "He Said God Wants A Fourth Jet. The Crowd Cheered."
+        ],
+        "thumbnail_text": [
+          "FOURTH JET",
+          "ROB GOD?",
+          "12 SEATS",
+          "DEMON TROLLS",
+          "STOP PAYING",
+          "TAIL NUMBER",
+          "SHAME COLLECT",
+          "NOT FAITH",
+          "CROWD CHEERED",
+          "YOUR MONEY"
+        ],
+        "pinned_comment": [
+          "Marcus Wray said holding back money is robbing God, then called anyone questioning the fourth jet a demonically influenced troll. Which part of that is the line you think crosses from faith into grift?",
+          "A preacher who needs a fourth private jet and blames Satan for people who ask why. What would actually make you walk out of a service like that?",
+          "Wray spent ten minutes calling his critics demonically influenced instead of answering why a twelve-seat aircraft belongs in a ministry budget. Has anyone else tracked how many of these prosperity preachers have more planes than members?"
+        ],
+        "clip_suggestions": [
+          "Marcus Wray's claim that God told him the ministry needs a fourth private jet and that holding back money means robbing God — hits righteous anger and schadenfreude because the sheer absurdity of a divine mandate for a fourth jet is self-contained and instantly damning without needing context",
+          "Marcus Wray calling anyone who questions the jet a 'demonically influenced troll' being used by Satan to attack the anointed — triggers protective instinct and vindication because it's a perfect example of how cult-leader logic shuts down criticism by framing dissenters as literally possessed, and it's self-contained as a single quote",
+          "The observation that Wray's operation is a fundraising machine that invents an emergency, wraps it in a Bible verse, and lets shame do the collecting, with the line that faith doesn't come with a tail number — hits 'wait what' and schadenfreude because the plain-language reframe of 'a church' as a fundraising operation with a Sunday meeting lands as a single punchy thought that works without any prior setup"
+        ],
+        "tags": "Marcus Wray,prosperity gospel,televangelist jet scandal,cult fundraising tactics,demonically influenced troll claims,Marcus Wray fourth private jet,religious grifters exposed,faith based wealth scams",
+        "description_hook": "Marcus Wray's 'fourth jet' claim and the accusation that questioning it is robbing God.",
+        "description": "Debate about Marcus Wray's claim that God told the ministry needs a fourth private jet, then his response to critics who question the purchase as robbing God.",
+        "_ungrounded": [
+          {
+            "title": "The Preacher Who Needs A Twelve-Seat Plane For God",
+            "invented": [
+              "Twelve-Seat Plane"
+            ]
+          }
+        ]
+      },
+      "declaredWarnings": [
+        "the description body was asked for twice and both times it ran to 27 words against the 150-300 word body; it is kept exactly as the model wrote it and nothing was reworded"
+      ]
+    },
+    {
+      "id": "B1",
+      "process": "B (--runs 2)",
+      "secs": 116.4,
+      "calls": [
+        {
+          "field": "titles",
+          "model": "qwen3.8:27b",
+          "secs": 43.8
+        },
+        {
+          "field": "thumbnail_text",
+          "model": "qwen3.8:27b",
+          "secs": 25
+        },
+        {
+          "field": "pinned_comment",
+          "model": "qwen3.8:27b",
+          "secs": 15.5
+        },
+        {
+          "field": "clip_suggestions",
+          "model": "qwen3.8:27b",
+          "secs": 14.2
+        },
+        {
+          "field": "tags",
+          "model": "qwen3.5:9b",
+          "secs": 9.7
+        },
+        {
+          "field": "description_hook+description",
+          "model": "qwen3.5:9b",
+          "secs": 8.2
+        }
+      ],
+      "fields": {
+        "titles": [
+          "Marcus Wray Says Holding Back Money Is Robbing God",
+          "Preacher Needs A Fourth Private Jet. Blame Satan If You Ask.",
+          "Marcus Wray Calls His Critics Demons For Questioning A Jet",
+          "The Prosperity Grift: Jet, Shame, And A Verse",
+          "He Said God Told Him To Buy Another Jet. Then Blamed Satan.",
+          "Marcus Wray: Stop Paying And You Find Out What It Was",
+          "A Fundraising Operation That Meets On Sundays",
+          "Told His Congregation They Were Robbing God Over A Jet",
+          "Fourth Jet. Ten Minutes On Critics. Zero Accountability.",
+          "The Jet Is The Tell Tail Of Every Prosperity Church"
+        ],
+        "thumbnail_text": [
+          "FOURTH JET",
+          "ROBBING GOD",
+          "SATAN'S TROLL",
+          "SHAME COLLECTOR",
+          "TWO LIVES",
+          "JET TAIL",
+          "SUNDAY FUNDRAISER",
+          "DEMON? YOU?",
+          "12 SEATS",
+          "STOP PAYING"
+        ],
+        "pinned_comment": [
+          "Marcus Wray told his congregation that withholding money for a fourth private jet means you are robbing God. If you were in that room, what was the one line from his sermon that made you want to walk out?",
+          "He called anyone questioning the jet a 'demonically influenced troll' working for Satan. Have you ever been told your doubt about a religious leader is literally a demon problem? What happened when you pushed back?",
+          "A preacher who needs a twelve-seat aircraft and tells you withholding funds is robbing God. The crowd stood and cheered. Does that sound like faith to you, or does that sound like a business model with a pulpit attached?"
+        ],
+        "clip_suggestions": [
+          "Marcus Wray's claim that God told him the ministry needs a fourth private jet and that withholding money means robbing God — the absurdity of a divine command for a fourth aircraft hits instant disbelief and the crowd's cheer is the damning punchline",
+          "Wray branding anyone questioning the jet purchase as a demonically influenced troll used by Satan — the reframe of a financial dispute into literal demonic possession is so unhinged it stops a scroll on its own",
+          "The breakdown of the prosperity sermon machine: invent an emergency, wrap it in a Bible verse, let the shame do the collecting — the plain-language translation of what a fundraising operation disguised as a church actually is hits protective instinct and vindication"
+        ],
+        "tags": "Marcus Wray fourth jet televangelist hypocrisy prosperity gospel scam fundraising church abuse cultic behavior demonically influenced troll",
+        "description_hook": "Marcus Wray's fourth jet claim and 'robbing God' sermon expose the fundraising operation behind Sunday services.",
+        "description": "Marcus Wray's claim that God told his ministry needs a fourth private jet, and if you hold your money back, you're robbing God, was met with cheers from the congregation. His argument against critics questioning the aircraft is that anyone challenging this purchase is a demonically influenced troll being used by Satan to attack the anointed. This response frames any inquiry into why a preacher needs an aircraft that seats twelve as possession by a literal demon, which is described as airtight. The video examines how this machine every one of these prosperity guys builds: invent an emergency, wrap it in a Bible verse, and let the shame do the collecting. It isn't faith. Faith doesn't come with a tail number. What Wray has built is a fundraising operation that happens to meet on Sundays, and the second you stop paying, you find out real fast whether it was ever a church at all.",
+        "_ungrounded": [
+          {
+            "title": "Fourth Jet. Ten Minutes On Critics. Zero Accountability.",
+            "invented": [
+              "Zero Accountability"
+            ]
+          }
+        ]
+      },
+      "declaredWarnings": []
+    },
+    {
+      "id": "B2",
+      "process": "B (--runs 2)",
+      "secs": 133.1,
+      "calls": [
+        {
+          "field": "titles",
+          "model": "qwen3.8:27b",
+          "secs": 49.2
+        },
+        {
+          "field": "thumbnail_text",
+          "model": "qwen3.8:27b",
+          "secs": 25.6
+        },
+        {
+          "field": "pinned_comment",
+          "model": "qwen3.8:27b",
+          "secs": 19.8
+        },
+        {
+          "field": "clip_suggestions",
+          "model": "qwen3.8:27b",
+          "secs": 19.3
+        },
+        {
+          "field": "tags",
+          "model": "qwen3.5:9b",
+          "secs": 11.4
+        },
+        {
+          "field": "description_hook+description",
+          "model": "qwen3.5:9b",
+          "secs": 7.8
+        }
+      ],
+      "fields": {
+        "titles": [
+          "Marcus Wray: 'You're Robbing God' If You Don't Fund My 4th Jet",
+          "A Preacher Said His Critics Are 'Demonic Trolls' For Asking About A Jet",
+          "God Told Me To Buy A Fourth Private Jet. Then He Called Me A Demon.",
+          "The Prosperity Grift: 'Hold Your Money Back, You're Robbing God'",
+          "Marcus Wray's Jet Sermon: 'Any Question Is A Demon Doing It'",
+          "He Needs A 12-Seat Plane And Calls Skeptics 'Demonic Trolls'",
+          "This Isn't Faith. Faith Doesn't Come With A Tail Number.",
+          "Marcus Wray: 'Satan Is Using You To Attack The Anointed'",
+          "The 4th Jet, The Bible Verse, And The Shame Machine",
+          "Preacher Demands Money For A Jet. Asks God Why You're Hesitating."
+        ],
+        "thumbnail_text": [
+          "FOURTH JET",
+          "ROBBING GOD",
+          "DEMON TROLL",
+          "12 SEATS",
+          "TAIL NUMBER",
+          "SHAME MACHINE",
+          "NOT FAITH",
+          "HE CHEERED",
+          "ANNOINTED?",
+          "COLLECT MONEY"
+        ],
+        "pinned_comment": [
+          "Marcus Wray said holding back your money means you're robbing God. Not robbing him. Robbing God. How do you explain to a friend that a preacher told their congregation that withholding a donation is a sin against the Almighty? What line does a person cross before the church stops being a church and becomes a collection operation?",
+          "He called anyone questioning a fourth private jet a 'demonically influenced troll used by Satan to attack the anointed.' So the only way to ask why a pastor needs a twelve-seat aircraft is to be possessed by a literal demon. That's the defense. Airtight. Tell me if you've ever seen a more absurd way to shut down a question.",
+          "The whole machine is the same: invent an emergency, wrap it in a scripture, let the guilt do the collecting. Wray built a fundraising operation that happens to meet on Sundays. If you've ever been in a room where a leader made you feel guilty for not giving more, what finally made you walk out? Or what kept you there?"
+        ],
+        "clip_suggestions": [
+          "Marcus Wray saying 'God told me the ministry needs a fourth private jet, and if you hold your money back, you're not robbing me, you're robbing God' — the absurdity of a divine command for a fourth jet plus the shame-based donation guilt hits instant outrage and is fully self-contained in one sentence",
+          "Marcus Wray calling critics of the jet 'demonically influenced trolls' used by Satan to attack the anointed — the leap from 'asked why a preacher needs a 12-seat aircraft' to 'possessed by a literal demon' is so unhinged it reads like satire, triggering schadenfreude and disbelief",
+          "The framing that Wray's operation is a fundraising machine that invents an emergency, wraps it in a Bible verse, and lets shame do the collecting — strips the religious euphemism down to the plain grift, hitting protective instinct in viewers who recognize the pattern in their own communities"
+        ],
+        "tags": "Marcus Wray fourth private jet televangelist luxury jets ministry fundraising cult prosperity gospel demonically influenced trolls shame do the collecting church is a fundraising operation Sunday service",
+        "description_hook": "Marcus Wray's 'fourth jet' claim, robbing God, and demonically influenced trolls.",
+        "description": "Marcus Wray's claim that God told his ministry needs a fourth private jet, and if you hold your money back, you're robbing God, sparked immediate controversy. The televangelist then spent time attacking critics, labeling anyone questioning the jet as marcus being demonically influenced by Satan to attack the anointed. This argument frames faith as something that comes with a tail number, yet it is not faith at all. Instead, the video reveals how this machine every one of these prosperity guys builds invents an emergency and wraps it in a Bible verse to let shame do the collecting. The response highlights that what Wray has built is a fundraising operation that happens on Sundays, where the second you stop paying, you find out whether it was ever a church at all. The claim that anyone who asks why a preacher needs an aircraft must be possessed by a literal demon is shown to be airtight in its logic only because it refuses to engage with reality. Ultimately, the video exposes how robbing God becomes a tool for fundraising rather than spiritual growth.",
+        "_ungrounded": [
+          {
+            "title": "Marcus Wray: 'You're Robbing God' If You Don't Fund My 4th Jet",
+            "invented": [
+              "Don't Fund"
+            ]
+          },
+          {
+            "title": "He Needs A 12-Seat Plane And Calls Skeptics 'Demonic Trolls'",
+            "invented": [
+              "Calls Skeptics"
+            ]
+          },
+          {
+            "title": "Preacher Demands Money For A Jet. Asks God Why You're Hesitating.",
+            "invented": [
+              "You're Hesitating"
+            ]
+          }
+        ]
+      },
+      "declaredWarnings": []
+    }
+  ],
+  "harnessNote": "hashtags read undefined in every run: they are code-assembled inside runMetadataTasks(), which prompt-harness/run.js bypasses so it can time each unit separately. Not a pipeline result."
+}

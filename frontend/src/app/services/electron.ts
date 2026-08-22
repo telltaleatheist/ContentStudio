@@ -308,7 +308,21 @@ export interface MetadataRoutingChapters {
   embeddingAvailability: MetadataRoutingAvailability;
 }
 
+/**
+ * The modal's single choice: which model writes the four packaging fields (local 27B or a
+ * Claude model). `selectedOptionId` is null when the store was hand-set per field and the
+ * tasks disagree — shown as Custom, never reconciled.
+ */
+export interface MetadataRoutingSlot {
+  id: string;
+  label: string;
+  taskIds: string[];
+  options: MetadataRoutingOption[];
+  selectedOptionId: string | null;
+}
+
 export interface MetadataRouting {
+  slots: MetadataRoutingSlot[];
   tasks: MetadataRoutingTask[];
   localModels: MetadataRoutingHost;
   chapters: MetadataRoutingChapters;

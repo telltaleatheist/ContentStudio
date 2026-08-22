@@ -73,8 +73,10 @@ Options:
   --runs <n>          Runs, to see consistency (default: 1)
   --units <spec>      Which planned units to actually RUN:
                         all      every unit (default)
-                        titles   only the unit that writes the titles
                         none     print the prompts and send nothing
+                        <fields> comma-separated field ids, e.g. titles,thumbnail_text
+                                 (a field whose input another field writes still needs that
+                                  one in the list — thumbnail_text reads the titles)
   --source <filename> Source filename context fed to the prompt
   --transcript <path> Override the transcript fixture
   --insights <path>   Override the insights fixture
@@ -112,9 +114,6 @@ function parseArgs(argv) {
     else if (a === '--out') args.out = path.resolve(argv[++i]);
     else if (a === '--prompts') args.prompts = path.resolve(argv[++i]);
     else fail(`Unknown option: ${a}  (--help for usage)`);
-  }
-  if (!['all', 'titles', 'none'].includes(args.units)) {
-    fail(`--units must be all, titles or none (got "${args.units}")`);
   }
   return args;
 }
@@ -158,14 +157,19 @@ async function main() {
   const ok = await mgr.initialize();
   if (!ok) fail(`AIManagerService init failed: ${mgr.lastInitError}`);
 
-  // The text-subject path: no chapters, so the transcript IS the subject every unit reads.
-  const plan = tasks.planMetadataUnits(
-    routing.resolveMetadataRouting(undefined),
-    'http://localhost:11434',
-    mgr,
-    Boolean(insightsBlock),
-    /* hasChapters */ false
-  );
+  // The text-subject path: no chapters, so the transcript IS the subject every call reads.
+  //
+  // `alsoLoads` is empty and that is TRUE HERE rather than a convenience: the harness runs no
+  // chapter pipeline, and it hands the transcript over whole rather than summarizing it, so the
+  // only local models this process loads are the ones the units name.
+  const plan = tasks.planMetadataUnits({
+    routing: routing.resolveMetadataRouting(undefined),
+    defaultHost: 'http://localhost:11434',
+    aiManager: mgr,
+    hasInsights: Boolean(insightsBlock),
+    hasChapters: false,
+    alsoLoads: [],
+  });
 
   const warnings = [];
   const ctx = {
@@ -178,6 +182,9 @@ async function main() {
     entities: entities.topEntities(transcript, 12),
     keyPhrases: entities.candidateKeyPhrases(transcript).slice(0, 40),
     contentText: transcript,
+    // Filled as each call returns, and read by the calls that take an earlier field as input
+    // data. Reset per run below, so run 2 never reads run 1's titles.
+    generated: {},
     warn: (m) => { warnings.push(m); console.error(`  ! ${m}`); },
   };
 
@@ -187,6 +194,8 @@ async function main() {
   console.error(`  transcript: ${path.relative(REPO_ROOT, transcriptPath)} (${transcript.length} chars)`);
   console.error(`  insights:   ${args.noInsights ? '(disabled)' : path.relative(REPO_ROOT, insightsPath)}`);
   console.error(`  plan:       ${plan.summary}`);
+  console.error(`  models:     ${plan.roster.summary}${plan.roster.overBudget ? '  ** OVER BUDGET **' : ''}`);
+  for (const w of plan.warnings) console.error(`  ! ${w}`);
   console.error(`  running:    ${args.units}\n`);
 
   const prompts = tasks.buildTaskPromptsForDisplay({ plan, ctx });
@@ -198,19 +207,32 @@ async function main() {
 
   const wanted = plan.units.filter((u) => {
     if (args.units === 'none') return false;
-    if (args.units === 'titles') return u.fields.includes('titles');
-    return true;
+    if (args.units === 'all') return true;
+    const asked = args.units.split(',').map((f) => f.trim()).filter(Boolean);
+    return u.fields.some((f) => asked.includes(f));
   });
 
   const runs = [];
   for (let r = 1; r <= args.runs && wanted.length > 0; r++) {
-    process.stderr.write(`  → run ${r}/${args.runs} ... `);
+    console.error(`  → run ${r}/${args.runs}`);
     const t0 = Date.now();
     const merged = {};
+    // One call per field means the interesting number is PER CALL, not per run: which field
+    // cost what, and whether a second call on the same model started fast (model resident) or
+    // slow (model reloaded). Recorded here rather than inferred from the total.
+    const calls = [];
     let error = null;
     try {
       for (const unit of wanted) {
-        Object.assign(merged, await unit.generate(ctx));
+        const c0 = Date.now();
+        const fields = await unit.generate(ctx);
+        const csecs = Number(((Date.now() - c0) / 1000).toFixed(1));
+        // Exactly what runMetadataTasks does, and in the same order: a later call that takes
+        // this field as input data reads it from here.
+        Object.assign(ctx.generated, fields);
+        Object.assign(merged, fields);
+        calls.push({ unit: unit.label, fields: unit.fields, secs: csecs });
+        console.error(`      ${unit.label}  ${csecs}s`);
       }
       // The grounding check, run exactly as production runs it, so the harness reports the
       // same declared warnings the app would.
@@ -221,8 +243,11 @@ async function main() {
       error = e.message;
     }
     const secs = Number(((Date.now() - t0) / 1000).toFixed(1));
-    console.error(error ? `FAILED (${secs}s): ${error}` : `ok (${secs}s, ${(merged.titles || []).length} titles)`);
-    runs.push({ run: r, secs, error, fields: merged });
+    console.error(error ? `    FAILED (${secs}s): ${error}` : `    run ${r} ok (${secs}s total, ${(merged.titles || []).length} titles)`);
+    runs.push({ run: r, secs, calls, error, fields: merged });
+    // Nothing carries between runs: run 2 must write its own titles before the thumbnail call
+    // reads any, exactly as a second item in a real job would.
+    ctx.generated = {};
   }
   for (const unit of plan.units) {
     if (typeof unit.unload === 'function') await unit.unload();
@@ -242,7 +267,15 @@ async function main() {
     }
   }
 
-  const payload = { args: { ...args }, plan: plan.summary, prompts, runs, warnings };
+  const payload = {
+    args: { ...args },
+    plan: plan.summary,
+    roster: plan.roster,
+    planWarnings: plan.warnings,
+    prompts,
+    runs,
+    warnings,
+  };
   const outDir = path.join(HARNESS_DIR, 'out');
   fs.mkdirSync(outDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
