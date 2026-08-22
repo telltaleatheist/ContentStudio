@@ -259,7 +259,7 @@ export class PublishBridge {
       if (errors.length) return { ok: false, errors };
     }
 
-    await this.store.update(itemId, generated.jobId, {
+    await this.store.update(itemId, generated, {
       chosenTitles: cleaned,
       // Capture the source filename at selection time -- the job's input path may be
       // gone by the time this is filled.
@@ -396,7 +396,7 @@ export class PublishBridge {
       // exist would produce a selection nothing could ever reach.
       throw new Error(`Cannot record a fill for ${itemId}: no such generated item.`);
     }
-    await this.store.update(itemId, generated.jobId, {
+    await this.store.update(itemId, generated, {
       videoId,
       status: 'filled',
       filledAt: new Date().toISOString(),

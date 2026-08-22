@@ -13,7 +13,28 @@ import {
   buildImportedContentItem,
   isTranscriptImportPath,
 } from './transcript-import.service';
+import { resolveRef, probeDrift } from './editor-transcript-link';
 import type { TranscriptRef } from '../publish/publish-types';
+
+/**
+ * The SECOND transcript of a video input: the editor story the operator linked it to.
+ *
+ * Present only when a link was declared AND honored. It sits BESIDE `content`, never
+ * instead of it — `content` and `srtSegments` are the final export's Whisper output on
+ * every path, and `srtSegments` is what chapters read (spec §3.3). The generator's one
+ * resolver (`contentTextOf`) is what decides that content FIELDS read `text` from here.
+ */
+export interface ContentSource {
+  /** The story's words, joined exactly as the transcript-import path joins them. */
+  text: string;
+  origin: 'editor-story-transcript';
+  /** The link that produced `text`, already resolved 'ok' against the file on disk. */
+  ref: TranscriptRef;
+  /** probeDrift, measured at GENERATION time: final export duration − story duration. */
+  driftSec: number;
+  /** The same drift as a percentage of the story's duration. Negative = final is shorter. */
+  driftPct: number;
+}
 
 export interface ContentItem {
   content: string;
@@ -30,16 +51,32 @@ export interface ContentItem {
    * The editor story transcript the operator linked this input to (Phase 2), or null when
    * he declared "final export only".
    *
-   * CARRIED, NOT CONSUMED. PR 4 finds, confirms, stores and shows the link; nothing reads
-   * this to generate anything. `content` above is still the final export's Whisper
-   * transcript on every path, and `srtSegments` — the only thing chapters ever read —
-   * stays the final export's for good. The generation split is PR 5.
+   * The DECLARATION. `contentSource` below is what became of it. `content` is still the
+   * final export's Whisper transcript on every path, and `srtSegments` — the only thing
+   * chapters ever read — stays the final export's for good.
    *
    * `undefined` means the input was never offered a choice (a subject, a text item, an
    * already-imported transcript); `null` means the operator was offered one and declared
    * final-only. The three states are not interchangeable.
    */
   transcriptRef?: TranscriptRef | null;
+  /**
+   * The linked story's words, when a declared link was honored (spec §3.3).
+   *
+   * Set ONLY on the linked branch, and a declared link that could not be honored throws
+   * rather than leaving this undefined: quietly generating final-only from a link the
+   * operator asked for is the one outcome §3.4 rule 4 rules out.
+   */
+  contentSource?: ContentSource;
+  /**
+   * The final export's duration in seconds as the transcription stage ffprobed it, or
+   * null when nothing measured one (no video, or the probe failed).
+   *
+   * Recorded, not re-derived: this is the single source of `ItemProvenance.
+   * final_duration_sec` on BOTH branches, so the linked and unlinked reports quote the
+   * same measurement of the same file.
+   */
+  finalDurationSec?: number | null;
 }
 
 export class InputDetector {
@@ -249,6 +286,10 @@ export class InputHandlerService {
   ): Promise<ContentItem> {
     log.info(`[InputHandler] Processing video: ${videoPath}`);
 
+    // Whisper the FINAL EXPORT, exactly as before — on both branches, unconditionally.
+    // A link changes where content FIELDS get their words; it never changes what the
+    // timeline is measured from, because chapters have to land on the published video.
+    let result: { jobId: string; segments: SRTSegment[]; durationSec: number | null };
     try {
       // Send 'preparing' event before transcription starts. The item index is
       // threaded in per-call (not read from a shared instance field) so concurrent
@@ -262,31 +303,9 @@ export class InputHandlerService {
 
       // Transcribe video (returns jobId along with result)
       log.info(`[InputHandler] Calling whisperService.transcribeVideo...`);
-      const result = await this.whisperService.transcribeVideo(videoPath);
+      result = await this.whisperService.transcribeVideo(videoPath);
 
       log.info(`[InputHandler] [${result.jobId}] Video transcribed: ${result.segments.length} segments`);
-
-      // Convert segments to text
-      const transcript = result.segments.map(seg => seg.text).join(' ');
-
-      let content = transcript;
-
-      // Add custom notes if provided
-      if (customNotes && customNotes.trim()) {
-        content += `\n\nAdditional context:\n${customNotes.trim()}`;
-      }
-
-      return {
-        content,
-        contentType: 'video',
-        source: videoPath,
-        processingNotes: customNotes?.trim(),
-        srtSegments: result.segments,
-        // Carried forward untouched. Whisper above still produced BOTH `content` and
-        // `srtSegments`, exactly as it always has — the link is recorded next to them,
-        // not instead of them. PR 5 is what makes `content` come from the story.
-        transcriptRef,
-      };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       const errorStack = error instanceof Error ? error.stack : undefined;
@@ -298,6 +317,97 @@ export class InputHandlerService {
 
       throw new Error(`Failed to transcribe video: ${errorMessage}`);
     }
+
+    // OUTSIDE the catch above, so a link that cannot be honored is not reported as a
+    // transcription failure. Transcription succeeded; this is a different fault.
+
+    // Convert segments to text
+    const transcript = result.segments.map(seg => seg.text).join(' ');
+
+    let content = transcript;
+
+    // Add custom notes if provided
+    if (customNotes && customNotes.trim()) {
+      content += `\n\nAdditional context:\n${customNotes.trim()}`;
+    }
+
+    // A declared link is HONORED here or the item fails; there is no third outcome.
+    const contentSource = transcriptRef
+      ? await this.resolveContentSource(videoPath, transcriptRef, customNotes)
+      : undefined;
+
+    return {
+      content,
+      contentType: 'video',
+      source: videoPath,
+      processingNotes: customNotes?.trim(),
+      srtSegments: result.segments,
+      // The declaration, carried onto the item so the generator can record what was
+      // asked for as well as what was done.
+      transcriptRef,
+      finalDurationSec: result.durationSec,
+      contentSource,
+    };
+  }
+
+  /**
+   * Turn a declared link into the story's words, or fail the item saying why.
+   *
+   * §3.4 rule 4: "a declared link whose file is missing/changed FAILS the run — it never
+   * quietly runs final-only". So there is no recovery path in here. Both non-'ok'
+   * resolutions throw with the resolver's own reason, which names the file, the story and
+   * exactly which identity field disagreed; the caller turns that into a per-item failure
+   * the operator reads on the queue.
+   *
+   * The words are produced by the EXISTING import path — the same parse and the same
+   * word→segment→text join `processTranscriptImport` uses for a hand-imported story — so
+   * a linked run and an imported run cannot feed the model differently worded transcripts
+   * of the same story.
+   */
+  private async resolveContentSource(
+    videoPath: string,
+    ref: TranscriptRef,
+    customNotes?: string
+  ): Promise<ContentSource> {
+    const resolution = resolveRef(ref);
+    if (resolution.state !== 'ok') {
+      throw new Error(
+        `The linked editor transcript for ${path.basename(videoPath)} is ${resolution.state}: ` +
+        `${resolution.reason}`
+      );
+    }
+
+    const raw = fs.readFileSync(ref.path, 'utf-8');
+    const parsed = parseTranscriptImport(raw, ref.path);
+    if (!parsed.ok) {
+      throw new Error(`The linked editor transcript ${ref.path} cannot be parsed: ${parsed.error}`);
+    }
+
+    // `content`, not a bespoke join: buildImportedContentItem is the one place that turns
+    // parsed words into the text the summarizer reads, notes appended and all. Only its
+    // text is kept — its srtSegments belong to the EDITOR timeline, and nothing timed may
+    // ever be built from those (they would move every chapter by the drift below).
+    const text = buildImportedContentItem(parsed.data, ref.path, customNotes).content;
+
+    // Measured now, against the file that is being generated from, rather than trusted
+    // from the Inputs row: the row's number was measured when the operator linked, and
+    // the export can be re-rendered between linking and queueing. probeDrift is the
+    // single source of truth for drift on this branch.
+    const probe = await probeDrift(videoPath, ref);
+
+    log.info(
+      `[InputHandler] Content fields will come from editor story "${ref.storyTitle}" ` +
+      `(${ref.sourceSession}): ${text.length} chars, drift ${probe.driftSec.toFixed(1)}s ` +
+      `(${probe.driftPct.toFixed(1)}%)`
+    );
+
+    return {
+      text,
+      origin: 'editor-story-transcript',
+      ref,
+      driftSec: probe.driftSec,
+      driftPct: probe.driftPct,
+    };
   }
 
   /**

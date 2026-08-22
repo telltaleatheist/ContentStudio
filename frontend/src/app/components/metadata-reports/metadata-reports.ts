@@ -21,6 +21,10 @@ import {
   offsetStringFor,
   splitPublishAt,
 } from '../../features/publish/publish-schedule';
+import {
+  describeProvenance,
+  type ItemProvenance,
+} from '../../features/transcript-link/transcript-link.types';
 
 interface MetadataReport {
   name: string;
@@ -57,6 +61,12 @@ interface ParsedMetadata {
   // Why this item has no chapters, as the run recorded it on the job JSON. Shown where
   // the chapter list would have been — a report read later has no other account of it.
   chaptersSkipped?: { outcome: 'failed' | 'skipped'; reason: string };
+  /**
+   * Which transcript wrote this item's words, as the run recorded it. Absent only for
+   * items generated before the two-source split existed — the pane then says nothing
+   * rather than claiming a mode nobody recorded.
+   */
+  content_provenance?: ItemProvenance;
   _title?: string; // The display title from the source
   _prompt_set?: string; // The prompt set used for generation
 }
@@ -1053,6 +1063,23 @@ export class MetadataReports implements OnInit {
    * The recorded reason this item has no chapters — null when it has some, or when the
    * run recorded nothing (chapters were never requested, so there is nothing to explain).
    */
+  /**
+   * The one-line account of which transcript wrote this item's content fields, and which
+   * one wrote its chapters — null for an item generated before the split was recorded.
+   *
+   * Shown above Titles because that is where the consequence bites: these are the words
+   * the titles were written from, and they either include a sponsor read or describe a
+   * story the final cut may have trimmed (spec §3.4/§3.5).
+   */
+  provenanceLine(): string | null {
+    return describeProvenance(this.metadata()?.content_provenance);
+  }
+
+  /** True when the content fields came from a linked editor story, for the pane's styling. */
+  provenanceIsLinked(): boolean {
+    return this.metadata()?.content_provenance?.content_fields === 'editor-story-transcript';
+  }
+
   chaptersMissing(): { outcome: 'failed' | 'skipped'; reason: string } | null {
     const meta = this.metadata();
     if (!meta || (meta.chapters && meta.chapters.length > 0)) return null;
@@ -1099,6 +1126,8 @@ export class MetadataReports implements OnInit {
       clip_suggestions: toStrArray(raw.clip_suggestions || raw.clipSuggestions || raw.clips) || undefined,
       chapters: raw.chapters,
       chaptersSkipped: raw.chaptersSkipped,
+      // Passed through verbatim — it is a record of a past run, not a value to normalize.
+      content_provenance: raw.content_provenance,
       _title: raw._title,
       _prompt_set: raw._prompt_set,
     };

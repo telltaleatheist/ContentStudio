@@ -431,8 +431,8 @@ export class Inputs implements OnInit, OnDestroy {
   // Every video item is asked one question before it can run: which editor story is this?
   // The finder hints (75% of the 40 live exports get a candidate) but never decides,
   // because the hint is the wrong story about 1 time in 4. The operator answers; the answer
-  // rides the job. NOTHING in this release generates differently because of it — PR 5 is
-  // the split. See PHASE-1-2-SPEC.md §3.2.
+  // rides the job, and the generator writes the content fields from the story he named
+  // while chapters stay on the final export. See PHASE-1-2-SPEC.md §3.2/§3.3.
 
   /** Scan results keyed by item.path. Not persisted: it is a fact about disk, re-read each session. */
   transcriptScans = signal<Record<string, CandidateScan>>({});

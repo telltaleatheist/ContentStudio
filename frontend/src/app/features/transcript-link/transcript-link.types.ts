@@ -136,3 +136,55 @@ export const DRIFT_WARN_PCT = 10;
 export function isDriftWarning(driftPct: number | null): boolean {
   return driftPct !== null && driftPct !== undefined && Math.abs(driftPct) > DRIFT_WARN_PCT;
 }
+
+/** Which transcript fed a field. Mirror of item-identity.ts's ContentOrigin. */
+export type ContentOrigin = 'editor-story-transcript' | 'final-export-whisper';
+
+/**
+ * What an item was generated FROM, as the report file records it — mirror of
+ * item-identity.ts's ItemProvenance.
+ *
+ * Optional on a report item, and only for one reason: items generated before this
+ * existed have none. Every item this build writes has one.
+ */
+export interface ItemProvenance {
+  content_fields: ContentOrigin;
+  timed_fields: 'final-export-whisper';
+  transcript_ref: TranscriptRef | null;
+  final_duration_sec: number | null;
+  transcript_duration_sec: number | null;
+  drift_sec: number | null;
+  drift_pct: number | null;
+  declared_at: string;
+}
+
+/**
+ * The one-line account of an item's two sources — mirror of item-identity.ts's
+ * `describeProvenance`, which writes the same sentence into the .txt. Keep them in step:
+ * the pane and the file are read by the same person about the same run, and two
+ * different sentences would read as two different facts.
+ *
+ * Returns null for an item with no recorded provenance (generated before PR 5): the pane
+ * says nothing rather than asserting a mode nobody recorded.
+ */
+export function describeProvenance(p: ItemProvenance | null | undefined): string | null {
+  if (!p || !p.content_fields) return null;
+
+  if (p.content_fields === 'final-export-whisper') {
+    return 'Content fields generated from the final export’s transcript — includes any ' +
+      'sponsor reads. Chapters from the same transcript.';
+  }
+
+  const ref = p.transcript_ref;
+  const story = ref
+    ? `${ref.sourceSession} · story ${ref.storyNumber} "${ref.storyTitle}"`
+    : 'the linked editor stories';
+
+  // drift_pct is (final − transcript) / transcript: negative means the final cut is the
+  // shorter of the two, so the story — the subject of the sentence — is the longer one.
+  const drift = typeof p.drift_pct === 'number'
+    ? ` — ${Math.abs(p.drift_pct).toFixed(1)}% ${p.drift_pct < 0 ? 'longer' : 'shorter'} than the final export`
+    : '';
+
+  return `Content from editor transcript ${story}${drift}. Chapters from the final export.`;
+}

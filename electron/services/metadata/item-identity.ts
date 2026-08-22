@@ -16,6 +16,7 @@
 import * as crypto from 'crypto';
 import * as path from 'path';
 import { isItemId, normalizeForMatch } from '../publish/publish-types';
+import type { TranscriptRef } from '../publish/publish-types';
 
 /**
  * Exact shape check. Anything else crossing an IPC boundary is rejected, not coerced.
@@ -101,4 +102,94 @@ export interface ItemSource {
   source_key: string | null;
   /** The path as the user supplied it, for display; null for text subjects. */
   source_path: string | null;
+}
+
+/**
+ * Where an item's WORDS came from. Two answers, because as of Phase 2 there are two
+ * transcripts in play and they feed different fields (spec §3.3/§3.5).
+ *
+ * `final-export-whisper`      — the .mov's own Whisper transcript, ad reads and all.
+ * `editor-story-transcript`   — the ad-free AutoCutStudio story transcript the operator
+ *                               linked this input to.
+ */
+export type ContentOrigin = 'editor-story-transcript' | 'final-export-whisper';
+
+/**
+ * What this item was GENERATED FROM, recorded on every item at write time.
+ *
+ * Sibling to `ItemSource` and written the same way: supplied by the generator, never
+ * derived on read. `ItemSource` says which file the operator pointed at; this says which
+ * TRANSCRIPT of it wrote the words — and it is the only record of the fact, because the
+ * two-source split leaves no trace in the output itself.
+ *
+ * `content_fields` is ALWAYS present, on both branches. "Final export only" is a DECLARED
+ * MODE, not an absence (spec §3.4): a report that simply omitted the field when nothing
+ * was linked could not distinguish "the operator declared final-only" from "written by a
+ * build that did not record it" — the `_is_compilation` lesson, again.
+ *
+ * `timed_fields` is always 'final-export-whisper' and is written anyway, because the
+ * whole point of the split is that chapters DID NOT move. A reader should be able to see
+ * that from the record rather than have to know it.
+ */
+export interface ItemProvenance {
+  /** Which transcript fed titles / description / tags / thumbnail text. */
+  content_fields: ContentOrigin;
+  /**
+   * Which transcript fed chapters. Structurally constant: the chapter pipeline reads
+   * `srtSegments`, which is the final export's Whisper output on every path, forever.
+   */
+  timed_fields: 'final-export-whisper';
+  /** The link that was honored, or null for the declared final-export-only mode. */
+  transcript_ref: TranscriptRef | null;
+  /**
+   * The final export's duration, as ffprobed by the transcription stage — the ONE source
+   * of truth for this number on both branches.
+   *
+   * null means nothing measured it: a text subject or an imported transcript (no video),
+   * a compilation (N inputs cannot answer with one duration, exactly as `source_key`
+   * cannot), or an ffprobe the transcription stage could not complete.
+   */
+  final_duration_sec: number | null;
+  /** What the linked story's transcript declares it runs; null when nothing is linked. */
+  transcript_duration_sec: number | null;
+  /** probeDrift: final_duration − transcript_duration. Negative = the final cut is shorter. */
+  drift_sec: number | null;
+  /** The same drift as a percentage of the transcript's duration. */
+  drift_pct: number | null;
+  /** ISO. When this run recorded the decision. */
+  declared_at: string;
+}
+
+/**
+ * The one-line account of an item's two sources, for the reports pane and the TXT.
+ *
+ * Stated wherever the output is READ, because that is where the consequence lands: words
+ * from the editor story describe material the final cut may not contain (drift runs to
+ * −23%), and words from the final export include whatever sponsor read is in it. The
+ * renderer mirrors this sentence in transcript-link.types.ts — keep the two in step.
+ */
+export function describeProvenance(p: ItemProvenance): string {
+  if (!p || typeof p !== 'object' || !p.content_fields) {
+    throw new Error('describeProvenance requires an ItemProvenance with content_fields');
+  }
+
+  if (p.content_fields === 'final-export-whisper') {
+    return 'Content fields generated from the final export’s transcript — includes any ' +
+      'sponsor reads. Chapters from the same transcript.';
+  }
+
+  const ref = p.transcript_ref;
+  const story = ref
+    ? `${ref.sourceSession} · story ${ref.storyNumber} "${ref.storyTitle}"`
+    // A compilation records the origin without a single ref, because a set of N inputs
+    // has no one link — the same reason its source_key is null.
+    : 'the linked editor stories';
+
+  const drift = typeof p.drift_pct === 'number'
+    // drift_pct is (final − transcript) / transcript: negative means the final cut is the
+    // shorter of the two, so the STORY — the subject of this sentence — is the longer one.
+    ? ` — ${Math.abs(p.drift_pct).toFixed(1)}% ${p.drift_pct < 0 ? 'longer' : 'shorter'} than the final export`
+    : '';
+
+  return `Content from editor transcript ${story}${drift}. Chapters from the final export.`;
 }

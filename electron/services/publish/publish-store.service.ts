@@ -36,6 +36,7 @@ import {
   ChosenMetadata,
   ResolvedMetadata,
   PublishStatus,
+  TranscriptRef,
   emptyChosenMetadata,
   isItemId,
   upgradeStoredMetadata,
@@ -68,6 +69,35 @@ export interface GeneratedFallback {
   sourcePath?: string | null;
   /** Source duration in seconds, when known. null just means the match is unverified. */
   sourceDurationSec?: number | null;
+  /**
+   * The editor-story link the RUN honored, read off the item's `content_provenance`, or
+   * null when the run was final-export only.
+   *
+   * This is the seed for `ChosenMetadata.transcriptRef`, and the two are different kinds
+   * of fact: the report's ref is the immutable record of what a past run generated from,
+   * while the selection's is the operator's durable choice, which he can change and which
+   * regeneration carries forward (spec §3.5). Seeding happens ONCE, when the record is
+   * created; an existing value is never overwritten from a report.
+   *
+   * Absent (rather than null) for items written before provenance existed — nothing to
+   * seed from, which is not the same as "the run declared final-only".
+   */
+  transcriptRef?: TranscriptRef | null;
+}
+
+/**
+ * What a NEW selection record is created from.
+ *
+ * Structurally a subset of GeneratedFallback, so every caller can simply pass the
+ * generated item it already had to read. It replaces the bare `jobId` argument
+ * deliberately: creation is the only moment `transcriptRef` may be seeded, and a
+ * signature that took just the id let every caller create records that silently missed
+ * the seed. Now a caller cannot supply the id without being in a position to supply
+ * the rest.
+ */
+export interface SelectionSeed {
+  jobId: string;
+  transcriptRef?: TranscriptRef | null;
 }
 
 /**
@@ -219,17 +249,30 @@ export class PublishStoreService {
    * Read-modify-write a single selection, serialized against every other mutation.
    * Creates the record if it doesn't exist yet.
    *
-   * `jobId` is required for the create case only -- it is the record's display
-   * back-reference. It is taken from the generated item the caller just read, so it is
-   * always the job the item actually came from.
+   * `seed` matters for the create case only -- its `jobId` is the record's display
+   * back-reference and its `transcriptRef` is the Phase-2 choice this item's run already
+   * made. It is the generated item the caller just read, so it is always the job the
+   * item actually came from.
+   *
+   * SEEDING HAPPENS ONCE. On an existing record the seed's transcriptRef is ignored
+   * entirely: the stored value is the operator's, and a later read of the report must not
+   * be able to reinstate a link he has since changed or cleared.
    */
   update(
     itemId: string,
-    jobId: string,
+    seed: SelectionSeed,
     patch: Partial<Omit<ChosenMetadata, 'itemId' | 'jobId'>>
   ): Promise<ChosenMetadata> {
     const run = this.writeQueue.then(() => {
-      const existing = this.readItemFile(itemId) ?? emptyChosenMetadata(itemId, jobId);
+      if (!seed || typeof seed !== 'object' || typeof seed.jobId !== 'string' || !seed.jobId.trim()) {
+        throw new Error(
+          `update requires the item's generated record as its seed ({ jobId, transcriptRef }); ` +
+          `got ${JSON.stringify(seed)}`
+        );
+      }
+      const jobId = seed.jobId;
+
+      const existing = this.readItemFile(itemId) ?? this.createRecord(itemId, seed);
 
       const next: ChosenMetadata = {
         ...existing,
@@ -262,6 +305,24 @@ export class PublishStoreService {
     // Keep the chain alive on failure so one bad write doesn't poison later ones.
     this.writeQueue = run.then(() => undefined, () => undefined);
     return run;
+  }
+
+  /**
+   * The blank record for an item that has none yet, with the one field the RUN already
+   * decided filled in.
+   *
+   * `transcriptRef` starts as the link that generated this item, because that is the
+   * operator's most recent statement about it -- he made it on the Inputs page minutes
+   * ago -- and a publish panel that showed "not linked" for an item whose words came from
+   * an editor story would be showing him a contradiction. `undefined` in the seed (an
+   * item written before provenance existed) leaves the null emptyChosenMetadata wrote.
+   */
+  private createRecord(itemId: string, seed: SelectionSeed): ChosenMetadata {
+    const record = emptyChosenMetadata(itemId, seed.jobId);
+    if (seed.transcriptRef) {
+      record.transcriptRef = seed.transcriptRef;
+    }
+    return record;
   }
 
   /**

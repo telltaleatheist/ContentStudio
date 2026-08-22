@@ -11,7 +11,7 @@ import { Chapter } from './chapter-generator.service';
 import { ChapterPipelineService, ChapterStage, ChapterPipelineResult } from './chapter-pipeline.service';
 import { ChapterSingleCallService } from './chapter-single-call.service';
 import { OutputHandlerService } from './output-handler.service';
-import { ItemSource, sourceKeyOf } from './item-identity';
+import { ContentOrigin, ItemProvenance, ItemSource, sourceKeyOf } from './item-identity';
 import {
   MetadataTaskRun,
   buildTaskPromptsForDisplay,
@@ -67,10 +67,10 @@ export interface GenerationParams {
    * come from this editor story"; an explicit `null` means "final export only", which is
    * a declared mode rather than a default (spec §3.2).
    *
-   * CARRIED, NOT CONSUMED. Nothing in this service reads it: `summarizeTranscript` still
-   * reads `item.content` and the chapter pipeline still reads `item.srtSegments` only.
-   * It is threaded now so PR 5's split has the choice already in hand, and so a queued job
-   * carries the decision the operator made when he queued it.
+   * CONSUMED BY THE INPUT STAGE, not here: the input handler resolves the ref into
+   * `ContentItem.contentSource`, and this service reads that through `contentTextOf`.
+   * The chapter pipeline still reads `item.srtSegments` only, which is the final
+   * export's Whisper output on every path.
    */
   inputTranscripts?: { [key: string]: TranscriptRef | null };
   /**
@@ -263,7 +263,11 @@ export class MetadataGeneratorService {
 
       log.info(`[MetadataGenerator] Processed ${contentItems.length} content items`);
       contentItems.forEach((item, idx) => {
-        log.info(`[MetadataGenerator]   Item ${idx + 1}: type=${item.contentType}, content=${item.content.substring(0, 100)}...`);
+        // Logs the text that will actually feed the content fields, and says which
+        // transcript it is: a linked run whose log showed the final export's words would
+        // be describing the one thing this stage no longer does.
+        const resolved = this.contentTextOf(item);
+        log.info(`[MetadataGenerator]   Item ${idx + 1}: type=${item.contentType}, content_fields=${resolved.origin}, content=${resolved.text.substring(0, 100)}...`);
       });
 
       // Initialize job and output handler
@@ -307,7 +311,8 @@ export class MetadataGeneratorService {
             this.throwIfCancelled(params, `assembling compilation prompt (item ${i + 1}/${contentItems.length})`);
             const item = contentItems[i];
             const sourceLabel = item.source || `Item ${i + 1}`;
-            const itemSummary = await aiManager.summarizeTranscript(item.content, sourceLabel, { forceCondense: true });
+            const itemSummary = await aiManager.summarizeTranscript(
+              this.contentTextOf(item).text, sourceLabel, { forceCondense: true });
             itemSummaries.push(`ITEM ${i + 1} (${sourceLabel}):\n${itemSummary}`);
           }
           const summary = itemSummaries.join('\n\n');
@@ -335,7 +340,7 @@ export class MetadataGeneratorService {
 
             this.throwIfCancelled(params, `before summarizing ${sourceLabel} for the prompt`);
             params.progressCallback?.('generating', 'Assembling prompt...', 80, undefined, i);
-            const summary = await aiManager.summarizeTranscript(item.content, sourceLabel);
+            const summary = await aiManager.summarizeTranscript(this.contentTextOf(item).text, sourceLabel);
 
             // Same mode decision the real run makes, so the user reads the prompts that
             // will actually be sent — three labelled task prompts when chapters exist,
@@ -391,6 +396,11 @@ export class MetadataGeneratorService {
         const contentTypes = contentItems.map(item => item.contentType);
         const uniqueContentTypes = Array.from(new Set(contentTypes));
 
+        // Resolved BEFORE the first model call: a set whose inputs disagree about where
+        // their words came from cannot be recorded as one item, and finding that out
+        // after N summarizations and a metadata call would cost the operator the run.
+        const compilationProvenance = this.compilationProvenanceOf(contentItems);
+
         // Summarize each item SEPARATELY to preserve distinct subjects
         // (Combining first then summarizing loses the ITEM structure during chunking)
         params.progressCallback?.('generating', 'Analyzing combined content...', 0);
@@ -403,7 +413,8 @@ export class MetadataGeneratorService {
           const sourceLabel = item.source || `Item ${i + 1}`;
           console.log(`[MetadataGenerator] Summarizing compilation item ${i + 1}/${contentItems.length}: ${sourceLabel}`);
           // Always condense compilation items — their outputs get joined into one prompt
-          const itemSummary = await aiManager.summarizeTranscript(item.content, sourceLabel, { forceCondense: true });
+          const itemSummary = await aiManager.summarizeTranscript(
+            this.contentTextOf(item).text, sourceLabel, { forceCondense: true });
           itemSummaries.push(`ITEM ${i + 1} (${sourceLabel}):\n${itemSummary}`);
         }
 
@@ -435,7 +446,8 @@ export class MetadataGeneratorService {
         // "is this the same video, generated again?", and a set of N inputs cannot
         // answer it. `_is_compilation` on the item says which kind of item this is.
         const compilationSource: ItemSource = { source_key: null, source_path: null };
-        const saveResult = await outputHandler.addItemToJob(jobInfo.jobId, metadata, compilationSource);
+        const saveResult = await outputHandler.addItemToJob(
+          jobInfo.jobId, metadata, compilationSource, compilationProvenance);
         console.log(`[MetadataGenerator] Saved compilation to: ${saveResult.txtPath}`);
 
         params.progressCallback?.('generating', 'Compilation complete', 100);
@@ -482,7 +494,7 @@ export class MetadataGeneratorService {
           this.throwIfCancelled(params, `before summarizing ${sourceLabel}`);
           console.log(`[MetadataGenerator] Sending generating phase: Analyzing content for item ${i}`);
           params.progressCallback?.('generating', `Analyzing content ${i + 1}/${contentItems.length}...`, 60, undefined, i);
-          const summary = await aiManager.summarizeTranscript(item.content, sourceLabel);
+          const summary = await aiManager.summarizeTranscript(this.contentTextOf(item).text, sourceLabel);
 
           this.throwIfCancelled(params, `before generating metadata for ${sourceLabel}`);
           console.log(`[MetadataGenerator] Sending generating phase: Generating metadata for item ${i}`);
@@ -523,7 +535,10 @@ export class MetadataGeneratorService {
           // recorded at generation time, never derived on read from `original_inputs`
           // (which is a different array with its own length, and already disagrees with
           // items[] on 16 of the live report files).
-          const saveResult = await outputHandler.addItemToJob(jobInfo.jobId, metadata, this.itemSourceOf(item));
+          // ...and with which TRANSCRIPT of that source wrote its words, recorded on both
+          // branches so the report can always say (spec §3.5).
+          const saveResult = await outputHandler.addItemToJob(
+            jobInfo.jobId, metadata, this.itemSourceOf(item), this.itemProvenanceOf(item));
           console.log(`[MetadataGenerator] Saved metadata to: ${saveResult.txtPath}`);
 
           // Mark this item as complete
@@ -1089,6 +1104,87 @@ export class MetadataGeneratorService {
    * same words. A file input with no path is a bug in input handling, not an item to
    * record a blank source for.
    */
+  /**
+   * THE SPLIT. The one place that decides which transcript feeds a CONTENT field.
+   *
+   * Every `summarizeTranscript` call in this service goes through here, and nothing else
+   * does. That is deliberate and it is the whole safety argument for the two-source
+   * design: the chapter pipeline reads `item.srtSegments` and never calls this, so a
+   * linked run and an unlinked run of the same video produce byte-identical chapters
+   * while their titles/description/tags differ (spec §5, PR 5's acceptance test).
+   *
+   * `origin` comes back with the text because the caller that records provenance and the
+   * caller that generates from it must not be able to disagree about which one was used.
+   *
+   * Public so the split can be tested at this seam without running Whisper or a model.
+   */
+  static contentTextOf(item: ContentItem): { text: string; origin: ContentOrigin } {
+    if (item.contentSource) {
+      // Never "if it's non-empty": an empty story transcript is a fault to see, not a
+      // reason to silently generate from the ad-carrying final export instead.
+      return { text: item.contentSource.text, origin: item.contentSource.origin };
+    }
+    return { text: item.content, origin: 'final-export-whisper' };
+  }
+
+  /**
+   * What ONE item was generated from, in the shape the report file stores.
+   *
+   * Written on BOTH branches (spec §3.5). The unlinked branch is not an absence of a
+   * record — it is the record of a declared mode, and it says so with the same fields.
+   */
+  private static itemProvenanceOf(item: ContentItem): ItemProvenance {
+    const source = item.contentSource;
+    return {
+      content_fields: this.contentTextOf(item).origin,
+      // Structurally constant. See ItemProvenance.timed_fields.
+      timed_fields: 'final-export-whisper',
+      transcript_ref: source ? source.ref : null,
+      final_duration_sec: item.finalDurationSec ?? null,
+      // The ref's own duration, not a second reading of the file: `resolveRef` returned
+      // 'ok' for this ref, which is precisely the assertion that the file on disk is
+      // still the one these numbers were taken from.
+      transcript_duration_sec: source ? source.ref.durationSeconds : null,
+      drift_sec: source ? source.driftSec : null,
+      drift_pct: source ? source.driftPct : null,
+      declared_at: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * What a COMPILATION was generated from — one record for N inputs.
+   *
+   * A compilation has no single source file (its `source_key` is an explicit null for
+   * exactly this reason) and therefore no single ref, duration or drift. What it does
+   * have is one content origin, and a set whose inputs disagree about that origin has
+   * none: rather than pick one and quietly mislabel the other half, this throws, and it
+   * is called BEFORE the first model call so the operator finds out in seconds rather
+   * than after a full run.
+   */
+  private static compilationProvenanceOf(items: ContentItem[]): ItemProvenance {
+    const linked = items.filter((item) => !!item.contentSource);
+
+    if (linked.length > 0 && linked.length < items.length) {
+      const linkedNames = linked.map((i) => i.contentSource!.ref.storyTitle).join(', ');
+      throw new Error(
+        `This compilation mixes sources: ${linked.length} of ${items.length} inputs are linked ` +
+        `to an editor story (${linkedNames}) and the rest are final-export only. One item ` +
+        `cannot record two content origins — link every input or none of them.`
+      );
+    }
+
+    return {
+      content_fields: linked.length > 0 ? 'editor-story-transcript' : 'final-export-whisper',
+      timed_fields: 'final-export-whisper',
+      transcript_ref: null,
+      final_duration_sec: null,
+      transcript_duration_sec: null,
+      drift_sec: null,
+      drift_pct: null,
+      declared_at: new Date().toISOString(),
+    };
+  }
+
   private static itemSourceOf(item: ContentItem): ItemSource {
     if (item.contentType === 'subject') {
       return { source_key: null, source_path: null };
