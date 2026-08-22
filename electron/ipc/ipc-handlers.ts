@@ -43,10 +43,11 @@ import {
   selectionMigrationIsNoteworthy,
 } from '../services/publish/selection-migration';
 import { isItemId } from '../services/metadata/item-identity';
-import { composeDescription, composeTags } from '../services/metadata/description-composer';
+import { composeChapterBlock, composeDescription, composeTags } from '../services/metadata/description-composer';
 import {
   buildRoutingView,
   describeRouting,
+  migrateStoredRouting,
   probeOllamaInventory,
   resolveMetadataRouting,
   validateRoutingSelections,
@@ -779,7 +780,19 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     // Not wrapped in a try/catch that returns a shape: a stored selection this build
     // cannot honour must reach the user as an error, because it is the same error their
     // next generation would fail with.
-    const stored = (store as any).get('metadataRouting');
+    // Migrated on the way out, and WRITTEN BACK when the migration changed anything, so
+    // the notice is logged once on the first open after an upgrade rather than on every
+    // open for the rest of the install's life. Without this the modal is the screen that
+    // throws on the very setting the user came here to fix.
+    const migration = migrateStoredRouting((store as any).get('metadataRouting'));
+    if (migration.changed) {
+      (store as any).set('metadataRouting', migration.selections);
+      log.warn(
+        `[IPC] metadataRouting migrated and rewritten (${migration.notices.length} entry/entries dropped): ` +
+          migration.notices.join(' | ')
+      );
+    }
+    const stored = migration.selections;
     // Which local models are actually installed, read fresh on every open. The host is
     // the one generation resolves against (passed down as aiHost), so what the modal
     // marks installed is what a run would find.
@@ -1077,7 +1090,6 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // `contentSource`, and a declared link it cannot honor fails that item rather
         // than quietly running final-only (§3.4 rule 4).
         inputTranscripts: params.inputTranscripts || {},
-        chapterStageModels: settings.chapterStageModels || undefined,
         chapterNumCtx: settings.chapterNumCtx || undefined,
         // Per-task model routing, read from the store AT JOB TIME. The registry supplies
         // the defaults at the read site (metadata-routing.ts), never the store's
@@ -1086,8 +1098,14 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // who already have a store. An absent key means "the shipped routing"; a present
         // one means the user chose something, and a bad one fails the job by name.
         //
-        // This is also what decides the chapter pipeline's model — the 'chapters' task.
-        metadataRouting: resolveMetadataRouting(settings.metadataRouting),
+        // Migrated first. A store written before 2026-08-22 names the removed 'chapters'
+        // task or a removed option id, and `resolveMetadataRouting` throws on those —
+        // which would fail the JOB rather than the setting. The migration drops exactly
+        // those entries, with a logged notice naming each one (metadata-routing.ts); an id
+        // this build never had still throws.
+        //
+        // It does NOT decide the chapter models. Chapters are not a routed task any more.
+        metadataRouting: resolveMetadataRouting(migrateStoredRouting(settings.metadataRouting).selections),
         // Keys for whatever providers the routing reaches, which need not be the provider
         // `aiApiKey` belongs to.
         cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
@@ -2488,7 +2506,15 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // COMPOSED, not raw: chapters at the top and hashtags before the link block, which
         // is what the reports page shows and therefore what has to reach YouTube. Sending
         // item.description alone silently dropped both.
-        description: composeDescription(item),
+        //
+        // BOTH compositions are read here, and which one is published is decided in
+        // resolveChosenMetadata from the item's own `chaptersInDescription` flag. The
+        // decision cannot be made here: this reader takes an item id and nothing else, on
+        // purpose — it is injected into six call sites that have no business knowing about
+        // selection records.
+        description: composeDescription(item, { includeChapters: true }),
+        descriptionWithoutChapters: composeDescription(item, { includeChapters: false }),
+        chapterBlock: composeChapterBlock(item),
         tags: composeTags(item),
         // Source filename drives draft matching. Read off the item's own recorded
         // source_path, not inferred from array alignment.

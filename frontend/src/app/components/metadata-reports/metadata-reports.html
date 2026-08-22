@@ -436,6 +436,22 @@
                 <span class="edited-badge" title="You edited this. The generated text is kept and can be restored.">edited</span>
               }
               <span class="card-head-spacer"></span>
+              <!-- The chapter block is composed into this description by the main process.
+                   The switch says whether it should be — for THIS item, persisted on its
+                   selection record, and honoured by the YouTube push. Hidden entirely when
+                   the item has no chapters: a control that cannot change anything is worse
+                   than no control. -->
+              @if (hasChapters() && publish.hasResolved()) {
+                <label class="chapters-toggle"
+                       [class.inert]="publish.descriptionOverride() !== null"
+                       [title]="chaptersToggleHint()">
+                  <input type="checkbox"
+                         [checked]="publish.chaptersInDescription()"
+                         [disabled]="publish.descriptionOverride() !== null || publish.saving()"
+                         (change)="setChaptersInDescription($any($event.target).checked)">
+                  Chapters
+                </label>
+              }
               <span class="char-count" [class.over]="descriptionOverLimit()">
                 {{ publish.hasResolved() ? descriptionCountLabel() : 'loading…' }}
               </span>
@@ -456,6 +472,12 @@
                 </button>
               }
             </div>
+            @if (hasChapters() && publish.descriptionOverride() !== null) {
+              <p class="chapters-toggle-note">
+                This description was edited by hand, so it is pushed exactly as saved — the
+                chapters switch does not apply to it. Revert to compose it again.
+              </p>
+            }
             <div class="description-box">
               <div class="description-card">
                 @if (editingDescription()) {

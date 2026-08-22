@@ -2,7 +2,7 @@
  * Chapter Embedding Service — boundaries scored by an embedding model, selected in code
  *
  * A THIRD chapter architecture, beside the sealed 5-stage pipeline
- * (chapter-pipeline.service.ts) and the 27B single call (chapter-single-call.service.ts).
+ * (both since deleted: the sealed 5-stage pipeline and the 27B single call).
  * It is a port of the method validated in Briefcase in August 2026 and written up as a
  * portable, self-contained handoff document:
  *
@@ -72,8 +72,15 @@ import {
   targetSecondsFor,
   ChapterPipelineResult,
   Cue,
-} from './chapter-pipeline.service';
+} from './chapter-transcript';
 import { CHAPTER_EMBEDDING_PROMPTS } from './chapter-prompts';
+import {
+  askOllamaJson,
+  unloadOllamaModels,
+  CTX_BUCKET,
+  TOKENS_PER_WORD,
+  OLLAMA_KEEP_ALIVE,
+} from './ollama-json';
 import { formatPrompt } from './system-prompts';
 import { isAbortError } from './cancellation';
 
@@ -109,7 +116,7 @@ const EMBED_MODEL = 'nomic-embed-text';
 const EMBED_TIMEOUT_MS = 60_000;
 
 /** 3.2 / 6. Keeps the model resident across the run without unloading anything else. */
-const KEEP_ALIVE = '10m';
+const KEEP_ALIVE = OLLAMA_KEEP_ALIVE;
 
 /**
  * 3.5. Adjacent chapters whose centroid vectors are this similar are the same subject.
@@ -158,14 +165,8 @@ const MAX_CHAPTER_TARGET_MULTIPLE = 3;
  */
 const NUM_PREDICT = 4096;
 
-/** Trap 3. Ollama fully reloads the model on ANY num_ctx change — bucket coarsely. */
-const CTX_BUCKET = 4096;
-
 /** Hard refusal point. A prompt that does not fit is a prompt that lies about its span. */
 const CTX_MAX = 32768;
-
-/** Tokens per transcript word — the estimate the rest of this codebase uses. */
-const TOKENS_PER_WORD = 1.4;
 
 const CALL_TIMEOUT_MS = 600_000;
 
@@ -1249,114 +1250,38 @@ export class ChapterEmbeddingService {
   /**
    * One generation call, or null when its ANSWER was unusable.
    *
-   * /api/generate, not /api/chat: these models reason by default, and on /api/chat that
-   * reasoning lands in `message.thinking` with `message.content` empty. /api/generate
-   * returns `response` and `thinking` as separate fields.
-   *
-   * The section 6 traps, all three of them, live here:
-   *  - `think` is NOT sent. `think: false` does not disable thinking, it relocates the
-   *    reasoning into `response` and breaks the JSON.
-   *  - with `format: "json"` the grammar constrains the WHOLE stream, so a thinking model
-   *    sometimes puts the object in `thinking` and leaves `response` empty. Read from
-   *    `thinking` in exactly that case and nowhere else.
-   *  - one num_ctx for the run, and `keep_alive` long enough to span the gap between calls
-   *    so the model stays resident.
-   *
-   * `done_reason: "length"` is a HARD failure for the call: the text is a truncated
-   * fragment, and half a quote maps to the wrong second. Transport failures throw.
+   * The mechanism — /api/generate, no `think` key, `format: "json"`, the `thinking`
+   * fallback when the grammar swallowed `response`, one num_ctx for the run, and the
+   * transport error messages — lives in ollama-json.ts, which is where those four traps are
+   * written down. This method is the POLICY, and the policy is the part that is specific to
+   * chaptering: a call whose answer is unusable costs this stage ONE boundary or ONE
+   * chapter name, not the run, so it returns null and the stage recovers and warns. A
+   * transport failure affects every remaining call, so it throws.
    */
   private async askJson(stage: ChapterEmbeddingStage, prompt: string, what: string): Promise<any | null> {
     this.checkCancelled();
     const model = this.modelFor(stage);
     this.calls++;
 
-    let data: any;
-    try {
-      const response = await this.client.post(
-        '/api/generate',
-        {
-          model,
-          prompt,
-          stream: false,
-          format: 'json',
-          keep_alive: KEEP_ALIVE,
-          options: {
-            temperature: 0,
-            seed: 0,
-            num_ctx: this.numCtx,
-            num_predict: NUM_PREDICT,
-          },
-        },
-        { timeout: CALL_TIMEOUT_MS, signal: this.options.abortSignal }
-      );
-      data = response.data;
-    } catch (error: any) {
-      if (isAbortError(error)) {
-        throw new Error(`Embedding chaptering was cancelled by the user during ${what} (model ${model})`);
-      }
-      const status = error?.response?.status;
-      const detail = error?.response?.data?.error || error?.message || 'unknown error';
-      if (status === 404) {
-        throw new Error(
-          `Embedding chaptering needs Ollama model "${model}", which is not installed. ` +
-            `Pull it with: ollama pull ${model}`
-        );
-      }
-      if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT') {
-        throw new Error(
-          `Embedding chaptering timed out after ${CALL_TIMEOUT_MS / 1000}s on ${what} (model ${model})`
-        );
-      }
-      throw new Error(`Embedding chaptering failed on ${what} (model ${model}): ${detail}`);
-    }
+    const result = await askOllamaJson(this.client, {
+      model,
+      prompt,
+      numCtx: this.numCtx,
+      numPredict: NUM_PREDICT,
+      temperature: 0,
+      seed: 0,
+      keepAlive: KEEP_ALIVE,
+      timeoutMs: CALL_TIMEOUT_MS,
+      signal: this.options.abortSignal,
+      what: `${what} (embedding chaptering)`,
+      logPrefix: `[ChapterEmbedding] stage "${stage}"`,
+    });
 
-    if (data?.done_reason === 'length') {
-      log.warn(
-        `[ChapterEmbedding] stage "${stage}" hit the ${NUM_PREDICT}-token output ceiling on ${what}, ` +
-          `so its answer is a truncated fragment and is discarded`
-      );
+    if (!result.ok) {
+      log.warn(`[ChapterEmbedding] stage "${stage}" got no usable answer: ${result.detail}`);
       return null;
     }
-
-    const answer = ChapterEmbeddingService.readAnswer(data, stage, what);
-    if (!answer) return null;
-
-    const match = answer.match(/\{[\s\S]*\}/);
-    if (!match) {
-      log.warn(`[ChapterEmbedding] stage "${stage}" returned no JSON object on ${what}: ${answer.slice(0, 200)}`);
-      return null;
-    }
-    try {
-      const parsed = JSON.parse(match[0]);
-      return parsed && typeof parsed === 'object' ? parsed : null;
-    } catch {
-      log.warn(`[ChapterEmbedding] stage "${stage}" returned unparseable JSON on ${what}: ${match[0].slice(0, 200)}`);
-      return null;
-    }
-  }
-
-  /**
-   * The answer text — trap 2, handled narrowly.
-   *
-   * Structured output was requested, so when `response` comes back EMPTY and `thinking`
-   * does not, the JSON grammar constrained the reasoning channel and the object is in
-   * there. Read it, and say so, rather than counting a perfectly good answer as a failure.
-   */
-  private static readAnswer(data: any, stage: ChapterEmbeddingStage, what: string): string {
-    const response = typeof data?.response === 'string' ? data.response : '';
-    if (response.trim().length > 0) return response;
-
-    const thinking = typeof data?.thinking === 'string' ? data.thinking : '';
-    if (thinking.trim().length > 0) {
-      log.info(
-        `[ChapterEmbedding] stage "${stage}" answered ${what} in the "thinking" field with "response" empty ` +
-          `(the format:json grammar constrained the whole stream) — reading the object from there`
-      );
-      return thinking;
-    }
-
-    log.warn(`[ChapterEmbedding] stage "${stage}" returned an empty response on ${what}`);
-    return '';
+    return result.value;
   }
 
   /**
@@ -1364,15 +1289,13 @@ export class ChapterEmbeddingService {
    * timer fires, so it warns rather than failing a finished run.
    */
   private async unloadModels(): Promise<void> {
-    const models = new Set<string>([this.options.model, ...Object.values(this.options.stageModels || {})]);
-    for (const model of models) {
-      if (!model) continue;
-      try {
-        await this.client.post('/api/generate', { model, prompt: '', keep_alive: 0 }, { timeout: 30_000 });
-      } catch (error: any) {
-        log.warn(`[ChapterEmbedding] Could not unload "${model}": ${error?.message || error}`);
-      }
-    }
+    await unloadOllamaModels(
+      this.client,
+      [this.options.model, ...Object.values(this.options.stageModels || {})].filter(
+        (m): m is string => typeof m === 'string' && m.length > 0
+      ),
+      '[ChapterEmbedding]'
+    );
   }
 
   // ---------------------------------------------------------------------- assembling

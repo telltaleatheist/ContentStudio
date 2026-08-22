@@ -53,7 +53,27 @@ export interface GeneratedFallback {
    */
   jobId: string;
   titles: string[];
+  /**
+   * The composed description WITH the chapter block, which is what the app has always
+   * pushed and still is unless the operator turned chapters off on this item.
+   */
   description: string;
+  /**
+   * The same composition with the chapter block left out.
+   *
+   * Both are carried rather than one being derived from the other, because deriving means
+   * STRIPPING a block back off a finished string, and a strip that matches slightly too
+   * much or too little corrupts the description it is editing. The composer is the only
+   * thing that knows where the block ends; it produces both.
+   */
+  descriptionWithoutChapters: string;
+  /**
+   * The chapter block on its own, '' when the item has no chapters.
+   *
+   * Read by the panel to decide whether the chapters switch is MEANINGFUL for this item.
+   * A switch on an item with no chapters is a control that cannot do anything.
+   */
+  chapterBlock: string;
   tags: string;
   /** Basename of the analyzed source file, when the host can determine it. */
   sourceFilename?: string | null;
@@ -480,7 +500,17 @@ export function resolveChosenMetadata(
     channelId: chosen.channelId,
     videoId: chosen.videoId,
     titles,
-    description: chosen.descriptionOverride ?? generated.description ?? '',
+    // THREE inputs, in a fixed order of authority:
+    //   1. the operator's edited text, which wins over composition entirely;
+    //   2. otherwise the composed description, chapters included;
+    //   3. unless the operator switched chapters off for this item.
+    // An override is deliberately NOT re-composed: it is the literal string the operator
+    // saved, and quietly re-prefixing it would either duplicate a chapter block it already
+    // contains or reinstate one they deleted by hand.
+    description:
+      chosen.descriptionOverride ??
+      (chosen.chaptersInDescription ? generated.description : generated.descriptionWithoutChapters) ??
+      '',
     tags: chosen.tagsOverride ?? generated.tags ?? '',
     // Stored value wins (it was captured at selection time); otherwise fall back to
     // whatever the host can still determine from the job.

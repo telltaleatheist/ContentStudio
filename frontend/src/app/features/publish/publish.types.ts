@@ -281,6 +281,16 @@ export interface ChosenMetadata {
   /** Ordered. Index 0 becomes the main title AND A/B variant 1. */
   chosenTitles: string[];
   descriptionOverride: string | null;
+  /**
+   * Whether the chapter block is part of the composed description that gets pushed.
+   *
+   * Strictly boolean and never absent — records written before it existed are upgraded to
+   * `true` on read, which is what they have always published.
+   *
+   * It governs the COMPOSED description only. Once `descriptionOverride` is set, that text
+   * is pushed verbatim and this flag changes nothing.
+   */
+  chaptersInDescription: boolean;
   tagsOverride: string | null;
   /** A value here is always a REGISTERED channel id; null means "not routed yet". */
   channelId: string | null;

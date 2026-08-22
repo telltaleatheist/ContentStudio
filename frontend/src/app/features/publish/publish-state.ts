@@ -225,6 +225,15 @@ export class PublishState {
   /** The operator's tags edit, or null when they haven't made one. */
   readonly tagsOverride = computed(() => this._selection()?.tagsOverride ?? null);
 
+  /**
+   * Whether the chapter block is composed into this item's description.
+   *
+   * TRUE when no selection record exists yet, because that is what an untouched item
+   * publishes — the same value emptyChosenMetadata writes and upgradeStoredMetadata fills
+   * in. It is not a UI default: the main process resolves an absent record the same way.
+   */
+  readonly chaptersInDescription = computed(() => this._selection()?.chaptersInDescription ?? true);
+
   // The Phase-1 publish fields, read-only for now: the panel that edits them lands with
   // the Publish UI. They are exposed here rather than reached out of `selection()` at
   // the call site so there is one place that knows how a missing selection reads —

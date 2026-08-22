@@ -69,6 +69,21 @@ const FIELD_VALIDATORS: Record<string, (value: unknown, ctx: FieldContext) => Fi
     return { descriptionOverride: value };
   },
 
+  /**
+   * Whether the chapter block goes into the composed description. Strict boolean, no null:
+   * this field has no "undecided" state — the description either carries the chapters or
+   * it does not, and every record has an answer (see ChosenMetadata.chaptersInDescription).
+   */
+  chaptersInDescription(value) {
+    if (typeof value !== 'boolean') {
+      throw new Error(
+        `chaptersInDescription must be true or false — the chapter block is either in the ` +
+        `composed description or it is not, and there is no third state; got ${describeValue(value)}.`
+      );
+    }
+    return { chaptersInDescription: value };
+  },
+
   /** Comma-separated, matching MetadataResult.tags. null clears. */
   tagsOverride(value) {
     if (value !== null && typeof value !== 'string') {

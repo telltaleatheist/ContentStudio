@@ -139,16 +139,17 @@ app.whenReady().then(async () => {
         ollamaModel: 'gpt-4o', // Used for all providers (OpenAI, Claude, and Ollama)
         ollamaHost: 'http://localhost:11434',
         // NOTE: no metadataRouting default here, deliberately. Which model writes which
-        // field (including the chapter pipeline's) is the `metadataRouting` setting, and
-        // its defaults come from the registry at the READ site (metadata-routing.ts).
-        // Seeding them here would freeze today's shipped routing into every store that
-        // already exists, so a default that changes later would never reach the users who
-        // have been running the app the longest.
-        // Per-stage overrides, e.g. {"rate": "qwen2.5:14b"}. Empty = one model runs
-        // every stage. CHAPTERING.md validates qwen2.5:14b as the rater and suggests
-        // it for stages 2, 4 and 5 when a corpus rates with little variance.
-        chapterStageModels: {},
-        // Floor for summarizing a ~18-minute consolidated chapter. One value for the
+        // field is the `metadataRouting` setting, and its defaults come from the registry
+        // at the READ site (metadata-routing.ts). Seeding them here would freeze today's
+        // shipped routing into every store that already exists, so a default that changes
+        // later would never reach the users who have been running the app the longest.
+        //
+        // The chapter models are not in there either, and never were a default here: they
+        // stopped being routable on 2026-08-22 and are declared in code as
+        // CHAPTER_PIPELINE_MODELS. `chapterStageModels` went with the sealed pipeline it
+        // configured — an existing store may still hold the key and nothing reads it.
+        //
+        // Floor for summarizing a long consolidated chapter. One value for the
         // whole run: Ollama reloads the model whenever num_ctx changes.
         chapterNumCtx: 16384,
         openaiApiKey: '',

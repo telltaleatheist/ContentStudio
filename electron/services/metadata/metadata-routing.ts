@@ -17,12 +17,17 @@
  * naming an option this table does not know, or an option that is not offered for that
  * task, throws — the user asked for something specific and must not silently get
  * something else.
+ *
+ * The ONE exception is an id THIS BUILD REMOVED, which is a different event: the user chose
+ * something legitimate and an upgrade took it away, and throwing there fails the very modal
+ * they would fix it in. Those ids are listed in REMOVED_ROUTING_TASKS /
+ * REMOVED_ROUTING_OPTIONS and dropped by `migrateStoredRouting` with a logged notice and a
+ * write-back — a recorded migration, not a silent substitution. Anything else still throws.
  */
 
 import * as log from 'electron-log';
 
 export type MetadataRoutingTaskId =
-  | 'chapters'
   | 'titles'
   | 'description'
   | 'tags'
@@ -61,16 +66,25 @@ export interface MetadataRoutingOption {
    */
   startCommand?: string[];
   /**
-   * Other models this option needs BESIDES `model`, as `ollama list` prints them.
+   * REQUIRED on every local option: which of the two local prompt shapes this model wants.
    *
-   * One option, one model held until the embedding chapter path arrived: it runs a
-   * generation model AND an embedding model, and a missing embedding model does not fail
-   * the run — it costs it the weaker lexical scorer, which the run then declares. The
-   * availability probe reads this so the picker can say which of the two is missing
-   * BEFORE the run, instead of reporting the option installed on the strength of half its
-   * requirements.
+   * They are not interchangeable and picking the wrong one produces confident garbage
+   * rather than an error:
+   *
+   *  - `adapter` — a FINE-TUNED model. It was trained on a terse turn (`task: description`,
+   *    `format: normal`, then the chapter subjects as bullets) and the brief is baked into
+   *    its weights. Handing it the prompt set's instructions is handing it text its training
+   *    never contained. Runs through metadata-tasks.ts's LocalAdapterUnit, and only the
+   *    three fields an adapter was ever trained for (description, tags, titles).
+   *  - `prompt-set` — a BASE model. It knows nothing about this channel, so it gets exactly
+   *    the prompt the cloud groups get: the editorial brief, the per-field `##` sections
+   *    from the channel's yml, the abLearnings block and the JSON output contract. Runs
+   *    through LocalGroupUnit, which is CloudGroupUnit's prompt and parser pointed at
+   *    Ollama, so any routable field can go to it.
+   *
+   * Cloud options have no `promptStyle` — a cloud model is always the prompt-set shape.
    */
-  companionModels?: string[];
+  promptStyle?: 'adapter' | 'prompt-set';
 }
 
 /** The shim behind headline-32b-titles. It is not Ollama and it is not always running. */
@@ -80,130 +94,79 @@ const HEADLINE_32B_START_HINT =
   '`python AutoCutStudioApp/tools/headline32b-server/serve.py`';
 
 /**
- * The one option id that selects a different chapter ARCHITECTURE rather than a different
- * chapter model. Exported so metadata-generator.service.ts can branch on it by identity
- * instead of matching a string literal in two files.
+ * The models the ALWAYS-ON chapter pipeline runs, which is deliberately not a routing
+ * option any more.
+ *
+ * Chapters used to be a routed task with six options across three architectures. As of
+ * 2026-08-22 there is one architecture — the embedding pipeline (chapter-embedding.service.ts,
+ * CHAPTERING.md's second addendum) — and it is not a choice: every run that has a
+ * timestamped transcript chapters it this way. A picker with one entry is not a picker, and
+ * the two dead architectures it used to offer are deleted rather than left selectable.
+ *
+ * The pair is still DECLARED here rather than hidden inside the pipeline, because the
+ * routing modal reports whether they are installed before a run spends an hour finding out.
+ * `embedding` missing does not stop a run — it costs it the lexical TF-IDF scorer, which the
+ * run then declares in its warnings — and the modal says so up front so the user can decline.
  */
-export const CHAPTERS_SINGLE_CALL_OPTION_ID = 'chapters-qwen27b-single';
-
-/**
- * The second chapter-ARCHITECTURE option id: the embedding pipeline
- * (chapter-embedding.service.ts). Exported for the same reason as the one above —
- * metadata-generator.service.ts branches on it by identity rather than matching a string
- * literal in two files.
- */
-export const CHAPTERS_EMBEDDING_OPTION_ID = 'chapters-embedding';
+export const CHAPTER_PIPELINE_MODELS = {
+  /** Places each boundary and names each chapter. */
+  generation: 'qwen3.8:27b',
+  /** Scores every junction in ONE batched /api/embed call. */
+  embedding: 'nomic-embed-text',
+} as const;
 
 export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
   sonnet5: { kind: 'cloud', label: 'Claude Sonnet 5', model: 'claude:claude-sonnet-5' },
   opus5: { kind: 'cloud', label: 'Claude Opus 5', model: 'claude:claude-opus-5' },
-  'cogito-14b': { kind: 'local', label: 'Cogito 14B', model: 'cogito:14b' },
-  'qwen25-14b': { kind: 'local', label: 'Qwen2.5 14B', model: 'qwen2.5:14b' },
-  'qwen3-14b': { kind: 'local', label: 'Qwen3 14B', model: 'qwen3:14b' },
-  'headline-desc-14b': { kind: 'local', label: 'Headline 14B (descriptions)', model: 'headline-14b-descriptions' },
-  'headline-tags-14b': { kind: 'local', label: 'Headline 14B (tags)', model: 'headline-14b-tags' },
-  'headline-titles-14b': { kind: 'local', label: 'Headline 14B (titles)', model: 'headline-14b-titles' },
   /**
-   * A BASE model on the titles field, which is a deliberate exception to this file's own rule.
+   * The local default for the text fields as of 2026-08-22.
    *
-   * Everything else offered for titles is either a cloud model or a trained headline adapter.
-   * The note on METADATA_ROUTING_TASKS warns that pointing a base model at a brief makes it
-   * "answer fluently and wrongly", and that applies here: measured on this machine, this model
-   * given a generic brief writes a colon title 47% of the time, and colons lose head-to-head
-   * 20-to-5 in the operator's own A/B record.
+   * It replaces the headline-14b adapters, which are not a choice any more: their base
+   * model (cogito:14b) was deleted from this machine, so every `headline-14b-*` tag left in
+   * Ollama is a shell that cannot load. Removing the options rather than leaving them
+   * selectable is the point — an option naming a model that cannot run is a job that fails
+   * an hour in.
+   */
+  'qwen35-9b': { kind: 'local', label: 'Qwen3.5 9B', model: 'qwen3.5:9b', promptStyle: 'prompt-set' },
+  /**
+   * A BASE model on fields that used to be cloud-only, which is a deliberate exception to
+   * this file's own rule and the reason the note below METADATA_ROUTING_TASKS was rewritten.
    *
-   * It is offered for CHAPTERS as well as titles, which is a different argument. Chapters are
-   * not a voice problem — the sealed pipeline asks hundreds of short factual questions about a
-   * transcript, so a base model with no adapter is the normal shape there rather than an
-   * exception. It also matters that it is INSTALLED: of the three options this table offered
-   * for chapters, two name models that are not present on the operator's machine, including
-   * the default, which is why chaptering silently produced nothing until it was diagnosed.
-   *
-   * The label carries no field suffix on purpose. Every other `(titles)` / `(tags)` /
-   * `(descriptions)` label in this table marks a TRAINED ADAPTER, and this is a base model
-   * appearing in two different dropdowns; "Qwen 27B (titles)" inside the Chapters list would
-   * be wrong twice over.
-   *
-   * It is offered anyway because it is not GIVEN a generic brief — it runs the same prompt
+   * Measured on this machine, this model given a GENERIC brief writes a colon title 47% of
+   * the time, and colons lose head-to-head 20-to-5 in the operator's own A/B record. It is
+   * offered anyway because it is not given a generic brief — it runs the same prompt
    * pipeline as everything else, which carries the per-channel yml sets and the abLearnings
    * block, and the same measurement showed the shape collapses to 0% once real head-to-heads
    * are in the prompt. The caveat is real but it is a property of the prompt, not the model.
    *
-   * Consequence worth knowing before choosing it: a larger model amplifies whatever the prompt
-   * teaches, in both directions. The yml sets currently REQUIRE one question-format title per
-   * batch of ten, against a shape that loses 15-to-2.
+   * Consequence worth knowing before choosing it: a larger model amplifies whatever the
+   * prompt teaches, in both directions.
    *
-   * CHECKED, because it was expected to be a problem and is not: this model reasons by default,
-   * and on Ollama's /api/chat that reasoning lands in `message.thinking` while `message.content`
-   * comes back EMPTY unless the caller sends `think: false`. A title needs ~13 tokens and the
-   * reasoning spends hundreds, so the generation hits its cap mid-thought and returns nothing.
-   * This app does not use /api/chat — ai-manager posts to /api/generate and reads
-   * `data.response`, and that endpoint returns `response` and `thinking` as SEPARATE fields.
-   * Probed with this app's exact options block (temperature 0.7, num_predict 4096,
-   * num_ctx 32768): 74 characters of `response`, 566 of `thinking`, done_reason "stop". The
-   * content arrives and the reasoning is discarded, which is what we want. No think flag needed
-   * — but anyone moving this app to /api/chat must add one, or every local title silently
-   * becomes an empty string.
+   * The label carries no field suffix on purpose. Every `(titles)` / `(tags)` /
+   * `(descriptions)` label this table ever had marked a TRAINED ADAPTER, and this is a base
+   * model appearing in six different dropdowns.
+   *
+   * CHECKED, because it was expected to be a problem and is not: this model reasons by
+   * default, and on Ollama's /api/chat that reasoning lands in `message.thinking` while
+   * `message.content` comes back EMPTY unless the caller sends `think: false`. This app does
+   * not use /api/chat — the local client posts to /api/generate and reads `data.response`,
+   * and that endpoint returns `response` and `thinking` as SEPARATE fields. Probed with this
+   * app's exact options block (temperature 0.7, num_predict 4096, num_ctx 32768): 74
+   * characters of `response`, 566 of `thinking`, done_reason "stop". The content arrives and
+   * the reasoning is discarded, which is what we want. No think flag needed — but anyone
+   * moving this app to /api/chat must add one, or every local field silently becomes an
+   * empty string. The one shape that DOES bite is `format: "json"`, which constrains the
+   * whole stream and can leave the object in `thinking`; ollama-json.ts handles exactly that
+   * case and nothing wider.
    */
-  'qwen38-27b': { kind: 'local', label: 'Qwen 27B', model: 'qwen3.8:27b' },
-  /**
-   * The same model, on a different ARCHITECTURE — chapters only.
-   *
-   * Every other option in this table names a model that runs the task's normal code path.
-   * This one is a path selector: picking it routes chapters to
-   * chapter-single-call.service.ts, which sends the WHOLE transcript in ONE call, instead
-   * of to the sealed 5-stage pipeline's ~390 one-question calls. Same model file, same
-   * host, ~390x fewer requests, and a completely different failure surface — hence its own
-   * id rather than a flag hidden somewhere else.
-   *
-   * Measured 2026-08-21 across four videos, 8.8 minutes to 2h08
-   * (/Volumes/Callisto/Projects/tools/chapter-experiment/RESULTS.md): 5 of 5 ground-truth
-   * story boundaries on a 2h08 stream, worst offset 54 s, zero invented names in any run,
-   * and whisper garble repaired from whole-video context in ways a span-local call cannot
-   * manage. Against that, cadence is unstable without a stated budget (a 44x swing at
-   * temperature 0) and four tokens of cosmetic punctuation once moved a count 8 -> 13, so
-   * the count, the ordering, the spacing and every quote are enforced in code and a list
-   * that misses fails the stage outright.
-   *
-   * "experimental" in the label is the honest word for that: it is a one-shot with a much
-   * narrower validated record than the sealed pipeline, and when it fails it fails the
-   * whole chapter list rather than degrading one chapter.
-   */
-  [CHAPTERS_SINGLE_CALL_OPTION_ID]: {
-    kind: 'local',
-    label: 'Qwen 27B — single call (experimental)',
-    model: 'qwen3.8:27b',
-  },
-  /**
-   * The THIRD chapter architecture: embeddings score the boundaries, code selects them,
-   * and the generation model is spent only on placing and naming (chapter-embedding.service.ts).
-   *
-   * Ported 2026-08-22 from the portable handoff document that is its authority,
-   * /Volumes/Callisto/Projects/Briefcase/docs/chapter-pipeline-handoff.md, where it was
-   * validated on real broadcast content in August 2026: on a 63-minute panel show it found
-   * an ad break the whole-transcript approach missed entirely, placed it to the second, and
-   * cut the boundary stage from ~5 minutes to ~1. It is the cheapest of the three paths by
-   * an order of magnitude — ~10 generation calls an hour of video against the sealed
-   * pipeline's ~390 — because the O(N) label and rate stages are replaced by ONE batched
-   * embedding call.
-   *
-   * TWO MODELS, which is why this option carries `companionModels`. The generation model
-   * below places and summarizes; `nomic-embed-text` (137M, 274MB) does the scoring. If the
-   * embedding model is missing the run does NOT stop — it declares the lexical TF-IDF
-   * scorer in its stats and warnings and carries on with measurably weaker boundaries —
-   * but the picker says so up front, because "it worked, just worse" is exactly the kind of
-   * degradation a user should get to decline before spending the run.
-   */
-  [CHAPTERS_EMBEDDING_OPTION_ID]: {
-    kind: 'local',
-    label: 'Embedding pipeline (Briefcase method)',
-    model: 'qwen3.8:27b',
-    companionModels: ['nomic-embed-text'],
-  },
+  'qwen38-27b': { kind: 'local', label: 'Qwen 27B', model: 'qwen3.8:27b', promptStyle: 'prompt-set' },
   'headline-titles-32b': {
     kind: 'local',
     label: 'Headline 32B (titles)',
     model: 'headline-32b-titles',
+    // The last surviving trained adapter: a separate MLX shim, its own server, and the
+    // terse task turn it was trained on. Nothing about it changed on 2026-08-22.
+    promptStyle: 'adapter',
     host: HEADLINE_32B_HOST,
     startHint: HEADLINE_32B_START_HINT,
     startCommand: [
@@ -225,63 +188,107 @@ export interface MetadataRoutingTask {
 /**
  * The table. Order is the modal's order.
  *
- * `chapters` is local-only because the sealed pipeline (CHAPTERING.md) makes hundreds of
- * one-question calls per video — a shape that only makes sense on a local model, and one
- * a cloud bill would not survive. thumbnail_text, pinned_comment and clip_suggestions are
- * cloud-only for the opposite reason: no adapter has been trained for them yet, and
- * pointing them at a base model would answer the brief fluently and wrongly.
+ * ALL SIX TASKS ARE NOW LOCAL-BY-DEFAULT AND CLOUD-CAPABLE, which is the opposite of what
+ * this note used to say. It read: "`chapters` is local-only because the sealed pipeline
+ * makes hundreds of one-question calls per video ... thumbnail_text, pinned_comment and
+ * clip_suggestions are cloud-only for the opposite reason: no adapter has been trained for
+ * them yet, and pointing them at a base model would answer the brief fluently and wrongly."
+ * Both halves of that stopped being true on 2026-08-22:
+ *
+ *  - `chapters` is not in this table at all. It is not routed, because there is nothing
+ *    left to route it to: the embedding pipeline is the only chaptering architecture and it
+ *    always runs (CHAPTER_PIPELINE_MODELS above).
+ *  - The adapter argument died with its base model. cogito:14b was deleted from this
+ *    machine, so `headline-14b-descriptions` / `-tags` / `-titles` cannot load, and holding
+ *    three fields at cloud-only to wait for adapters that no longer have a base is waiting
+ *    for nothing. The base-model caveat still stands and is written out in full on the
+ *    `qwen38-27b` option — it is a property of a GENERIC brief, and these tasks send the
+ *    per-channel yml sets and the abLearnings block, not a generic brief.
+ *
+ * Where a task defaults to the 27B rather than the 9B, the reason is the same in each case:
+ * the output is tiny and the judgement behind it is not. Thumbnail text is three words that
+ * have to carry a whole video, and clip suggestions require reasoning over the WHOLE
+ * transcript at once — both are worth the slower model. Description, tags and pinned
+ * comments are longer writing against a detailed brief, which is what the 9B is for.
+ *
+ * Cloud stays offered on every task. Nothing here is a fallback: a local model that fails
+ * fails the field, and the user picks the cloud option deliberately if they want it.
  */
 export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
   {
-    id: 'chapters',
-    label: 'Chapters',
-    options: [
-      'cogito-14b',
-      'qwen25-14b',
-      'qwen3-14b',
-      'qwen38-27b',
-      CHAPTERS_SINGLE_CALL_OPTION_ID,
-      CHAPTERS_EMBEDDING_OPTION_ID,
-    ],
-    defaultOptionId: 'cogito-14b',
-  },
-  {
     id: 'titles',
     label: 'Titles',
-    options: ['sonnet5', 'opus5', 'headline-titles-14b', 'headline-titles-32b', 'qwen38-27b'],
+    options: ['sonnet5', 'opus5', 'headline-titles-32b', 'qwen38-27b'],
     defaultOptionId: 'sonnet5',
   },
   {
     id: 'description',
     label: 'Description',
-    options: ['headline-desc-14b', 'sonnet5', 'opus5'],
-    defaultOptionId: 'headline-desc-14b',
+    options: ['qwen35-9b', 'qwen38-27b', 'sonnet5', 'opus5'],
+    defaultOptionId: 'qwen35-9b',
   },
   {
     id: 'tags',
     label: 'Tags',
-    options: ['headline-tags-14b', 'sonnet5', 'opus5'],
-    defaultOptionId: 'headline-tags-14b',
+    options: ['qwen35-9b', 'qwen38-27b', 'sonnet5', 'opus5'],
+    defaultOptionId: 'qwen35-9b',
   },
   {
     id: 'thumbnail_text',
     label: 'Thumbnail text',
-    options: ['sonnet5', 'opus5'],
-    defaultOptionId: 'sonnet5',
+    // 27B by default: the output is three words and the judgement behind them is the whole
+    // video, so the cheaper model saves nothing worth having here.
+    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5'],
+    defaultOptionId: 'qwen38-27b',
   },
   {
     id: 'pinned_comment',
     label: 'Pinned comment',
-    options: ['sonnet5', 'opus5'],
-    defaultOptionId: 'sonnet5',
+    options: ['qwen35-9b', 'qwen38-27b', 'sonnet5', 'opus5'],
+    defaultOptionId: 'qwen35-9b',
   },
   {
     id: 'clip_suggestions',
     label: 'Clip suggestions',
-    options: ['sonnet5', 'opus5'],
-    defaultOptionId: 'sonnet5',
+    // 27B by default: picking the clippable moments means holding the whole transcript in
+    // one head, which is the shape the smaller model is worst at.
+    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5'],
+    defaultOptionId: 'qwen38-27b',
   },
 ];
+
+/**
+ * Ids this build used to offer, and why they went. Read by `migrateStoredRouting` ONLY.
+ *
+ * An existing store holds whatever the user last chose, and on 2026-08-22 a whole task and
+ * six options stopped existing. Without this, `validateRoutingSelection` throws on the
+ * store's own contents — which is right for a hand-edited typo and wrong for a setting this
+ * build removed underneath the user, because the throw lands in `metadata-routing:get`,
+ * which is the one screen where they could have fixed it.
+ *
+ * So removal is RECORDED here rather than guessed at the read site: an id in this map is
+ * dropped with a logged notice quoting the reason, and an id that is NOT in this map still
+ * throws exactly as before. Anyone removing an option in future adds it here in the same
+ * commit, or existing installs break on upgrade.
+ */
+export const REMOVED_ROUTING_TASKS: Record<string, string> = {
+  chapters:
+    'chapters are no longer routed — the embedding pipeline is the only chaptering ' +
+    'architecture and it runs on every item that has a timestamped transcript',
+};
+
+export const REMOVED_ROUTING_OPTIONS: Record<string, string> = {
+  'cogito-14b': 'cogito:14b was deleted from this machine',
+  'qwen25-14b': 'it was offered for chapters only, and chapters are no longer routed',
+  'qwen3-14b': 'it was offered for chapters only, and chapters are no longer routed',
+  'chapters-qwen27b-single': 'the single-call chapter architecture was removed',
+  'chapters-embedding':
+    'the embedding pipeline stopped being one chapter option among several and became the ' +
+    'only one, so it is not selectable any more — it always runs',
+  'headline-desc-14b': 'its base model (cogito:14b) was deleted, so the adapter cannot load',
+  'headline-tags-14b': 'its base model (cogito:14b) was deleted, so the adapter cannot load',
+  'headline-titles-14b': 'its base model (cogito:14b) was deleted, so the adapter cannot load',
+};
 
 /** Stored shape: taskId -> optionId. Partial by design; absent entries take the default. */
 export type MetadataRoutingSelections = Partial<Record<MetadataRoutingTaskId, string>>;
@@ -352,6 +359,94 @@ export function resolveMetadataRouting(stored: unknown): ResolvedMetadataRouting
     resolved[task.id] = selections[task.id] || task.defaultOptionId;
   }
   return resolved;
+}
+
+/**
+ * What a stored routing looked like after this build was done reading it.
+ *
+ * `changed` is the whole point: the caller writes the migrated object BACK to the store
+ * when it is true, so the notice is logged once on the first launch after the upgrade
+ * rather than on every read for the rest of the install's life.
+ */
+export interface MetadataRoutingMigration {
+  selections: MetadataRoutingSelections;
+  changed: boolean;
+  /** One human-readable line per entry dropped. Empty when nothing was. */
+  notices: string[];
+}
+
+/**
+ * Read a STORED routing, dropping the entries this build removed.
+ *
+ * This is the only reader that is allowed to be lenient, and it is lenient about exactly
+ * one thing: ids listed in REMOVED_ROUTING_TASKS / REMOVED_ROUTING_OPTIONS above, plus an
+ * option that is still known but is no longer OFFERED for its task. Those three cases are
+ * this build's own doing — the user chose something legitimate and an upgrade took it away
+ * — so dropping them back to the shipped default is a recorded migration, and it is
+ * recorded: every drop is logged with the reason, and `changed` tells the caller to persist
+ * the result so the notice is not repeated forever.
+ *
+ * Everything else still throws. An option id that was never in this table is a typo or a
+ * hand-edited store, and quietly running a different model than the one the file names is
+ * precisely the failure this module exists to prevent.
+ *
+ * NOT called by `metadata-routing:set`. Input arriving from the modal is validated
+ * strictly — the modal can only offer what this build has, so a rejected id there is a bug
+ * in the modal, not an upgrade.
+ */
+export function migrateStoredRouting(stored: unknown): MetadataRoutingMigration {
+  if (stored === undefined || stored === null) {
+    return { selections: {}, changed: false, notices: [] };
+  }
+  if (typeof stored !== 'object' || Array.isArray(stored)) {
+    throw new Error(`metadataRouting must be an object of taskId -> optionId (got ${JSON.stringify(stored)})`);
+  }
+
+  const selections: MetadataRoutingSelections = {};
+  const notices: string[] = [];
+
+  for (const [taskId, optionId] of Object.entries(stored as Record<string, unknown>)) {
+    if (typeof optionId !== 'string' || optionId.trim().length === 0) {
+      throw new Error(`metadataRouting.${taskId} must be an option id string (got ${JSON.stringify(optionId)})`);
+    }
+
+    const removedTask = REMOVED_ROUTING_TASKS[taskId];
+    if (removedTask) {
+      notices.push(`dropped metadataRouting.${taskId} (was "${optionId}"): ${removedTask}`);
+      continue;
+    }
+
+    const removedOption = REMOVED_ROUTING_OPTIONS[optionId];
+    if (removedOption) {
+      const task = taskDef(taskId);
+      notices.push(
+        `dropped metadataRouting.${taskId} = "${optionId}": ${removedOption}; ` +
+          `${task ? `"${task.label}" falls back to its shipped default, ${task.defaultOptionId}` : 'the entry is gone'}`
+      );
+      continue;
+    }
+
+    // Still a known option, but this build no longer offers it HERE (e.g. a task's option
+    // list was narrowed). Same class of event as a removal and recorded the same way.
+    const task = taskDef(taskId);
+    if (task && METADATA_ROUTING_OPTIONS[optionId] && !task.options.includes(optionId)) {
+      notices.push(
+        `dropped metadataRouting.${taskId} = "${optionId}": that option is no longer offered for ` +
+          `"${task.label}"; it falls back to the shipped default, ${task.defaultOptionId}`
+      );
+      continue;
+    }
+
+    // Anything left is validated exactly as before — including the unknown-id throw.
+    validateRoutingSelection(taskId, optionId);
+    selections[taskId as MetadataRoutingTaskId] = optionId;
+  }
+
+  const changed = notices.length > 0;
+  for (const notice of notices) {
+    log.warn(`[MetadataRouting] settings migration: ${notice}`);
+  }
+  return { selections, changed, notices };
 }
 
 export function routingOption(taskId: MetadataRoutingTaskId, optionId: string): MetadataRoutingOption {
@@ -447,11 +542,8 @@ export interface MetadataRoutingOptionView {
   model: string;
   availability: MetadataRoutingAvailability;
   /**
-   * The detail the availability alone does not carry:
-   *  - `unknown` for a reason the host banner does not already give (the MLX shim);
-   *  - `not-installed` on a MULTI-MODEL option, naming which of its models is missing —
-   *    without it the modal's generic sentence would name the option's primary model,
-   *    which may be installed perfectly well.
+   * The detail the availability alone does not carry: `unknown` for a reason the host
+   * banner does not already give (the MLX shim, which Ollama cannot be asked about).
    */
   availabilityNote?: string;
 }
@@ -471,9 +563,31 @@ export interface MetadataRoutingHostView {
   installedCount: number;
 }
 
+/**
+ * The chapter pipeline, which is not a routed task any more and still has to be REPORTED.
+ *
+ * Chapters run on every item with a timestamped transcript, on the two models named in
+ * CHAPTER_PIPELINE_MODELS. Nobody chooses them, so there is no row to hang a "not
+ * installed" warning off — but the warning is the part that was worth having: a stored
+ * `cogito:14b` selection once cost a job its chapters an hour into the run, and the probe
+ * exists so that is said BEFORE the run rather than after it.
+ *
+ * `embeddingInstalled` is separate from `generationInstalled` because the two failures are
+ * not the same failure. Without the generation model there are no chapters at all; without
+ * the embedding model the run continues on the weaker lexical scorer and declares it in its
+ * warnings, which the user should get to decline in advance.
+ */
+export interface MetadataRoutingChaptersView {
+  generationModel: string;
+  embeddingModel: string;
+  generationAvailability: MetadataRoutingAvailability;
+  embeddingAvailability: MetadataRoutingAvailability;
+}
+
 export interface MetadataRoutingView {
   tasks: MetadataRoutingTaskView[];
   localModels: MetadataRoutingHostView;
+  chapters: MetadataRoutingChaptersView;
 }
 
 function optionView(id: string, inventory: OllamaInventory): MetadataRoutingOptionView {
@@ -496,29 +610,10 @@ function optionView(id: string, inventory: OllamaInventory): MetadataRoutingOpti
     return { ...base, availability: 'unknown' };
   }
 
-  // An option may need more than one model (see companionModels). It is installed only
-  // when ALL of them are, and when one is missing the note says WHICH — "qwen3.8:27b is
-  // not installed" would be a false statement about a two-model option whose generation
-  // model is right there.
-  const required = [option.model, ...(option.companionModels || [])];
-  const missing = required.filter(
-    (name) => !inventory.models.some((installed) => normalizeOllamaName(installed) === normalizeOllamaName(name))
+  const installed = inventory.models.some(
+    (name) => normalizeOllamaName(name) === normalizeOllamaName(option.model)
   );
-  if (missing.length === 0) {
-    return { ...base, availability: 'installed' };
-  }
-  return {
-    ...base,
-    availability: 'not-installed',
-    ...(option.companionModels && option.companionModels.length > 0
-      ? {
-          availabilityNote:
-            `this option needs ${required.join(' + ')}; ` +
-            `${missing.join(' and ')} ${missing.length > 1 ? 'are' : 'is'} not installed ` +
-            `(pull with: ${missing.map((m) => `ollama pull ${m}`).join('; ')})`,
-        }
-      : {}),
-  };
+  return { ...base, availability: installed ? 'installed' : 'not-installed' };
 }
 
 /**
@@ -539,6 +634,12 @@ function optionView(id: string, inventory: OllamaInventory): MetadataRoutingOpti
  */
 export function buildRoutingView(stored: unknown, inventory: OllamaInventory): MetadataRoutingView {
   const resolved = resolveMetadataRouting(stored);
+  const chapterModel = (name: string): MetadataRoutingAvailability => {
+    if (!inventory.reachable) return 'unknown';
+    return inventory.models.some((installed) => normalizeOllamaName(installed) === normalizeOllamaName(name))
+      ? 'installed'
+      : 'not-installed';
+  };
   return {
     tasks: METADATA_ROUTING_TASKS.map((task) => ({
       id: task.id,
@@ -546,6 +647,12 @@ export function buildRoutingView(stored: unknown, inventory: OllamaInventory): M
       options: task.options.map((id) => optionView(id, inventory)),
       selectedOptionId: resolved[task.id],
     })),
+    chapters: {
+      generationModel: CHAPTER_PIPELINE_MODELS.generation,
+      embeddingModel: CHAPTER_PIPELINE_MODELS.embedding,
+      generationAvailability: chapterModel(CHAPTER_PIPELINE_MODELS.generation),
+      embeddingAvailability: chapterModel(CHAPTER_PIPELINE_MODELS.embedding),
+    },
     localModels: {
       host: inventory.host,
       reachable: inventory.reachable,

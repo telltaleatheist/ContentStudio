@@ -584,6 +584,41 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The per-item chapters switch, on the description card's toolbar row. Sits with the
+   character count rather than the buttons: it changes what the description IS, not what
+   you do with it. */
+.chapters-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+
+  input {
+    margin: 0;
+    cursor: pointer;
+  }
+
+  /* An override is in force, so the switch cannot move the pushed text. Shown greyed
+     rather than hidden — vanishing controls read as bugs. */
+  &.inert {
+    opacity: 0.45;
+    cursor: default;
+
+    input { cursor: default; }
+  }
+}
+
+.chapters-toggle-note {
+  margin: 0 0 0.5rem;
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
 .char-count {
   font-size: 0.6875rem;
   font-variant-numeric: tabular-nums;

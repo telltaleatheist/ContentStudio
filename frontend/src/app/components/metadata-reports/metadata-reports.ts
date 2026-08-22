@@ -1880,6 +1880,32 @@ export class MetadataReports implements OnInit {
     return this.metadata()?.content_provenance?.content_fields === 'editor-story-transcript';
   }
 
+  /** Does this item have a chapter list at all? The chapters switch is meaningless without one. */
+  hasChapters(): boolean {
+    const chapters = this.metadata()?.chapters;
+    return Array.isArray(chapters) && chapters.length > 0;
+  }
+
+  /** Why the switch is inert, when it is. Empty otherwise — a tooltip that always fires is noise. */
+  chaptersToggleHint(): string {
+    if (this.publish.descriptionOverride() !== null) {
+      return 'This description was edited by hand and is pushed exactly as saved. Revert it to compose the chapter block again.';
+    }
+    return 'Include the chapter list at the top of the description that gets copied and pushed.';
+  }
+
+  /**
+   * Persist the switch on the item's selection record.
+   *
+   * Straight through to publish-set-fields — the same channel the description and tag
+   * overrides use — so it survives a reload and the YouTube push reads it from the same
+   * resolver the panel does. Nothing is recomposed here; refreshing the resolved values is
+   * what re-reads the description with or without its chapters.
+   */
+  async setChaptersInDescription(include: boolean): Promise<void> {
+    await this.publish.setFields({ chaptersInDescription: include });
+  }
+
   chaptersMissing(): { outcome: 'failed' | 'skipped'; reason: string } | null {
     const meta = this.metadata();
     if (!meta || (meta.chapters && meta.chapters.length > 0)) return null;

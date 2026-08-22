@@ -8,8 +8,7 @@ import { AIManagerService, AIConfig, MetadataResult } from './ai-manager.service
 import { WhisperService } from './whisper.service';
 import { InputHandlerService, ContentItem } from './input-handler.service';
 import { Chapter } from './chapter-generator.service';
-import { ChapterPipelineService, ChapterStage, ChapterPipelineResult } from './chapter-pipeline.service';
-import { ChapterSingleCallService } from './chapter-single-call.service';
+import { ChapterPipelineResult } from './chapter-transcript';
 import { ChapterEmbeddingService } from './chapter-embedding.service';
 import { OutputHandlerService } from './output-handler.service';
 import { ContentDeclaration, ContentOrigin, ItemProvenance, ItemSource, sourceKeyOf } from './item-identity';
@@ -20,12 +19,10 @@ import {
   runMetadataTasks,
 } from './metadata-tasks';
 import {
-  CHAPTERS_EMBEDDING_OPTION_ID,
-  CHAPTERS_SINGLE_CALL_OPTION_ID,
+  CHAPTER_PIPELINE_MODELS,
   MetadataRoutingSelections,
   ResolvedMetadataRouting,
   resolveMetadataRouting,
-  routingOption,
 } from './metadata-routing';
 import { excludePromoChapters } from './promo-chapters';
 import { JobCancelledError } from './cancellation';
@@ -80,12 +77,11 @@ export interface GenerationParams {
    * optionId, see metadata-routing.ts). Resolved against the registry here, so an absent
    * key means "the shipped defaults" and a bad one fails the job naming the task.
    *
-   * This is the ONLY input that decides which model writes which field, including the
-   * chapter pipeline's.
+   * This is the ONLY input that decides which model writes which field. It does NOT decide
+   * the chapter models: chapters stopped being a routed task on 2026-08-22 and run on
+   * CHAPTER_PIPELINE_MODELS, which nobody picks.
    */
   metadataRouting?: MetadataRoutingSelections;
-  /** Optional per-stage overrides, e.g. running stages 2/4/5 on a different rater. */
-  chapterStageModels?: Partial<Record<ChapterStage, string>>;
   /** Chapter-pipeline context window. One value for the whole run (Ollama reloads on change). */
   chapterNumCtx?: number;
   /**
@@ -921,29 +917,30 @@ export class MetadataGeneratorService {
   }
 
   /**
-   * Generate chapters — with the sealed 14B pipeline (CHAPTERING.md), or, when the
-   * routing says so, with the 27B single call.
+   * Generate chapters — with the embedding pipeline, which is now the only way.
    *
-   * The pipeline replaced a single "here is the whole video, give me the chapters" call.
-   * That shape cannot work on a 14B: asked to pick K boundaries out of N candidates it
-   * returns the first few and stops, which produces mega-chapters and lost stories.
-   * The pipeline asks one local question at a time and does the selection in code.
+   * There used to be three architectures behind a routing option: the sealed 5-stage 14B
+   * pipeline (~390 one-question calls a video), the 27B single call, and this. As of
+   * 2026-08-22 there is one, and it is not a choice — a picker whose other entries are
+   * measurably worse and an order of magnitude more expensive is a trap, not a setting.
+   * The other two are DELETED rather than left selectable, so there is no "fall back to
+   * the old pipeline" path to find here: chapters either come out of this method or the
+   * item records why they did not.
    *
-   * The single-call option (2026-08-21) is that shape brought back for one model class
-   * that measurably does not fail this way, fenced by a code-enforced budget and quote
-   * resolution. It is opt-in and never a recovery path: if it fails validation the
-   * chapter stage fails, and resolveChapters records `chaptersSkipped` exactly as it does
-   * for any other chapter failure. It does NOT retry and it does NOT drop back here.
+   * How it works: ONE batched /api/embed call scores every junction, code selects the
+   * boundaries, and the generation model is spent only on placing each boundary and naming
+   * each chapter — ~10 calls an hour of video against the sealed pipeline's ~390. The model
+   * never emits a timestamp; it quotes, and code measures the quote against the caption word
+   * stream.
    *
-   * The embedding option (2026-08-22) is the third code path, and the cheapest: ONE
-   * batched /api/embed call scores every junction, code selects them, and the generation
-   * model is spent only on placing each boundary and naming each chapter — ~10 calls an
-   * hour of video. It degrades where the other two fail: a missing embedding model costs
-   * it the lexical scorer and a declared warning rather than the chapter list.
+   * Its one degradation is DECLARED: a missing embedding model costs it the weaker lexical
+   * scorer and a warning that says so, rather than costing it the chapter list. Everything
+   * else — Ollama unreachable, generation model missing, timeout — throws, and
+   * resolveChapters records `chaptersSkipped` on the item.
    *
-   * The WHOLE run holds the single AI queue slot rather than queueing each of its
-   * hundreds of calls separately: the method requires one model resident at a time,
-   * and that is exactly what the 1-slot AI pool exists to guarantee.
+   * The WHOLE run holds the single AI queue slot rather than queueing each of its calls
+   * separately: the method requires one model resident at a time, and that is exactly what
+   * the 1-slot AI pool exists to guarantee.
    */
   private static async generateChapters(
     item: ContentItem,
@@ -955,58 +952,27 @@ export class MetadataGeneratorService {
       throw new Error('Chapter generation needs a timestamped transcript');
     }
 
-    // The chapter pipeline's model comes from the same routing table as every other
-    // field's. It is local by construction — the 'chapters' task offers local options
-    // only, because the sealed method makes hundreds of one-question calls per video.
-    const routing = this.routing(params);
-    const option = routingOption('chapters', routing.chapters);
-    const model = option.model;
-
-    const host = option.host || params.aiHost || 'http://localhost:11434';
+    // NOT from the routing table. Chapters are not a routed task any more — the pair of
+    // models this pipeline needs is declared in metadata-routing.ts as
+    // CHAPTER_PIPELINE_MODELS, where the settings modal can still report whether they are
+    // installed BEFORE a run spends an hour finding out.
+    const model = CHAPTER_PIPELINE_MODELS.generation;
+    const host = params.aiHost || 'http://localhost:11434';
     const label = item.source || `item_${itemIndex + 1}`;
 
-    // WHICH ARCHITECTURE. Every other chapter option in the routing table names a model
-    // for the sealed 5-stage pipeline; this one selects a different code path entirely —
-    // ONE call over the whole transcript, validated in code (chapter-single-call.service.ts
-    // explains what was measured and what is fenced). Chosen by option id, so the picker
-    // is the only place it can be turned on.
-    const singleCall = routing.chapters === CHAPTERS_SINGLE_CALL_OPTION_ID;
-    // The third architecture (2026-08-22): embeddings score the boundaries, code selects
-    // them, and the model is spent only on placing and naming. Same branch-by-option-id
-    // rule as the single call — the picker is the only place it can be turned on.
-    const embedding = routing.chapters === CHAPTERS_EMBEDDING_OPTION_ID;
-
     // Chapter work is 0-60% of this item's "generating" phase; the metadata call that
-    // follows takes it from there. Weighted by the real call counts: labelling and
-    // rating are ~2 x (duration/45s) calls, the rest are ~3 x chapter_count.
+    // follows takes it from there.
     //
-    // The single-call path has one stage that spans the whole allowance. It reports once
-    // at the start and once at the end and says nothing in between — which is what the
-    // stall notice below exists for, and on this path a long silence is the normal case
-    // rather than a symptom.
-    //
-    // The embedding path's bands are its own table rather than extra keys in the shared
-    // one, because it reuses two of the sealed pipeline's stage NAMES ('place',
-    // 'summarize') for stages that sit at completely different points of its run. Scoring
-    // is ONE batched embed call measured in seconds, so it gets a token slice rather than
-    // a proportional one — giving seconds of work a fifth of the bar would freeze it
-    // exactly where the old label stage did. Placement is ~10 short calls; summarizing is
-    // one call per chapter on the big model, which is where its time actually goes (its
-    // consolidation is pure code and reports nothing).
-    const stageWeights: Record<string, [number, number]> = embedding
-      ? {
-          embed: [0, 6],
-          place: [6, 30],
-          summarize: [30, 60],
-        }
-      : {
-          label: [0, 22],
-          rate: [22, 44],
-          place: [44, 50],
-          summarize: [50, 55],
-          consolidate: [55, 60],
-          'single-call': [0, 60],
-        };
+    // Scoring is ONE batched embed call measured in seconds, so it gets a token slice
+    // rather than a proportional one — giving seconds of work a fifth of the bar would
+    // freeze it exactly where the deleted pipeline's label stage did. Placement is ~10
+    // short calls; summarizing is one call per chapter on the big model, which is where its
+    // time actually goes (consolidation is pure code and reports nothing).
+    const stageWeights: Record<string, [number, number]> = {
+      embed: [0, 6],
+      place: [6, 30],
+      summarize: [30, 60],
+    };
 
     // A stage that reports every ~3s and then says nothing for minutes is
     // indistinguishable, from the progress bar, from a hang. It usually is not one —
@@ -1022,7 +988,7 @@ export class MetadataGeneratorService {
     // next onProgress would put a stall notice on a job that already ended.
     let stallDone = false;
     let lastProgress: { stage: string; percent: number; at: number } = {
-      stage: singleCall ? 'single-call' : embedding ? 'embed' : 'label',
+      stage: 'embed',
       percent: 0,
       at: Date.now(),
     };
@@ -1070,54 +1036,30 @@ export class MetadataGeneratorService {
       );
     };
 
-    const chapterer = embedding
-      ? new ChapterEmbeddingService({
-          host,
-          model,
-          // Sizes its own context window from the largest prompt the run will send; a
-          // configured value can only raise that floor, never lower it.
-          numCtx: params.chapterNumCtx,
-          // Section 8's second required context input: what the video IS. A filename like
-          // "2026-08-19 jesse watters mocks democrat candidates" tells the summarizer who
-          // is speaking and why, which is what grounds the names it writes.
-          videoTitle: item.title || (item.source ? path.basename(item.source) : undefined),
-          cancelCallback: params.cancelCallback,
-          abortSignal: params.cancelSignal,
-          onProgress: reportProgress,
-        })
-      : singleCall
-      ? new ChapterSingleCallService({
-          host,
-          model,
-          // The single call sizes its own context from the transcript it is about to
-          // send; the configured value can only raise that, never lower it below what
-          // the prompt needs.
-          numCtx: params.chapterNumCtx,
-          cancelCallback: params.cancelCallback,
-          abortSignal: params.cancelSignal,
-          onProgress: reportProgress,
-        })
-      : new ChapterPipelineService({
-          host,
-          model,
-          stageModels: params.chapterStageModels,
-          numCtx: params.chapterNumCtx,
-          cancelCallback: params.cancelCallback,
-          abortSignal: params.cancelSignal,
-          onProgress: reportProgress,
-        });
+    const chapterer = new ChapterEmbeddingService({
+      host,
+      model,
+      embedModel: CHAPTER_PIPELINE_MODELS.embedding,
+      // Sizes its own context window from the largest prompt the run will send; a
+      // configured value can only raise that floor, never lower it.
+      numCtx: params.chapterNumCtx,
+      // Section 8's second required context input: what the video IS. A filename like
+      // "2026-08-19 jesse watters mocks democrat candidates" tells the summarizer who
+      // is speaking and why, which is what grounds the names it writes.
+      videoTitle: item.title || (item.source ? path.basename(item.source) : undefined),
+      cancelCallback: params.cancelCallback,
+      abortSignal: params.cancelSignal,
+      onProgress: reportProgress,
+    });
 
     log.info(
-      `[MetadataGenerator] ${
-        embedding ? 'Embedding chaptering' : singleCall ? 'Single-call chaptering' : 'Chapter pipeline'
-      } starting for ${label} on ${model} @ ${host}`
+      `[MetadataGenerator] Embedding chaptering starting for ${label} on ${model} ` +
+        `(+ ${CHAPTER_PIPELINE_MODELS.embedding}) @ ${host}`
     );
 
-    // The AI pool's default 30-minute watchdog is sized for ONE stalled request. This
-    // task is hundreds of short requests in a row: CHAPTERING.md clocks a 2h10m
-    // livestream at ~390 calls / ~25 minutes on a 24GB-class GPU, so the default would
-    // force-fail legitimate long-form runs on anything slower. 4 hours still backstops
-    // a genuinely wedged run.
+    // The AI pool's default 30-minute watchdog is sized for ONE stalled request. A long
+    // livestream is a few dozen requests in a row on a big model, and on slower hardware
+    // that legitimately outruns the default. 4 hours still backstops a genuinely wedged run.
     const CHAPTER_TASK_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 
     try {

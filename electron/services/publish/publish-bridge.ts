@@ -237,7 +237,17 @@ export class PublishBridge {
       createdAt: summary?.createdAt ?? '',
       generatedTitles,
       chosenTitles: chosen?.chosenTitles ?? [],
-      description: chosen?.descriptionOverride ?? generated.description ?? '',
+      // Same three-input rule resolveChosenMetadata applies, and it has to be the same
+      // rule: this is what the browser extension types into Studio, and a description the
+      // extension fills that differs from the one the API would push is the exact bug the
+      // single-composition-site rule exists to prevent. A record that does not exist yet
+      // has made no decision, and the app's decision has always been to include chapters.
+      description:
+        chosen?.descriptionOverride ??
+        (chosen === undefined || chosen === null || chosen.chaptersInDescription
+          ? generated.description
+          : generated.descriptionWithoutChapters) ??
+        '',
       tags: chosen?.tagsOverride ?? generated.tags ?? '',
       sourceFilename,
       status: chosen ? chosen.status : 'none',

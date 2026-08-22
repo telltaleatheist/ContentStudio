@@ -81,21 +81,40 @@ export function chapterTitle(chapter: unknown): string {
 const LINK_BLOCK_MARKERS = ['🔥', '📖', '🎥', 'Support the Channel', 'Become a YouTube Member'];
 
 /**
+ * The chapter lines as YouTube wants to read them, or '' when the item has none.
+ *
+ * Its own function since 2026-08-22, because the operator can now switch the block off per
+ * item (`ChosenMetadata.chaptersInDescription`) and the two callers need the same block for
+ * two different questions: composeDescription asks for it to prepend, and the publish
+ * resolver asks whether one EXISTS at all — an item with no chapters must not be offered a
+ * switch that does nothing.
+ */
+export function composeChapterBlock(item: ComposableItem): string {
+  const chapters = Array.isArray(item.chapters) ? item.chapters : [];
+  if (chapters.length === 0) return '';
+  const lines = chapters
+    .map((c) => `${chapterTimestamp(c)} - ${chapterTitle(c)}`)
+    // A chapter with neither a timestamp nor a title would render as a bare " - ".
+    .filter((line) => line.trim() !== '-');
+  return lines.join('\n');
+}
+
+/**
  * The full description as it should be typed into YouTube.
  *
  * Order: chapters (YouTube requires them at the top to build the chapter bar), body,
  * hashtags before the link block, then the links.
+ *
+ * `includeChapters` has NO DEFAULT on purpose. Every caller has to state which of the two
+ * descriptions it wants, because the two are pushed to different videos and a default here
+ * would decide that silently for whichever caller forgot.
  */
-export function composeDescription(item: ComposableItem): string {
+export function composeDescription(item: ComposableItem, options: { includeChapters: boolean }): string {
   let result = '';
 
-  const chapters = Array.isArray(item.chapters) ? item.chapters : [];
-  if (chapters.length > 0) {
-    const lines = chapters
-      .map((c) => `${chapterTimestamp(c)} - ${chapterTitle(c)}`)
-      // A chapter with neither a timestamp nor a title would render as a bare " - ".
-      .filter((line) => line.trim() !== '-');
-    if (lines.length > 0) result = `${lines.join('\n')}\n\n`;
+  if (options.includeChapters) {
+    const block = composeChapterBlock(item);
+    if (block) result = `${block}\n\n`;
   }
 
   result += descriptionText(item.description);

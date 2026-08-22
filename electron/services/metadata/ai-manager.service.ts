@@ -1110,8 +1110,13 @@ export class AIManagerService {
    * empty. Per-task callers need that distinction: a task that was asked for one field
    * and returned nothing has failed, and an empty array is not the same answer as a
    * missing key.
+   *
+   * PUBLIC because LocalGroupUnit (metadata-tasks.ts) has to run the identical parse. It is
+   * not just JSON.parse — it is four stages of repair against the shapes models actually
+   * return — and a local group that parsed its answer any other way would accept and reject
+   * different responses than the cloud group running the same prompt.
    */
-  private parseMetadataResponse(response: string): { metadata: MetadataResult; presentKeys: Set<string> } {
+  parseMetadataResponse(response: string): { metadata: MetadataResult; presentKeys: Set<string> } {
     try {
       // Step 1: Remove markdown code blocks if present
       let cleaned = response.trim();
