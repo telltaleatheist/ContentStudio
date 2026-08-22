@@ -68,6 +68,13 @@ const HEADLINE_32B_START_HINT =
   'that host is the Ollama-shaped MLX shim for the 32B titles model, not Ollama itself — start it with ' +
   '`python AutoCutStudioApp/tools/headline32b-server/serve.py`';
 
+/**
+ * The one option id that selects a different chapter ARCHITECTURE rather than a different
+ * chapter model. Exported so metadata-generator.service.ts can branch on it by identity
+ * instead of matching a string literal in two files.
+ */
+export const CHAPTERS_SINGLE_CALL_OPTION_ID = 'chapters-qwen27b-single';
+
 export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
   sonnet5: { kind: 'cloud', label: 'Claude Sonnet 5', model: 'claude:claude-sonnet-5' },
   opus5: { kind: 'cloud', label: 'Claude Opus 5', model: 'claude:claude-opus-5' },
@@ -120,6 +127,34 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    * becomes an empty string.
    */
   'qwen38-27b': { kind: 'local', label: 'Qwen 27B', model: 'qwen3.8:27b' },
+  /**
+   * The same model, on a different ARCHITECTURE — chapters only.
+   *
+   * Every other option in this table names a model that runs the task's normal code path.
+   * This one is a path selector: picking it routes chapters to
+   * chapter-single-call.service.ts, which sends the WHOLE transcript in ONE call, instead
+   * of to the sealed 5-stage pipeline's ~390 one-question calls. Same model file, same
+   * host, ~390x fewer requests, and a completely different failure surface — hence its own
+   * id rather than a flag hidden somewhere else.
+   *
+   * Measured 2026-08-21 across four videos, 8.8 minutes to 2h08
+   * (/Volumes/Callisto/Projects/tools/chapter-experiment/RESULTS.md): 5 of 5 ground-truth
+   * story boundaries on a 2h08 stream, worst offset 54 s, zero invented names in any run,
+   * and whisper garble repaired from whole-video context in ways a span-local call cannot
+   * manage. Against that, cadence is unstable without a stated budget (a 44x swing at
+   * temperature 0) and four tokens of cosmetic punctuation once moved a count 8 -> 13, so
+   * the count, the ordering, the spacing and every quote are enforced in code and a list
+   * that misses fails the stage outright.
+   *
+   * "experimental" in the label is the honest word for that: it is a one-shot with a much
+   * narrower validated record than the sealed pipeline, and when it fails it fails the
+   * whole chapter list rather than degrading one chapter.
+   */
+  [CHAPTERS_SINGLE_CALL_OPTION_ID]: {
+    kind: 'local',
+    label: 'Qwen 27B — single call (experimental)',
+    model: 'qwen3.8:27b',
+  },
   'headline-titles-32b': {
     kind: 'local',
     label: 'Headline 32B (titles)',
@@ -155,7 +190,7 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
   {
     id: 'chapters',
     label: 'Chapters',
-    options: ['cogito-14b', 'qwen25-14b', 'qwen3-14b', 'qwen38-27b'],
+    options: ['cogito-14b', 'qwen25-14b', 'qwen3-14b', 'qwen38-27b', CHAPTERS_SINGLE_CALL_OPTION_ID],
     defaultOptionId: 'cogito-14b',
   },
   {

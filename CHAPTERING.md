@@ -35,6 +35,14 @@ delete-the-dividers, pick-the-headings) before it was isolated. The fix is absol
 > local question about ONE thing. Code does all counting, ranking, spacing, and
 > assembling.**
 
+> **2026-08-21 — this is a 14B law, and it now has one measured exception.** The
+> paragraph above stands for the sealed pipeline and for every model this document was
+> written about. It does NOT hold for qwen3.8:27b, which was measured doing the whole
+> video in one call without the prefix failure. See the addendum
+> "[The 27B single-call exception](#2026-08-21--addendum-the-27b-single-call-exception)"
+> at the end of this document for what was measured, what is qualified, and what is not.
+> The corollary below it — the model never emits a timestamp — survives unchanged.
+
 Corollaries that follow from it, each learned the hard way:
 
 - **The model never emits a timestamp.** It quotes a verbatim sentence; code maps the
@@ -357,3 +365,103 @@ Calls per video ≈ `stretches + junctions + boundaries + chapters + pairs` ≈
 3. **Auto-caption proper-noun garble** ("Eric Metaxas" → "Mataxis") both feeds fix #1
    and occasionally cuts a name introduction off a chapter's opening — a boundary landing
    4 s after "This is Eric Metaxas" leaves the span with an anonymous ranter.
+
+---
+
+## 2026-08-21 — addendum: the 27B single-call exception
+
+Nothing above is retracted. This section qualifies exactly one sentence of it — "no model
+call ever sees a list, a count, or the whole video" — and says what the qualification is
+allowed to cover.
+
+**The law is a 14B result, and it does not reproduce at 27B.** Measured on 2026-08-21 on
+`qwen3.8:27b` (Q4_K_M, trained context 262144) over four videos from 8.8 minutes to 2h08,
+temperature 0, `format: json`, thinking off. Full record and raw responses:
+`/Volumes/Callisto/Projects/tools/chapter-experiment/RESULTS.md`.
+
+- **No prefix behaviour at any length.** The failure that sank whole-transcript chaptering
+  at 14B — the model returning the first few boundaries and stopping — did not occur once,
+  up to a 24,831-token prompt. Final-chapter coverage was 89 / 97 / 99 / 100%.
+- **Story boundaries as good as the sealed method's.** On the 2h08 session master, graded
+  against the creator's own `edits.json` story list: 5 of 5 stories found, in order, worst
+  offset +54 s, intro and sign-off both isolated. One call, 174 seconds, against ~390 calls
+  and ~25 minutes.
+- **Zero fabricated names in any run of either round**, and whole-video context REPAIRED
+  whisper garble a span-local call cannot see (`Occupy to early 1913 KJV` → Luke 19:13,
+  `As I as 6'8" and "I"V` → Isaiah 6:8). That is limitation #1 and limitation #3 above,
+  fixed by the thing this document forbids.
+- **Context was never the constraint.** The 2h08 run used 51% of its window with
+  `truncated = 0`, re-running at 65536 was byte-identical to 49152, and a 32x increase in
+  `num_ctx` moves this model's resident footprint by 0.42 GB.
+
+**What did NOT survive, and is why the exception is fenced rather than adopted.**
+Unconstrained, cadence is not a stable quantity: the same model at temperature 0 produced
+1.1 min/chapter at 8.8 minutes, 0.36 at 32 minutes (88 "chapters", median gap 18 s, titles
+like "Host interjection" attached to one-word quotes) and 16.0 at 2h08 — a 44x spread with
+no relation to content. And four tokens of cosmetic punctuation, with everything else
+identical, moved a chapter count from 8 to 13. Stating a duration-derived chapter budget in
+the prompt fixes both directions — the 32-minute collapse becomes 7 clean chapters and the
+2h08 under-split becomes 12-14 with ground-truth accuracy *improving* — but the budget is a
+strong prior, not a constraint the model is bound by.
+
+### The qualification, in full
+
+> A model call MAY see the whole transcript, and MAY be told a count, **only** when all of
+> the following hold. This is the ONLY exception; adding a second one requires the same
+> evidence.
+>
+> 1. **Opt-in.** It runs because the operator selected the "Qwen 27B — single call
+>    (experimental)" option for the Chapters task. It is never a default and never a
+>    recovery path.
+> 2. **The count comes from the shipped cadence table.** The prompt states a chapter-count
+>    budget computed from `targetSecondsFor()` — the same function stage 3 selects with,
+>    imported, not copied. A budget derived any other way is obeyed literally into the
+>    wrong answer: given `ceil(M/15)..ceil(M/5)` the model returned exactly 2 chapters for
+>    an 8.8-minute video and collapsed five separately-clipped people into one.
+> 3. **The model still never emits a timestamp.** It returns an exact quote per chapter and
+>    code resolves that quote against the caption word stream. The resolution is stricter
+>    than the pipeline's `mapQuote`: exact on the first 12 normalized words and UNIQUE, no
+>    fractional match, because here the quote is the only evidence of where the chapter
+>    starts rather than a refinement of a boundary already known to ±45 s.
+> 4. **Everything is validated in code, and validation is the whole answer.** Count inside
+>    the budget band, first chapter at 0:00, strictly monotonic starts, a minimum gap
+>    derived from the same table, at least 3 chapters, no degenerate or duplicated quotes,
+>    no duplicated titles. Every violation is named.
+> 5. **Failure is failure.** One call means one answer, so a list that misses any check
+>    fails the chapter stage outright — no retry, no second call, no falling back to the
+>    5-stage pipeline, no emitting the list anyway. The item records `chaptersSkipped` and
+>    the rest of the metadata is generated without chapter subjects, exactly as it is for
+>    any other chapter failure.
+
+Implementation: `electron/services/metadata/chapter-single-call.service.ts`, prompts in
+`chapter-prompts.ts` as `CHAPTER_SINGLE_CALL_PROMPTS` (kept separate from the sealed five),
+routing option `chapters-qwen27b-single`.
+
+### Two things the integration learned that the experiment did not
+
+- **Render one line per SPEAKER RUN, not per caption cue.** The prompt asks for the first
+  8-12 words of the *sentence* a subject begins on. Handed ~7-word caption fragments, the
+  model stitches the sentence back together across the break and returns text that appears
+  nowhere. Cue-per-line rendering produced 2 unresolvable quotes out of 12 on a 43-minute
+  transcript; joining each speaker's run into one block — what the experiment did — dropped
+  that to 0.
+- **A dual-track transcript has more than one faithful reading, and quote resolution has to
+  search all of them.** When the host says one word over a clip, that word lands inside the
+  clip's sentence in time order, so a faithfully-copied quote is not contiguous in the
+  flattened stream (`Jesse Deplantis said "All that you cannot do` — the host said "my" in
+  the gap). The model also reads straight down the page across a speaker switch
+  (`on we go. dude left here is Gene Bailey` — one word from the clip, the rest from the
+  host). Both are correct copies pointing at the same second. Resolution searches the
+  flattened stream and each speaker's own stream, and collapses hits by resolved time —
+  uniqueness is still required, it is simply required of the right text.
+
+### Status: shipped, opt-in, and it does reject
+
+On the two 2026-08-16 story regions re-run through the finished implementation, every quote
+resolved and both counts landed inside the budget — and both runs were still REJECTED, each
+on a single chapter shorter than the enforced minimum (52 s inside a 44-minute video, 30 s
+inside a 9-minute one). That is the intended behaviour and it is also the honest headline:
+with spacing enforced rather than requested, this path fails on good-looking output about as
+often as it succeeds. The sealed pipeline remains the default, and the surviving argument for
+it is exactly the one the experiment ended on — one call is a single point of failure in a
+way that ~390 independent micro-calls are not.
