@@ -124,6 +124,34 @@ export class App implements OnInit {
     }
 
     this.startTitlesIntake();
+    this.reportWithheldPromptAssets();
+  }
+
+  /**
+   * This build ships newer versions of some prompt sets, and the copies in userData have
+   * local edits, so they were left alone. Nothing is merged and nothing is overwritten —
+   * the only correct move is to tell the user which files are behind, because the failure
+   * this replaces was exactly that: a new field shipped in the asset and never arrived.
+   */
+  private reportWithheldPromptAssets(): void {
+    this.electron.takePendingPromptAssetNotice()
+      .then((notice) => {
+        if (!notice?.withheld?.length) return;
+
+        this.notificationService.warning(
+          'Prompt updates not applied',
+          `This version of ContentStudio ships newer prompt sets, but your edited copies ` +
+          `were left untouched: ${notice.withheld.join(', ')}. Reconcile them from the ` +
+          `Prompts tab to pick up the shipped changes.`
+        );
+        console.warn('[App] Bundled prompt updates withheld over local edits:', notice.withheld);
+      })
+      .catch((error: any) => {
+        this.notificationService.error(
+          'Prompt updates',
+          `Could not read the startup report on bundled prompt updates: ${error?.message || String(error)}`
+        );
+      });
   }
 
   /** Open (or focus) the editor's own window. The nav entry is a button, not a routerLink —

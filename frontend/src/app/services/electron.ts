@@ -200,6 +200,14 @@ export interface MetadataRouting {
   tasks: MetadataRoutingTask[];
 }
 
+/**
+ * Bundled prompt-set files whose newer shipped version was NOT installed, because the copy
+ * in userData has local edits. Reported once per app start.
+ */
+export interface PromptAssetNotice {
+  withheld: string[];
+}
+
 // Declare window.launchpad interface for TypeScript
 declare global {
   interface Window {
@@ -220,6 +228,7 @@ declare global {
       createPromptSet: (promptSet: any) => Promise<any>;
       updatePromptSet: (id: string, promptSet: any) => Promise<any>;
       deletePromptSet: (id: string) => Promise<any>;
+      takePendingPromptAssetNotice: () => Promise<PromptAssetNotice | null>;
 
       // File operations
       selectFiles: () => Promise<{ success: boolean; files: string[] }>;
@@ -562,6 +571,16 @@ export class ElectronService {
   async deletePromptSet(id: string): Promise<any> {
     if (!this.ipcRenderer) return { success: false };
     return await this.ipcRenderer.deletePromptSet(id);
+  }
+
+  /**
+   * Drain the startup report of bundled prompt-set updates that were withheld because the
+   * installed file has local edits. Delivered ONCE — the main process clears it on read.
+   * null = nothing withheld, and outside Electron there are no bundled assets to withhold.
+   */
+  async takePendingPromptAssetNotice(): Promise<PromptAssetNotice | null> {
+    if (!this.ipcRenderer) return null;
+    return await this.ipcRenderer.takePendingPromptAssetNotice();
   }
 
   // File operations

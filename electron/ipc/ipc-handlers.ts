@@ -4,6 +4,7 @@ import * as log from 'electron-log';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as crypto from 'crypto';
 import * as yaml from 'js-yaml';
 import { AIManagerService, AIConfig } from '../services/metadata/ai-manager.service';
 import type { ContentItem } from '../services/metadata/input-handler.service';
@@ -76,66 +77,188 @@ function getSamplePromptsDirectory(): string {
 }
 
 /**
- * Ensure prompt sets directory exists and copy sample prompts if empty
+ * Which SHIPPED version of each bundled prompt-set file is installed under
+ * userData/prompt_sets.
+ *
+ * `shippedHash` is the sha256 of the BUNDLED asset at the moment we last wrote that file
+ * into the user's directory — never the hash of what is on disk now. Comparing the
+ * installed file against it is exactly what tells us whether the user has hand-edited it
+ * since we put it there.
+ */
+interface PromptSetProvenance {
+  version: number;
+  files: Record<string, { shippedHash: string; updatedAt: string }>;
+}
+
+const PROMPT_SET_PROVENANCE_VERSION = 1;
+
+/**
+ * Bundled prompt updates that were withheld at startup because the installed file carries
+ * local edits. Parked here for the renderer to pull — a main-process log line is invisible
+ * to the person whose prompts are out of date, and that invisibility is the whole bug this
+ * mechanism exists to fix.
+ */
+interface PromptAssetNotice {
+  withheld: string[];
+}
+let pendingPromptAssetNotice: PromptAssetNotice | null = null;
+
+/**
+ * Where the provenance manifest lives. Deliberately OUTSIDE prompt_sets/: that directory
+ * belongs to the user, and bookkeeping sitting among their prompts invites a "what is
+ * this?" deletion — which would make every installed file look unrecognised.
+ */
+function getPromptSetProvenancePath(): string {
+  return path.join(app.getPath('userData'), 'prompt-set-provenance.json');
+}
+
+function sha256OfFile(filePath: string): string {
+  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+/**
+ * Read the manifest. Absent means "first run of this mechanism on this install", which is
+ * a real state with a defined handling below. Present-but-unreadable is NOT folded into
+ * it: treating a corrupt manifest as absent would let the next start overwrite files whose
+ * history we merely failed to read.
+ */
+function readPromptSetProvenance(): PromptSetProvenance {
+  const provenancePath = getPromptSetProvenancePath();
+  if (!fs.existsSync(provenancePath)) {
+    return { version: PROMPT_SET_PROVENANCE_VERSION, files: {} };
+  }
+
+  const parsed = JSON.parse(fs.readFileSync(provenancePath, 'utf8')) as PromptSetProvenance;
+  if (!parsed || typeof parsed !== 'object' || !parsed.files || typeof parsed.files !== 'object') {
+    throw new Error(`Prompt-set provenance manifest is malformed: ${provenancePath}`);
+  }
+  if (parsed.version !== PROMPT_SET_PROVENANCE_VERSION) {
+    throw new Error(
+      `Prompt-set provenance manifest is version ${parsed.version}, this build reads ` +
+      `version ${PROMPT_SET_PROVENANCE_VERSION}: ${provenancePath}`
+    );
+  }
+  return parsed;
+}
+
+function writePromptSetProvenance(provenance: PromptSetProvenance): void {
+  fs.writeFileSync(getPromptSetProvenancePath(), JSON.stringify(provenance, null, 2), 'utf8');
+}
+
+/**
+ * Install and refresh the bundled prompt-set assets in userData/prompt_sets.
+ *
+ * The old rule was "seed only when the directory is empty", so a prompt improvement
+ * shipped with the app NEVER reached an install that already existed — a new channel_tags
+ * field shipped in the repo asset and silently never arrived. The rule is now per FILE and
+ * decided by the provenance manifest above:
+ *
+ *   - not installed        → install it, record the shipped hash
+ *   - installed, untouched → the user has not edited it, so a changed bundled asset
+ *                            replaces it and the provenance moves forward
+ *   - installed, edited    → NEVER overwritten. If the bundled asset moved on too, the
+ *                            file is named in a notice the renderer shows the user.
+ *
+ * Nothing is merged and nothing is skipped quietly: an unreadable asset or a failed write
+ * throws, which aborts startup in main.ts rather than leaving a half-migrated prompt
+ * directory that looks fine.
  */
 function ensurePromptSetsDirectory(): void {
   const promptSetsDir = getPromptSetsDirectory();
-  const isNewDirectory = !fs.existsSync(promptSetsDir);
-
-  if (isNewDirectory) {
+  if (!fs.existsSync(promptSetsDir)) {
     fs.mkdirSync(promptSetsDir, { recursive: true });
     log.info(`Created prompt sets directory: ${promptSetsDir}`);
   }
 
-  // Check if directory is empty (no YAML files)
-  const existingPrompts = fs.existsSync(promptSetsDir)
-    ? fs.readdirSync(promptSetsDir).filter(f => f.endsWith('.yml') || f.endsWith('.yaml'))
-    : [];
+  const samplePromptsDir = getSamplePromptsDirectory();
+  if (!fs.existsSync(samplePromptsDir)) {
+    // The assets are part of the app. Missing means a broken build or package, and going
+    // on would hand the user an install with no prompts and no explanation.
+    throw new Error(`Bundled prompt assets not found at: ${samplePromptsDir}`);
+  }
 
-  // Copy sample prompts if directory is empty
-  if (existingPrompts.length === 0) {
-    const samplePromptsDir = getSamplePromptsDirectory();
+  // Every YAML under the asset directory, not a hardcoded list of channels: a new prompt
+  // set ships by dropping the file into electron/assets and nothing here changes.
+  const bundledFiles = fs.readdirSync(samplePromptsDir).filter(f =>
+    f.endsWith('.yml') || f.endsWith('.yaml')
+  );
 
-    if (fs.existsSync(samplePromptsDir)) {
-      // Starter metadata prompt sets + summarization_prompts.yml (pipeline config).
-      const sampleFiles = fs.readdirSync(samplePromptsDir).filter(f =>
-        f.endsWith('.yml') || f.endsWith('.yaml')
-      );
+  const provenance = readPromptSetProvenance();
+  const withheld: string[] = [];
+  let installed = 0;
+  let updated = 0;
+  let provenanceChanged = false;
 
-      for (const file of sampleFiles) {
-        const srcPath = path.join(samplePromptsDir, file);
-        const destPath = path.join(promptSetsDir, file);
+  for (const file of bundledFiles) {
+    const srcPath = path.join(samplePromptsDir, file);
+    const destPath = path.join(promptSetsDir, file);
+    const bundledHash = sha256OfFile(srcPath);
+    const record = provenance.files[file];
 
-        try {
-          fs.copyFileSync(srcPath, destPath);
-          log.info(`Copied sample prompt: ${file}`);
-        } catch (error) {
-          log.warn(`Failed to copy sample prompt ${file}:`, error);
-        }
+    // Not installed: fresh install, or a prompt set that did not exist in the last build.
+    // A provenance record for a file that is gone means the user deleted a set we had
+    // installed; it comes back, and the log says which of the two happened.
+    if (!fs.existsSync(destPath)) {
+      fs.copyFileSync(srcPath, destPath);
+      provenance.files[file] = { shippedHash: bundledHash, updatedAt: new Date().toISOString() };
+      provenanceChanged = true;
+      installed++;
+      log.info(record ? `Reinstalled deleted prompt asset: ${file}` : `Installed bundled prompt asset: ${file}`);
+      continue;
+    }
+
+    const installedHash = sha256OfFile(destPath);
+
+    // Byte-identical to what we ship IS the shipped version, whatever the history says.
+    // This is also how an install that predates the manifest adopts its provenance, and
+    // how a user who reconciled their own edits stops being told about the update.
+    if (installedHash === bundledHash) {
+      if (!record || record.shippedHash !== bundledHash) {
+        provenance.files[file] = { shippedHash: bundledHash, updatedAt: new Date().toISOString() };
+        provenanceChanged = true;
       }
+      continue;
+    }
 
-      if (sampleFiles.length > 0) {
-        log.info(`Installed ${sampleFiles.length} sample prompt(s) to help you get started`);
-      }
-    } else {
-      log.info(`Sample prompts directory not found at: ${samplePromptsDir}`);
+    // No record and it differs from what we ship: this install predates the manifest and
+    // nothing says the file came from us. It is the user's — announce, do not claim it.
+    if (!record) {
+      withheld.push(file);
+      continue;
+    }
+
+    // Untouched since we installed it, and it differs from the bundle (checked above), so
+    // the bundle is what moved. Replace it.
+    if (installedHash === record.shippedHash) {
+      fs.copyFileSync(srcPath, destPath);
+      provenance.files[file] = { shippedHash: bundledHash, updatedAt: new Date().toISOString() };
+      provenanceChanged = true;
+      updated++;
+      log.info(`Updated unmodified prompt asset to the shipped version: ${file}`);
+      continue;
+    }
+
+    // Hand-edited. Their edits stand. Say so only when the bundle also moved past the
+    // version they edited — that is the update they are not getting.
+    if (bundledHash !== record.shippedHash) {
+      withheld.push(file);
     }
   }
 
-  // summarization_prompts.yml is pipeline config (not a user prompt set) — without
-  // it, transcript summarization falls back to a generic prompt. Ensure it exists
-  // even on installs whose prompt_sets directory already has prompts.
-  const summarizationDest = path.join(promptSetsDir, 'summarization_prompts.yml');
-  if (!fs.existsSync(summarizationDest)) {
-    const summarizationSrc = path.join(getSamplePromptsDirectory(), 'summarization_prompts.yml');
-    if (fs.existsSync(summarizationSrc)) {
-      try {
-        fs.copyFileSync(summarizationSrc, summarizationDest);
-        log.info('Installed summarization_prompts.yml (pipeline config)');
-      } catch (error) {
-        log.warn('Failed to copy summarization_prompts.yml:', error);
-      }
-    }
+  if (provenanceChanged) {
+    writePromptSetProvenance(provenance);
+  }
+
+  if (installed > 0 || updated > 0) {
+    log.info(`Prompt assets: ${installed} installed, ${updated} updated in ${promptSetsDir}`);
+  }
+
+  pendingPromptAssetNotice = withheld.length > 0 ? { withheld } : null;
+  if (withheld.length > 0) {
+    log.warn(
+      `Prompt assets NOT updated because they have local edits: ${withheld.join(', ')}. ` +
+      `Newer bundled versions ship with this build (${samplePromptsDir}).`
+    );
   }
 }
 
@@ -1063,6 +1186,16 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       default:
         log.debug(...args);
     }
+  });
+
+  // Drain the startup notice about bundled prompt updates that were NOT applied because
+  // the installed file has local edits. Race-free pull, in the shape of the editor's
+  // handoff park: the notice is computed before any window exists, so it cannot be pushed.
+  // null means nothing was withheld, which is not an error.
+  ipcMain.handle('prompt-assets:take-pending-notice', async () => {
+    const notice = pendingPromptAssetNotice;
+    pendingPromptAssetNotice = null;
+    return notice;
   });
 
   // Get prompt sets directory path
