@@ -1,4 +1,13 @@
-import { Component, ElementRef, OnInit, ViewChild, computed, inject, signal } from '@angular/core';
+import {
+  Component,
+  ElementRef,
+  HostListener,
+  OnInit,
+  ViewChild,
+  computed,
+  inject,
+  signal,
+} from '@angular/core';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { MatCardModule } from '@angular/material/card';
@@ -9,7 +18,7 @@ import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
-import { ElectronService } from '../../services/electron';
+import { AnalyticsChannel, ElectronService } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
 import { PublishState } from '../../features/publish/publish-state';
 import { YouTubePushDialog, YouTubePushDialogData } from '../../features/publish/youtube-push-dialog';
@@ -17,7 +26,11 @@ import {
   SpreakerUploadDialog,
   SpreakerUploadDialogData,
 } from '../../features/publish/spreaker-upload-dialog';
-import { MAX_AB_VARIANTS, type ReportIndexEntry } from '../../features/publish/publish.types';
+import {
+  MAX_AB_VARIANTS,
+  type PublishFacts,
+  type ReportIndexEntry,
+} from '../../features/publish/publish.types';
 import {
   basename,
   describePublishAt,
@@ -54,6 +67,108 @@ interface MetadataReport {
   itemIndex?: number; // Position within the job — for reading items[], never for identity
   txtFilePath?: string; // The TXT file this item recorded, when it recorded one
   selected?: boolean; // Selection state for batch operations
+  /**
+   * The source this run was generated from, as the index reports it. Re-runs of one
+   * source share it, which is what collapses them under the newest.
+   *
+   * Absent for the pre-`.contentstudio/metadata` layout below, which has no such record —
+   * those rows are each their own group rather than being lumped together by a guess.
+   */
+  sourceKey?: string | null;
+  sourceFilename?: string | null;
+  /** How many titles the run produced. 0 is the failed-run state the list can filter for. */
+  titleCount?: number;
+  /** This item's publish record as the index joined it, or null when it has none yet. */
+  facts?: PublishFacts | null;
+  /** Why this item's publish record could not be read. The row still exists. */
+  publishFault?: string | null;
+}
+
+// ---------------------------------------------------------------- page shell
+//
+// The three-pane report page (PHASE-4-DESIGN §1.2): list | decide | dispatch. The left
+// split is a real pane, so its width belongs to the operator and outlives the session. A
+// missing key is the first run, not a failure; a stored value outside the draggable range
+// is clamped rather than allowed to hide the pane; and a value that is not a number at
+// all is SAID rather than silently corrected, because something else wrote it.
+const LEFT_WIDTH_KEY = 'metadata-reports.left-width';
+const LEFT_WIDTH_DEFAULT = 280;
+const LEFT_WIDTH_MIN = 220;
+const LEFT_WIDTH_MAX = 560;
+
+/** YouTube's description limit — what the character count is read against. */
+const MAX_DESCRIPTION_CHARS = 5000;
+
+/** Beyond this many tags the chip strip is clamped to two rows with a Show all. */
+const TAGS_CLAMP_THRESHOLD = 8;
+
+function clampLeftWidth(px: number): number {
+  return Math.min(LEFT_WIDTH_MAX, Math.max(LEFT_WIDTH_MIN, Math.round(px)));
+}
+
+function readStoredLeftWidth(): number {
+  const raw = localStorage.getItem(LEFT_WIDTH_KEY);
+  if (raw === null) return LEFT_WIDTH_DEFAULT;
+  const px = Number(raw);
+  if (!Number.isFinite(px)) {
+    console.warn(
+      `[MetadataReports] ${LEFT_WIDTH_KEY} holds ${JSON.stringify(raw)}, which is not a ` +
+        'width. The split opens at its default; dragging it writes a real one.',
+    );
+    return LEFT_WIDTH_DEFAULT;
+  }
+  return clampLeftWidth(px);
+}
+
+/**
+ * The five publish facts the readiness strip states and the list rows dot.
+ *
+ * One vocabulary for both surfaces on purpose: a row's dots and the open report's strip
+ * are the same five answers, so learning one teaches the other.
+ */
+type ReadinessKey = 'channel' | 'schedule' | 'ab' | 'thumbnail' | 'podcast';
+
+interface ReadinessChip {
+  key: ReadinessKey;
+  label: string;
+  /** set = recorded; unset = nothing recorded, said as such; warn = recorded and suspect. */
+  state: 'set' | 'unset' | 'warn';
+  hint: string;
+}
+
+/** One A/B slot: a VIEW of publish.chosenTitles(), never a second store. */
+interface SlateSlot {
+  /** 0-based slot. Slot 0 is variant 1 — the video's title and YouTube's fallback. */
+  index: number;
+  title: string | null;
+  chars: number;
+  /**
+   * Which row of the generated list holds this exact text, or null when none does —
+   * which is what an inline-edited variant looks like, since the generated report is
+   * never rewritten. A slot with no row has nothing to scroll to and says so.
+   */
+  rowIndex: number | null;
+}
+
+/** A source's newest run, with its older runs collapsed underneath. */
+interface ReportGroup {
+  key: string;
+  head: MetadataReport;
+  runs: MetadataReport[];
+}
+
+interface ChannelFilterChip {
+  value: string;
+  label: string;
+  count: number;
+}
+
+type StateFilter = 'all' | 'scheduled' | 'unscheduled' | 'ab' | 'no-titles';
+
+/** One dot on a list row — a publish fact that is recorded. */
+interface RowDot {
+  key: string;
+  label: string;
 }
 
 interface ParsedMetadata {
@@ -128,6 +243,490 @@ export class MetadataReports implements OnInit {
     private dialog: MatDialog,
     private route: ActivatedRoute
   ) {}
+
+  // ================================================================ page shell (4.2)
+  //
+  // Three panes, each with its own scroll, and a page that never scrolls: a 30-chapter
+  // report and a 5-chapter one are the same height. Nothing in this block reads or writes
+  // anything new — it arranges what the page already had and states what the already
+  // loaded record already says.
+
+  readonly MAX_DESCRIPTION_CHARS = MAX_DESCRIPTION_CHARS;
+  readonly TAGS_CLAMP_THRESHOLD = TAGS_CLAMP_THRESHOLD;
+
+  /** One slot per A/B variant, always rendered — an empty slot is a state, not a gap. */
+  readonly SLATE_SLOTS = Array.from({ length: MAX_AB_VARIANTS }, (_, i) => i);
+
+  /** The draggable list/work split, in px, persisted across sessions. */
+  readonly leftWidth = signal(readStoredLeftWidth());
+  readonly draggingSplit = signal(false);
+
+  @ViewChild('searchBox') private searchBox?: ElementRef<HTMLInputElement>;
+  @ViewChild('titlesScroll') private titlesScroll?: ElementRef<HTMLElement>;
+  @ViewChild('channelSelect') private channelSelect?: ElementRef<HTMLSelectElement>;
+  @ViewChild('scheduleDateInput') private scheduleDateInput?: ElementRef<HTMLInputElement>;
+  @ViewChild('thumbnailRow') private thumbnailRow?: ElementRef<HTMLElement>;
+  @ViewChild('podcastRow') private podcastRow?: ElementRef<HTMLElement>;
+
+  /**
+   * Where the drag started, so the pane tracks the pointer exactly rather than snapping
+   * by whatever padding sits between the grid's edge and the pane's.
+   */
+  private splitDragFrom: { x: number; width: number } | null = null;
+
+  /**
+   * Drag the split. Pointer capture rather than window listeners so a pointer that
+   * leaves the window still ends the drag on release.
+   */
+  onSplitPointerDown(event: PointerEvent): void {
+    const handle = event.currentTarget as HTMLElement;
+    handle.setPointerCapture(event.pointerId);
+    this.splitDragFrom = { x: event.clientX, width: this.leftWidth() };
+    this.draggingSplit.set(true);
+    event.preventDefault();
+  }
+
+  onSplitPointerMove(event: PointerEvent): void {
+    const from = this.splitDragFrom;
+    if (!from) return;
+    this.leftWidth.set(clampLeftWidth(from.width + (event.clientX - from.x)));
+  }
+
+  onSplitPointerUp(event: PointerEvent): void {
+    if (!this.splitDragFrom) return;
+    const handle = event.currentTarget as HTMLElement;
+    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+    this.splitDragFrom = null;
+    this.draggingSplit.set(false);
+    localStorage.setItem(LEFT_WIDTH_KEY, String(this.leftWidth()));
+  }
+
+  // ------------------------------------------------------- left column (§1.7)
+
+  readonly searchQuery = signal('');
+  /** '' is every channel; 'unrouted' is the null-channel state, which is a real answer. */
+  readonly channelFilter = signal('');
+  readonly stateFilter = signal<StateFilter>('all');
+
+  /** Which re-run groups the operator has opened. Keyed by sourceKey. */
+  readonly expandedGroups = signal<ReadonlySet<string>>(new Set<string>());
+
+  /**
+   * The channel registry, for the filter chips' NAMES only.
+   *
+   * The same call the publish panel and the calendar make. When it fails the chips fall
+   * back to nothing — they show the raw channel ids, which is what the index actually
+   * holds, and the failure is said out loud rather than leaving an empty filter row that
+   * looks like "no channels are in use".
+   */
+  readonly registryChannels = signal<AnalyticsChannel[]>([]);
+
+  readonly channelFilterChips = computed<ChannelFilterChip[]>(() => {
+    const counts = new Map<string, number>();
+    let unrouted = 0;
+    for (const entry of this.reportIndex()) {
+      const id = entry.publish?.channelId ?? null;
+      if (id === null) {
+        unrouted++;
+        continue;
+      }
+      counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+
+    const named = this.registryChannels();
+    const chips: ChannelFilterChip[] = [...counts.entries()].map(([value, count]) => {
+      const known = named.find((c) => c.channelId === value);
+      return { value, label: known ? known.name : value, count };
+    });
+    chips.sort((a, b) => a.label.localeCompare(b.label));
+    if (unrouted > 0) chips.push({ value: 'unrouted', label: 'unrouted', count: unrouted });
+    return chips;
+  });
+
+  /** Does this row survive the search box and the two filter chip rows? */
+  private matchesFilters(report: MetadataReport): boolean {
+    const query = this.searchQuery().trim().toLowerCase();
+    if (query) {
+      const haystack = [report.displayTitle, report.name, report.sourceFilename]
+        .filter((s): s is string => typeof s === 'string' && s.length > 0)
+        .join(' ')
+        .toLowerCase();
+      if (!haystack.includes(query)) return false;
+    }
+
+    const channel = this.channelFilter();
+    if (channel) {
+      const id = report.facts?.channelId ?? null;
+      if (channel === 'unrouted') {
+        if (id !== null) return false;
+      } else if (id !== channel) {
+        return false;
+      }
+    }
+
+    switch (this.stateFilter()) {
+      case 'scheduled':
+        return !!report.facts?.publishAt;
+      case 'unscheduled':
+        return !report.facts?.publishAt;
+      case 'ab':
+        return (report.facts?.abCount ?? 0) > 0;
+      case 'no-titles':
+        // Only rows whose run RECORDED a title count answer this. A legacy row has no
+        // count, which is not the same claim as "it produced none".
+        return report.titleCount === 0;
+      case 'all':
+        return true;
+    }
+  }
+
+  /**
+   * The list as it renders: newest run per source, older runs collapsed under it.
+   *
+   * Filtered BEFORE grouping, so a filter promotes the newest MATCHING run to the head
+   * rather than hiding a whole source behind a head that does not match.
+   */
+  readonly visibleGroups = computed<ReportGroup[]>(() => {
+    const groups: ReportGroup[] = [];
+    const byKey = new Map<string, ReportGroup>();
+
+    for (const report of this.reports()) {
+      if (!this.matchesFilters(report)) continue;
+      // A row with no source key is its own group: the index did not record what it was
+      // generated from, and grouping it with anything would be a guess.
+      const key = report.sourceKey ?? ` row:${report.itemId ?? report.path}`;
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.runs.push(report);
+      } else {
+        const group: ReportGroup = { key, head: report, runs: [] };
+        byKey.set(key, group);
+        groups.push(group);
+      }
+    }
+
+    return groups;
+  });
+
+  /** Every row on screen — heads, plus the runs of whichever groups are open. */
+  readonly visibleReports = computed<MetadataReport[]>(() => {
+    const open = this.expandedGroups();
+    const rows: MetadataReport[] = [];
+    for (const group of this.visibleGroups()) {
+      rows.push(group.head);
+      if (open.has(group.key)) rows.push(...group.runs);
+    }
+    return rows;
+  });
+
+  isGroupExpanded(key: string): boolean {
+    return this.expandedGroups().has(key);
+  }
+
+  toggleGroup(key: string, event: Event): void {
+    event.stopPropagation();
+    const next = new Set(this.expandedGroups());
+    if (!next.delete(key)) next.add(key);
+    this.expandedGroups.set(next);
+  }
+
+  focusSearch(): void {
+    const input = this.searchBox?.nativeElement;
+    if (!input) return;
+    input.focus();
+    input.select();
+  }
+
+  /** ⌘F / Ctrl-F puts the caret in the report search box (§1.5). */
+  @HostListener('window:keydown', ['$event'])
+  onWindowKeydown(event: KeyboardEvent): void {
+    if (event.key !== 'f' || !(event.metaKey || event.ctrlKey)) return;
+    event.preventDefault();
+    this.focusSearch();
+  }
+
+  /**
+   * The publish facts this row has recorded, one dot each.
+   *
+   * Only facts that ARE recorded get a dot — an unrouted, unscheduled item shows none,
+   * which is the honest reading of a row nobody has touched.
+   */
+  rowDots(report: MetadataReport): RowDot[] {
+    const facts = report.facts;
+    if (!facts) return [];
+    const dots: RowDot[] = [];
+    if (facts.channelId) dots.push({ key: 'channel', label: 'Routed to a channel' });
+    if (facts.publishAt) dots.push({ key: 'schedule', label: 'Scheduled' });
+    if (facts.abCount > 0) {
+      dots.push({
+        key: 'ab',
+        label: `${facts.abCount} of ${MAX_AB_VARIANTS} A/B variants picked`,
+      });
+    }
+    if (facts.hasThumbnail) dots.push({ key: 'thumbnail', label: 'Thumbnail attached' });
+    if (facts.isPodcast) dots.push({ key: 'podcast', label: 'Podcast episode' });
+    return dots;
+  }
+
+  // ---------------------------------------------- readiness strip (§1.3, 4.4)
+
+  /**
+   * The one line that answers "is this ready", built ONLY from the record already on
+   * screen. Nothing here is inferred: a field with nothing in it renders as a hollow chip
+   * saying so, never as a plausible value.
+   */
+  readonly readinessChips = computed<ReadinessChip[]>(() => {
+    const chips: ReadinessChip[] = [];
+
+    const unknown = this.publish.unknownStoredChannel();
+    const channelId = this.publish.selectedChannelId();
+    if (unknown) {
+      chips.push({
+        key: 'channel',
+        label: `channel ${unknown}`,
+        state: 'warn',
+        hint: `Routed to ${unknown}, which is not in the channel registry.`,
+      });
+    } else if (channelId) {
+      const known = this.publish.channels().find((c) => c.channelId === channelId);
+      const suggested = this.publish.channelIsSuggested();
+      chips.push({
+        key: 'channel',
+        label: known ? known.name : channelId,
+        state: suggested ? 'warn' : 'set',
+        hint: suggested
+          ? 'Suggested only — not stored until your next change here.'
+          : 'The channel this item is routed to.',
+      });
+    } else {
+      chips.push({
+        key: 'channel',
+        label: 'no channel',
+        state: 'unset',
+        hint: 'Not routed to a channel.',
+      });
+    }
+
+    const when = this.scheduleDescription();
+    if (when) {
+      chips.push({
+        key: 'schedule',
+        label: when.local,
+        state: when.isPast || !when.offsetsAgree ? 'warn' : 'set',
+        hint: when.isPast
+          ? 'This time has already passed.'
+          : !when.offsetsAgree
+            ? `Stored as ${when.raw} (${when.storedOffset}), read here in ${when.localOffset}.`
+            : `${when.localOffset} · ${when.relative}`,
+      });
+    } else {
+      chips.push({
+        key: 'schedule',
+        label: 'no schedule',
+        state: 'unset',
+        hint: 'No publish time recorded.',
+      });
+    }
+
+    const chosen = this.publish.chosenCount();
+    chips.push({
+      key: 'ab',
+      label: `A/B ${chosen}/${MAX_AB_VARIANTS}`,
+      state: chosen === MAX_AB_VARIANTS ? 'set' : 'unset',
+      hint:
+        chosen === 0
+          ? 'No titles picked yet.'
+          : `${chosen} picked, in click order — #1 is the video's title.`,
+    });
+
+    const warnings = this.publish.thumbnailWarnings();
+    if (this.publish.thumbnailPath()) {
+      chips.push({
+        key: 'thumbnail',
+        label: warnings.length
+          ? `thumbnail · ${warnings.length} warning${warnings.length === 1 ? '' : 's'}`
+          : 'thumbnail ✓',
+        state: warnings.length ? 'warn' : 'set',
+        hint: warnings.length ? warnings.join(' ') : 'A thumbnail is attached.',
+      });
+    } else {
+      chips.push({
+        key: 'thumbnail',
+        label: 'no thumbnail',
+        state: 'unset',
+        hint: 'No thumbnail chosen.',
+      });
+    }
+
+    const podcast = this.publish.isPodcast();
+    chips.push({
+      key: 'podcast',
+      label: podcast ? 'podcast' : 'podcast —',
+      state: podcast ? 'set' : 'unset',
+      hint: podcast ? 'Marked as a Spreaker episode.' : 'Not a podcast episode.',
+    });
+
+    return chips;
+  });
+
+  /** A chip is a jump target: it focuses the control in the rail that sets that fact. */
+  focusReadiness(key: ReadinessKey): void {
+    if (key === 'ab') {
+      this.titlesScroll?.nativeElement.focus();
+      return;
+    }
+    const el =
+      key === 'channel'
+        ? this.channelSelect?.nativeElement
+        : key === 'schedule'
+          ? this.scheduleDateInput?.nativeElement
+          : key === 'thumbnail'
+            ? this.thumbnailRow?.nativeElement
+            : this.podcastRow?.nativeElement;
+    if (!el) return;
+    el.scrollIntoView({ block: 'nearest' });
+    if (el instanceof HTMLSelectElement || el instanceof HTMLInputElement) el.focus();
+  }
+
+  // ------------------------------------------------------ the A/B slate (§1.4)
+
+  /**
+   * The three slots, read straight off publish.chosenTitles().
+   *
+   * A VIEW, not a second state: order here is the store's order, which is click order,
+   * which is variant order. Nothing on the slate writes — removing a variant is still
+   * done by clicking its row in the list below, exactly as before.
+   */
+  readonly slate = computed<SlateSlot[]>(() => {
+    const chosen = this.publish.chosenTitles();
+    const rows = this.metadata()?.titles ?? [];
+    return this.SLATE_SLOTS.map((index) => {
+      const title = chosen[index] ?? null;
+      if (title === null) return { index, title: null, chars: 0, rowIndex: null };
+      const rowIndex = rows.findIndex((row) => this.getTitleText(row) === title);
+      return { index, title, chars: title.length, rowIndex: rowIndex === -1 ? null : rowIndex };
+    });
+  });
+
+  /** Scroll a slot's row into view and mark it. A slot with no row does nothing. */
+  revealSlateSlot(slot: SlateSlot): void {
+    if (slot.rowIndex === null) return;
+    this.focusedTitleIndex.set(slot.rowIndex);
+    this.scrollTitleIntoView(slot.rowIndex);
+  }
+
+  // -------------------------------------------------- titles keyboard (§1.5)
+  //
+  // Additive, and scoped to the titles pane: the handler is on the scroll container, so
+  // none of it fires unless that pane has focus, and every pointer interaction on the
+  // page behaves identically with the keyboard layer never touched.
+
+  readonly focusedTitleIndex = signal<number | null>(null);
+
+  private scrollTitleIntoView(index: number): void {
+    const host = this.titlesScroll?.nativeElement;
+    if (!host) return;
+    const row = host.querySelector(`[data-title-row="${index}"]`);
+    if (row) row.scrollIntoView({ block: 'nearest' });
+  }
+
+  onTitlesKeydown(event: KeyboardEvent): void {
+    // The inline editor owns its own keys (Enter saves, Escape cancels) and it lives
+    // inside this container.
+    const target = event.target as HTMLElement | null;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+    const titles = this.metadata()?.titles ?? [];
+    if (titles.length === 0) return;
+
+    const current = this.focusedTitleIndex();
+    const moveTo = (next: number) => {
+      const clamped = Math.min(titles.length - 1, Math.max(0, next));
+      this.focusedTitleIndex.set(clamped);
+      this.scrollTitleIntoView(clamped);
+      event.preventDefault();
+    };
+
+    switch (event.key) {
+      case 'ArrowDown':
+        moveTo(current === null ? 0 : current + 1);
+        return;
+      case 'ArrowUp':
+        moveTo(current === null ? titles.length - 1 : current - 1);
+        return;
+      case ' ':
+      case 'Enter':
+        if (current === null) return;
+        event.preventDefault();
+        void this.publish.toggleTitle(this.getTitleText(titles[current]));
+        return;
+      case 'e':
+        if (current === null) return;
+        event.preventDefault();
+        this.startEditTitle(titles[current], current);
+        return;
+      case 'c':
+        if (current === null) return;
+        event.preventDefault();
+        this.copyToClipboard(this.getTitleText(titles[current]), 'title-' + current);
+        return;
+    }
+
+    // 1…9 then 0 for the tenth. A digit past the end of the list is not a row, so it
+    // toggles nothing rather than wrapping onto some other title.
+    if (/^[0-9]$/.test(event.key)) {
+      const nth = event.key === '0' ? 10 : Number(event.key);
+      if (nth > titles.length) return;
+      event.preventDefault();
+      this.focusedTitleIndex.set(nth - 1);
+      void this.publish.toggleTitle(this.getTitleText(titles[nth - 1]));
+    }
+  }
+
+  // ------------------------------------------- description, tags, assets (4.4)
+
+  /** `2,143 / 5,000` against YouTube's real limit. */
+  descriptionCountLabel(): string {
+    return `${this.descriptionValue().length.toLocaleString()} / ${MAX_DESCRIPTION_CHARS.toLocaleString()}`;
+  }
+
+  descriptionOverLimit(): boolean {
+    return this.descriptionValue().length > MAX_DESCRIPTION_CHARS;
+  }
+
+  readonly tagsExpanded = signal(false);
+
+  /** The extract sections, collapsed to their counts until the text is wanted. */
+  readonly openAssets = signal<ReadonlySet<string>>(new Set<string>(['chapters']));
+
+  /**
+   * Whether this item has any extract at all.
+   *
+   * An "Assets" card with nothing under it would claim the item has clipboard sources it
+   * does not have, which is a smaller version of the same lie the counts exist to avoid.
+   */
+  hasAssets(): boolean {
+    const meta = this.metadata();
+    if (!meta) return false;
+    return (
+      (meta.thumbnail_text?.length ?? 0) > 0 ||
+      (meta.chapters?.length ?? 0) > 0 ||
+      this.chaptersMissing() !== null ||
+      (meta.pinned_comment?.length ?? 0) > 0 ||
+      (meta.clip_suggestions?.length ?? 0) > 0
+    );
+  }
+
+  isAssetOpen(key: string): boolean {
+    return this.openAssets().has(key);
+  }
+
+  toggleAsset(key: string): void {
+    const next = new Set(this.openAssets());
+    if (!next.delete(key)) next.add(key);
+    this.openAssets.set(next);
+  }
 
   /**
    * Toggle a title into/out of the A/B set. Click order becomes variant order —
@@ -536,8 +1135,13 @@ export class MetadataReports implements OnInit {
   readonly editingTags = signal(false);
   readonly tagsDraft = signal('');
 
-  startEditTitle(title: any, rowIndex: number, event: MouseEvent) {
-    event.stopPropagation();
+  /**
+   * `event` is optional because the keyboard opens the same editor and has no click to
+   * stop propagating. The pointer path is unchanged: it still passes its event and the
+   * row's own toggle still does not fire.
+   */
+  startEditTitle(title: any, rowIndex: number, event?: MouseEvent) {
+    event?.stopPropagation();
     this.editingTitleIndex.set(rowIndex);
     this.titleDraft.set(this.getTitleText(title));
 
@@ -644,6 +1248,10 @@ export class MetadataReports implements OnInit {
   async ngOnInit() {
     await this.loadReports();
 
+    // Names for the channel filter chips. Deliberately after the list: the chips are
+    // derived from the ids the index actually holds, and this call only labels them.
+    await this.loadChannelRegistry();
+
     // Deep link: /metadata-reports?item=<itemId>, which is what every chip on the publish
     // calendar navigates to. Read once, AFTER the list exists — the parameter names a row,
     // and there is no row to select before the index has been read.
@@ -654,6 +1262,26 @@ export class MetadataReports implements OnInit {
     // navigation.
     const requestedItemId = this.route.snapshot.queryParamMap.get('item');
     if (requestedItemId) await this.selectByItemId(requestedItemId);
+  }
+
+  /**
+   * Read the channel registry, for the filter chips' names.
+   *
+   * A failure is said and the chips then show the raw channel ids the index holds —
+   * which is the truth about the data, not a stand-in for it. The reports list does not
+   * depend on this call and is not blanked by its failure.
+   */
+  private async loadChannelRegistry(): Promise<void> {
+    const res = await this.electron.analyticsListChannels();
+    if (!res.success || !res.channels) {
+      this.notificationService.warning(
+        'Channel names unavailable',
+        `The channel registry could not be read (${res.error ?? 'no reason given'}), so the ` +
+          'channel filter shows raw channel ids.',
+      );
+      return;
+    }
+    this.registryChannels.set(res.channels);
   }
 
   /**
@@ -768,6 +1396,13 @@ export class MetadataReports implements OnInit {
           itemId: entry.itemId,
           itemIndex: entry.itemIndex,
           txtFilePath: entry.txtFilePath ?? '',
+          // Carried onto the row so the list can search, filter, dot and collapse without
+          // a second pass over the index. Every one of them is the index's own value.
+          sourceKey: entry.sourceKey,
+          sourceFilename: entry.sourceFilename,
+          titleCount: entry.titleCount,
+          facts: entry.publish,
+          publishFault: entry.publishFault,
         })),
       );
 
@@ -980,6 +1615,13 @@ export class MetadataReports implements OnInit {
       this.cancelEditDescription();
       this.cancelEditTags();
       this.clearScheduleDrafts();
+
+      // View state that named a row or a section of the PREVIOUS item. Keyboard focus on
+      // "row 7" means nothing here, and an expanded tag strip is about the item it was
+      // expanded for.
+      this.focusedTitleIndex.set(null);
+      this.tagsExpanded.set(false);
+      this.openAssets.set(new Set<string>(['chapters']));
 
       // Load any previously chosen A/B titles for this item, BY ITS ID. The row's
       // itemIndex is only ever a position into the array read above; it has never been
@@ -1297,12 +1939,26 @@ export class MetadataReports implements OnInit {
     this.reports.set([...this.reports()]);
   }
 
+  /**
+   * Select-all acts on WHAT IS VISIBLE — the rows the search box, the filter chips and
+   * the collapsed re-run groups have left on screen. Ticking a box you cannot see is the
+   * thing this list must never do.
+   */
   toggleSelectAll() {
-    const allSelected = this.reports().every(r => r.selected);
-    this.reports().forEach(r => r.selected = !allSelected);
+    const visible = this.visibleReports();
+    const allSelected = visible.every(r => r.selected);
+    visible.forEach(r => r.selected = !allSelected);
     this.reports.set([...this.reports()]);
   }
 
+  /**
+   * Everything selected, visible or not.
+   *
+   * Deliberately NOT filtered to the visible rows: a row selected before a filter was
+   * typed is still selected, and dropping it from the export silently is exactly the
+   * failure this list is trying to stop. The count in the header says how many there are,
+   * so a number larger than what is on screen is the operator's cue.
+   */
   getSelectedReports(): MetadataReport[] {
     return this.reports().filter(r => r.selected);
   }
@@ -1312,7 +1968,8 @@ export class MetadataReports implements OnInit {
   }
 
   allReportsSelected(): boolean {
-    return this.reports().length > 0 && this.reports().every(r => r.selected);
+    const visible = this.visibleReports();
+    return visible.length > 0 && visible.every(r => r.selected);
   }
 
   async exportSelectedAsTxt() {
