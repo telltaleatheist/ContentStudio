@@ -36,7 +36,7 @@ counts:
 title_format: |-
   - FORMAT — Unfiltered's multi-part convention: structure each title as `[hook] | [subject] | p[N]` — the compelling hook, then the subject/through-line (the person, group, or topic), then the part marker (p1, p2, p3). That ` | [subject] | p[N]` tail intentionally runs the title past a normal cap; that is expected and correct here.
     - The hook must land inside the FIRST ~45 characters (all that mobile search results and notifications show). The ` | [subject] | p[N]` tail is truncated in previews, so nothing essential goes there.
-    - Write the hook itself as one unbroken claim. The pipe-delimited tail is structural and is exempt from that.
+    - Write the hook itself as one unbroken claim. The one-claim and read-aloud full-sentence rules govern the HOOK; the pipe-delimited tail is structural and is exempt from them.
     - INDEPENDENCE: each part stands alone. Write every title so a viewer who lands on p2 or p3 with no prior context understands what it is.
     - [N] is THIS input's part number: use the part the input states if it is given; otherwise leave `pN` as a literal placeholder for the human to fill.
 

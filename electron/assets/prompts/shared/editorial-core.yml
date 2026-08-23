@@ -98,6 +98,8 @@ blocks:
       - Protective instinct — they're targeting vulnerable people: abuse victims, kids, cult members. Leads on cult analysis, paired with morbid curiosity ("this is happening right now").
       - "Wait, what?" — the detail is so absurd you have to click to confirm it's real. Leads on pseudoscience, where it pairs with genuine concern ("people are falling for this"), and on policy and legislation, where it pairs with protective instinct ("they're actually trying to do this").
 
+      The titles list is the one field that ranges wider: its alternate angles may pull different triggers — the reaction you picked leads, the alternates test.
+
   - id: voice
     text: |-
       ## VOICE
@@ -323,6 +325,8 @@ variants:
       - Depth — get the full story, not just the highlight. Leads on cult analysis alongside protective outrage, and on policy ("what this actually means for real people").
       - Authority — learn from someone who did the homework. Leads on pseudoscience, paired with genuine concern ("here's exactly why this fails").
       - Protective instinct — someone you know could fall for this.
+
+      The titles list is the one field that ranges wider: its alternate angles may pull different triggers — the reaction you picked leads, the alternates test.
     voice: |-
       ## VOICE & TONE
 
@@ -363,7 +367,6 @@ variants:
       - Inventing specific moments, quotes, or reactions not stated or clearly implied in the input
       - Generic clickbait filler: "I'm still shaking," "what happened next," "you won't believe," "worse than we all feared," "let that sink in," "buckle up" — these are content-free and signal low quality
       - Using the subject's own euphemistic terminology as the primary hook without translating it into plain human stakes first
-      - Person-focused titles for people nobody knows. Where the subject is not widely known, lead with what they DID or what they CLAIM.
     content_slot: |-
       ## CONTENT TO ANALYZE
 
