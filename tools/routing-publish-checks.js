@@ -272,14 +272,63 @@ check('the titles prompt carries none of the nine defects it was rewritten to re
   }
 });
 
-check("unfiltered's pipe-tail title format replaces the shared length line, and only there", () => {
+check("unfiltered's title format is hook-only: the deterministic tail is named, never generated", () => {
   const unfiltered = assets.fieldSection(assets.channel('youtube-unfiltered'), 'titles');
-  if (!unfiltered.includes('| [subject] | p[N]')) throw new Error('the multi-part convention is gone');
-  if (unfiltered.includes('70 characters is the ceiling')) {
-    throw new Error('unfiltered kept a ceiling its own convention deliberately exceeds');
+  if (!unfiltered.includes('| [subject] | p[N]')) {
+    throw new Error('the tail convention is no longer named, so a model will imitate part markers it sees in the filename');
+  }
+  if (!unfiltered.includes('appended outside this call')) {
+    throw new Error('the tail is no longer declared as appended outside generation');
+  }
+  if (!unfiltered.includes('70 characters is the ceiling')) {
+    throw new Error('unfiltered lost the length ceiling; the hook the model writes is a normal-length title');
   }
   const telltale = assets.fieldSection(assets.channel('youtube-telltale'), 'titles');
   if (telltale.includes('| [subject] |')) throw new Error("unfiltered's format leaked into a normal channel");
+});
+
+// ---------------------------------------------------- the deterministic title tail
+//
+// Unfiltered's ` | [subject] | p[N]` tail is filename data, appended in code after
+// generation. The parser and the tail builder are pure; what is asserted is the filename
+// conventions Owen actually uses, both loud degradations, and that only the channel that
+// declares a template gets one.
+
+check('the title tail parses subject and part out of the filename conventions in use', () => {
+  const t = (label) => tasks.deterministicTitleTail(' | {subject} | p{part}', label);
+  eq(t('Faith Healers Exposed p3.mov').tail, ' | Faith Healers Exposed | p3', 'plain `p3` naming');
+  eq(t('moon_landing_denial part 2.mp4').tail, ' | moon landing denial | p2', 'underscores and `part 2`');
+  eq(t('/Volumes/x/Grifter Watch - Pt 11.mkv').tail, ' | Grifter Watch | p11', 'a full path, a dash, `Pt`');
+  eq(t('Warpath 3 begins p2.mov').tail, ' | Warpath 3 begins | p2', 'a digit-bearing subject is not a marker');
+});
+
+check('a filename without a part number gets the literal pN and a warning; one without a subject gets no tail', () => {
+  const noPart = tasks.deterministicTitleTail(' | {subject} | p{part}', 'Just A Stream.mov');
+  eq(noPart.tail, ' | Just A Stream | pN', 'the human-fillable placeholder the old prompt asked for');
+  if (!noPart.warning || !noPart.warning.includes('pN')) throw new Error('the missing part number did not warn');
+  const noSubject = tasks.deterministicTitleTail(' | {subject} | p{part}', 'p3.mov');
+  if (noSubject.tail !== undefined) throw new Error('a subjectless filename manufactured a tail');
+  if (!noSubject.warning) throw new Error('the missing subject did not warn');
+});
+
+check('the titles call reads the transcript, not the chapter digest; other fields keep the chapter list', () => {
+  if (tasks.subjectCarriesChapters('titles')) {
+    throw new Error('the titles subject block grew the chapter table of contents back');
+  }
+  for (const field of ['description', 'thumbnail_text', 'pinned_comment', 'clip_suggestions']) {
+    if (!tasks.subjectCarriesChapters(field)) throw new Error(`${field} lost its chapter list`);
+  }
+});
+
+check('only unfiltered declares a tail template, and it carries both slots', () => {
+  const unfiltered = assets.channel('youtube-unfiltered');
+  if (!unfiltered.titleTailFromFilename) throw new Error('unfiltered lost its title_tail_from_filename');
+  for (const slot of ['{subject}', '{part}']) {
+    if (!unfiltered.titleTailFromFilename.includes(slot)) throw new Error(`the template lost its ${slot} slot`);
+  }
+  for (const id of ['youtube-telltale', 'youtube-fireside', 'youtube-shorts', 'podcast-spreaker']) {
+    if (assets.channel(id).titleTailFromFilename) throw new Error(`${id} grew a title tail it never had`);
+  }
 });
 
 check('a channel that publishes no thumbnails says so by its field list', () => {

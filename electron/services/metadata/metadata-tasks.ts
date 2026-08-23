@@ -289,6 +289,18 @@ interface MetadataFieldSpec {
   section: string;
   shape: string;
   /**
+   * This field's subject block SKIPS the chapter table of contents.
+   *
+   * Titles set it. The chapter list is a compressed digest whose block tells the model to
+   * "stay inside it", and a model writing titles from a digest welds its adjacent facts into
+   * claims the transcript never made — the operator's Katie Suza review caught exactly that,
+   * and the well-regarded early-August titles were written with no chapter block at all
+   * (buildSubjectBlock grew chapter injection later). The transcript IS the titles input; the
+   * chapter list still reaches title GROUNDING (titleGroundingText), which is a check, not an
+   * input.
+   */
+  subjectOmitsChapters?: boolean;
+  /**
    * Ollama's `format` for a call that returns ONLY this field.
    *
    * SHAPE ONLY — a key, and whether its value is a string or a list of strings. No
@@ -320,7 +332,7 @@ function stringListSchema(key: string): Record<string, unknown> {
 }
 
 export const METADATA_FIELD_SECTIONS: Record<MetadataFieldId, MetadataFieldSpec> = {
-  titles: { section: 'TITLES', shape: '["string", ...]', schema: stringListSchema('titles') },
+  titles: { section: 'TITLES', shape: '["string", ...]', schema: stringListSchema('titles'), subjectOmitsChapters: true },
   description: { section: 'DESCRIPTION', shape: '"one string"', schema: stringSchema('description') },
   // Not a prompt-set section and never sent as a field call: the hook comes out of
   // DescriptionUnit's own call under its own schema. The entry exists so the field id has one
@@ -333,6 +345,11 @@ export const METADATA_FIELD_SECTIONS: Record<MetadataFieldId, MetadataFieldSpec>
   hashtags: { section: 'HASHTAGS', shape: '"#One #Two #Three"', schema: stringSchema('hashtags') },
   spoken_keywords: { section: 'SPOKEN_KEYWORDS', shape: '["string", ...]', schema: stringListSchema('spoken_keywords') },
 };
+
+/** Whether this field's subject block carries the chapter table of contents. */
+export function subjectCarriesChapters(field: MetadataFieldId): boolean {
+  return !METADATA_FIELD_SECTIONS[field]?.subjectOmitsChapters;
+}
 
 export function buildOutputFormat(fields: MetadataFieldId[]): string {
   const keyLines = fields.map((f) => `  "${f}": ${METADATA_FIELD_SECTIONS[f].shape}`).join(',\n');
@@ -1806,6 +1823,94 @@ export interface MetadataTaskRun {
  * Joined with newlines and matched whole-word, case- and punctuation-insensitively, with
  * possessives normalized away (entity-extraction.ts `occursIn`).
  */
+// ------------------------------------------------------------------ title tail
+
+/** What a deterministic title tail parsed out of one source filename. */
+export interface TitleTailParse {
+  subject: string;
+  /** The part number as written in the filename, or undefined when it carries none. */
+  part?: string;
+}
+
+/**
+ * Subject and part number from a source filename, for channels whose titles carry a
+ * deterministic series tail (prompts/channels/unfiltered.yml `title_tail_from_filename`).
+ *
+ * PURE, so the checks exercise it without a run. The part marker is the LAST `p3` / `pt 3` /
+ * `part 3` token in the basename (case-insensitive, preceded by start-of-name or a
+ * space/dot/dash/underscore separator, so "Warpath 3" never matches); the subject is
+ * everything before that marker, with underscores read as spaces. A name with no marker is a
+ * subject with no part — the caller decides what that means.
+ */
+export function parseTitleTailSource(sourceLabel: string): TitleTailParse {
+  const base = sourceLabel.split(/[\\/]/).pop() || '';
+  const noExt = base.replace(/\.[A-Za-z0-9]{1,5}$/, '');
+  const markers = [...noExt.matchAll(/(?:^|[\s._-])(?:part|pt|p)\.?[\s._-]*(\d+)\b/gi)];
+  const last = markers.length > 0 ? markers[markers.length - 1] : undefined;
+  const rawSubject = last ? noExt.slice(0, last.index) : noExt;
+  const subject = rawSubject
+    .replace(/_/g, ' ')
+    .replace(/[\s.-]+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return { subject, part: last ? last[1] : undefined };
+}
+
+/**
+ * The tail one item's titles get, or the loud reason they get none.
+ *
+ * A filename without a part number still gets its tail — with the literal `N` where the part
+ * belongs, exactly the placeholder the old prompt asked the human to fill — and the run says
+ * so. A filename that yields NO SUBJECT (nothing before the part marker) appends nothing:
+ * manufacturing a subject would be inventing an input, so the titles ship bare and the
+ * warning names the filename.
+ */
+export function deterministicTitleTail(
+  template: string,
+  sourceLabel: string
+): { tail?: string; warning?: string } {
+  const parsed = parseTitleTailSource(sourceLabel);
+  if (parsed.subject.length === 0) {
+    return {
+      warning:
+        `this channel appends a title tail from the filename, but "${sourceLabel}" has no text ` +
+        `before its part marker to use as the subject — the titles are published without the tail`,
+    };
+  }
+  const tail = template
+    .replace(/\{subject\}/g, () => parsed.subject)
+    .replace(/\{part\}/g, () => parsed.part ?? 'N');
+  if (parsed.part === undefined) {
+    return {
+      tail,
+      warning:
+        `no part number found in "${sourceLabel}"; the title tail uses the literal pN — ` +
+        `fill in the real part before publishing`,
+    };
+  }
+  return { tail };
+}
+
+/**
+ * Append the channel's deterministic title tail to every generated title.
+ *
+ * AFTER generation and AFTER the code-owned fields: the model wrote hooks (its prompt says
+ * the tail is appended outside the call), the grounding check ran against those hooks, and
+ * the hashtag dedupe read the bare first hook — the tail's subject is filename data, not
+ * title copy for hashtags to avoid. Channels that declare no template are untouched.
+ */
+function appendTitleTail(aiManager: AIManagerService, run: MetadataTaskRun, merged: Record<string, unknown>): void {
+  const template = aiManager.titleTailTemplate();
+  if (!template) return;
+  if (!Array.isArray(merged.titles)) return;
+  const { tail, warning } = deterministicTitleTail(template, run.ctx.sourceLabel);
+  if (warning) run.ctx.warn(warning);
+  if (!tail) return;
+  merged.titles = (merged.titles as unknown[]).map((t) => (typeof t === 'string' ? `${t}${tail}` : t));
+  run.ctx.generated.titles = merged.titles;
+  log.info(`[MetadataTasks] ${run.ctx.sourceLabel}: appended the deterministic title tail "${tail}" to ${(merged.titles as unknown[]).length} title(s)`);
+}
+
 export function titleGroundingText(ctx: MetadataRunContext): string {
   return [
     ctx.content,
@@ -1941,6 +2046,10 @@ export async function runMetadataTasks(
     // §6.3). AFTER the units, because the hashtag rule dedupes against the title and the
     // titles unit is one of the ones that just ran.
     assembleCodeOwnedFields(aiManager, run, merged);
+
+    // The deterministic series tail (unfiltered's ` | [subject] | p[N]`), appended in code
+    // from the filename — the titles prompt tells the model the tail is not its to write.
+    appendTitleTail(aiManager, run, merged);
 
     // Description links, the channel tag append and hashtag spacing are applied ONCE, to
     // the merged object. Per unit they could not be: the links append to a description one

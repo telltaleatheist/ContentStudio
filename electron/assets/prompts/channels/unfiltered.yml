@@ -28,17 +28,22 @@ counts:
   pinned_comment: 3
 
 # THE TITLE FORMAT OVERRIDE. This channel posts one long stream split into independent
-# hour-long parts, and its titles carry a structural tail that deliberately runs LONGER than
-# any normal character cap. It replaces the shared `default_title_format` line in
-# prompts/shared/fields/titles.yml, which is why the length rule is a slot there rather than a
-# fixed line — the pipe tail is exempt from the one-unbroken-claim guidance for the same
-# reason: it is structure, not a colon construction.
+# hour-long parts, published as `[hook] | [subject] | p[N]`. The tail is DETERMINISTIC —
+# the subject and part number arrive in the video's filename — so no model writes it: the
+# AI generates the HOOK only, and the tail is appended outside this call. The model still
+# has to be told the tail exists, or it will imitate the part markers it sees in the
+# input filename.
 title_format: |-
-  - FORMAT — Unfiltered's multi-part convention: structure each title as `[hook] | [subject] | p[N]` — the compelling hook, then the subject/through-line (the person, group, or topic), then the part marker (p1, p2, p3). That ` | [subject] | p[N]` tail intentionally runs the title past a normal cap; that is expected and correct here.
-    - The hook must land inside the FIRST ~45 characters (all that mobile search results and notifications show). The ` | [subject] | p[N]` tail is truncated in previews, so nothing essential goes there.
-    - Write the hook itself as one unbroken claim. The pipe-delimited tail is structural and is exempt from that.
-    - INDEPENDENCE: each part stands alone. Write every title so a viewer who lands on p2 or p3 with no prior context understands what it is.
-    - [N] is THIS input's part number: use the part the input states if it is given; otherwise leave `pN` as a literal placeholder for the human to fill.
+  - Length: 70 characters is the ceiling. The hook must land inside the FIRST 45 characters — that is all mobile search results and notifications show.
+    - Write the title as one unbroken claim; prefer that to a `Topic: elaboration` construction.
+    - Titles are the HOOK ONLY. This channel's series name and part marker (` | [subject] | p[N]`) are appended outside this call from the filename — never write a pipe tail, a part number, or a series label into a title.
+
+# THE TAIL ITSELF, as data. Code (metadata-tasks.ts appendTitleTail) parses the subject and
+# part number out of the source filename and appends this template to every generated title
+# after generation. Both slots are required; prompt-assets.ts throws on a template missing
+# either. A filename with no part number still gets the tail with a literal `pN` to fill; a
+# filename with no subject text gets no tail, and both cases warn in the run report.
+title_tail_from_filename: " | {subject} | p{part}"
 
 # The creator's search surfaces, named INSIDE the TAGS instruction ({brand_terms}).
 #

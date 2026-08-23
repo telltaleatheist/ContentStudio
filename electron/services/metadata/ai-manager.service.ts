@@ -23,6 +23,7 @@ import {
   buildInputDataBlock,
   buildOutputFormat,
   parseInstructionSections,
+  subjectCarriesChapters,
 } from './metadata-tasks';
 import { ChannelData, PROMPTS_SUBDIR, initPromptAssets, promptAssets } from './prompt-assets';
 import { Chapter } from './chapter-generator.service';
@@ -1062,12 +1063,15 @@ export class AIManagerService {
     }
 
     const promptSetName = this.config.promptSet || this.currentPromptSet.name || 'unknown';
+    // Titles read the transcript, not the chapter digest (subjectCarriesChapters,
+    // metadata-tasks.ts) — the chapter list still reaches their GROUNDING check.
+    const withChapters = subjectCarriesChapters(spec.field);
     const subject = this.buildSubjectBlock(
       ctx.content,
       ctx.sourceLabel,
       undefined,
-      ctx.chapterSubjects,
-      ctx.chapterDetails
+      withChapters ? ctx.chapterSubjects : undefined,
+      withChapters ? ctx.chapterDetails : undefined
     );
     // Whatever an earlier call in this run wrote that this one has to read — today, the titles
     // the thumbnail text has to avoid repeating.
@@ -1236,6 +1240,14 @@ export class AIManagerService {
    */
   channelTags(): string[] {
     return (this.currentPromptSet?.channel_tags || []).map((t) => t.trim()).filter((t) => t.length > 0);
+  }
+
+  /**
+   * The channel's deterministic title-tail template (`title_tail_from_filename`), when it
+   * declares one. Undefined for every channel whose titles the model writes whole.
+   */
+  titleTailTemplate(): string | undefined {
+    return this.currentChannel?.titleTailFromFilename;
   }
 
   /**

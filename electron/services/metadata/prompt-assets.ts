@@ -46,6 +46,13 @@ export interface ChannelData {
   /** Replaces the shared titles length/format line where the channel has its own convention. */
   titleFormat?: string;
   /**
+   * A deterministic tail appended to every generated title AFTER generation, filled from the
+   * source filename (metadata-tasks.ts appendTitleTail). `{subject}` and `{part}` are required
+   * slots. Declared only by channels whose titles carry a structural series tail the model is
+   * told never to write (prompts/channels/unfiltered.yml).
+   */
+  titleTailFromFilename?: string;
+  /**
    * The creator's search surfaces, filled into the TAGS instruction's `{brand_terms}` slot.
    *
    * DISTINCT FROM `channelTags`, which are appended verbatim by code after the model answers.
@@ -291,11 +298,34 @@ export class PromptAssets {
       fields: fields as string[],
       counts: (raw.counts || {}) as Record<string, number>,
       titleFormat: typeof raw.title_format === 'string' ? raw.title_format : undefined,
+      titleTailFromFilename: this.titleTailTemplate(raw, filePath),
       brandTerms: raw.brand_terms as string[] | undefined,
       channelTags: raw.channel_tags as string[] | undefined,
       descriptionLinks: this.requireString(raw, filePath, 'description_links'),
       sourcePath: filePath,
     };
+  }
+
+  /**
+   * The `title_tail_from_filename` template, validated loudly: a template missing either slot
+   * would append a half-filled tail to every published title, which is exactly the silent
+   * wrong answer this file exists to refuse.
+   */
+  private titleTailTemplate(raw: Record<string, unknown>, filePath: string): string | undefined {
+    const template = raw.title_tail_from_filename;
+    if (template === undefined || template === null) return undefined;
+    if (typeof template !== 'string') {
+      throw new Error(`Channel file "${filePath}" key "title_tail_from_filename" must be a string`);
+    }
+    for (const slot of ['{subject}', '{part}']) {
+      if (!template.includes(slot)) {
+        throw new Error(
+          `Channel file "${filePath}" declares title_tail_from_filename without its ${slot} slot; ` +
+            `a tail template must carry both {subject} and {part}`
+        );
+      }
+    }
+    return template;
   }
 
   channelIds(): string[] {
