@@ -44,7 +44,14 @@ import { AxiosInstance } from 'axios';
 import * as log from 'electron-log';
 import { isAbortError } from './cancellation';
 
-/** Trap 3. Long enough to span the gap between consecutive calls, so the model stays resident. */
+/**
+ * Long enough to span the gap between consecutive calls, so the model stays resident.
+ *
+ * This is the whole mechanism by which one job loads a model once. It only works because
+ * NOTHING releases a model between stages any more: model-lifecycle.ts holds the job's set and
+ * releases it in a finally at the end of the JOB. The per-stage unloads this replaced were
+ * defeating exactly this value.
+ */
 export const OLLAMA_KEEP_ALIVE = '10m';
 
 /** Trap 4. Ollama fully reloads the model on ANY num_ctx change — bucket coarsely. */

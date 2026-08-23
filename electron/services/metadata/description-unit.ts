@@ -78,7 +78,8 @@
 
 import axios, { AxiosInstance } from 'axios';
 import * as log from 'electron-log';
-import { askOllamaJson, estimateTokens, unloadOllamaModels } from './ollama-json';
+import { askOllamaJson, estimateTokens } from './ollama-json';
+import { JobModelLifecycle } from './model-lifecycle';
 import { MetadataRoutingOption } from './metadata-routing';
 import { queueAITask } from '../queue-manager.service';
 import { JobCancelledError } from './cancellation';
@@ -227,7 +228,6 @@ export class DescriptionUnit implements MetadataUnit {
 
   private readonly client?: AxiosInstance;
   private readonly host?: string;
-  private loaded = false;
 
   constructor(
     private readonly aiManager: AIManagerService,
@@ -242,7 +242,12 @@ export class DescriptionUnit implements MetadataUnit {
      * num_ctx change, so a private value here would reload it between the description and the
      * tags. Absent on the cloud path, where there is no window to pin.
      */
-    private readonly budget?: ModelRunContextBudget,
+    private readonly budget: ModelRunContextBudget | undefined,
+    /**
+     * Where this unit DECLARES the model it made resident. It never releases one: these two
+     * calls share the 9B with the tags call, and unloading it here reloaded it for that call.
+     */
+    private readonly lifecycle: JobModelLifecycle,
     private readonly abortSignal?: AbortSignal
   ) {
     if (option.kind === 'local') {
@@ -287,11 +292,6 @@ export class DescriptionUnit implements MetadataUnit {
     const hook = await this.writeHook(ctx);
     const body = await this.writeBody(ctx, hook);
     return { description_hook: hook, description: body };
-  }
-
-  async unload(): Promise<void> {
-    if (!this.loaded || !this.client) return;
-    await unloadOllamaModels(this.client, [this.option.model], `[Description] ${this.label}`);
   }
 
   // ------------------------------------------------------------------------ the two calls
@@ -426,7 +426,7 @@ export class DescriptionUnit implements MetadataUnit {
           what: `the description ${what} for ${ctx.sourceLabel}`,
           logPrefix: `[Description] ${this.label}`,
         });
-        this.loaded = true;
+        this.lifecycle.holdOllamaModel(this.host!, this.option.model, 'the description calls');
         return answer;
       },
       undefined,

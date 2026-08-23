@@ -48,16 +48,25 @@
  * ONE num_ctx PER MODEL PER RUN. Ollama FULLY RELOADS a model on any num_ctx change
  * (ollama-json.ts trap 4), so per-call sizing would reload the 27B between titles and
  * thumbnails and again before the pinned comment. Every unit on a model shares one
- * `ModelRunContextBudget`, sized from the LARGEST prompt that model will send this run.
+ * `ModelRunContextBudget`, sized from the LARGEST prompt that model will send this run, and the
+ * budget cannot size BELOW a window the job has already made resident on that model
+ * (model-lifecycle.ts's ratchet) — the chapter stage runs first on the same hardware.
+ *
+ * NO UNIT RELEASES A MODEL. Every unit here used to unload its model as it finished, which
+ * reloaded ~17GB of weights for the next call on the same model and froze the operator's
+ * machine while it did. A unit DECLARES what it made resident to the job's `JobModelLifecycle`
+ * and the JOB releases the set once, in a finally in metadata-generator.service.ts. That is why
+ * there is no `unload()` on the unit seam any more: a per-stage release is the defect.
  */
 
 import axios, { AxiosInstance } from 'axios';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn } from 'child_process';
 import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import { queueAITask } from '../queue-manager.service';
 import { JobCancelledError, isAbortError } from './cancellation';
-import { askOllamaJson, bucketNumCtx, estimateTokens, unloadOllamaModels } from './ollama-json';
+import { askOllamaJson, bucketNumCtx, estimateTokens } from './ollama-json';
+import { JobModelLifecycle } from './model-lifecycle';
 import {
   CHAPTER_PIPELINE_MODELS,
   KEY_PHRASE_EMBEDDING_MODEL,
@@ -214,12 +223,6 @@ export interface MetadataUnit {
   describePrompt(ctx: MetadataRunContext): string;
   /** Resolves to only the fields this unit owns. */
   generate(ctx: MetadataRunContext): Promise<Record<string, unknown>>;
-  /**
-   * Release whatever this unit is holding after the last unit of a run. Only a unit with
-   * resident state implements it — a cloud request has nothing to let go of, and
-   * pretending otherwise would put an empty method on the seam.
-   */
-  unload?(): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -521,6 +524,8 @@ export function runNumCtx(options: {
   model: string;
   /** Per-call token needs on this model: estimated prompt tokens + that call's num_predict. */
   needs: number[];
+  /** The window already resident on this model. Can only raise the computed value, never lower it. */
+  configured?: number;
   max: number;
   what: string;
 }): number {
@@ -532,6 +537,7 @@ export function runNumCtx(options: {
     // Already included per call in `needs` — the largest call's own output budget is what has
     // to fit alongside its own prompt, not the sum of everybody's.
     numPredict: 0,
+    configured: options.configured,
     max: options.max,
     logPrefix: `[MetadataTasks] ${options.model}`,
     what: options.what,
@@ -555,7 +561,15 @@ export class ModelRunContextBudget {
   private numCtx?: number;
   private readonly sizers: Array<{ label: string; need: (ctx: MetadataRunContext) => number }> = [];
 
-  constructor(readonly model: string) {}
+  constructor(
+    readonly model: string,
+    /**
+     * The JOB's ratchet. A run's units are planned per ITEM, so without it item 2 would size
+     * its own window from its own transcript and reload the model to make it SMALLER than the
+     * one item 1 left resident — a reload that buys nothing.
+     */
+    private readonly lifecycle: JobModelLifecycle
+  ) {}
 
   /** `need` returns estimated prompt tokens PLUS that call's own num_predict. */
   register(label: string, need: (ctx: MetadataRunContext) => number): void {
@@ -569,11 +583,16 @@ export class ModelRunContextBudget {
     this.numCtx = runNumCtx({
       model: this.model,
       needs: measured.map((m) => m.need),
+      // Never below the window this job already made resident on this model — the chapter
+      // stage and the earlier items pinned theirs first. Clamped to LOCAL_FIELD_CTX_MAX by
+      // `contextFloor`, so the floor can never turn into this call's refusal.
+      configured: this.lifecycle.contextFloor(this.model, LOCAL_FIELD_CTX_MAX),
       max: LOCAL_FIELD_CTX_MAX,
       what:
         `the "${largest.label}" call for ${ctx.sourceLabel}, which is the largest prompt "${this.model}" ` +
         `sends this run (it carries the transcript)`,
     });
+    this.lifecycle.recordContext(this.model, this.numCtx);
     log.info(
       `[MetadataTasks] "${this.model}": num_ctx pinned at ${this.numCtx} for this whole run, shared by ` +
         `${measured.length} call(s) — ${measured.map((m) => `${m.label} ${m.need}t`).join(', ')} — so Ollama ` +
@@ -695,7 +714,6 @@ export class LocalFieldUnit implements MetadataUnit {
   readonly inputFields: MetadataFieldId[];
   private readonly client: AxiosInstance;
   private readonly host: string;
-  private loaded = false;
 
   constructor(
     private readonly aiManager: AIManagerService,
@@ -704,6 +722,8 @@ export class LocalFieldUnit implements MetadataUnit {
     defaultHost: string,
     /** Shared with every other unit on this model — one num_ctx, one load. */
     private readonly budget: ModelRunContextBudget,
+    /** Where this unit DECLARES the model it made resident. It never releases one itself. */
+    private readonly lifecycle: JobModelLifecycle,
     private readonly abortSignal?: AbortSignal
   ) {
     this.fields = [spec.field];
@@ -769,7 +789,7 @@ export class LocalFieldUnit implements MetadataUnit {
           what,
           logPrefix: `[MetadataTasks] ${this.label}`,
         });
-        this.loaded = true;
+        this.lifecycle.holdOllamaModel(this.host, this.option.model, `the ${this.spec.field} call`);
         return answer;
       },
       undefined,
@@ -801,12 +821,6 @@ export class LocalFieldUnit implements MetadataUnit {
       ctx,
       this.option.model
     );
-  }
-
-  /** Release the model. Only if this unit actually loaded one — a unit that never ran holds nothing. */
-  async unload(): Promise<void> {
-    if (!this.loaded) return;
-    await unloadOllamaModels(this.client, [this.option.model], `[MetadataTasks] ${this.label}`);
   }
 }
 
@@ -935,8 +949,8 @@ const TITLE_SAMPLING = { temperature: 0.7, top_p: 0.9, num_predict: TITLE_NUM_PR
  *
  * Three tasks have a LoRA over qwen3:14b, one contract each (adapters.yml), and
  * ONE instance of this class serves ONE task — the models differ, the hosts can differ
- * (the 32B titles model is an MLX shim on its own port), and a run releases each one it
- * made resident.
+ * (the 32B titles model is an MLX shim on its own port), and each one it makes resident is
+ * declared to the JOB, which releases them together when the job ends.
  *
  * Decoding differs by task, and deliberately:
  *   description, tags — greedy (`temperature 0`), because a metadata run that returns a
@@ -967,10 +981,6 @@ export class LocalAdapterUnit implements MetadataUnit {
   private readonly model: string;
   private readonly startHint?: string;
   private readonly startCommand?: string[];
-  /** Models this run actually made resident — the exact set unload() releases. */
-  private readonly loaded = new Set<string>();
-  /** The host process THIS UNIT spawned. One found already listening is never owned, never stopped. */
-  private shim?: ChildProcess;
   /** The spawned host's most recent output lines, for the error when it fails to come up. */
   private shimOutput: string[] = [];
 
@@ -978,6 +988,12 @@ export class LocalAdapterUnit implements MetadataUnit {
     private readonly task: AdapterTask,
     option: MetadataRoutingOption,
     defaultHost: string,
+    /**
+     * Where this unit DECLARES what it is holding: the model it made resident, and separately
+     * the host process it started, whose memory only comes back when that process exits (its
+     * own keep-alive eviction is a deliberate no-op). The JOB releases both, once.
+     */
+    private readonly lifecycle: JobModelLifecycle,
     /** Fired on cancel, so an adapter call in flight is aborted rather than waited out. */
     private readonly abortSignal?: AbortSignal
   ) {
@@ -1032,54 +1048,32 @@ export class LocalAdapterUnit implements MetadataUnit {
       : { tags: normalizeAdapterTags(answer, this.task, this.model, ctx.sourceLabel) };
   }
 
-  /**
-   * Let the resident adapter go. Housekeeping only: a failure here costs VRAM until the
-   * server's own keep-alive timer fires, which is not worth failing a finished run over
-   * — the same call the chapter pipeline makes for the same reason.
-   */
-  async unload(): Promise<void> {
-    // A host this unit spawned is stopped outright: the shim's own contract is that
-    // its memory comes back when the process exits (its keep_alive eviction is a
-    // deliberate no-op). One the user started stays theirs.
-    if (this.shim) {
-      log.info(`[MetadataTasks] stopping the "${this.model}" server this run started (releases its memory)`);
-      this.shim.kill('SIGTERM');
-      this.shim = undefined;
-      this.loaded.clear();
-      return;
-    }
-    for (const model of this.loaded) {
-      try {
-        await this.client.post('/api/generate', { model, prompt: '', keep_alive: 0 }, { timeout: 30_000 });
-      } catch (error: any) {
-        console.warn(`[MetadataTasks] Could not unload "${model}": ${error?.message || error}`);
-      }
-    }
-    this.loaded.clear();
-  }
-
   // --------------------------------------------------------------- managed host
 
   /**
    * App-managed adapter hosts (the 32B MLX shim) are started HERE, before the first
    * request, as a planned part of running the task — not as recovery from a failed one.
-   * A server found already listening is used and left alone; one this unit spawns is
-   * owned by the unit, tracked in `shim`, and stopped in unload() (which runMetadataTasks
-   * calls in a finally, so a spawned host cannot outlive its run even when it fails).
+   * A server found already listening is used and left alone; one this unit spawns is held by
+   * the JOB (model-lifecycle.ts) and stopped in the orchestrator's finally, so a spawned host
+   * cannot outlive its job even when it fails — and does not die between two items of one job
+   * only to be started again, at 16s and a full model load, for the next.
    *
    * Readiness is GET /api/tags answering: the shim only opens its port after the model
    * is loaded and warmed (~16s measured), so a 200 means ready, not merely started.
    */
   private async ensureHostUp(): Promise<void> {
-    if (!this.startCommand || this.shim) return;
+    if (!this.startCommand) return;
+    // The one question that matters, and it covers the host a PREVIOUS item of this job
+    // started: it is still listening, because nothing stops it until the job ends.
     if (await this.hostAnswers()) return;
 
     const [command, ...args] = this.startCommand;
     log.info(
       `[MetadataTasks] "${this.model}": nothing is listening on ${this.host} — starting it: ${this.startCommand.join(' ')}`
     );
+    // Owned by the JOB from the moment it answers, not by this unit: a server found already
+    // listening is somebody else's and is never stopped here.
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    this.shim = child;
     this.shimOutput = [];
     const capture = (chunk: Buffer) => {
       for (const line of chunk.toString().split('\n')) {
@@ -1095,14 +1089,14 @@ export class LocalAdapterUnit implements MetadataUnit {
     let exited = false;
     child.on('exit', (code) => {
       exited = true;
-      if (this.shim === child) this.shim = undefined;
       log.info(`[MetadataTasks] "${this.model}" server exited with code ${code}`);
     });
 
     const deadline = Date.now() + SHIM_READY_TIMEOUT_MS;
     while (Date.now() < deadline) {
       // Two minutes is a long time to keep waiting for a run the user has already
-      // stopped. The spawned host is already tracked in `shim`, so unload() stops it.
+      // stopped. Nothing has held this host yet — it never answered — so it is killed on
+      // the deadline path below and by its own exit handler here.
       if (this.abortSignal?.aborted) {
         throw new JobCancelledError(`while waiting for the "${this.model}" server to come up on ${this.host}`);
       }
@@ -1115,7 +1109,14 @@ export class LocalAdapterUnit implements MetadataUnit {
       }
       if (await this.hostAnswers()) {
         log.info(
-          `[MetadataTasks] "${this.model}" is up on ${this.host} (started by this run; stopped when the run finishes)`
+          `[MetadataTasks] "${this.model}" is up on ${this.host} (started by this job; stopped when the job ends)`
+        );
+        // The JOB stops it, not this unit and not this item: the next item's adapter call
+        // finds it listening and is served by the model already in memory.
+        this.lifecycle.holdProcess(
+          `host ${this.host}`,
+          `the "${this.model}" server this job started`,
+          () => child.kill('SIGTERM')
         );
         return;
       }
@@ -1275,7 +1276,7 @@ export class LocalAdapterUnit implements MetadataUnit {
           );
         }
 
-        this.loaded.add(model);
+        this.lifecycle.holdOllamaModel(this.host, model, `the ${task} adapter`);
         return typeof data?.message?.content === 'string' ? data.message.content : '';
       }
     );
@@ -1448,6 +1449,14 @@ export interface MetadataPlanRequest {
    * loads inside the same run, so both count against the two-model budget.
    */
   alsoLoads: ModelRosterEntry[];
+  /**
+   * The JOB's model residence, threaded to every local unit.
+   *
+   * REQUIRED, and not per item: a plan is built per item, and a per-item lifecycle would
+   * release the 27B between two items of one job — which is the reload this object exists to
+   * stop. The orchestrator makes one per job and releases it once.
+   */
+  lifecycle: JobModelLifecycle;
   /** This run's cancel signal, threaded to the local units. */
   abortSignal?: AbortSignal;
 }
@@ -1494,7 +1503,8 @@ export interface MetadataPlanRequest {
  * written by the model the routing names. Both are logged per item.
  */
 export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan {
-  const { routing, defaultHost, aiManager, hasInsights, hasChapters, alsoLoads, abortSignal } = request;
+  const { routing, defaultHost, aiManager, hasInsights, hasChapters, alsoLoads, lifecycle, abortSignal } =
+    request;
 
   // A field the PROMPT SET does not define is not generated at all, whatever the routing
   // says. The Spreaker podcast set has no "## THUMBNAIL_TEXT" and never did — that is the
@@ -1667,7 +1677,7 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
   const budgetFor = (model: string): ModelRunContextBudget => {
     let budget = budgets.get(model);
     if (!budget) {
-      budget = new ModelRunContextBudget(model);
+      budget = new ModelRunContextBudget(model, lifecycle);
       budgets.set(model, budget);
     }
     return budget;
@@ -1682,7 +1692,7 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
         field: plan.field,
         model: plan.option.model,
         local: true,
-        unit: new LocalAdapterUnit(plan.adapter, plan.option, defaultHost, abortSignal),
+        unit: new LocalAdapterUnit(plan.adapter, plan.option, defaultHost, lifecycle, abortSignal),
       });
       continue;
     }
@@ -1701,7 +1711,15 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
       local: plan.option.kind === 'local',
       unit:
         plan.option.kind === 'local'
-          ? new LocalFieldUnit(aiManager, spec, plan.option, defaultHost, budgetFor(plan.option.model), abortSignal)
+          ? new LocalFieldUnit(
+              aiManager,
+              spec,
+              plan.option,
+              defaultHost,
+              budgetFor(plan.option.model),
+              lifecycle,
+              abortSignal
+            )
           : new CloudFieldUnit(aiManager, spec),
     });
   }
@@ -1716,6 +1734,7 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
         descriptionOption,
         defaultHost,
         descriptionOption.kind === 'local' ? budgetFor(descriptionOption.model) : undefined,
+        lifecycle,
         abortSignal
       ),
     });
@@ -1913,46 +1932,42 @@ export async function runMetadataTasks(
   run: MetadataTaskRun
 ): Promise<MetadataResult> {
   const merged: Record<string, unknown> = {};
-  const resident = run.plan.units.filter((u) => typeof u.unload === 'function');
 
   // Declared at PLAN time — the model roster going over budget, a published field nothing
   // owns — and surfaced here, because the plan has no warnings channel of its own and the
   // operator reads these in the run report beside the chapter pipeline's.
   for (const warning of run.plan.warnings) run.ctx.warn(warning);
 
-  try {
-    for (const unit of run.plan.units) {
-      console.log(`[MetadataTasks] ${run.ctx.sourceLabel}: running unit ${unit.label}`);
-      let fields = await unit.generate(run.ctx);
-      if (unit.fields.includes('titles')) {
-        fields = await groundTitlesOnce(unit, run.ctx, fields);
-      }
-      if (unit.fields.includes('tags')) {
-        fields = await usableTagsOrThrow(unit, run.ctx, fields);
-      }
-      // Before the merge, so a later unit that declares this field as INPUT DATA reads exactly
-      // what this one returned — including the second set of titles when the grounding check
-      // re-asked for them.
-      Object.assign(run.ctx.generated, fields);
-      Object.assign(merged, fields);
+  // NO try/finally RELEASING MODELS HERE, and its absence is the fix. This function used to
+  // unload every resident unit's model as it returned — per ITEM, and per item is per stage
+  // from the machine's point of view: the next call on the same 27B re-streamed 17GB of weights
+  // into unified memory and froze the UI while it did. What a unit made resident is declared to
+  // the job's lifecycle and released once, at the end of the job.
+  for (const unit of run.plan.units) {
+    console.log(`[MetadataTasks] ${run.ctx.sourceLabel}: running unit ${unit.label}`);
+    let fields = await unit.generate(run.ctx);
+    if (unit.fields.includes('titles')) {
+      fields = await groundTitlesOnce(unit, run.ctx, fields);
     }
-
-    // Tags and hashtags, assembled from the pools with no model call at all (spec §4, §6.2,
-    // §6.3). AFTER the units, because the hashtag rule dedupes against the title and the
-    // titles unit is one of the ones that just ran.
-    assembleCodeOwnedFields(aiManager, run, merged);
-
-    // Description links, the channel tag append and hashtag spacing are applied ONCE, to
-    // the merged object. Per unit they could not be: the links append to a description one
-    // unit returns, while the channel tags append to a list assembled just above.
-    return aiManager.finalizeMetadata(merged as MetadataResult);
-  } finally {
-    // A failed run leaves a 9.5GB adapter resident just as surely as a successful one, so
-    // the release is in a finally. It only releases models that were actually loaded.
-    for (const unit of resident) {
-      await unit.unload!();
+    if (unit.fields.includes('tags')) {
+      fields = await usableTagsOrThrow(unit, run.ctx, fields);
     }
+    // Before the merge, so a later unit that declares this field as INPUT DATA reads exactly
+    // what this one returned — including the second set of titles when the grounding check
+    // re-asked for them.
+    Object.assign(run.ctx.generated, fields);
+    Object.assign(merged, fields);
   }
+
+  // Tags and hashtags, assembled from the pools with no model call at all (spec §4, §6.2,
+  // §6.3). AFTER the units, because the hashtag rule dedupes against the title and the
+  // titles unit is one of the ones that just ran.
+  assembleCodeOwnedFields(aiManager, run, merged);
+
+  // Description links, the channel tag append and hashtag spacing are applied ONCE, to
+  // the merged object. Per unit they could not be: the links append to a description one
+  // unit returns, while the channel tags append to a list assembled just above.
+  return aiManager.finalizeMetadata(merged as MetadataResult);
 }
 
 /**

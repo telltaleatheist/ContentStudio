@@ -115,10 +115,10 @@ import {
   askOllamaJson,
   bucketNumCtx,
   estimateTokens,
-  unloadOllamaModels,
   TOKENS_PER_WORD,
   OLLAMA_KEEP_ALIVE,
 } from './ollama-json';
+import { JobModelLifecycle } from './model-lifecycle';
 import { formatPrompt } from './system-prompts';
 import { topEntities, transcriptCasing } from './entity-extraction';
 import { groundTitle, narratesAnActor } from './chapter-title-quality';
@@ -200,6 +200,16 @@ export interface WholeTranscriptChapterOptions {
   host: string;
   /** Bare Ollama model name for both stages, as `ollama list` prints it. */
   model: string;
+  /**
+   * The JOB's model residence. This stage holds its model here instead of releasing it when it
+   * finishes: the next stage usually wants the same one, and re-streaming 17GB of weights
+   * between two stages of one job is what froze the operator's machine. The job releases the
+   * set once, at the end (model-lifecycle.ts).
+   *
+   * It also carries the num_ctx ratchet, so a stage that shares this model with the field calls
+   * does not size a SMALLER window than the one already resident and reload it for nothing.
+   */
+  lifecycle: JobModelLifecycle;
   /** Floor for the context window, never a ceiling. The run sizes its own (trap 3). */
   numCtx?: number;
   /** The video's title or filename — the detail call's second required context input. */
@@ -359,111 +369,107 @@ export class WholeTranscriptChapterService {
         `${this.speakerTagged ? 'speaker-tagged' : 'untagged'}`
     );
 
-    try {
-      // ---- stage 1: the one call ------------------------------------------------
-      this.numCtx = this.runNumCtx(transcript);
-      this.options.onProgress?.('chapters', 0, 1);
-      const answer = await this.askForChapters(transcript, runtime);
-      this.options.onProgress?.('chapters', 1, 1);
+    // ---- stage 1: the one call ------------------------------------------------
+    this.numCtx = this.runNumCtx(transcript);
+    this.options.onProgress?.('chapters', 0, 1);
+    const answer = await this.askForChapters(transcript, runtime);
+    this.options.onProgress?.('chapters', 1, 1);
 
-      if (answer.malformed > 0) {
-        this.warn(
-          `${answer.malformed} of the ${answer.claims.length + answer.malformed} chapters the model listed ` +
-            `came back with no opening sentence to measure, so they were dropped rather than placed by ` +
-            `guesswork — this video has ${answer.malformed} chapter(s) fewer than the model found`
-        );
-      }
-
-      // ---- stage 2: measure every quote, forwards only --------------------------
-      const mappings = mapChapterQuotes(answer.claims, cues);
-      for (const mapping of mappings) {
-        if (mapping.status === 'mapped') {
-          log.info(
-            `[Chapters] chapter ${mapping.ordinal} at ${formatClock(mapping.time!)}: ` +
-              `"${mapping.quote.slice(0, 60)}" — ${mapping.label}`
-          );
-          continue;
-        }
-        this.warn(
-          mapping.status === 'out-of-order'
-            ? `the chapter the model called "${mapping.label || 'untitled'}" was DROPPED: its opening ` +
-                `sentence ("${mapping.quote.slice(0, 60)}") is in this transcript at ` +
-                `${formatClock(mapping.wholeVideoTime!)}, which is not after the chapter before it, so the ` +
-                `model listed it out of order or quoted a sentence the speaker says twice`
-            : `the chapter the model called "${mapping.label || 'untitled'}" was DROPPED: its opening ` +
-                `sentence ("${mapping.quote.slice(0, 60)}") is not in this transcript, so there is no ` +
-                `measured time for it and nothing is guessed at`
-        );
-      }
-
-      const starts = mappings.filter((m) => m.status === 'mapped');
-      const mapped = starts.length;
-      const dropped = mappings.filter((m) => m.status !== 'mapped').length + answer.malformed;
-
-      // The prompt says the opening chapter needs no entry, and a model that reports it
-      // anyway has not made a mistake worth a warning — it has named the one chapter this
-      // architecture otherwise has no name for. Its boundary is redundant (code puts the
-      // first chapter at 0:00 regardless) and is taken off the front so the opening span
-      // cannot be 0:00-0:00, which would be an empty chapter and would throw.
-      let openingLabel = '';
-      if (starts.length > 0 && starts[0].time === 0) {
-        openingLabel = starts[0].label;
-        starts.shift();
-        log.info(
-          `[Chapters] the model reported the opening of the video as a chapter; 0:00 is already the ` +
-            `first chapter, so its entry is not a second boundary — it is the opening chapter's name ` +
-            `("${openingLabel || 'unnamed'}")`
-        );
-      }
-
-      // The opening chapter is at 0:00 and the model usually does not report it: the prompt
-      // asks for the TURNS, and the opening of the video is not a turn. Where it has no label
-      // from the chapter call, THE TITLE RULE's second clause names it from its detail call.
-      const spans: { startSec: number; endSec: number; label: string }[] = [
-        {
-          startSec: 0,
-          endSec: starts.length > 0 ? starts[0].time! : durationSeconds,
-          label: openingLabel,
-        },
-        ...starts.map((m, i) => ({
-          startSec: m.time!,
-          endSec: i + 1 < starts.length ? starts[i + 1].time! : durationSeconds,
-          label: m.label,
-        })),
-      ];
-
-      // ---- stage 3: one call per chapter for its detail -------------------------
-      const working = await this.detailChapters(spans, cues);
-
-      const chapters = this.toChapters(working, durationSeconds);
-      log.info(
-        `[Chapters] ${chapters.length} chapters in ${this.calls} model calls` +
-          (dropped > 0 ? ` (${dropped} dropped for an unmeasurable opening sentence)` : '') +
-          ': ' +
-          chapters.map((c) => `${c.timestamp} ${c.title}`).join(' | ')
+    if (answer.malformed > 0) {
+      this.warn(
+        `${answer.malformed} of the ${answer.claims.length + answer.malformed} chapters the model listed ` +
+          `came back with no opening sentence to measure, so they were dropped rather than placed by ` +
+          `guesswork — this video has ${answer.malformed} chapter(s) fewer than the model found`
       );
-
-      return {
-        chapters,
-        subjects: chapters.map((c) => c.title),
-        subjectDetails: working.map((c) => ({ about: c.title, detail: c.detail })),
-        warnings: [...this.warnings],
-        stats: {
-          durationSeconds,
-          band,
-          chaptersClaimed: answer.claims.length + answer.malformed,
-          chaptersMapped: mapped,
-          chaptersDropped: dropped,
-          // Structurally zero: see ChapterRunStats.approxStarts. A chapter here is measured
-          // or it is dropped; there is no third state to count.
-          approxStarts: 0,
-          speakerTagged: this.speakerTagged,
-          calls: this.calls,
-        },
-      };
-    } finally {
-      await this.unloadModels();
     }
+
+    // ---- stage 2: measure every quote, forwards only --------------------------
+    const mappings = mapChapterQuotes(answer.claims, cues);
+    for (const mapping of mappings) {
+      if (mapping.status === 'mapped') {
+        log.info(
+          `[Chapters] chapter ${mapping.ordinal} at ${formatClock(mapping.time!)}: ` +
+            `"${mapping.quote.slice(0, 60)}" — ${mapping.label}`
+        );
+        continue;
+      }
+      this.warn(
+        mapping.status === 'out-of-order'
+          ? `the chapter the model called "${mapping.label || 'untitled'}" was DROPPED: its opening ` +
+              `sentence ("${mapping.quote.slice(0, 60)}") is in this transcript at ` +
+              `${formatClock(mapping.wholeVideoTime!)}, which is not after the chapter before it, so the ` +
+              `model listed it out of order or quoted a sentence the speaker says twice`
+          : `the chapter the model called "${mapping.label || 'untitled'}" was DROPPED: its opening ` +
+              `sentence ("${mapping.quote.slice(0, 60)}") is not in this transcript, so there is no ` +
+              `measured time for it and nothing is guessed at`
+      );
+    }
+
+    const starts = mappings.filter((m) => m.status === 'mapped');
+    const mapped = starts.length;
+    const dropped = mappings.filter((m) => m.status !== 'mapped').length + answer.malformed;
+
+    // The prompt says the opening chapter needs no entry, and a model that reports it
+    // anyway has not made a mistake worth a warning — it has named the one chapter this
+    // architecture otherwise has no name for. Its boundary is redundant (code puts the
+    // first chapter at 0:00 regardless) and is taken off the front so the opening span
+    // cannot be 0:00-0:00, which would be an empty chapter and would throw.
+    let openingLabel = '';
+    if (starts.length > 0 && starts[0].time === 0) {
+      openingLabel = starts[0].label;
+      starts.shift();
+      log.info(
+        `[Chapters] the model reported the opening of the video as a chapter; 0:00 is already the ` +
+          `first chapter, so its entry is not a second boundary — it is the opening chapter's name ` +
+          `("${openingLabel || 'unnamed'}")`
+      );
+    }
+
+    // The opening chapter is at 0:00 and the model usually does not report it: the prompt
+    // asks for the TURNS, and the opening of the video is not a turn. Where it has no label
+    // from the chapter call, THE TITLE RULE's second clause names it from its detail call.
+    const spans: { startSec: number; endSec: number; label: string }[] = [
+      {
+        startSec: 0,
+        endSec: starts.length > 0 ? starts[0].time! : durationSeconds,
+        label: openingLabel,
+      },
+      ...starts.map((m, i) => ({
+        startSec: m.time!,
+        endSec: i + 1 < starts.length ? starts[i + 1].time! : durationSeconds,
+        label: m.label,
+      })),
+    ];
+
+    // ---- stage 3: one call per chapter for its detail -------------------------
+    const working = await this.detailChapters(spans, cues);
+
+    const chapters = this.toChapters(working, durationSeconds);
+    log.info(
+      `[Chapters] ${chapters.length} chapters in ${this.calls} model calls` +
+        (dropped > 0 ? ` (${dropped} dropped for an unmeasurable opening sentence)` : '') +
+        ': ' +
+        chapters.map((c) => `${c.timestamp} ${c.title}`).join(' | ')
+    );
+
+    return {
+      chapters,
+      subjects: chapters.map((c) => c.title),
+      subjectDetails: working.map((c) => ({ about: c.title, detail: c.detail })),
+      warnings: [...this.warnings],
+      stats: {
+        durationSeconds,
+        band,
+        chaptersClaimed: answer.claims.length + answer.malformed,
+        chaptersMapped: mapped,
+        chaptersDropped: dropped,
+        // Structurally zero: see ChapterRunStats.approxStarts. A chapter here is measured
+        // or it is dropped; there is no third state to count.
+        approxStarts: 0,
+        speakerTagged: this.speakerTagged,
+        calls: this.calls,
+      },
+    };
   }
 
   // ---------------------------------------------------------------------- stage 1
@@ -724,14 +730,23 @@ export class WholeTranscriptChapterService {
 
     // The GPU ceiling is checked here rather than passed to bucketNumCtx, which only logs it:
     // a run that will be slow for a stated reason is something the job report should carry.
+    //
+    // The floor is the LARGER of the configured one and whatever window this job has already
+    // made resident on this model (model-lifecycle.ts): sizing under a resident window reloads
+    // the model to make it smaller, which buys nothing and costs the operator a UI freeze.
+    // Clamped to CTX_MAX by `contextFloor`, so a floor can never turn into the refusal below.
     const numCtx = bucketNumCtx({
       promptTokens,
       numPredict: NUM_PREDICT,
-      configured: this.options.numCtx,
+      configured: Math.max(
+        this.options.numCtx || 0,
+        this.options.lifecycle.contextFloor(this.options.model, CTX_MAX)
+      ),
       max: CTX_MAX,
       logPrefix: '[Chapters]',
       what: `reading this ${Math.round(words / 1000)}k-word transcript in one call`,
     });
+    this.options.lifecycle.recordContext(this.options.model, numCtx);
 
     const ceiling = numCtxGpuCeiling(this.options.model);
     if (numCtx > ceiling) {
@@ -808,19 +823,16 @@ export class WholeTranscriptChapterService {
       logPrefix: `[Chapters] stage "${stage}"`,
     });
 
+    // Resident from here until the JOB ends. The next stage — the detail calls, then the field
+    // calls when they are routed to the same model — finds it loaded, which is what the
+    // 10-minute keep-alive is for.
+    this.options.lifecycle.holdOllamaModel(this.options.host, this.options.model, 'the chapter pipeline');
+
     if (!result.ok) {
       log.warn(`[Chapters] stage "${stage}" got no usable answer: ${result.detail}`);
       return null;
     }
     return result.value;
-  }
-
-  /**
-   * Release the resident model. Housekeeping — a failure costs VRAM until Ollama's own timer
-   * fires, so it warns rather than failing a finished run.
-   */
-  private async unloadModels(): Promise<void> {
-    await unloadOllamaModels(this.client, [this.options.model], '[Chapters]');
   }
 
   // ---------------------------------------------------------------------- assembling
