@@ -59,6 +59,22 @@
 # model that cannot see time cannot apply a rate expressed in minutes, so it is TOLD the runtime,
 # once, as a fact. It is not a count and not a target.
 #
+# THE LABEL REGISTER (2026-08-22, operator-directed). Stage 1's labels are the titles that SHIP
+# (stage 3's are usually discarded — see THE TITLE RULE below), yet stage 1 carried no register
+# guidance at all, which is how a published chapter list read as narration of the person on
+# camera. The label bullet now states the same topic form stage 3 always asked for — noun phrase
+# or gerund phrase, the content itself as the title — with examples, per POSITIVE FORM ONLY
+# above.
+#
+# THE EXAMPLES CARRY NO NAMES, and that is a measurement, not caution (2026-08-23). The first
+# cut reused stage 3's operator-supplied Gene Bailey titles, and on the first LONG transcript
+# through this body (a 20k-token video, KV cache spilled) the 27b returned two of those example
+# titles VERBATIM as chapters of an unrelated video. The quote-mapping law held — fabricated
+# first sentences map to no time, both fake chapters were DROPPED, nothing shipped wrong — but
+# the dropped chapters left the video below YouTube's three-chapter floor and the run failed.
+# Per the header's own law the examples were REPLACED, with nameless ones, and the bullet now
+# says out loud that they are from other videos and show the form only.
+#
 # Placeholders: {duration} (e.g. "42 minutes", "1 hour 12 minutes"), {transcript}
 whole_transcript_chapters: |-
   Below is the complete transcript of one video, with no timestamps. The video runs {duration}.
@@ -77,7 +93,10 @@ whole_transcript_chapters: |-
   Those counts include the opening chapter, which starts at the beginning of the video and needs no entry. Work through the transcript from the beginning to the end and report each chapter AFTER that first one, in the order they occur, and carry on to the end of the transcript so that the chapters cover the whole runtime.
 
   For each chapter, report:
-  - "label": a title for the chapter, 50 to 80 characters, written as one complete thought, saying specifically what happens in that stretch and naming the people, claims and events in it.
+  - "label": a title for the chapter, 50 to 80 characters, in topic form: a bare noun phrase or a gerund phrase naming the specific people, claims and events in that stretch. These labels publish under the video as the creator's own chapter list, so each one titles the CONTENT itself, the way the creator would title a chapter of their own video. Labels in exactly the right form — these are from OTHER videos and show the form only; your labels name the people, claims and events THIS transcript contains:
+    - "Debunking the 'laws from chaos' claim and the miracle framing behind it"
+    - "The sit-in arrest story and the fight over private prison abolition"
+    - "The red blood cell design argument, answered with sickle cell anemia"
   - "first_sentence": the FIRST sentence of that chapter, copied from the transcript above EXACTLY as it appears there, word for word, at least six words long. That is the sentence where the speaker turns toward the new subject, which is usually a beat EARLIER than the sentence that first explains it: if the speaker says "anyway, let's talk about the eggs" and explains three sentences later, the first sentence of the chapter is "anyway, let's talk about the eggs".
 
   Your copied sentence is what fixes the chapter's position in the video, so a sentence you reworded, tidied up or paraphrased points at the wrong moment.

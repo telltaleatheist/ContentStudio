@@ -20,7 +20,6 @@ fields:
   - thumbnail_text
   - hashtags
   - pinned_comment
-  - clip_suggestions
 
 counts:
   titles: 10
