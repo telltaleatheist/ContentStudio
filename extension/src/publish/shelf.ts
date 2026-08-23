@@ -110,6 +110,9 @@ const CSS = `
 .pick li.on { background: #2e2419; border-color: #ff6b35; }
 .pick li.full { opacity: .45; cursor: default; }
 .pick li.full:hover { background: transparent; }
+/* Not picked, but what Fill would type anyway — dashed, so it never reads as chosen. */
+.pick li.dflt { border-style: dashed; border-color: #5a4a20; }
+.dflt .n { background: #3a2f22; color: #ffcf6b; }
 .n {
   flex: 0 0 17px; height: 17px; margin-top: 1px; border-radius: 50%;
   background: #3a3a3a; color: #888; font-size: 10px; font-weight: 700;
@@ -521,6 +524,20 @@ export class PublishShelf {
     const picked = item.chosenTitles.length;
     add(`${picked}/${item.maxVariants} picked`, picked === item.maxVariants ? 'good' : 'warn');
 
+    // With nothing picked, every fill path here types the GENERATOR's top titles instead
+    // — see fillContextOf in publish-content.ts. That substitution is the shelf's, not the
+    // operator's, so it is stated rather than left to look like a reviewed choice. It does
+    // not BLOCK the fill: the operator curates, and an unreviewed title is a normal thing
+    // to push while deciding.
+    if (picked === 0) {
+      add(
+        item.generatedTitles.length
+          ? `no titles picked — using top ${Math.min(item.maxVariants, item.generatedTitles.length)} generated`
+          : 'no titles in this report',
+        'warn',
+      );
+    }
+
     // Drafts cannot be A/B tested at all, so this is load-bearing rather than decoration.
     if (this.page.isDraft) add('draft — no A/B', 'warn');
     if (item.status === 'filled') add('filled');
@@ -536,6 +553,11 @@ export class PublishShelf {
     const chosen = item.chosenTitles;
     const atCap = chosen.length >= item.maxVariants;
 
+    // Exactly the titles a fill would use when nothing is picked. Marked in the list so
+    // "which three" is visible, and marked DIFFERENTLY from picked ones so the two states
+    // can never be read as the same thing.
+    const defaults = chosen.length ? [] : item.generatedTitles.slice(0, item.maxVariants);
+
     // Chosen titles first in variant order, then the rest — the operator is deciding an
     // order, so the order has to be what they see.
     const rest = item.generatedTitles.filter((t) => !chosen.includes(t));
@@ -549,18 +571,21 @@ export class PublishShelf {
       const variant = chosen.indexOf(title);
       const isOn = variant !== -1;
       const blocked = !isOn && atCap;
+      const asDefault = defaults.indexOf(title);
 
       const li = document.createElement('li');
-      li.className = isOn ? 'on' : blocked ? 'full' : '';
+      li.className = isOn ? 'on' : blocked ? 'full' : asDefault !== -1 ? 'dflt' : '';
       li.title = isOn
         ? 'Click to remove from the test'
         : blocked
           ? `Deselect one first — YouTube allows ${item.maxVariants} variants`
-          : 'Click to add to the test';
+          : asDefault !== -1
+            ? `Not picked — a fill would use this as variant ${asDefault + 1}. Click to pick it.`
+            : 'Click to add to the test';
 
       const n = document.createElement('span');
       n.className = 'n';
-      n.textContent = isOn ? String(variant + 1) : '+';
+      n.textContent = isOn ? String(variant + 1) : asDefault !== -1 ? String(asDefault + 1) : '+';
 
       const t = document.createElement('span');
       t.className = 't';

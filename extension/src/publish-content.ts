@@ -65,6 +65,11 @@ function fillContextOf(detail: ItemDetail): FillContext {
   return {
     // The chosen set is what gets tested. With nothing picked, fall back to the
     // generator's top 3, which the prompts already order as the intended variants.
+    //
+    // The fall-back is NOT silent: the shelf chips say "no titles picked — using top N
+    // generated" and the picker marks those N distinctly (shelf.ts buildChips/buildPicker)
+    // whenever chosenTitles is empty, so nobody fills unreviewed titles thinking they are
+    // reviewed ones. It is not blocked either — the operator curates.
     titles: detail.chosenTitles.length
       ? detail.chosenTitles
       : detail.generatedTitles.slice(0, detail.maxVariants),
@@ -177,10 +182,15 @@ async function resolveCurrentVideo(): Promise<void> {
     const detail = await requestItem(resolved.item.itemId);
     item = detail;
     // A match with nothing picked is the one case worth interrupting for: there is a
-    // decision to make before this video can be filled.
+    // decision to make before this video can be filled. The invitation is only true when
+    // the report HAS titles -- "pick up to 3" on a report that generated none reads as a
+    // shelf that has lost the list, so that state says what it is instead.
+    const invite = detail.generatedTitles.length
+      ? `Pick up to ${detail.maxVariants}.`
+      : 'This report generated no titles.';
     shelf?.setItem(
       detail,
-      resolved.needsTitles ? `${resolved.reason} Pick up to ${detail.maxVariants}.` : resolved.reason,
+      resolved.needsTitles ? `${resolved.reason} ${invite}` : resolved.reason,
       resolved.needsTitles,
     );
   } catch (error) {
