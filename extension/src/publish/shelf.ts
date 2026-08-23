@@ -12,6 +12,12 @@
 //   - TERSE. Only what can't be inferred: which report is loaded, what state it's in, the
 //     titles, the actions, and any failure. Explanations live in the app, not on top of
 //     someone's work.
+//   - IT NEVER REFUSES A REPORT. Any report in the browser can be filled into any Studio
+//     page. Whether the report matches the video is DECLARED in one line (linkage.ts) and
+//     the buttons stay live either way, because the operator has workflows with no match
+//     at all — metadata generated from a text subject, filled into a livestream created
+//     minutes before going live. The click is the guard; a gate would only ever be a wall
+//     around the cases the filename join was never able to describe.
 //
 // Rendered inside a shadow root so Studio's stylesheet can't reach in and ours can't leak
 // out. Two tabs: the video currently open, and the report browser.
@@ -23,6 +29,7 @@ import {
   type FillSurface,
   type Filler,
 } from './fillers';
+import { linkageOf } from './linkage';
 import type { BrowsePage, BrowseRow, ItemDetail, PublishThumbnail } from './publish-client';
 import { DEFAULT_SHELF_PREFS, loadShelfPrefs, saveShelfPrefs, type ShelfPrefs } from './shelf-prefs';
 import { STALE_CONTEXT_MESSAGE, extensionContextAlive } from './publish-messages';
@@ -140,6 +147,18 @@ button.primary {
 .ok { color: #7ddc7d; }
 .bad { color: #ff8a80; }
 .muted { color: #8f8f8f; }
+/*
+ * The linkage note. Amber and boxed for a mismatch, quiet grey for a match, because the
+ * mismatch is the one the operator has to actually read before clicking — but never red
+ * and never a disabled button: this is a declaration, not a refusal. See linkage.ts.
+ */
+.note {
+  font-size: 11px; line-height: 1.35; border-radius: 6px;
+  padding: 5px 7px; margin: 6px 0 0;
+  color: #8f8f8f; background: #282828; border: 1px solid #383838;
+}
+.note.differ { color: #ffcf6b; background: #2b2418; border-color: #5a4a20; }
+.note.unknown { color: #cfcfcf; }
 .err {
   color: #ff8a80; background: #2c1d1d; border: 1px solid #5a2b2b;
   border-radius: 6px; padding: 6px 8px; margin-top: 8px; font-size: 11px;
@@ -494,6 +513,7 @@ export class PublishShelf {
       this.body.appendChild(sub);
     }
 
+    this.body.appendChild(this.buildLinkageNote(item));
     this.body.appendChild(this.buildChips(item));
     this.body.appendChild(this.buildPicker(item));
     this.body.appendChild(this.buildActions(item));
@@ -516,6 +536,28 @@ export class PublishShelf {
     }
   }
 
+  /**
+   * How this report relates to the page underneath, in one sentence.
+   *
+   * ALWAYS RENDERED, including when the two agree. A note that appeared only on a
+   * mismatch would be a warning, and a warning is read as "something is wrong here" —
+   * which is the reading that made the old behaviour feel like a refusal. Stating the
+   * relationship every time makes "linked to a different video" one of several ordinary
+   * answers rather than an alarm, and it means the operator filling a text-subject report
+   * into a fresh livestream sees the shelf agree with what they already know instead of
+   * having to work out why it is quiet.
+   *
+   * Nothing here disables anything. The actions below it are built from what the PAGE can
+   * do, never from what the linkage says.
+   */
+  private buildLinkageNote(item: ItemDetail): HTMLElement {
+    const linkage = linkageOf(item, this.page);
+    const note = document.createElement('div');
+    note.className = `note ${linkage.kind === 'agree' ? '' : linkage.kind}`.trim();
+    note.textContent = linkage.note;
+    return note;
+  }
+
   private buildChips(item: ItemDetail): HTMLElement {
     const chips = document.createElement('div');
     chips.className = 'chips';
@@ -533,9 +575,9 @@ export class PublishShelf {
     // Drafts cannot be A/B tested at all, so this is load-bearing rather than decoration.
     if (this.page.isDraft) add('draft — no A/B', 'warn');
     if (item.status === 'filled') add('filled');
-    if (item.videoId && this.page.videoId && item.videoId !== this.page.videoId) {
-      add('linked to another video', 'warn');
-    }
+    // The "linked to another video" chip that used to live here is gone: buildLinkageNote
+    // says the same thing in full above, naming BOTH videos, and a three-word chip
+    // repeating it read as a second, sterner objection to the same fact.
     return chips;
   }
 
@@ -623,7 +665,9 @@ export class PublishShelf {
     if (!surfaces.length) {
       const note = document.createElement('div');
       note.className = 'muted';
-      note.textContent = "Open a video's Details or Monetization tab in Studio to fill it.";
+      note.textContent =
+        "Nothing fillable on this Studio page. Open a video's Details or Monetization tab, " +
+        "or a stream's details, to fill it.";
       actions.appendChild(note);
       return actions;
     }

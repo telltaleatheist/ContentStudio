@@ -8,6 +8,13 @@
 // ask ContentStudio which generated item that is -> show it -> fill on click. When no
 // video is open, the shelf stays up on its Reports tab.
 //
+// That resolution is a SUGGESTION and never a precondition. The operator can pick any
+// report out of the browser and fill it into whatever Studio page is in front of them —
+// including a livestream's details, which has no uploaded file and therefore no filename
+// for the join to work on. manualPick below is what protects such a choice from being
+// overwritten by the next navigation, and linkage.ts is what tells the operator, in one
+// line, what they are about to do.
+//
 // Runs in the extension's ISOLATED world, which is sufficient: everything it does is DOM
 // work (querySelector, execCommand, dispatched events, the native input setter) and DOM
 // nodes are shared across worlds. No MAIN-world injection needed, so no page-script
@@ -32,7 +39,14 @@ import {
   requestSaveTitles,
   requestThumbnail,
 } from './publish/publish-messages';
-import { detailsFormReady, isDetailsPage, looksLikeDraft, readFilename, videoIdFromUrl } from './publish/page';
+import {
+  detailsFormReady,
+  isDetailsPage,
+  isLivestreamPage,
+  looksLikeDraft,
+  readFilename,
+  videoIdFromUrl,
+} from './publish/page';
 import { isMonetizationUrl, monetizationSurfaceReady } from './publish/monetization';
 import { waitFor } from './publish/dom';
 
@@ -82,7 +96,17 @@ function fillContextOf(detail: ItemDetail): FillContext {
   };
 }
 
-async function runFillers(detail: ItemDetail, videoId: string, ids: FillId[]): Promise<void> {
+/**
+ * Run the named fillers against the page.
+ *
+ * `videoId` is NULLABLE, and that is the whole point of this signature. A Studio page can
+ * legitimately have a fillable metadata form and no video id in its URL — the live
+ * dashboard opens a stream's details in a dialog over /channel/<cid>/livestreaming — and
+ * the operator filling that form is the pre-stream workflow this feature exists for. The
+ * id is needed only to RECORD the fill afterwards, so its absence costs the record, not
+ * the fill, and the shelf is told which of the two happened.
+ */
+async function runFillers(detail: ItemDetail, videoId: string | null, ids: FillId[]): Promise<void> {
   const ctx = fillContextOf(detail);
   let anySucceeded = false;
 
@@ -108,18 +132,42 @@ async function runFillers(detail: ItemDetail, videoId: string, ids: FillId[]): P
     }
   }
 
-  if (anySucceeded) {
-    try {
-      await requestFilled(detail.itemId, videoId);
-    } catch (error) {
-      shelf?.log(
-        false,
-        null,
-        `Filled the form but could not tell ContentStudio: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+  if (!anySucceeded) return;
+
+  if (!videoId) {
+    // DECLARED, not swallowed. /publish/filled is keyed by videoId, so there is nothing
+    // truthful to send from a page that has none — but a fill that quietly failed to
+    // record would leave the report looking untouched next time the operator opens it,
+    // and they would have no way to know why.
+    shelf?.log(
+      false,
+      null,
+      'Filled the form, but this page carries no video id, so ContentStudio could not ' +
+        'record the fill or link the report. Open the video and fill again to link it.',
+    );
+    return;
+  }
+
+  // The fill re-points the report at the video it was just typed into, which is what makes
+  // the pre-stream workflow work at all (a text-subject report acquires the stream's id
+  // the moment it is filled). When it was pointing somewhere ELSE that is a real change to
+  // state the operator has already made once, so it is said out loud rather than left to
+  // be discovered on the reports page.
+  const relinkedFrom = detail.videoId && detail.videoId !== videoId ? detail.videoId : null;
+
+  try {
+    await requestFilled(detail.itemId, videoId);
+    if (relinkedFrom) {
+      shelf?.log(true, null, `Re-linked this report from video ${relinkedFrom} to ${videoId}.`);
     }
+  } catch (error) {
+    shelf?.log(
+      false,
+      null,
+      `Filled the form but could not tell ContentStudio: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
 }
 
@@ -132,19 +180,27 @@ async function resolveCurrentVideo(): Promise<void> {
   const ctx = pageContext();
   shelf?.setPageContext(ctx);
 
-  // TWO kinds of page can have a video open, and the monetization one is the odd shape:
+  // THREE kinds of page can have a video open, and only the first carries everything
+  // resolution would like to have:
   //   * details page / upload wizard  -> isDetailsPage(), the metadata form and the
   //                                      filename sidebar that filename-matching needs
   //   * standalone monetization page  -> the url carries the video id, but there is no
   //                                      metadata form and no filename sidebar on it
-  // Both are worth resolving, because a video that is already LINKED resolves by its id
-  // alone — which is exactly the case where the operator came here to set monetization.
-  // (The wizard's Monetization STEP is not a third case: it keeps the wizard's url, so
-  // isDetailsPage() is still true there.)
+  //   * live control room             -> the url carries the video id; there is no
+  //                                      filename sidebar, and the metadata form is
+  //                                      behind an Edit control that may never be opened
+  // All three are worth resolving, because a video that is already LINKED resolves by its
+  // id alone — which on the live surfaces is the only join available, since a stream has
+  // no uploaded file for a filename to come from.
+  // (The wizard's Monetization STEP is not a fourth case: it keeps the wizard's url, so
+  // isDetailsPage() is still true there. Neither is the live DASHBOARD, which carries a
+  // channel id and no video id and therefore falls out below — the operator reaches its
+  // stream details through the Reports tab, which is exactly what that tab is for.)
   const onDetails = isDetailsPage();
   const onMonetization = isMonetizationUrl();
+  const onLivestream = isLivestreamPage();
 
-  if (!ctx.videoId || (!onDetails && !onMonetization)) {
+  if (!ctx.videoId || (!onDetails && !onMonetization && !onLivestream)) {
     item = null;
     resolvedFor = null;
     shelf?.setStatus('No video open. Use Reports to load one.');
@@ -160,14 +216,17 @@ async function resolveCurrentVideo(): Promise<void> {
       return;
     }
   }
-  // Nothing to wait for on the monetization page: the video id is in the url and the
-  // filename sidebar does not exist there, so resolution has everything it will get. The
-  // monetization PANEL's own readiness is a separate fact and is reported in the page
-  // context, not waited on — a channel outside the Partner Program never renders it, and
-  // sitting in a 15-second timeout would report that as "still loading".
+  // Nothing to wait for on the monetization page or in the live control room: the video
+  // id is in the url and the filename sidebar does not exist on either, so resolution has
+  // everything it will get. Each page's own fillable PANEL is a separate fact and is
+  // reported in the page context, not waited on — a channel outside the Partner Program
+  // never renders the monetization radios, and a control room shows its metadata form only
+  // once the operator opens Edit, so sitting in a 15-second timeout would report both of
+  // those as "still loading". The surface poll in watchNavigation picks them up whenever
+  // they do appear.
 
   // Re-read: on the details page the form (and with it the filename) has only just
-  // arrived, and on either page the fillable surfaces are what the shelf renders from.
+  // arrived, and on any of them the fillable surfaces are what the shelf renders from.
   const loaded = pageContext();
   shelf?.setPageContext(loaded);
 
@@ -202,17 +261,20 @@ async function resolveCurrentVideo(): Promise<void> {
 
 function callbacks() {
   return {
+    // WHAT IS DELIBERATELY NOT CHECKED HERE: whether the loaded report belongs to the
+    // video on this page. It used to refuse without a videoId in the URL, which made the
+    // one workflow that has no matching video — metadata generated from a text subject,
+    // filled into a livestream created minutes earlier — impossible to perform at all.
+    // The match is a suggestion (publish-bridge.resolveForPage) and the mismatch is a
+    // NOTE (linkage.ts); neither is a gate. What stands between a report and the wrong
+    // video is that nothing on this shelf fills without the operator clicking it, and
+    // that they read the note before they did.
     onFill: async (ids: FillId[]) => {
-      const videoId = videoIdFromUrl();
       if (!item) {
         shelf?.log(false, null, 'No report loaded.');
         return;
       }
-      if (!videoId) {
-        shelf?.log(false, null, 'No video open to fill.');
-        return;
-      }
-      await runFillers(item, videoId, ids);
+      await runFillers(item, videoIdFromUrl(), ids);
     },
 
     onRefresh: async () => {
