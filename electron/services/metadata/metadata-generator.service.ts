@@ -539,6 +539,8 @@ export class MetadataGeneratorService {
         (metadata as any)._prompt_set = params.promptSet;
         (metadata as any)._is_compilation = true;
         (metadata as any)._source_count = contentItems.length;
+        // A compilation is one item, so the whole run's trace is its trace.
+        (metadata as any)._prompt_trace = aiManager.promptTrace.slice();
 
         // Save compilation result. A compilation has no single source, so its source_key
         // is an explicit null rather than the first input's: the key exists to answer
@@ -564,6 +566,11 @@ export class MetadataGeneratorService {
 
         const item = contentItems[i];
         console.log(`[MetadataGenerator] Generating metadata ${i + 1}/${contentItems.length}`);
+
+        // Everything makeRequest sends from here to this item's save belongs to this item:
+        // the chapter calls, the field calls, the description calls, the summarization.
+        // Sliced onto `_prompt_trace` below so the report can show what the models read.
+        const promptTraceStart = aiManager.promptTrace.length;
 
         try {
           const sourceLabel = item.source || `item_${i + 1}`;
@@ -636,6 +643,8 @@ export class MetadataGeneratorService {
           // items[] on 16 of the live report files).
           // ...and with which TRANSCRIPT of that source wrote its words, recorded on both
           // branches so the report can always say (spec §3.5).
+          (metadata as any)._prompt_trace = aiManager.promptTrace.slice(promptTraceStart);
+
           const saveResult = await outputHandler.addItemToJob(
             jobInfo.jobId, metadata, this.itemSourceOf(item), this.itemProvenanceOf(item));
           console.log(`[MetadataGenerator] Saved metadata to: ${saveResult.txtPath}`);

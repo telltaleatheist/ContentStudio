@@ -1135,6 +1135,19 @@ export class MetadataReports implements OnInit {
   }
 
   /**
+   * The prompts the run sent for this item, recorded by the generator as `_prompt_trace`.
+   * Empty (and the section unrendered) for items generated before the trace existed.
+   */
+  promptTrace(): Array<{ what: string; model: string; chars: number; at: string; prompt: string }> {
+    const trace = (this.metadata() as any)?._prompt_trace;
+    return Array.isArray(trace) ? trace : [];
+  }
+
+  formatPromptSize(chars: number): string {
+    return chars >= 1000 ? `${(chars / 1000).toFixed(1)}k chars` : `${chars} chars`;
+  }
+
+  /**
    * Toggle a title into/out of the A/B set. Click order becomes variant order —
    * variant 1 is YouTube's fallback when a test is inconclusive, so it's a real choice.
    */

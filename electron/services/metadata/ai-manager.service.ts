@@ -196,6 +196,25 @@ export interface PromptSet {
 }
 
 export class AIManagerService {
+  /**
+   * Every prompt this instance has sent through makeRequest, in send order — what the call
+   * was for, which model read it, its size, and the prompt text itself.
+   *
+   * WHY: the operator judging a bad field has the OUTPUT and nothing else; whether the
+   * input was overloaded, thin, or garbled is unanswerable after the run. The generator
+   * slices this per item onto `_prompt_trace`, the job JSON stores it, and the reports
+   * page renders it — so every generated item can show exactly what the models were told.
+   *
+   * SCOPE: everything routed through makeRequest, which is every CLOUD call and the legacy
+   * package/summarization paths. The per-field LOCAL calls (description-unit, metadata-tasks,
+   * the chapter pipeline's Ollama transport) speak to Ollama directly and do not appear;
+   * "Show prompt" already covers those before the run.
+   *
+   * One AIManagerService is constructed per generation run, so the trace's lifetime is the
+   * job's and nothing carries across runs.
+   */
+  readonly promptTrace: Array<{ what: string; model: string; chars: number; at: string; prompt: string }> = [];
+
   // Ollama context window size - controls KV cache memory allocation.
   // 131072 (default) creates a ~40GB KV cache for 70B models, causing OOM on most systems.
   // 32768 reduces it to ~10GB while still supporting long prompts (master analysis, episode splitting).
@@ -768,7 +787,7 @@ export class AIManagerService {
         // 600s, matching LOCAL_GROUP_TIMEOUT_MS: this call's num_ctx differs from the
         // chapter pipeline's, so Ollama fully reloads the 27b before generating and the
         // window has to hold the reload as well as the summary.
-        response = await this.makeRequest(prompt, this.summaryModel, 600);
+        response = await this.makeRequest(prompt, this.summaryModel, 600, `summarization chunk ${i + 1} of ${sourceName}`);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         throw new Error(`Summarization failed for ${sourceName} chunk ${i + 1}/${chunks.length}: ${reason}`);
@@ -792,7 +811,7 @@ export class AIManagerService {
     const prompt = this.createSummarizationPrompt(transcript, sourceName);
     // 600s for the same reason as the chunked path above: the local model may need a
     // full reload (num_ctx change) before it can start writing.
-    const response = await this.makeRequest(prompt, this.summaryModel, 600);
+    const response = await this.makeRequest(prompt, this.summaryModel, 600, `summarization of ${sourceName}`);
 
     // A trivially short/empty summary means the model produced nothing usable —
     // fail loudly rather than silently substituting truncated raw transcript.
@@ -1175,7 +1194,7 @@ export class AIManagerService {
 
     const maxAttempts = 2;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const response = await this.makeRequest(prompt, requestModel, 300);
+      const response = await this.makeRequest(prompt, requestModel, 300, `metadata package (attempt ${attempt})`);
 
       if (!response) {
         log.error('[AIManager] === METADATA GENERATION FAILED ===');
@@ -1265,30 +1284,33 @@ export class AIManagerService {
    */
   async runJsonRequest(prompt: string, model: string, what: string): Promise<Record<string, unknown>> {
     await this.ensureProviderReady(model);
-    const response = await this.makeRequest(prompt, model, 300);
+    const response = await this.makeRequest(prompt, model, 300, what);
     if (!response) {
       throw new Error(`No response from "${model}" for ${what}`);
     }
-    const match = response.match(/\{[\s\S]*\}/);
-    if (!match) {
-      throw new Error(`No JSON object in the answer to ${what} from "${model}": ${response.slice(0, 200)}`);
+    const extracted = AIManagerService.extractFirstJsonObject(response);
+    if (!extracted) {
+      log.warn(`[AIManager] the answer to ${what} from "${model}" holds no complete JSON object:\n${response}`);
+      throw new Error(`No complete JSON object in the answer to ${what} from "${model}" (full answer in the log above)`);
     }
     try {
       let parsed: unknown;
       try {
-        parsed = JSON.parse(match[0]);
+        parsed = JSON.parse(extracted);
       } catch (strictError: any) {
-        // A cloud model legitimately writes a literal newline inside a JSON string when the
-        // value is prose — Ollama's format:json grammar can never emit one, so only this path
-        // meets them. Strict parse first; on failure, control characters INSIDE string
-        // literals are escaped and the parse is tried once more. Anything still unparseable
-        // after that is a genuinely malformed answer and fails exactly as before. Measured on
-        // the first cloud chapter run (2026-08-23): a valid detail answer was discarded for
-        // one raw newline, and the 0:00 chapter shipped titled by its own opening words.
-        parsed = JSON.parse(AIManagerService.escapeControlCharsInJsonStrings(match[0]));
+        // A cloud model legitimately writes JSON no grammar-constrained local call ever
+        // produces: a literal newline inside a string (the value is prose), a trailing comma
+        // before the closing brace. Strict parse first; on failure, both repairs are applied
+        // and the parse is tried once more. Anything still unparseable is a genuinely
+        // malformed answer and fails as before — with the WHOLE answer logged, because the
+        // 200-character snippet made the first two cloud runs' failures (2026-08-23, the f3
+        // and f2 chapter details) a diagnosis by guesswork.
+        parsed = JSON.parse(
+          AIManagerService.stripTrailingCommas(AIManagerService.escapeControlCharsInJsonStrings(extracted))
+        );
         log.info(
-          `[AIManager] the answer to ${what} parsed only after escaping raw control characters ` +
-            `inside its string literals (strict parse: ${strictError?.message || strictError})`
+          `[AIManager] the answer to ${what} parsed only after repair — control characters in string ` +
+            `literals escaped, trailing commas stripped (strict parse: ${strictError?.message || strictError})`
         );
       }
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -1296,11 +1318,81 @@ export class AIManagerService {
       }
       return parsed as Record<string, unknown>;
     } catch (error: any) {
+      log.warn(`[AIManager] the full unparseable answer to ${what} from "${model}":\n${response}`);
       throw new Error(
         `Unparseable JSON in the answer to ${what} from "${model}": ${error?.message || error} ` +
-          `(${match[0].slice(0, 200)})`
+          `(the full answer is in the log above this error)`
       );
     }
+  }
+
+  /**
+   * The FIRST complete top-level JSON object in the text, extracted by brace depth with
+   * string and escape state tracked — never by regex.
+   *
+   * The `/\{[\s\S]*\}/` this replaces matched first `{` to LAST `}`, which breaks in both
+   * directions on a real cloud answer: prose after the object drags junk into the match, and
+   * an answer whose object never closes gets cut at some `}` inside its own prose — the
+   * "Unterminated string" the f2 chapter-detail call died of (2026-08-23). Control characters
+   * count as in-string content here (the repair above escapes them); this only finds where
+   * the object ENDS.
+   *
+   * Null when no object opens or none closes: a truncated answer is reported as what it is
+   * rather than parsed by luck.
+   */
+  private static extractFirstJsonObject(text: string): string | null {
+    const start = text.indexOf('{');
+    if (start === -1) return null;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) return text.slice(start, i + 1);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Remove a comma that directly precedes a closing brace or bracket, outside strings —
+   * string-aware for the same reason every scanner in this family is: a comma-brace
+   * sequence inside prose is content, not syntax.
+   */
+  private static stripTrailingCommas(text: string): string {
+    let out = '';
+    let inString = false;
+    let escaped = false;
+    for (const ch of text) {
+      if (inString) {
+        out += ch;
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+        out += ch;
+        continue;
+      }
+      if (ch === '}' || ch === ']') {
+        out = out.replace(/,(\s*)$/, '$1') + ch;
+        continue;
+      }
+      out += ch;
+    }
+    return out;
   }
 
   /**
@@ -1628,10 +1720,15 @@ export class AIManagerService {
   private async makeRequest(
     prompt: string,
     model: string,
-    timeout: number = 600
+    timeout: number = 600,
+    what: string = 'AI request'
   ): Promise<string | null> {
     const requestId = Math.random().toString(36).substring(7);
     const timestamp = new Date().toISOString();
+
+    // Recorded BEFORE the call: a request that fails or times out is still a prompt that
+    // was sent, and the trace exists to answer "what did the model actually read".
+    this.promptTrace.push({ what, model, chars: prompt.length, at: timestamp, prompt });
 
     console.log(`[AIManager] ▶ AI REQUEST START [${requestId}] at ${timestamp}`);
     console.log(`[AIManager]   Model: ${model}`);
