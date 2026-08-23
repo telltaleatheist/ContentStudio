@@ -23,9 +23,11 @@ import {
   PublishStoreService,
   GeneratedFallback,
   GeneratedIndex,
+  GeneratedItemSummary,
   resolveChosenMetadata,
 } from './publish-store.service';
 import {
+  ChosenMetadata,
   MAX_AB_VARIANTS,
   MAX_TITLE_LENGTH,
   PublishStatus,
@@ -303,73 +305,114 @@ export class PublishBridge {
    *   2. an exact normalized-filename match against the Studio sidebar filename
    *   3. nothing -- the shelf shows its report browser rather than guessing
    *
+   * Step 1 searches EVERY selection on disk, not just the `ready|linked|filled` ones the
+   * pending endpoint serves: an item can be linked to a video while still sitting in
+   * `selecting`, and filtering it out made the operator's own confirmed link invisible.
+   *
    * Step 2 searches EVERY generated report, not just ones with titles picked: a fresh
    * report whose filename matches is exactly the case where the operator still needs to
    * pick, and refusing to find it would defeat the point.
+   *
+   * When several reports share the filename -- which regenerating an item guarantees,
+   * since every run mints a new item id against the same source_path -- this DISAMBIGUATES
+   * rather than refusing (see `disambiguate`), and the reason it returns says which rule
+   * fired and how many other reports were in the running. That is a stated decision the
+   * operator can see and override from the Reports tab, not a silent guess: nothing is
+   * written and nothing is typed into Studio until they click.
    */
   async resolveForPage(videoId: string, filename: string | null): Promise<ResolveOutcome> {
-    const pending = await this.listPending();
+    // Every selection, plus the ones that would not parse. A corrupt file could be the
+    // very record linked to this video, so it is named in the reason rather than counted
+    // as "nothing matched".
+    const { records, faults } = this.store.listAllRecords();
+    const notes: string[] = [];
+    if (faults.length) {
+      notes.push(
+        `${faults.length} selection file(s) could not be read (${faults.map((f) => f.itemId).join(', ')})`
+      );
+    }
+    const suffixOf = () => (notes.length ? ` — ${notes.join('; ')}` : '');
 
-    const linked = pending.find((p) => p.videoId && p.videoId === videoId);
-    if (linked) {
-      return {
-        item: linked,
-        reason: 'Already linked to this video.',
-        linked: true,
-        needsTitles: false,
-      };
+    const links = records.filter((r) => r.videoId === videoId);
+    if (links.length) {
+      // Nothing stops two records naming the same video. The operator's most recent
+      // decision stands, and the count travels in the reason.
+      const best = [...links].sort(byNewestSelection)[0]!;
+      const item = this.toPending(best.itemId);
+      if (item) {
+        return {
+          item,
+          reason:
+            links.length > 1
+              ? `Already linked to this video (${links.length} records name it; showing the most recently updated).${suffixOf()}`
+              : `Already linked to this video.${suffixOf()}`,
+          linked: true,
+          // A linked item with nothing picked still needs picking. Reporting false here
+          // is what let the shelf offer a fill that would have typed the generator's
+          // top 3 in as if they had been chosen.
+          needsTitles: best.chosenTitles.length === 0,
+        };
+      }
+      // The link is real but its report is gone from disk. Say so, then carry on to the
+      // filename match -- a regenerated report for the same source is very often exactly
+      // what the operator is looking at, and it is named in the reason when it is found.
+      notes.push(`the record linked to this video (${best.itemId}) has no report on disk`);
     }
 
     if (!filename) {
       return {
         item: null,
-        reason: 'No filename on this page.',
+        reason: `No filename on this page.${suffixOf()}`,
         linked: false,
         needsTitles: false,
       };
     }
 
     const wanted = normalizeForMatch(filename);
-    const hits = this.listGenerated().items.filter(
-      (i) => i.sourceFilename && normalizeForMatch(i.sourceFilename) === wanted
-    );
+    const byItemId = new Map(records.map((r) => [r.itemId, r]));
+    const hits: FilenameCandidate[] = this.listGenerated()
+      .items.filter((i) => i.sourceFilename && normalizeForMatch(i.sourceFilename) === wanted)
+      .map((summary) => ({ summary, chosen: byItemId.get(summary.itemId) ?? null }));
 
-    if (hits.length > 1) {
-      // Refuse to guess -- same rule as the draft matcher.
+    if (!hits.length) {
       return {
         item: null,
-        reason: `${hits.length} reports share the filename "${filename}".`,
+        reason: `No report matches "${filename}".${suffixOf()}`,
         linked: false,
         needsTitles: false,
       };
     }
 
-    if (hits.length === 1) {
-      const hit = hits[0];
-      const chosen = this.store.get(hit.itemId);
-      const item = this.toPendingFromGenerated(hit.itemId);
-      if (!item) {
-        return {
-          item: null,
-          reason: `Matched "${filename}" but the report could not be read.`,
-          linked: false,
-          needsTitles: false,
-        };
-      }
-      const chosenCount = chosen ? chosen.chosenTitles.length : 0;
+    const picked =
+      hits.length === 1
+        ? { candidate: hits[0]!, why: `Matched "${filename}".` }
+        : disambiguate(hits, videoId, filename);
+
+    if (!picked.candidate) {
       return {
-        item,
-        reason: `Matched "${filename}".`,
+        item: null,
+        reason: `${picked.why}${suffixOf()}`,
         linked: false,
-        needsTitles: chosenCount === 0,
+        needsTitles: false,
       };
     }
 
+    const item = this.toPendingFromGenerated(picked.candidate.summary.itemId);
+    if (!item) {
+      return {
+        item: null,
+        reason: `Matched "${filename}" but the report could not be read.${suffixOf()}`,
+        linked: false,
+        needsTitles: false,
+      };
+    }
+
+    const chosenCount = picked.candidate.chosen?.chosenTitles.length ?? 0;
     return {
-      item: null,
-      reason: `No report matches "${filename}".`,
+      item,
+      reason: `${picked.why}${suffixOf()}`,
       linked: false,
-      needsTitles: false,
+      needsTitles: chosenCount === 0,
     };
   }
 
@@ -424,4 +467,130 @@ export class PublishBridge {
       filledAt: new Date().toISOString(),
     });
   }
+}
+
+/**
+ * One report whose filename matches the Studio page, paired with its selection record
+ * (null when the operator has never opened it). The pair is what every disambiguation
+ * rule below reads: the report says what was generated, the selection says what the
+ * operator decided about it.
+ */
+interface FilenameCandidate {
+  summary: GeneratedItemSummary;
+  chosen: ChosenMetadata | null;
+}
+
+/**
+ * Either a decision plus the sentence that explains it, or a refusal plus the sentence
+ * that names the candidates. `why` is never empty — it is what the shelf puts on screen.
+ */
+type Disambiguation =
+  | { candidate: FilenameCandidate; why: string }
+  | { candidate: null; why: string };
+
+/**
+ * Choose between reports that share one filename.
+ *
+ * This case is the NORM, not an edge: regenerating an item writes a new report against
+ * the same `source_path` and mints a new item id, so a video the operator has re-run four
+ * times has four reports with identical filenames. Refusing to choose (the old behaviour)
+ * meant the shelf found nothing for exactly the videos that had been worked on most.
+ *
+ * Refusing is still right when the matcher picks a YOUTUBE VIDEO (video-matcher.ts):
+ * writing to the wrong video is destructive. It is wrong here, because picking the wrong
+ * REPORT costs a glance — the shelf shows the label, the reason and every title, and
+ * nothing reaches Studio until the operator clicks Fill. So this decides, states which
+ * rule fired, and leaves the Reports tab as the override.
+ *
+ * The rules, in order:
+ *   1. Drop reports already linked to a DIFFERENT video. They are that video's record.
+ *   2. Drop reports that generated NO titles, as long as that leaves something. A report
+ *      with an empty titles[] (the per-field CLI runs write these) has nothing to fill.
+ *   3. Prefer a report with titles PICKED. Picks do not carry across a regeneration
+ *      (carry-forward.ts is explicit about why), so the report holding them is the one
+ *      the operator actually worked on. Several picked: the most recently updated.
+ *   4. Otherwise the newest report by createdAt.
+ *
+ * A tie the rules cannot break (identical timestamps) is a refusal naming the candidates,
+ * because at that point there is genuinely nothing to choose on.
+ */
+function disambiguate(
+  hits: FilenameCandidate[],
+  videoId: string,
+  filename: string
+): Disambiguation {
+  const total = hits.length;
+  const shared = `${total} reports share the filename "${filename}"`;
+
+  const elsewhere = hits.filter((h) => h.chosen?.videoId && h.chosen.videoId !== videoId);
+  let live = hits.filter((h) => !(h.chosen?.videoId && h.chosen.videoId !== videoId));
+  if (!live.length) {
+    return {
+      candidate: null,
+      why: `${shared}, and every one is already linked to a different video (${labelsOf(elsewhere)}).`,
+    };
+  }
+
+  const titled = live.filter((h) => h.summary.titleCount > 0);
+  if (titled.length) live = titled;
+
+  const withPicks = live.filter((h) => (h.chosen?.chosenTitles.length ?? 0) > 0);
+  if (withPicks.length === 1) {
+    return {
+      candidate: withPicks[0]!,
+      why: `Matched the one of ${total} reports with this filename that has titles picked.`,
+    };
+  }
+  if (withPicks.length > 1) {
+    const newest = onlyNewest(withPicks, (h) => h.chosen!.updatedAt);
+    if (!newest) {
+      return {
+        candidate: null,
+        why: `${shared} and ${withPicks.length} were picked at the same moment — open the one you want from Reports (${labelsOf(withPicks)}).`,
+      };
+    }
+    return {
+      candidate: newest,
+      why: `Matched the most recently picked of ${withPicks.length} reports with picked titles (${total} share this filename).`,
+    };
+  }
+
+  const newest = onlyNewest(live, (h) => h.summary.createdAt);
+  if (!newest) {
+    return {
+      candidate: null,
+      why: `${shared} and carry no date to order them by — open the one you want from Reports (${labelsOf(live)}).`,
+    };
+  }
+  return { candidate: newest, why: `Matched the newest of ${total} reports sharing this filename.` };
+}
+
+/**
+ * The single newest candidate by `stamp`, or null when the top two are indistinguishable.
+ *
+ * Null is the point of it: an ISO timestamp two candidates share (or that neither has) is
+ * not a tie-break, and treating the array order as one would make the answer depend on
+ * readdir. The caller refuses instead.
+ */
+function onlyNewest<T>(items: T[], stamp: (item: T) => string): T | null {
+  const sorted = [...items].sort((a, b) => stamp(b).localeCompare(stamp(a)));
+  const best = sorted[0];
+  if (!best || !stamp(best)) return null;
+  if (sorted.length > 1 && stamp(sorted[1]!) === stamp(best)) return null;
+  return best;
+}
+
+/** Selection records, most recently updated first. */
+function byNewestSelection(a: ChosenMetadata, b: ChosenMetadata): number {
+  return (b.updatedAt || '').localeCompare(a.updatedAt || '');
+}
+
+/**
+ * Candidates as the operator can tell them apart. The label is the same filename on every
+ * one of them, so the date and the item id are the only distinguishing facts there are.
+ */
+function labelsOf(candidates: FilenameCandidate[]): string {
+  return candidates
+    .map((c) => `${c.summary.itemId} of ${c.summary.createdAt.slice(0, 10) || 'unknown date'}`)
+    .join(', ');
 }
