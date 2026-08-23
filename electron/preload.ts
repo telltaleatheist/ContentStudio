@@ -157,9 +157,11 @@ const api = {
       channelId?: string | null;
       publishAt?: string | null;
       isPodcast?: boolean;
-      // Three-valued: true = monetize, false = don't, null = no decision recorded (the
-      // extension then leaves Studio's monetization control alone). Never coerced.
-      monetize?: boolean | null;
+      // ONLY true. Monetization is on for every video and stopped being a per-item choice
+      // on 2026-08-23; the main process refuses false and null by name. Left on the type
+      // as documentation of that refusal rather than removed, so a caller that still tries
+      // is a compile error here instead of a rejection there.
+      monetize?: true;
     }
   ) => ipcRenderer.invoke('publish-set-fields', itemId, fields),
   publishGetResolved: (itemId: string) => ipcRenderer.invoke('publish-get-resolved', itemId),
