@@ -128,7 +128,7 @@ export interface RuntimePaths {
 let selectedWhisperModel = 'small';
 
 export function setSelectedWhisperModel(model: string): void {
-  if (!['tiny', 'base', 'small'].includes(model)) {
+  if (!['tiny', 'base', 'small', 'large-v3', 'large-v3-turbo'].includes(model)) {
     throw new Error(`Unsupported Whisper model: ${model}`);
   }
   selectedWhisperModel = model;

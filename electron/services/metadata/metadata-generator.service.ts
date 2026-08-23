@@ -23,12 +23,12 @@ import {
   runMetadataTasks,
 } from './metadata-tasks';
 import {
-  CHAPTER_PIPELINE_MODELS,
   KEY_PHRASE_EMBEDDING_MODEL,
   MetadataRoutingSelections,
   MetadataRoutingTaskId,
   ResolvedMetadataRouting,
   SUMMARIZATION_MODEL,
+  resolveChapterModelOption,
   resolveMetadataRouting,
   routingOption,
 } from './metadata-routing';
@@ -100,9 +100,10 @@ export interface GenerationParams {
    * optionId, see metadata-routing.ts). Resolved against the registry here, so an absent
    * key means "the shipped defaults" and a bad one fails the job naming the task.
    *
-   * This is the ONLY input that decides which model writes which field. It does NOT decide
-   * the chapter model: chapters stopped being a routed task on 2026-08-22 and run on
-   * CHAPTER_PIPELINE_MODELS, which nobody picks.
+   * This is the ONLY input that decides which model writes which field — and, since
+   * 2026-08-23, the chapter model with them: chapters are still not a routed task, but they
+   * run on the writing-model slot's projection of this table (resolveChapterModelOption),
+   * falling back to CHAPTER_PIPELINE_MODELS when the slot's tasks disagree.
    */
   metadataRouting?: MetadataRoutingSelections;
   /** Chapter context-window FLOOR. One value for the whole run (Ollama reloads on change). */
@@ -423,6 +424,7 @@ export class MetadataGeneratorService {
 
             const { subjects, details } = await this.resolveChapters(
               item,
+              aiManager,
               params,
               i,
               contentItems.length,
@@ -578,6 +580,7 @@ export class MetadataGeneratorService {
             chaptersSkipped,
           } = await this.resolveChapters(
             item,
+            aiManager,
             params,
             i,
             contentItems.length,
@@ -847,7 +850,12 @@ export class MetadataGeneratorService {
      * is exactly that fact, measured rather than assumed.
      */
     const alsoLoads: ModelRosterEntry[] = [];
-    if (hasChapters) alsoLoads.push({ model: CHAPTER_PIPELINE_MODELS.generation, what: 'chapters' });
+    // The chapter model counts against the local two-model budget only when it IS local —
+    // a slot routed to a cloud option made nothing resident.
+    const chapterOption = resolveChapterModelOption(resolveMetadataRouting(params.metadataRouting));
+    if (hasChapters && chapterOption.kind === 'local') {
+      alsoLoads.push({ model: chapterOption.model, what: 'chapters' });
+    }
     if (summary !== contentText) {
       const summarizer = SUMMARIZATION_MODEL.replace(/^ollama:/, '');
       alsoLoads.push({ model: summarizer, what: 'summarization' });
@@ -995,6 +1003,7 @@ export class MetadataGeneratorService {
    */
   private static async resolveChapters(
     item: ContentItem,
+    aiManager: AIManagerService,
     params: GenerationParams,
     itemIndex: number,
     itemCount: number,
@@ -1027,7 +1036,7 @@ export class MetadataGeneratorService {
     params.progressCallback?.('generating', `Finding chapters ${itemIndex + 1}/${itemCount}...`, 0, undefined, itemIndex);
 
     try {
-      const result = await this.generateChapters(item, params, itemIndex, itemCount, lifecycle);
+      const result = await this.generateChapters(item, aiManager, params, itemIndex, itemCount, lifecycle);
 
       // Degradations the pipeline recovered from rather than threw on. Surfaced even
       // when the chapters below are then dropped for being too few — the user asked
@@ -1154,6 +1163,7 @@ export class MetadataGeneratorService {
    */
   private static async generateChapters(
     item: ContentItem,
+    aiManager: AIManagerService,
     params: GenerationParams,
     itemIndex: number,
     itemCount: number,
@@ -1163,11 +1173,13 @@ export class MetadataGeneratorService {
       throw new Error('Chapter generation needs a timestamped transcript');
     }
 
-    // NOT from the routing table. Chapters are not a routed task any more — the model this
-    // pipeline needs is declared in metadata-routing.ts as CHAPTER_PIPELINE_MODELS, where the
-    // settings modal can still report whether it is installed BEFORE a run spends an hour
-    // finding out.
-    const model = CHAPTER_PIPELINE_MODELS.generation;
+    // Still not a routed TASK — there is no chapter entry in the store — but no longer a
+    // fixed constant either: the chapter model is the writing-model slot's projection
+    // (resolveChapterModelOption), because the labels this pipeline writes are the inputs
+    // the description conditions on. A store whose slot tasks disagree projects to the
+    // declared CHAPTER_PIPELINE_MODELS default, exactly the pre-slot behavior.
+    const chapterOption = resolveChapterModelOption(resolveMetadataRouting(params.metadataRouting));
+    const model = chapterOption.model;
     const host = params.aiHost || 'http://localhost:11434';
     const label = item.source || `item_${itemIndex + 1}`;
 
@@ -1249,6 +1261,13 @@ export class MetadataGeneratorService {
     const chapterer = new WholeTranscriptChapterService({
       host,
       model,
+      // The cloud transport, exactly when the slot resolved to a cloud option. `model` is
+      // then the provider-prefixed string runJsonRequest routes on, and the service's
+      // local machinery (context sizing, residency) stands down — see the option's doc.
+      cloudJson:
+        chapterOption.kind === 'cloud'
+          ? (prompt, cloudModel, what) => aiManager.runJsonRequest(prompt, cloudModel, what)
+          : undefined,
       // The pipeline HOLDS its model here rather than unloading it when it finishes: the field
       // calls that run next are routed to the same 27B on most channels, and reloading it
       // between the two stages is the freeze this job stopped paying for.

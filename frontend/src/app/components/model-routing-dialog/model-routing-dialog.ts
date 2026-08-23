@@ -67,8 +67,9 @@ export type ModelRoutingDialogResult = boolean | undefined;
           }
         }
 
-        <!-- THE choice: which model writes the four packaging fields. One pick writes the
-             same per-task entries the store has always held; a store hand-set per field
+        <!-- THE choice: which model does the run's writing — the description and the four
+             packaging fields, with chapters following it (the note below). One pick writes
+             the same per-task entries the store has always held; a store hand-set per field
              (e.g. titles on the 32B adapter) shows as Custom and is never rewritten. -->
         @if (slot(); as bigSlot) {
           <div class="routing-row">
@@ -111,9 +112,9 @@ export type ModelRoutingDialogResult = boolean | undefined;
           <mat-icon>info_outline</mat-icon>
           <div>
             <p>
-              <strong>Description and tags</strong> always run on the small local model
-              ({{ smallModelLabel() }}); hashtags follow the description. Tags on a chaptered
-              item are assembled in code and use no model at all.
+              <strong>Tags</strong> on a chaptered item are assembled in code from the video's own
+              words and use no model at all; a chapterless item's tags run on the small local model
+              ({{ smallModelLabel() }}). Hashtags follow the tags.
             </p>
           </div>
         </div>
@@ -123,9 +124,9 @@ export type ModelRoutingDialogResult = boolean | undefined;
             <mat-icon>auto_stories</mat-icon>
             <div>
               <p>
-                <strong>Chapters</strong> are not routed. Every item with a timestamped transcript is
-                chaptered by {{ chapter.generationModel }}, which reads the whole transcript in one
-                call and then writes each chapter's detail.
+                <strong>Chapters follow the model above.</strong> Every item with a timestamped
+                transcript is chaptered by {{ chapter.generationModel }}, which reads the whole
+                transcript in one call and then writes each chapter's detail.
               </p>
               @if (chapter.generationAvailability === 'not-installed') {
                 <p class="row-note missing">
@@ -269,9 +270,9 @@ export class ModelRoutingDialog implements OnInit {
   readonly saving = signal(false);
   /**
    * Every routed task with its stored selection — not rendered as rows any more, but still
-   * loaded whole and saved whole: the modal edits only the slot's four entries, and the
-   * others (description, tags — including a hand-set 9b/4b A/B entry) pass through Save
-   * untouched rather than being reset to defaults.
+   * loaded whole and saved whole: the modal edits only the slot's entries (description and
+   * the four packaging fields), and tags — including a hand-set 9b/4b A/B entry — pass
+   * through Save untouched rather than being reset to defaults.
    */
   readonly tasks = signal<MetadataRoutingTask[]>([]);
   readonly slot = signal<MetadataRoutingSlot | null>(null);
@@ -300,10 +301,10 @@ export class ModelRoutingDialog implements OnInit {
     return keys.some(key => current[key] !== initial[key]);
   });
 
-  /** What the description (and so tags/hashtags) actually runs on, named from the payload. */
+  /** What a chapterless item's tags actually run on, named from the payload. */
   readonly smallModelLabel = computed(() => {
-    const description = this.tasks().find(task => task.id === 'description');
-    const chosen = description?.options.find(option => option.id === this.selections()['description']);
+    const tags = this.tasks().find(task => task.id === 'tags');
+    const chosen = tags?.options.find(option => option.id === this.selections()['tags']);
     return chosen?.label ?? 'the registry default';
   });
 

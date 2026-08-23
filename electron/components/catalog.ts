@@ -72,7 +72,12 @@ const toolComponents: OptionalComponent[] = [
 const modelSpecs = [
   ['tiny', 'Tiny', 77_691_713, 'Fastest; best for quick drafts.', false, 'be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21'],
   ['base', 'Base', 147_951_465, 'Fast with better accuracy than Tiny.', false, '60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe'],
-  ['small', 'Small', 487_601_967, 'Balanced speed and accuracy.', true, '1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b'],
+  ['small', 'Small', 487_601_967, 'Balanced speed and accuracy.', false, '1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b'],
+  // Measured 2026-08-23 on "f2 - braeden sorbo": base garbled every proper noun in the video
+  // (Kofi Asare -> "Kufi Asari", Forgiato -> dropped) and those garbles flowed into the
+  // description, chapters and the tag pools. large-v3 recovered all of them. Turbo is the
+  // shippable form of the same model: near-identical accuracy, several times the speed.
+  ['large-v3-turbo', 'Large v3 Turbo', 1_624_555_275, 'Most accurate; recovers names the smaller models garble.', true, '1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69'],
 ] as const;
 
 const modelComponents: OptionalComponent[] = modelSpecs.map(([model, name, bytes, description, recommended, sha256]) => ({
