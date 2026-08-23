@@ -373,6 +373,49 @@ export function wordsToSegments(words: NormalizedWord[], speakers: ImportSpeaker
 }
 
 /**
+ * Does this transcript carry attribution worth rendering?
+ *
+ * TRUE when more than one distinct speaker id appears across the segments — which is the same
+ * question `buildContentText` has always asked itself, lifted out so its CALLERS can ask it too.
+ * They need to: a prompt that explains HOST/CLIP/UNSURE tags has to be sent only where the tags
+ * exist, and the one authority on whether they exist is the function that renders them.
+ *
+ * A single-speaker transcript answers false, and that is the right answer even when the speaker
+ * tagger ran: a video where every caption scored as the host has no attribution to preserve, and
+ * prefixing 300 identical labels onto it would spend context to say nothing. (It also matters
+ * that it stays flat: entity-extraction.ts refuses a transcript whose capitalized-word ratio
+ * looks like "a speaker-tagged dump", and prefixing only on CHANGE keeps the added tokens down
+ * to one per turn rather than one per caption.)
+ */
+export function segmentsCarrySpeakerAttribution(segments: SRTSegment[]): boolean {
+  return new Set(segments.map((s) => s.speaker).filter(Boolean)).size > 1;
+}
+
+/**
+ * The same text with the screenplay labels taken back off.
+ *
+ * FOR THE CODE THAT MEASURES THE WORDS, never for the model. A speaker label is a fact ABOUT
+ * the transcript, not part of it, and the two measurements this app makes over the content text
+ * both read it as one flat stream: `extractProperNouns` walks runs of capitalized tokens, and
+ * `rankKeyPhrases` scores n-grams.
+ *
+ * IT IS NOT HYPOTHETICAL. Run over the calibration transcript, the tagged text's entity pool
+ * came back with "CLIP Debbie Wasserman Schultz", "HOST Wasserman Schultz" and "UNSURE Refugee
+ * Center" at the top — the label welded onto the name that followed it, outranking the real
+ * names because it fused two frequent things into one. That pool feeds the description prompts,
+ * the assembled tags and the derived hashtags, so the video would have published a tag with the
+ * word CLIP in it.
+ *
+ * Anchored to the start of a line, which is the only place `buildContentText` writes a label:
+ * an untagged transcript is joined with spaces and has no line starts to match after the first.
+ * The width cap keeps it to something label-shaped ("Mic", "Screen audio", "HOST") rather than
+ * anything that happens to contain a colon.
+ */
+export function stripSpeakerPrefixes(text: string): string {
+  return text.replace(/^[A-Z][A-Za-z0-9 ]{0,23}: /gm, '');
+}
+
+/**
  * Build the plain-text transcript the AI summarizer/metadata stage consumes.
  * When more than one speaker is present, attribution is preserved by prefixing
  * each speaker change with its label (screenplay style), e.g.:
@@ -380,10 +423,17 @@ export function wordsToSegments(words: NormalizedWord[], speakers: ImportSpeaker
  *
  *    Screen audio: ... reacted-to clip ..."
  * With a single speaker it's just the joined transcript (no noise).
+ *
+ * SINCE SPEAKER TAGGING (2026-08-23) THIS IS ALSO THE WHISPER PATH'S BUILDER. It used to serve
+ * only imported AutoCutStudio transcripts, whose labels are track names ("Mic", "Screen audio");
+ * a video transcribed here now arrives with the same two fields filled in by the voice tagger,
+ * whose labels are HOST, CLIP and UNSURE. Nothing in this function had to change to carry them —
+ * it renders whatever label the segment carries — and input-handler.service.ts's own
+ * `segments.map(s => s.text).join(' ')` was replaced by a call to this, so there is one renderer
+ * of attributed transcript text in the app rather than two that can drift apart.
  */
-export function buildContentText(segments: SRTSegment[], speakers: ImportSpeaker[]): string {
-  const multiSpeaker = new Set(segments.map((s) => s.speaker).filter(Boolean)).size > 1;
-  if (!multiSpeaker) {
+export function buildContentText(segments: SRTSegment[], speakers: ImportSpeaker[] = []): string {
+  if (!segmentsCarrySpeakerAttribution(segments)) {
     return segments.map((s) => s.text).join(' ').replace(/\s+/g, ' ').trim();
   }
 
@@ -426,6 +476,10 @@ export function buildImportedContentItem(
     title: parsed.meta.story.title,
     processingNotes: customNotes?.trim(),
     srtSegments: segments,
+    // Whether `content` above came out in screenplay form, recorded rather than re-derived — a
+    // two-track AutoCutStudio story is tagged, a one-track one is not, and the prompts that
+    // explain the tags are sent on the strength of this.
+    contentSpeakerTagged: segmentsCarrySpeakerAttribution(segments),
     importMeta: parsed.meta,
   };
 }

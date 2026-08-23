@@ -13,6 +13,9 @@ import { WholeTranscriptChapterService } from './chapter-whole-transcript.servic
 import { OutputHandlerService } from './output-handler.service';
 import { ContentDeclaration, ContentOrigin, ItemProvenance, ItemSource, SavedTranscriptReuse, sourceKeyOf } from './item-identity';
 import { resolveOutputDirectory } from './saved-transcript.service';
+import { stripSpeakerPrefixes } from './transcript-import.service';
+import { SpeakerTagger, announceSpeakerTagging, resolveSpeakerTagging } from './speaker-tagging.service';
+import { getRuntimePaths } from '../../lib/bridges';
 import {
   MetadataTaskRun,
   buildTaskPromptsForDisplay,
@@ -120,6 +123,16 @@ export interface GenerationParams {
    * it — and there is no third state, because reuse is something the operator ticks.
    */
   useSavedTranscripts?: { [key: string]: boolean };
+  /**
+   * The operator's voice-enrollment recording (`speakerEnrollmentAudio`), read from the settings
+   * by the IPC layer and threaded in as a value.
+   *
+   * A VALUE ON THE RUN, not a setting the input stage reads for itself, so that the whole queue
+   * is tagged the same way: the mode is resolved once from this before any item starts, and an
+   * operator who opens Settings mid-run does not end up with half a job attributed and half not.
+   * Absent or blank is the untagged MODE, which is what every run did before this existed.
+   */
+  speakerEnrollmentAudio?: string;
   inputNotes?: { [key: string]: string };
   preTranscribedContent?: ContentItem[]; // Pre-transcribed content from pipeline (skips transcription phase)
   inputWarnings?: string[]; // Input-stage failures from the pipeline (surfaced in result.warnings)
@@ -214,8 +227,31 @@ export class MetadataGeneratorService {
       // transcripts the input stage reads and writes, and the job report written further
       // down. `outputPath` below is this value.
       const runOutputDir = resolveOutputDirectory(params.outputPath);
+
+      // Speaker tagging, decided ONCE and announced once — in the calls that are the ones doing
+      // the transcribing.
+      //
+      // ONLY THOSE. The ordinary route into this service is ipc-handlers' pipeline, which
+      // transcribes on its own side and arrives here with `preTranscribedContent` whose segments
+      // are already tagged; it resolved the mode before it started. Resolving it again here would
+      // announce the same fact twice and, worse, could fail a job whose transcription is already
+      // finished over an enrollment recording that has been moved since it ran. What is left is
+      // the direct callers, which do transcribe, and for them this is the top of the run — the
+      // cheapest place to learn either that the run is untagged (a declared mode: the pipeline
+      // then behaves exactly as it did before this feature existed) or that the enrollment cannot
+      // be read at all.
+      const willTranscribeHere = !(params.preTranscribedContent && params.preTranscribedContent.length > 0);
+      let speakerTagger: SpeakerTagger | undefined;
+      if (willTranscribeHere) {
+        const speakerMode = await resolveSpeakerTagging(
+          params.speakerEnrollmentAudio, getRuntimePaths().speakerModel);
+        announceSpeakerTagging(speakerMode);
+        if (speakerMode.enabled) speakerTagger = new SpeakerTagger(speakerMode);
+      }
+
       // Progress callback passed through so the handler can send 'preparing' events.
-      const inputHandler = new InputHandlerService(whisperService, runOutputDir, params.progressCallback);
+      const inputHandler = new InputHandlerService(
+        whisperService, runOutputDir, params.progressCallback, speakerTagger);
 
       // Initialize AI Manager
       const aiConfig: AIConfig = {
@@ -798,7 +834,8 @@ export class MetadataGeneratorService {
     // (spec §2). Both are measured from the app's CONTENT text — the ad-free editor transcript
     // when one is linked, the final export's otherwise — which is the same resolution every
     // content field in this service goes through and never the timed final export by accident.
-    const contentText = this.contentTextOf(item).text;
+    const resolvedContent = this.contentTextOf(item);
+    const contentText = resolvedContent.text;
 
     /**
      * The local models this run loads OUTSIDE the metadata calls, so the two-model budget counts
@@ -852,6 +889,11 @@ export class MetadataGeneratorService {
         entities: pools.entities,
         keyPhrases: pools.keyPhrases,
         contentText,
+        // Whether the two content slots above are screenplay-labelled. Note that `content` is
+        // the SUMMARY on the rare over-ceiling item, where the labels survive only as far as the
+        // summarizer carried them; on the ordinary direct-passed item the summary IS the content
+        // text and this describes both exactly.
+        contentSpeakerTagged: resolvedContent.speakerTagged,
         // Filled by runMetadataTasks as each call returns, and read by the calls that take an
         // earlier field as input data — the thumbnail call reading the titles. It starts empty
         // on every item: nothing carries over from the last one.
@@ -879,13 +921,20 @@ export class MetadataGeneratorService {
    * A transcript that cannot be read for proper nouns at all is also declared: an uncased
    * transcript makes the entity half of every pool empty, and "no names in this video" and "no
    * capital letters in this transcript" must not look the same in the report.
+   *
+   * BOTH MEASUREMENTS READ THE WORDS WITHOUT THEIR SPEAKER LABELS. The labels are a fact about
+   * the transcript rather than part of it, and both of these read the text as one flat stream:
+   * measured on the calibration transcript, leaving them in put "CLIP Debbie Wasserman Schultz"
+   * and "UNSURE Refugee Center" at the top of the entity pool that writes the tags. The model
+   * still sees the labels — the prompts explain them — but nothing that counts words does.
    */
   private static async extractPools(
-    contentText: string,
+    taggedContentText: string,
     params: GenerationParams,
     sourceLabel: string,
     warnings: string[]
   ): Promise<{ entities: string[]; keyPhrases: string[] }> {
+    const contentText = stripSpeakerPrefixes(taggedContentText);
     const casing = transcriptCasing(contentText);
     if (!casing.usable) {
       const msg =
@@ -1271,13 +1320,33 @@ export class MetadataGeneratorService {
    *
    * Public so the split can be tested at this seam without running Whisper or a model.
    */
-  static contentTextOf(item: ContentItem): { text: string; origin: ContentOrigin } {
+  static contentTextOf(item: ContentItem): {
+    text: string;
+    origin: ContentOrigin;
+    /**
+     * Whether `text` carries screenplay speaker labels. It travels WITH the text for the same
+     * reason `origin` does: the two branches are two different transcripts of two different
+     * things, and one can be tagged while the other is not — a linked two-track editor story
+     * over an untagged Whisper run, or a voice-tagged export beside a single-track story.
+     * Reading the flag off the item while reading the text off the branch would eventually
+     * describe one transcript's attribution to a model looking at the other.
+     */
+    speakerTagged: boolean;
+  } {
     if (item.contentSource) {
       // Never "if it's non-empty": an empty story transcript is a fault to see, not a
       // reason to silently generate from the ad-carrying final export instead.
-      return { text: item.contentSource.text, origin: item.contentSource.origin };
+      return {
+        text: item.contentSource.text,
+        origin: item.contentSource.origin,
+        speakerTagged: item.contentSource.speakerTagged,
+      };
     }
-    return { text: item.content, origin: 'final-export-whisper' };
+    return {
+      text: item.content,
+      origin: 'final-export-whisper',
+      speakerTagged: item.contentSpeakerTagged === true,
+    };
   }
 
   /**

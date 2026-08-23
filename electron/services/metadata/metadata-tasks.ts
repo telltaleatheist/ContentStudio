@@ -85,6 +85,7 @@ import {
 } from './tags-hashtags';
 import { promptAssets } from './prompt-assets';
 import { groundViewerTitle } from './chapter-title-quality';
+import { stripSpeakerPrefixes } from './transcript-import.service';
 // Type-only: the units receive an AIManagerService instance, they never construct one.
 // A value import here would close an import cycle (ai-manager imports this module for
 // its section parser) and break at require() time.
@@ -181,6 +182,21 @@ export interface MetadataRunContext {
    * because YouTube reads a tag that is not in the content as a spam signal (spec §6.2).
    */
   contentText: string;
+  /**
+   * Whether the CONTENT text above is rendered in screenplay form with a speaker label on every
+   * turn (`HOST:`, `CLIP:`, `UNSURE:`).
+   *
+   * Measured, not assumed: it is `segmentsCarrySpeakerAttribution` over the item's own segments,
+   * which is the same test `buildContentText` uses to decide whether to emit the labels at all.
+   * So this is true exactly when the labels are in the text, and a prompt gated on it can never
+   * explain tags to a call that was not shown any — or, worse, leave a call reading them with no
+   * idea what they mean, which is the case that produced "Fox News frames the 13th Amendment's
+   * prisoner exception as..." about a passage the host was speaking.
+   *
+   * False on a text subject, on an untagged Whisper run, and on a tagged video where every
+   * caption came out the same side (nothing to tell apart, so nothing is labelled).
+   */
+  contentSpeakerTagged: boolean;
   /**
    * Fields written by EARLIER units in this run, keyed by field id.
    *
@@ -1824,11 +1840,15 @@ export interface MetadataTaskRun {
  *
  * Joined with newlines and matched whole-word, case- and punctuation-insensitively, with
  * possessives normalized away (entity-extraction.ts `occursIn`).
+ *
+ * THE SPEAKER LABELS COME OFF BOTH TRANSCRIPTS FIRST. This text is the answer to "did the video
+ * contain this name?", and HOST, CLIP and UNSURE are things the app wrote onto the transcript,
+ * not things the video said. Left in, they would ground a title that used them as words.
  */
 export function titleGroundingText(ctx: MetadataRunContext): string {
   return [
-    ctx.content,
-    ctx.contentText,
+    stripSpeakerPrefixes(ctx.content),
+    stripSpeakerPrefixes(ctx.contentText),
     ctx.videoTitle,
     ctx.sourceLabel,
     ...ctx.chapterSubjects,
@@ -2046,7 +2066,11 @@ function assembleCodeOwnedFields(
       entities: ctx.entities,
       keyPhrases: ctx.keyPhrases,
       categories: ctx.keyPhrases.filter((p) => !p.includes(' ')).slice(0, 3),
-      contentText: ctx.contentText,
+      // Without the speaker labels, for the same reason the entity pool is measured without
+      // them: this is the "does the video actually say this?" test that keeps a tag off a video
+      // it does not belong to, and HOST/CLIP/UNSURE are words the app wrote, not words the video
+      // said. A tag is a claim about the content; the labels are a claim about the transcript.
+      contentText: stripSpeakerPrefixes(ctx.contentText),
     });
     merged.tags = assembled.tags.join(',');
     log.info(

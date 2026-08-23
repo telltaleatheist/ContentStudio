@@ -18,6 +18,25 @@
 # prompts/channels/*.yml).
 section: DESCRIPTION
 
+# The register bullet at the end of `instructions` below has always said the true thing about a
+# reaction channel — "Who is talking changes shot to shot — sometimes it is this channel,
+# sometimes it is the footage being reacted to" — and until 2026-08-23 that was all it could say,
+# because nothing told the model WHICH. Its answer was to make the speaker never the subject of a
+# sentence, which dodges the problem rather than solving it: a description that names nobody
+# cannot misattribute, and also cannot say who was right.
+#
+# Speaker tagging measures it. Where the transcript is tagged, this addendum is appended to the
+# rules both description calls read, and it lifts the dodge for the one thing the tags settle:
+# the description may now say who said something, because the transcript says. Untagged, it is
+# not appended and the bullet stands alone exactly as before.
+#
+# It is a SEPARATE KEY rather than a line inside `instructions` for the reason every conditional
+# in this tree is: `instructions` is also read whole by the compilation call, which has no
+# transcript at all, and telling that call to read tags it was never shown would be a rule about
+# nothing. Appended by description-unit.ts, beneath the section it qualifies.
+tagged_addendum: |-
+  - The transcript this description is written from is tagged by speaker: HOST: lines are this channel talking, CLIP: lines are the footage being reacted to, UNSURE: lines run across a cut and belong to nobody. Attribution therefore comes from the tags rather than from context: where a sentence says who claimed, framed, argued or admitted something, it names the side the tag gives — the footage's claim is the footage's, the channel's verdict is the channel's — and the content of an UNSURE line is written about with no speaker attached to it.
+
 # The body call's word range, per field variant, as DATA so the number in the prompt and the
 # number description-unit.ts warns against are one number. It measures the BODY only — the hook
 # is a separate call under its own character cap — and a body outside it is a declared warning

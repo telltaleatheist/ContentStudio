@@ -336,6 +336,13 @@ export class WholeTranscriptChapterService {
     // Speaker tags are all-or-nothing, exactly as every deleted path decided it: a prompt
     // that announces HOST:/CLIP: over a transcript where half the lines have none is a
     // prompt that lies, and the model cannot tell which half.
+    //
+    // "RESOLVES TO A SIDE" NOW INCLUDES UNSURE, which is what changed when voice tagging
+    // arrived (2026-08-23). The gate is unchanged in form and in intent — every cue must carry
+    // an attribution — but a cue attributed to NOBODY is carrying one. It is the honest answer
+    // for a caption that straddles a cut, the tagged prompt is written to handle it, and
+    // treating it as "missing" would have thrown away the tags on the other 94% of a video over
+    // the 6% that genuinely contain two voices in one line.
     const rolesResolved = cues.filter((c) => c.role !== null).length;
     this.speakerTagged = rolesResolved === cues.length;
     if (!this.speakerTagged && rolesResolved > 0) {
@@ -703,11 +710,17 @@ export class WholeTranscriptChapterService {
 
   // ------------------------------------------------------------------ transcript prep
 
-  /** Raw transcript text between two times. */
+  /**
+   * Raw transcript text between two times.
+   *
+   * The tagged rendering labels EVERY line, including the UNSURE ones. Dropping an unsure line
+   * would hide words the video says; giving it to whichever side is adjacent would be a guess
+   * printed as a fact. Labelled, it is a line the prompt has an explicit instruction for.
+   */
   private transcriptBetween(cues: Cue[], startSec: number, endSec: number, tagged: boolean): string {
     const inside = cues.filter((c) => c.startSec >= startSec && c.startSec < endSec);
     return tagged
-      ? inside.map((c) => `${c.role === 'host' ? 'HOST:' : 'CLIP:'} ${c.text}`).join('\n')
+      ? inside.map((c) => `${(c.role ?? 'unsure').toUpperCase()}: ${c.text}`).join('\n')
       : inside.map((c) => c.text).join(' ');
   }
 

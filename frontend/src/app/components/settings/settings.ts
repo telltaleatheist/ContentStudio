@@ -80,6 +80,11 @@ export class Settings implements OnInit, OnDestroy {
   downloadableComponents = signal<DownloadComponent[]>([]);
   componentProgress = signal<Record<string, number>>({});
   whisperModel = signal('small');
+
+  // Path to a clean solo recording of the operator's voice. Empty is a declared mode,
+  // not an oversight: with nothing enrolled the pipeline skips speaker tagging entirely,
+  // which is why main.ts ships no default for it.
+  speakerEnrollmentAudio = signal('');
   setupRequired = signal(false);
   setupNeedsAI = signal(false);
   setupNeedsTranscription = signal(false);
@@ -218,6 +223,7 @@ export class Settings implements OnInit, OnDestroy {
       if (settings.outputDirectory) this.outputDirectory.set(settings.outputDirectory);
       if (settings.promptSet) this.selectedPromptSet.set(settings.promptSet);
       if (settings.whisperModel) this.whisperModel.set(settings.whisperModel);
+      if (settings.speakerEnrollmentAudio) this.speakerEnrollmentAudio.set(settings.speakerEnrollmentAudio);
       await this.loadComponents();
 
       // Load available prompt sets
@@ -382,6 +388,17 @@ export class Settings implements OnInit, OnDestroy {
     }
   }
 
+  async selectEnrollmentAudio() {
+    const result = await this.electron.selectEnrollmentAudio();
+    if (result.success && result.file) {
+      this.speakerEnrollmentAudio.set(result.file);
+    }
+  }
+
+  clearEnrollmentAudio() {
+    this.speakerEnrollmentAudio.set('');
+  }
+
   /**
    * Read this machine's Spreaker setup and seed the two non-secret boxes.
    *
@@ -487,7 +504,8 @@ export class Settings implements OnInit, OnDestroy {
       // Other settings
       outputDirectory: this.outputDirectory(),
       promptSet: this.selectedPromptSet(),
-      whisperModel: this.whisperModel()
+      whisperModel: this.whisperModel(),
+      speakerEnrollmentAudio: this.speakerEnrollmentAudio()
     };
 
     try {

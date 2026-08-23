@@ -549,13 +549,27 @@ async function runTranscription(job: PipelineJob): Promise<void> {
   try {
     const { WhisperService } = require('../services/metadata/whisper.service');
     const { InputHandlerService } = require('../services/metadata/input-handler.service');
+    const { resolveSpeakerTagging, announceSpeakerTagging, SpeakerTagger } =
+      require('../services/metadata/speaker-tagging.service');
+    const { getRuntimePaths } = require('../lib/bridges');
 
     const whisperService = new WhisperService();
     // The same directory the generator will write this job's report into, resolved the
     // same way — the saved transcripts sit beside it, and the "does this video have one?"
     // check the UI makes has to look in the directory the run will actually use.
     const outputDir = resolveOutputDirectory(job.metadataParams.outputPath);
-    const inputHandler = new InputHandlerService(whisperService, outputDir, job.progressCallback);
+
+    // THIS is where speaker tagging actually happens for the ordinary route: the pipeline
+    // transcribes here and hands the generator finished content items, so the mode has to be
+    // resolved on this side of the handoff. Resolved once for the job, announced once, and any
+    // problem with the enrollment throws before a single video is read.
+    const speakerMode = await resolveSpeakerTagging(
+      job.metadataParams.speakerEnrollmentAudio, getRuntimePaths().speakerModel);
+    announceSpeakerTagging(speakerMode);
+    const speakerTagger = speakerMode.enabled ? new SpeakerTagger(speakerMode) : undefined;
+
+    const inputHandler = new InputHandlerService(
+      whisperService, outputDir, job.progressCallback, speakerTagger);
 
     // Normalize inputs
     const normalizedInputs = job.metadataParams.inputs.map((input: any) => {
@@ -973,6 +987,32 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     }
   });
 
+  // Speaker enrollment recording picker. This cannot reuse 'select-files': that
+  // dialog is multiSelections with no filters and hands back files: string[],
+  // whereas enrollment is exactly one media file and the operator benefits from
+  // the audio/video filter narrowing a folder full of project junk.
+  ipcMain.handle('select-enrollment-audio', async () => {
+    try {
+      const result = await dialog.showOpenDialog({
+        title: 'Select Voice Enrollment Recording',
+        filters: [
+          { name: 'Audio & Video', extensions: ['wav', 'mp3', 'm4a', 'aac', 'flac', 'ogg', 'mp4', 'mov', 'mkv', 'webm'] },
+          { name: 'All Files', extensions: ['*'] }
+        ],
+        properties: ['openFile']
+      });
+
+      if (result.canceled || result.filePaths.length === 0) {
+        return { success: false, file: null };
+      }
+
+      return { success: true, file: result.filePaths[0] };
+    } catch (error) {
+      log.error('Error selecting enrollment audio:', error);
+      throw error;
+    }
+  });
+
   // Select directory
   ipcMain.handle('select-directory', async () => {
     try {
@@ -1271,6 +1311,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // runTranscription — a ticked box whose record has gone missing FAILS that item
         // rather than quietly costing the operator the hour he declined.
         useSavedTranscripts: params.useSavedTranscripts || {},
+        // The operator's voice enrollment, read from the settings AT JOB TIME and carried on
+        // the job. Present means every caption this run transcribes is scored against it and
+        // tagged HOST / CLIP / UNSURE; absent or blank is the untagged mode, announced once in
+        // the log, in which the run behaves exactly as it did before speaker tagging existed.
+        // Not seeded in the store's `defaults` — there is no sensible default recording, and a
+        // path nobody chose is worse than no path.
+        speakerEnrollmentAudio: settings.speakerEnrollmentAudio || undefined,
         chapterNumCtx: settings.chapterNumCtx || undefined,
         // Per-task model routing, read from the store AT JOB TIME. The registry supplies
         // the defaults at the read site (metadata-routing.ts), never the store's

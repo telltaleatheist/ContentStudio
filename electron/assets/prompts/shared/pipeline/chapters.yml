@@ -138,17 +138,31 @@ summarize_chapter: |-
 
 # The same call for a transcript that knows who is speaking.
 #
-# ContentStudio's imported AutoCutStudio transcripts carry a HOST/CLIP side per caption (a plain
-# Whisper run does not). Untagged, a summarizer cannot tell the host's verdict from the claim
-# being played and inverts attribution. This body is the untagged one plus the two blocks that
-# fix it, and it runs ONLY when every caption resolves to a side.
+# ContentStudio's imported AutoCutStudio transcripts carry a HOST/CLIP side per caption, and
+# since 2026-08-23 so does a Whisper run with a voice enrollment configured: every caption's
+# audio is scored against the operator's own voice and tagged from that. Untagged, a summarizer
+# cannot tell the host's verdict from the claim being played and inverts attribution. This body
+# is the untagged one plus the blocks that fix it, and it runs ONLY when every caption resolves
+# to a side.
+#
+# THE THIRD TAG. "Resolves to a side" includes UNSURE, which the voice tagger produces for a
+# caption that straddles a cut — whisper.cpp does not break its captions on speaker changes, so
+# a caption containing both voices scores between the two thresholds and belongs to neither.
+# Measured on the calibration transcript, 18 captions in 297 (6%) come out that way and every
+# one of them, read back, has an audible speaker change inside it. So the prompt states what an
+# UNSURE line is rather than leaving the model to infer it from an unexplained third label, and
+# what it states is the one thing that is true of those lines: the words were said, and nobody
+# in particular said them. The alternative — attributing them to whichever side is adjacent —
+# is a guess printed as a fact, which is the failure this whole prompt exists to stop.
+#
+# POSITIVE FORM, like everything else in this file: each rule says what to DO with a tag.
 #
 # Placeholders: {number}, {video}, {context_lines}, {entity_scaffold}, {transcript}
 summarize_chapter_tagged: |-
   Label chapter {number} of a video transcript. Output JSON only.
   Video: {video}
   {context_lines}
-  The transcript below is tagged by speaker. HOST: is the creator of this video talking. CLIP: is footage he is playing and reacting to — those words are somebody else's, and the claims in them are not his.
+  The transcript below is tagged by speaker. HOST: is the creator of this video talking. CLIP: is footage he is playing and reacting to — those words are somebody else's, and the claims in them are not his. UNSURE: is a line that runs across a cut and contains both of them, so the words on it belong to nobody.
 
   Produce:
   - title: one sentence (max ~15 words) naming what this chapter is about.
@@ -167,6 +181,7 @@ summarize_chapter_tagged: |-
   How to use the tags:
   - A claim in a CLIP line belongs to the footage; the HOST lines are the response to it. Write the chapter around the claim that is actually being made and the response it gets, in that relation.
   - Where the HOST lines reach a verdict, carry it — as the content it is ("the bridge contract claim, rebutted").
+  - An UNSURE line is evidence that something was said and evidence of nothing about who said it. Read it for the subject matter, and take every attribution you make from the HOST and CLIP lines around it.
 
   How to write the summary:
   - The same topic form as the title, in 2-3 sentences: the claims, the people named in the transcript, and what is said about them.

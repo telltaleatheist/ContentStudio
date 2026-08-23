@@ -465,12 +465,13 @@ export class DescriptionUnit implements MetadataUnit {
       video: ctx.videoTitle || ctx.sourceLabel,
       coverage: this.coverageBlock(ctx),
       transcript: this.transcriptBlock(ctx),
+      speaker_tags: this.speakerTagsBlock(ctx),
       pools: pools || '(none)',
       // The channel's `## DESCRIPTION` section, whole. See the note at the top of this file and
       // the one in shared/pipeline/description.yml for what withholding it measured out at.
       rules: assets
         .pipeline(DESCRIPTION_FILE, 'rules_block')
-        .replace(/\{items\}/g, () => assets.fieldSection(channel, 'description')),
+        .replace(/\{items\}/g, () => this.descriptionRules(ctx, channel)),
       hook,
       hookTargetChars: String(HOOK_TARGET_CHARS),
       bodyMinWords: String(min),
@@ -484,9 +485,57 @@ export class DescriptionUnit implements MetadataUnit {
     // unfilled brace in the asset survives to the prompt where it is visible rather than
     // silently blanked.
     return template.replace(
-      /\{(channel|video|coverage|transcript|pools|rules|hook|hookTargetChars|bodyMinWords|bodyMaxWords)\}/g,
+      /\{(channel|video|coverage|transcript|speaker_tags|pools|rules|hook|hookTargetChars|bodyMinWords|bodyMaxWords)\}/g,
       (_match, key: string) => slots[key]
     );
+  }
+
+  /**
+   * What the tags on the transcript mean, or nothing at all.
+   *
+   * GATED ON THE MEASUREMENT, not on whether a voice enrollment exists: `contentSpeakerTagged`
+   * is true exactly when `buildContentText` put the labels in the text. A run with tagging on
+   * whose every caption came out HOST has an unlabelled transcript and gets no block, which is
+   * correct — there is nothing on the page for the block to describe.
+   *
+   * The transcript slot is its precondition, and for the same reason. On a chapterless item
+   * `transcriptBlock` renders nothing (the coverage block IS the operator's subject text), so
+   * there are no tagged lines in this prompt however the video was transcribed.
+   */
+  private speakerTagsBlock(ctx: MetadataRunContext): string {
+    if (!ctx.contentSpeakerTagged) return '';
+    if (this.transcriptBlock(ctx).length === 0) return '';
+    return promptAssets().pipeline(DESCRIPTION_FILE, 'speaker_tags_block');
+  }
+
+  /**
+   * The channel's `## DESCRIPTION` section, plus the tagged addendum where it applies.
+   *
+   * The addendum is a rule about attribution, and attribution is only decidable on a tagged
+   * transcript, so it is appended under the same condition the block above is rendered under.
+   * A channel whose description rules declare no addendum while the transcript IS tagged is a
+   * prompt asset that has lost a key rather than a channel with nothing to say — the tagged
+   * transcript is in the prompt either way, and rules that do not mention it would leave the
+   * register bullet telling the model to keep the speaker out of every sentence while the
+   * speaker is labelled on every line. So it throws, naming the file, as every other missing
+   * asset in this tree does.
+   */
+  private descriptionRules(ctx: MetadataRunContext, channel: ChannelData): string {
+    const assets = promptAssets();
+    const section = assets.fieldSection(channel, 'description');
+    if (!ctx.contentSpeakerTagged || this.transcriptBlock(ctx).length === 0) return section;
+
+    const addendum = assets.field(channel, 'description').taggedAddendum;
+    if (!addendum || addendum.trim().length === 0) {
+      throw new Error(
+        `The transcript for ${ctx.sourceLabel} is speaker-tagged, and channel "${channel.id}"'s ` +
+          `description rules declare no "tagged_addendum" for its field variant ` +
+          `("${channel.fieldVariant}") in prompts/shared/fields/description.yml. The tagged ` +
+          `transcript reaches the prompt either way; the rules that govern how it is attributed ` +
+          `cannot be missing.`
+      );
+    }
+    return `${section.replace(/\s+$/, '')}\n${addendum.replace(/\s+$/, '')}`;
   }
 
   /**
