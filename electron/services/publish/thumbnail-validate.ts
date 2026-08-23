@@ -54,8 +54,18 @@ export const RECOMMENDED_THUMBNAIL_HEIGHT = 720;
 /** How far from 16:9 an image may be before it is called out. 1% either way. */
 export const ASPECT_TOLERANCE = 0.01;
 
-/** The filename every exported thumbnail ends with, after the slot. */
-const THUMBNAIL_SUFFIX = 'youtube-thumbnail.png';
+/**
+ * The image extensions a proposal will look for, in order.
+ *
+ * PNG first because every one of the 28 thumbnails on Callisto is a PNG (measured
+ * 2026-08-21, again 2026-08-23); the two JPEG spellings are here because they are the
+ * other two formats validateThumbnailFile accepts, so a proposal that ignored them would
+ * refuse to see a file this module would happily take.
+ */
+export const PROPOSED_THUMBNAIL_EXTENSIONS: readonly string[] = ['.png', '.jpg', '.jpeg'];
+
+/** The filename every exported thumbnail ended with, after the slot, until 2026-08-16. */
+const LEGACY_THUMBNAIL_SUFFIX = 'youtube-thumbnail.png';
 
 /** The week-relative folders in the disk layout (see spec §1, "Disk layout"). */
 const EXPORTS_DIR = 'complete';
@@ -286,40 +296,101 @@ export function validateThumbnailFile(absPath: string): ThumbnailValidation {
 }
 
 /**
- * Where this item's exported thumbnail WOULD be, from the final export's own path.
+ * Where this item's exported thumbnail WOULD be, from the final export's own path — every
+ * candidate, in the order they should be tried.
  *
  * PURE — it does not touch the disk. Existence is the caller's question, and the answer
- * "no file there" is a fact about the week's exports, not an error.
- *
- * The layout (spec §1): /Volumes/Callisto/Movies/FCPX/<weekMonday>/complete/<slot> -
- * <label>.mov beside <weekMonday>/thumbnails/<slot> - youtube-thumbnail.png, where slot
- * is an optional channel letter plus a number (none = Telltale, u = Unfiltered,
- * f = Fireside). So `…/2026-08-16/complete/1 - jake lang.mov` proposes
- * `…/2026-08-16/thumbnails/1 - youtube-thumbnail.png`.
- *
- * Returns null when the source path is not in that layout at all (a text subject, a
- * compilation, a file somewhere else entirely) — there is nothing to propose, and
+ * "no file at any of these" is a fact about the week's exports, not an error. An empty
+ * array means the source is not in the export layout at all (a text subject, a
+ * compilation, a file somewhere else entirely): there is nothing to propose, and
  * inventing a path so the caller has something to stat would just move the failure.
  *
- * NOTHING IS APPLIED FROM THIS. Slots get renumbered between the export and the upload
- * (13 of 40 live exports, spec Q5), so the proposal is always shown for confirmation.
+ * ── The layout ───────────────────────────────────────────────────────────────────────
+ *
+ * The half that has never changed is the two folders: the export lives in
+ * `<week>/complete/` and its thumbnail in the sibling `<week>/thumbnails/`. The
+ * `complete` folder is what locates the week, which is why a source outside one proposes
+ * nothing — the folder above an arbitrary file is not a week.
+ *
+ * The half that DID change is the filename, and both spellings are live on disk right
+ * now, which is why this returns a list rather than a path:
+ *
+ *   SAME BASENAME (current). `…/complete/1 - jake lang.mov`
+ *                         -> `…/thumbnails/1 - jake lang.png`
+ *   SLOT ONLY (legacy).      `…/complete/1 - jake lang.mov`
+ *                         -> `…/thumbnails/1 - youtube-thumbnail.png`
+ *
+ * MEASURED 2026-08-23 across /Volumes/Callisto/Movies/FCPX: every one of the 11
+ * thumbnails in the 2026-08-09 week uses the legacy spelling, and 13 of the 14 in
+ * 2026-08-16 use the current one (that week also still holds a single
+ * `u1 - youtube-thumbnail.png`). Dropping either form would strand a whole week of
+ * exports, so both are declared, current first.
+ *
+ * ── The leading space ────────────────────────────────────────────────────────────────
+ *
+ * Six of the fourteen files in 2026-08-16/thumbnails/ are named with a LEADING SPACE
+ * (` u1 - jesse watters commies.png`, ` 4 - satanism.png`, …) while their .mov siblings
+ * are not. That is an export-side accident, but it is on disk in numbers, so the
+ * space-prefixed spelling is a DECLARED CANDIDATE rather than something matched by
+ * trimming or fuzzing at lookup time. The difference matters: a declared candidate can be
+ * named in the log line that says which file was picked, and can be deleted from this
+ * table the day the exports are renamed. A trim could only ever match "something close",
+ * and nothing downstream could tell which file it actually got.
+ *
+ * Nothing here matches on anything but an exact filename.
+ *
+ * ── Why each candidate says HOW it matched ───────────────────────────────────────────
+ *
+ * `match: 'basename'` means the candidate's filename contains this export's own name —
+ * slot AND label. `match: 'slot'` means it contains only the slot number.
+ *
+ * That difference is the whole reason auto-attachment is safe for one form and not the
+ * other. Slots get renumbered between the export and the upload (13 of 40 live exports,
+ * spec Q5): under the legacy spelling `2 - youtube-thumbnail.png` follows the SLOT, so a
+ * renumber silently points an item at another video's image, and the original design was
+ * emphatic that such a proposal must always be confirmed by eye. Under the current
+ * spelling the filename carries the label too, so a match is a match on the video's own
+ * name and a renumber makes it miss rather than mis-hit. auto-config.ts attaches
+ * 'basename' matches automatically and leaves 'slot' matches to the proposal UI.
  */
-export function deriveProposedThumbnailPath(sourcePath: string | null | undefined): string | null {
-  if (typeof sourcePath !== 'string' || !sourcePath.trim()) return null;
+export interface ThumbnailCandidate {
+  /** Absolute path. Nothing has been stat'ed — see the note above. */
+  path: string;
+  /** Whether this filename identifies the export, or only its slot. */
+  match: 'basename' | 'slot';
+}
 
-  const base = path.basename(sourcePath);
+export function deriveProposedThumbnailPaths(
+  sourcePath: string | null | undefined
+): ThumbnailCandidate[] {
+  if (typeof sourcePath !== 'string' || !sourcePath.trim()) return [];
+
   const parent = path.dirname(sourcePath);
-
-  // The exports folder is what locates the week. Without it we do not know which
-  // <week>/thumbnails/ to look in, and the folder above an arbitrary file is not it.
-  if (path.basename(parent).toLowerCase() !== EXPORTS_DIR) return null;
+  if (path.basename(parent).toLowerCase() !== EXPORTS_DIR) return [];
   const weekDir = path.dirname(parent);
-  if (!weekDir || weekDir === parent) return null;
+  if (!weekDir || weekDir === parent) return [];
 
-  // Slot: optional channel letter + number, then " - ". Anchored, so a file that does
-  // not follow the convention proposes nothing rather than something plausible.
+  const thumbsDir = path.join(weekDir, THUMBNAILS_DIR);
+  const base = path.basename(sourcePath);
+  const stem = path.basename(sourcePath, path.extname(sourcePath));
+  const candidates: ThumbnailCandidate[] = [];
+
+  if (stem) {
+    for (const ext of PROPOSED_THUMBNAIL_EXTENSIONS) {
+      candidates.push({ path: path.join(thumbsDir, `${stem}${ext}`), match: 'basename' });
+      candidates.push({ path: path.join(thumbsDir, ` ${stem}${ext}`), match: 'basename' });
+    }
+  }
+
+  // Slot: optional channel letter + number, then " - ". Anchored, so a file that does not
+  // follow the convention adds nothing rather than something plausible.
   const slotMatch = /^([A-Za-z]?\d+)\s+-\s+/.exec(base);
-  if (!slotMatch) return null;
+  if (slotMatch) {
+    candidates.push({
+      path: path.join(thumbsDir, `${slotMatch[1]} - ${LEGACY_THUMBNAIL_SUFFIX}`),
+      match: 'slot',
+    });
+  }
 
-  return path.join(weekDir, THUMBNAILS_DIR, `${slotMatch[1]} - ${THUMBNAIL_SUFFIX}`);
+  return candidates;
 }

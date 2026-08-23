@@ -104,6 +104,47 @@ export interface ThumbnailMeta {
 }
 
 /**
+ * WHO put the current thumbnail state there — the provenance of `thumbnailPath`, not a
+ * second copy of it.
+ *
+ * It exists because auto-discovery (auto-config.ts) and the operator both write the same
+ * field, and without this they are indistinguishable afterwards. Three states, and the
+ * one that matters most is the third:
+ *
+ *   'auto'   -> auto-discovery found the sibling export and attached it. A manual choice
+ *               replaces it without ceremony.
+ *   'manual' -> the operator chose this file — OR deliberately cleared the field, which
+ *               is why 'manual' can sit beside a null thumbnailPath. "No thumbnail,
+ *               because I removed it" is a decision, and auto-discovery must not undo it
+ *               on the next write.
+ *   null     -> nobody has decided anything yet. The ONLY state auto-discovery acts on.
+ *
+ * Collapsing 'manual'+null (i.e. reading "no path" as "nothing decided") is exactly the
+ * bug this prevents: the operator clears a wrong thumbnail, saves any other field, and
+ * the wrong thumbnail comes straight back.
+ */
+export type ThumbnailSource = 'auto' | 'manual';
+
+/**
+ * Monetization is ON, for every video, always.
+ *
+ * DECIDED 2026-08-23, and it retires a per-item choice rather than defaulting one. The
+ * field `ChosenMetadata.monetize` used to be `boolean | null` — on / off / nobody has
+ * said — because the operator was expected to answer it per video. He does not: every
+ * video on all three channels is monetized, so a three-state field was three ways of
+ * spelling one answer, and the two spare states could only ever produce a video that
+ * earned nothing by accident.
+ *
+ * So the constant IS the decision. `monetize` stays on the record (it is what the
+ * companion extension reads, and older extension builds refuse a payload without it) but
+ * its type is now the literal `true`: there is no value a caller could send that would
+ * mean anything else, and the compiler says so. upgradeStoredMetadata rewrites what is
+ * on disk to match — see its note on why that is a policy change stated out loud rather
+ * than a silent repair.
+ */
+export const MONETIZATION_ALWAYS_ON = true;
+
+/**
  * What one "Push to YouTube" actually did.
  *
  * Every part of the push is named here EITHER in `updated` OR in `skipped` with the
@@ -339,6 +380,11 @@ export interface ChosenMetadata {
   thumbnailPath: string | null;
   /** What the file measured when it was accepted. null exactly when thumbnailPath is. */
   thumbnailMeta: ThumbnailMeta | null;
+  /**
+   * Who set the two fields above. See ThumbnailSource — null is "nobody yet", and it is
+   * the only value auto-discovery is allowed to write over.
+   */
+  thumbnailSource: ThumbnailSource | null;
 
   /**
    * True when this item is a podcast episode rather than a YouTube-first video.
@@ -389,24 +435,19 @@ export interface ChosenMetadata {
   spreakerReceipt: SpreakerReceipt | null;
 
   /**
-   * Whether this video should be monetized — the operator's INTENT, three-valued.
+   * Whether this video should be monetized. ALWAYS `true` — see MONETIZATION_ALWAYS_ON.
    *
-   *   true  -> turn monetization ON in Studio
-   *   false -> turn it OFF in Studio
-   *   null  -> NO DECISION RECORDED. The extension does not touch the control at all.
+   * It was `boolean | null` (on / off / undecided) while this was a per-item question.
+   * It is not one: every video on all three channels is monetized, so the field is kept
+   * only because it is what travels to the companion extension, and its type is now the
+   * one value it can hold. The YouTube Data API cannot set monetization at all
+   * (PUBLISH-PIPELINE-PLAN Phase 5), so the extension's Monetization tab step is the only
+   * thing that acts on it — and that step now runs unconditionally.
    *
-   * null is a third state, not a default-off. The YouTube Data API cannot set
-   * monetization (PUBLISH-PIPELINE-PLAN Phase 5), so the only thing that acts on this is
-   * the companion extension typing into Studio's Monetization tab, and "the operator
-   * never said" must not read as "the operator said off" — that would flip monetization
-   * off on every legacy record the day the field shipped. Hence `boolean | null` rather
-   * than the strict boolean `isPodcast` uses: isPodcast's false is a real answer, this
-   * one's absence is not.
-   *
-   * Like isPodcast it is NEVER ABSENT: written explicitly by emptyChosenMetadata and
-   * filled in by upgradeStoredMetadata, so `'monetize' in record` is always true.
+   * NEVER ABSENT: written explicitly by emptyChosenMetadata and normalized by
+   * upgradeStoredMetadata, so `'monetize' in record` is always true.
    */
-  monetize: boolean | null;
+  monetize: true;
 
   /**
    * The operator's durable choice of editor-story transcript for this item, or null for
@@ -461,6 +502,15 @@ export interface ResolvedMetadata {
   jobId: string;
   channelId: string | null;
   videoId: string | null;
+  /**
+   * Whether a thumbnail file is attached to this item.
+   *
+   * A BOOLEAN, not the path. The consumer that needs this is the browser extension, and
+   * it cannot open a file on Callisto — it fetches the bytes back through the app (see
+   * PublishBridge.getThumbnail). A path would tell it about a file it can never read and
+   * would put an absolute disk path into a web page for no purpose.
+   */
+  hasThumbnail: boolean;
   /** Ordered. titles[0] is the main title AND A/B variant 1. */
   titles: string[];
   description: string;
@@ -470,11 +520,9 @@ export interface ResolvedMetadata {
   sourceDurationSec: number | null;
   status: PublishStatus;
   /**
-   * The monetization intent, passed through UNRESOLVED — there is no generated value to
-   * fall back to, so this is the stored three-valued field verbatim. null reaches the
-   * extension as "leave Studio's monetization control alone".
+   * Monetization. Always true — the constant, not the record. See MONETIZATION_ALWAYS_ON.
    */
-  monetize: boolean | null;
+  monetize: true;
 }
 
 /** A YouTube video the matcher considers a fillable draft. */
@@ -678,6 +726,10 @@ export function emptyChosenMetadata(itemId: string, jobId: string): ChosenMetada
     publishAtSetAt: null,
     thumbnailPath: null,
     thumbnailMeta: null,
+    // null, not 'manual'. A brand-new record has had no thumbnail decision made about it,
+    // which is precisely the state auto-discovery is allowed to fill — and the state a
+    // deliberate clear is NOT. See ThumbnailSource.
+    thumbnailSource: null,
     isPodcast: false,
     // The four Spreaker fields, written out like every other one. The three that describe
     // an upload are null TOGETHER and stay that way until a push succeeds — there is no
@@ -686,10 +738,9 @@ export function emptyChosenMetadata(itemId: string, jobId: string): ChosenMetada
     spreakerEpisodeId: null,
     spreakerPushedAt: null,
     spreakerReceipt: null,
-    // null, not false: "no monetization decision recorded" is a distinct state from
-    // "monetize: off", and only the first one means the extension leaves the control
-    // alone. See the field's doc comment.
-    monetize: null,
+    // The constant, not a default. Monetization is not a per-item question — see
+    // MONETIZATION_ALWAYS_ON.
+    monetize: MONETIZATION_ALWAYS_ON,
     transcriptRef: null,
     pushedAt: null,
     pushReceipt: null,
@@ -714,6 +765,14 @@ export function emptyChosenMetadata(itemId: string, jobId: string): ChosenMetada
  * Everything ALREADY PRESENT is left exactly as found — including values this version
  * would reject on a write. Stored data is the operator's, and quietly "correcting" it on
  * read would hide the fact that it needs attention.
+ *
+ * `monetize` IS THE ONE EXCEPTION, and it is stated here rather than buried below.
+ * Monetization stopped being a per-item field on 2026-08-23 (MONETIZATION_ALWAYS_ON), so
+ * a stored `false` or `null` is not an operator decision this version disagrees with — it
+ * is an answer to a question that no longer exists. Leaving it would give the record a
+ * value the type system says is impossible and the extension ignores, which is the worst
+ * of both: a field that reads like a decision and controls nothing. It is rewritten to
+ * `true`, out loud, here.
  */
 export function upgradeStoredMetadata(record: ChosenMetadata): ChosenMetadata {
   // The static type says every field is there; the FILE is what is actually being
@@ -727,6 +786,14 @@ export function upgradeStoredMetadata(record: ChosenMetadata): ChosenMetadata {
   if (!('publishAtSetAt' in stored)) upgraded.publishAtSetAt = null;
   if (!('thumbnailPath' in stored)) upgraded.thumbnailPath = null;
   if (!('thumbnailMeta' in stored)) upgraded.thumbnailMeta = null;
+  // Provenance for a record written before there was any such thing as auto-discovery.
+  // A path that is already there was put there BY THE OPERATOR — nothing else could have
+  // — so it reads as 'manual'; no path means nobody decided, which is null and is what
+  // lets auto-discovery run for the first time on an old record. Deriving it from the
+  // path is not an inference: on these records it is the only history there was.
+  if (!('thumbnailSource' in stored)) {
+    upgraded.thumbnailSource = upgraded.thumbnailPath ? 'manual' : null;
+  }
   if (!('isPodcast' in stored)) upgraded.isPodcast = false;
   // TRUE, not false. Every record written before 2026-08-22 published its chapters in its
   // description, because that was the only behaviour there was. Reading absence as `false`
@@ -739,11 +806,9 @@ export function upgradeStoredMetadata(record: ChosenMetadata): ChosenMetadata {
   if (!('spreakerEpisodeId' in stored)) upgraded.spreakerEpisodeId = null;
   if (!('spreakerPushedAt' in stored)) upgraded.spreakerPushedAt = null;
   if (!('spreakerReceipt' in stored)) upgraded.spreakerReceipt = null;
-  // Every record written before Phase 5 gets `null` — "nobody has decided" — which is
-  // exactly what emptyChosenMetadata writes today. Reading absence as `false` would be
-  // an inference: it would tell the extension to switch monetization OFF on 44 videos
-  // whose operator never said anything of the kind.
-  if (!('monetize' in stored)) upgraded.monetize = null;
+  // Not `in`-guarded, unlike every other line here: absent, null and false all become
+  // true, because none of the three is a decision any more. See the note above.
+  upgraded.monetize = MONETIZATION_ALWAYS_ON;
   if (!('transcriptRef' in stored)) upgraded.transcriptRef = null;
   if (!('pushedAt' in stored)) upgraded.pushedAt = null;
   if (!('pushReceipt' in stored)) upgraded.pushReceipt = null;

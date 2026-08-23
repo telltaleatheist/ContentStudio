@@ -159,25 +159,25 @@ const FIELD_VALIDATORS: Record<string, (value: unknown, ctx: FieldContext) => Fi
   },
 
   /**
-   * Monetization intent: exactly true, false, or null. Three values, no fourth.
+   * Monetization: exactly `true`, and nothing else.
    *
-   * null is ACCEPTED and means "no decision recorded" — it is how the operator takes the
-   * decision back off the record, and it is the only value that tells the extension not
-   * to touch Studio's monetization control at all. So unlike `isPodcast`, null is not a
-   * clear-to-default here; it IS one of the three answers.
+   * This entry used to take three values (on / off / undecided) because monetization was
+   * a per-item question. It is not one — every video on all three channels is monetized
+   * (MONETIZATION_ALWAYS_ON) — so `false` and `null` are refused rather than stored.
    *
-   * Nothing is coerced, for the same reason isPodcast isn't: the string "false" is
-   * truthy, and this field decides whether a video earns money.
+   * The entry is KEPT rather than deleted for the sake of the message. Deleting it would
+   * make an old caller's `monetize: false` come back as buildFieldPatch's generic "cannot
+   * write this field", which reads like a bug in the field table; this says what actually
+   * changed and that there is nothing to switch off.
    */
   monetize(value) {
-    if (value !== null && typeof value !== 'boolean') {
+    if (value !== true) {
       throw new Error(
-        `monetize must be exactly true (monetize this video), false (do not) or null ` +
-        `(no decision recorded — the extension leaves Studio's monetization control ` +
-        `alone); got ${describeValue(value)}. It is never coerced.`
+        `monetize can only be true: monetization is on for every video and is no longer a ` +
+        `per-item choice, so there is nothing to record. Got ${describeValue(value)}.`
       );
     }
-    return { monetize: value };
+    return { monetize: true };
   },
 };
 
@@ -204,7 +204,10 @@ export function buildFieldPatch(fields: Record<string, unknown>, ctx: FieldConte
         `publish-set-fields cannot write ${JSON.stringify(key)}. It accepts: ${known.join(', ')}. ` +
         `(thumbnailPath has its own channel, publish-set-thumbnail, and spreakerAudioPath has ` +
         `publish-set-audio, because both are validated against the file on disk — a path is ` +
-        `only half of either value. spreakerEpisodeId / spreakerPushedAt / spreakerReceipt are ` +
+        `only half of either value. thumbnailSource is written BY those actions and by ` +
+        `automatic discovery, never typed: it records who set the thumbnail, and a caller ` +
+        `who could set it separately could claim a hand-picked image was found automatically. ` +
+        `spreakerEpisodeId / spreakerPushedAt / spreakerReceipt are ` +
         `written by the upload itself and are not the operator's to type, exactly like ` +
         `pushedAt / pushReceipt.)`
       );
