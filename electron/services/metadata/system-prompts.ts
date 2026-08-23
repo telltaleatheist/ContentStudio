@@ -49,6 +49,19 @@ export const SYSTEM_PROMPTS = {
   },
 
   /**
+   * The chapter digest — the content slot on an item whose transcript is over the ceiling.
+   *
+   * REPLACES the block above on that path rather than joining it. Both render the same table
+   * of contents; this one carries the timestamps, and says in as many words that there is no
+   * fuller transcript in the prompt, which the other one would be lying about.
+   *
+   * Placeholder: {chapterList}
+   */
+  get CHAPTER_DIGEST(): string {
+    return promptAssets().pipeline(SYSTEM_FILE, 'chapter_digest');
+  },
+
+  /**
    * OUTPUT FORMAT for a single group, naming only that group's keys.
    *
    * A model told to return seven keys returns seven, and the six belonging to other units

@@ -50,6 +50,14 @@
 # not tell you — and it is empty on a chapterless item, where the coverage block already IS the
 # only description of the video that exists.
 #
+# IT IS EMPTY IN ONE MORE CASE, for that same reason: an item whose transcript is over the
+# direct-pass ceiling (2026-08-23). There the content the field calls read is the CHAPTER DIGEST
+# — the chapter list with each chapter's own detail — and `{coverage}` above is already that
+# list, so there is no transcript in this prompt and this slot says so by being empty. Nothing
+# summarized is ever rendered here. A condensation printed under the heading "The transcript of
+# the video, in full" would tell the model it has quotes it does not have, which is precisely the
+# failure the blind summarizer this replaced used to cause.
+#
 # `{speaker_tags}` (2026-08-23) EXPLAINS THAT TRANSCRIPT WHEN IT IS TAGGED, and is empty when it
 # is not. The chapter prompts have had a tagged variant for as long as AutoCutStudio imports have
 # carried track attribution; these two calls never did, and the omission produced the failure

@@ -113,14 +113,27 @@ const HEADLINE_32B_START_HINT =
  * depend on a model they cannot even reach.
  */
 /**
- * The model that extracts evidence from a transcript before anything else reads it.
+ * The model that extracts evidence from a transcript, on the ONE path that still asks for it.
+ *
+ * COMPILATION MODE IS THE ONLY SURVIVING CONSUMER (2026-08-23). Compilation joins every item's
+ * output into a single combined prompt, so each item has to arrive short by construction
+ * whatever its length — `forceCondense`, which is not size-dependent and never was. And a
+ * compilation item cannot use the alternative: the chapter digest that replaced summarization on
+ * the per-item path needs a chapter list, and compilation runs no chapter pipeline (its items
+ * are joined, and one chapter list per item is not one video's table of contents). So this stays,
+ * scoped to the mode the operator selects.
+ *
+ * What it is NO LONGER used for: the per-item metadata path. An over-ceiling item there reads
+ * the chapter digest (chapter-digest.ts), on the operator's ruling that a condensation is only
+ * acceptable in the form of chapters. If compilation ever grows chapters per item, this constant
+ * and the summarize functions in ai-manager.service.ts go with it.
  *
  * DECLARED HERE, not routed, and not taken from the Settings page. Summarization used to run on
  * whatever the "AI Model" picker said — which meant a user who had ever configured a cloud
  * model was silently paying a cloud provider to read every transcript, on a run whose every
  * other field was local. That is the kind of divergence this build exists to remove: the
- * summarizer is a fixed, stated part of the pipeline, exactly like CHAPTER_PIPELINE_MODELS
- * below, and it is stated in one place.
+ * summarizer is a fixed, stated part of the compilation pipeline, exactly like
+ * CHAPTER_PIPELINE_MODELS below, and it is stated in one place.
  *
  * Provider-prefixed because AIManagerService's model strings are.
  *

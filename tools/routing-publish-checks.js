@@ -728,17 +728,19 @@ check('a prompt too big for any window this app will ask for is REFUSED, not tru
 /**
  * THE TWO-LLM BUDGET. One call per field makes a five-model run trivially easy to configure, and
  * every extra model is a multi-GB load that evicts the last one. The roster counts what the run
- * ACTUALLY loads — the field calls, the chapter pipeline, the summarizer — and says so.
+ * ACTUALLY loads — the field calls and the chapter pipeline — and says so.
+ *
+ * THE SUMMARIZER USED TO BE A THIRD ENTRY HERE and this check used to supply it. It is gone from
+ * the per-item path as of 2026-08-23: an over-ceiling item reads the chapter digest, which is
+ * assembled in code from a list the chapter model already wrote and loads nothing
+ * (chapter-digest.ts). Supplying it here would assert a load the shipped run no longer makes.
  */
-check('the shipped defaults load exactly two local models, chapters and summarizer included', () => {
+check('the shipped defaults stay inside the two-model budget, chapters included', () => {
   const p = plan('youtube-telltale', {
     hasChapters: true,
-    alsoLoads: [
-      { model: routing.CHAPTER_PIPELINE_MODELS.generation, what: 'chapters' },
-      { model: routing.SUMMARIZATION_MODEL.replace(/^ollama:/, ''), what: 'summarization' },
-    ],
+    alsoLoads: [{ model: routing.CHAPTER_PIPELINE_MODELS.generation, what: 'chapters' }],
   });
-  eq(p.roster.models.length, 2, 'the shipped run loads ' + p.roster.summary);
+  if (p.roster.models.length > 2) throw new Error('the shipped run loads ' + p.roster.summary);
   eq(p.roster.overBudget, false, 'the shipped defaults are over their own budget');
   eq(p.warnings.length, 0, 'the shipped defaults declared a warning: ' + p.warnings.join('; '));
   if (!p.roster.byModel['qwen3.8:27b'].includes('chapters')) {
@@ -790,9 +792,16 @@ check('compilation still condenses whatever the length', () => {
     'and it is not transport-dependent either');
 });
 
-check('the cloud ceiling is unchanged by any of this', () => {
-  eq(aiManager.directPassesRaw({ chars: 59000, ceiling: 'cloud' }), true, 'under the cloud ceiling');
-  eq(aiManager.directPassesRaw({ chars: 61000, ceiling: 'cloud' }), false, 'over the cloud ceiling');
+/**
+ * The cloud ceiling moved 60k -> 400k on 2026-08-23 (d173f66) and these two checks were left
+ * asserting the old number, so they went red the moment the change landed. Restated against the
+ * number this commit ships: 400k is ~110k tokens into a 1M-token window, which is the whole
+ * point — on a cloud-routed run essentially nothing is over the ceiling any more.
+ */
+check('the cloud ceiling is the raised one', () => {
+  eq(aiManager.DIRECT_PASS_MAX_CHARS.cloud, 400000, 'the cloud ceiling moved');
+  eq(aiManager.directPassesRaw({ chars: 399000, ceiling: 'cloud' }), true, 'under the cloud ceiling');
+  eq(aiManager.directPassesRaw({ chars: 401000, ceiling: 'cloud' }), false, 'over the cloud ceiling');
 });
 
 /**
@@ -809,13 +818,17 @@ check('an all-local routing earns the local ceiling whatever the Settings provid
     'the podcast 1.mov transcript reaches the model raw');
 });
 
-check('one cloud field drops the run to the cost ceiling', () => {
+check('one cloud field lifts the whole run to the cloud ceiling', () => {
   const routed = routing.resolveMetadataRouting({ titles: 'sonnet5' });
   const allLocal = Object.entries(routed)
     .every(([taskId, optionId]) => routing.routingOption(taskId, optionId).kind === 'local');
   eq(allLocal, false, 'sonnet5 titles make the run partly cloud');
-  eq(aiManager.directPassesRaw({ chars: 62299, ceiling: allLocal ? 'local' : 'cloud' }), false,
-    '62k is over the cloud cost ceiling');
+  // The direction reversed with the 400k raise: routing one field to the cloud used to DROP the
+  // run to a 60k cost guard, and now lifts it to a 400k window. Same rule, opposite consequence.
+  eq(aiManager.directPassesRaw({ chars: 62299, ceiling: allLocal ? 'local' : 'cloud' }), true,
+    '62k is well under the cloud ceiling');
+  eq(aiManager.directPassesRaw({ chars: 62299, ceiling: 'local' }), true,
+    'and it fits the local window too, which is why the podcast run reads it raw either way');
 });
 
 check('a podcast plans no thumbnail or clip unit at all', () => {

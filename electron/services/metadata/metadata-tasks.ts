@@ -24,7 +24,8 @@
  * WHAT EACH CALL CARRIES: the editorial core with the channel's focus, THAT FIELD'S instruction
  * section and no other, the self-check lines that field can actually perform, the measured
  * chapter subjects and their detail, the RAW TRANSCRIPT (ai-manager.service.ts direct-passes it
- * now rather than summarizing by default), the insights block where it belongs, any earlier
+ * now rather than summarizing by default; over the ceiling it is the chapter digest and the
+ * subject block drops the duplicate table of contents), the insights block where it belongs, any earlier
  * field's answer it needs as input data, and an OUTPUT FORMAT naming exactly one key.
  *
  * TWO SHAPES REMAIN, and the split is not local-vs-cloud:
@@ -40,8 +41,9 @@
  *
  * TWO LOCAL MODELS IS THE BUDGET. Per-field calls make it trivially easy to have a run load
  * five models, and every load is a multi-GB stall. planMetadataUnits computes the roster of
- * distinct local models a run will make resident — the units', the chapter pipeline's, the
- * summarizer's — logs it every run, and declares a loud warning naming the responsible fields
+ * distinct local models a run will make resident — the units' and the chapter pipeline's; the
+ * summarizer used to be a third and is no longer on this path — logs it every run, and
+ * declares a loud warning naming the responsible fields
  * when it exceeds two. It does not block: which model writes which field is the operator's
  * choice, and a silently overridden routing selection would be worse than a slow run.
  *
@@ -90,6 +92,9 @@ import { stripSpeakerPrefixes } from './transcript-import.service';
 // A value import here would close an import cycle (ai-manager imports this module for
 // its section parser) and break at require() time.
 import type { AIManagerService, MetadataResult } from './ai-manager.service';
+// Type-only for the same reason, one link further round: chapter-digest.ts imports the ceiling
+// from ai-manager.service, which imports this module.
+import type { FieldContentMode } from './chapter-digest';
 
 /**
  * A metadata field a unit can be responsible for.
@@ -143,15 +148,22 @@ const FIELD_TASKS: Array<{ task: MetadataRoutingTaskId; field: MetadataFieldId }
  */
 export interface MetadataRunContext {
   /**
-   * THE TRANSCRIPT, and every call gets it.
+   * WHAT EVERY CALL READS, in whichever of the two declared forms this item has it.
    *
-   * Raw, in the ordinary case: ai-manager.service.ts direct-passes anything under its
-   * OLLAMA_DIRECT_PASS_MAX_CHARS ceiling instead of summarizing it first, so what reaches a
-   * titles call is the words the video actually said. It is an evidence extraction only for the
-   * two cases that genuinely need one — a transcript over the ceiling, and a compilation item —
-   * and both are declared in the log when they happen.
+   * Raw, in the ordinary case: ai-manager.service.ts direct-passes anything at or under the
+   * applicable DIRECT_PASS_MAX_CHARS ceiling, so what reaches a titles call is the words the
+   * video actually said, byte for byte. Over the ceiling it is the CHAPTER DIGEST — the chapter
+   * list with each chapter's own detail paragraph (chapter-digest.ts). Never a blind summary:
+   * the transcript summarizer was retired from this path on 2026-08-23 and survives only in
+   * compilation mode, which never builds one of these contexts.
+   *
+   * `contentMode` says which, and it is a FIELD rather than something inferred from the length,
+   * because two readers have to agree about it (Law 10): the subject block skips the separate
+   * chapter table of contents when the content already IS one, and the description's
+   * `{transcript}` slot stays empty rather than labelling a digest as the video's own words.
    */
   content: string;
+  contentMode: FieldContentMode;
   sourceLabel: string;
   chapterSubjects: string[];
   /**
@@ -303,7 +315,9 @@ function canonicalSectionKey(header: string): string {
  * comments and clips were written from the video. Every call reads the video now: the
  * transcript is direct-passed rather than summarized (ai-manager.service.ts), so there is a
  * transcript to give them, and "written from a précis of the video" was never a property
- * anybody wanted — it was a context-window concession from the 14B era.
+ * anybody wanted — it was a context-window concession from the 14B era. Over the ceiling they
+ * all read the same chapter digest rather than the same summary (chapter-digest.ts), so "every
+ * call reads the same thing" survives that case too.
  */
 interface MetadataFieldSpec {
   section: string;
@@ -492,8 +506,9 @@ export function buildInputDataBlock(
  *
  * Every field call carries the whole transcript now, and a long livestream transcript does not
  * fit in any local context this app is willing to ask for. Refusing names the model and the
- * call, because letting the summarizer condense the transcript — which is what happens above
- * ai-manager's direct-pass ceiling — or moving the field to the cloud is the actual fix.
+ * call, because the actual fix is one of the two things above it: an item over the local
+ * direct-pass ceiling reads the chapter digest instead (chapter-digest.ts), and a field routed
+ * to the cloud gets the 400k ceiling.
  */
 export const LOCAL_FIELD_CTX_MAX = 40960;
 

@@ -42,6 +42,13 @@
  * operator's text subject instead of the chapter list — the same two calls, the same schemas,
  * the same failure policy, over the only description of the video that exists.
  *
+ * AND WHERE THE TRANSCRIPT IS TOO BIG (2026-08-23). Over the direct-pass ceiling the content
+ * these calls read is the CHAPTER DIGEST (chapter-digest.ts), not a summary — the operator's
+ * ruling is that a condensation is acceptable only in the form of chapters. `{coverage}` is
+ * already that list, so `{transcript}` goes EMPTY, exactly as it does on a chapterless item and
+ * for exactly the same reason: the coverage block IS the content, and nothing condensed is ever
+ * rendered under a heading that calls it the transcript.
+ *
  * WHAT THEY CARRY ABOUT THE CHANNEL, and why that is the opposite of what this comment used to
  * say. These two calls used to carry NO editorial brief at all: the channel's `## DESCRIPTION`
  * section was deliberately withheld — two paragraphs, the above-the-fold snippet rule, the
@@ -859,9 +866,19 @@ export class DescriptionUnit implements MetadataUnit {
    * both belong. Where there are NOT, the coverage block IS `ctx.content` — the operator's text
    * subject — and rendering it again under a second heading would hand the model the same
    * paragraph twice and call one of them a transcript.
+   *
+   * THE DIGEST MODE IS THE SAME CASE AS THE CHAPTERLESS ONE, for the same reason. Over the
+   * direct-pass ceiling `ctx.content` is the chapter digest (chapter-digest.ts), and the
+   * coverage block above is already that list of chapters with their details — so this slot goes
+   * EMPTY. It is not that the transcript is missing and something has to stand in for it: the
+   * coverage block IS the content on that path, exactly as it is on a text subject, and the one
+   * thing this slot must never do is put a condensation under the heading "The transcript of the
+   * video, in full". A description written from a digest labelled as the transcript is a
+   * description whose model believes it has quotes it does not have.
    */
   private transcriptBlock(ctx: MetadataRunContext): string {
     if (ctx.chapterSubjects.length === 0) return '';
+    if (ctx.contentMode === 'chapter-digest') return '';
     const content = (ctx.content || '').trim();
     if (content.length === 0) return '';
     return promptAssets().pipeline(DESCRIPTION_FILE, 'transcript_block').replace(/\{items\}/g, () => content);
