@@ -23,24 +23,23 @@ section: DESCRIPTION
 # is a separate call under its own character cap — and a body outside it is a declared warning
 # on a paragraph that still publishes, never a truncation.
 #
-# Per variant because the variants are different documents: a YouTube description is two
-# paragraphs, a Spreaker episode note is 150-250 words by its own rule below, and a Shorts
-# description is two or three sentences nobody reads. One shared number would have made the
-# warning wrong on two channels out of three.
+# Per variant because the variants are different documents: a YouTube description is ONE
+# paragraph (operator-directed 2026-08-23 — the second below-the-fold paragraph is gone; the
+# chapter list code appends is what sits under the prose), a Spreaker episode note is 150-250
+# words by its own rule below, and a Shorts description is two or three sentences nobody reads.
+# One shared number would have made the warning wrong on two channels out of three.
 #
-# The YouTube floor is 130 rather than the spec's 150 because the body is now the description
-# MINUS its opening line: the hook is its own call under its own cap, and the descriptions this
-# channel shipped through 2026-08-16 ran 165-230 words of prose after that first sentence.
-body_words: [130, 300]
+# The range measures the BODY, which is the description MINUS its opening line: the hook is its
+# own call under its own cap, and one paragraph of 3-5 further sentences runs 60 to 200 words.
+body_words: [60, 200]
 
 instructions: |-
   ## DESCRIPTION
 
-  - Two paragraphs separated by one blank line
-  - Paragraph 1 (3-5 sentences): Sentence 1 must work standalone as a search snippet — primary search phrase within the first 60 characters, and the full hook inside the first 157 characters (everything before "Show more"). No line breaks inside the paragraph. Write it like the opening line of a news segment, not a diary entry.
-  - Sentences 2-3: The specific claims being debunked, fact-checked, or exposed. Weave in 1-2 secondary keywords naturally.
+  - ONE paragraph, 4-6 sentences, no line breaks inside it. The chapter list is appended below it by code, so the paragraph is the whole prose description.
+  - Sentence 1 must work standalone as a search snippet — primary search phrase within the first 60 characters, and the full hook inside the first 157 characters (everything before "Show more"). Write it like the opening line of a news segment, not a diary entry.
+  - Middle sentences: The specific claims being debunked, fact-checked, or exposed, with the real names and 2-3 secondary keywords woven in naturally. Keep it genuine; keyword-stuffed text is dead weight and gets ignored.
   - Final sentence: Channel positioning or soft CTA.
-  - Paragraph 2 (2-3 sentences): Below-the-fold search context — secondary keywords, related search terms, names and topics woven into readable sentences. Keep it genuine; keyword-stuffed walls of text are dead weight and get ignored.
   - TRANSCRIPT/SUMMARY inputs: reference the single most damaging or absurd specific claim from the input in sentence 1
   - SHORT DESCRIPTION inputs: frame the topic and subject factually
   - Voice: confident, direct, slightly pissed. Banned phrases: "I'm still shaking," "what happened next," "you won't believe," "worse than we all feared," "everything changed," "broke the internet," "let that sink in," "I need to talk about this," "and honestly," "here's the thing," "buckle up"

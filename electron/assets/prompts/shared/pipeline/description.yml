@@ -190,10 +190,9 @@ body: |-
   The opening line is already written, and it will stand above what you write:
   "{hook}"
 
-  YOUR JOB IS THE REST OF THAT DESCRIPTION, {bodyMinWords} to {bodyMaxWords} words: the remainder
-  of paragraph 1, then one blank line, then paragraph 2, exactly as the rules above lay them out.
-  Paragraph 1 still closes on the sentence those rules ask it to close on. Carry on from the
-  opening line rather than restating it or its examples.
+  YOUR JOB IS THE REST OF THAT DESCRIPTION, {bodyMinWords} to {bodyMaxWords} words: the rest of
+  the ONE paragraph the rules above lay out, closing on the sentence those rules ask it to close
+  on. Carry on from the opening line rather than restating it or its examples.
 
   Every name you use comes from the material above, and you write about the claims, the events
   and the arguments themselves. This is a YouTube description that sells the video to a stranger
