@@ -448,6 +448,87 @@ check('an item WITH chapters keeps its code-assembled tags', () => {
 });
 
 /**
+ * THE SPACE-JOINED TAG LIST, refused.
+ *
+ * Measured on qwen3.5:9b through the prompt harness: two runs in three answered the tags call
+ * with every tag in it and no comma anywhere, which the comma split reads as ONE tag and which
+ * shipped with nothing declared. The prompt now states and shows the separator; this asserts
+ * that an answer ignoring it is still caught, because the prompt is the thing most likely to be
+ * edited next.
+ */
+check('a tag list that came back without its commas is refused, not re-split on spaces', () => {
+  const runOn =
+    'Marcus Wray private jet fundraising televangelist cult prosperity gospel demonically ' +
+    'influenced trolls high-control church scams Marcus Wray fourth jet allegations';
+  const fault = tagsHashtags.unusableTagList(runOn);
+  if (!fault) throw new Error('a 160-character run-on passed as a tag list');
+  if (!/run-on|comma/.test(fault)) throw new Error('the reason does not name the missing commas: ' + fault);
+
+  // The real shape passes, multi-word tags and all — the check must not be a length opinion.
+  const real =
+    'ken paxton,texas ten commandments law,sb10,ten commandments in schools,stone v graham,' +
+    'separation of church and state,owen morgan,telltale atheist';
+  eq(tagsHashtags.unusableTagList(real), undefined, 'a real shipped tag list is usable');
+
+  // A short answer is thin, not broken: a count opinion belongs to the prompt.
+  eq(tagsHashtags.unusableTagList('kent christmas,kat kerr'), undefined, 'two real tags are usable');
+  eq(tagsHashtags.unusableTagList('christian nationalism'), undefined, 'one real tag is usable');
+
+  // Nothing at all is a failure with a reason, not a silent empty list.
+  if (!tagsHashtags.unusableTagList('')) throw new Error('an empty tags value passed');
+  if (!tagsHashtags.unusableTagList(undefined)) throw new Error('a missing tags value passed');
+});
+
+/**
+ * THE BRAND TERMS reach the TAGS instruction as the channel's own, or the assembly throws.
+ *
+ * The line said "channel brand terms" with nothing after it for the whole per-field wave, which
+ * is a rule naming information the call does not carry: the tags call names the channel nowhere
+ * else. Harness runs left the brand terms out entirely and one production run invented
+ * "O. Morgan".
+ */
+check('the TAGS section names the channel\'s real brand terms, per channel', () => {
+  const telltale = assets.fieldSection(assets.channel('youtube-telltale'), 'tags');
+  for (const term of ['owen morgan', 'telltale atheist']) {
+    if (!telltale.includes(term)) throw new Error('the telltale TAGS section does not name "' + term + '"');
+  }
+  if (/\{brand_terms\}/.test(telltale)) throw new Error('the {brand_terms} slot shipped unfilled');
+
+  // Shorts takes its own shorter list, so the shared instruction is not one channel's terms.
+  const shorts = assets.fieldSection(assets.channel('youtube-shorts'), 'tags');
+  if (shorts.includes('telltale atheist')) throw new Error('shorts took telltale\'s brand terms');
+
+  // Every channel that publishes tags assembles its section at all — a channel that asks for
+  // the slot and declares no terms must throw rather than ship the brace.
+  for (const id of assets.channelIds()) {
+    const channel = assets.channel(id);
+    if (!channel.fields.includes('tags')) continue;
+    const text = assets.fieldSection(channel, 'tags');
+    if (/\{[a-z_]+\}/.test(text)) throw new Error('channel "' + id + '" ships an unfilled slot in its TAGS section');
+  }
+});
+
+/**
+ * THE SEPARATOR IS SHOWN, not only named, in every variant of the section.
+ *
+ * The OUTPUT FORMAT's `"tags": "comma-separated string"` is a type annotation and was the only
+ * place a comma was ever mentioned; it did not survive the move to a 9B. An exemplar in the
+ * demanded form is what the fix rests on, so it is asserted rather than trusted to a later edit.
+ */
+check('every channel that publishes tags is SHOWN the comma-separated form', () => {
+  for (const id of assets.channelIds()) {
+    const channel = assets.channel(id);
+    if (!channel.fields.includes('tags')) continue;
+    const text = assets.fieldSection(channel, 'tags');
+    const exemplar = text.match(/"[^"\n]*,[^"\n]*"/);
+    if (!exemplar) throw new Error('channel "' + id + '" is told the tag shape but never shown it');
+    if (exemplar[0].split(',').length < 4) {
+      throw new Error('channel "' + id + '" exemplar is too short to read as a list: ' + exemplar[0]);
+    }
+  }
+});
+
+/**
  * THE SHAPE CHANGE ITSELF. Every field is its own call and every call names exactly one key.
  *
  * This is the property the whole branch exists for, and it is asserted on the PLAN rather than

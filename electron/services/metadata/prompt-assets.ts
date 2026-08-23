@@ -45,6 +45,15 @@ export interface ChannelData {
   counts: Record<string, number>;
   /** Replaces the shared titles length/format line where the channel has its own convention. */
   titleFormat?: string;
+  /**
+   * The creator's search surfaces, filled into the TAGS instruction's `{brand_terms}` slot.
+   *
+   * DISTINCT FROM `channelTags`, which are appended verbatim by code after the model answers.
+   * These are named to the model so the "include channel brand terms" line is followable at
+   * all: nothing else in a tags call names the channel, and the genericised line produced tag
+   * lists with no brand term in them and, once, an invented one ("O. Morgan").
+   */
+  brandTerms?: string[];
   channelTags?: string[];
   descriptionLinks: string;
   /** Where this channel was loaded from, for error messages. */
@@ -249,6 +258,18 @@ export class PromptAssets {
         );
       }
     }
+    if (raw.brand_terms !== undefined) {
+      const valid =
+        Array.isArray(raw.brand_terms) &&
+        raw.brand_terms.every((t: unknown) => typeof t === 'string' && t.trim().length > 0);
+      if (!valid) {
+        throw new Error(
+          `Channel "${id}" (${filePath}) has a brand_terms key that is not a list of non-empty strings ` +
+            `(got: ${JSON.stringify(raw.brand_terms)}). Write it as a YAML list, e.g. ` +
+            `brand_terms: ["owen morgan", "telltale"]`
+        );
+      }
+    }
     if (raw.channel_tags !== undefined) {
       const valid =
         Array.isArray(raw.channel_tags) &&
@@ -270,6 +291,7 @@ export class PromptAssets {
       fields: fields as string[],
       counts: (raw.counts || {}) as Record<string, number>,
       titleFormat: typeof raw.title_format === 'string' ? raw.title_format : undefined,
+      brandTerms: raw.brand_terms as string[] | undefined,
       channelTags: raw.channel_tags as string[] | undefined,
       descriptionLinks: this.requireString(raw, filePath, 'description_links'),
       sourcePath: filePath,
@@ -423,6 +445,23 @@ export class PromptAssets {
         );
       }
       text = text.replace(/\{title_format\}/g, () => format.replace(/\s+$/, ''));
+    }
+
+    // `{brand_terms}` — the creator's own search surfaces, named in the TAGS instruction so
+    // "include channel brand terms" is a line the model can follow. Channel DATA, so the shared
+    // instruction never names one channel's terms to another. A channel whose section asks for
+    // the slot and declares none throws, exactly as {title_format} does: shipping the literal
+    // brace, or quietly blanking it back to the unfollowable line, is what this replaced.
+    if (text.includes('{brand_terms}')) {
+      const terms = (channel.brandTerms || []).map((t) => t.trim()).filter((t) => t.length > 0);
+      if (terms.length === 0) {
+        throw new Error(
+          `Channel "${channel.id}" declares no brand_terms, which its "${fieldId}" instructions ask ` +
+            `for through a {brand_terms} slot (add it to ${channel.sourcePath}, e.g. ` +
+            `brand_terms: ["owen morgan", "telltale"])`
+        );
+      }
+      text = text.replace(/\{brand_terms\}/g, () => terms.join(', '));
     }
 
     // `{<field id>_count}` — how many of that field's options to ask for. Channel data, so the

@@ -40,6 +40,16 @@ title_format: |-
     - INDEPENDENCE: each part stands alone. Write every title so a viewer who lands on p2 or p3 with no prior context understands what it is.
     - [N] is THIS input's part number: use the part the input states if it is given; otherwise leave `pN` as a literal placeholder for the human to fill.
 
+# The creator's search surfaces, named INSIDE the TAGS instruction ({brand_terms}).
+#
+# NOT channel_tags. `channel_tags` below are appended verbatim by code after the model has
+# answered; these are the terms the model is told to work into the list it writes, and they are
+# the ones a viewer actually types. The old flat prompt sets carried this list inline in every
+# channel's `## TAGS` section — "channel brand terms (owen morgan, telltale, telltale atheist)" —
+# and every tag list the operator has shipped contains them. Genericised to a bare "channel brand
+# terms" the line was unfollowable and the model started inventing creator names ("O. Morgan").
+brand_terms: ["owen morgan", "telltale", "telltale atheist"]
+
 channel_tags: ["Telltale Unfiltered", "Owen Morgan"]
 
 description_links: |-
