@@ -88,6 +88,15 @@ const TILE_H = 72;
 const TILE_GAP = 6;
 
 /**
+ * How many tiles are VISIBLE at once — the rest stay reachable by scrolling the column.
+ * Five keeps the rail to roughly the height of the video player area instead of the
+ * whole window. The cap counts the gaps between tiles but not the arrows/bar around
+ * the column, which add their own height outside it.
+ */
+const VISIBLE_TILES = 5;
+const COLUMN_MAX_PX = VISIBLE_TILES * TILE_H + (VISIBLE_TILES - 1) * TILE_GAP;
+
+/**
  * How close to the bottom of a TRUNCATED column counts as "about to run out", in tiles.
  *
  * Crossing it asks for a deeper fetch. Far enough from the end that the answer usually
@@ -142,7 +151,7 @@ const CSS = `
    that runs off the end of this column from scrolling Studio's page underneath. */
 .tiles {
   display: flex; flex-direction: column; align-items: center; gap: ${TILE_GAP}px;
-  flex: 0 1 auto; min-height: 0; width: 100%;
+  flex: 0 1 auto; min-height: 0; width: 100%; max-height: ${COLUMN_MAX_PX}px;
   overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain;
   scrollbar-width: thin; scrollbar-color: #555 transparent;
 }
