@@ -656,15 +656,12 @@ export class MetadataReports implements OnInit {
         ? { key: 'channel', state: 'set', label: `Routed to ${this.channelNameFor(facts.channelId)}` }
         : { key: 'channel', state: 'warn', label: 'Not routed to a destination yet.' };
 
-    // Three-valued, and null is an ANSWER — "nobody has decided" is what tells the
-    // extension to leave Studio's monetization control alone. It is never a fault.
+    // One state on YouTube, because there is one answer: monetization is on for every
+    // video. The dot is kept rather than dropped from the row — a fact row that stops
+    // mentioning money reads as a fact row that forgot to check.
     const money: RowDot = facts?.isPodcast
       ? { key: 'money', state: 'na', label: 'Monetization is a YouTube setting; this goes to Spreaker.' }
-      : facts?.monetize === true
-        ? { key: 'money', state: 'set', label: 'Monetize — on' }
-        : facts?.monetize === false
-          ? { key: 'money', state: 'set', label: 'Do not monetize — off' }
-          : { key: 'money', state: 'unset', label: 'Monetization not decided.' };
+      : { key: 'money', state: 'set', label: 'Monetized — every video is.' };
 
     const when: RowDot = facts?.publishAt
       ? new Date(facts.publishAt).getTime() < Date.now()
@@ -769,8 +766,7 @@ export class MetadataReports implements OnInit {
       });
     }
 
-    // -- MONEY -- null is an ANSWER, and the only one that leaves Studio's control alone.
-    const monetize = this.publish.monetize();
+    // -- MONEY -- one answer, stated rather than asked. See PublishState.monetize.
     ticks.push(
       toSpreaker
         ? {
@@ -783,12 +779,11 @@ export class MetadataReports implements OnInit {
         : {
             key: 'money',
             label: 'Money',
-            state: monetize === null ? 'unset' : 'set',
-            value: monetize === null ? 'not decided' : monetize ? 'on' : 'off',
+            state: 'set',
+            value: 'on',
             hint:
-              monetize === null
-                ? "Not decided — the extension leaves Studio's monetization control untouched."
-                : "The extension sets this in Studio's Monetization tab when you click it there.",
+              'Every video is monetized. The extension switches it on in Studio\'s ' +
+              'Monetization tab when you click it there.',
           },
     );
 
@@ -821,12 +816,20 @@ export class MetadataReports implements OnInit {
     const proposal = this.publish.proposal();
     const thumbnailPath = this.publish.thumbnailPath();
     if (thumbnailPath) {
+      // WHO attached it is in the hint, not the state: an image found beside the export is
+      // as usable as one picked by hand, so it is not a warning — but "you have not looked
+      // at this one" is worth being able to read off the row.
+      const source = this.publish.thumbnailSource();
       ticks.push({
         key: 'thumb',
         label: 'Thumb',
         state: warnings.length ? 'warn' : 'set',
         value: this.fileName(thumbnailPath),
-        hint: warnings.length ? warnings.join(' ') : 'A thumbnail is attached.',
+        hint: warnings.length
+          ? warnings.join(' ')
+          : source === 'auto'
+            ? 'Found automatically beside the export. Choose or drop another to replace it.'
+            : 'A thumbnail is attached.',
       });
     } else if (proposal) {
       ticks.push({
@@ -1274,7 +1277,18 @@ export class MetadataReports implements OnInit {
   /** An explicit choice, including the empty option — see PublishState.chooseDestination. */
   async onDestinationChange(event: Event) {
     const value = (event.target as HTMLSelectElement).value;
-    await this.publish.chooseDestination(value === '' ? null : value);
+    if (value === '') {
+      // Unreachable through the picker — "— not routed —" is disabled there, because the
+      // channel comes from the prompt set and clearing it is undone by the same write.
+      // Named rather than silently ignored: if it ever IS reachable, that is a template
+      // and handler that have drifted apart.
+      this.publish.showError(
+        'An item cannot be un-routed: its channel comes from the prompt set it was ' +
+        'generated with. Pick a different destination instead. Nothing was saved.'
+      );
+      return;
+    }
+    await this.publish.chooseDestination(value);
   }
 
   /** How the chosen destination reads on one line. */
@@ -1629,52 +1643,64 @@ export class MetadataReports implements OnInit {
   }
 
   /**
-   * The monetization picker's value, as a string the <select> can match.
+   * Pick a thumbnail file.
    *
-   * THREE options, not a checkbox: '' is "no decision recorded", which is a real answer
-   * and the only one that leaves Studio's monetization control untouched. A checkbox
-   * could only say on/off and would turn every never-answered item into "off".
+   * The dedicated picker (`publish-choose-thumbnail`), not the generic multi-select
+   * `selectFiles` this used to open: a video has ONE thumbnail, and a dialog that let the
+   * operator select four of them and then told them off is a worse dialog than one that
+   * only ever hands back one. It is filtered to the three extensions the validator takes,
+   * which cannot screen out anything the validator would have accepted — everything about
+   * whether the file is usable is still decided in the main process, against the bytes.
    */
-  monetizeSelectValue(): string {
-    const value = this.publish.monetize();
-    if (value === null) return '';
-    return value ? 'on' : 'off';
-  }
-
-  /** Record the intent. Nothing here monetizes anything — the extension fills Studio. */
-  async onMonetizeChange(event: Event) {
-    const value = (event.target as HTMLSelectElement).value;
-    if (value !== '' && value !== 'on' && value !== 'off') {
-      // The template owns these three options; anything else means the two have drifted
-      // apart, and writing a guess would put a decision on the record nobody made.
-      this.publish.showError(
-        `The monetization picker offered an option this handler does not know: ` +
-        `${JSON.stringify(value)}. Nothing was saved.`
-      );
-      return;
-    }
-    await this.publish.setMonetize(value === '' ? null : value === 'on');
+  async changeThumbnail() {
+    await this.publish.chooseThumbnail();
   }
 
   /**
-   * Pick a thumbnail file.
+   * Drag-and-drop onto the thumbnail row.
    *
-   * The dialog is unfiltered, and everything about whether the file is usable is decided
-   * in the main process against the bytes — so a wrong pick comes back naming the file
-   * and the rule instead of being screened out by an extension list that magic bytes
-   * disagree with.
+   * The second way in, and the one the operator reaches for with Finder already open on
+   * the week's thumbnails folder. Everything after the path is the same code the picker
+   * runs, so a dropped file and a picked file cannot be validated differently.
+   *
+   * `dragOverThumbnail` is a signal rather than a CSS :hover because a drop target has to
+   * light up for a drag that is CARRYING something, which hover cannot express.
    */
-  async changeThumbnail() {
-    const picked = await this.electron.selectFiles();
-    // Cancelling is not a failure and has nothing to report.
-    if (!picked.success || picked.files.length === 0) return;
-    if (picked.files.length > 1) {
+  readonly dragOverThumbnail = signal(false);
+
+  onThumbnailDragOver(event: DragEvent) {
+    // Both calls are required: without preventDefault the browser navigates to the file
+    // instead of firing drop, and without dropEffect the cursor shows the wrong verb.
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    this.dragOverThumbnail.set(true);
+  }
+
+  onThumbnailDragLeave() {
+    this.dragOverThumbnail.set(false);
+  }
+
+  async onThumbnailDrop(event: DragEvent) {
+    event.preventDefault();
+    this.dragOverThumbnail.set(false);
+
+    const files = event.dataTransfer?.files;
+    if (!files || files.length === 0) {
       this.publish.showError(
-        `A video has one thumbnail; you picked ${picked.files.length} files. Choose one.`
+        'That drop carried no file — a dragged image from a web page is not a file on ' +
+        'this computer. Save it first, or use Choose….'
       );
       return;
     }
-    await this.publish.setThumbnail(picked.files[0]);
+    if (files.length > 1) {
+      // Refused rather than taking the first: a video has one thumbnail, and picking one
+      // of four dropped files on the operator's behalf is a choice they did not make.
+      this.publish.showError(
+        `A video has one thumbnail; you dropped ${files.length} files. Drop one.`
+      );
+      return;
+    }
+    await this.publish.dropThumbnail(files[0]);
   }
 
   // ------------------------------------------------------------- push to YouTube

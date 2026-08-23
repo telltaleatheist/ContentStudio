@@ -1428,6 +1428,30 @@ input[type='time'].control { width: 92px; flex: none; }
   background: var(--rp-pane);
 }
 
+/* The thumbnail editor doubles as a file drop target.
+ *
+ * The dashed outline is only drawn WHILE A DRAG IS OVER IT, not permanently: a dashed box
+ * sitting there at rest reads as an empty slot, and this row is usually not empty. The
+ * transparent 1px border at rest reserves the space so nothing shifts when it appears. */
+.drop-zone {
+  border: 1px dashed transparent;
+  border-radius: 7px;
+  transition: border-color 90ms linear, background-color 90ms linear;
+}
+.drop-zone.dragover {
+  /* NEUTRAL, not the accent. Rule 1 at the top of this file allows the orange in exactly
+   * three places and a transient drop outline is not one of them — and it does not need
+   * to be: while a file is over this box the operator is already looking straight at it,
+   * so the outline only has to confirm the target, not compete for attention. */
+  border-color: var(--rp-ink-2);
+  background: var(--rp-raised);
+}
+/* Children must not eat the drag events the zone is listening for — a dragleave fired by
+ * crossing onto the preview image would flicker the outline off mid-drag. */
+.drop-zone.dragover * {
+  pointer-events: none;
+}
+
 /* — dispatch — */
 .dispatch {
   flex: none;

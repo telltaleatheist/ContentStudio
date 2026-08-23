@@ -32,11 +32,13 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { AutoConfigResult } from './auto-config';
 import {
   ChosenMetadata,
   ResolvedMetadata,
   PublishStatus,
   TranscriptRef,
+  MONETIZATION_ALWAYS_ON,
   emptyChosenMetadata,
   isItemId,
   upgradeStoredMetadata,
@@ -87,6 +89,16 @@ export interface GeneratedFallback {
    * compilation, both of which have no single source file and therefore no proposal.
    */
   sourcePath?: string | null;
+  /**
+   * The prompt set the RUN was generated with, as the job JSON recorded it, or null.
+   *
+   * Carried for ONE reason: it is the operator's channel choice, made before generation
+   * and already written down, and automatic routing is the app reading it back rather
+   * than asking him for it again (auto-config.ts). Read off the job, never inferred from
+   * anything else — a prompt set guessed from a title or a folder would route a video to
+   * a channel nobody chose.
+   */
+  promptSet?: string | null;
   /** Source duration in seconds, when known. null just means the match is unverified. */
   sourceDurationSec?: number | null;
   /**
@@ -118,7 +130,30 @@ export interface GeneratedFallback {
 export interface SelectionSeed {
   jobId: string;
   transcriptRef?: TranscriptRef | null;
+  /**
+   * The two facts automatic configuration reads (auto-config.ts). Optional here for the
+   * same reason the rest of GeneratedFallback's optional fields are: a caller that cannot
+   * determine them passes nothing, and the auto pass says so in its log line rather than
+   * inventing either.
+   */
+  promptSet?: string | null;
+  sourcePath?: string | null;
 }
+
+/**
+ * The automatic pass over a record — auto-config.autoConfigure, injected.
+ *
+ * INJECTED, not imported, and the reason is the channel registry: routing needs
+ * channels.json, which lives in services/analytics, and this store has no business
+ * reaching for it. The host binds the registry reader into this function once (see
+ * ipc-handlers.ts) and the store simply calls it, exactly as publish-ipc receives
+ * `readGenerated` rather than importing the report reader.
+ */
+export type AutoConfigure = (input: {
+  record: ChosenMetadata;
+  promptSet: string | null;
+  sourcePath: string | null;
+}) => AutoConfigResult;
 
 /**
  * One entry in the host's index of generated items -- enough to list and search without
@@ -212,9 +247,20 @@ export class PublishStoreService {
   private readonly baseDir: string;
   private readonly selectionsDir: string;
   private readonly itemsDir: string;
+  private readonly autoConfigure: AutoConfigure;
   private writeQueue: Promise<unknown> = Promise.resolve();
 
-  constructor(baseDir: string) {
+  constructor(baseDir: string, autoConfigure: AutoConfigure) {
+    if (typeof autoConfigure !== 'function') {
+      throw new Error(
+        'PublishStoreService requires an autoConfigure function. Every write is the moment ' +
+        'a record can be routed to its prompt set\'s channel and given its exported ' +
+        'thumbnail; a store constructed without it would write records that are silently ' +
+        'never auto-configured, and nothing downstream could tell that apart from an item ' +
+        'whose prompt set no channel claims.'
+      );
+    }
+    this.autoConfigure = autoConfigure;
     this.baseDir = baseDir;
     this.selectionsDir = path.join(baseDir, 'selections');
     this.itemsDir = path.join(this.selectionsDir, 'items');
@@ -352,6 +398,19 @@ export class PublishStoreService {
    * SEEDING HAPPENS ONCE. On an existing record the seed's transcriptRef is ignored
    * entirely: the stored value is the operator's, and a later read of the report must not
    * be able to reinstate a link he has since changed or cleared.
+   *
+   * EVERY WRITE ALSO RUNS THE AUTOMATIC PASS (auto-config.ts), and it runs here rather
+   * than at each of the six call sites for two reasons. The first is that there is then
+   * one door: an item cannot be auto-routed when the reports page saves it and left
+   * unrouted when the extension's shelf does. The second is atomicity — the channel and
+   * the thumbnail land on the SAME file write as whatever the operator was actually
+   * doing, instead of a second write that could half-succeed and leave a record claiming
+   * a channel nobody's action put there.
+   *
+   * The pass runs AFTER the caller's patch is merged and can only fill fields that are
+   * still unanswered, so an explicit write always wins over the automatic one — including
+   * an explicit write of null. It is not run on a read, ever: reads do not write, and an
+   * item nobody has touched is meant to look untouched.
    */
   update(
     itemId: string,
@@ -369,13 +428,27 @@ export class PublishStoreService {
 
       const existing = this.readItemFile(itemId) ?? this.createRecord(itemId, seed);
 
-      const next: ChosenMetadata = {
+      const merged: ChosenMetadata = {
         ...existing,
         ...patch,
         itemId,
         jobId,
         updatedAt: new Date().toISOString(),
       };
+
+      const auto = this.autoConfigure({
+        record: merged,
+        promptSet: seed.promptSet ?? null,
+        sourcePath: seed.sourcePath ?? null,
+      });
+      // Every branch is announced, applied or not. An automatic decision nobody can find
+      // afterwards is the thing this codebase refuses to ship: "why is this on Fireside?"
+      // has to have an answer in the log, and so does "why did it not pick up my image?".
+      for (const d of auto.applied) console.log(`[PublishStore] ${itemId} ${d.field}: ${d.detail}`);
+      for (const d of auto.refused) console.error(`[PublishStore] ${itemId} ${d.field} REFUSED: ${d.detail}`);
+      for (const d of auto.skipped) console.log(`[PublishStore] ${itemId} ${d.field} not set: ${d.detail}`);
+
+      const next: ChosenMetadata = { ...merged, ...auto.patch };
 
       if (next.chosenTitles.length > MAX_AB_VARIANTS) {
         throw new Error(
@@ -517,9 +590,12 @@ export function resolveChosenMetadata(
     sourceFilename: chosen.sourceFilename ?? generated.sourceFilename ?? null,
     sourceDurationSec: chosen.sourceDurationSec ?? generated.sourceDurationSec ?? null,
     status: chosen.status,
-    // No generated counterpart and nothing to merge: monetization is a decision only the
-    // operator makes. `??` would be wrong here — false is a real answer and must not be
-    // replaced by anything.
-    monetize: chosen.monetize,
+    // WHETHER, not where. The extension is the consumer and cannot open a file on
+    // Callisto; it asks the app for the bytes when this is true.
+    hasThumbnail: chosen.thumbnailPath !== null,
+    // The constant, not the record's copy of it. Monetization is not a per-item decision
+    // any more (MONETIZATION_ALWAYS_ON), and reading it off a record would be the one
+    // place a legacy `false` could still escape to the extension.
+    monetize: MONETIZATION_ALWAYS_ON,
   };
 }

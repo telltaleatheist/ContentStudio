@@ -2707,9 +2707,23 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // Source filename drives draft matching. Read off the item's own recorded
         // source_path, not inferred from array alignment.
         sourceFilename: sourceFilenameOf(item),
-        // The full path, for the thumbnail proposal: only this can say which week's
-        // thumbnails/ folder to look in. Read off the item's own record, never inferred.
+        // The full path, for the thumbnail proposal and for automatic discovery: only this
+        // can say which week's thumbnails/ folder to look in. Read off the item's own
+        // record, never inferred.
         sourcePath: typeof item.source_path === 'string' ? item.source_path : null,
+        // The prompt set the operator picked BEFORE generating, which is what automatic
+        // channel routing reads (auto-config.ts). The item's own `_prompt_set` is
+        // preferred over the job's `prompt_set` for one reason: they can differ. The job
+        // key is the run's setting, the item key is what that item was actually generated
+        // with, and on a run whose items came from different sets the job key would route
+        // some of them to the wrong channel. Both are read off the report; neither is
+        // guessed.
+        promptSet:
+          typeof item._prompt_set === 'string' && item._prompt_set
+            ? item._prompt_set
+            : typeof job?.prompt_set === 'string' && job.prompt_set
+              ? job.prompt_set
+              : null,
         // TODO: probe the source with ffprobe so the duration guard can verify the
         // match. Null is handled — it downgrades the match to 'filename' (unverified)
         // rather than failing.

@@ -19,7 +19,7 @@
  * import this module, which pulls in `electron`.
  */
 
-import { ipcMain, nativeImage } from 'electron';
+import { dialog, ipcMain, nativeImage } from 'electron';
 import * as log from 'electron-log';
 import type { UploadStatusEntry } from '../youtube/youtube-api.service';
 import {
@@ -50,12 +50,14 @@ import {
 } from './carry-forward';
 import {
   ThumbnailValidation,
-  deriveProposedThumbnailPath,
+  deriveProposedThumbnailPaths,
   validateThumbnailFile,
 } from './thumbnail-validate';
 import {
+  ThumbnailSource,
   TranscriptRef,
   MAX_AB_VARIANTS,
+  MONETIZATION_ALWAYS_ON,
   emptyChosenMetadata,
   isItemId,
   validateChosenTitles,
@@ -89,14 +91,22 @@ export interface PublishFacts {
   filledAt: string | null;
   hasThumbnail: boolean;
   /**
-   * The monetization decision, three-valued exactly as the record holds it: true, false,
-   * or null for "nobody has decided".
+   * Who put that thumbnail there — 'auto', 'manual', or null for "nobody has decided".
    *
-   * Projected for the reports list, whose six-fact row vocabulary has to be able to
-   * ANSWER this rather than send the reader to open the item. Three states of one field —
-   * not the record, and not a string.
+   * Projected alongside hasThumbnail rather than folded into it because the two answer
+   * different questions in a list: hasThumbnail is "will an image go up with this video",
+   * and this is "did anyone look at it". A row whose image was found automatically is
+   * worth a glance in a way a hand-picked one is not.
    */
-  monetize: boolean | null;
+  thumbnailSource: ThumbnailSource | null;
+  /**
+   * Monetization. Always true — see MONETIZATION_ALWAYS_ON.
+   *
+   * Kept in the projection, rather than dropped now that it cannot vary, because the
+   * reports list's fact row ANSWERS "is this monetized?" and an answer that has to be
+   * assumed from a missing field is not one.
+   */
+  monetize: true;
   /**
    * Spreaker's episode id once uploaded, or null for never.
    *
@@ -420,7 +430,8 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
                 pushedAt: record.pushedAt,
                 filledAt: record.filledAt,
                 hasThumbnail: record.thumbnailPath !== null,
-                monetize: record.monetize,
+                thumbnailSource: record.thumbnailSource,
+                monetize: MONETIZATION_ALWAYS_ON,
                 spreakerEpisodeId: record.spreakerEpisodeId,
                 abCount: record.chosenTitles.length,
                 mainTitle: record.chosenTitles.length > 0 ? record.chosenTitles[0] : null,
@@ -526,9 +537,14 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       const generated = requireGenerated(id);
 
       if (absPath === null) {
+        // 'manual' WITH A NULL PATH, and this is the case the field exists for: "no
+        // thumbnail, because I removed it" is a decision, and leaving the source null
+        // here would let automatic discovery re-attach the image the operator just took
+        // off on the very next save. See ThumbnailSource.
         const cleared = await store.update(id, generated, {
           thumbnailPath: null,
           thumbnailMeta: null,
+          thumbnailSource: 'manual',
         });
         return ok({ selection: cleared, warnings: [] as string[] });
       }
@@ -538,8 +554,40 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       const selection = await store.update(id, generated, {
         thumbnailPath: absPath,
         thumbnailMeta: meta,
+        thumbnailSource: 'manual',
       });
       return ok({ selection, warnings });
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * Choose a thumbnail file with the native picker.
+   *
+   * Its own channel rather than a reuse of 'select-files' for the reason
+   * 'select-enrollment-audio' has its own: that dialog is multi-select with no filters
+   * and hands back `files: string[]`, and a thumbnail is exactly one image out of a
+   * folder that also holds .mov exports and project junk. The filter is the same three
+   * extensions validateThumbnailFile accepts, so the picker cannot offer a file the
+   * validator is about to refuse.
+   *
+   * It STORES NOTHING. The path comes back and the renderer sends it to
+   * publish-set-thumbnail, which is the one place a thumbnail is validated and written —
+   * the same door the drag-and-drop path goes through. A picker that wrote directly would
+   * be a second writer with its own idea of what a valid thumbnail is.
+   */
+  ipcMain.handle('publish-choose-thumbnail', async () => {
+    try {
+      const result = await dialog.showOpenDialog({
+        title: 'Choose Thumbnail',
+        filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg'] }],
+        properties: ['openFile'],
+      });
+      // Cancelling is an answer, not a failure: null means "the operator changed their
+      // mind", and the caller leaves the current thumbnail exactly as it was.
+      if (result.canceled || result.filePaths.length === 0) return ok(null);
+      return ok(result.filePaths[0]);
     } catch (err: any) {
       return fail(err?.message || String(err));
     }
@@ -554,21 +602,25 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
    * file at the derived path) are all "there is nothing to offer". A rejection would be
    * a file that IS there and is not usable, and that still throws.
    *
-   * Never applied automatically. Slots are renumbered between export and upload often
-   * enough (13 of 40 live exports) that a pre-applied proposal would be wrong routinely
-   * and invisibly.
+   * WHAT REACHES HERE, now that auto-config.ts exists: the SLOT-ONLY spelling, and only
+   * it. A thumbnail named after this export has already been attached automatically by
+   * the time the panel opens, so the item has one and never asks; a thumbnail named
+   * `2 - youtube-thumbnail.png` follows the slot, and slots are renumbered between export
+   * and upload often enough (13 of 40 live exports) that attaching one would be wrong
+   * routinely and invisibly. So this is what is left to confirm by eye, which is what it
+   * was always for.
    */
   ipcMain.handle('publish-propose-thumbnail', async (_e, itemId: string) => {
     try {
       const id = requireItemId(itemId, 'itemId');
       const generated = requireGenerated(id);
 
-      const candidate = deriveProposedThumbnailPath(generated.sourcePath ?? null);
-      if (!candidate) return ok(null);
-      if (!fs.existsSync(candidate)) return ok(null);
+      const candidates = deriveProposedThumbnailPaths(generated.sourcePath ?? null);
+      const found = candidates.find((c) => fs.existsSync(c.path));
+      if (!found) return ok(null);
 
-      const { meta, warnings } = validateThumbnailFile(candidate);
-      return ok({ path: candidate, meta, warnings });
+      const { meta, warnings } = validateThumbnailFile(found.path);
+      return ok({ path: found.path, meta, warnings });
     } catch (err: any) {
       return fail(err?.message || String(err));
     }

@@ -1,9 +1,11 @@
 // The fill registry.
 //
 // Each action declares { id, label, surface, detect, fill } so adding the planned extras
-// later (thumbnail upload, scheduling) is one new entry rather than surgery on the panel.
-// Monetization (0.2.1) was exactly that: one entry, plus the `surface` field it needed
-// because its control is on a different Studio panel from every other field.
+// later (scheduling) is one new entry rather than surgery on the panel. Monetization
+// (0.2.1) was exactly that: one entry, plus the `surface` field it needed because its
+// control is on a different Studio panel from every other field. The thumbnail step was
+// the same again — one entry, plus `loadThumbnail` on the context, because it is the only
+// action whose data is neither on the page nor already in hand.
 //
 // Nothing here is ever committed on the operator's behalf: fillers put text into the
 // form and stop. The operator still presses "Set test" in the A/B dialog and "Save" on
@@ -22,6 +24,8 @@ import {
   planMonetization,
   radioIsChecked,
 } from './monetization';
+import type { PublishThumbnail } from './publish-client';
+import { setStudioThumbnail, thumbnailSurfaceReady } from './thumbnail';
 import {
   FillError,
   buttonByText,
@@ -42,7 +46,19 @@ export type FillId =
   | 'tags'
   | 'altered-content'
   | 'paid-promotion'
+  | 'thumbnail'
   | 'monetization';
+
+/**
+ * Monetization is on for every video, and this extension does not ask.
+ *
+ * The app's MONETIZATION_ALWAYS_ON, restated on this side of the wire because this is
+ * where the click happens. It is a constant rather than a payload field for the reason
+ * the app retired the field: there is no per-video decision to carry, and a value read
+ * off the wire could only ever be a stale app's way of turning monetization OFF on a
+ * video that should earn.
+ */
+const MONETIZE_EVERY_VIDEO = true;
 
 /**
  * Which Studio SURFACE a filler's controls live on.
@@ -66,11 +82,24 @@ export interface FillContext {
   /** Comma-separated. */
   tags: string;
   /**
-   * The operator's monetization intent: true = turn it on, false = turn it off, null =
-   * no decision recorded, which means the monetization control is not touched at all.
-   * Three-valued for a reason — see ChosenMetadata.monetize in the app.
+   * Whether ContentStudio has a thumbnail for this item, and undefined when the app is
+   * too old to say.
+   *
+   * The three states are all different answers and the thumbnail filler words each one
+   * separately: true means fetch it, false means this video goes up with Studio's own
+   * frame, and undefined means the app cannot serve images and should be updated.
    */
-  monetize: boolean | null;
+  hasThumbnail: boolean | undefined;
+  /**
+   * Fetch the item's thumbnail bytes — a FUNCTION, not the bytes.
+   *
+   * The image is up to 2 MiB and is needed only if the operator actually runs the
+   * thumbnail action, so it is fetched at fill time rather than carried on every context
+   * built for every Studio page. Passing it as a function is also what keeps this module
+   * free of publish-client and publish-messages: fillers know how to write to Studio, and
+   * nothing about the transport.
+   */
+  loadThumbnail: () => Promise<PublishThumbnail | null>;
 }
 
 export type FillOutcome =
@@ -527,31 +556,80 @@ const paidPromotionFiller: Filler = {
  * All of the deciding is in monetization.ts and is pure. What is left here is: read the
  * radios, ask what to do, do exactly that, and confirm it landed.
  */
+/**
+ * The custom thumbnail: ContentStudio's image into Studio's file input.
+ *
+ * The one filler whose data is not on the page and not in the context — it is BYTES, and
+ * they come over the wire when this runs (see FillContext.loadThumbnail). Everything about
+ * how they get into the input is in thumbnail.ts; what is here is the decision about
+ * whether to try.
+ *
+ * "No thumbnail on this item" is AVAILABLE-FALSE with its own wording, not a silent
+ * absence: a video going up with Studio's auto-generated frame is a legitimate outcome,
+ * and the operator should be able to read that off the shelf rather than wonder whether
+ * the step ran.
+ */
+const thumbnailFiller: Filler = {
+  id: 'thumbnail',
+  label: 'Thumbnail',
+  surface: 'details',
+  detect(ctx) {
+    if (ctx.hasThumbnail === undefined) {
+      return {
+        available: false,
+        reason: 'This ContentStudio is older than the thumbnail step — update the app',
+      };
+    }
+    if (!ctx.hasThumbnail) {
+      return {
+        available: false,
+        reason: 'No thumbnail on this report — attach one in ContentStudio\'s Publish panel',
+      };
+    }
+    if (!thumbnailSurfaceReady()) {
+      return { available: false, reason: 'Open this video\'s Details page in Studio' };
+    }
+    return { available: true };
+  },
+  async fill(ctx) {
+    try {
+      const thumbnail = await ctx.loadThumbnail();
+      if (!thumbnail) {
+        // Reachable via "Fill everything" when the record changed under the shelf. Named
+        // rather than reported as a success with nothing behind it.
+        return {
+          ok: false,
+          reason: 'ContentStudio no longer has a thumbnail for this item — nothing was set.',
+        };
+      }
+      const name = await setStudioThumbnail(thumbnail);
+      return {
+        ok: true,
+        detail: `Set the thumbnail to ${name}. Press Save in Studio to keep it.`,
+      };
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+    }
+  },
+};
+
 const monetizationFiller: Filler = {
   id: 'monetization',
   label: 'Monetization',
   surface: 'monetization',
-  detect(ctx) {
-    // Cheap check first: with no decision recorded there is nothing to do regardless of
-    // what page this is, and scanning the DOM to say so would be wasted work.
-    if (ctx.monetize === null) return monetizationAvailability(null, false);
-    return monetizationAvailability(ctx.monetize, findMonetizationRadios().found);
+  detect() {
+    return monetizationAvailability(findMonetizationRadios().found);
   },
-  async fill(ctx) {
+  async fill() {
     try {
-      if (ctx.monetize === null) {
-        // Reachable via "Fill everything" if the shelf's data changed under it. Refusing
-        // is the point of the third state: no decision means touch nothing.
-        return {
-          ok: false,
-          reason: 'No monetization decision on this report — nothing was changed.',
-        };
-      }
-
       const target = findMonetizationRadios();
       if (!target.found) throw new FillError(target.reason);
 
-      const plan = planMonetization(target.facts, ctx.monetize);
+      // MONETIZE_EVERY_VIDEO, not ctx.monetize. The two null-gates that used to stand
+      // here — one in detect, one at the top of this function — existed to honour a
+      // per-item decision that no longer exists; with the policy fixed, reading the
+      // payload would only give a stale app the power to turn monetization off.
+      const plan = planMonetization(target.facts, MONETIZE_EVERY_VIDEO);
       if (plan.kind === 'refuse') throw new FillError(plan.reason);
       if (plan.kind === 'already') return { ok: true, detail: plan.detail };
 
@@ -569,9 +647,9 @@ const monetizationFiller: Filler = {
         return {
           ok: false,
           reason:
-            `Clicked the "${ctx.monetize ? 'on' : 'off'}" monetization radio but it did not ` +
-            `become selected — Studio may be refusing it (channel not in the Partner ` +
-            `Program, or this video not eligible).`,
+            `Clicked the "on" monetization radio but it did not become selected — Studio ` +
+            `may be refusing it (channel not in the Partner Program, or this video not ` +
+            `eligible).`,
         };
       }
       return { ok: true, detail: `${plan.detail} Press Save in Studio to keep it.` };
@@ -594,6 +672,11 @@ export const FILLERS: Filler[] = [
   descriptionFiller,
   alteredContentFiller,
   paidPromotionFiller,
+  // Before the title and well before the A/B modal: the thumbnail control sits at the top
+  // of the details form, its uploader takes a moment to render the picked image, and
+  // doing it first means that render happens while the rest of the fields are being
+  // filled rather than while the operator waits.
+  thumbnailFiller,
   titleFiller,
   abTestFiller,
   // Last, and on its own surface: it is never on screen at the same time as the ones

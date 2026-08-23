@@ -157,9 +157,11 @@ const api = {
       channelId?: string | null;
       publishAt?: string | null;
       isPodcast?: boolean;
-      // Three-valued: true = monetize, false = don't, null = no decision recorded (the
-      // extension then leaves Studio's monetization control alone). Never coerced.
-      monetize?: boolean | null;
+      // ONLY true. Monetization is on for every video and stopped being a per-item choice
+      // on 2026-08-23; the main process refuses false and null by name. Left on the type
+      // as documentation of that refusal rather than removed, so a caller that still tries
+      // is a compile error here instead of a rejection there.
+      monetize?: true;
     }
   ) => ipcRenderer.invoke('publish-set-fields', itemId, fields),
   publishGetResolved: (itemId: string) => ipcRenderer.invoke('publish-get-resolved', itemId),
@@ -171,9 +173,16 @@ const api = {
   // Pass null to clear.
   publishSetThumbnail: (itemId: string, absPath: string | null) =>
     ipcRenderer.invoke('publish-set-thumbnail', itemId, absPath),
-  // Read-only. Returns null when there is nothing to offer, which is the common case.
+  // Read-only. Returns null when there is nothing to offer, which is now the common case
+  // because an image named after the export has already been attached automatically —
+  // what still reaches here is the legacy slot-only spelling, which needs an eye on it.
   publishProposeThumbnail: (itemId: string) =>
     ipcRenderer.invoke('publish-propose-thumbnail', itemId),
+  // The native picker, filtered to the three extensions the validator accepts. Returns the
+  // path (or null for cancel) and stores NOTHING — the path goes back through
+  // publish-set-thumbnail, the one door a thumbnail is validated and written through,
+  // which is also where a drag-and-drop lands.
+  publishChooseThumbnail: () => ipcRenderer.invoke('publish-choose-thumbnail'),
   // Downscaled in the MAIN process (nativeImage) so the preview never needs a file://
   // read from the renderer — webSecurity stays on. `absPath` names a file that is NOT
   // the stored one, which is how a proposal is previewed before it is confirmed; omit it

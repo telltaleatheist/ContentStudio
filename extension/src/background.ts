@@ -22,6 +22,7 @@ import {
   fetchItem,
   fetchPending,
   fetchReports,
+  fetchThumbnail,
   reportFilled,
   resolveForPage,
   saveTitles,
@@ -238,5 +239,7 @@ async function handlePublishMessage(message: PublishMessage): Promise<unknown> {
       return fetchItem(message.itemId);
     case 'publish-titles':
       return saveTitles(message.itemId, message.titles);
+    case 'publish-thumbnail':
+      return fetchThumbnail(message.itemId);
   }
 }

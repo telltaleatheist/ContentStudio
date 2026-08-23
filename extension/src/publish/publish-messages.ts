@@ -16,6 +16,7 @@ import type {
   BrowsePage,
   ItemDetail,
   PendingFillItem,
+  PublishThumbnail,
   ResolveOutcome,
   SetTitlesResult,
 } from './publish-client';
@@ -26,7 +27,8 @@ export type PublishMessage =
   | { type: 'publish-filled'; itemId: string; videoId: string }
   | { type: 'publish-reports'; offset: number; limit: number; query: string }
   | { type: 'publish-item'; itemId: string }
-  | { type: 'publish-titles'; itemId: string; titles: string[] };
+  | { type: 'publish-titles'; itemId: string; titles: string[] }
+  | { type: 'publish-thumbnail'; itemId: string };
 
 export type PublishResponse<T> =
   | { ok: true; data: T }
@@ -44,6 +46,7 @@ const PUBLISH_MESSAGE_TYPES: ReadonlySet<string> = new Set<PublishMessage['type'
   'publish-reports',
   'publish-item',
   'publish-titles',
+  'publish-thumbnail',
 ]);
 
 export function isPublishMessage(message: unknown): message is PublishMessage {
@@ -143,4 +146,17 @@ export function requestItem(itemId: string): Promise<ItemDetail> {
 
 export function requestSaveTitles(itemId: string, titles: string[]): Promise<SetTitlesResult> {
   return send<SetTitlesResult>({ type: 'publish-titles', itemId, titles });
+}
+
+/**
+ * The item's thumbnail bytes, base64, or null when it has none.
+ *
+ * Asked for at FILL TIME rather than carried on the item payload, and that is the whole
+ * reason this is its own message: a thumbnail is up to 2 MiB, `/publish/pending` returns
+ * every actionable item at once, and putting the bytes on that list would push megabytes
+ * through the message channel on every Studio page load for images that will never be
+ * used. One image, once, when the operator asks for it.
+ */
+export function requestThumbnail(itemId: string): Promise<PublishThumbnail | null> {
+  return send<PublishThumbnail | null>({ type: 'publish-thumbnail', itemId });
 }

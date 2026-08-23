@@ -819,7 +819,12 @@
                             class="control"
                             [disabled]="publish.saving()"
                             (change)="onDestinationChange($event)">
-                      <option value="" [selected]="publish.destination() === ''">— not routed —</option>
+                      <!-- DISABLED, not removed. It has to be able to SHOW — an item whose
+                           prompt set no channel claims really is unrouted — but it is not
+                           an answer any more: the channel comes from the prompt set the
+                           operator picked before generating, so clearing it would only be
+                           undone by the same write that cleared it. -->
+                      <option value="" disabled [selected]="publish.destination() === ''">— not routed —</option>
                       @for (channel of publish.channels(); track channel.channelId) {
                         <option [value]="channel.channelId"
                                 [selected]="publish.destination() === channel.channelId">
@@ -834,10 +839,11 @@
                   </div>
                   <p class="why">
                     This is the routing decision: the dispatch at the foot of this column
-                    follows it.
+                    follows it. It is made for you from the prompt set you picked before
+                    generating — this picker is here to override it, not to make it.
                     @if (publish.channelIsSuggested()) {
-                      {{ publish.channelNote() }} Pre-selected only — it is saved with your next
-                      change here, or right away if you pick it yourself.
+                      {{ publish.channelNote() }} It is recorded automatically the moment
+                      anything about this item is saved.
                     } @else if (publish.channelNote(); as note) {
                       {{ note }}
                     }
@@ -855,11 +861,13 @@
                 </div>
               }
 
-              <!-- ── MONETIZATION ── Intent only, and the one publish field the YouTube
-                   Data API cannot write at all: the companion extension fills it in
-                   Studio's Monetization tab, on the operator's click. Three options,
-                   because "not decided" is a real answer. Hidden for a Spreaker item —
-                   a control that cannot change anything is worse than no control. -->
+              <!-- ── MONETIZATION ── A statement, not a question: monetization is on for
+                   every video. It is still shown because it is the one publish field the
+                   YouTube Data API cannot write at all — the companion extension fills it
+                   in Studio's Monetization tab on the operator's click — and a fact row
+                   that stops mentioning money reads as one that forgot to check. Hidden
+                   for a Spreaker item — monetization is a YouTube setting and a row about
+                   it on a podcast episode would be answering a question nobody asked. -->
               @if (!publish.isPodcast()) {
                 <button class="fact"
                         [class.open]="isFactOpen('money')"
@@ -870,25 +878,17 @@
                   <span class="fact-v">{{ tickFor('money')?.value }}</span>
                   <span class="chev">{{ isFactOpen('money') ? '▴' : '▾' }}</span>
                 </button>
+                <!-- No picker. Monetization is on for every video and stopped being a
+                     per-item choice on 2026-08-23; a control with one option is a control
+                     that cannot do anything, so this states the rule instead of offering
+                     a decision that has already been made. -->
                 @if (isFactOpen('money')) {
                   <div class="editor">
-                    <div class="fld">
-                      <select class="control"
-                              [disabled]="publish.saving()"
-                              (change)="onMonetizeChange($event)">
-                        <option value="" [selected]="monetizeSelectValue() === ''">— not decided —</option>
-                        <option value="on" [selected]="monetizeSelectValue() === 'on'">Monetize (on)</option>
-                        <option value="off" [selected]="monetizeSelectValue() === 'off'">Do not monetize (off)</option>
-                      </select>
-                    </div>
                     <p class="why">
-                      @if (publish.monetize() === null) {
-                        Nothing is recorded, so the extension leaves Studio's monetization
-                        control exactly as it finds it. That is a real answer, not a gap.
-                      } @else {
-                        The extension sets this in Studio's Monetization tab when you click
-                        it there. Nothing here changes YouTube on its own.
-                      }
+                      Every video is monetized. The extension switches it on in Studio's
+                      Monetization tab when you click it there and reads the control back
+                      to confirm it took — the YouTube API cannot set this field at all,
+                      so nothing here changes YouTube on its own.
                     </p>
                   </div>
                 }
@@ -1046,8 +1046,25 @@
                 @if (isNextAction('thumb')) { <span class="fact-do">check it</span> }
                 <span class="chev">{{ isFactOpen('thumb') ? '▴' : '▾' }}</span>
               </button>
+              <!-- The whole editor is a DROP TARGET, not just the empty state: replacing a
+                   thumbnail by dropping the new one on top of the old one is the gesture
+                   the operator already has in their hands with Finder open. `Choose…`
+                   stays beside it because a drop needs two windows arranged and a picker
+                   does not. -->
               @if (isFactOpen('thumb')) {
-                <div class="editor" #thumbnailRow>
+                <div class="editor drop-zone"
+                     #thumbnailRow
+                     [class.dragover]="dragOverThumbnail()"
+                     (dragover)="onThumbnailDragOver($event)"
+                     (dragleave)="onThumbnailDragLeave()"
+                     (drop)="onThumbnailDrop($event)">
+                  @if (publish.thumbnailSource() === 'auto') {
+                    <p class="why">
+                      Found automatically in this week's <code>thumbnails</code> folder,
+                      beside the export. Nobody chose it — drop a different image here, or
+                      use Change…, and that choice sticks.
+                    </p>
+                  }
                   @if (publish.thumbnailPreview(); as preview) {
                     <div class="thumb">
                       <img class="thumb-img" [src]="preview.dataUrl" [alt]="fileName(preview.path)" />
@@ -1078,7 +1095,16 @@
                     </div>
                   } @else {
                     <div class="fld">
-                      <span class="why">Nothing chosen — the video keeps whatever thumbnail it has.</span>
+                      <span class="why">
+                        @if (publish.thumbnailSource() === 'manual') {
+                          Cleared — this one stays empty. Nothing will attach an image to it
+                          on its own; the video keeps whatever thumbnail YouTube gave it.
+                        } @else {
+                          Nothing chosen, and no image was exported beside this video. Drop
+                          one here or choose a file — the video keeps whatever thumbnail it
+                          has otherwise.
+                        }
+                      </span>
                       <button class="ghost" [disabled]="publish.saving()" (click)="changeThumbnail()">Choose…</button>
                     </div>
                   }

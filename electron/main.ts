@@ -10,6 +10,7 @@ import { YouTubeAuthService } from './services/youtube/youtube-auth.service';
 import { YouTubeApiService } from './services/youtube/youtube-api.service';
 import { ApiCollectorService } from './services/youtube/api-collector.service';
 import { PublishStoreService } from './services/publish/publish-store.service';
+import { autoConfigure } from './services/publish/auto-config';
 import { SpreakerConfigService } from './services/spreaker/spreaker-config.service';
 import { stopArchiveSyncOnQuit } from './services/editor/editor-ipc';
 
@@ -193,7 +194,16 @@ app.whenReady().then(async () => {
 
     // Publish / title-A-B store. Kept under its own userData subtree (publish/) rather
     // than inside analytics/ so the whole feature can be lifted out cleanly.
-    const publishStore = new PublishStoreService(path.join(userDataPath, 'publish'));
+    //
+    // The automatic pass is bound HERE because it is the one thing in publish/ that needs
+    // the channel registry, and channels.json belongs to analytics. Binding it at
+    // construction — rather than importing analytics from the store — is what keeps the
+    // publish directory liftable, and reading `listChannels()` on every call rather than
+    // capturing the list is what makes connecting a channel take effect without a restart.
+    const publishStore = new PublishStoreService(
+      path.join(userDataPath, 'publish'),
+      (input) => autoConfigure({ ...input, channels: analyticsStore.listChannels() })
+    );
 
     // Spreaker credentials (one account, one show). Constructed here rather than inside
     // the service for the same reason YouTubeAuthService takes userDataPath as an

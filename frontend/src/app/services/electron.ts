@@ -70,11 +70,15 @@ export interface PublishFields {
   /** Strictly boolean — a string here is refused, not coerced. */
   isPodcast?: boolean;
   /**
-   * Monetization intent, three-valued: true = monetize this video, false = do not,
-   * null = no decision recorded. null is an ANSWER here, not a clear-to-default: it is
-   * the only value that tells the extension to leave Studio's control untouched.
+   * Monetization — and the ONLY value it takes is `true`.
+   *
+   * It was three-valued (on / off / undecided) while monetization was a per-item choice.
+   * It is not one: every video is monetized, the main process refuses `false` and `null`
+   * by name, and nothing in this app sends the field any more. It is left on the type as
+   * documentation of that refusal rather than removed, so a call that still tries is a
+   * compile error here instead of a runtime rejection there.
    */
-  monetize?: boolean | null;
+  monetize?: true;
 }
 import type {
   ArchiveCheck, ArchiveDeleteProgress, ArchiveProgress, ArchiveQueue, ArchiveResult, ArchiveStatus,
@@ -556,6 +560,8 @@ declare global {
         absPath: string | null
       ) => Promise<PublishResult<ThumbnailSetResult>>;
       publishProposeThumbnail: (itemId: string) => Promise<PublishResult<ThumbnailProposal | null>>;
+      /** The native picker. Returns the chosen path, or null when the operator cancelled. */
+      publishChooseThumbnail: () => Promise<PublishResult<string | null>>;
       publishReadThumbnail: (
         itemId: string,
         maxPx: number,
@@ -1246,15 +1252,30 @@ export class ElectronService {
   }
 
   /**
-   * The exported thumbnail this item's source path points at, if one is on disk.
+   * The exported thumbnail this item's source path points at, if one is on disk AND was
+   * not already attached automatically.
    *
-   * Read-only, and `data: null` is the ordinary answer — most items have none. Always
-   * presented for confirmation; slots are renumbered often enough that applying it
-   * automatically would be wrong routinely and invisibly.
+   * Read-only, and `data: null` is now the usual answer for a different reason than it
+   * used to be: an image named after this export is attached by the main process without
+   * anyone being asked, so what still reaches here is the legacy slot-only spelling
+   * (`2 - youtube-thumbnail.png`), which follows the SLOT and is therefore wrong whenever
+   * slots have been renumbered. That one is still presented for confirmation.
    */
   async publishProposeThumbnail(itemId: string): Promise<PublishResult<ThumbnailProposal | null>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.publishProposeThumbnail(itemId);
+  }
+
+  /**
+   * Choose a thumbnail with the native file picker. Returns the path, or null if the
+   * operator cancelled — which is an answer, not a failure.
+   *
+   * It stores nothing. The path goes back through publishSetThumbnail, which is where a
+   * thumbnail is validated and written no matter how it was chosen — picker or drop.
+   */
+  async publishChooseThumbnail(): Promise<PublishResult<string | null>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishChooseThumbnail();
   }
 
   /**
@@ -1658,7 +1679,12 @@ export class ElectronService {
    * and a drop zone built on it accepts files and adds nothing, with no error anywhere.
    */
   getPathForFile(file: File): string {
-    return this.editorBridge.getPathForFile(file);
+    // NOT `this.editorBridge`, despite sitting in the editor's section of this file. Drop
+    // zones exist on the publish surface too, and the editor accessor's refusal names the
+    // timeline editor — which would be the wrong thing to read after dropping an image on
+    // a thumbnail row. Same bridge, an honest message about who wanted it.
+    if (!this.ipcRenderer) throw noBridge('Reading a dropped file\'s path');
+    return this.ipcRenderer.getPathForFile(file);
   }
 
   // ── Asset relinking (File ▸ Relink…) ────────────────────────────────────────
