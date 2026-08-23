@@ -58,10 +58,11 @@ blocks:
 
       Work through these silently before generating a single field:
       1. CORE STORY: one sentence — who did what, and why should a stranger care?
-      2. PRIMARY SEARCH PHRASE: the exact words a curious or newly-skeptical person would type into YouTube after encountering this subject. A title carrying those words is a title search can find.
-      3. AMMUNITION: the 3 most damning, absurd, or revealing SPECIFIC moments, claims, or quotes in the input. These anchor your best titles.
-      4. RECOGNIZABILITY: would a general audience recognize the named subject? If yes, the name is a hook. If no, the DEED leads and the name follows.
-      5. TARGET EMOTION: the single reaction the packaging should trigger — righteous anger, schadenfreude, vindication, protective instinct, or "wait, WHAT?"
+      2. THE ARGUMENT: step back from the individual facts — what is this video trying to COMMUNICATE? Name the position the subject is pushing, the position the video takes against it, and what the whole thing means one level up from any single claim. Extrapolate: what does this story say about the machinery behind it?
+      3. PRIMARY SEARCH PHRASE: the exact words a curious or newly-skeptical person would type into YouTube after encountering this subject. A title carrying those words is a title search can find.
+      4. AMMUNITION: the 3 most damning, absurd, or revealing SPECIFIC moments, claims, or quotes in the input. These anchor your best titles.
+      5. RECOGNIZABILITY: would a general audience recognize the named subject? If yes, the name is a hook. If no, the DEED leads and the name follows.
+      6. TARGET EMOTION: the single reaction the packaging should trigger — righteous anger, schadenfreude, vindication, protective instinct, or "wait, WHAT?"
 
       Every field you generate must trace back to this analysis.
 
@@ -286,11 +287,12 @@ variants:
 
       Work through these silently before generating a single field:
       1. CORE STORY: one sentence — who did what, and why should a stranger care?
-      2. PRIMARY SEARCH PHRASE: the exact words a curious or newly-skeptical person would type into a podcast app or Google after encountering this subject.
-      3. EVERGREEN QUESTION: what will people STILL be searching a year from now — the durable claim, doctrine, or question underneath the news hook?
-      4. AMMUNITION: the 3 most damning, absurd, or revealing SPECIFIC moments, claims, or quotes in the input.
-      5. RECOGNIZABILITY: would a general audience recognize the named subject? If yes, the name is a search magnet — use it early and spelled fully. If no, the DEED leads and the name follows.
-      6. TARGET EMOTION: the single reaction the packaging should trigger.
+      2. THE ARGUMENT: step back from the individual facts — what is this episode trying to COMMUNICATE? Name the position the subject is pushing, the position the episode takes against it, and what the whole thing means one level up from any single claim.
+      3. PRIMARY SEARCH PHRASE: the exact words a curious or newly-skeptical person would type into a podcast app or Google after encountering this subject.
+      4. EVERGREEN QUESTION: what will people STILL be searching a year from now — the durable claim, doctrine, or question underneath the news hook?
+      5. AMMUNITION: the 3 most damning, absurd, or revealing SPECIFIC moments, claims, or quotes in the input.
+      6. RECOGNIZABILITY: would a general audience recognize the named subject? If yes, the name is a search magnet — use it early and spelled fully. If no, the DEED leads and the name follows.
+      7. TARGET EMOTION: the single reaction the packaging should trigger.
 
       Every field you generate must trace back to this analysis.
     reframing: |-

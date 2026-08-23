@@ -43,6 +43,7 @@ instructions: |-
   ## TITLES
 
   - Generate {titles_count} options that represent genuinely DIFFERENT ANGLES. Apply the swap test as you go: if two of your titles could be exchanged and nobody would notice, one of them is redundant — replace it with a new angle rather than a new wording.
+  - Anchor your strongest titles in THE ARGUMENT from your analysis — the position the video takes and what it means one level up from the facts. A title voicing the argument beats a title sampling the facts underneath it.
   - Before generating, internally identify at least 5 distinct framings, then distribute titles across them. Framing types include:
     - Plain-language reframe (strip the euphemism, say what they're actually doing)
     - Person-focused (lead with WHO, make it personal)
@@ -114,6 +115,7 @@ overrides:
       ## TITLES
 
       - Generate {titles_count} options that represent genuinely DIFFERENT ANGLES. Apply the swap test as you go: if two of your titles could be exchanged and nobody would notice, one of them is redundant — replace it with a new angle rather than a new wording.
+      - Anchor your strongest titles in THE ARGUMENT from your analysis — the position the episode takes and what it means one level up from the facts. A title voicing the argument beats a title sampling the facts underneath it.
       - Before generating, internally identify at least 5 distinct framings, then distribute titles across them. Framing types include:
         - Plain-language reframe (strip the euphemism, say what they're actually doing in human terms)
         - Specific accusation (name the lie, name the claim, name the failure)
