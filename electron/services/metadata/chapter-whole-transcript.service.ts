@@ -273,6 +273,12 @@ export interface WholeTranscriptChapterOptions {
     what: string,
     schema?: Record<string, unknown>
   ) => Promise<Record<string, unknown>>;
+  /**
+   * The channel's promoted_items list (prompts/channels/*.yml), filled into the prompts'
+   * {promoted_items} slot: the chapter call uses it to bound plug chapters and keep passing
+   * mentions out of content labels; the detail calls to keep them out of titles/summaries.
+   */
+  promotedItems?: string[];
   onProgress?: (stage: ChapterStage, done: number, total: number) => void;
   cancelCallback?: () => boolean;
   /**
@@ -548,6 +554,7 @@ export class WholeTranscriptChapterService {
   private async askForChapters(transcript: string, runtime: string): Promise<ChapterAnswer> {
     const prompt = formatPrompt(CHAPTER_PROMPTS.WHOLE_TRANSCRIPT_CHAPTERS, {
       duration: runtime,
+      promoted_items: this.promotedItemsLine(),
       // Substituted last, as everywhere else in this codebase: transcript text that happens
       // to contain a brace token must not be rewritten by a later pass.
       transcript,
@@ -633,6 +640,7 @@ export class WholeTranscriptChapterService {
         {
           number: i + 1,
           video: this.options.videoTitle || 'untitled',
+          promoted_items: this.promotedItemsLine(),
           context_lines: this.contextLines(previousDetail),
           entity_scaffold:
             entities.length > 0
@@ -844,6 +852,15 @@ export class WholeTranscriptChapterService {
   private warn(message: string): void {
     log.warn(`[Chapters] ${message}`);
     this.warnings.push(message);
+  }
+
+  /**
+   * The {promoted_items} slot's text. A channel that declares none still gets a truthful
+   * sentence rather than a literal brace or an exclusion about nothing.
+   */
+  private promotedItemsLine(): string {
+    const items = (this.options.promotedItems || []).map((t) => t.trim()).filter((t) => t.length > 0);
+    return items.length > 0 ? items.join('; ') : 'none are declared for this channel';
   }
 
   private static readString(value: unknown): string {
