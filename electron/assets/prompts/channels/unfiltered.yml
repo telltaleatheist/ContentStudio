@@ -45,6 +45,16 @@ title_format: |-
 # filename with no subject text gets no tail, and both cases warn in the run report.
 title_tail_from_filename: " | {subject} | p{part}"
 
+# The creator's search surfaces, named INSIDE the TAGS instruction ({brand_terms}).
+#
+# NOT channel_tags. `channel_tags` below are appended verbatim by code after the model has
+# answered; these are the terms the model is told to work into the list it writes, and they are
+# the ones a viewer actually types. The old flat prompt sets carried this list inline in every
+# channel's `## TAGS` section — "channel brand terms (owen morgan, telltale, telltale atheist)" —
+# and every tag list the operator has shipped contains them. Genericised to a bare "channel brand
+# terms" the line was unfollowable and the model started inventing creator names ("O. Morgan").
+brand_terms: ["owen morgan", "telltale", "telltale atheist"]
+
 channel_tags: ["Telltale Unfiltered", "Owen Morgan"]
 
 description_links: |-

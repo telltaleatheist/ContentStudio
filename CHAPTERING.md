@@ -679,3 +679,107 @@ voice in any given second is either the creator or the footage he is reacting to
 register instruction, deliberately not a banned-word check on the output — pointed at the
 right grammar, the phrasing does not arise, and nothing has to police it afterwards. The
 same rule is in the prompt sets' `## DESCRIPTION` and `## CLIP_SUGGESTIONS` sections.
+
+---
+
+## 2026-08-22 (later still) — addendum: the embedding pipeline is REVERSED OUT
+
+Everything above this line is now history. The embedding pipeline shipped in the morning and
+is **deleted** by the end of the same day, and chaptering is back to the shape it had before
+any of it: **one call reads the whole transcript and names the chapters**. This section is the
+measurement that decided it, because a reversal with no numbers on it is a mood.
+
+### The regression, measured
+
+Eight videos with boundaries labelled by hand from the transcripts beforehand — five "subtle"
+(a commentary video turning from one source to the next inside one subject) and three
+"clear-split" (a compilation with known segment handoffs). 28 labelled boundaries. Kit
+preserved at `/tmp/contentstudio-chapter-eval`.
+
+| architecture | recall@30s | recall@60s | precision |
+|---|---|---|---|
+| embedding pipeline, as shipped | 9/28 (32%) | **12/28 (43%)** | 10/30 (33%) |
+| embedding pipeline, best of a full parameter sweep | 12/28 (43%) | 17/28 (61%) | 13/36 (36%) |
+| 27B reads the whole transcript, "report every beat" | 22/28 (79%) | 24/28 (86%) | 49/107 (46%) |
+| 27B reads the whole transcript, cadence band restored | 20/28 (71%) | **24/28 (86%)** | **23/29 (79%)** |
+
+Split by class, the restored path is 10/14 at 60 s on the subtle videos and **14 of 14 inside
+30 seconds** on the clear-split ones, with zero spurious boundaries on that class — the
+compilation handoffs a viewer would notice immediately are all landed to the sentence.
+
+The sweep is the important row. Stretch length, block width, min-gap, consolidation threshold
+and the wanted-count were all swept, and the best configuration in the whole space reached 61%.
+**The failure is not tuning, it is the premise.** A cosine valley between two 90-second blocks
+measures how much the VOCABULARY changed. A video that plays four clips of four different
+people all saying the same thing about Islam has one vocabulary and four chapters, and there is
+no valley to find: **nine of the eleven** boundaries the best swept configuration still missed
+had no valley at the labelled second at all, and three of those are 30-90 seconds apart inside
+one 9-minute video.
+
+Reading the transcript is not a better version of that signal, it is a different signal.
+"This is a new clip of a different person making the same argument" is reading comprehension,
+and it is what the 43% architecture had thrown away.
+
+### What the restoration is, exactly
+
+The deleted 27B single call was thrown out in the first place for its RETRIEVAL — it quoted a
+3-8 word phrase and matched it against a SAMPLED excerpt, and phrases landed on the wrong
+minute. Its CADENCE language was never the problem. So the restored path is the old build's
+cadence over the new build's retrieval:
+
+- **The full first sentence, six words or longer**, mapped against the whole caption word
+  stream with a chronological cursor. Measured across the runs above: **137 of 138 quotes
+  mapped, none out of order.** A full sentence is long enough to be unique; the old 3-8 word
+  phrase was not, which is why it needed rules about never bridging across gaps.
+- **The runtime stated once as a plain fact** ("The video runs 42 minutes"). The transcript
+  carries no timestamps — that is what makes a quote-mapped time a measurement — so a model
+  that cannot see time is TOLD the runtime and given a rate.
+- **A graduated cadence band.** The old build's flat "every chapter covers at least 3 to 4
+  minutes" was measured first: it bought precision 46% → 79% at no cost to recall@60, but the
+  four boundaries it lost were all on short videos, whose real chapters sit 30 seconds to 2.5
+  minutes apart. On a short video a turn to a different source IS a chapter. So the floor
+  follows the runtime — under 10 minutes / 10 to 30 / 30 and longer — and inside the rung the
+  **content decides the count**. Code computes no count anywhere; `targetSecondsFor`, the
+  code-side cadence table every deleted architecture used, is gone.
+- **`num_predict` 8192, not 4096.** A 72-minute podcast hit the 4096 ceiling on both the first
+  ask and the re-ask and contributed nothing at all. Thinking and the answer share one budget.
+
+### What was deleted
+
+`chapter-embedding.service.ts` in full: the stretch/score/select/consolidate machinery, the
+batched `/api/embed` call, the per-junction placement stage, and the lexical TF-IDF fallback
+scorer. The fallback is deleted rather than kept behind a flag — two chapter architectures in
+one tree means one of them runs when something goes wrong, which is this app's cardinal rule
+violated by construction.
+
+What survived is what was always pure: the cue reader, the word stream, the quote matcher
+(`findQuoteTime`, now in `chapter-transcript.ts` beside the cursor that drives it) and the
+result shape. `nomic-embed-text` is still installed and still used — by key-phrase ranking,
+which is where it is now declared (`KEY_PHRASE_EMBEDDING_MODEL`). It is not a chapter model
+any more and is no longer reported as one.
+
+### The architecture now
+
+1. **CHAPTERS** — LLM, one call. Whole transcript, no timestamps, runtime stated, graduated
+   band, a 50-80 character title and the verbatim first sentence per chapter.
+2. **MAP** — code. Each sentence to a second, forwards only. Unmappable is **dropped and
+   named**, never approximated: the quote is the only positional evidence this architecture
+   produces, so there is no weaker second measurement to fall back on and an interpolated time
+   would be a guess wearing a measurement's clothes.
+3. **DETAIL** — LLM, one call per chapter from its raw transcript, for the 20-45 words the
+   description and tags condition on.
+
+1 + N calls, N being 3 to 8. Every chapter's title has exactly one source: the chapter call's
+label, or — for the opening 0:00 chapter, which the prompt does not ask for because the opening
+of a video is not a turn — the detail call's title. The detail call still writes a title on
+every chapter and it is discarded wherever the chapter call already supplied one, so the two
+stages can never quietly disagree.
+
+### What this addendum does NOT claim
+
+The four-row table above measures **boundaries**, not titles, not details, and not the
+description and tags that condition on them. The graduated band is a one-line change to a body
+that was measured flat; the recovery of those four short-video boundaries is its intent and
+has not itself been re-measured. Implementation:
+`electron/services/metadata/chapter-whole-transcript.service.ts`, prompts in
+`electron/assets/prompts/shared/pipeline/chapters.yml`.

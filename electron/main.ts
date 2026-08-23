@@ -144,13 +144,14 @@ app.whenReady().then(async () => {
         // shipped routing into every store that already exists, so a default that changes
         // later would never reach the users who have been running the app the longest.
         //
-        // The chapter models are not in there either, and never were a default here: they
-        // stopped being routable on 2026-08-22 and are declared in code as
+        // The chapter model is not in there either, and never was a default here: chapters
+        // stopped being routable on 2026-08-22 and the model is declared in code as
         // CHAPTER_PIPELINE_MODELS. `chapterStageModels` went with the sealed pipeline it
         // configured — an existing store may still hold the key and nothing reads it.
         //
-        // Floor for summarizing a long consolidated chapter. One value for the
-        // whole run: Ollama reloads the model whenever num_ctx changes.
+        // FLOOR for the chapter run's context window, never a ceiling: the run sizes its own
+        // from the whole transcript it has to read. One value for the whole run, because
+        // Ollama reloads the model whenever num_ctx changes.
         chapterNumCtx: 16384,
         openaiApiKey: '',
         claudeApiKey: '',

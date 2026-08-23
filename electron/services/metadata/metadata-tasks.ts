@@ -60,13 +60,20 @@ import { JobCancelledError, isAbortError } from './cancellation';
 import { askOllamaJson, bucketNumCtx, estimateTokens, unloadOllamaModels } from './ollama-json';
 import {
   CHAPTER_PIPELINE_MODELS,
+  KEY_PHRASE_EMBEDDING_MODEL,
   METADATA_ROUTING_OPTIONS,
   MetadataRoutingOption,
   MetadataRoutingTaskId,
   ResolvedMetadataRouting,
 } from './metadata-routing';
 import { DescriptionUnit } from './description-unit';
-import { assembleTags, buildHashtags, hashtagLine, GENERATED_TAG_BUDGET_CHARS } from './tags-hashtags';
+import {
+  assembleTags,
+  buildHashtags,
+  hashtagLine,
+  unusableTagList,
+  GENERATED_TAG_BUDGET_CHARS,
+} from './tags-hashtags';
 import { promptAssets } from './prompt-assets';
 import { groundViewerTitle } from './chapter-title-quality';
 // Type-only: the units receive an AIManagerService instance, they never construct one.
@@ -1764,7 +1771,7 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
       ...built.filter((b) => b.local).map((b) => ({ model: b.model, what: b.field })),
       ...alsoLoads,
     ],
-    [CHAPTER_PIPELINE_MODELS.embedding]
+    [KEY_PHRASE_EMBEDDING_MODEL]
   );
   log.info(
     `[MetadataTasks] this run loads ${roster.models.length} local model(s): ${roster.summary}` +
@@ -2025,6 +2032,9 @@ export async function runMetadataTasks(
       if (unit.fields.includes('titles')) {
         fields = await groundTitlesOnce(unit, run.ctx, fields);
       }
+      if (unit.fields.includes('tags')) {
+        fields = await usableTagsOrThrow(unit, run.ctx, fields);
+      }
       // Before the merge, so a later unit that declares this field as INPUT DATA reads exactly
       // what this one returned — including the second set of titles when the grounding check
       // re-asked for them.
@@ -2052,6 +2062,50 @@ export async function runMetadataTasks(
       await unit.unload!();
     }
   }
+}
+
+/**
+ * The model-written tag list, checked and asked for ONE more time before the run keeps it.
+ *
+ * SAME SHAPE AS `groundTitlesOnce`, and for the same reason: the judgment belongs to one field
+ * and the second ask is the unit's own call re-run, so it lives beside the loop rather than
+ * inside the generic unit.
+ *
+ * WHY THIS ONE THROWS where the titles check warns. An ungrounded title is a title — it
+ * publishes, and the operator picks a different one out of the ten. A tag list that came back
+ * without its commas is not a thin tag list, it is a 160-character sentence that would be
+ * published to YouTube as a single tag, on a field whose own rule is that YouTube reads a tag
+ * the video does not mention as a spam signal. There is no version of it that ships, so there
+ * is nothing for a warning to declare: `unusableTagList` explains why it cannot be read, and
+ * the second identical failure says the prompt and this model are not agreeing on the format,
+ * which the operator needs to know before starting thirty more items. See `unusableTagList` for
+ * why the parser cannot repair it.
+ */
+async function usableTagsOrThrow(
+  unit: MetadataUnit,
+  ctx: MetadataRunContext,
+  first: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const fault = unusableTagList(first.tags);
+  if (!fault) return first;
+
+  log.warn(
+    `[MetadataTasks] ${ctx.sourceLabel}: the tag list is unusable — ${fault}; asking ${unit.label} once more`
+  );
+
+  const second = await unit.generate(ctx);
+  const secondFault = unusableTagList(second.tags);
+  if (!secondFault) {
+    log.info(`[MetadataTasks] ${ctx.sourceLabel}: the second tag list is readable; keeping it`);
+    return second;
+  }
+
+  throw new Error(
+    `The tags call on ${unit.label} for ${ctx.sourceLabel} returned a tag list that cannot be read as one, ` +
+      `twice: first ${fault}; then ${secondFault}. The tags are separated by commas and the prompt both says ` +
+      `so and shows it (shared/fields/tags.yml), so nothing here re-splits the answer on spaces — that would ` +
+      `turn one multi-word tag into three tags nobody wrote. Re-run this item, or route tags to a larger model.`
+  );
 }
 
 /**

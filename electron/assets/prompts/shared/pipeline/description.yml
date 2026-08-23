@@ -3,13 +3,30 @@
 # POSITIVE FORM ONLY, and correct examples only — for the same measured reason it applies to
 # the chapter prompts: a model shown a wrong form reproduces it, and attaching the word "never"
 # to it does not change that. The register these want is stated as what to WRITE, and the
-# examples are real hooks and openings for real videos.
+# examples are real hooks and openings taken from descriptions the operator shipped.
 #
-# WHAT THEY DO NOT CARRY, stated because it is a real editorial cost and a deliberate one: the
-# channel's `## DESCRIPTION` section (prompts/shared/fields/description.yml). That section is
-# two paragraphs, a soft CTA, a banned-phrase list and a voice note, and loading fifteen
-# editorial bullets onto a schema-constrained small model is exactly the over-specification
-# these calls exist to avoid. The channel reaches these prompts as the channel NAME.
+# WHAT THEY CARRY, AND WHY THAT CHANGED (2026-08-22). These two calls used to carry NO channel
+# identity and NO editorial rules: `{channel}` was filled with the stored prompt-set SLUG
+# ("youtube-telltale"), and the channel's `## DESCRIPTION` section — two paragraphs, the
+# above-the-fold snippet rule, the search-context paragraph, the soft CTA, the voice note and
+# the banned-phrase list — was deliberately withheld on the argument that fifteen editorial
+# bullets over-specify a schema-constrained small model.
+#
+# The measurement says otherwise, and it is not a small-model measurement. The only run that
+# ever went through these two calls in production (job-1787440820706-wk0cej99g, podcast 1,
+# 2026-08-22 19:30) produced a 324-word single-paragraph synopsis of the NARRATOR — "The episode
+# opens with O. Morgan dissecting ... The host then addresses ... Morgan questions" — with no
+# second paragraph, no search context and no CTA. The same prompts reach Claude Sonnet and Opus
+# unchanged when the operator routes the description to the cloud, so this is a property of what
+# the calls are TOLD, not of the model that answers them. A call given no brief writes to no
+# brief.
+#
+# So both calls now carry `{channel}` (the channel's real name and its own focus paragraph) and
+# `{rules}` (the channel's `## DESCRIPTION` section, from prompts/shared/fields/description.yml
+# — the same block the compilation call reads). The division of labour between them is stated
+# in each prompt: the hook writes the opening line the rules describe, the body writes the rest
+# of the description the rules describe, and the body is shown the hook so it can carry on from
+# it instead of restating it.
 #
 # `{coverage}` is filled by code with one of the two labelled blocks below: the chapter list
 # where the pipeline produced one, the text subject where the item has no chapters. Both say
@@ -21,9 +38,10 @@
 # not tell you — and it is empty on a chapterless item, where the coverage block already IS the
 # only description of the video that exists.
 #
-# Placeholders: {channel}, {video}, {coverage}, {transcript}, {pools}, and the two
-# character/word budgets, which are substituted from description-unit.ts's own constants so the
-# number in the prompt and the number the code measures can never drift apart.
+# Placeholders: {channel}, {video}, {coverage}, {transcript}, {pools}, {rules}, {hook}, and the
+# two character/word budgets, which are substituted from description-unit.ts's own constant and
+# from the channel's own `body_words` so the number in the prompt and the number the code
+# measures can never drift apart.
 
 coverage_chapters: |-
   What the video covers, chapter by chapter:
@@ -37,10 +55,31 @@ transcript_block: |-
   The transcript of the video, in full:
   {items}
 
+# The channel, as the channel's own data says it — its name and the focus paragraph that is the
+# {channel_focus} slot everywhere else in the tree. It replaces the stored slug, which named the
+# channel to a model in the one form that carries nothing.
+channel_block: |-
+  Channel: {name}
+  {focus}
+
+# The channel's `## DESCRIPTION` section, verbatim. Both calls are bound by it and each says
+# which part of it it is writing.
+rules_block: |-
+  The channel's rules for this description. Everything below governs what you write here:
+
+  {items}
+
+# What the body call is shown where the hook is not written yet — the "Show prompt" preview and
+# the context-window estimate, both of which are assembled before any call runs. A real run
+# always has the hook: `generate` writes it first and hands it to this prompt.
+hook_pending: |-
+  (not written yet — the real body call is assembled after the hook and carries it here)
+
 hook: |-
   Write the opening line of a YouTube description. Output JSON only.
 
-  Channel: {channel}
+  {channel}
+
   Video: {video}
 
   {coverage}
@@ -50,19 +89,31 @@ hook: |-
   Names and phrases from the video, to draw on where they fit:
   {pools}
 
-  Write one complete sentence, ending in a full stop, of at most {hookTargetChars} characters. Name the two or three things above that would draw a viewer in — not all of them — and put the words somebody would type into search at the front. The names go in as parts of noun phrases, a possessive or an object, so the sentence is about the claim, the event or the argument itself.
+  {rules}
+
+  YOUR JOB IS SENTENCE 1 OF PARAGRAPH 1 AND NOTHING ELSE — the standalone search snippet those
+  rules describe. The rest of the description is written by a second call, which will be shown
+  what you write here.
+
+  One complete sentence with a finite verb, ending in a full stop, of at most {hookTargetChars}
+  characters. Name the two or three things above that would draw a viewer in — not all of them —
+  and put the words somebody would type into search at the front. Write about the claim, the
+  event or the argument itself: the real names from the material go in as possessives or objects
+  inside the sentence, and the thing doing something is always something the viewer can see, not
+  the speaker, the host, the episode or this video.
 
   Hooks in exactly the right form:
-  "Iran ceasefire collapse, Byron Donalds's projected win in Florida, and the 29-state lawsuit against Meta."
-  "Gene Bailey's misreading of Luke 19:13 and the David and Goliath framing behind his call to occupy territory."
+  "Gene Bailey's chapter on Ziklag tells Christians to weaponize their wounds against trans kids."
+  "Iowa spent three years blocking the Satanic Temple's holiday display while the man who axed their statue got probation."
 
   Output exactly this shape and nothing else:
   {"hook": "..."}
 
 body: |-
-  Write the body paragraph of a YouTube description. Output JSON only.
+  Write the rest of a YouTube description — everything after its opening line. Output JSON only.
 
-  Channel: {channel}
+  {channel}
+
   Video: {video}
 
   {coverage}
@@ -72,14 +123,27 @@ body: |-
   Names and phrases from the video, to draw on where they fit:
   {pools}
 
-  Write one paragraph of {bodyMinWords} to {bodyMaxWords} words that walks through what the video covers in order. Every name you use comes from the material above, and the names go in as parts of noun phrases — a possessive or an object, so the sentence is about the claim, the refusal or the argument itself. Where the material describes somebody responding to something, write the claim and the response as content: "the bridge contract claim, rebutted", "Jack Hibbs's First Amendment argument and the constitutional answer to it".
+  {rules}
 
-  Openings in exactly the right form:
-  "Debate about Trump's refusal to extend the Iran ceasefire MOU and rising tensions in the Strait of Hormuz, then the Florida results and Byron Donalds's projected win."
-  "Gene Bailey's misreading of Luke 19:13, his call to occupy territory, and the David and Goliath framing behind it."
-  "Paul Petit's report on the 29-state lawsuit against Meta, and the panel's disagreement over what it means for teenagers."
+  The opening line is already written, and it will stand above what you write:
+  "{hook}"
 
-  No links, no timestamps, no calls to subscribe: the chapter block and the standing links are assembled by code afterwards.
+  YOUR JOB IS THE REST OF THAT DESCRIPTION, {bodyMinWords} to {bodyMaxWords} words: the remainder
+  of paragraph 1, then one blank line, then paragraph 2, exactly as the rules above lay them out.
+  Paragraph 1 still closes on the sentence those rules ask it to close on. Carry on from the
+  opening line rather than restating it or its examples.
+
+  Every name you use comes from the material above, and you write about the claims, the events
+  and the arguments themselves: the real names go in as possessives or objects, and the thing
+  doing something is always something the viewer can see, not the speaker, the host, the episode
+  or this video.
+
+  Sentences in exactly the right form:
+  "Every policy branded communist in the segment — universal healthcare, ending private prisons, a green new deal — turns out to be a mainstream position."
+  "The book never says the quiet part outright, but the call to get 'truly psychotic' for God's blessing leaves almost nothing to interpretation."
+
+  No links and no timestamps: the chapter block and the standing links are assembled by code
+  afterwards.
 
   Output exactly this shape and nothing else:
   {"body": "..."}

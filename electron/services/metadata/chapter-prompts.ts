@@ -1,33 +1,34 @@
 /**
- * Chapter Prompts — access to the embedding pipeline's two prompts
+ * Chapter Prompts — access to the chapter pipeline's three prompts
  *
- * THE BODIES MOVED. They are in electron/assets/prompts/shared/pipeline/chapters.yml now,
- * byte-identical, along with the header that records what they encode and why — the quoting
- * law, the one-thing-per-call law, the positive-form rule, and the stated leak risk that comes
- * with real names in the examples. Read them there before editing either one.
+ * THE BODIES ARE NOT HERE. They are in electron/assets/prompts/shared/pipeline/chapters.yml,
+ * along with the header that records what they encode and why — the quoting law, the
+ * count-is-the-model's law, the positive-form rule, and the stated leak risk that comes with
+ * real names in the examples. Read them there before editing any of them.
  *
- * What is left here is the ACCESS, as getters, so `CHAPTER_EMBEDDING_PROMPTS.PLACE_BOUNDARY`
- * reads exactly as it did. A missing file or key throws naming both (prompt-assets.ts). There
- * is no built-in copy of a chapter prompt anywhere: a substituted one would place boundaries
- * that look measured and were guessed.
+ * What is left here is the ACCESS, as getters, so `CHAPTER_PROMPTS.SUMMARIZE_CHAPTER` reads as
+ * a constant does. A missing file or key throws naming both (prompt-assets.ts). There is no
+ * built-in copy of a chapter prompt anywhere: a substituted one would produce chapters that
+ * look measured and were guessed.
  */
 
 import { promptAssets } from './prompt-assets';
 
 const CHAPTERS_FILE = 'chapters.yml';
 
-export const CHAPTER_EMBEDDING_PROMPTS = {
+export const CHAPTER_PROMPTS = {
   /**
-   * Stage 4 — place ONE selected junction to the sentence it turns on.
+   * Stage 1 — read the whole transcript in ONE call and report the chapters in it.
    *
-   * Placeholders: {title_context} (already rendered, may be empty), {window}
+   * Placeholders: {duration} (the runtime in words), {transcript}
    */
-  get PLACE_BOUNDARY(): string {
-    return promptAssets().pipeline(CHAPTERS_FILE, 'place_boundary');
+  get WHOLE_TRANSCRIPT_CHAPTERS(): string {
+    return promptAssets().pipeline(CHAPTERS_FILE, 'whole_transcript_chapters');
   },
 
   /**
-   * Stage 6 — name and summarize ONE chapter, from its RAW transcript.
+   * Stage 3 — describe ONE chapter, from its RAW transcript. Its `title` is read only for a
+   * chapter stage 1 did not label; see THE TITLE RULE in chapter-whole-transcript.service.ts.
    *
    * Placeholders: {number}, {video}, {context_lines} (already rendered, may be empty),
    * {entity_scaffold} (already rendered, may be empty), {transcript}

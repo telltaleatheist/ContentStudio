@@ -124,8 +124,8 @@ export type ModelRoutingDialogResult = boolean | undefined;
             <div>
               <p>
                 <strong>Chapters</strong> are not routed. Every item with a timestamped transcript is
-                chaptered by the embedding pipeline on {{ chapter.generationModel }} +
-                {{ chapter.embeddingModel }}.
+                chaptered by {{ chapter.generationModel }}, which reads the whole transcript in one
+                call and then writes each chapter's detail.
               </p>
               @if (chapter.generationAvailability === 'not-installed') {
                 <p class="row-note missing">
@@ -133,10 +133,11 @@ export type ModelRoutingDialogResult = boolean | undefined;
                   get chapters until it is pulled.
                 </p>
               }
-              @if (chapter.embeddingAvailability === 'not-installed') {
+              @if (chapter.keyPhraseAvailability === 'not-installed') {
                 <p class="row-note missing">
-                  {{ chapter.embeddingModel }} is not installed on {{ localModels().host }} — runs will fall
-                  to the weaker word-matching scorer and say so in their warnings.
+                  {{ chapter.keyPhraseModel }} is not installed on {{ localModels().host }} — key phrases for
+                  tags and hashtags will be ranked by frequency instead, and runs will say so in their
+                  warnings.
                 </p>
               }
             </div>

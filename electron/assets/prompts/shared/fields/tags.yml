@@ -5,18 +5,61 @@
 # every group's instructions. It is sent to a model on the TEXT-SUBJECT path (no chapters —
 # there are no pools measured against a chapter list to assemble from) and on the COMPILATION
 # call, and it is what declares that the channel publishes tags at all.
+#
+# TWO THINGS THIS SECTION LOST when it moved out of the flat per-channel ymls, both measured:
+#
+#  1. THE SEPARATOR. Nothing here ever said the tags are separated by commas. The only place
+#     that said so was the OUTPUT FORMAT's type annotation, `"tags": "comma-separated string"`,
+#     which is a description of the value rather than a demonstration of it. That was survivable
+#     while the whole metadata object was written in one call by Sonnet; it is not survivable now
+#     that this is its own schema-constrained call on a 9B. Measured on qwen3.5:9b through the
+#     harness, three runs, same fixture: TWO of the three came back as one space-joined run-on —
+#     "Marcus Wray private jet fundraising televangelist cult prosperity gospel demonically
+#     influenced trolls high-control church scams Marcus Wray fourth jet allegations" — which the
+#     comma split reads as ONE 160-character tag and which nothing downstream could tell from a
+#     real one. The one channel that DID come back correct in production
+#     (job-1787440820706-wk0cej99g, podcast-spreaker) is the one variant below whose text
+#     happens to contain the words "comma-separated".
+#
+#     Note what the fix is NOT: splitting the answer on whitespace instead. The information
+#     needed to split it is not in the answer — "prosperity gospel scam" is one tag and
+#     whitespace would make it three — so a whitespace split does not recover the tags, it
+#     invents different ones, against the rule directly above it that multi-word phrases are the
+#     point. The prompt states the separator, SHOWS it, and the run refuses a list that came
+#     back without it (tags-hashtags.ts `unusableTagList`).
+#
+#     THE EXEMPLAR NAMES ITS SLOTS rather than showing a real tag list, and that was measured
+#     too. Shown a real shipped one ("ken paxton,texas ten commandments law,sb10,..."), qwen3.5:9b
+#     answered a video about a televangelist's private jet with "sb10 ten commandments law" and
+#     "texas prosperity gospel" in the tags. The editorial core's "all examples are ILLUSTRATION
+#     ONLY" line is at the top of the prompt and this exemplar is at the bottom, next to the
+#     answer. A slot-named exemplar shows the commas exactly as well and has no content to lift.
+#
+#  2. THE BRAND TERMS. The old sections named them — "channel brand terms (owen morgan,
+#     telltale, telltale atheist)" — and every tag list the operator shipped carries "owen
+#     morgan" and "telltale atheist" because of it. Genericised to a bare "channel brand terms",
+#     the line is unfollowable: nothing else in this call names the channel, so the model either
+#     omits them (harness run 1) or invents one (the production run above wrote "O. Morgan").
+#     They are channel DATA now — `brand_terms` in prompts/channels/*.yml, filled into the
+#     {brand_terms} slot below — so the instruction names the real terms for whichever channel
+#     is running. They are NOT the same list as `channel_tags`: those are appended verbatim by
+#     code after the fact, while these are the search surfaces a viewer types.
 section: TAGS
 
 instructions: |-
   ## TAGS
 
   - 8-12 tags, under 500 characters total
-  - Include: subject's full name, specific topic keywords, channel brand terms, 2-3 long-tail phrases a viewer would actually type into YouTube search
+  - Include: subject's full name, specific topic keywords, channel brand terms ({brand_terms}), 2-3 long-tail phrases a viewer would actually type into YouTube search
   - Include 1-2 common misspellings of the subject's name if applicable — misspelling coverage is the one tag use YouTube officially endorses
   - Prioritize specific multi-word phrases over single broad terms
   - Every tag names something the content actually covers: YouTube reads a tag the video never mentions as a spam signal.
+  - THE WHOLE FIELD IS ONE STRING WITH A COMMA BETWEEN EVERY TAG. This is the shape, and the only shape it is read in:
+    "subject full name,the specific claim,a common misspelling of the name,a long-tail search phrase,a channel brand term"
+    A tag may contain spaces; two tags may not be separated by one. "subject full name the specific claim" is ONE tag, not two, and it is unusable.
 
-self_check: []
+self_check:
+  - "The tags value is one string with a comma between every tag — if any two tags are separated by a space alone, the comma goes back in"
 
 overrides:
   shorts:
@@ -24,11 +67,15 @@ overrides:
       ## TAGS
 
       - 5-8 tags maximum
-      - Include: subject's full name, topic keyword, content type, channel brand terms
+      - Include: subject's full name, topic keyword, content type, channel brand terms ({brand_terms})
       - Prioritize terms people actually search on YouTube
       - Include "shorts" as a tag
       - Every tag names something the clip actually covers.
-    self_check: []
+      - THE WHOLE FIELD IS ONE STRING WITH A COMMA BETWEEN EVERY TAG. This is the shape, and the only shape it is read in:
+        "subject full name,the topic keyword,a channel brand term,shorts"
+        A tag may contain spaces; two tags may not be separated by one. "subject full name the topic keyword" is ONE tag, not two, and it is unusable.
+    self_check:
+      - "The tags value is one string with a comma between every tag — if any two tags are separated by a space alone, the comma goes back in"
 
   spreaker:
     instructions: |-
@@ -38,4 +85,9 @@ overrides:
       - Include: the subject's full name (as one tag), the specific claims/doctrines/organizations discussed, niche identifiers (e.g. atheism, skepticism, cult recovery), and 2-3 broader discovery terms
       - Include a common misspelling of the subject's name as its own tag if one is widespread
       - These tags power Spreaker's own discovery pages and minor directories — Apple and Spotify ignore RSS keywords, so keep tags focused and relevant rather than exhaustive
-    self_check: []
+      - THE WHOLE FIELD IS ONE STRING WITH A COMMA BETWEEN EVERY TAG. This is the shape, and the only shape it is read in:
+        "subject full name,the specific claim,a niche identifier,a broader discovery term,a common misspelling"
+        A tag may contain spaces; two tags may not be separated by one. "subject full name the specific claim" is ONE tag, not two, and it is unusable.
+      - No creator or channel name: the podcast does not tag itself.
+    self_check:
+      - "The tags value is one string with a comma between every tag — if any two tags are separated by a space alone, the comma goes back in"

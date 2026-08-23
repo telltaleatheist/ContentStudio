@@ -1,11 +1,12 @@
 /**
  * Pure-function checks for the routing migration and the chapters-in-description flag.
  *
- * WHAT IT COVERS, and why these two things and not others: both are places where the app
+ * WHAT IT COVERS, and why these things and not others: all of them are places where the app
  * DECIDES SOMETHING ON THE USER'S BEHALF from data it did not write. The routing migration
  * reads a store that an upgrade invalidated; the description resolver decides what a push
- * actually sends. Both have a wrong answer that looks exactly like a right one — a routing
- * silently reset, a chapter block silently dropped — so both are asserted rather than
+ * actually sends; the chapter quote mapper decides what second a viewer lands on. Each has a
+ * wrong answer that looks exactly like a right one — a routing silently reset, a chapter block
+ * silently dropped, a chapter marker half a minute off — so each is asserted rather than
  * eyeballed.
  *
  * Run it against the COMPILED main process, which is what ships:
@@ -30,6 +31,7 @@ const composer = require(path.join(ROOT, 'services/metadata/description-composer
 const validators = require(path.join(ROOT, 'services/publish/field-validators.js'));
 const entities = require(path.join(ROOT, 'services/metadata/entity-extraction.js'));
 const quality = require(path.join(ROOT, 'services/metadata/chapter-title-quality.js'));
+const chapters = require(path.join(ROOT, 'services/metadata/chapter-transcript.js'));
 const tagsHashtags = require(path.join(ROOT, 'services/metadata/tags-hashtags.js'));
 const promptAssetsModule = require(path.join(ROOT, 'services/metadata/prompt-assets.js'));
 const tasks = require(path.join(ROOT, 'services/metadata/metadata-tasks.js'));
@@ -497,6 +499,87 @@ check('an item WITH chapters keeps its code-assembled tags', () => {
 });
 
 /**
+ * THE SPACE-JOINED TAG LIST, refused.
+ *
+ * Measured on qwen3.5:9b through the prompt harness: two runs in three answered the tags call
+ * with every tag in it and no comma anywhere, which the comma split reads as ONE tag and which
+ * shipped with nothing declared. The prompt now states and shows the separator; this asserts
+ * that an answer ignoring it is still caught, because the prompt is the thing most likely to be
+ * edited next.
+ */
+check('a tag list that came back without its commas is refused, not re-split on spaces', () => {
+  const runOn =
+    'Marcus Wray private jet fundraising televangelist cult prosperity gospel demonically ' +
+    'influenced trolls high-control church scams Marcus Wray fourth jet allegations';
+  const fault = tagsHashtags.unusableTagList(runOn);
+  if (!fault) throw new Error('a 160-character run-on passed as a tag list');
+  if (!/run-on|comma/.test(fault)) throw new Error('the reason does not name the missing commas: ' + fault);
+
+  // The real shape passes, multi-word tags and all — the check must not be a length opinion.
+  const real =
+    'ken paxton,texas ten commandments law,sb10,ten commandments in schools,stone v graham,' +
+    'separation of church and state,owen morgan,telltale atheist';
+  eq(tagsHashtags.unusableTagList(real), undefined, 'a real shipped tag list is usable');
+
+  // A short answer is thin, not broken: a count opinion belongs to the prompt.
+  eq(tagsHashtags.unusableTagList('kent christmas,kat kerr'), undefined, 'two real tags are usable');
+  eq(tagsHashtags.unusableTagList('christian nationalism'), undefined, 'one real tag is usable');
+
+  // Nothing at all is a failure with a reason, not a silent empty list.
+  if (!tagsHashtags.unusableTagList('')) throw new Error('an empty tags value passed');
+  if (!tagsHashtags.unusableTagList(undefined)) throw new Error('a missing tags value passed');
+});
+
+/**
+ * THE BRAND TERMS reach the TAGS instruction as the channel's own, or the assembly throws.
+ *
+ * The line said "channel brand terms" with nothing after it for the whole per-field wave, which
+ * is a rule naming information the call does not carry: the tags call names the channel nowhere
+ * else. Harness runs left the brand terms out entirely and one production run invented
+ * "O. Morgan".
+ */
+check('the TAGS section names the channel\'s real brand terms, per channel', () => {
+  const telltale = assets.fieldSection(assets.channel('youtube-telltale'), 'tags');
+  for (const term of ['owen morgan', 'telltale atheist']) {
+    if (!telltale.includes(term)) throw new Error('the telltale TAGS section does not name "' + term + '"');
+  }
+  if (/\{brand_terms\}/.test(telltale)) throw new Error('the {brand_terms} slot shipped unfilled');
+
+  // Shorts takes its own shorter list, so the shared instruction is not one channel's terms.
+  const shorts = assets.fieldSection(assets.channel('youtube-shorts'), 'tags');
+  if (shorts.includes('telltale atheist')) throw new Error('shorts took telltale\'s brand terms');
+
+  // Every channel that publishes tags assembles its section at all — a channel that asks for
+  // the slot and declares no terms must throw rather than ship the brace.
+  for (const id of assets.channelIds()) {
+    const channel = assets.channel(id);
+    if (!channel.fields.includes('tags')) continue;
+    const text = assets.fieldSection(channel, 'tags');
+    if (/\{[a-z_]+\}/.test(text)) throw new Error('channel "' + id + '" ships an unfilled slot in its TAGS section');
+  }
+});
+
+/**
+ * THE SEPARATOR IS SHOWN, not only named, in every variant of the section.
+ *
+ * The OUTPUT FORMAT's `"tags": "comma-separated string"` is a type annotation and was the only
+ * place a comma was ever mentioned; it did not survive the move to a 9B. An exemplar in the
+ * demanded form is what the fix rests on, so it is asserted rather than trusted to a later edit.
+ */
+check('every channel that publishes tags is SHOWN the comma-separated form', () => {
+  for (const id of assets.channelIds()) {
+    const channel = assets.channel(id);
+    if (!channel.fields.includes('tags')) continue;
+    const text = assets.fieldSection(channel, 'tags');
+    const exemplar = text.match(/"[^"\n]*,[^"\n]*"/);
+    if (!exemplar) throw new Error('channel "' + id + '" is told the tag shape but never shown it');
+    if (exemplar[0].split(',').length < 4) {
+      throw new Error('channel "' + id + '" exemplar is too short to read as a list: ' + exemplar[0]);
+    }
+  }
+});
+
+/**
  * THE SHAPE CHANGE ITSELF. Every field is its own call and every call names exactly one key.
  *
  * This is the property the whole branch exists for, and it is asserted on the PLAN rather than
@@ -660,7 +743,7 @@ check('the embedding model does not count against the budget', () => {
   const roster = tasks.buildModelRoster([
     { model: 'qwen3.8:27b', what: 'titles' },
     { model: 'nomic-embed-text', what: 'key phrases' },
-  ], [routing.CHAPTER_PIPELINE_MODELS.embedding]);
+  ], [routing.KEY_PHRASE_EMBEDDING_MODEL]);
   eq(roster.models.length, 1, '274MB of embeddings was counted as a resident LLM');
 });
 
@@ -835,6 +918,123 @@ check('a userData dir holding the old flat prompt sets migrates to the new tree'
   }
 
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+
+// ---------------------------------------------------------------- chapters
+/**
+ * THE CHAPTER QUOTE MAPPER. The model never emits a timestamp: it quotes the sentence each
+ * chapter opens on, and this code measures that quote against the caption word stream. Every
+ * failure mode here is invisible in the output — a chapter list built from a mis-measured quote
+ * reads exactly like one built from a good one, and the only symptom is a viewer clicking a
+ * marker and landing in the middle of the previous subject.
+ *
+ * The rule being asserted is the CURSOR: each quote is searched only in the cues after the one
+ * that placed the previous chapter. It is what stops a sentence the speaker says twice from
+ * pulling a late chapter back to minute two, and what makes "this quote is not in the
+ * transcript" a droppable fact rather than a confident wrong number.
+ */
+const cue = (startSec, text) => {
+  const stamp = (s) => {
+    const h = String(Math.floor(s / 3600)).padStart(2, '0');
+    const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+    const sec = String(Math.floor(s % 60)).padStart(2, '0');
+    return `${h}:${m}:${sec},000`;
+  };
+  return { start: stamp(startSec), end: stamp(startSec + 4), text };
+};
+
+const CHAPTER_CUES = chapters.buildCues([
+  cue(0, 'Welcome back to the show everybody, it is good to see you all again.'),
+  cue(5, 'Today we are going to look at three separate clips about the same claim.'),
+  cue(120, 'Anyway, let us talk about the eggs and what happened to them.'),
+  cue(125, 'The article says her eggs were stolen from the incubator overnight.'),
+  cue(300, 'Welcome back to the show everybody, it is good to see you all again.'),
+  cue(305, 'That was the second clip, and here is what the pastor said about it.'),
+]);
+
+check('a chapter quote measures to the second the sentence was said', () => {
+  const mapped = chapters.mapChapterQuotes(
+    [{ label: 'the eggs article', quote: 'Anyway, let us talk about the eggs and what happened to them.' }],
+    CHAPTER_CUES,
+  );
+  eq(mapped.length, 1);
+  eq(mapped[0].status, 'mapped');
+  eq(mapped[0].time, 120, 'the quote did not measure to its own cue');
+});
+
+check('a sentence the speaker says twice resolves FORWARD, never back', () => {
+  // "Welcome back to the show everybody" is at 0s and again at 300s. Claimed as the opening of
+  // the chapter AFTER the one at 120s, it can only mean the second one.
+  const mapped = chapters.mapChapterQuotes(
+    [
+      { label: 'the eggs article', quote: 'Anyway, let us talk about the eggs and what happened to them.' },
+      { label: 'the second clip', quote: 'Welcome back to the show everybody, it is good to see you all again.' },
+    ],
+    CHAPTER_CUES,
+  );
+  eq(mapped.map((m) => m.status), ['mapped', 'mapped']);
+  eq(mapped[1].time, 300, 'a repeated sentence was measured against the wrong occurrence');
+  if (!(mapped[1].time > mapped[0].time)) throw new Error('the chapters came back out of order');
+});
+
+check('a quote that is only BEHIND the cursor is dropped as out-of-order, with its real time named', () => {
+  const mapped = chapters.mapChapterQuotes(
+    [
+      { label: 'the second clip', quote: 'That was the second clip, and here is what the pastor said about it.' },
+      { label: 'the eggs article', quote: 'Anyway, let us talk about the eggs and what happened to them.' },
+    ],
+    CHAPTER_CUES,
+  );
+  eq(mapped[1].status, 'out-of-order');
+  eq(mapped[1].time, null, 'an out-of-order quote was given a time anyway');
+  eq(mapped[1].wholeVideoTime, 120, 'the warning cannot say where the sentence actually is');
+});
+
+check('a quote that is nowhere in the transcript is unmapped, and nothing is interpolated', () => {
+  const mapped = chapters.mapChapterQuotes(
+    [{ label: 'invented', quote: 'The submarine fleet departed Reykjavik long before dawn on Tuesday.' }],
+    CHAPTER_CUES,
+  );
+  eq(mapped[0].status, 'unmapped');
+  eq(mapped[0].time, null);
+  eq(mapped[0].wholeVideoTime, null, 'a sentence that is not in the video was located anyway');
+});
+
+/**
+ * THE CADENCE BAND. Code states the runtime and names the rung; the model applies the rate and
+ * decides the count. These assert the two inputs it is given, not the answer it gives back.
+ */
+check('the runtime is stated in the words the band language uses', () => {
+  eq(chapters.runtimePhrase(0), '0 minutes');
+  eq(chapters.runtimePhrase(564.8), '9 minutes', 'seconds were not rounded to whole minutes');
+  eq(chapters.runtimePhrase(3600), '1 hour');
+  eq(chapters.runtimePhrase(4332.76), '1 hour 12 minutes');
+  eq(chapters.runtimePhrase(2 * 3600 + 30 * 60), '2 hours 30 minutes');
+});
+
+check('the cadence rung is the one the prompt body states for that runtime', () => {
+  eq(chapters.cadenceBandFor(9 * 60 + 59), 'under-10-minutes');
+  eq(chapters.cadenceBandFor(10 * 60), '10-to-30-minutes');
+  eq(chapters.cadenceBandFor(29 * 60 + 59), '10-to-30-minutes');
+  eq(chapters.cadenceBandFor(30 * 60), '30-minutes-and-longer');
+  eq(chapters.cadenceBandFor(4 * 3600), '30-minutes-and-longer');
+});
+
+check('the chapter prompt this build ships states all three rungs and asks for a quote', () => {
+  const body = assets.pipeline('chapters.yml', 'whole_transcript_chapters');
+  for (const rung of ['under 10 minutes:', '10 to 30 minutes:', '30 minutes and longer:']) {
+    if (!body.includes(rung)) throw new Error(`the shipped prompt has no "${rung}" rung`);
+  }
+  if (!body.includes('{duration}') || !body.includes('{transcript}')) {
+    throw new Error('the shipped prompt lost one of its placeholders');
+  }
+  if (!body.includes('"first_sentence"')) {
+    throw new Error('the shipped prompt no longer asks for the sentence the time is measured from');
+  }
+  let threw = false;
+  try { assets.pipeline('chapters.yml', 'place_boundary'); } catch { threw = true; }
+  if (!threw) throw new Error('the deleted junction-placement prompt is still shipping');
 });
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);

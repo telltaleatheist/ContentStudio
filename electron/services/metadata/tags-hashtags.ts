@@ -304,3 +304,73 @@ export function camelCaseHashtag(value: string): string {
 export function hashtagLine(hashtags: string[]): string {
   return hashtags.join(' ');
 }
+
+// ---------------------------------------------------------------------------
+// The model-written tag list, judged
+// ---------------------------------------------------------------------------
+
+/**
+ * Longer than this, one comma-delimited entry is not a tag.
+ *
+ * A real tag is a name or a search phrase — the longest one in anything the operator has
+ * shipped is "separation of church and state" at 31 characters. 80 is not a style opinion about
+ * tag length; it is the width at which an entry has stopped being a tag and become a sentence
+ * the model forgot to punctuate.
+ */
+const RUNAWAY_TAG_CHARS = 80;
+
+/** Below this many words, a single-entry list is a short answer rather than a broken one. */
+const RUN_ON_WORDS = 5;
+
+/**
+ * Is this model-written `tags` value UNUSABLE — as opposed to merely thin?
+ *
+ * THE ONE FAILURE THIS CATCHES, measured on qwen3.5:9b through the prompt harness in two runs
+ * of three: the model answers the tags call with every tag in it and no commas anywhere —
+ * "Marcus Wray private jet fundraising televangelist cult prosperity gospel demonically
+ * influenced trolls high-control church scams Marcus Wray fourth jet allegations" — which the
+ * comma split reads as ONE 160-character tag and publishes. Nothing declared it, because
+ * nothing looked.
+ *
+ * WHY THIS IS NOT FIXED IN THE PARSER. Splitting a run-on on whitespace does not recover the
+ * answer: "prosperity gospel scam" is one tag and whitespace makes it three, against the rule
+ * in the same prompt that multi-word phrases are the point. The delimiter the model dropped is
+ * not reconstructible from what it sent, so there is no honest normalization — only a
+ * fabrication that would look exactly like a real tag list downstream. The prompt states and
+ * shows the separator (shared/fields/tags.yml); this is what refuses the answers that ignore it.
+ *
+ * NOT JUDGED HERE: the tag COUNT, or whether the list names the channel. Those are the prompt's
+ * business and a thin list still publishes. This returns a reason only for an answer that
+ * cannot be read as a tag list at all.
+ *
+ * PURE. Returns the reason, or undefined when the list is usable.
+ */
+export function unusableTagList(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return `it came back as ${value === undefined ? 'nothing' : JSON.stringify(value)} rather than a tag list`;
+  }
+
+  const tags = value
+    .split(',')
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+
+  if (tags.length === 0) return 'it came back as separators with no tags between them';
+
+  if (tags.length === 1 && tags[0].split(/\s+/).filter(Boolean).length >= RUN_ON_WORDS) {
+    return (
+      `it came back as one ${tags[0].length}-character run-on with no comma anywhere, so the whole ` +
+      `answer reads as a single tag: "${tags[0]}"`
+    );
+  }
+
+  const runaway = tags.find((t) => t.length > RUNAWAY_TAG_CHARS);
+  if (runaway) {
+    return (
+      `one entry runs to ${runaway.length} characters, past the ${RUNAWAY_TAG_CHARS} at which an entry ` +
+      `has stopped being a tag — the commas are missing inside it: "${runaway}"`
+    );
+  }
+
+  return undefined;
+}

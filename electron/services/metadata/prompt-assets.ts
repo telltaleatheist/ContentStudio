@@ -52,6 +52,15 @@ export interface ChannelData {
    * told never to write (prompts/channels/unfiltered.yml).
    */
   titleTailFromFilename?: string;
+  /**
+   * The creator's search surfaces, filled into the TAGS instruction's `{brand_terms}` slot.
+   *
+   * DISTINCT FROM `channelTags`, which are appended verbatim by code after the model answers.
+   * These are named to the model so the "include channel brand terms" line is followable at
+   * all: nothing else in a tags call names the channel, and the genericised line produced tag
+   * lists with no brand term in them and, once, an invented one ("O. Morgan").
+   */
+  brandTerms?: string[];
   channelTags?: string[];
   descriptionLinks: string;
   /** Where this channel was loaded from, for error messages. */
@@ -67,6 +76,14 @@ export interface FieldAsset {
   /** Self-check lines that need a SECOND field present in the same group to be followable. */
   selfCheckWith: Record<string, string[]>;
   defaultTitleFormat?: string;
+  /**
+   * `[min, max]` words, on the fields that declare one. Only the description does today.
+   *
+   * DATA, so the range the prompt asks for and the range the code measures are one value —
+   * description-unit.ts substitutes both ends into its body prompt and warns against the same
+   * pair. Absent where the field declares none, and the reader that wants it says so.
+   */
+  wordRange?: [number, number];
 }
 
 /** Field id -> the file under prompts/shared/fields/ that carries its instructions. */
@@ -248,6 +265,18 @@ export class PromptAssets {
         );
       }
     }
+    if (raw.brand_terms !== undefined) {
+      const valid =
+        Array.isArray(raw.brand_terms) &&
+        raw.brand_terms.every((t: unknown) => typeof t === 'string' && t.trim().length > 0);
+      if (!valid) {
+        throw new Error(
+          `Channel "${id}" (${filePath}) has a brand_terms key that is not a list of non-empty strings ` +
+            `(got: ${JSON.stringify(raw.brand_terms)}). Write it as a YAML list, e.g. ` +
+            `brand_terms: ["owen morgan", "telltale"]`
+        );
+      }
+    }
     if (raw.channel_tags !== undefined) {
       const valid =
         Array.isArray(raw.channel_tags) &&
@@ -270,6 +299,7 @@ export class PromptAssets {
       counts: (raw.counts || {}) as Record<string, number>,
       titleFormat: typeof raw.title_format === 'string' ? raw.title_format : undefined,
       titleTailFromFilename: this.titleTailTemplate(raw, filePath),
+      brandTerms: raw.brand_terms as string[] | undefined,
       channelTags: raw.channel_tags as string[] | undefined,
       descriptionLinks: this.requireString(raw, filePath, 'description_links'),
       sourcePath: filePath,
@@ -386,12 +416,33 @@ export class PromptAssets {
           ? loaded.default_title_format
           : undefined;
 
+    // `body_words` falls back to the FILE's value where the variant declares none, exactly as
+    // `default_title_format` does — a variant that does not restate a shared number is taking
+    // the shared number, not losing it. A value that is present and malformed throws.
+    const rawRange = source.body_words !== undefined ? source.body_words : loaded.body_words;
+    let wordRange: [number, number] | undefined;
+    if (rawRange !== undefined) {
+      if (
+        !Array.isArray(rawRange) ||
+        rawRange.length !== 2 ||
+        rawRange.some((n: unknown) => typeof n !== 'number') ||
+        rawRange[0] > rawRange[1]
+      ) {
+        throw new Error(
+          `Prompt asset "${filePath}" key "${fieldId} body_words" must be [min, max] with min <= max ` +
+            `(got: ${JSON.stringify(rawRange)})`
+        );
+      }
+      wordRange = [rawRange[0], rawRange[1]];
+    }
+
     return {
       section: this.requireString(loaded, filePath, 'section'),
       instructions,
       selfCheck,
       selfCheckWith,
       defaultTitleFormat,
+      wordRange,
     };
   }
 
@@ -424,6 +475,23 @@ export class PromptAssets {
         );
       }
       text = text.replace(/\{title_format\}/g, () => format.replace(/\s+$/, ''));
+    }
+
+    // `{brand_terms}` — the creator's own search surfaces, named in the TAGS instruction so
+    // "include channel brand terms" is a line the model can follow. Channel DATA, so the shared
+    // instruction never names one channel's terms to another. A channel whose section asks for
+    // the slot and declares none throws, exactly as {title_format} does: shipping the literal
+    // brace, or quietly blanking it back to the unfollowable line, is what this replaced.
+    if (text.includes('{brand_terms}')) {
+      const terms = (channel.brandTerms || []).map((t) => t.trim()).filter((t) => t.length > 0);
+      if (terms.length === 0) {
+        throw new Error(
+          `Channel "${channel.id}" declares no brand_terms, which its "${fieldId}" instructions ask ` +
+            `for through a {brand_terms} slot (add it to ${channel.sourcePath}, e.g. ` +
+            `brand_terms: ["owen morgan", "telltale"])`
+        );
+      }
+      text = text.replace(/\{brand_terms\}/g, () => terms.join(', '));
     }
 
     // `{<field id>_count}` — how many of that field's options to ask for. Channel data, so the
