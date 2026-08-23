@@ -417,7 +417,16 @@ export async function applyCarryForward(
       // record a size and a shape nobody just verified. A file that has vanished throws,
       // naming the path, and lands in `refused` — never a dead link on the record.
       const { meta, warnings: thumbWarnings } = validateThumbnailFile(source.thumbnailPath);
-      patch = { ...patch, thumbnailPath: source.thumbnailPath, thumbnailMeta: meta };
+      // 'manual', whatever it was on the earlier record. Carrying forward happens because
+      // the operator CLICKED, so the thumbnail on the new item is his choice however it
+      // reached the old one — and marking it 'auto' would let automatic discovery
+      // overwrite a decision he just made. See ThumbnailSource.
+      patch = {
+        ...patch,
+        thumbnailPath: source.thumbnailPath,
+        thumbnailMeta: meta,
+        thumbnailSource: 'manual',
+      };
       applied.push({
         field: 'thumbnail',
         detail: `${source.thumbnailPath} (${meta.width}×${meta.height}, ${meta.mime}).`,
