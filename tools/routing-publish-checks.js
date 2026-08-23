@@ -106,7 +106,7 @@ check('a real pre-upgrade store migrates instead of throwing', () => {
   eq(m.notices.length, 4, 'notice count');
   eq(m.selections, { thumbnail_text: 'opus5' }, 'survivors');
   const resolved = routing.resolveMetadataRouting(m.selections);
-  eq(resolved.description, 'qwen35-9b');
+  eq(resolved.description, 'qwen38-27b', 'the 27B default as of 2026-08-23 (the 9B shipped misattributed claims)');
   eq(resolved.tags, 'qwen35-9b');
   eq(resolved.titles, 'qwen38-27b', 'the shipped default, which is local as of the consolidation build');
   eq(resolved.thumbnail_text, 'opus5', 'the one legal choice is KEPT');
@@ -138,14 +138,13 @@ check('an empty / absent store is not a migration', () => {
 check('the shipped defaults are all local, and the packaging four share one model', () => {
   const resolved = routing.resolveMetadataRouting(undefined);
   eq(routing.describeRouting(resolved),
-    'titles=qwen3.8:27b, description=qwen3.5:9b, tags=qwen3.5:9b, ' +
+    'titles=qwen3.8:27b, description=qwen3.8:27b, tags=qwen3.5:9b, ' +
     'thumbnail_text=qwen3.8:27b, pinned_comment=qwen3.8:27b, clip_suggestions=qwen3.8:27b');
   for (const task of Object.keys(resolved)) {
     const option = routing.METADATA_ROUTING_OPTIONS[resolved[task]];
     if (option.kind !== 'local') throw new Error(task + ' defaults to a ' + option.kind + ' model');
   }
-  const packaging = ['titles', 'thumbnail_text', 'pinned_comment', 'clip_suggestions']
-    .map((t) => resolved[t]);
+  const packaging = routing.METADATA_ROUTING_SLOTS[0].taskIds.map((t) => resolved[t]);
   if (new Set(packaging).size !== 1) {
     throw new Error('the packaging fields are on ' + new Set(packaging).size + ' models, so they are not one call');
   }
@@ -159,11 +158,11 @@ check('the shipped defaults are all local, and the packaging four share one mode
  * if they disagree — and the view resolves it to null (Custom) rather than rewriting a
  * store whose fields were hand-set apart.
  */
-check('the slot is the operator decision: one choice, 27B or a Claude model, packaging fields only', () => {
+check('the slot is the operator decision: one choice, 27B or a Claude model, for the writing fields', () => {
   const slots = routing.METADATA_ROUTING_SLOTS;
   eq(slots.length, 1);
   eq(slots[0].id, 'big');
-  eq(slots[0].taskIds.join(','), 'titles,thumbnail_text,pinned_comment,clip_suggestions');
+  eq(slots[0].taskIds.join(','), 'titles,description,thumbnail_text,pinned_comment,clip_suggestions');
   eq(slots[0].optionIds.join(','), 'qwen38-27b,sonnet5,opus5');
 });
 
@@ -180,11 +179,14 @@ check('the routing view resolves the slot, and a hand-set store renders as Custo
   eq(overridden.slots[0].selectedOptionId, null);
   eq(overridden.tasks.find((t) => t.id === 'titles').selectedOptionId, 'headline-titles-32b');
 
-  // The mechanical fields are not the slot's business: rerouting description and tags (the
-  // 9b/4b A/B path) leaves the slot resolved and the entries intact.
-  const abFlip = routing.buildRoutingView({ description: 'qwen35-4b', tags: 'qwen35-4b' }, inventory);
+  // Tags are not the slot's business: the 9b/4b A/B path leaves the slot resolved. The
+  // DESCRIPTION joined the slot on 2026-08-23, so hand-setting it apart is a Custom state
+  // now — the same protection titles-on-the-32B gets, not a silent rewrite.
+  const abFlip = routing.buildRoutingView({ tags: 'qwen35-4b' }, inventory);
   eq(abFlip.slots[0].selectedOptionId, 'qwen38-27b');
-  eq(abFlip.tasks.find((t) => t.id === 'description').selectedOptionId, 'qwen35-4b');
+  eq(abFlip.tasks.find((t) => t.id === 'tags').selectedOptionId, 'qwen35-4b');
+  const descApart = routing.buildRoutingView({ description: 'qwen35-4b' }, inventory);
+  eq(descApart.slots[0].selectedOptionId, null, 'a hand-set description makes the slot Custom');
 });
 
 /**
@@ -434,9 +436,15 @@ check('an item WITHOUT chapters plans the same routed units, not a legacy single
   const written = new Set();
   for (const unit of p.units) for (const f of unit.fields) written.add(f);
 
-  for (const field of ['titles', 'thumbnail_text', 'pinned_comment', 'clip_suggestions',
+  for (const field of ['titles', 'thumbnail_text', 'pinned_comment',
                        'description', 'description_hook', 'tags']) {
     if (!written.has(field)) throw new Error(field + ' is not written by any unit on a chapterless item');
+  }
+  // The channel's fields list is a STATEMENT (LEDGER II-A #133): telltale declares no
+  // clip_suggestions, so no unit may write one — planned anyway would be the legacy
+  // absorb-everything behavior coming back.
+  if (written.has('clip_suggestions')) {
+    throw new Error('clip_suggestions planned for a channel that does not declare the field');
   }
   eq(p.assembleTags, false, 'tags come from a model when there is no chapter list to measure pools against');
   eq(p.assembleHashtags, true, 'hashtags are still derived in code');
@@ -546,14 +554,17 @@ check('every field gets its OWN call, and each call names exactly one key', () =
     // The description is the one deliberate pair: a hook and a body, two calls, two keys, one
     // unit — schema-constrained separately (description-unit.ts).
     if (unit.fields.includes('description')) {
-      eq(unit.fields.length, 2, 'the description unit writes the hook and the body and nothing else');
+      eq([...unit.fields].sort().join(','), 'description,description_hook,description_options',
+        'the description unit writes the hook, the body, and the additive options — nothing else');
       continue;
     }
     eq(unit.fields.length, 1, 'unit "' + unit.label + '" carries more than one field');
   }
+  // One separate call per DECLARED packaging field — telltale declares three of the four
+  // (no clip_suggestions), and a channel's fields list is a statement (LEDGER II-A #133).
   const packaging = p.units.filter((u) =>
     ['titles', 'thumbnail_text', 'pinned_comment', 'clip_suggestions'].some((f) => u.fields.includes(f)));
-  eq(packaging.length, 4, 'the four packaging fields are four separate calls');
+  eq(packaging.length, 3, 'each declared packaging field is its own call');
 });
 
 /**
