@@ -54,6 +54,14 @@ export interface ChannelData {
    * lists with no brand term in them and, once, an invented one ("O. Morgan").
    */
   brandTerms?: string[];
+  /**
+   * The creator's own promotions — plugs that appear inside videos without being any video's
+   * subject. Filled into `{promoted_items}` slots (description, titles, tags instructions)
+   * and into the chapter prompts, where the rules exclude them from titles, description
+   * prose, tags and content-chapter labels. The operator extends this list in the channel
+   * yml when a new sponsorship starts; nothing else needs to change.
+   */
+  promotedItems?: string[];
   channelTags?: string[];
   descriptionLinks: string;
   /** Where this channel was loaded from, for error messages. */
@@ -279,6 +287,18 @@ export class PromptAssets {
         );
       }
     }
+    if (raw.promoted_items !== undefined) {
+      const valid =
+        Array.isArray(raw.promoted_items) &&
+        raw.promoted_items.every((t: unknown) => typeof t === 'string' && t.trim().length > 0);
+      if (!valid) {
+        throw new Error(
+          `Channel "${id}" (${filePath}) has a promoted_items key that is not a list of non-empty strings ` +
+            `(got: ${JSON.stringify(raw.promoted_items)}). Write it as a YAML list, e.g. ` +
+            `promoted_items: ['the book "God''s People"', 'the Patreon (owenmorgan.com/patreon)']`
+        );
+      }
+    }
     if (raw.channel_tags !== undefined) {
       const valid =
         Array.isArray(raw.channel_tags) &&
@@ -301,6 +321,7 @@ export class PromptAssets {
       counts: (raw.counts || {}) as Record<string, number>,
       titleFormat: typeof raw.title_format === 'string' ? raw.title_format : undefined,
       brandTerms: raw.brand_terms as string[] | undefined,
+      promotedItems: raw.promoted_items as string[] | undefined,
       channelTags: raw.channel_tags as string[] | undefined,
       descriptionLinks: this.requireString(raw, filePath, 'description_links'),
       sourcePath: filePath,
@@ -483,6 +504,21 @@ export class PromptAssets {
         );
       }
       text = text.replace(/\{brand_terms\}/g, () => terms.join(', '));
+    }
+
+    // `{promoted_items}` — the creator's own plugs, named so "keep the promotions out" is a
+    // line the model can follow: an exclusion that names nothing excludes nothing. Channel
+    // DATA like {brand_terms}, with the same throw when a section asks and the channel
+    // declares none — shipping the literal brace or a blank exclusion are both wrong answers.
+    if (text.includes('{promoted_items}')) {
+      const items = (channel.promotedItems || []).map((t) => t.trim()).filter((t) => t.length > 0);
+      if (items.length === 0) {
+        throw new Error(
+          `Channel "${channel.id}" declares no promoted_items, which its "${fieldId}" instructions ask ` +
+            `for through a {promoted_items} slot (add the list to ${channel.sourcePath})`
+        );
+      }
+      text = text.replace(/\{promoted_items\}/g, () => items.join('; '));
     }
 
     // `{<field id>_count}` — how many of that field's options to ask for. Channel data, so the

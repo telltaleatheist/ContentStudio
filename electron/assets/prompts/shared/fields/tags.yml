@@ -54,6 +54,7 @@ instructions: |-
   - Include 1-2 common misspellings of the subject's name if applicable — misspelling coverage is the one tag use YouTube officially endorses
   - Prioritize specific multi-word phrases over single broad terms
   - Every tag names something the content actually covers: YouTube reads a tag the video never mentions as a spam signal.
+  - Every tag names the video's SUBJECT. The channel's own promotions — {promoted_items} — are ad reads inside the video, and the brand terms above are the only channel-side tags in the list.
   - THE WHOLE FIELD IS ONE STRING WITH A COMMA BETWEEN EVERY TAG. This is the shape, and the only shape it is read in:
     "subject full name,the specific claim,a common misspelling of the name,a long-tail search phrase,a channel brand term"
     A tag may contain spaces; two tags may not be separated by one. "subject full name the specific claim" is ONE tag, not two, and it is unusable.

@@ -1472,6 +1472,15 @@ export class AIManagerService {
   }
 
   /**
+   * The loaded channel's promoted_items list — the creator's own plugs, read here for the
+   * chapter pipeline's prompts (the field instructions get theirs through fieldSection's
+   * {promoted_items} slot). Empty when the channel declares none.
+   */
+  promotedItems(): string[] {
+    return (this.currentChannel?.promotedItems || []).map((t) => t.trim()).filter((t) => t.length > 0);
+  }
+
+  /**
    * Public entry to the post-processing every generated item gets, whichever path it came
    * from: the prompt set's channel tags, its description links, hashtag spacing.
    *

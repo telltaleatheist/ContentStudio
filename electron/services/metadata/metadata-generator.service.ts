@@ -1292,6 +1292,10 @@ export class MetadataGeneratorService {
       // channel in this app — one yml per channel — so the name the run already loaded is
       // the honest answer, and nothing new is plumbed in from elsewhere to produce it.
       channelName: params.promptSet,
+      // The channel's own plugs, for the prompts' {promoted_items} slot: plug stretches get
+      // bounded and labeled as plugs (code excludes them), passing mentions stay out of
+      // content labels and summaries.
+      promotedItems: aiManager.promotedItems(),
       cancelCallback: params.cancelCallback,
       abortSignal: params.cancelSignal,
       onProgress: reportProgress,

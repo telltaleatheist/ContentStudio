@@ -93,10 +93,14 @@ whole_transcript_chapters: |-
   Those counts include the opening chapter, which starts at the beginning of the video and needs no entry. Work through the transcript from the beginning to the end and report each chapter AFTER that first one, in the order they occur, and carry on to the end of the transcript so that the chapters cover the whole runtime.
 
   For each chapter, report:
-  - "label": a title for the chapter, 50 to 80 characters, in topic form: a bare noun phrase or a gerund phrase naming the specific people, claims and events in that stretch. These labels publish under the video as the creator's own chapter list, so each one titles the CONTENT itself, the way the creator would title a chapter of their own video. Labels in exactly the right form — these are from OTHER videos and show the form only; your labels name the people, claims and events THIS transcript contains:
-    - "Debunking the 'laws from chaos' claim and the miracle framing behind it"
+  - "label": a title for the chapter, 50 to 80 characters, in topic form: a bare noun phrase or a gerund phrase naming the specific people, claims and events in that stretch. These labels publish under the video as the creator's own chapter list, so each one titles the CONTENT itself, the way the creator would title a chapter of their own video — the subject of the label is the claim, the person or the event, never the person reacting to it. Labels in exactly the right form — these are from OTHER videos and show the form only; your labels name the people, claims and events THIS transcript contains:
+    - "Debunking an AI-generated 'universe from nothing' intelligent design pamphlet"
+    - "Flipping the burden of proof: demanding lab-made life like God claims"
+    - "Debunking the red blood cell and sickle cell 'coded design' argument"
+    - "The infinite regress question of what God depends on"
     - "The sit-in arrest story and the fight over private prison abolition"
-    - "The red blood cell design argument, answered with sickle cell anemia"
+
+  The creator advertises his own promotions inside videos — {promoted_items}. A stretch of the video that IS one of those promotions is its own chapter, labeled as the plug it is ("Patreon plug and a promotion of the book God's People") — report it like any other chapter, so it can be separated from the content afterwards. A promotion mentioned in passing inside a content chapter is an aside, and that chapter's label names the content around it.
   - "first_sentence": the FIRST sentence of that chapter, copied from the transcript above EXACTLY as it appears there, word for word, at least six words long. That is the sentence where the speaker turns toward the new subject, which is usually a beat EARLIER than the sentence that first explains it: if the speaker says "anyway, let's talk about the eggs" and explains three sentences later, the first sentence of the chapter is "anyway, let's talk about the eggs".
 
   Your copied sentence is what fixes the chapter's position in the video, so a sentence you reworded, tidied up or paraphrased points at the wrong moment.
@@ -144,7 +148,7 @@ summarize_chapter: |-
   For both fields:
   - Say what is there, plainly. Straight description, no colons, no part numbers.
   - Name the concrete subject matter of this stretch specifically enough that the answer could not be swapped with a chapter of any other video.
-  - A sponsor read, a Patreon plug, a channel promo or a sign-off simply says that is what it is.
+  - A sponsor read, a Patreon plug, a channel promo or a sign-off simply says that is what it is. The creator's own promotions — {promoted_items} — follow that rule: a stretch that IS one of them says so ("Patreon plug and a promotion of the book God's People"), and one mentioned in passing stays out of the title and the summary, which name the content around it.
   {entity_scaffold}
   Output exactly this shape and nothing else:
   {
@@ -209,7 +213,7 @@ summarize_chapter_tagged: |-
   For both fields:
   - Say what is there, plainly. Straight description, no colons, no part numbers.
   - Name the concrete subject matter of this stretch specifically enough that the answer could not be swapped with a chapter of any other video.
-  - A sponsor read, a Patreon plug, a channel promo or a sign-off simply says that is what it is.
+  - A sponsor read, a Patreon plug, a channel promo or a sign-off simply says that is what it is. The creator's own promotions — {promoted_items} — follow that rule: a stretch that IS one of them says so ("Patreon plug and a promotion of the book God's People"), and one mentioned in passing stays out of the title and the summary, which name the content around it.
   {entity_scaffold}
   Output exactly this shape and nothing else:
   {

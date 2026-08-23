@@ -50,3 +50,19 @@ description_links: |-
   Telltale Unfiltered: https://www.youtube.com/@telltaleunfiltered
   Pixel Dreams: https://www.youtube.com/@owenpixeldreams
   Twitch: https://owenmorgan.com/twitch
+
+# The creator's own promotions: things advertised INSIDE the videos that are not part of any
+# video's subject. Filled into the {promoted_items} slots in the description, titles and tags
+# instructions and into the chapter prompts, where the rules say what appears where: a stretch
+# of video that IS one of these is a plug chapter (labeled as such, and code excludes it from
+# the published list); none of them appears in a title, a description sentence, a tag, or a
+# content chapter's label. ADD FUTURE SPONSORSHIPS AND PROMOTIONS TO THIS LIST — the prompts
+# read it, so an entry here is all it takes.
+promoted_items:
+  - 'the book "God''s People: Christian Nationalism in the Third Reich"'
+  - 'the book "Understanding Jehovah''s Witnesses"'
+  - 'the Patreon (owenmorgan.com/patreon)'
+  - 'the merch shop (owenmorgan.com/shop)'
+  - 'the website firesidewatch.com'
+  - 'the Cult Archive'
+  - 'the creator''s other YouTube channels (Telltale, Fireside Chat, Unfiltered, Pixel Dreams) and Twitch'
