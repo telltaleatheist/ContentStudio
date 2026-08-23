@@ -94,19 +94,23 @@ const HEADLINE_32B_START_HINT =
   '`python AutoCutStudioApp/tools/headline32b-server/serve.py`';
 
 /**
- * The models the ALWAYS-ON chapter pipeline runs, which is deliberately not a routing
- * option any more.
+ * The model the ALWAYS-ON chapter pipeline runs, which is deliberately not a routing option
+ * any more.
  *
  * Chapters used to be a routed task with six options across three architectures. As of
- * 2026-08-22 there is one architecture — the embedding pipeline (chapter-embedding.service.ts,
- * CHAPTERING.md's second addendum) — and it is not a choice: every run that has a
+ * 2026-08-22 there is one — the whole-transcript call (chapter-whole-transcript.service.ts,
+ * CHAPTERING.md's reversal section) — and it is not a choice: every run that has a
  * timestamped transcript chapters it this way. A picker with one entry is not a picker, and
- * the two dead architectures it used to offer are deleted rather than left selectable.
+ * the dead architectures it used to offer are deleted rather than left selectable.
  *
- * The pair is still DECLARED here rather than hidden inside the pipeline, because the
- * routing modal reports whether they are installed before a run spends an hour finding out.
- * `embedding` missing does not stop a run — it costs it the lexical TF-IDF scorer, which the
- * run then declares in its warnings — and the modal says so up front so the user can decline.
+ * It is still DECLARED here rather than hidden inside the pipeline, because the routing modal
+ * reports whether it is installed before a run spends an hour finding out.
+ *
+ * ONE MODEL, where this used to name two. `nomic-embed-text` was the chapter pipeline's
+ * junction scorer and the chapter pipeline no longer scores junctions; it is still used, by
+ * key-phrase ranking, and it is declared where THAT reads it (KEY_PHRASE_EMBEDDING_MODEL
+ * below). Leaving it in a constant called CHAPTER_PIPELINE_MODELS would say a run's chapters
+ * depend on a model they cannot even reach.
  */
 /**
  * The model that extracts evidence from a transcript before anything else reads it.
@@ -126,11 +130,20 @@ const HEADLINE_32B_START_HINT =
 export const SUMMARIZATION_MODEL = 'ollama:qwen3.8:27b';
 
 export const CHAPTER_PIPELINE_MODELS = {
-  /** Places each boundary and names each chapter. */
+  /** Reads the whole transcript in one call, then writes each chapter's detail. */
   generation: 'qwen3.8:27b',
-  /** Scores every junction in ONE batched /api/embed call. */
-  embedding: 'nomic-embed-text',
 } as const;
+
+/**
+ * The embedding model key-phrase ranking uses (key-phrases.ts), declared for the same reason
+ * the chapter model is: the routing modal can say it is missing before a run finds out.
+ *
+ * Its absence is NOT a failure — the ranking falls to frequency and the run RECORDS that as a
+ * declared mode in its warnings — so the modal reports it as a quality notice rather than a
+ * blocker. It is also the one local model this app loads that does NOT count against the
+ * two-model budget: 274MB loads beside a generation model rather than instead of it.
+ */
+export const KEY_PHRASE_EMBEDDING_MODEL = 'nomic-embed-text';
 
 export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
   sonnet5: { kind: 'cloud', label: 'Claude Sonnet 5', model: 'claude:claude-sonnet-5' },
@@ -698,24 +711,28 @@ export interface MetadataRoutingHostView {
 }
 
 /**
- * The chapter pipeline, which is not a routed task any more and still has to be REPORTED.
+ * The two models nobody chooses, which still have to be REPORTED.
  *
- * Chapters run on every item with a timestamped transcript, on the two models named in
- * CHAPTER_PIPELINE_MODELS. Nobody chooses them, so there is no row to hang a "not
- * installed" warning off — but the warning is the part that was worth having: a stored
- * `cogito:14b` selection once cost a job its chapters an hour into the run, and the probe
- * exists so that is said BEFORE the run rather than after it.
+ * Chapters run on every item with a timestamped transcript, on CHAPTER_PIPELINE_MODELS.
+ * Key-phrase ranking runs on every item, on KEY_PHRASE_EMBEDDING_MODEL. Nobody picks either,
+ * so there is no row to hang a "not installed" warning off — but the warning is the part that
+ * was worth having: a stored `cogito:14b` selection once cost a job its chapters an hour into
+ * the run, and the probe exists so that is said BEFORE the run rather than after it.
  *
- * `embeddingInstalled` is separate from `generationInstalled` because the two failures are
- * not the same failure. Without the generation model there are no chapters at all; without
- * the embedding model the run continues on the weaker lexical scorer and declares it in its
- * warnings, which the user should get to decline in advance.
+ * The two are separate fields because they are not the same failure. Without the chapter
+ * model an item gets no chapters at all; without the embedding model the run continues with
+ * frequency-ranked key phrases and declares it in its warnings, which the user should get to
+ * decline in advance.
+ *
+ * `keyPhrase*` used to be `embedding*` on this same view, when the embedding model was the
+ * chapter pipeline's junction scorer. It is renamed rather than repurposed: reporting it
+ * under chapters would say a run's chapters depend on it, and since 2026-08-22 they do not.
  */
 export interface MetadataRoutingChaptersView {
   generationModel: string;
-  embeddingModel: string;
+  keyPhraseModel: string;
   generationAvailability: MetadataRoutingAvailability;
-  embeddingAvailability: MetadataRoutingAvailability;
+  keyPhraseAvailability: MetadataRoutingAvailability;
 }
 
 /**
@@ -811,9 +828,9 @@ export function buildRoutingView(stored: unknown, inventory: OllamaInventory): M
     })),
     chapters: {
       generationModel: CHAPTER_PIPELINE_MODELS.generation,
-      embeddingModel: CHAPTER_PIPELINE_MODELS.embedding,
+      keyPhraseModel: KEY_PHRASE_EMBEDDING_MODEL,
       generationAvailability: chapterModel(CHAPTER_PIPELINE_MODELS.generation),
-      embeddingAvailability: chapterModel(CHAPTER_PIPELINE_MODELS.embedding),
+      keyPhraseAvailability: chapterModel(KEY_PHRASE_EMBEDDING_MODEL),
     },
     localModels: {
       host: inventory.host,
