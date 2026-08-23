@@ -35,7 +35,7 @@ section: DESCRIPTION
 # transcript at all, and telling that call to read tags it was never shown would be a rule about
 # nothing. Appended by description-unit.ts, beneath the section it qualifies.
 tagged_addendum: |-
-  - The transcript this description is written from is tagged by speaker: HOST: lines are this channel talking, CLIP: lines are the footage being reacted to, UNSURE: lines run across a cut and belong to nobody. Attribution therefore comes from the tags rather than from context: where a sentence says who claimed, framed, argued or admitted something, it names the side the tag gives — the footage's claim is the footage's, the channel's verdict is the channel's — and the content of an UNSURE line is written about with no speaker attached to it.
+  - The transcript this description is written from is tagged by speaker: HOST: lines are this channel talking, CLIP: lines are the footage being reacted to, UNSURE: lines run across a cut and belong to nobody. Attribution comes from the tags rather than from context — a CLIP line's claim belongs to the footage and to whoever is named making it there, a HOST line's argument is the channel's own verdict, and an UNSURE line's content is written about with no speaker attached. The register rules above still govern every sentence: a HOST verdict is carried as the content it is — the claim collapses, the evidence undoes it, the policy turns out to be mainstream — with the claims, the evidence and the people named on the CLIP lines as the subjects of the sentences.
 
 # The body call's word range, per field variant, as DATA so the number in the prompt and the
 # number description-unit.ts warns against are one number. It measures the BODY only — the hook

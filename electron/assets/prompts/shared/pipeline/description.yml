@@ -98,7 +98,7 @@ speaker_tags_block: |-
   - CLIP: is footage he is playing and reacting to. Those words are somebody else's, and the claims in them belong to whoever is on screen.
   - UNSURE: is a line that runs across a cut and holds both voices, so the words on it belong to nobody.
 
-  Take every attribution you write from these tags. Where you name who said, framed, claimed or argued something, name the side the tag gives you: a claim on a CLIP line is the footage's, an argument on a HOST line is the channel's, and the subject matter of an UNSURE line is written about on its own without a speaker attached to it.
+  Take every attribution you write from these tags: a claim on a CLIP line belongs to the footage and to whoever is named making it there, an argument on a HOST line is the channel's own verdict, and the subject matter of an UNSURE line is written about on its own with no speaker attached. The register above still governs every sentence: a HOST verdict is carried as the content it is — the claim collapses, the evidence undoes it, the policy turns out to be mainstream — with the claims, the evidence and the people named on the CLIP lines as the subjects doing the doing.
 
 # The channel, as the channel's own data says it — its name and the focus paragraph that is the
 # {channel_focus} slot everywhere else in the tree. It replaces the stored slug, which named the
