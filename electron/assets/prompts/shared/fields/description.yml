@@ -1,15 +1,37 @@
 # The DESCRIPTION section.
 #
-# WHO ACTUALLY READS THIS, because it is not what it looks like. On the routed path the
-# description is DescriptionUnit's two schema-constrained calls, whose prompts live in
-# prompts/shared/pipeline/description.yml — this section is stripped out of every group's
-# instructions there (metadata-tasks.ts owns the field in code). What this section is FOR:
+# WHO READS THIS. Everything that writes a description, which since 2026-08-22 includes the
+# routed path again:
 #
-#   - declaring that the channel publishes a description at all (the `fields` list in
-#     prompts/channels/*.yml), and
-#   - the COMPILATION call, which is the one surviving whole-metadata request and does read
-#     these rules in full.
+#   - DescriptionUnit's two schema-constrained calls (prompts/shared/pipeline/description.yml)
+#     take this block whole, as their `{rules}`. The hook call writes sentence 1 of paragraph 1
+#     and the body call writes the rest, and each says so; the rules below are what both are
+#     bound by. They used to be withheld from those calls on the argument that they
+#     over-specify a small model, and the one production run that happened under that
+#     arrangement wrote a 324-word synopsis of the narrator with no second paragraph and no CTA
+#     — on a prompt that reaches Sonnet and Opus unchanged. The note in the pipeline file
+#     records the measurement.
+#   - the COMPILATION call, which is the one surviving whole-metadata request and has always
+#     read these rules in full.
+#
+# It also declares that the channel publishes a description at all (the `fields` list in
+# prompts/channels/*.yml).
 section: DESCRIPTION
+
+# The body call's word range, per field variant, as DATA so the number in the prompt and the
+# number description-unit.ts warns against are one number. It measures the BODY only — the hook
+# is a separate call under its own character cap — and a body outside it is a declared warning
+# on a paragraph that still publishes, never a truncation.
+#
+# Per variant because the variants are different documents: a YouTube description is two
+# paragraphs, a Spreaker episode note is 150-250 words by its own rule below, and a Shorts
+# description is two or three sentences nobody reads. One shared number would have made the
+# warning wrong on two channels out of three.
+#
+# The YouTube floor is 130 rather than the spec's 150 because the body is now the description
+# MINUS its opening line: the hook is its own call under its own cap, and the descriptions this
+# channel shipped through 2026-08-16 ran 165-230 words of prose after that first sentence.
+body_words: [130, 300]
 
 instructions: |-
   ## DESCRIPTION
@@ -22,7 +44,7 @@ instructions: |-
   - TRANSCRIPT/SUMMARY inputs: reference the single most damaging or absurd specific claim from the input in sentence 1
   - SHORT DESCRIPTION inputs: frame the topic and subject factually
   - Voice: confident, direct, slightly pissed. Banned phrases: "I'm still shaking," "what happened next," "you won't believe," "worse than we all feared," "everything changed," "broke the internet," "let that sink in," "I need to talk about this," "and honestly," "here's the thing," "buckle up"
-  - Register: write about the topics and the named people directly, as the subject of your sentences. Topic and noun-phrase form, built around the real names the input gives you — "Discussion of mainstream alien belief, Roswell, and the UAP disclosure order"; "Gene Bailey's use of Jabez, D.L. Moody, and Isaiah to justify Christian political takeover"; "Debunking Gene Bailey's misreading of Luke 19:13 and his call to occupy territory". Who is talking changes shot to shot — sometimes it is this channel, sometimes it is the footage being reacted to — and the viewer can see who is on screen, so the writing is about what is being said and who it is about.
+  - Register: write about the claims, the events and the arguments themselves, built around the real names the input gives you — "Gene Bailey's chapter on Ziklag tells Christians to weaponize their wounds"; "Iowa spent three years blocking the Satanic Temple's holiday display". These are full sentences with finite verbs, not catalogue entries: the names go in as possessives or objects, and the thing doing something is always something the viewer can see. Who is talking changes shot to shot — sometimes it is this channel, sometimes it is the footage being reacted to — so the speaker, the host, the episode and this video are never the thing doing it.
 
 self_check: []
 
@@ -38,6 +60,7 @@ overrides:
       - Keep it factual and keyword-rich; the clickbait-filler list applies here too
       - Voice doesn't matter here — this is metadata for machines, not humans
     self_check: []
+    body_words: [25, 60]
 
   spreaker:
     instructions: |-
@@ -52,5 +75,6 @@ overrides:
       - TRANSCRIPT/SUMMARY inputs: reference the single most damaging or absurd specific claim from the input in the first 120 characters
       - SHORT DESCRIPTION inputs: frame the topic and subject factually
       - Voice: confident, direct, authoritative. Banned phrases: "I'm still shaking," "what happened next," "you won't believe," "worse than we all feared," "everything changed," "let that sink in," "I need to talk about this," "and honestly," "here's the thing," "buckle up"
-      - Register: write about the topics and the named people directly, as the subject of your sentences. Topic and noun-phrase form, built around the real names the input gives you — "Discussion of mainstream alien belief, Roswell, and the UAP disclosure order"; "Gene Bailey's use of Jabez, D.L. Moody, and Isaiah to justify Christian political takeover".
+      - Register: write about the claims, the events and the arguments themselves, built around the real names the input gives you — "Gene Bailey's chapter on Ziklag tells Christians to weaponize their wounds"; "Iowa spent three years blocking the Satanic Temple's holiday display". These are full sentences with finite verbs, not catalogue entries: the names go in as possessives or objects, and the thing doing something is always something the viewer can see.
     self_check: []
+    body_words: [150, 250]
