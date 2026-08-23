@@ -10,6 +10,16 @@ export interface InputItem {
   promptSet: string; // ID of the prompt set to use (e.g., "sample-youtube")
   notes?: string; // Optional notes/instructions for the AI (e.g., "focus on tax fraud")
   splitEpisode?: boolean; // For transcript imports: mark for split-into-segments before generating
+  /**
+   * For video items: run this input from the transcript a previous run saved, instead of
+   * transcribing it again.
+   *
+   * Default false, and only ever offered for a video the store already holds a matching
+   * record for — the checkbox does not exist otherwise. Set on the item (not in a
+   * component signal) so it is captured into the queued job with the rest of the item and
+   * survives the sessionStorage round-trip, exactly like `transcriptChoice`.
+   */
+  useSavedTranscript?: boolean;
   textContent?: string; // For text-subject items: the actual text content
   /**
    * The operator's Phase-2 decision: which editor story transcript this video came from,

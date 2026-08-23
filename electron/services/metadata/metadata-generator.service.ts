@@ -11,7 +11,8 @@ import { Chapter } from './chapter-generator.service';
 import { ChapterPipelineResult, MIN_CHAPTERS } from './chapter-transcript';
 import { WholeTranscriptChapterService } from './chapter-whole-transcript.service';
 import { OutputHandlerService } from './output-handler.service';
-import { ContentDeclaration, ContentOrigin, ItemProvenance, ItemSource, sourceKeyOf } from './item-identity';
+import { ContentDeclaration, ContentOrigin, ItemProvenance, ItemSource, SavedTranscriptReuse, sourceKeyOf } from './item-identity';
+import { resolveOutputDirectory } from './saved-transcript.service';
 import {
   MetadataTaskRun,
   buildTaskPromptsForDisplay,
@@ -110,6 +111,15 @@ export interface GenerationParams {
    * the SAME chapters rather than re-deriving a possibly different set.
    */
   preComputedChapters?: { [sourceLabel: string]: ChapterPipelineResult };
+  /**
+   * The inputs that run from their SAVED Whisper transcript instead of being transcribed
+   * again, keyed by absolute path and only ever `true` (saved-transcript.service.ts).
+   *
+   * CONSUMED BY THE INPUT STAGE, like `inputTranscripts`: the input handler reads the
+   * record, or fails that item naming the file. An absent key is the default — transcribe
+   * it — and there is no third state, because reuse is something the operator ticks.
+   */
+  useSavedTranscripts?: { [key: string]: boolean };
   inputNotes?: { [key: string]: string };
   preTranscribedContent?: ContentItem[]; // Pre-transcribed content from pipeline (skips transcription phase)
   inputWarnings?: string[]; // Input-stage failures from the pipeline (surfaced in result.warnings)
@@ -200,8 +210,12 @@ export class MetadataGeneratorService {
       const whisperService = new WhisperService();
       log.info('[MetadataGenerator] WhisperService created successfully');
 
-      // Pass progress callback to inputHandler so it can send 'preparing' events
-      const inputHandler = new InputHandlerService(whisperService, params.progressCallback);
+      // Resolved once, up here, because two things need the SAME directory: the saved
+      // transcripts the input stage reads and writes, and the job report written further
+      // down. `outputPath` below is this value.
+      const runOutputDir = resolveOutputDirectory(params.outputPath);
+      // Progress callback passed through so the handler can send 'preparing' events.
+      const inputHandler = new InputHandlerService(whisperService, runOutputDir, params.progressCallback);
 
       // Initialize AI Manager
       const aiConfig: AIConfig = {
@@ -285,8 +299,11 @@ export class MetadataGeneratorService {
         log.info(`[MetadataGenerator] Using ${contentItems.length} pre-transcribed content items`);
       } else {
         const customNotesMap = new Map(Object.entries(params.inputNotes || {}));
+        const useSavedTranscriptMap = new Map(
+          Object.entries(params.useSavedTranscripts || {}).filter(([, flag]) => flag === true));
         log.info('[MetadataGenerator] Processing inputs...');
-        contentItems = await inputHandler.processMultipleInputs(normalizedInputs, customNotesMap, inputFailures);
+        contentItems = await inputHandler.processMultipleInputs(
+          normalizedInputs, customNotesMap, inputFailures, undefined, useSavedTranscriptMap);
       }
 
       this.throwIfCancelled(params, 'after input processing');
@@ -311,7 +328,7 @@ export class MetadataGeneratorService {
       });
 
       // Initialize job and output handler
-      const outputPath = params.outputPath || this.getDefaultOutputPath();
+      const outputPath = runOutputDir;
       // Shared per output directory: the handler's write queue only orders calls that go
       // through the same instance, and a reports-page delete now arrives on that queue too.
       outputHandler = OutputHandlerService.forOutputDir(outputPath);
@@ -1291,11 +1308,27 @@ export class MetadataGeneratorService {
     };
   }
 
+  /**
+   * The saved records an item's inputs were read from, or undefined when every one of
+   * them was transcribed on this run.
+   *
+   * Undefined rather than an empty array on the ordinary path: the field's absence is
+   * what says "Whisper ran", and an empty array in every report would be noise that a
+   * reader has to learn to ignore.
+   */
+  private static savedTranscriptsOf(items: ContentItem[]): SavedTranscriptReuse[] | undefined {
+    const reused = items
+      .map((item) => item.savedTranscript)
+      .filter((reuse): reuse is SavedTranscriptReuse => !!reuse);
+    return reused.length > 0 ? reused : undefined;
+  }
+
   private static itemProvenanceOf(item: ContentItem): ItemProvenance {
     const source = item.contentSource;
     const declared = this.declarationOf(item);
     return {
       content_fields: this.contentTextOf(item).origin,
+      saved_transcripts: this.savedTranscriptsOf([item]),
       content_declaration: declared.declaration,
       content_declaration_reason: declared.reason,
       // Structurally constant. See ItemProvenance.timed_fields.
@@ -1352,6 +1385,10 @@ export class MetadataGeneratorService {
 
     return {
       content_fields: linked.length > 0 ? 'editor-story-transcript' : 'final-export-whisper',
+      // One record per input that reused one. A compilation cannot answer this with a
+      // single ref any more than it can answer `transcript_ref` with one, and an omitted
+      // answer would read as "all N were transcribed on this run".
+      saved_transcripts: this.savedTranscriptsOf(items),
       content_declaration: declaration,
       content_declaration_reason: declaration === 'linked' && kinds.size === 1 ? null : reason,
       timed_fields: 'final-export-whisper',
@@ -1409,13 +1446,5 @@ export class MetadataGeneratorService {
 
     const firstName = this.getCleanTitle(items[0]);
     return `${firstName} + ${items.length - 1} more`;
-  }
-
-  /**
-   * Get default output path
-   */
-  private static getDefaultOutputPath(): string {
-    const os = require('os');
-    return path.join(os.homedir(), 'Documents', 'ContentStudio Output');
   }
 }

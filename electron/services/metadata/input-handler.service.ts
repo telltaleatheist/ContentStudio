@@ -16,6 +16,8 @@ import {
 import { resolveRef, probeDrift, isTranscriptRefLink } from './editor-transcript-link';
 import type { FinalOnlyDeclaration, TranscriptLink } from './editor-transcript-link';
 import type { TranscriptRef } from '../publish/publish-types';
+import type { SavedTranscriptReuse } from './item-identity';
+import { loadSavedTranscript, saveTranscript } from './saved-transcript.service';
 
 /**
  * The SECOND transcript of a video input: the editor story the operator linked it to.
@@ -35,6 +37,23 @@ export interface ContentSource {
   driftSec: number;
   /** The same drift as a percentage of the story's duration. Negative = final is shorter. */
   driftPct: number;
+}
+
+/**
+ * The segments for one video input, in the one shape the rest of the pipeline sees —
+ * however this run came by them.
+ *
+ * There are two ways: Whisper ran, or the operator ticked "Use saved transcript" and a
+ * stored record was read (saved-transcript.service.ts). They meet HERE, at the top of
+ * `processVideo`, and every line after that point is shared. That is deliberate: a reused
+ * transcript built by its own construction path would be a second definition of what a
+ * video item is, and the two would drift apart the first time either was touched.
+ */
+interface VideoTranscript {
+  segments: SRTSegment[];
+  durationSec: number | null;
+  /** Set only when a saved record was reused; absent means Whisper ran on this run. */
+  reuse?: SavedTranscriptReuse;
 }
 
 export interface ContentItem {
@@ -90,6 +109,15 @@ export interface ContentItem {
    * same measurement of the same file.
    */
   finalDurationSec?: number | null;
+  /**
+   * The saved Whisper record this item's transcript was read from, when the operator
+   * chose reuse instead of transcribing.
+   *
+   * Absent means Whisper ran on this run — so a report can say which of the two happened
+   * rather than describe every item as a fresh transcription. Carried on the item because
+   * the generator, not the input stage, is what writes provenance.
+   */
+  savedTranscript?: SavedTranscriptReuse;
 }
 
 export class InputDetector {
@@ -224,12 +252,31 @@ export class InputDetector {
 
 export class InputHandlerService {
   private whisperService: WhisperService;
+  /**
+   * The run's output directory — where `.contentstudio/transcripts/` lives.
+   *
+   * REQUIRED, and second in the list so it cannot be forgotten behind an optional
+   * callback. Every video this handler transcribes writes its segments there, so a
+   * handler that did not know the directory would be a handler whose transcriptions are
+   * silently unrepeatable. Callers resolve it exactly as the generator resolves the
+   * report directory (`resolveOutputDirectory`), so the checkbox in the UI and the
+   * pipeline are always talking about the same store.
+   */
+  private outputDir: string;
   private progressCallback?: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => void;
   public currentFilename: string = '';
   public currentItemIndex: number = -1;
 
-  constructor(whisperService: WhisperService, progressCallback?: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => void) {
+  constructor(
+    whisperService: WhisperService,
+    outputDir: string,
+    progressCallback?: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => void
+  ) {
+    if (typeof outputDir !== 'string' || !outputDir.trim()) {
+      throw new Error('InputHandlerService requires the run output directory (saved transcripts live under it)');
+    }
     this.whisperService = whisperService;
+    this.outputDir = outputDir;
     this.progressCallback = progressCallback;
   }
 
@@ -240,7 +287,8 @@ export class InputHandlerService {
     input: string,
     customNotes?: string,
     itemIndex?: number,
-    link?: TranscriptLink
+    link?: TranscriptLink,
+    useSavedTranscript?: boolean
   ): Promise<ContentItem> {
     console.log(`[InputHandler] Processing input: ${input}`);
 
@@ -257,7 +305,7 @@ export class InputHandlerService {
     if (inputType === 'subject') {
       return this.processSubject(input, customNotes);
     } else if (inputType === 'video') {
-      return await this.processVideo(input, customNotes, itemIndex, link);
+      return await this.processVideo(input, customNotes, itemIndex, link, useSavedTranscript);
     } else if (inputType === 'transcript_file') {
       return this.processTranscriptFile(input, customNotes);
     } else if (inputType === 'directory') {
@@ -295,7 +343,8 @@ export class InputHandlerService {
     videoPath: string,
     customNotes?: string,
     itemIndex?: number,
-    link?: TranscriptLink
+    link?: TranscriptLink,
+    useSavedTranscript?: boolean
   ): Promise<ContentItem> {
     // Split the one wire value into the two things the item records: the ref that gets
     // honored, and — when there is none — the declaration that says why not. An absent
@@ -306,10 +355,61 @@ export class InputHandlerService {
       link && !isTranscriptRefLink(link) ? link : undefined;
     log.info(`[InputHandler] Processing video: ${videoPath}`);
 
-    // Whisper the FINAL EXPORT, exactly as before — on both branches, unconditionally.
-    // A link changes where content FIELDS get their words; it never changes what the
-    // timeline is measured from, because chapters have to land on the published video.
-    let result: { jobId: string; segments: SRTSegment[]; durationSec: number | null };
+    // THE ONLY BRANCH. The operator either asked for the saved transcript or he did not,
+    // and past this line nothing knows which — the item is built once, from `transcript`,
+    // so a reused transcript cannot generate a differently-shaped item than a fresh one.
+    const transcript: VideoTranscript = useSavedTranscript
+      ? this.reuseSavedTranscript(videoPath, itemIndex)
+      : await this.transcribeAndSave(videoPath, itemIndex);
+
+    // Convert segments to text
+    const transcriptText = transcript.segments.map(seg => seg.text).join(' ');
+
+    let content = transcriptText;
+
+    // Add custom notes if provided
+    if (customNotes && customNotes.trim()) {
+      content += `\n\nAdditional context:\n${customNotes.trim()}`;
+    }
+
+    // A declared link is HONORED here or the item fails; there is no third outcome. Out
+    // here rather than inside either branch above, so a link that cannot be honored is
+    // never reported as a transcription failure — the words arrived; this is a different
+    // fault, and it reads the same whichever way they arrived.
+    const contentSource = transcriptRef
+      ? await this.resolveContentSource(videoPath, transcriptRef, customNotes)
+      : undefined;
+
+    return {
+      content,
+      contentType: 'video',
+      source: videoPath,
+      processingNotes: customNotes?.trim(),
+      srtSegments: transcript.segments,
+      // The declaration, carried onto the item so the generator can record what was
+      // asked for as well as what was done.
+      transcriptRef,
+      finalOnly,
+      finalDurationSec: transcript.durationSec,
+      contentSource,
+      savedTranscript: transcript.reuse,
+    };
+  }
+
+  /**
+   * Whisper the FINAL EXPORT — on both link branches, unconditionally. A link changes
+   * where content FIELDS get their words; it never changes what the timeline is measured
+   * from, because chapters have to land on the published video.
+   *
+   * The result is then SAVED, every time, so the next run over this file can be offered
+   * it. The save is part of transcribing, not a nicety on the end of it: a run that
+   * transcribed an hour of video and could not record the fact would leave the operator
+   * with a checkbox that never appears and nothing to explain why, so it fails here
+   * instead — outside the catch below, so a store that cannot be written is not reported
+   * as a transcription that failed.
+   */
+  private async transcribeAndSave(videoPath: string, itemIndex?: number): Promise<VideoTranscript> {
+    let result: { jobId: string; segments: SRTSegment[]; durationSec: number | null; model: string };
     try {
       // Send 'preparing' event before transcription starts. The item index is
       // threaded in per-call (not read from a shared instance field) so concurrent
@@ -338,37 +438,58 @@ export class InputHandlerService {
       throw new Error(`Failed to transcribe video: ${errorMessage}`);
     }
 
-    // OUTSIDE the catch above, so a link that cannot be honored is not reported as a
-    // transcription failure. Transcription succeeded; this is a different fault.
+    saveTranscript({
+      outputDir: this.outputDir,
+      videoPath,
+      segments: result.segments,
+      durationSec: result.durationSec,
+      // The model the run actually used, returned by the transcription rather than
+      // re-read from the setting: the setting can have moved on by now, and the record
+      // has to name the model these words came out of.
+      whisperModel: result.model,
+    });
 
-    // Convert segments to text
-    const transcript = result.segments.map(seg => seg.text).join(' ');
+    return { segments: result.segments, durationSec: result.durationSec };
+  }
 
-    let content = transcript;
+  /**
+   * Read the saved record instead of running Whisper, because the operator ticked the box.
+   *
+   * There is no recovery path in here and there must not be one. A record that is missing,
+   * unreadable or no longer a record OF this video throws (see loadSavedTranscript), and
+   * the caller turns that into a per-item failure naming the file. Quietly re-transcribing
+   * would spend the hour the operator explicitly declined AND hide the more serious case:
+   * that the video on disk is not the video that was transcribed.
+   *
+   * `durationSec` comes from the record rather than a fresh ffprobe. It is the length of
+   * the file these segments were taken from, and the stamp check has just established that
+   * the file has not changed since — so a second probe could only agree, at the cost of
+   * another read of a large file on a network volume.
+   */
+  private reuseSavedTranscript(videoPath: string, itemIndex?: number): VideoTranscript {
+    const filename = path.basename(videoPath);
+    const index = itemIndex !== undefined && itemIndex >= 0 ? itemIndex : undefined;
 
-    // Add custom notes if provided
-    if (customNotes && customNotes.trim()) {
-      content += `\n\nAdditional context:\n${customNotes.trim()}`;
+    if (this.progressCallback) {
+      this.progressCallback('preparing', `Reading saved transcript for ${filename}`, 0, filename, index);
     }
 
-    // A declared link is HONORED here or the item fails; there is no third outcome.
-    const contentSource = transcriptRef
-      ? await this.resolveContentSource(videoPath, transcriptRef, customNotes)
-      : undefined;
+    const { record, reuse } = loadSavedTranscript(this.outputDir, videoPath);
 
-    return {
-      content,
-      contentType: 'video',
-      source: videoPath,
-      processingNotes: customNotes?.trim(),
-      srtSegments: result.segments,
-      // The declaration, carried onto the item so the generator can record what was
-      // asked for as well as what was done.
-      transcriptRef,
-      finalOnly,
-      finalDurationSec: result.durationSec,
-      contentSource,
-    };
+    log.info(
+      `[InputHandler] Reused the saved transcript for ${filename}: ${record.segments.length} ` +
+      `segments, transcribed ${record.saved_at} by Whisper ${record.whisper_model}`
+    );
+
+    // The queue row moves to 'transcribed' the same way a real transcription moves it —
+    // through a 100% 'transcription' event. Without it the row would sit at "transcribing"
+    // for the whole AI phase, because nothing else ever tells it the words arrived.
+    if (this.progressCallback) {
+      this.progressCallback(
+        'transcription', `Reused saved transcript for ${filename}`, 100, filename, index);
+    }
+
+    return { segments: record.segments, durationSec: record.duration_sec, reuse };
   }
 
   /**
@@ -560,7 +681,8 @@ export class InputHandlerService {
     inputs: string[],
     customNotesMap?: Map<string, string>,
     failures?: string[],
-    transcriptLinkMap?: Map<string, TranscriptLink>
+    transcriptLinkMap?: Map<string, TranscriptLink>,
+    useSavedTranscriptMap?: Map<string, boolean>
   ): Promise<ContentItem[]> {
     console.log(`[InputHandler] Processing ${inputs.length} inputs (max 5 concurrent transcriptions)`);
 
@@ -584,7 +706,10 @@ export class InputHandlerService {
           // with its reason attached, which is not the same as no entry at all (never
           // offered a link). Collapsing them would erase the declaration.
           const link = transcriptLinkMap?.get(input);
-          return await this.processInput(input, customNotes, index, link);
+          // Absent means "transcribe it", which is the default and the only default. The
+          // map only ever carries the videos whose box the operator ticked.
+          const useSaved = useSavedTranscriptMap?.get(input) === true;
+          return await this.processInput(input, customNotes, index, link, useSaved);
         }
       } catch (error) {
         console.error(`[InputHandler] Failed to process input ${input}:`, error);

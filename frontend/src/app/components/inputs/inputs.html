@@ -194,6 +194,25 @@
                   </button>
                 }
 
+                <!--
+                  Use saved transcript (videos this app has already transcribed).
+                  Rendered only when the store holds a record whose video stamps still
+                  match the file on disk, so ticking it can never mean "transcribe it
+                  after all": unticked transcribes and replaces the record, ticked reuses
+                  it, and a record that has gone missing by run time fails the item.
+                -->
+                @if (canUseSavedTranscript(item)) {
+                  <mat-checkbox
+                    class="saved-transcript-toggle"
+                    color="primary"
+                    [checked]="!!item.useSavedTranscript"
+                    (change)="toggleUseSavedTranscript(item, $event.checked)"
+                    [matTooltip]="savedTranscriptTooltip(item)"
+                    matTooltipShowDelay="350">
+                    Saved transcript
+                  </mat-checkbox>
+                }
+
                 <!-- Remove Button -->
                 <button mat-icon-button (click)="removeInput(i)" matTooltip="Remove" class="remove-btn">
                   <mat-icon>close</mat-icon>

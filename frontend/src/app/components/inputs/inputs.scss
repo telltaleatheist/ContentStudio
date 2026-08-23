@@ -511,6 +511,14 @@
 
         .split-btn { flex-shrink: 0; }
 
+        // "Saved transcript" sits in the same run of per-item controls, so it keeps their
+        // sizing and does not wrap on its own.
+        .saved-transcript-toggle {
+          flex-shrink: 0;
+          white-space: nowrap;
+          font-size: 0.85rem;
+        }
+
         .drag-handle {
           cursor: grab;
           color: var(--text-muted);
