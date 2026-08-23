@@ -149,6 +149,16 @@ export interface SavedTranscriptReuse {
   whisper_model: string;
   /** Absolute path of the record that was read, so the operator can go and look at it. */
   record_path: string;
+  /**
+   * The voice enrollment the reused record's captions were tagged against, or null if that
+   * record was written by an untagged run.
+   *
+   * It rides here because the tags ride with the segments: a transcript saved before speaker
+   * tagging existed, or saved by a run with no enrollment, reuses perfectly well and produces
+   * UNTAGGED metadata — and a reader comparing two runs of the same video needs to be able to
+   * see that the difference was the transcript, not the prompts.
+   */
+  speaker_enrollment: string | null;
 }
 
 export type ContentDeclaration =

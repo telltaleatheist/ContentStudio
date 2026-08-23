@@ -97,6 +97,17 @@ function getWhisperBinaryName(): string {
 }
 
 /**
+ * The speaker-embedding graph, by name.
+ *
+ * NeMo TitaNet-small, from the sherpa-onnx speaker-recognition release. It is the model
+ * speaker tagging is calibrated against — see the model comparison in
+ * services/metadata/speaker-embedding.ts, which measured three alternatives that do not
+ * separate this material at all. The filename is here rather than in the tagger because it is
+ * the same kind of fact as `ggml-<model>.bin`: what the installer put on disk.
+ */
+const SPEAKER_MODEL_FILE = 'nemo_en_titanet_small.onnx';
+
+/**
  * Runtime paths configuration
  */
 export interface RuntimePaths {
@@ -104,6 +115,14 @@ export interface RuntimePaths {
   ffprobe: string;
   whisper: string;
   whisperModelsDir: string;
+  /**
+   * The speaker-embedding ONNX file, resolved whether or not it is installed.
+   *
+   * A PATH, not a promise that the file is there — the same contract `whisperModelsDir` has.
+   * Speaker tagging is optional, so its consumer checks existence and says what to install;
+   * nothing at startup fails over a model an operator may never turn on.
+   */
+  speakerModel: string;
 }
 
 let selectedWhisperModel = 'small';
@@ -157,11 +176,17 @@ export function getRuntimePaths(): RuntimePaths {
   const installedModel = isPackaged()
     ? (resolveEntry(`whisper-${selectedWhisperModel}`) || expectedEntry(`whisper-${selectedWhisperModel}`))
     : null;
+  // Same two-arm resolution as the Whisper model, deliberately: installed component when
+  // packaged, utilities/models in development.
+  const installedSpeakerModel = isPackaged()
+    ? (resolveEntry('speaker-embedding') || expectedEntry('speaker-embedding'))
+    : null;
   return {
     ffmpeg: ffmpegPath,
     ffprobe: ffprobePath,
     whisper: whisperPath,
     whisperModelsDir: installedModel ? path.dirname(installedModel) : path.join(resourcesPath, 'utilities', 'models'),
+    speakerModel: installedSpeakerModel || path.join(resourcesPath, 'utilities', 'models', SPEAKER_MODEL_FILE),
   };
 }
 

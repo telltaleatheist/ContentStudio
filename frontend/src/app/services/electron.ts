@@ -461,6 +461,7 @@ declare global {
 
       // File operations
       selectFiles: () => Promise<{ success: boolean; files: string[] }>;
+      selectEnrollmentAudio: () => Promise<{ success: boolean; file: string | null }>;
       selectDirectory: () => Promise<{ success: boolean; directory: string | null }>;
       selectOutputDirectory: () => Promise<{ success: boolean; directory: string | null }>;
       isDirectory: (filePath: string) => Promise<boolean>;
@@ -893,6 +894,11 @@ export class ElectronService {
   async selectOutputDirectory(): Promise<{ success: boolean; directory: string | null }> {
     if (!this.ipcRenderer) return { success: false, directory: null };
     return await this.ipcRenderer.selectOutputDirectory();
+  }
+
+  async selectEnrollmentAudio(): Promise<{ success: boolean; file: string | null }> {
+    if (!this.ipcRenderer) return { success: false, file: null };
+    return await this.ipcRenderer.selectEnrollmentAudio();
   }
 
   async isDirectory(filePath: string): Promise<boolean> {

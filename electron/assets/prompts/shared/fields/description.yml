@@ -18,33 +18,53 @@
 # prompts/channels/*.yml).
 section: DESCRIPTION
 
+# The register bullet at the end of `instructions` below has always said the true thing about a
+# reaction channel — "Who is talking changes shot to shot — sometimes it is this channel,
+# sometimes it is the footage being reacted to" — and until 2026-08-23 that was all it could say,
+# because nothing told the model WHICH. Its answer was to make the speaker never the subject of a
+# sentence, which dodges the problem rather than solving it: a description that names nobody
+# cannot misattribute, and also cannot say who was right.
+#
+# Speaker tagging measures it. Where the transcript is tagged, this addendum is appended to the
+# rules both description calls read, and it lifts the dodge for the one thing the tags settle:
+# the description may now say who said something, because the transcript says. Untagged, it is
+# not appended and the bullet stands alone exactly as before.
+#
+# It is a SEPARATE KEY rather than a line inside `instructions` for the reason every conditional
+# in this tree is: `instructions` is also read whole by the compilation call, which has no
+# transcript at all, and telling that call to read tags it was never shown would be a rule about
+# nothing. Appended by description-unit.ts, beneath the section it qualifies.
+tagged_addendum: |-
+  - The transcript this description is written from is tagged by speaker: HOST: lines are this channel talking, CLIP: lines are the footage being reacted to, UNSURE: lines run across a cut and belong to nobody. Attribution comes from the tags rather than from context — a CLIP line's claim belongs to the footage and to whoever is named making it there, a HOST line's argument is the channel's own verdict, and an UNSURE line's content is written about with no speaker attached. The register rules above still govern every sentence: a HOST verdict is carried as the content it is — the claim collapses, the evidence undoes it, the policy turns out to be mainstream — with the claims, the evidence and the people named on the CLIP lines as the subjects of the sentences.
+
 # The body call's word range, per field variant, as DATA so the number in the prompt and the
 # number description-unit.ts warns against are one number. It measures the BODY only — the hook
 # is a separate call under its own character cap — and a body outside it is a declared warning
 # on a paragraph that still publishes, never a truncation.
 #
-# Per variant because the variants are different documents: a YouTube description is two
-# paragraphs, a Spreaker episode note is 150-250 words by its own rule below, and a Shorts
-# description is two or three sentences nobody reads. One shared number would have made the
-# warning wrong on two channels out of three.
+# Per variant because the variants are different documents: a YouTube description is ONE
+# paragraph (operator-directed 2026-08-23 — the second below-the-fold paragraph is gone; the
+# chapter list code appends is what sits under the prose), a Spreaker episode note is 150-250
+# words by its own rule below, and a Shorts description is two or three sentences nobody reads.
+# One shared number would have made the warning wrong on two channels out of three.
 #
-# The YouTube floor is 130 rather than the spec's 150 because the body is now the description
-# MINUS its opening line: the hook is its own call under its own cap, and the descriptions this
-# channel shipped through 2026-08-16 ran 165-230 words of prose after that first sentence.
-body_words: [130, 300]
+# The range measures the BODY, which is the description MINUS its opening line: the hook is its
+# own call under its own cap, and one paragraph of 3-5 further sentences runs 60 to 200 words.
+body_words: [60, 200]
 
 instructions: |-
   ## DESCRIPTION
 
-  - Two paragraphs separated by one blank line
-  - Paragraph 1 (3-5 sentences): Sentence 1 must work standalone as a search snippet — primary search phrase within the first 60 characters, and the full hook inside the first 157 characters (everything before "Show more"). No line breaks inside the paragraph. Write it like the opening line of a news segment, not a diary entry.
-  - Sentences 2-3: What specifically you're debunking, fact-checking, or exposing. Weave in 1-2 secondary keywords naturally.
+  - ONE paragraph, 4-6 sentences, no line breaks inside it. The chapter list is appended below it by code, so the paragraph is the whole prose description.
+  - Sentence 1 must work standalone as a search snippet — primary search phrase within the first 60 characters, and the full hook inside the first 157 characters (everything before "Show more"). Write it like the opening line of a news segment, not a diary entry.
+  - Middle sentences: The specific claims being debunked, fact-checked, or exposed, with the real names and 2-3 secondary keywords woven in naturally. Keep it genuine; keyword-stuffed text is dead weight and gets ignored.
   - Final sentence: Channel positioning or soft CTA.
-  - Paragraph 2 (2-3 sentences): Below-the-fold search context — secondary keywords, related search terms, names and topics woven into readable sentences. Keep it genuine; keyword-stuffed walls of text are dead weight and get ignored.
+  - A complete description in exactly the right shape — it is from ANOTHER video and shows the form only; every name in yours comes from the input: "A Black community just showed America exactly how to deal with Nazi threats — by exercising their Second Amendment rights and standing united. After fascists showed up to terrorize residents the day before, the community organized an armed defense that sent a clear message: hate won't be tolerated here. Fascists thrive on fear and easy targets, but they scatter like roaches when faced with organized resistance — this community didn't wait for permission or rely on institutions that have historically failed them. This is what real patriotism looks like." 
   - TRANSCRIPT/SUMMARY inputs: reference the single most damaging or absurd specific claim from the input in sentence 1
   - SHORT DESCRIPTION inputs: frame the topic and subject factually
   - Voice: confident, direct, slightly pissed. Banned phrases: "I'm still shaking," "what happened next," "you won't believe," "worse than we all feared," "everything changed," "broke the internet," "let that sink in," "I need to talk about this," "and honestly," "here's the thing," "buckle up"
-  - Register: write about the claims, the events and the arguments themselves, built around the real names the input gives you — "Gene Bailey's chapter on Ziklag tells Christians to weaponize their wounds"; "Iowa spent three years blocking the Satanic Temple's holiday display". These are full sentences with finite verbs, not catalogue entries: the names go in as possessives or objects, and the thing doing something is always something the viewer can see. Who is talking changes shot to shot — sometimes it is this channel, sometimes it is the footage being reacted to — so the speaker, the host, the episode and this video are never the thing doing it.
+  - Plugs inside the video — a book, a Patreon, a sponsor read, another channel — are already covered by the standing links block that code appends under the description. The description sells the claims and events the video takes apart; a plug shows up in it only as the plug it is ("and a promotion of the book Was Hitler an Atheist"), standing apart from the argument.
+  - Register: this is a YouTube description — it sells the video to a stranger scrolling past, in the channel's own confident voice. Write about the claims, the events and the arguments themselves, built around the real names the input gives you — "Gene Bailey's chapter on Ziklag tells Christians to weaponize their wounds"; "Iowa spent three years blocking the Satanic Temple's holiday display while the man who axed their statue got probation". These are full sentences with finite ACTIVE verbs, exactly like those examples: the names go in as possessives or objects, the subject of every clause is a person, claim or event from inside the video — the page making the claim, the argument under examination, the evidence that undoes it — and that subject DOES something in every sentence.
 
 self_check: []
 
@@ -68,13 +88,13 @@ overrides:
 
       - 150-250 words, plain text
       - FIRST 120 CHARACTERS (critical): Spotify shows ~120 characters and Apple ~150 before "show more" — this fragment must work as a standalone pitch that makes someone press play. Include the primary search phrase and the subject's full name, and be specific about what the episode delivers. No line breaks inside it.
-      - Body: Expand on the specific claims debunked, evidence examined, or story told. Include concrete payoffs that signal depth: "We trace every source," "I fact-checked each claim," "We follow the money"
+      - Body: Expand on the specific claims debunked, evidence examined, or story told. Include concrete payoffs that signal depth: "every source traced", "each claim checked against the record", "the money followed to where it actually goes"
       - Use the primary search phrase once or twice more, woven naturally, plus related terms and every important name spelled fully — Spotify's semantic search rewards natural topical coverage; mechanical repetition does nothing and keyword stuffing violates Apple's guidelines
       - End with a brief CTA (subscribe, leave a review, check the website)
       - Keep the show title and host name out of it
       - TRANSCRIPT/SUMMARY inputs: reference the single most damaging or absurd specific claim from the input in the first 120 characters
       - SHORT DESCRIPTION inputs: frame the topic and subject factually
       - Voice: confident, direct, authoritative. Banned phrases: "I'm still shaking," "what happened next," "you won't believe," "worse than we all feared," "everything changed," "let that sink in," "I need to talk about this," "and honestly," "here's the thing," "buckle up"
-      - Register: write about the claims, the events and the arguments themselves, built around the real names the input gives you — "Gene Bailey's chapter on Ziklag tells Christians to weaponize their wounds"; "Iowa spent three years blocking the Satanic Temple's holiday display". These are full sentences with finite verbs, not catalogue entries: the names go in as possessives or objects, and the thing doing something is always something the viewer can see.
+      - Register: this note pitches the episode to someone deciding whether to press play, in the show's own confident voice. Write about the claims, the events and the arguments themselves, built around the real names the input gives you — "Gene Bailey's chapter on Ziklag tells Christians to weaponize their wounds"; "Iowa spent three years blocking the Satanic Temple's holiday display while the man who axed their statue got probation". These are full sentences with finite ACTIVE verbs, exactly like those examples: the names go in as possessives or objects, the subject of every clause is a person, claim or event from inside the episode — the page making the claim, the argument under examination, the evidence that undoes it — and that subject DOES something in every sentence.
     self_check: []
     body_words: [150, 250]

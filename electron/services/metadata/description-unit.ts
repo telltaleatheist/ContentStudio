@@ -69,6 +69,33 @@
  * is shown the hook so it carries on from it instead of restating it. The section still runs, in
  * full, on the compilation call as well.
  *
+ * THREE OF THEM, SINCE 2026-08-23. This unit used to write one description and that was the
+ * item's description. Titles have always come back as a LIST the operator curates, and the
+ * operator's ruling is that the description is the same kind of decision: he reads them, he
+ * picks one, and a second opinion should not cost another run of the whole pipeline.
+ *
+ * The PRIMARY is unchanged in every respect — same prompts, same 0.4/0.2, same judging — and it
+ * is still `description` + `description_hook`. Nothing downstream learned a new shape: the
+ * composer, the publish pipeline, the carry-forward and every stored report read the fields they
+ * always read. The alternatives are additive, in `description_options`, each a WHOLE pair: its
+ * own hook, drawn at this app's variety temperature, then a body written to continue that hook
+ * at the primary's. Where the variety comes from and why it is confined to the hook is measured
+ * on OPTION_HOOK_TEMPERATURE below.
+ *
+ * An extra is also dropped when its body comes back the wrong LENGTH twice — measured on the
+ * channel's own `body_words`. The primary keeps a wrong-length body because the operator needs
+ * one; an option that is not description-length is not something he can choose, and the first
+ * run of this feature produced exactly that (the model returned "..." as an option's whole body,
+ * judged at 1 word against 60-200, and the report offered it as a choice). Register faults never
+ * drop an option — taste is what the operator is there for.
+ *
+ * And an extra that FAILS is dropped with a warning rather than failing the item, which is a
+ * stated exception to the no-fallbacks rule and the only one in this file. The rule exists
+ * because a silently missing output cannot be told from a correct one; a missing OPTION can,
+ * because the warning names it and the description it was an alternative to is right there,
+ * complete and judged. Failing the item would throw away a correct description to punish a
+ * missing choice.
+ *
  * FAILURE POLICY. A hook over the 150-character cap or prose in the wrong register is asked
  * for ONE more time and then KEPT AS WRITTEN with a declared warning on the run. Nothing here
  * truncates a hook, rewrites a sentence or fails an item over style: the operator curates, and
@@ -83,7 +110,7 @@ import { JobModelLifecycle } from './model-lifecycle';
 import { MetadataRoutingOption } from './metadata-routing';
 import { queueAITask } from '../queue-manager.service';
 import { JobCancelledError } from './cancellation';
-import { narratesAnActor } from './chapter-title-quality';
+import { describerClauses } from './chapter-title-quality';
 import { promptAssets, ChannelData } from './prompt-assets';
 import type { MetadataFieldId, MetadataRunContext, MetadataUnit } from './metadata-tasks';
 import type { ModelRunContextBudget } from './metadata-tasks';
@@ -142,6 +169,94 @@ function bodyWordRange(channel: ChannelData): [number, number] {
  */
 const HOOK_TEMPERATURE = 0.4;
 const BODY_TEMPERATURE = 0.2;
+
+/**
+ * How many descriptions the operator gets to choose from, the primary included.
+ *
+ * DATA, in the same spirit as the channel's `{titles_count}`: the number is stated once and the
+ * loop reads it. It is a constant rather than channel YAML because unlike a title count it is
+ * not an editorial property of a channel — every channel's operator curates the same way — and a
+ * per-channel knob nobody would ever set differently is a knob to keep in step for nothing. If a
+ * channel ever does want its own count, this is the line that moves into the YAML.
+ */
+const DESCRIPTION_CANDIDATES = 3;
+
+/**
+ * The sampling the EXTRA candidates are drawn at — HIGH ON THE HOOK, UNCHANGED ON THE BODY.
+ *
+ * THE HOOK IS WHERE THE VARIETY HAS TO COME FROM, and it is the only place it needs to. Each
+ * candidate's body is written to continue ITS OWN hook, so two different opening lines produce
+ * two different descriptions whatever the body is decoded at. The hook is also the part the
+ * operator is really choosing between: it is the search snippet and everything above the fold.
+ * 0.7 is this app's variety setting, the one the titles adapter samples at, for the reason
+ * stated there.
+ *
+ * THE BODY STAYS AT THE PRIMARY'S 0.2, and that is a measurement, not caution. Sampling the body
+ * at 0.7 as well was the first thing tried, over three runs of the same video on qwen3.8:27b:
+ *
+ *   option bodies at 0.7   2 usable out of 6 — two came back as the single token "...", two
+ *                          stopped mid-clause ("...primary win is framed as a battle against a")
+ *   primary bodies at 0.2  3 usable out of 3
+ *
+ * Both failure modes are one failure: a 250-word answer under a JSON schema, on a model that
+ * reasons first inside the same num_predict budget, has no slack for high-temperature decoding,
+ * and it either abandons the answer or runs out of budget partway through it. The titles
+ * adapter's 0.7 is evaluated on a 64-token single line, which is a different call.
+ *
+ * The drop rules below still stand behind this. They caught every one of those four, which is
+ * how the numbers above exist, and they are what keeps a bad draw out of the operator's choices
+ * rather than something to be relied on for every draw.
+ *
+ * No seed is pinned. ollama-json's seed comment has the argument: a pinned seed makes a
+ * measurement repeatable and makes a regeneration pointless. Two options drawn under one seed
+ * would be one option twice, and re-running for a fresh set is the whole workflow.
+ *
+ * ON A CLOUD MODEL nothing sends a sampling parameter at all (see the note on these constants),
+ * so the extras there vary by the provider's own default temperature rather than by these. They
+ * still vary; they are just not varying by a number this file chose.
+ */
+const OPTION_HOOK_TEMPERATURE = 0.7;
+const OPTION_BODY_TEMPERATURE = BODY_TEMPERATURE;
+
+/**
+ * How the body judge opens its word-count complaint.
+ *
+ * A CONSTANT because two places depend on the same sentence: `judgeBody` writes it, and the
+ * option rule reads it back to tell a wrong-length body from a wrong-register one. Matching on
+ * the substring "word" would have done it until the day a register fault quoted a clause with
+ * the word "word" in it and silently threw away a good option.
+ */
+const LENGTH_FAULT = 'it ran to ';
+
+/**
+ * The fewest words that can be the opening sentence of a description.
+ *
+ * FIVE, which is nowhere near any real hook — the ones measured on this channel run 20 to 25
+ * words — because this is not a style floor. It catches the NON-ANSWER: on qwen3.8:27b, sampled
+ * for an alternative, the hook call returned the three characters "..." as its whole answer, and
+ * every other check passed it. It is under the character cap. It has no describer clause. It
+ * even ends on a full stop. It is simply not a sentence, and it went into a published report as
+ * an option's opening line.
+ *
+ * IT IS CHECKED FOR THE PRIMARY TOO, which is a change to the primary's judge and a deliberate
+ * one. The same draw can happen on the primary, where "..." would become the item's search
+ * snippet — the single most visible string this app produces — and nothing anywhere would have
+ * said so. Unlike the register question this file leaves alone, "the model returned an ellipsis
+ * instead of a sentence" is not a matter of taste, and the existing policy handles it correctly
+ * without further help: re-ask once, and if it comes back the same, keep it and declare it.
+ */
+const HOOK_MIN_WORDS = 5;
+
+/** How the hook judge opens its not-a-sentence complaint. Read back by the option rule. */
+const SHORT_HOOK_FAULT = 'it came back as ';
+
+/**
+ * WHAT THE EXTRAS COST. Each candidate is a full pair — its own hook call, then its own body
+ * call reading that hook — plus whatever judging re-asks. Two extras is therefore about four
+ * more calls, ~80s on the 27b, against a job already measured at 163s. The operator's ruling
+ * (2026-08-23) is that this is worth it: his loop is generate, read three, pick one, and a
+ * second run to get a second opinion costs the whole pipeline again.
+ */
 
 /**
  * Output budget per call.
@@ -204,12 +319,21 @@ export const DESCRIPTION_PROMPTS = {
   get BODY(): string {
     return promptAssets().pipeline(DESCRIPTION_FILE, 'body');
   },
+  get BODY_REVISION(): string {
+    return promptAssets().pipeline(DESCRIPTION_FILE, 'body_revision');
+  },
 };
 
 const DESCRIPTION_FILE = 'description.yml';
 
-/** The two fields this unit owns. `description` is the BODY; the hook is its own field. */
-const DESCRIPTION_FIELDS: MetadataFieldId[] = ['description_hook', 'description'];
+/**
+ * The fields this unit owns. `description` is the BODY; the hook is its own field.
+ *
+ * `description_options` is the third, and it is the only one that may legitimately come back
+ * absent: the primary pair is the contract and the alternatives are additive, so a run whose
+ * extras all failed still satisfies this unit's declaration with two fields and a warning.
+ */
+export const DESCRIPTION_FIELDS: MetadataFieldId[] = ['description_hook', 'description', 'description_options'];
 
 /**
  * The description unit: two calls, one field pair, either transport.
@@ -279,6 +403,10 @@ export class DescriptionUnit implements MetadataUnit {
 
   describePrompt(ctx: MetadataRunContext): string {
     return (
+      `# ${DESCRIPTION_CANDIDATES} DESCRIPTIONS ARE WRITTEN FROM THESE TWO PROMPTS.\n` +
+      `# The primary at the temperatures below; ${DESCRIPTION_CANDIDATES - 1} alternative(s) at ` +
+      `${OPTION_HOOK_TEMPERATURE} on the hook, each with a body written to continue it. The prompts\n` +
+      `# are identical for all of them — only the sampling differs — so they are shown once.\n\n` +
       `# DESCRIPTION HOOK (${this.option.model}, ` +
       `${this.option.kind === 'local' ? `schema-constrained, temperature ${HOOK_TEMPERATURE}` : 'JSON, provider defaults'})\n\n` +
       this.buildPrompt(DESCRIPTION_PROMPTS.HOOK, ctx, hookPending()) +
@@ -289,9 +417,127 @@ export class DescriptionUnit implements MetadataUnit {
   }
 
   async generate(ctx: MetadataRunContext): Promise<Record<string, unknown>> {
-    const hook = await this.writeHook(ctx);
-    const body = await this.writeBody(ctx, hook);
-    return { description_hook: hook, description: body };
+    // THE PRIMARY IS UNCHANGED. Same two calls, same temperatures, same judging, same fields —
+    // `description` and `description_hook` mean exactly what they meant before this unit could
+    // produce more than one, so the composer, the publish pipeline, the carry-forward and every
+    // stored report are untouched by what follows.
+    const primary = await this.writePair(ctx, 'primary', HOOK_TEMPERATURE, BODY_TEMPERATURE);
+    // The primary publishes whatever it wrote, faults and all, exactly as it always has.
+
+    const options = await this.writeOptions(ctx, primary);
+
+    return {
+      description_hook: primary.hook,
+      description: primary.body,
+      // Omitted entirely rather than sent as [] when there are none: an absent field reads as
+      // "this build/run produced no alternatives", which is true, and the .txt writer's
+      // `emptyToUndefined` would drop an empty array anyway.
+      ...(options.length > 0 ? { description_options: options } : {}),
+    };
+  }
+
+  /**
+   * The alternatives, each a WHOLE description written from scratch.
+   *
+   * A candidate is a hook and then a body that continues THAT hook. Reusing the primary's hook
+   * and re-rolling only the body would produce three descriptions that all open the same way,
+   * which is the one thing an operator choosing between them cannot use — the opening line IS
+   * the search snippet, and it is the part he is really picking.
+   *
+   * A FAILED EXTRA IS DROPPED, WITH A WARNING, AND THAT IS A DELIBERATE EXCEPTION to this
+   * codebase's rule that a failed call fails the item. The rule exists because a silently
+   * missing output is indistinguishable from a correct one; here it is not. The primary is the
+   * contract and it has already been written and judged. An extra that fails costs the operator
+   * one CHOICE, which the warning names, and failing the whole item over it would throw away a
+   * description that is complete and correct. Cancellation still propagates — a cancelled job is
+   * not a failed candidate.
+   */
+  private async writeOptions(
+    ctx: MetadataRunContext,
+    primary: DescriptionCandidate
+  ): Promise<string[]> {
+    if (DESCRIPTION_CANDIDATES <= 1) return [];
+
+    const written: DescriptionCandidate[] = [primary];
+    const options: string[] = [];
+
+    for (let n = 2; n <= DESCRIPTION_CANDIDATES; n++) {
+      try {
+        let candidate = await this.writePair(ctx, `option ${n}`, OPTION_HOOK_TEMPERATURE, OPTION_BODY_TEMPERATURE);
+
+        // ONE RE-DRAW, for either reason a first draw disappoints: it is unusable, or it opens
+        // the way something already written opens. Both get exactly one more go and no more — a
+        // loop that re-rolled until it was happy would spend minutes chasing a model that has
+        // settled, and two good options are worth more than three expensive ones.
+        const firstProblem = unusableReason(candidate) ?? this.duplicateReason(candidate, written);
+        if (firstProblem) {
+          log.info(`[Description] ${ctx.sourceLabel}: option ${n} was drawn again — ${firstProblem}`);
+          candidate = await this.writePair(
+            ctx, `option ${n} (re-drawn)`, OPTION_HOOK_TEMPERATURE, OPTION_BODY_TEMPERATURE);
+        }
+
+        // The two reasons part company here. A DUPLICATE opening is kept if it comes back twice:
+        // three descriptions that share a lead are still three descriptions, and the operator can
+        // see the repetition for himself. An UNUSABLE one is never kept, however many times it is
+        // drawn — offering it would be offering a choice that is not a description.
+        const stillUnusable = unusableReason(candidate);
+        if (stillUnusable) {
+          ctx.warn(
+            `description option ${n} of ${DESCRIPTION_CANDIDATES} was dropped: ${stillUnusable}. The ` +
+              `description above is unaffected and ${options.length} alternative(s) were kept.`
+          );
+          continue;
+        }
+        const stillDuplicate = this.duplicateReason(candidate, written);
+        if (stillDuplicate) {
+          log.info(`[Description] ${ctx.sourceLabel}: option ${n} ${stillDuplicate} again, and is kept as drawn`);
+        }
+
+        written.push(candidate);
+        // Flattened the way the composer publishes it — hook, blank line, body — so what the
+        // operator reads in the report is what he would be pasting in.
+        options.push(`${candidate.hook}\n\n${candidate.body}`);
+      } catch (error) {
+        if (error instanceof JobCancelledError) throw error;
+        const reason = error instanceof Error ? error.message : String(error);
+        ctx.warn(
+          `description option ${n} of ${DESCRIPTION_CANDIDATES} could not be written and was dropped ` +
+            `(${reason}); the description above is unaffected and ${options.length} alternative(s) were kept`
+        );
+      }
+    }
+
+    log.info(
+      `[Description] ${ctx.sourceLabel}: ${options.length + 1} description(s) — the primary at ` +
+        `${HOOK_TEMPERATURE}/${BODY_TEMPERATURE} and ${options.length} alternative(s) at ` +
+        `${OPTION_HOOK_TEMPERATURE}/${OPTION_BODY_TEMPERATURE}`
+    );
+    return options;
+  }
+
+  /**
+   * Does this candidate open the way one already written opens?
+   *
+   * DEDUPED BY OPENING SENTENCE, not by string equality: two bodies that differ in their third
+   * paragraph and open identically are one option as far as the operator is concerned, because
+   * he reads the first line and moves on.
+   */
+  private duplicateReason(candidate: DescriptionCandidate, written: DescriptionCandidate[]): string | null {
+    return written.some((prior) => sameOpening(prior.body, candidate.body))
+      ? 'it opened on the same sentence as an earlier one'
+      : null;
+  }
+
+  /** One complete description: a hook, then the body that was written to continue it. */
+  private async writePair(
+    ctx: MetadataRunContext,
+    tag: string,
+    hookTemperature: number,
+    bodyTemperature: number
+  ): Promise<DescriptionCandidate> {
+    const hook = await this.writeHook(ctx, tag, hookTemperature);
+    const body = await this.writeBody(ctx, hook.text, tag, bodyTemperature);
+    return { hook: hook.text, hookFaults: hook.faults, body: body.text, bodyFaults: body.faults };
   }
 
   // ------------------------------------------------------------------------ the two calls
@@ -304,32 +550,43 @@ export class DescriptionUnit implements MetadataUnit {
    * still over, the long hook is KEPT and the run says so. Truncating it would produce a
    * sentence the model did not write, ending mid-clause, in the one line YouTube shows first.
    */
-  private async writeHook(ctx: MetadataRunContext): Promise<string> {
+  private async writeHook(ctx: MetadataRunContext, tag: string, temperature: number): Promise<JudgedText> {
     const prompt = this.buildPrompt(DESCRIPTION_PROMPTS.HOOK, ctx, hookPending());
-    const first = await this.ask(prompt, 'hook', HOOK_SCHEMA, HOOK_TEMPERATURE, ctx);
+    const first = await this.ask(prompt, `${tag} hook`, HOOK_SCHEMA, temperature, ctx);
     const faults = this.judgeHook(first);
-    if (faults.length === 0) return first;
+    if (faults.length === 0) return { text: first, faults: [] };
 
-    const second = await this.ask(prompt, 'hook (second attempt)', HOOK_SCHEMA, HOOK_TEMPERATURE, ctx);
+    const second = await this.ask(prompt, `${tag} hook (second attempt)`, HOOK_SCHEMA, temperature, ctx);
     if (this.judgeHook(second).length === 0) {
-      log.info(`[Description] ${ctx.sourceLabel}: re-asked for the hook (${faults.join('; ')}); the second answer holds`);
-      return second;
+      log.info(`[Description] ${ctx.sourceLabel}: re-asked for the ${tag} hook (${faults.join('; ')}); the second answer holds`);
+      return { text: second, faults: [] };
     }
 
     ctx.warn(
-      `the description hook was asked for twice and both times ${faults.join(' and ')}; it is kept exactly as ` +
+      `the description ${tag} hook was asked for twice and both times ${faults.join(' and ')}; it is kept exactly as ` +
         `the model wrote it ("${first}") and nothing was shortened or reworded`
     );
-    return first;
+    return { text: first, faults };
   }
 
   private judgeHook(hook: string): string[] {
     const faults: string[] = [];
+    const words = hook.split(/\s+/).filter(Boolean).length;
+    if (words < HOOK_MIN_WORDS) {
+      faults.push(
+        `${SHORT_HOOK_FAULT}${words} word(s) ("${hook}"), which is not the complete sentence the ` +
+          `search snippet has to be`
+      );
+    }
     if (hook.length > HOOK_MAX_CHARS) {
       faults.push(`it ran to ${hook.length} characters against the ${HOOK_MAX_CHARS}-character search snippet`);
     }
-    if (narratesAnActor(hook).narrated) {
-      faults.push('it was written about someone covering the subject rather than about the subject');
+    const narrated = describerClauses(hook);
+    if (narrated.length > 0) {
+      faults.push(
+        `it was written about someone covering the subject rather than about the subject ` +
+          `(${narrated.map((clause) => `"${clause}"`).join('; ')})`
+      );
     }
     return faults;
   }
@@ -340,23 +597,50 @@ export class DescriptionUnit implements MetadataUnit {
    * The word count is a SPEC RANGE, not a hard limit — a 310-word body is a warning, not a
    * failure, and it publishes.
    */
-  private async writeBody(ctx: MetadataRunContext, hook: string): Promise<string> {
+  private async writeBody(
+    ctx: MetadataRunContext,
+    hook: string,
+    tag: string,
+    temperature: number
+  ): Promise<JudgedText> {
     const prompt = this.buildPrompt(DESCRIPTION_PROMPTS.BODY, ctx, hook);
-    const first = await this.ask(prompt, 'body', BODY_SCHEMA, BODY_TEMPERATURE, ctx);
-    const faults = this.judgeBody(first, ctx);
-    if (faults.length === 0) return first;
+    const first = await this.ask(prompt, `${tag} body`, BODY_SCHEMA, temperature, ctx);
+    const firstFaults = this.judgeBody(first, ctx);
+    if (firstFaults.length === 0) return { text: first, faults: [] };
 
-    const second = await this.ask(prompt, 'body (second attempt)', BODY_SCHEMA, BODY_TEMPERATURE, ctx);
-    if (this.judgeBody(second, ctx).length === 0) {
-      log.info(`[Description] ${ctx.sourceLabel}: re-asked for the body (${faults.join('; ')}); the second answer holds`);
-      return second;
+    // A register fault gets a REVISION, not a re-roll: the same prompt asked twice returned
+    // the same register twice, on two measured runs. The revision call hands the model its own
+    // draft and the judged clauses, which is an edit it can actually perform. A fault that is
+    // only the word count keeps the plain re-ask, where fresh dice are the right tool.
+    const narratedFirst = describerClauses(first);
+    const secondPrompt =
+      narratedFirst.length > 0
+        ? this.buildPrompt(DESCRIPTION_PROMPTS.BODY_REVISION, ctx, hook, {
+            body: first,
+            clauses: narratedFirst.map((clause) => `- "${clause}"`).join('\n'),
+          })
+        : prompt;
+    const what = narratedFirst.length > 0 ? `${tag} body (revision)` : `${tag} body (second attempt)`;
+    const second = await this.ask(secondPrompt, what, BODY_SCHEMA, temperature, ctx);
+    const secondFaults = this.judgeBody(second, ctx);
+    if (secondFaults.length === 0) {
+      log.info(`[Description] ${ctx.sourceLabel}: re-asked for the ${tag} body (${firstFaults.join('; ')}); the second answer holds`);
+      return { text: second, faults: [] };
     }
 
+    // Both faulty: the answer with fewer describer clauses is the closer one, and a tie keeps
+    // the first, which is the answer the plain prompt produced.
+    const keepSecond = describerClauses(second).length < narratedFirst.length;
+    const kept = keepSecond ? second : first;
+    const keptFaults = keepSecond ? secondFaults : firstFaults;
     ctx.warn(
-      `the description body was asked for twice and both times ${faults.join(' and ')}; it is kept exactly as ` +
-        `the model wrote it and nothing was reworded`
+      `the description ${tag} body was asked for twice and both times ${keptFaults.join(' and ')}; the ` +
+        `${keepSecond ? 'revised second' : 'first'} answer is kept exactly as the model wrote it and nothing was reworded`
     );
-    return first;
+    // The faults come back WITH the text. The primary keeps it regardless — that is the stated
+    // policy and it has not changed — but an extra candidate needs to know, because an answer
+    // that is not the length of a description is not an alternative description.
+    return { text: kept, faults: keptFaults };
   }
 
   private judgeBody(body: string, ctx: MetadataRunContext): string[] {
@@ -364,10 +648,12 @@ export class DescriptionUnit implements MetadataUnit {
     const [min, max] = bodyWordRange(this.channel(ctx));
     const words = body.split(/\s+/).filter(Boolean).length;
     if (words < min || words > max) {
-      faults.push(`it ran to ${words} words against the ${min}-${max} word body this channel asks for`);
+      faults.push(`${LENGTH_FAULT}${words} words against the ${min}-${max} word body this channel asks for`);
     }
-    if (narratesAnActor(firstSentence(body)).narrated) {
-      faults.push('it opened by writing about someone covering the subject rather than about the subject');
+    const narrated = describerClauses(body);
+    if (narrated.length > 0) {
+      const shown = narrated.map((clause) => `"${clause.length > 60 ? `${clause.slice(0, 57)}...` : clause}"`);
+      faults.push(`it wrote about someone covering the subject rather than about the subject (${shown.join('; ')})`);
     }
     return faults;
   }
@@ -444,7 +730,12 @@ export class DescriptionUnit implements MetadataUnit {
 
   // ----------------------------------------------------------------------------- prompting
 
-  private buildPrompt(template: string, ctx: MetadataRunContext, hook: string): string {
+  private buildPrompt(
+    template: string,
+    ctx: MetadataRunContext,
+    hook: string,
+    extra: Record<string, string> = {}
+  ): string {
     const assets = promptAssets();
     const channel = this.channel(ctx);
     const [min, max] = bodyWordRange(channel);
@@ -465,16 +756,21 @@ export class DescriptionUnit implements MetadataUnit {
       video: ctx.videoTitle || ctx.sourceLabel,
       coverage: this.coverageBlock(ctx),
       transcript: this.transcriptBlock(ctx),
+      speaker_tags: this.speakerTagsBlock(ctx),
       pools: pools || '(none)',
       // The channel's `## DESCRIPTION` section, whole. See the note at the top of this file and
       // the one in shared/pipeline/description.yml for what withholding it measured out at.
       rules: assets
         .pipeline(DESCRIPTION_FILE, 'rules_block')
-        .replace(/\{items\}/g, () => assets.fieldSection(channel, 'description')),
+        .replace(/\{items\}/g, () => this.descriptionRules(ctx, channel)),
       hook,
       hookTargetChars: String(HOOK_TARGET_CHARS),
       bodyMinWords: String(min),
       bodyMaxWords: String(max),
+      // The revision call's two slots, empty everywhere else so the one-pass replace below
+      // still fills every name it knows.
+      body: extra.body ?? '',
+      clauses: extra.clauses ?? '',
     };
 
     // ONE PASS over the whole template, so a slot's own free text can never be read as another
@@ -484,9 +780,57 @@ export class DescriptionUnit implements MetadataUnit {
     // unfilled brace in the asset survives to the prompt where it is visible rather than
     // silently blanked.
     return template.replace(
-      /\{(channel|video|coverage|transcript|pools|rules|hook|hookTargetChars|bodyMinWords|bodyMaxWords)\}/g,
+      /\{(channel|video|coverage|transcript|speaker_tags|pools|rules|hook|hookTargetChars|bodyMinWords|bodyMaxWords|body|clauses)\}/g,
       (_match, key: string) => slots[key]
     );
+  }
+
+  /**
+   * What the tags on the transcript mean, or nothing at all.
+   *
+   * GATED ON THE MEASUREMENT, not on whether a voice enrollment exists: `contentSpeakerTagged`
+   * is true exactly when `buildContentText` put the labels in the text. A run with tagging on
+   * whose every caption came out HOST has an unlabelled transcript and gets no block, which is
+   * correct — there is nothing on the page for the block to describe.
+   *
+   * The transcript slot is its precondition, and for the same reason. On a chapterless item
+   * `transcriptBlock` renders nothing (the coverage block IS the operator's subject text), so
+   * there are no tagged lines in this prompt however the video was transcribed.
+   */
+  private speakerTagsBlock(ctx: MetadataRunContext): string {
+    if (!ctx.contentSpeakerTagged) return '';
+    if (this.transcriptBlock(ctx).length === 0) return '';
+    return promptAssets().pipeline(DESCRIPTION_FILE, 'speaker_tags_block');
+  }
+
+  /**
+   * The channel's `## DESCRIPTION` section, plus the tagged addendum where it applies.
+   *
+   * The addendum is a rule about attribution, and attribution is only decidable on a tagged
+   * transcript, so it is appended under the same condition the block above is rendered under.
+   * A channel whose description rules declare no addendum while the transcript IS tagged is a
+   * prompt asset that has lost a key rather than a channel with nothing to say — the tagged
+   * transcript is in the prompt either way, and rules that do not mention it would leave the
+   * register bullet telling the model to keep the speaker out of every sentence while the
+   * speaker is labelled on every line. So it throws, naming the file, as every other missing
+   * asset in this tree does.
+   */
+  private descriptionRules(ctx: MetadataRunContext, channel: ChannelData): string {
+    const assets = promptAssets();
+    const section = assets.fieldSection(channel, 'description');
+    if (!ctx.contentSpeakerTagged || this.transcriptBlock(ctx).length === 0) return section;
+
+    const addendum = assets.field(channel, 'description').taggedAddendum;
+    if (!addendum || addendum.trim().length === 0) {
+      throw new Error(
+        `The transcript for ${ctx.sourceLabel} is speaker-tagged, and channel "${channel.id}"'s ` +
+          `description rules declare no "tagged_addendum" for its field variant ` +
+          `("${channel.fieldVariant}") in prompts/shared/fields/description.yml. The tagged ` +
+          `transcript reaches the prompt either way; the rules that govern how it is attributed ` +
+          `cannot be missing.`
+      );
+    }
+    return `${section.replace(/\s+$/, '')}\n${addendum.replace(/\s+$/, '')}`;
   }
 
   /**
@@ -567,7 +911,94 @@ function hookPending(): string {
   return promptAssets().pipeline(DESCRIPTION_FILE, 'hook_pending');
 }
 
-function firstSentence(text: string): string {
-  const match = text.match(/^[^.!?]+[.!?]?/);
-  return (match ? match[0] : text).trim();
+
+
+/** One whole description as this unit writes it: an opening line and the body that continues it. */
+interface DescriptionCandidate {
+  hook: string;
+  /** What was still wrong with `hook` after the one re-ask — empty when the judge was satisfied. */
+  hookFaults: string[];
+  body: string;
+  /** What was still wrong with `body` after the one re-ask — empty when the judge was satisfied. */
+  bodyFaults: string[];
+}
+
+/** An answer and whatever its judge still had against it after the re-ask. */
+interface JudgedText {
+  text: string;
+  faults: string[];
+}
+
+/**
+ * Do two bodies start on the same sentence?
+ *
+ * BY MEANING RATHER THAN BY BYTES, to the extent that is cheap and honest: the comparison is on
+ * the first sentence with case, punctuation and whitespace normalised away, so "The footage
+ * brands Oliver a communist." and "the footage brands oliver a communist" are one opening. It
+ * deliberately stops there. A real paraphrase check would need an embedding call per candidate
+ * to catch two openings that say the same thing in different words, and the failure it would be
+ * catching \u2014 a model that re-words its lead but keeps its angle \u2014 is one an operator can see for
+ * himself in three descriptions he is already reading.
+ */
+function sameOpening(a: string, b: string): boolean {
+  const normalize = (text: string) => {
+    const match = text.match(/^[^.!?]+[.!?]?/);
+    return (match ? match[0] : text)
+      .toLowerCase()
+      .replace(/[^a-z0-9 ]+/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+  const left = normalize(a);
+  return left.length > 0 && left === normalize(b);
+}
+
+/**
+ * Why this candidate cannot be offered as a choice, or null because it can.
+ *
+ * AN OPTION MUST BE A DESCRIPTION, and that is the whole rule. The primary keeps a body its
+ * judge still objects to, because the operator needs one and the alternative is none; an option
+ * carries no such obligation, and a candidate that is not a description is strictly worse than
+ * one fewer choice — he is picking between them, and one of them is not a thing he can pick.
+ *
+ * BOTH REASONS ARE MEASURED, AND BOTH WERE OBSERVED while building this, on qwen3.8:27b:
+ *
+ *   not description-length   the model returned "..." as an option's whole body, judged at 1
+ *                            word against the channel's 60-200. Seen twice.
+ *   stops mid-sentence       a 103-word body — comfortably inside the range, so the length judge
+ *                            passed it — ending on "...primary win is framed as a battle against
+ *                            a". Seen three times.
+ *   opening line is not one  the hook call returned "..." as its entire answer, which is under
+ *                            the character cap, has no describer clause and even ends on a full
+ *                            stop. `judgeHook` now measures it (HOOK_MIN_WORDS) so the primary
+ *                            re-asks rather than publishing it as a search snippet; an option
+ *                            whose re-ask brings back the same thing is dropped here.
+ *
+ * The second is NOT the output ceiling being hit: ollama-json already fails a call outright on
+ * `done_reason: "length"`, so these came back as completed answers that the model simply stopped
+ * writing partway through a clause. Raising num_predict would not touch them, and a body that
+ * does not end on a terminator is a fact about the answer rather than an opinion about it.
+ *
+ * WHAT DOES NOT DROP AN OPTION: register. That is a taste call, taste is exactly what the
+ * operator is there for, and an option warned for register is still a description he can read
+ * and choose.
+ *
+ * NEITHER CHECK LIVES IN `judgeBody`, deliberately. Putting them there would change what the
+ * PRIMARY does — a new fault means a new re-ask on the call this app has measured most carefully
+ * — and whether a truncated primary should warn is a real question for whoever owns that judge,
+ * to be asked on its own evidence rather than as a side effect of adding options.
+ */
+function unusableReason(candidate: DescriptionCandidate): string | null {
+  const shortHook = candidate.hookFaults.find((fault) => fault.startsWith(SHORT_HOOK_FAULT));
+  if (shortHook) {
+    return `its opening line ${shortHook}`;
+  }
+  const lengthFault = candidate.bodyFaults.find((fault) => fault.startsWith(LENGTH_FAULT));
+  if (lengthFault) {
+    return `${lengthFault}, and an alternative that is not the length of a description is not an alternative`;
+  }
+  if (!/[.!?]["\u2019\u201d')\]]?\s*$/.test(candidate.body)) {
+    return `its body stops mid-sentence ("...${candidate.body.slice(-60).trim()}"), so the model did not finish writing it`;
+  }
+  return null;
 }

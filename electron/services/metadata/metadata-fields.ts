@@ -75,6 +75,29 @@ export const METADATA_FIELDS: MetadataFieldDef[] = [
     txtStyle: 'block',
   },
   {
+    /**
+     * The alternative descriptions, each already flattened to `<hook>\n\n<body>`.
+     *
+     * DIRECTLY AFTER `description`, because that is where they are read: the operator reads the
+     * one this run chose, then the others, and decides. Putting them anywhere else in this list
+     * would move them somewhere else in the .txt, which is the only thing this order controls.
+     *
+     * The label says "alternatives" so the numbering cannot be misread. The list holds the
+     * EXTRAS only — the primary is the DESCRIPTION section immediately above — so "1." here is
+     * the second description of the item, and a reader who saw "1." next to a description
+     * identical to the one above would reasonably wonder which was which.
+     *
+     * `emptyToUndefined` because a run with no extras (they all failed, declared in the
+     * warnings) should print no section at all rather than an empty heading.
+     */
+    key: 'description_options',
+    aliases: ['descriptionOptions', 'description_candidates'],
+    kind: 'stringArray',
+    txtLabel: 'DESCRIPTION OPTIONS (alternatives to the one above)',
+    txtStyle: 'numbered',
+    emptyToUndefined: true,
+  },
+  {
     key: 'tags',
     aliases: [],
     kind: 'tags',

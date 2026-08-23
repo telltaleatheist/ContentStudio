@@ -10,9 +10,12 @@ import { WhisperService, SRTSegment } from './whisper.service';
 import type { TranscriptImportMeta } from './transcript-import.service';
 import {
   parseTranscriptImport,
+  buildContentText,
   buildImportedContentItem,
   isTranscriptImportPath,
+  segmentsCarrySpeakerAttribution,
 } from './transcript-import.service';
+import type { SpeakerTagger } from './speaker-tagging.service';
 import { resolveRef, probeDrift, isTranscriptRefLink } from './editor-transcript-link';
 import type { FinalOnlyDeclaration, TranscriptLink } from './editor-transcript-link';
 import type { TranscriptRef } from '../publish/publish-types';
@@ -30,6 +33,15 @@ import { loadSavedTranscript, saveTranscript } from './saved-transcript.service'
 export interface ContentSource {
   /** The story's words, joined exactly as the transcript-import path joins them. */
   text: string;
+  /**
+   * Whether `text` above carries screenplay speaker labels on its turns.
+   *
+   * Recorded here rather than sniffed out of the string later, because THIS is where the
+   * question has an answer: the joiner that decided whether to write the labels was called two
+   * lines above. An editor story with a mic track and a screen track answers true; a
+   * single-track one answers false.
+   */
+  speakerTagged: boolean;
   origin: 'editor-story-transcript';
   /** The link that produced `text`, already resolved 'ok' against the file on disk. */
   ref: TranscriptRef;
@@ -118,6 +130,18 @@ export interface ContentItem {
    * the generator, not the input stage, is what writes provenance.
    */
   savedTranscript?: SavedTranscriptReuse;
+  /**
+   * Whether `content` above is rendered in screenplay form, with a speaker label on every turn.
+   *
+   * The one authority on the question, set by whichever path built `content` and never
+   * re-derived by sniffing the string for "HOST:". A prompt that explains the tags is sent
+   * exactly where they are — anywhere else it would be describing something the model cannot see.
+   *
+   * Absent is false and means untagged: a text subject, a plain .txt/.srt transcript, a Whisper
+   * run with no voice enrollment, or a tagged video whose every caption came out the same side
+   * (nothing to tell apart, so nothing was labelled).
+   */
+  contentSpeakerTagged?: boolean;
 }
 
 export class InputDetector {
@@ -263,6 +287,14 @@ export class InputHandlerService {
    * pipeline are always talking about the same store.
    */
   private outputDir: string;
+  /**
+   * This run's speaker tagger, or undefined because the run is in the untagged mode.
+   *
+   * Decided ONCE, before the queue starts (resolveSpeakerTagging), and handed in — never
+   * re-read from the settings per item. Half a queue tagged because the operator opened
+   * Settings mid-run would be a queue whose items are not comparable with each other.
+   */
+  private speakerTagger?: SpeakerTagger;
   private progressCallback?: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => void;
   public currentFilename: string = '';
   public currentItemIndex: number = -1;
@@ -270,7 +302,8 @@ export class InputHandlerService {
   constructor(
     whisperService: WhisperService,
     outputDir: string,
-    progressCallback?: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => void
+    progressCallback?: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => void,
+    speakerTagger?: SpeakerTagger
   ) {
     if (typeof outputDir !== 'string' || !outputDir.trim()) {
       throw new Error('InputHandlerService requires the run output directory (saved transcripts live under it)');
@@ -278,6 +311,7 @@ export class InputHandlerService {
     this.whisperService = whisperService;
     this.outputDir = outputDir;
     this.progressCallback = progressCallback;
+    this.speakerTagger = speakerTagger;
   }
 
   /**
@@ -362,8 +396,14 @@ export class InputHandlerService {
       ? this.reuseSavedTranscript(videoPath, itemIndex)
       : await this.transcribeAndSave(videoPath, itemIndex);
 
-    // Convert segments to text
-    const transcriptText = transcript.segments.map(seg => seg.text).join(' ');
+    // Convert segments to text.
+    //
+    // THROUGH THE IMPORT PATH'S BUILDER, since speaker tagging. This used to be a local
+    // `map(...).join(' ')`, which was correct for as long as a Whisper transcript could not
+    // carry attribution; now it can, and a second joiner here would render tagged segments flat
+    // while transcript-import.service.ts rendered the identical segments in screenplay form. On
+    // an untagged transcript `buildContentText` produces byte-for-byte what the old line did.
+    const transcriptText = buildContentText(transcript.segments);
 
     let content = transcriptText;
 
@@ -386,6 +426,9 @@ export class InputHandlerService {
       source: videoPath,
       processingNotes: customNotes?.trim(),
       srtSegments: transcript.segments,
+      // Same question `buildContentText` just answered for itself, recorded so the prompts can
+      // read it without asking the string.
+      contentSpeakerTagged: segmentsCarrySpeakerAttribution(transcript.segments),
       // The declaration, carried onto the item so the generator can record what was
       // asked for as well as what was done.
       transcriptRef,
@@ -409,7 +452,7 @@ export class InputHandlerService {
    * as a transcription that failed.
    */
   private async transcribeAndSave(videoPath: string, itemIndex?: number): Promise<VideoTranscript> {
-    let result: { jobId: string; segments: SRTSegment[]; durationSec: number | null; model: string };
+    let result: Awaited<ReturnType<WhisperService['transcribeVideo']>>;
     try {
       // Send 'preparing' event before transcription starts. The item index is
       // threaded in per-call (not read from a shared instance field) so concurrent
@@ -423,7 +466,9 @@ export class InputHandlerService {
 
       // Transcribe video (returns jobId along with result)
       log.info(`[InputHandler] Calling whisperService.transcribeVideo...`);
-      result = await this.whisperService.transcribeVideo(videoPath);
+      // The tagger goes IN, rather than tagging out here, because the audio it scores is the WAV
+      // whisper.cpp just read and transcribeVideo deletes it on the way out.
+      result = await this.whisperService.transcribeVideo(videoPath, undefined, this.speakerTagger);
 
       log.info(`[InputHandler] [${result.jobId}] Video transcribed: ${result.segments.length} segments`);
     } catch (error) {
@@ -447,6 +492,17 @@ export class InputHandlerService {
       // re-read from the setting: the setting can have moved on by now, and the record
       // has to name the model these words came out of.
       whisperModel: result.model,
+      // The tags are ON the segments above, so this is the record's statement of where they came
+      // from. null says the run was in the untagged mode — which a later reuse can then see,
+      // rather than reading absent tags as "tagged, and nobody was recognised".
+      speakerTagging: result.speakerTagging
+        ? {
+            enrollment: result.speakerTagging.enrollmentStamp,
+            host: result.speakerTagging.host,
+            clip: result.speakerTagging.clip,
+            unsure: result.speakerTagging.unsure,
+          }
+        : null,
     });
 
     return { segments: result.segments, durationSec: result.durationSec };
@@ -476,9 +532,47 @@ export class InputHandlerService {
 
     const { record, reuse } = loadSavedTranscript(this.outputDir, videoPath);
 
+    // SPEAKER TAGS COME FROM THE RECORD, and cannot be added to it here — the audio the tagger
+    // would need was deleted at the end of the run that wrote it, and re-extracting it would
+    // mean re-reading the whole video, which is the cost the operator ticked the box to decline.
+    //
+    // So the two ways this can disagree are two different things, and they are treated
+    // differently. Tagging ON over an untagged record is a REQUEST THAT CANNOT BE MET: the
+    // operator has an enrollment configured, and this item would silently produce metadata whose
+    // attribution was never checked. It fails, naming the fix. Tagging OFF over a tagged record
+    // is not a failure at all — the tags are real, they were measured, and the item is simply
+    // better than the run promised; it is logged so the report and the log agree about why.
+    if (this.speakerTagger && !record.speaker_tagging) {
+      throw new Error(
+        `"Use saved transcript" is ticked for ${filename}, but that transcript was saved before a ` +
+        `voice enrollment was configured, so its captions carry no speaker attribution. Speaker ` +
+        `tagging is on for this run and cannot be applied to a stored transcript — the audio it ` +
+        `scores is only available while the video is being transcribed. Untick the box to ` +
+        `transcribe and tag it, or clear the enrollment in Settings to run untagged.`
+      );
+    }
+    if (this.speakerTagger && record.speaker_tagging &&
+        record.speaker_tagging.enrollment !== this.speakerTagger.enrollmentStamp) {
+      log.warn(
+        `[InputHandler] ${filename} reuses a transcript tagged against ${record.speaker_tagging.enrollment}, ` +
+        `and this run is enrolled as ${this.speakerTagger.enrollmentStamp}. The stored tags stand ` +
+        `— they were measured — but they were measured against the older recording.`
+      );
+    }
+    if (!this.speakerTagger && record.speaker_tagging) {
+      log.info(
+        `[InputHandler] ${filename} has no enrollment configured for this run, and its saved ` +
+        `transcript is already speaker-tagged (against ${record.speaker_tagging.enrollment}). The ` +
+        `stored tags are used.`
+      );
+    }
+
     log.info(
       `[InputHandler] Reused the saved transcript for ${filename}: ${record.segments.length} ` +
-      `segments, transcribed ${record.saved_at} by Whisper ${record.whisper_model}`
+      `segments, transcribed ${record.saved_at} by Whisper ${record.whisper_model}` +
+      `${record.speaker_tagging
+        ? `, speaker-tagged ${record.speaker_tagging.host} HOST / ${record.speaker_tagging.clip} CLIP / ${record.speaker_tagging.unsure} UNSURE`
+        : ', untagged'}`
     );
 
     // The queue row moves to 'transcribed' the same way a real transcription moves it —
@@ -529,7 +623,8 @@ export class InputHandlerService {
     // parsed words into the text the summarizer reads, notes appended and all. Only its
     // text is kept — its srtSegments belong to the EDITOR timeline, and nothing timed may
     // ever be built from those (they would move every chapter by the drift below).
-    const text = buildImportedContentItem(parsed.data, ref.path, customNotes).content;
+    const imported = buildImportedContentItem(parsed.data, ref.path, customNotes);
+    const text = imported.content;
 
     // Measured now, against the file that is being generated from, rather than trusted
     // from the Inputs row: the row's number was measured when the operator linked, and
@@ -545,6 +640,10 @@ export class InputHandlerService {
 
     return {
       text,
+      // Asked of the story's OWN segments, which are the segments `text` was joined from. The
+      // final export's segments are a different transcript with a different attribution, and
+      // this field describes the words the content fields will actually read.
+      speakerTagged: segmentsCarrySpeakerAttribution(imported.srtSegments || []),
       origin: 'editor-story-transcript',
       ref,
       driftSec: probe.driftSec,

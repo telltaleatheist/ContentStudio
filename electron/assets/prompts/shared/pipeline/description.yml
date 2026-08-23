@@ -5,6 +5,18 @@
 # to it does not change that. The register these want is stated as what to WRITE, and the
 # examples are real hooks and openings taken from descriptions the operator shipped.
 #
+# 2026-08-22: both calls' register lines carried one leftover negated clause naming the wrong
+# subjects, against the law above. It is now stated positively — the doer in every sentence is
+# a person, claim or event on screen. Operator-directed, same session as the stage 1 label
+# register fix in chapters.yml and the creator-voice rule in pinned-comment.yml.
+#
+# 2026-08-23: the first cut of that fix also framed the description as the creator's own words,
+# first person where the creator's actions came up. A measured run produced "I debunk its
+# bullshit", "I also dismantle" — and the operator rejected the "I" as firmly as "the speaker".
+# The description is a SUMMARY OF THE CONTENT, and the subject of every sentence comes from
+# INSIDE the video: the page making the claim, the argument under examination, the evidence
+# that undoes it. First person remains the register of the PINNED COMMENT only.
+#
 # WHAT THEY CARRY, AND WHY THAT CHANGED (2026-08-22). These two calls used to carry NO channel
 # identity and NO editorial rules: `{channel}` was filled with the stored prompt-set SLUG
 # ("youtube-telltale"), and the channel's `## DESCRIPTION` section — two paragraphs, the
@@ -38,10 +50,27 @@
 # not tell you — and it is empty on a chapterless item, where the coverage block already IS the
 # only description of the video that exists.
 #
-# Placeholders: {channel}, {video}, {coverage}, {transcript}, {pools}, {rules}, {hook}, and the
-# two character/word budgets, which are substituted from description-unit.ts's own constant and
-# from the channel's own `body_words` so the number in the prompt and the number the code
-# measures can never drift apart.
+# `{speaker_tags}` (2026-08-23) EXPLAINS THAT TRANSCRIPT WHEN IT IS TAGGED, and is empty when it
+# is not. The chapter prompts have had a tagged variant for as long as AutoCutStudio imports have
+# carried track attribution; these two calls never did, and the omission produced the failure
+# that motivated the whole speaker-tagging feature. The operator's own example, from a shipped
+# description: "Fox News frames the 13th Amendment's prisoner exception as..." — when the person
+# who brought the 13th Amendment up, and who explained the prisoner exception, was the HOST. The
+# transcript is two people's words in one stream and the call had no way to tell them apart, so
+# it attributed at random and roughly half the time handed the host's argument to the people he
+# was arguing with.
+#
+# It is a BLOCK rather than a second copy of each prompt, which is where this file differs from
+# chapters.yml. That file duplicates `summarize_chapter` into `summarize_chapter_tagged` because
+# the tags change how the whole answer is composed. Here they change one thing — who a sentence
+# may be attributed to — and these two prompts are 40 lines each; two copies of each would be
+# four bodies to keep in step, and the slot mechanism this file already uses for `{coverage}` and
+# `{transcript}` says exactly this kind of thing conditionally.
+#
+# Placeholders: {channel}, {video}, {coverage}, {transcript}, {speaker_tags}, {pools}, {rules},
+# {hook}, and the two character/word budgets, which are substituted from description-unit.ts's
+# own constant and from the channel's own `body_words` so the number in the prompt and the number
+# the code measures can never drift apart.
 
 coverage_chapters: |-
   What the video covers, chapter by chapter:
@@ -54,6 +83,22 @@ coverage_subject: |-
 transcript_block: |-
   The transcript of the video, in full:
   {items}
+
+# Rendered into `{speaker_tags}` when the transcript above carries speaker attribution, and
+# omitted entirely when it does not — a call told to read tags on an untagged transcript would be
+# looking for something that is not there.
+#
+# POSITIVE FORM, like the rest of the tree: every line says what to attribute where. The last one
+# is the whole point of the block and it is stated as an instruction to follow rather than a
+# mistake to avoid — attribution comes from the tag, so a sentence about who said something is
+# reading the tag, and the tag on an UNSURE line says nobody.
+speaker_tags_block: |-
+  The transcript is tagged by speaker, line by line:
+  - HOST: is the creator of this video talking. His words are the channel's own argument.
+  - CLIP: is footage he is playing and reacting to. Those words are somebody else's, and the claims in them belong to whoever is on screen.
+  - UNSURE: is a line that runs across a cut and holds both voices, so the words on it belong to nobody.
+
+  Take every attribution you write from these tags: a claim on a CLIP line belongs to the footage and to whoever is named making it there, an argument on a HOST line is the channel's own verdict, and the subject matter of an UNSURE line is written about on its own with no speaker attached. The register above still governs every sentence: a HOST verdict is carried as the content it is — the claim collapses, the evidence undoes it, the policy turns out to be mainstream — with the claims, the evidence and the people named on the CLIP lines as the subjects doing the doing.
 
 # The channel, as the channel's own data says it — its name and the focus paragraph that is the
 # {channel_focus} slot everywhere else in the tree. It replaces the stored slug, which named the
@@ -75,6 +120,55 @@ rules_block: |-
 hook_pending: |-
   (not written yet — the real body call is assembled after the hook and carries it here)
 
+# The body's SECOND attempt, when the first slipped into describing the coverage.
+#
+# WHY A REVISION AND NOT A RE-ASK, measured twice on 2026-08-23: a blind re-ask of the body
+# prompt failed the register judge twice in a row on two consecutive runs — the model that
+# wrote "The speaker dismantles" once writes it again when handed the identical prompt. This
+# call hands it its own draft and the exact clauses the judge flagged, which turns a re-roll
+# of the same dice into a targeted edit.
+#
+# ON THE POSITIVE-FORM LAW. This prompt necessarily contains wrong-register text: the model's
+# own flagged clauses, quoted as the material to transform. That is not an example to imitate
+# — it is the input of an edit, explicitly marked as what to change, which is the one place a
+# wrong form can appear without teaching it. The instruction itself still states only the
+# wanted form, and the examples are the same shipped ones the body call carries.
+#
+# Placeholders: {channel}, {video}, {coverage}, {rules}, {hook}, {body}, {clauses},
+# {bodyMinWords}, {bodyMaxWords}
+body_revision: |-
+  Revise the body of a YouTube description. Output JSON only.
+
+  {channel}
+
+  Video: {video}
+
+  {coverage}
+
+  {rules}
+
+  The opening line, which stands above the body and is not yours to change:
+  "{hook}"
+
+  The body as drafted:
+  "{body}"
+
+  The draft is right except for these clauses, which are the ones to rewrite:
+  {clauses}
+
+  Rewrite the body keeping everything that already works — the same claims, the same names, the
+  same order — and recast those clauses so that the subject of every clause of every sentence is
+  a person, claim or event from inside the video: the page making the claim, the argument under
+  examination, the evidence that undoes it. Keep the body at {bodyMinWords} to {bodyMaxWords}
+  words.
+
+  Sentences in exactly the right form:
+  "Every policy branded communist in the segment — universal healthcare, ending private prisons, a green new deal — turns out to be a mainstream position."
+  "The book never says the quiet part outright, but the call to get 'truly psychotic' for God's blessing leaves almost nothing to interpretation."
+
+  Output exactly this shape and nothing else:
+  {"body": "..."}
+
 hook: |-
   Write the opening line of a YouTube description. Output JSON only.
 
@@ -85,6 +179,8 @@ hook: |-
   {coverage}
 
   {transcript}
+
+  {speaker_tags}
 
   Names and phrases from the video, to draw on where they fit:
   {pools}
@@ -99,8 +195,9 @@ hook: |-
   characters. Name the two or three things above that would draw a viewer in — not all of them —
   and put the words somebody would type into search at the front. Write about the claim, the
   event or the argument itself: the real names from the material go in as possessives or objects
-  inside the sentence, and the thing doing something is always something the viewer can see, not
-  the speaker, the host, the episode or this video.
+  inside the sentence, and the thing doing something is always a person, claim or event from
+  inside the video: the page making the claim, the person being debunked, the evidence that
+  undoes them. That holds in every clause of the sentence, on both sides of a comma or a "but".
 
   Hooks in exactly the right form:
   "Gene Bailey's chapter on Ziklag tells Christians to weaponize their wounds against trans kids."
@@ -120,6 +217,8 @@ body: |-
 
   {transcript}
 
+  {speaker_tags}
+
   Names and phrases from the video, to draw on where they fit:
   {pools}
 
@@ -128,22 +227,24 @@ body: |-
   The opening line is already written, and it will stand above what you write:
   "{hook}"
 
-  YOUR JOB IS THE REST OF THAT DESCRIPTION, {bodyMinWords} to {bodyMaxWords} words: the remainder
-  of paragraph 1, then one blank line, then paragraph 2, exactly as the rules above lay them out.
-  Paragraph 1 still closes on the sentence those rules ask it to close on. Carry on from the
-  opening line rather than restating it or its examples.
+  YOUR JOB IS THE REST OF THAT DESCRIPTION, {bodyMinWords} to {bodyMaxWords} words: the rest of
+  the ONE paragraph the rules above lay out, closing on the sentence those rules ask it to close
+  on. Carry on from the opening line rather than restating it or its examples.
 
   Every name you use comes from the material above, and you write about the claims, the events
-  and the arguments themselves: the real names go in as possessives or objects, and the thing
-  doing something is always something the viewer can see, not the speaker, the host, the episode
-  or this video.
+  and the arguments themselves. This is a YouTube description that sells the video to a stranger
+  scrolling past, in the channel's own confident voice: the real names go in as possessives or
+  objects, the subject of every clause of every sentence is a person, claim or event from inside
+  the video — the page making the claim, the argument under examination, the evidence that
+  undoes it — and that subject DOES something, with a finite active verb, in every sentence.
 
   Sentences in exactly the right form:
   "Every policy branded communist in the segment — universal healthcare, ending private prisons, a green new deal — turns out to be a mainstream position."
   "The book never says the quiet part outright, but the call to get 'truly psychotic' for God's blessing leaves almost nothing to interpretation."
 
-  No links and no timestamps: the chapter block and the standing links are assembled by code
-  afterwards.
+  No links and no timestamps: the chapter block, the standing links and the book and Patreon
+  promotions are assembled by code afterwards, so the body describes the content the video
+  examines and leaves every plug to that block.
 
   Output exactly this shape and nothing else:
   {"body": "..."}

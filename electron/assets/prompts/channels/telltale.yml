@@ -35,7 +35,6 @@ fields:
   - thumbnail_text
   - hashtags
   - pinned_comment
-  - clip_suggestions
 
 # How many options each list field asks for.
 counts:

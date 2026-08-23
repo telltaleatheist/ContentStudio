@@ -26,6 +26,10 @@ import {
   WhisperBridge,
   type WhisperProgress,
 } from '../../lib/bridges';
+// TYPE-ONLY, and that matters: speaker-tagging.service.ts imports `SRTSegment` from this file,
+// so a value import here would be a runtime cycle. `import type` is erased at compile time, and
+// the two modules only ever meet through the object the caller passes in.
+import type { SpeakerTagger, SpeakerTaggingSummary } from './speaker-tagging.service';
 
 export interface TranscriptionProgress {
   jobId: string;
@@ -121,11 +125,26 @@ export class WhisperService extends EventEmitter {
   /**
    * Transcribe a video file to SRT format
    * Returns job ID for tracking progress
+   *
+   * `speakerTagger`, when the run has one, scores every caption against the operator's enrolled
+   * voice before this method returns. It happens HERE, inside the try block, for one reason: the
+   * 16 kHz mono WAV the tagger needs is the audio whisper.cpp just read, and the very next thing
+   * this method does is delete it. Tagging anywhere else would mean extracting the audio a second
+   * time — a second decode of a 90-minute export, to hear the same samples.
    */
   async transcribeVideo(
     videoPath: string,
-    modelName?: string
-  ): Promise<{ jobId: string; srtPath: string; segments: SRTSegment[]; durationSec: number | null; model: string }> {
+    modelName?: string,
+    speakerTagger?: SpeakerTagger
+  ): Promise<{
+    jobId: string;
+    srtPath: string;
+    segments: SRTSegment[];
+    durationSec: number | null;
+    model: string;
+    /** Present only when a tagger ran. Absent means this run was in the untagged mode. */
+    speakerTagging?: SpeakerTaggingSummary;
+  }> {
     // Generate unique job ID
     const jobId = crypto.randomBytes(8).toString('hex');
 
@@ -225,6 +244,16 @@ export class WhisperService extends EventEmitter {
       }
 
       log.info(`[WhisperService] [${jobId}] Transcription complete: ${segments.length} segments`);
+
+      // Speaker tagging, while audio.wav is still on disk. Any failure THROWS out of here and
+      // fails the item: the operator configured an enrollment, which is a request for tagged
+      // output, and returning untagged segments instead would look exactly like success.
+      let speakerTagging: SpeakerTaggingSummary | undefined;
+      if (speakerTagger) {
+        this.emitProgress(jobId, 95, 'Identifying speakers...');
+        speakerTagging = speakerTagger.tagSegments(segments, audioPath, path.basename(videoPath));
+      }
+
       this.emitProgress(jobId, 100, 'Transcription complete');
 
       // Segments are parsed in memory, so clean up the whole job temp dir (audio.wav
@@ -242,7 +271,7 @@ export class WhisperService extends EventEmitter {
       // nothing downstream has to ffprobe the same file a second time to record it.
       // null when that probe failed — which the caller can already see happening in the
       // log above, and which stays a stated absence rather than a guessed number.
-      return { jobId, srtPath: whisperResult.srtPath, segments, durationSec: duration ?? null, model };
+      return { jobId, srtPath: whisperResult.srtPath, segments, durationSec: duration ?? null, model, speakerTagging };
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
