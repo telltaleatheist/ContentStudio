@@ -123,6 +123,20 @@ export interface MetadataResult {
    * absence is what tells description-composer.ts to compose an item the way it always did.
    */
   description_hook?: string;
+  /**
+   * The OTHER descriptions this run wrote, each already flattened to `<hook>\n\n<body>` —
+   * the shape the composer publishes, minus the chapter block it inserts between them.
+   *
+   * ADDITIVE, and it never changes what `description` means. `description` is still the one
+   * description of this item: the publish pipeline, the carry-forward and every stored report
+   * read exactly the field they always read. These are alternatives the operator may choose to
+   * paste over it, in the same relation to `description` that `titles` has always had to the
+   * title he ends up using.
+   *
+   * Absent on every item generated before this build, and on any run whose extra candidates
+   * all failed — which is a declared warning, not a missing contract.
+   */
+  description_options?: string[];
   tags?: string;
   hashtags?: string;
   pinned_comment?: string[];

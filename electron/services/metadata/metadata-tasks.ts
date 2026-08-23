@@ -75,7 +75,7 @@ import {
   MetadataRoutingTaskId,
   ResolvedMetadataRouting,
 } from './metadata-routing';
-import { DescriptionUnit } from './description-unit';
+import { DESCRIPTION_FIELDS, DescriptionUnit } from './description-unit';
 import {
   assembleTags,
   buildHashtags,
@@ -85,6 +85,7 @@ import {
 } from './tags-hashtags';
 import { promptAssets } from './prompt-assets';
 import { groundViewerTitle } from './chapter-title-quality';
+import { stripSpeakerPrefixes } from './transcript-import.service';
 // Type-only: the units receive an AIManagerService instance, they never construct one.
 // A value import here would close an import cycle (ai-manager imports this module for
 // its section parser) and break at require() time.
@@ -106,6 +107,7 @@ export type MetadataFieldId =
   | 'titles'
   | 'description'
   | 'description_hook'
+  | 'description_options'
   | 'tags'
   | 'thumbnail_text'
   | 'pinned_comment'
@@ -181,6 +183,21 @@ export interface MetadataRunContext {
    * because YouTube reads a tag that is not in the content as a spam signal (spec §6.2).
    */
   contentText: string;
+  /**
+   * Whether the CONTENT text above is rendered in screenplay form with a speaker label on every
+   * turn (`HOST:`, `CLIP:`, `UNSURE:`).
+   *
+   * Measured, not assumed: it is `segmentsCarrySpeakerAttribution` over the item's own segments,
+   * which is the same test `buildContentText` uses to decide whether to emit the labels at all.
+   * So this is true exactly when the labels are in the text, and a prompt gated on it can never
+   * explain tags to a call that was not shown any — or, worse, leave a call reading them with no
+   * idea what they mean, which is the case that produced "Fox News frames the 13th Amendment's
+   * prisoner exception as..." about a passage the host was speaking.
+   *
+   * False on a text subject, on an untagged Whisper run, and on a tagged video where every
+   * caption came out the same side (nothing to tell apart, so nothing is labelled).
+   */
+  contentSpeakerTagged: boolean;
   /**
    * Fields written by EARLIER units in this run, keyed by field id.
    *
@@ -329,6 +346,14 @@ export const METADATA_FIELD_SECTIONS: Record<MetadataFieldId, MetadataFieldSpec>
   // DescriptionUnit's own call under its own schema. The entry exists so the field id has one
   // registry.
   description_hook: { section: 'DESCRIPTION', shape: '"one string"', schema: stringSchema('description_hook') },
+  // Same story as the hook, and even more so: the alternatives are whole hook+body pairs
+  // DescriptionUnit writes through its OWN two schemas, one candidate at a time. Nothing ever
+  // asks a model for this array, so the schema here is a formality the registry's shape demands.
+  description_options: {
+    section: 'DESCRIPTION',
+    shape: '["string", ...]',
+    schema: stringListSchema('description_options'),
+  },
   tags: { section: 'TAGS', shape: '"comma-separated string"', schema: stringSchema('tags') },
   thumbnail_text: { section: 'THUMBNAIL_TEXT', shape: '["string", ...]', schema: stringListSchema('thumbnail_text') },
   pinned_comment: { section: 'PINNED_COMMENT', shape: '["string", ...]', schema: stringListSchema('pinned_comment') },
@@ -1572,11 +1597,17 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
    */
   const unrouted: MetadataFieldId[] = [];
   for (const [field, spec] of Object.entries(METADATA_FIELD_SECTIONS) as Array<[MetadataFieldId, { section: string }]>) {
-    if (field === 'description_hook') continue;
+    // Everything DescriptionUnit writes, from ITS OWN list rather than named here one at a
+    // time. This used to say `field === 'description_hook'` beside the `description` check
+    // below, and adding a third description field (`description_options`, 2026-08-23) walked
+    // straight into it: the loop saw a field id whose section the channel publishes and which no
+    // routing task owns, and warned that the alternatives would not be generated — in a run that
+    // generated them. One list, two readers, and the next field added to the unit is covered.
+    if (DESCRIPTION_FIELDS.includes(field)) continue;
     if (!available.has(spec.section)) continue;
     if (planned.some((p) => p.field === field)) continue;
-    // Owned by code or by the description unit on every path.
-    if (field === 'description' || field === 'hashtags' || field === 'tags') continue;
+    // Owned by code.
+    if (field === 'hashtags' || field === 'tags') continue;
     unrouted.push(field);
   }
   for (const field of unrouted) {
@@ -1824,11 +1855,15 @@ export interface MetadataTaskRun {
  *
  * Joined with newlines and matched whole-word, case- and punctuation-insensitively, with
  * possessives normalized away (entity-extraction.ts `occursIn`).
+ *
+ * THE SPEAKER LABELS COME OFF BOTH TRANSCRIPTS FIRST. This text is the answer to "did the video
+ * contain this name?", and HOST, CLIP and UNSURE are things the app wrote onto the transcript,
+ * not things the video said. Left in, they would ground a title that used them as words.
  */
 export function titleGroundingText(ctx: MetadataRunContext): string {
   return [
-    ctx.content,
-    ctx.contentText,
+    stripSpeakerPrefixes(ctx.content),
+    stripSpeakerPrefixes(ctx.contentText),
     ctx.videoTitle,
     ctx.sourceLabel,
     ...ctx.chapterSubjects,
@@ -2046,7 +2081,11 @@ function assembleCodeOwnedFields(
       entities: ctx.entities,
       keyPhrases: ctx.keyPhrases,
       categories: ctx.keyPhrases.filter((p) => !p.includes(' ')).slice(0, 3),
-      contentText: ctx.contentText,
+      // Without the speaker labels, for the same reason the entity pool is measured without
+      // them: this is the "does the video actually say this?" test that keeps a tag off a video
+      // it does not belong to, and HOST/CLIP/UNSURE are words the app wrote, not words the video
+      // said. A tag is a claim about the content; the labels are a claim about the transcript.
+      contentText: stripSpeakerPrefixes(ctx.contentText),
     });
     merged.tags = assembled.tags.join(',');
     log.info(

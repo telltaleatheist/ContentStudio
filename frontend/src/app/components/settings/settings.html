@@ -108,6 +108,20 @@
         </mat-select>
         <mat-hint>Download a model above, then choose which one transcription uses by default.</mat-hint>
       </mat-form-field>
+
+      <mat-form-field appearance="outline" class="full-width whisper-default">
+        <mat-label>Voice enrollment recording</mat-label>
+        <input matInput [(ngModel)]="speakerEnrollmentAudio" readonly>
+        @if (speakerEnrollmentAudio()) {
+          <button mat-icon-button matSuffix (click)="clearEnrollmentAudio()" aria-label="Clear voice enrollment recording">
+            <mat-icon>close</mat-icon>
+          </button>
+        }
+        <button mat-icon-button matSuffix (click)="selectEnrollmentAudio()" aria-label="Choose voice enrollment recording">
+          <mat-icon>folder_open</mat-icon>
+        </button>
+        <mat-hint>A clean solo recording of your own voice &mdash; 30+ seconds of you talking with nothing playing underneath &mdash; lets every caption be tagged HOST, CLIP or UNSURE, so descriptions and chapters can tell your words from the footage you are reacting to. With no recording set, transcripts are untagged and the app behaves as it did before.</mat-hint>
+      </mat-form-field>
     </mat-card-content>
   </mat-card>
 

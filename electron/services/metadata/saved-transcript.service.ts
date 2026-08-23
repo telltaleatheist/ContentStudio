@@ -35,8 +35,14 @@ import type { SRTSegment } from './whisper.service';
  * Bumped when the on-disk shape changes. A record written by another version is REFUSED
  * rather than read leniently — the reader would be guessing which fields it can trust,
  * and the whole point of the record is that it is trustworthy.
+ *
+ * 2 (speaker tagging): the segments may now carry `speaker`/`speakerLabel`, and the record says
+ * whether they do and against whose voice. A version-1 record has neither, and its segments are
+ * untagged in a way a reader could not distinguish from "tagged, and every caption came out
+ * UNSURE" — which is why this is a version bump and not an optional field. Refusing them costs
+ * one re-transcription of anything the operator saved before this build.
  */
-export const SAVED_TRANSCRIPT_SCHEMA_VERSION = 1;
+export const SAVED_TRANSCRIPT_SCHEMA_VERSION = 2;
 
 /** The video identity a transcript is only valid for. */
 export interface SavedTranscriptVideoStamp {
@@ -53,6 +59,23 @@ export interface SavedTranscriptVideoStamp {
   mtimeMs: number;
 }
 
+/**
+ * What speaker tagging did to the segments in this record, or that it did not run.
+ *
+ * PERSISTED WITH THE SEGMENTS, because the tags are persisted with the segments: reuse hands
+ * the pipeline the same `speaker`/`speakerLabel` the tagging run put there, and this is the
+ * record's own statement of where they came from. `enrollment` is the stamp of the recording
+ * the captions were scored against (`<basename>@<size>-<mtimeMs>`), so a transcript tagged
+ * against an enrollment the operator has since re-recorded is visibly a transcript tagged
+ * against the old one.
+ */
+export interface SavedTranscriptSpeakerTagging {
+  enrollment: string;
+  host: number;
+  clip: number;
+  unsure: number;
+}
+
 export interface SavedTranscriptRecord {
   schema_version: number;
   /** `sourceKeyOf(source_path)` — the cross-run join key, and this file's name. */
@@ -66,6 +89,8 @@ export interface SavedTranscriptRecord {
   saved_at: string;
   /** The final export's duration as the transcription stage ffprobed it; null if it could not. */
   duration_sec: number | null;
+  /** null when the transcribing run was in the untagged mode — see SavedTranscriptSpeakerTagging. */
+  speaker_tagging: SavedTranscriptSpeakerTagging | null;
   segments: SRTSegment[];
 }
 
@@ -135,8 +160,10 @@ export function saveTranscript(args: {
   segments: SRTSegment[];
   durationSec: number | null;
   whisperModel: string;
+  /** What the speaker tagger did to these segments; null when the run was in the untagged mode. */
+  speakerTagging: SavedTranscriptSpeakerTagging | null;
 }): SavedTranscriptReuse {
-  const { outputDir, videoPath, segments, durationSec, whisperModel } = args;
+  const { outputDir, videoPath, segments, durationSec, whisperModel, speakerTagging } = args;
 
   if (!Array.isArray(segments) || segments.length === 0) {
     throw new Error(
@@ -162,6 +189,7 @@ export function saveTranscript(args: {
     whisper_model: whisperModel,
     saved_at: new Date().toISOString(),
     duration_sec: durationSec,
+    speaker_tagging: speakerTagging,
     segments,
   };
 
@@ -180,7 +208,8 @@ export function saveTranscript(args: {
 
   log.info(
     `[SavedTranscript] Saved ${record.segments.length} segments for ${record.source_key} ` +
-    `(${record.whisper_model}) to ${recordPath}`
+    `(${record.whisper_model}${record.speaker_tagging ? `, speaker-tagged against ${record.speaker_tagging.enrollment}` : ''}) ` +
+    `to ${recordPath}`
   );
 
   return {
@@ -188,6 +217,7 @@ export function saveTranscript(args: {
     saved_at: record.saved_at,
     whisper_model: record.whisper_model,
     record_path: recordPath,
+    speaker_enrollment: record.speaker_tagging ? record.speaker_tagging.enrollment : null,
   };
 }
 
@@ -227,6 +257,16 @@ export function inspectSavedTranscript(outputDir: string, videoPath: string): Sa
   }
   if (!Array.isArray(record.segments) || record.segments.length === 0) {
     return { exists: false, reason: 'the saved transcript has no segments', recordPath };
+  }
+  // A v2 record STATES its tagging, including stating that there was none. `undefined` is not
+  // "untagged" — it is a record that does not answer the question, and the answer decides
+  // whether the metadata calls are told who is speaking.
+  if (record.speaker_tagging !== null && typeof record.speaker_tagging !== 'object') {
+    return {
+      exists: false,
+      reason: 'the saved transcript does not say whether its captions were speaker-tagged',
+      recordPath,
+    };
   }
   for (const segment of record.segments) {
     if (!segment || typeof segment.text !== 'string' ||
@@ -299,7 +339,9 @@ export function loadSavedTranscript(outputDir: string, videoPath: string): {
   const { record, recordPath } = lookup;
   log.info(
     `[SavedTranscript] Reusing ${record.segments.length} segments for ${record.source_key} ` +
-    `saved ${record.saved_at} by ${record.whisper_model} (${recordPath})`
+    `saved ${record.saved_at} by ${record.whisper_model} ` +
+    `(${record.speaker_tagging ? `speaker-tagged against ${record.speaker_tagging.enrollment}` : 'untagged'}) ` +
+    `(${recordPath})`
   );
 
   return {
@@ -309,6 +351,7 @@ export function loadSavedTranscript(outputDir: string, videoPath: string): {
       saved_at: record.saved_at,
       whisper_model: record.whisper_model,
       record_path: recordPath,
+      speaker_enrollment: record.speaker_tagging ? record.speaker_tagging.enrollment : null,
     },
   };
 }

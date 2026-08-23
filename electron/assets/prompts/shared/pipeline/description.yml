@@ -50,10 +50,27 @@
 # not tell you — and it is empty on a chapterless item, where the coverage block already IS the
 # only description of the video that exists.
 #
-# Placeholders: {channel}, {video}, {coverage}, {transcript}, {pools}, {rules}, {hook}, and the
-# two character/word budgets, which are substituted from description-unit.ts's own constant and
-# from the channel's own `body_words` so the number in the prompt and the number the code
-# measures can never drift apart.
+# `{speaker_tags}` (2026-08-23) EXPLAINS THAT TRANSCRIPT WHEN IT IS TAGGED, and is empty when it
+# is not. The chapter prompts have had a tagged variant for as long as AutoCutStudio imports have
+# carried track attribution; these two calls never did, and the omission produced the failure
+# that motivated the whole speaker-tagging feature. The operator's own example, from a shipped
+# description: "Fox News frames the 13th Amendment's prisoner exception as..." — when the person
+# who brought the 13th Amendment up, and who explained the prisoner exception, was the HOST. The
+# transcript is two people's words in one stream and the call had no way to tell them apart, so
+# it attributed at random and roughly half the time handed the host's argument to the people he
+# was arguing with.
+#
+# It is a BLOCK rather than a second copy of each prompt, which is where this file differs from
+# chapters.yml. That file duplicates `summarize_chapter` into `summarize_chapter_tagged` because
+# the tags change how the whole answer is composed. Here they change one thing — who a sentence
+# may be attributed to — and these two prompts are 40 lines each; two copies of each would be
+# four bodies to keep in step, and the slot mechanism this file already uses for `{coverage}` and
+# `{transcript}` says exactly this kind of thing conditionally.
+#
+# Placeholders: {channel}, {video}, {coverage}, {transcript}, {speaker_tags}, {pools}, {rules},
+# {hook}, and the two character/word budgets, which are substituted from description-unit.ts's
+# own constant and from the channel's own `body_words` so the number in the prompt and the number
+# the code measures can never drift apart.
 
 coverage_chapters: |-
   What the video covers, chapter by chapter:
@@ -66,6 +83,22 @@ coverage_subject: |-
 transcript_block: |-
   The transcript of the video, in full:
   {items}
+
+# Rendered into `{speaker_tags}` when the transcript above carries speaker attribution, and
+# omitted entirely when it does not — a call told to read tags on an untagged transcript would be
+# looking for something that is not there.
+#
+# POSITIVE FORM, like the rest of the tree: every line says what to attribute where. The last one
+# is the whole point of the block and it is stated as an instruction to follow rather than a
+# mistake to avoid — attribution comes from the tag, so a sentence about who said something is
+# reading the tag, and the tag on an UNSURE line says nobody.
+speaker_tags_block: |-
+  The transcript is tagged by speaker, line by line:
+  - HOST: is the creator of this video talking. His words are the channel's own argument.
+  - CLIP: is footage he is playing and reacting to. Those words are somebody else's, and the claims in them belong to whoever is on screen.
+  - UNSURE: is a line that runs across a cut and holds both voices, so the words on it belong to nobody.
+
+  Take every attribution you write from these tags: a claim on a CLIP line belongs to the footage and to whoever is named making it there, an argument on a HOST line is the channel's own verdict, and the subject matter of an UNSURE line is written about on its own with no speaker attached. The register above still governs every sentence: a HOST verdict is carried as the content it is — the claim collapses, the evidence undoes it, the policy turns out to be mainstream — with the claims, the evidence and the people named on the CLIP lines as the subjects doing the doing.
 
 # The channel, as the channel's own data says it — its name and the focus paragraph that is the
 # {channel_focus} slot everywhere else in the tree. It replaces the stored slug, which named the
@@ -147,6 +180,8 @@ hook: |-
 
   {transcript}
 
+  {speaker_tags}
+
   Names and phrases from the video, to draw on where they fit:
   {pools}
 
@@ -181,6 +216,8 @@ body: |-
   {coverage}
 
   {transcript}
+
+  {speaker_tags}
 
   Names and phrases from the video, to draw on where they fit:
   {pools}

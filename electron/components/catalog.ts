@@ -4,6 +4,8 @@ const RELEASE_BASE =
   'https://github.com/telltaleatheist/ContentStudio/releases/download/binaries-v1';
 const WHISPER_MODELS =
   'https://huggingface.co/ggerganov/whisper.cpp/resolve/main';
+const SHERPA_SPEAKER_MODELS =
+  'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models';
 
 const toolComponents: OptionalComponent[] = [
   {
@@ -35,6 +37,35 @@ const toolComponents: OptionalComponent[] = [
       { platform: 'darwin', arch: 'x64', kind: 'archive', url: `${RELEASE_BASE}/whisper-darwin-x64.tar.gz`, sha256: 'acad8080ffa3a3d0f8b2ce47eaa0f91f8dbeec9e271872867e96250901d1b908', bytes: 1_160_425, entry: 'whisper-cli-x64' },
       { platform: 'win32', arch: 'x64', kind: 'archive', url: `${RELEASE_BASE}/whisper-win32-x64.zip`, sha256: '703dbf6419dd4273b2e60ac72cf4980d2be72b4d4338401e5241451a20af420e', bytes: 1_982_464, entry: 'whisper-cli.exe' },
     ],
+  },
+  {
+    // Speaker tagging's embedding model. OPTIONAL and not `recommended`: it does nothing until
+    // the operator also enrolls his voice in Settings, and an app with no enrollment transcribes
+    // exactly as it did before this component existed.
+    //
+    // One artifact for every target — an ONNX graph is portable, and the same 38 MB file is the
+    // one the thresholds in speaker-embedding.ts were calibrated against. The URL misspells
+    // "recognition"; that is the upstream release tag, not a typo here.
+    id: 'speaker-embedding',
+    name: 'Speaker embedding model',
+    description:
+      'Identifies who is talking in each caption, so descriptions and chapters can tell the host apart from the footage he is reacting to. Needs a voice enrollment in Settings to do anything.',
+    category: 'tool',
+    sizeBytes: 40_257_283,
+    entryPath: 'nemo_en_titanet_small.onnx',
+    version: 'sherpa-onnx-titanet-small',
+    artifacts: (['darwin-arm64', 'darwin-x64', 'win32-x64', 'linux-x64'] as const).map((target) => {
+      const split = target.lastIndexOf('-');
+      return {
+        platform: target.slice(0, split) as NodeJS.Platform,
+        arch: target.slice(split + 1),
+        kind: 'file' as const,
+        url: `${SHERPA_SPEAKER_MODELS}/nemo_en_titanet_small.onnx`,
+        sha256: 'ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e',
+        bytes: 40_257_283,
+        fileName: 'nemo_en_titanet_small.onnx',
+      };
+    }),
   },
 ];
 

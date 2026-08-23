@@ -42,6 +42,7 @@ const api = {
 
   // File operations
   selectFiles: () => ipcRenderer.invoke('select-files'),
+  selectEnrollmentAudio: () => ipcRenderer.invoke('select-enrollment-audio'),
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
   selectOutputDirectory: () => ipcRenderer.invoke('select-output-directory'),
   isDirectory: (filePath: string) => ipcRenderer.invoke('is-directory', filePath),

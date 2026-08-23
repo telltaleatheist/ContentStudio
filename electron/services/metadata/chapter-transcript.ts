@@ -42,24 +42,34 @@ export function normalizeWords(text: string): string[] {
 }
 
 /**
- * Which side of the commentary a caption segment is: the host's own mic, or the
- * footage being reacted to.
+ * Which side of the commentary a caption segment is: the host's own mic, the footage being
+ * reacted to, or NEITHER.
  *
- * ContentStudio's segments carry free-form track ids (AutoCutStudio imports use
- * "mic"/"screen"; plain Whisper leaves them undefined), so the two sides are matched
- * by name rather than assumed. An id that matches BOTH sides, or neither, returns null
- * and the whole run stays untagged — a segment silently rendered as CLIP would put the
- * host's own words in the footage's mouth, which is the exact error the tags exist to
- * prevent.
+ * ContentStudio's segments carry free-form track ids (AutoCutStudio imports use "mic"/"screen";
+ * the voice tagger writes "host"/"clip"/"unsure"; a plain Whisper run with no enrollment leaves
+ * them undefined), so the sides are matched by name rather than assumed. An id that matches more
+ * than one side, or none of them, returns null and the whole run stays untagged — a segment
+ * silently rendered as CLIP would put the host's own words in the footage's mouth, which is the
+ * exact error the tags exist to prevent.
+ *
+ * 'unsure' IS A THIRD SIDE, added with voice tagging (2026-08-23), and it is emphatically not
+ * the same as null. null means "this transcript does not say"; 'unsure' means "this transcript
+ * says nobody". The voice tagger produces it for a caption that straddles a cut — whisper.cpp
+ * does not break its captions on speaker changes, so a caption containing both voices embeds as
+ * a blend and scores between the two thresholds. Those words belong to neither side and the
+ * prompt tells the model so, which is a better answer than picking whichever side is nearer.
  */
-type SpeakerRole = 'host' | 'clip';
+export type SpeakerRole = 'host' | 'clip' | 'unsure';
 
 function speakerRoleOf(segment: SRTSegment): SpeakerRole | null {
   const id = `${segment.speaker || ''} ${segment.speakerLabel || ''}`.toLowerCase().trim();
   if (id.length === 0) return null;
   const host = /mic|host/.test(id);
   const clip = /screen|clip|footage/.test(id);
-  if (host === clip) return null; // both or neither — not a usable attribution
+  const unsure = /unsure/.test(id);
+  // Exactly one side, or it is not a usable attribution.
+  if ([host, clip, unsure].filter(Boolean).length !== 1) return null;
+  if (unsure) return 'unsure';
   return host ? 'host' : 'clip';
 }
 

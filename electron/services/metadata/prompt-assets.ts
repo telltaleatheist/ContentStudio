@@ -77,6 +77,15 @@ export interface FieldAsset {
    * pair. Absent where the field declares none, and the reader that wants it says so.
    */
   wordRange?: [number, number];
+  /**
+   * Extra rules that apply only when the transcript this field is written from carries speaker
+   * attribution. Appended to the section by the caller, beneath the rules it qualifies.
+   *
+   * Absent on every field but the description today, and absent is a legitimate answer rather
+   * than a gap: a field whose rules say nothing different about a tagged transcript declares
+   * nothing here. The one caller that needs it says so itself if it is missing.
+   */
+  taggedAddendum?: string;
 }
 
 /** Field id -> the file under prompts/shared/fields/ that carries its instructions. */
@@ -406,6 +415,17 @@ export class PromptAssets {
       wordRange = [rawRange[0], rawRange[1]];
     }
 
+    // Falls back to the FILE's value where the variant declares none, for the same reason
+    // `default_title_format` and `body_words` do: a variant that does not restate a shared rule
+    // is taking the shared rule, not dropping it. The Shorts and Spreaker description variants
+    // both say nothing about speaker tags, and both mean the shared paragraph.
+    const taggedAddendum =
+      typeof source.tagged_addendum === 'string'
+        ? source.tagged_addendum
+        : typeof loaded.tagged_addendum === 'string'
+          ? loaded.tagged_addendum
+          : undefined;
+
     return {
       section: this.requireString(loaded, filePath, 'section'),
       instructions,
@@ -413,6 +433,7 @@ export class PromptAssets {
       selfCheckWith,
       defaultTitleFormat,
       wordRange,
+      taggedAddendum,
     };
   }
 

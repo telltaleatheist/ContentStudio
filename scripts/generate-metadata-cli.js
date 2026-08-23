@@ -292,6 +292,12 @@ function readCache(file, videoPath, what) {
   } catch (error) {
     fail(`The cached ${what} at ${file} is not readable JSON (${error.message}); delete it and re-run`);
   }
+  if (parsed.version !== undefined && parsed.version < 2) {
+    fail(
+      `The cached ${what} at ${file} is version ${parsed.version}, written before speaker tagging ` +
+        `existed, so its captions carry no attribution. Re-run with --transcribe to replace it.`
+    );
+  }
   if (!sameStamp(parsed.video, videoStamp(videoPath))) {
     fail(
       `The cached ${what} at ${file} was taken from a different file, or from this one before it ` +
@@ -329,6 +335,9 @@ async function main() {
   const { MetadataGeneratorService } = require(path.join(DIST, 'services/metadata/metadata-generator.service.js'));
   const { WhisperService } = require(path.join(DIST, 'services/metadata/whisper.service.js'));
   const { InputHandlerService } = require(path.join(DIST, 'services/metadata/input-handler.service.js'));
+  const { resolveSpeakerTagging, announceSpeakerTagging, SpeakerTagger } =
+    require(path.join(DIST, 'services/metadata/speaker-tagging.service.js'));
+  const { getRuntimePaths } = require(path.join(DIST, 'lib/bridges/index.js'));
 
   // ipc-handlers.ts:760 — the selected Whisper model comes from the store.
   if (!settings.whisperModel) {
@@ -493,7 +502,22 @@ async function main() {
     whisperService.on('progress', (p) => {
       if (p.percent !== undefined) progressCallback('transcription', p.message, p.percent);
     });
-    const inputHandler = new InputHandlerService(whisperService, progressCallback);
+    // Speaker tagging, resolved exactly as ipc-handlers' transcription job resolves it: once,
+    // before any video is read, announced once. The CLI is the transcribing side here, so this
+    // is the side that has to do it — the generator below is handed `preTranscribedContent` and
+    // deliberately does not resolve a second time.
+    const speakerMode = await resolveSpeakerTagging(
+      settings.speakerEnrollmentAudio, getRuntimePaths().speakerModel);
+    announceSpeakerTagging(speakerMode);
+    console.error(
+      `  SPEAKERS:   ${speakerMode.enabled
+        ? `TAGGING ON — captions scored against ${speakerMode.enrollment.stamp}`
+        : `tagging off — ${speakerMode.reason}`}\n`
+    );
+    const speakerTagger = speakerMode.enabled ? new SpeakerTagger(speakerMode) : undefined;
+
+    const inputHandler = new InputHandlerService(
+      whisperService, outputDir, progressCallback, speakerTagger);
     const inputFailures = [];
     contentItems = await inputHandler.processMultipleInputs([args.input], new Map(), inputFailures, new Map());
     if (contentItems.length === 0) {
@@ -503,7 +527,12 @@ async function main() {
       for (const f of inputFailures) console.error(`  ! input stage: ${f}`);
     }
     writeCache(caches.transcript, {
-      version: 1,
+      // 2: the ContentItem's segments may now carry speaker tags, and its `content` may be
+      // screenplay-prefixed because of them. A version-1 cache is a transcript from before
+      // tagging existed, and replaying it would generate an untagged description while the run
+      // said tagging was on — the same confusion the saved-transcript store bumped its own
+      // schema to refuse.
+      version: 2,
       video: videoStamp(args.input),
       cachedAt: new Date().toISOString(),
       whisperModel: settings.whisperModel,
@@ -538,6 +567,11 @@ async function main() {
     jobName: path.basename(args.input),
     inputTranscripts: {},
     chapterNumCtx: settings.chapterNumCtx || undefined,
+    // Carried for parity with ipc-handlers' `generate-metadata`. It is a no-op on this call —
+    // the generator only resolves a tagging mode when it is the one transcribing, and it is
+    // handed `preTranscribedContent` here — but a params object that silently lacks a field the
+    // real one has is how a CLI stops being the real pipeline.
+    speakerEnrollmentAudio: settings.speakerEnrollmentAudio || undefined,
     metadataRouting: resolvedRouting,
     cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
     inputNotes: {},
@@ -604,7 +638,7 @@ async function main() {
         );
       }
       writeCache(caches.chapters, {
-        version: 1,
+        version: 2,
         video: videoStamp(args.input),
         cachedAt: new Date().toISOString(),
         transcriptCachedAt: transcriptStamp(caches.transcript),
