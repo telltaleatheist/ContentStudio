@@ -4,18 +4,19 @@
 // above and below the open one in the channel's content list, so moving between videos is
 // one click instead of back-to-the-list-then-find-it-again.
 //
-// The list is ContentStudio's, not Studio's: the analytics collector already stores every
-// video per channel, and the app answers "which channel is this video in, and what is its
-// whole list" in one call. Nothing here scrapes Studio's content list — it isn't on screen
-// on an edit page anyway.
+// The list is STUDIO'S OWN and ContentStudio is not involved: the worker reads it from
+// the same `creator/list_creator_videos` endpoint that backs Studio's content list, in the
+// same order, so the strip navigates exactly what the operator sees on that page — and it
+// keeps working with the desktop app closed. Drafts, private and unlisted videos are in it
+// for that same reason: they are in Studio's list, and walking straight into one to edit
+// its metadata is the whole point.
 //
-// ORDER: newest first, the same order Studio's content list uses, so "up" means the same
-// thing here as it does there. Up = newer, down = older.
+// ORDER: newest display time first, Studio's own order, so "up" means the same thing here
+// as it does there. Up = newer, down = older.
 //
 // Like the shelf it lives in its own shadow root, and for the same reason: Studio's
 // stylesheet must not reach in and ours must not leak out.
 
-import type { NavVideo } from './publish-client';
 import {
   DEFAULT_NAV_STRIP_PREFS,
   loadNavStripPrefs,
@@ -23,6 +24,29 @@ import {
   type NavStripPrefs,
 } from './nav-strip-prefs';
 import { STALE_CONTEXT_MESSAGE, extensionContextAlive } from './publish-messages';
+
+/**
+ * One entry of Studio's content list, as the strip renders it.
+ *
+ * Mapped down from the worker's CatalogueVideo (catalogue.ts): the strip needs three of
+ * its fields, and carrying the rest would invite rendering decisions that belong to the
+ * data source. BOTH strings can be empty, and that is a real state rather than missing
+ * data — a draft has no publish date, and Studio holds no title for an upload nobody has
+ * named yet. Nothing here invents a stand-in for either.
+ */
+export interface NavVideo {
+  videoId: string;
+  /** '' when Studio holds no title for it. */
+  title: string;
+  /** ISO, or '' for anything never published — drafts and scheduled uploads. */
+  publishedAt: string;
+}
+
+/** A channel's content list, newest display time first, and the channel it came from. */
+export interface NavList {
+  channelId: string;
+  videos: NavVideo[];
+}
 
 const HOST_ID = 'contentstudio-video-nav';
 
@@ -114,17 +138,21 @@ export interface NavStripCallbacks {
 /**
  * What the strip is showing.
  *
- * 'notice' is for the two ORDINARY not-showing-a-list states — the app is closed, or the
- * collector has not reached this video yet. Both have a plain next step and neither is a
- * fault, so they get muted text rather than the red 'error' treatment. Nothing renders an
- * empty rail: a strip with no tiles and no words would read as "this video has no
- * neighbours", which is a different and wrong claim.
+ * 'notice' is for the ORDINARY not-showing-a-list state: this tab has no usable Studio
+ * session yet. It has a plain next step (reload the page), it is nobody's fault, and it
+ * resolves itself, so it gets muted text rather than the red 'error' treatment. Nothing
+ * renders an empty rail: a strip with no tiles and no words would read as "this video has
+ * no neighbours", which is a different and wrong claim.
+ *
+ * `detail` is the underlying message, kept for the tooltip. The rail is 64px wide so the
+ * visible line has to be short — but shortening it must not be how the real reason gets
+ * lost, so the reason hangs on the note's title instead of being dropped.
  */
 type StripState =
   | { kind: 'loading' }
   | { kind: 'ready'; current: string; videos: NavVideo[] }
-  | { kind: 'notice'; text: string }
-  | { kind: 'error'; text: string };
+  | { kind: 'notice'; text: string; detail: string | null }
+  | { kind: 'error'; text: string; detail: string | null };
 
 export class NavStrip {
   private host: HTMLElement;
@@ -176,14 +204,14 @@ export class NavStrip {
   }
 
   /** An ordinary state with an ordinary next step. Muted, never red. */
-  setNotice(text: string): void {
-    this.state = { kind: 'notice', text };
+  setNotice(text: string, detail: string | null = null): void {
+    this.state = { kind: 'notice', text, detail };
     this.render();
   }
 
   /** A real fault. Stays until something replaces it. */
-  setError(text: string): void {
-    this.state = { kind: 'error', text };
+  setError(text: string, detail: string | null = null): void {
+    this.state = { kind: 'error', text, detail };
     this.render();
   }
 
@@ -239,7 +267,7 @@ export class NavStrip {
       // than picking a window around an arbitrary position — every arrow would then point
       // somewhere the operator did not ask for.
       card.appendChild(
-        this.note('This video is not in the list ContentStudio returned.', true),
+        this.note('This video is not in Studio’s content list.', true),
       );
       return card;
     }
@@ -283,10 +311,11 @@ export class NavStrip {
     tile.title = isCurrent ? `Open now: ${labelOf(video)}` : labelOf(video);
 
     const img = document.createElement('img');
-    // Derived, not stored: ContentStudio keeps no thumbnails, and this URL shape is
-    // stable for every public YouTube video.
+    // Derived, not fetched: the content-list endpoint returns no thumbnail, and this URL
+    // shape is stable for every PUBLIC YouTube video. Drafts and privates 404 here — which
+    // is expected, and handled just below rather than by dropping them from the list.
     img.src = `https://i.ytimg.com/vi/${video.videoId}/mqdefault.jpg`;
-    img.alt = video.title ?? video.videoId;
+    img.alt = video.title || video.videoId;
     img.addEventListener('error', () => {
       // A thumbnail YouTube will not serve must not leave a blank clickable box. Swap in
       // the title so the tile still says which video it is.
@@ -294,7 +323,7 @@ export class NavStrip {
       tile.classList.add('noimg');
       const txt = document.createElement('span');
       txt.className = 'txt';
-      txt.textContent = video.title ?? video.videoId;
+      txt.textContent = video.title || video.videoId;
       tile.appendChild(txt);
     });
     tile.appendChild(img);
@@ -309,16 +338,18 @@ export class NavStrip {
 
   private buildNote(): HTMLElement {
     if (this.state.kind === 'loading') return this.note('Loading…', false);
-    if (this.state.kind === 'error') return this.note(this.state.text, true);
-    if (this.state.kind === 'notice') return this.note(this.state.text, false);
+    if (this.state.kind === 'error') return this.note(this.state.text, true, this.state.detail);
+    if (this.state.kind === 'notice') return this.note(this.state.text, false, this.state.detail);
     throw new Error(`buildNote called in state ${this.state.kind}`);
   }
 
-  private note(text: string, bad: boolean): HTMLElement {
+  private note(text: string, bad: boolean, detail: string | null = null): HTMLElement {
     const note = document.createElement('div');
     note.className = `note${bad ? ' bad' : ''}`;
     note.textContent = text;
-    note.title = text;
+    // The tooltip carries the cause when there is one, so the short line on screen is a
+    // summary rather than the only thing that survived.
+    note.title = detail ? `${text}\n\n${detail}` : text;
     return note;
   }
 
@@ -342,10 +373,17 @@ export class NavStrip {
   }
 }
 
-/** Title plus publish date, for tooltips. */
+/**
+ * Title plus publish date, for tooltips.
+ *
+ * Studio's content list is full of drafts, and a draft has no publish date. The date is
+ * left OFF rather than filled with a placeholder or with today: a tooltip stating a
+ * publication that never happened is worse than one that says nothing about it.
+ */
 function labelOf(video: NavVideo): string {
+  const title = video.title || '(no title recorded)';
   const date = video.publishedAt.slice(0, 10);
-  return `${video.title ?? '(no title recorded)'} — ${date}`;
+  return date ? `${title} — ${date}` : title;
 }
 
 /**

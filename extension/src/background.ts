@@ -22,12 +22,13 @@ import {
   fetchItem,
   fetchPending,
   fetchReports,
-  fetchVideoNav,
   reportFilled,
   resolveForPage,
   saveTitles,
 } from './publish/publish-client';
 import { isPublishMessage, type PublishMessage } from './publish/publish-messages';
+import { isNavMessage } from './publish/nav-messages';
+import { NavSourceError, fetchNavListForTab } from './nav-source';
 import { enqueueAbTests, enqueueSnapshots, enqueueVideos, flushOutbox, outboxDepth, type FlushResult } from './outbox';
 import { fetchChannels } from './ingest-client';
 import { DEFAULT_SETTINGS, saveSettings } from './settings';
@@ -184,7 +185,7 @@ async function collectAllChannels(channels: Awaited<ReturnType<typeof fetchChann
 
 // The popup triggers manual syncs via messaging so all storage writes happen
 // in this single service worker context.
-chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   if (
     typeof message === 'object' &&
     message !== null &&
@@ -198,6 +199,35 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
       },
     );
     return true; // keep the message channel open for the async response
+  }
+
+  // The nav strip's video list. NOT a ContentStudio call — the worker reads it out of
+  // Studio itself, by injecting into the SENDER's tab, which is the only place the
+  // page-world globals the endpoint needs exist. See nav-source.ts.
+  if (isNavMessage(message)) {
+    const tabId = sender.tab?.id;
+    if (typeof tabId !== 'number') {
+      // Nothing to inject into. Only the content script sends this, so reaching here means
+      // something else did — answer with the fact rather than guessing at a tab.
+      sendResponse({
+        ok: false,
+        error: 'The video-list request did not come from a tab.',
+        kind: 'no-tab',
+      });
+      return true;
+    }
+    fetchNavListForTab(tabId).then(
+      (data) => sendResponse({ ok: true, data }),
+      (err: unknown) => {
+        const error = err instanceof Error ? err : new Error(String(err));
+        sendResponse({
+          ok: false,
+          error: error.message,
+          kind: error instanceof NavSourceError ? error.kind : 'unknown',
+        });
+      },
+    );
+    return true;
   }
 
   // Publish requests from the Studio content script.
@@ -239,7 +269,5 @@ async function handlePublishMessage(message: PublishMessage): Promise<unknown> {
       return fetchItem(message.itemId);
     case 'publish-titles':
       return saveTitles(message.itemId, message.titles);
-    case 'video-nav':
-      return fetchVideoNav(message.videoId);
   }
 }

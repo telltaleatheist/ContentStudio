@@ -10,16 +10,17 @@
 //
 // Runs in the extension's ISOLATED world, which is sufficient: everything it does is DOM
 // work (querySelector, execCommand, dispatched events, the native input setter) and DOM
-// nodes are shared across worlds. No MAIN-world injection needed, so no page-script
-// privileges are taken.
+// nodes are shared across worlds. It never injects into the MAIN world itself — the one
+// thing that needs page globals, the nav strip's video list, is asked of the service
+// worker, which is the only context that can inject at all.
 //
 // Studio is an SPA — the URL changes without a reload — so this watches for navigation
 // instead of relying on document_idle firing once.
 
 import { fillerById, type FillContext, type FillId } from './publish/fillers';
 import { PublishShelf, type PageContext } from './publish/shelf';
-import { NavStrip, type NavStripCallbacks } from './publish/nav-strip';
-import type { ItemDetail, NavVideo } from './publish/publish-client';
+import { NavStrip, type NavStripCallbacks, type NavVideo } from './publish/nav-strip';
+import type { ItemDetail } from './publish/publish-client';
 // All localhost traffic goes through the service worker — see publish-messages.ts for
 // why a content-script fetch cannot talk to ContentStudio directly.
 import {
@@ -31,8 +32,10 @@ import {
   requestReports,
   requestResolve,
   requestSaveTitles,
-  requestVideoNav,
 } from './publish/publish-messages';
+// The nav strip's list is NOT a ContentStudio call — it is read from Studio itself, so it
+// travels its own message rather than a publish one. See nav-messages.ts.
+import { requestNavList } from './publish/nav-messages';
 import {
   detailsFormReady,
   isDetailsPage,
@@ -48,19 +51,21 @@ let shelf: PublishShelf | null = null;
 /** The right-edge video navigator. Mounted only on /video/<id>/edit — see syncNavStrip. */
 let navStrip: NavStrip | null = null;
 /**
- * The channel's video list the strip draws from.
+ * Studio's content list, as the strip draws it.
  *
- * Cached for the tab because it is the same list for every video on the channel, and the
- * operator clicks through several in a row. Dropped — never quietly reused — when the
- * refresh button is pressed or when the open video is not in it.
+ * Cached for the tab because it is the same list for every video on the channel, the
+ * operator clicks through several in a row, and fetching it pages the whole channel out of
+ * Studio 100 videos at a time. Dropped — never quietly reused — when the refresh button is
+ * pressed or when the open video is not in it.
  */
 let navList: NavVideo[] | null = null;
 /**
  * Sequence number for the in-flight list fetch.
  *
- * Studio navigation is faster than a localhost round trip, so a reply can arrive after
- * the operator has already moved on. Painting it would highlight the wrong video and aim
- * both arrows at the wrong neighbours, so a superseded reply is dropped.
+ * Studio navigation is far faster than paging a channel's whole content list, so a reply
+ * can easily arrive after the operator has already moved on. Painting it would highlight
+ * the wrong video and aim both arrows at the wrong neighbours, so a superseded reply is
+ * dropped.
  */
 let navRequest = 0;
 
@@ -279,30 +284,24 @@ async function syncNavStrip(): Promise<void> {
   const seq = (navRequest += 1);
   navStrip.setLoading();
   try {
-    const nav = await requestVideoNav(videoId);
+    const list = await requestNavList();
     if (seq !== navRequest) return;
-    navList = nav.videos;
-    navStrip?.setList(videoId, nav.videos);
+    navList = list.videos;
+    navStrip?.setList(videoId, list.videos);
   } catch (error) {
     if (seq !== navRequest) return;
     navList = null;
+    const detail = error instanceof Error ? error.message : String(error);
     const kind = error instanceof PublishBridgeError ? error.kind : null;
-    if (kind === 'unreachable') {
-      // The app being closed is a normal state, not a fault.
-      navStrip?.setNotice('ContentStudio app not reachable');
+    if (kind === 'ytcfg-missing' || kind === 'no-channel' || kind === 'no-sapisid') {
+      // The tab has no usable Studio session yet: still loading, sitting on a sign-in
+      // interstitial, or signed out. It is Studio's state, not a fault of ours, and it
+      // fixes itself once the page is what it looks like — so it is muted, and the exact
+      // reason waits in the tooltip.
+      navStrip?.setNotice('Studio session not ready \u2014 reload this page.', detail);
       return;
     }
-    if (kind === 'not-in-store') {
-      navStrip?.setNotice('Not in ContentStudio\u2019s video list \u2014 press \u27f3 after the collector runs.');
-      return;
-    }
-    if (kind === 'unavailable') {
-      // The app answered but predates the video-nav route: an update problem, not a data
-      // one, and the operator fixes it at the app, not here.
-      navStrip?.setNotice('ContentStudio is running an older build \u2014 restart or update the app.');
-      return;
-    }
-    navStrip?.setError(error instanceof Error ? error.message : String(error));
+    navStrip?.setError(detail);
   }
 }
 
@@ -326,9 +325,10 @@ function callbacks() {
       // inside the wizard without the URL changing.
       manualPick = false;
       resolvedFor = videoIdFromUrl();
-      // The refresh button is also the nav strip's: it is the only way to pick up videos
-      // the 6-hour collector has published since this tab was opened, which is exactly
-      // what the strip's "not in the list" state tells the operator to press.
+      // The refresh button is also the nav strip's: the cached list is a snapshot of
+      // Studio's content list at the moment this tab first asked for it, so an upload made
+      // since then reaches the strip only by dropping it, which is exactly what the
+      // strip's "not in the list" state tells the operator to press.
       navList = null;
       await Promise.all([resolveCurrentVideo(), syncNavStrip()]);
     },

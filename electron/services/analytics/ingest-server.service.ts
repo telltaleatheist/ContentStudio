@@ -7,7 +7,6 @@
  * Endpoints:
  *   GET  /health             -> 200 {"ok":true,"app":"contentstudio"}
  *   GET  /analytics/channels -> 200 {channels: [{channelId,name}]}
- *   GET  /analytics/video-nav -> ?videoId -> 200 {channelId, videos:[{videoId,title,publishedAt}]}
  *   POST /analytics/videos   -> body {videos: VideoRecord[]}   -> upsert, 200 {accepted:N}
  *   POST /analytics/ingest   -> body {snapshots: Snapshot[]}   -> validate+append, 200 {accepted:N}
  *   POST /analytics/ab-tests -> body {tests: AbTestResult[]}   -> upsert, 200 {accepted:N}
@@ -103,31 +102,6 @@ function legacyShapeError(field: string): string {
  */
 function requireItemIdField(body: any): string | null {
   return typeof body?.itemId === 'string' && body.itemId.trim() ? body.itemId : null;
-}
-
-/**
- * The title a VideoRecord is CURRENTLY published under.
- *
- * titleHistory is a list of spans and the OPEN one (to === null) is the live title.
- * A record with no open span returns null and the route sends null through unchanged —
- * inventing an "Untitled" here would hide a collector that has stopped recording titles
- * behind a plausible-looking label.
- */
-function currentTitleOf(video: VideoRecord): string | null {
-  const open = video.titleHistory?.find((span) => span.to === null);
-  return open ? open.title : null;
-}
-
-/**
- * Newest first — the same order YouTube Studio's content list uses, which is what makes
- * "the video above this one" mean the same thing in the extension's nav strip as it does
- * on screen. videoId breaks ties (and unparseable dates) so the order is stable between
- * requests rather than depending on sort implementation.
- */
-function compareByPublishedDesc(a: VideoRecord, b: VideoRecord): number {
-  const byDate = Date.parse(b.publishedAt) - Date.parse(a.publishedAt);
-  if (Number.isFinite(byDate) && byDate !== 0) return byDate;
-  return a.videoId.localeCompare(b.videoId);
 }
 
 export class IngestServerService {
@@ -346,44 +320,6 @@ export class IngestServerService {
       }
       const channels = this.store.listChannels().map((c) => ({ channelId: c.channelId, name: c.name }));
       this.sendJson(res, 200, { channels });
-      return;
-    }
-
-    // The companion extension's video-navigation strip: one channel's whole video list,
-    // newest first, resolved from a SINGLE video id.
-    //
-    // The extension knows only which video Studio has open; which channel that belongs to
-    // is this store's knowledge, so the channel lookup happens here instead of asking the
-    // extension to guess one. CSRF-guarded like the rest of /analytics/*.
-    if (req.method === 'GET' && url === '/analytics/video-nav') {
-      if (this.isCrossOriginWebRequest(req)) {
-        this.sendJson(res, 403, { error: 'cross-origin web requests are not allowed' });
-        return;
-      }
-      const videoId = this.queryOf(req).get('videoId');
-      if (!videoId) {
-        this.sendJson(res, 400, { error: 'videoId is required' });
-        return;
-      }
-
-      for (const channel of this.store.listChannels()) {
-        const videos = this.store.listVideos(channel.channelId);
-        if (!videos.some((v) => v.videoId === videoId)) continue;
-        this.sendJson(res, 200, {
-          channelId: channel.channelId,
-          videos: [...videos].sort(compareByPublishedDesc).map((v) => ({
-            videoId: v.videoId,
-            title: currentTitleOf(v),
-            publishedAt: v.publishedAt,
-          })),
-        });
-        return;
-      }
-
-      // A 404, NOT an empty list. "The collector has never seen this video" and "this
-      // channel has no videos" are different facts, and an empty rail would render as
-      // the second while meaning the first — the strip says which one out loud.
-      this.sendJson(res, 404, { error: 'video not in analytics store' });
       return;
     }
 

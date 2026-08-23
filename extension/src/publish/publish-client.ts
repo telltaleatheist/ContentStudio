@@ -6,7 +6,6 @@
 //   GET  /publish/reports  -> ?offset&limit&q -> BrowsePage
 //   GET  /publish/item     -> ?itemId -> { item: ItemDetail }
 //   POST /publish/titles   -> body { itemId, titles } -> SetTitlesResult
-//   GET  /analytics/video-nav -> ?videoId -> VideoNav   (the nav strip's video list)
 //
 // EVERY route names ONE generated item by its permanent `itemId`. They used to take a
 // (jobId, itemIndex) pair; the index was a position in the job's items[] array, so
@@ -102,33 +101,11 @@ export type SetTitlesResult =
   | { ok: true; item: ItemDetail }
   | { ok: false; errors: string[] };
 
-/** One neighbour in the channel's video list, as the nav strip renders it. */
-export interface NavVideo {
-  videoId: string;
-  /** The live title, or null when the store holds no open title span for the video. */
-  title: string | null;
-  publishedAt: string;
-}
-
-/** A channel's whole video list, newest first — the order Studio's content list uses. */
-export interface VideoNav {
-  channelId: string;
-  videos: NavVideo[];
-}
-
 export type PublishFailureKind =
   /** ContentStudio is not running, or the port is wrong. */
   | 'unreachable'
   /** The app is running but the publish routes are not wired (503). */
   | 'unavailable'
-  /**
-   * The app answered, and the answer is "I have never seen this video".
-   *
-   * Its own kind rather than a generic bad response because it is an ORDINARY state with
-   * an ordinary fix (wait for the 6-hour collector, or press refresh) — the nav strip
-   * says exactly that instead of showing a fault.
-   */
-  | 'not-in-store'
   /** Unexpected status or a body that isn't ContentStudio's. */
   | 'unexpected-response';
 
@@ -298,49 +275,5 @@ export async function saveTitles(itemId: string, titles: string[]): Promise<SetT
   }
   // The success shape carries a full ItemDetail, which is what the shelf then fills from.
   if (body.ok) requireMonetize(body.item.monetize, '/publish/titles');
-  return body;
-}
-
-/**
- * The channel video list surrounding one video, for the nav strip.
- *
- * Not a /publish/ route: the list comes from the analytics store the collector fills, so
- * it sits with the other /analytics/ endpoints. A 404 is turned into its own
- * 'not-in-store' kind so the strip can tell "the collector has not reached this video"
- * apart from a real fault — the generic path would flatten both into a red error box.
- */
-export async function fetchVideoNav(videoId: string): Promise<VideoNav> {
-  const params = new URLSearchParams({ videoId });
-  let body: VideoNav;
-  try {
-    body = await call<VideoNav>(`/analytics/video-nav?${params.toString()}`);
-  } catch (error) {
-    if (error instanceof PublishClientError && error.status === 404) {
-      // Two different 404s reach here and they must not blur: the route answering "I have
-      // never seen this video" (its exact error string), and an app build OLD ENOUGH not
-      // to have the route at all, whose catch-all says "No such endpoint". Telling the
-      // operator to wait for the collector when the actual fix is restarting the app
-      // would send them down the wrong road.
-      if (error.message === 'video not in analytics store') {
-        throw new PublishClientError(
-          'not-in-store',
-          `ContentStudio's video list does not contain ${videoId}`,
-          404,
-        );
-      }
-      throw new PublishClientError(
-        'unavailable',
-        'ContentStudio is running a build without /analytics/video-nav. Restart or update the app.',
-        404,
-      );
-    }
-    throw error;
-  }
-  if (!body || !Array.isArray(body.videos) || typeof body.channelId !== 'string') {
-    throw new PublishClientError(
-      'unexpected-response',
-      '/analytics/video-nav returned an unexpected body',
-    );
-  }
   return body;
 }
