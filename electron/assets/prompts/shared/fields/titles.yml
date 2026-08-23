@@ -1,9 +1,10 @@
 # The titles instruction block, shared by every channel.
 #
 # It was byte-identical across telltale, fireside and unfiltered; unfiltered's only real
-# difference is its multi-part title FORMAT, which is now channel data ({title_format}) rather
-# than a fourth copy of this section. Shorts and Spreaker are genuinely different jobs and
-# carry their own `overrides` entry below.
+# difference is its title FORMAT line, which is channel data ({title_format}) rather than a
+# fourth copy of this section (its multi-part ` | [subject] | p[N]` tail is deterministic and
+# appended outside AI generation — see prompts/channels/unfiltered.yml). Shorts and Spreaker
+# are genuinely different jobs and carry their own `overrides` entry below.
 #
 # NINE DEFECTS WERE FIXED ON THE WAY IN. Each is listed here because the wording that replaced
 # it looks arbitrary without the reason:
@@ -65,8 +66,8 @@ instructions: |-
   - The top 3 titles are for YouTube's Test & Compare, which measures watch time per impression rather than clicks. Send it three of your genuinely distinct angles — different emotional appeals, different entry points — so the test measures something. A click-baity variant viewers abandon will lose.
 
 # The default title FORMAT line, used where a channel declares no `title_format` of its own.
-# It is a slot rather than a fixed line because Unfiltered's multi-part convention deliberately
-# runs longer than any cap (see prompts/channels/unfiltered.yml).
+# It is a slot rather than a fixed line so a channel can amend it — Unfiltered's version adds
+# a hook-only rule because its series/part tail is appended deterministically after generation.
 default_title_format: |-
   - Length: 70 characters is the ceiling. The hook must land inside the FIRST 45 characters — that is all mobile search results and notifications show.
     - Write the title as one unbroken claim; prefer that to a `Topic: elaboration` construction.

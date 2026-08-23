@@ -270,11 +270,16 @@ check('the titles prompt carries none of the nine defects it was rewritten to re
   }
 });
 
-check("unfiltered's pipe-tail title format replaces the shared length line, and only there", () => {
+check("unfiltered's title format is hook-only: the deterministic tail is named, never generated", () => {
   const unfiltered = assets.fieldSection(assets.channel('youtube-unfiltered'), 'titles');
-  if (!unfiltered.includes('| [subject] | p[N]')) throw new Error('the multi-part convention is gone');
-  if (unfiltered.includes('70 characters is the ceiling')) {
-    throw new Error('unfiltered kept a ceiling its own convention deliberately exceeds');
+  if (!unfiltered.includes('| [subject] | p[N]')) {
+    throw new Error('the tail convention is no longer named, so a model will imitate part markers it sees in the filename');
+  }
+  if (!unfiltered.includes('appended outside this call')) {
+    throw new Error('the tail is no longer declared as appended outside generation');
+  }
+  if (!unfiltered.includes('70 characters is the ceiling')) {
+    throw new Error('unfiltered lost the length ceiling; the hook the model writes is a normal-length title');
   }
   const telltale = assets.fieldSection(assets.channel('youtube-telltale'), 'titles');
   if (telltale.includes('| [subject] |')) throw new Error("unfiltered's format leaked into a normal channel");
