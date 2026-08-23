@@ -29,9 +29,11 @@ import {
   SPREAKER_MAX_TITLE_LENGTH,
   SpreakerReceipt,
   SpreakerStatus,
+  THUMBNAIL_EXTENSIONS,
   ThumbnailMeta,
   ThumbnailPreview,
   ThumbnailProposal,
+  ThumbnailSource,
 } from './publish.types';
 import { composePublishAt } from './publish-schedule';
 
@@ -90,20 +92,15 @@ export class PublishState {
   /**
    * What the item's prompt set routes to, when the record has no channel of its own.
    *
-   * A SUGGESTION, never a stored value: it pre-selects the picker and is written with the
-   * operator's next save (see withChannelSeed). Resolving is only ever done for a record
-   * whose channelId is null, so a stored choice is never re-routed behind the operator.
+   * DISPLAY ONLY, and that is a change: this used to be a suggestion the renderer wrote
+   * with the operator's next save. The main process now routes the item itself, on every
+   * write, from the prompt set the run recorded (services/publish/auto-config.ts), so a
+   * second mechanism here would be two things racing to write the same field. What is
+   * left is the SENTENCE — "Prompt set X is mapped to Y" — which is what the panel shows
+   * under a picker that has filled itself in, and the reason the picker is still empty
+   * when no channel claims the prompt set.
    */
   private readonly _channelSuggestion = signal<ChannelResolution | null>(null);
-
-  /**
-   * True once the operator has touched the picker themselves.
-   *
-   * This is what makes an override sticky. Without it, choosing "not routed" on an item
-   * that HAS a suggestion would be undone by the next save of any other field, which
-   * would silently route a video the operator had just declined to route.
-   */
-  private readonly _channelTouched = signal(false);
 
   /** The stored thumbnail, decoded and downscaled by the main process. */
   private readonly _thumbnailPreview = signal<ThumbnailPreview | null>(null);
@@ -259,17 +256,18 @@ export class PublishState {
     () => this._selection()?.thumbnailMeta ?? null
   );
 
+  /**
+   * Who attached the thumbnail — 'auto', 'manual', or null when nobody has decided.
+   *
+   * `?? null` covers the item with no record, which really is "nobody has decided": the
+   * automatic pass has not run for it yet, because nothing has been written.
+   */
+  readonly thumbnailSource = computed<ThumbnailSource | null>(
+    () => this._selection()?.thumbnailSource ?? null
+  );
+
   /** Podcast episode rather than a YouTube-first video. False until set otherwise. */
   readonly isPodcast = computed(() => this._selection()?.isPodcast ?? false);
-
-  /**
-   * Monetization intent: true, false, or null for "no decision recorded".
-   *
-   * `?? null` covers the item with NO record at all, which is the same answer — nobody
-   * has decided — and NOT `false`. Only null keeps the extension's hands off Studio's
-   * monetization control.
-   */
-  readonly monetize = computed<boolean | null>(() => this._selection()?.monetize ?? null);
 
   /** Every channel the picker can offer. */
   readonly channels = this._channels.asReadonly();
@@ -720,7 +718,6 @@ export class PublishState {
     this._carryCandidate.set(null);
     this._carryReceipt.set(null);
     this._channelSuggestion.set(null);
-    this._channelTouched.set(false);
     this._thumbnailPreview.set(null);
     this._thumbnailWarnings.set([]);
     this._proposal.set(null);
@@ -1001,15 +998,10 @@ export class PublishState {
     const t = this.target('save that change');
     if (!t) return;
 
-    // A pending channel suggestion rides along with whatever else is being saved, in the
-    // SAME call, so it is written by the same all-or-nothing write rather than by a
-    // second one that could half-succeed.
-    const payload = this.withChannelSeed(fields);
-
     this._saving.set(true);
     this._error.set(null);
     try {
-      const res = await this.electron.publishSetFields(t, payload);
+      const res = await this.electron.publishSetFields(t, fields);
       if (!res.success || !res.data) {
         this._error.set(res.error ?? 'Failed to save changes');
         return;
@@ -1024,54 +1016,28 @@ export class PublishState {
 
   // --------------------------------------------------------- the Publish panel's writes
   //
-  // Channel seeding, spelled out once: a suggestion is shown pre-selected and is written
-  // WITH THE OPERATOR'S NEXT SAVE, whatever that save is. It is never written on its own
-  // off the back of merely opening a report — an open is not a decision — and it is
-  // dropped the moment the operator touches the picker, because at that point they have
-  // decided and the suggestion has nothing left to say. The panel states this on screen
-  // ("saved with your next change") so the write is never a surprise.
-
-  /** The suggestion a save should carry, or null when there is nothing pending. */
-  private pendingChannelSeed(): string | null {
-    if (this._channelTouched()) return null;
-    if (this._selection()?.channelId) return null;
-    return this._channelSuggestion()?.channelId ?? null;
-  }
-
-  /** Merge the pending suggestion into a write, unless the write is about the channel. */
-  private withChannelSeed(fields: PublishFields): PublishFields {
-    if ('channelId' in fields) return fields;
-    const seed = this.pendingChannelSeed();
-    return seed === null ? fields : { ...fields, channelId: seed };
-  }
+  // CHANNEL SEEDING NO LONGER HAPPENS HERE, and the three methods that used to do it
+  // (pendingChannelSeed / withChannelSeed / commitChannelSeed) are gone rather than
+  // disabled. The main process routes an unrouted item from its prompt set on EVERY write
+  // — one door, atomic with whatever the operator was actually saving, and logged. The
+  // renderer's version could only ever be a second writer with its own idea of when to
+  // fire, and the two would disagree the first time a write went through a channel the
+  // renderer had not been taught about.
+  //
+  // What is left on this side is the picker's OVERRIDE, below: an explicit channelId in a
+  // write wins over the automatic pass by construction, because the pass only fills a
+  // field that is still null after the patch is applied.
 
   /**
-   * Save the suggestion after a write that went through a DIFFERENT channel.
+   * The operator's own choice of channel.
    *
-   * The thumbnail has its own IPC channel, so it cannot carry the seed in its payload the
-   * way setFields does. It is written after the thumbnail write succeeds, never before:
-   * a failed action must not still route the video.
-   */
-  private async commitChannelSeed(itemId: string): Promise<void> {
-    const seed = this.pendingChannelSeed();
-    if (seed === null) return;
-
-    const res = await this.electron.publishSetFields(itemId, { channelId: seed });
-    if (!res.success || !res.data) {
-      this.reportError(res.error ?? 'Saved, but the suggested channel could not be stored.');
-      return;
-    }
-    this._selection.set(res.data);
-  }
-
-  /**
-   * The operator's own choice of channel, including `null` for "not routed".
-   *
-   * Marks the picker touched first, so no later save re-applies the suggestion this
-   * choice replaces. That is what makes an override stick.
+   * An explicit write, which is what makes it stick: the main process's automatic routing
+   * only fills a channelId that is still null after the patch, so a chosen channel is
+   * never re-routed. Passing `null` is the exception and it does NOT un-route the item —
+   * a null clears the field, and the same write then routes it again from the prompt set.
+   * The picker reflects that by refusing to offer "not routed" as a choice.
    */
   async chooseChannel(channelId: string | null): Promise<void> {
-    this._channelTouched.set(true);
     this._channelSuggestion.set(null);
     await this.setFields({ channelId });
   }
@@ -1097,11 +1063,10 @@ export class PublishState {
     const toSpreaker = destination === SPREAKER_DESTINATION;
 
     if (toSpreaker) {
-      // The channel is untouched, so a pending suggestion still rides along with this
-      // write exactly as it would with any other — see withChannelSeed.
+      // The channel is left alone, so this write routes the item from its prompt set
+      // exactly as any other write would — a Fireside episode is still a Fireside video.
       await this.setFields({ isPodcast: true });
     } else {
-      this._channelTouched.set(true);
       this._channelSuggestion.set(null);
       await this.setFields({ channelId: destination, isPodcast: false });
     }
@@ -1166,9 +1131,11 @@ export class PublishState {
    * banner here belongs to the one report the panel has open, and putting another item's
    * refusal in it would attribute the failure to the wrong video.
    *
-   * The pending channel suggestion is NOT carried here (`withChannelSeed` is not
-   * applied): the suggestion belongs to the item the panel has open, and this call is
-   * about a different one.
+   * Automatic routing still applies, because it applies in the MAIN PROCESS to every
+   * write of every record — including this one, which is about an item the panel does not
+   * have open. That is precisely why the renderer no longer carries a seed of its own: a
+   * suggestion held here belongs to the open item and would have been the wrong channel
+   * to attach to this call.
    */
   async setPublishAtOn(itemId: string, date: string, time: string): Promise<ChosenMetadata> {
     // Throws on an incomplete pair, or on the hour that does not exist on a
@@ -1214,24 +1181,76 @@ export class PublishState {
   }
 
   /**
-   * Record what should happen to monetization in Studio, or null to record no decision.
+   * Choose a thumbnail with the native file picker.
    *
-   * The Data API cannot write monetization at all (PUBLISH-PIPELINE-PLAN Phase 5), so
-   * this value does nothing on its own — it travels to the companion extension, which
-   * fills Studio's Monetization tab when the operator clicks the action there. Setting it
-   * here monetizes nothing by itself.
+   * One of TWO ways in — the other is dropThumbnail below — and both end at setThumbnail,
+   * which is the only thing that writes. Cancelling is silent because it is an answer:
+   * the operator opened the picker and changed their mind, and the thumbnail they already
+   * had is still the one they want.
    */
-  async setMonetize(monetize: boolean | null): Promise<void> {
-    await this.setFields({ monetize });
+  async chooseThumbnail(): Promise<void> {
+    if (!this.target('choose a thumbnail')) return;
+
+    const picked = await this.electron.publishChooseThumbnail();
+    if (!picked.success) {
+      this.reportError(picked.error ?? 'The thumbnail picker could not be opened.');
+      return;
+    }
+    if (!picked.data) return;
+    await this.setThumbnail(picked.data);
   }
 
   /**
-   * Attach a thumbnail file.
+   * Attach a thumbnail from a drag-and-drop.
+   *
+   * The renderer cannot read a dropped File's path itself — Electron removed `File.path`,
+   * and a drop zone written that way accepts files and silently adds nothing — so the
+   * path comes from preload-side webUtils. An EMPTY path means the drop was not a
+   * filesystem file at all (a dragged image out of a web page, a selection), and it is
+   * named rather than ignored: "nothing happened" after a deliberate drop is the worst
+   * possible answer.
+   *
+   * The extension is checked here ONLY so a dropped .mov is refused before the main
+   * process is asked. It is not the validation — that is still entirely the main
+   * process's, against the bytes — and this check can only ever refuse things the
+   * validator would also refuse.
+   */
+  async dropThumbnail(file: File): Promise<void> {
+    if (!this.target('set the thumbnail')) return;
+
+    const absPath = this.electron.getPathForFile(file);
+    if (!absPath) {
+      this.reportError(
+        `"${file.name}" is not a file on this computer, so there is no image to read. ` +
+        `Drag the exported .png out of Finder, or use Choose….`
+      );
+      return;
+    }
+
+    const dot = absPath.lastIndexOf('.');
+    const ext = dot === -1 ? '' : absPath.slice(dot).toLowerCase();
+    if (!THUMBNAIL_EXTENSIONS.includes(ext)) {
+      this.reportError(
+        `${file.name} is not a thumbnail: YouTube accepts ` +
+        `${THUMBNAIL_EXTENSIONS.join(', ')} and this is ${ext || 'extensionless'}.`
+      );
+      return;
+    }
+
+    await this.setThumbnail(absPath);
+  }
+
+  /**
+   * Attach a thumbnail file. The one door every choice goes through — picker, drop, or
+   * confirming a proposal.
    *
    * Validation is entirely the main process's (extension AND magic bytes, ≤2 MiB,
    * ≥640x360), so a rejection arrives as text naming the file and the rule and is shown
    * verbatim. Warnings come back WITH a success — a 4:3 image is stored and used, and the
    * note about it sits under the row rather than replacing the image.
+   *
+   * The write records the thumbnail as MANUAL, which is what makes it permanent: automatic
+   * discovery only ever fills an item nobody has decided about.
    */
   async setThumbnail(absPath: string): Promise<void> {
     const t = this.target('set the thumbnail');
@@ -1249,7 +1268,6 @@ export class PublishState {
       this._thumbnailWarnings.set(res.data.warnings);
       this._proposal.set(null);
       this._proposalPreview.set(null);
-      await this.commitChannelSeed(t);
       await this.refreshThumbnail(t);
     } finally {
       this._saving.set(false);
@@ -1259,9 +1277,11 @@ export class PublishState {
   /**
    * Detach the thumbnail.
    *
-   * refreshThumbnail runs afterwards, which means the exported thumbnail (if there is
-   * one) is offered again — clearing a thumbnail is how the operator asks to be shown
-   * what is on disk.
+   * This is a DECISION, not a reset: the main process records it as a manual clear, so
+   * automatic discovery will not re-attach the image on the next save. refreshThumbnail
+   * runs afterwards, which is how the legacy slot-named export (if there is one) gets
+   * offered for confirmation — clearing is still how the operator asks to be shown what
+   * else is on disk.
    */
   async clearThumbnail(): Promise<void> {
     const t = this.target('clear the thumbnail');
@@ -1277,7 +1297,6 @@ export class PublishState {
       }
       this._selection.set(res.data.selection);
       this._thumbnailWarnings.set([]);
-      await this.commitChannelSeed(t);
       await this.refreshThumbnail(t);
     } finally {
       this._saving.set(false);
@@ -1475,7 +1494,6 @@ export class PublishState {
       this._audio.set(
         res.data.meta ? { path: absPath, meta: res.data.meta, warnings: res.data.warnings } : null
       );
-      await this.commitChannelSeed(t);
     } finally {
       this._saving.set(false);
     }
@@ -1501,7 +1519,6 @@ export class PublishState {
       }
       this._selection.set(res.data.selection);
       this._audio.set(null);
-      await this.commitChannelSeed(t);
       await this.refreshSpreaker(t);
     } finally {
       this._saving.set(false);

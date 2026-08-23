@@ -41,6 +41,28 @@ export interface ThumbnailMeta {
 }
 
 /**
+ * Who put the current thumbnail state there. Mirror of publish-types.ThumbnailSource.
+ *
+ * 'auto'   — found in the week's thumbnails/ folder beside the export and attached
+ *            without anyone being asked.
+ * 'manual' — the operator chose this file, or deliberately cleared it. Either way it is
+ *            his decision and automatic discovery never touches the item again.
+ * null     — nobody has decided; the next write runs discovery.
+ */
+export type ThumbnailSource = 'auto' | 'manual';
+
+/**
+ * The extensions the thumbnail picker and the drop zone accept.
+ *
+ * Exactly what the main process's validateThumbnailFile accepts, and the reason this list
+ * is here at all is that the renderer must not offer a file the validator is about to
+ * refuse. It is a display filter, never a substitute for the check: the real validation
+ * (magic bytes, ≤2 MiB, ≥640x360) happens in the main process on every set, because a
+ * renderer knows a filename and nothing about the file.
+ */
+export const THUMBNAIL_EXTENSIONS: readonly string[] = ['.png', '.jpg', '.jpeg'];
+
+/**
  * A link to one story's editor transcript (Phase 2).
  *
  * The Inputs page finds, confirms and stores one, and it rides the job. As of PR 5 the
@@ -314,6 +336,16 @@ export interface ChosenMetadata {
   thumbnailPath: string | null;
   /** What that file measured when accepted. null exactly when thumbnailPath is. */
   thumbnailMeta: ThumbnailMeta | null;
+  /**
+   * Who set the thumbnail: 'auto' (found beside the export), 'manual' (chosen or
+   * deliberately cleared by the operator), or null (nobody has decided).
+   *
+   * 'manual' with a NULL path is the important combination: it is how "no thumbnail,
+   * because I removed it" is told apart from "nothing has happened yet", and it is what
+   * stops automatic discovery re-attaching an image the operator took off. Mirrors
+   * publish-types.ThumbnailSource.
+   */
+  thumbnailSource: ThumbnailSource | null;
   /** Strictly boolean and never absent — see the _is_compilation lesson. */
   isPodcast: boolean;
   /**
@@ -333,11 +365,11 @@ export interface ChosenMetadata {
   /** What that upload sent, part by part. Last upload only. */
   spreakerReceipt: SpreakerReceipt | null;
   /**
-   * Monetization intent. Never absent, and three-valued: true / false / null, where null
-   * means nobody has decided and the extension leaves Studio's control alone. Mirrors
-   * publish-types.ChosenMetadata.monetize.
+   * Monetization. Always true — it is on for every video and stopped being a per-item
+   * choice on 2026-08-23. Mirrors publish-types.MONETIZATION_ALWAYS_ON, which the main
+   * process also normalizes stored records to on read.
    */
-  monetize: boolean | null;
+  monetize: true;
   /** Phase 2. Always present, null until an editor story is linked. */
   transcriptRef: TranscriptRef | null;
   /** ISO. When metadata was last pushed to the linked video, or null for never. */
@@ -365,8 +397,8 @@ export interface ResolvedMetadata {
   sourceFilename: string | null;
   sourceDurationSec: number | null;
   status: PublishStatus;
-  /** Monetization intent, passed through unresolved — there is no generated counterpart. */
-  monetize: boolean | null;
+  /** Monetization. Always true — see ChosenMetadata.monetize. */
+  monetize: true;
 }
 
 /**
@@ -401,8 +433,10 @@ export interface PublishFacts {
   pushedAt: string | null;
   filledAt: string | null;
   hasThumbnail: boolean;
-  /** Three-valued exactly as the record holds it: true, false, or null for "not decided". */
-  monetize: boolean | null;
+  /** Who attached it — 'auto', 'manual', or null when nobody has decided. */
+  thumbnailSource: ThumbnailSource | null;
+  /** Always true. Kept in the projection so the fact row can ANSWER rather than assume. */
+  monetize: true;
   /** Spreaker's episode id once uploaded, or null for never — the podcast half of "sent". */
   spreakerEpisodeId: number | null;
   abCount: number;
