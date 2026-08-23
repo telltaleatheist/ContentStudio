@@ -1239,6 +1239,14 @@ export class AIManagerService {
   }
 
   /**
+   * The channel's deterministic title-tail template (`title_tail_from_filename`), when it
+   * declares one. Undefined for every channel whose titles the model writes whole.
+   */
+  titleTailTemplate(): string | undefined {
+    return this.currentChannel?.titleTailFromFilename;
+  }
+
+  /**
    * Public entry to the post-processing every generated item gets, whichever path it came
    * from: the prompt set's channel tags, its description links, hashtag spacing.
    *

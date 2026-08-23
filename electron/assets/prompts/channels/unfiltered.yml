@@ -38,6 +38,13 @@ title_format: |-
     - Write the title as one unbroken claim; prefer that to a `Topic: elaboration` construction.
     - Titles are the HOOK ONLY. This channel's series name and part marker (` | [subject] | p[N]`) are appended outside this call from the filename — never write a pipe tail, a part number, or a series label into a title.
 
+# THE TAIL ITSELF, as data. Code (metadata-tasks.ts appendTitleTail) parses the subject and
+# part number out of the source filename and appends this template to every generated title
+# after generation. Both slots are required; prompt-assets.ts throws on a template missing
+# either. A filename with no part number still gets the tail with a literal `pN` to fill; a
+# filename with no subject text gets no tail, and both cases warn in the run report.
+title_tail_from_filename: " | {subject} | p{part}"
+
 channel_tags: ["Telltale Unfiltered", "Owen Morgan"]
 
 description_links: |-
