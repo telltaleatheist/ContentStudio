@@ -47,7 +47,15 @@ import { JobCancelledError, isAbortError } from './cancellation';
  *   143k - 29k - 20k ≈ 94k; 90,000 is that with the margin left in.
  */
 export const DIRECT_PASS_MAX_CHARS = {
-  cloud: 60000,
+  // 400k as of 2026-08-23, up from 60k — an operator-directed priority call, made the day a
+  // 60,695-char podcast missed the old ceiling by 695 characters and spent seven minutes
+  // being summarized on the local 27B, shedding exactly the verbatim phrasing the ship-field
+  // bars require (LEDGER.md §1: correctness over cost, "it can take as long as it needs").
+  // The cloud models this app routes to carry a 1M-token window; 400k chars ≈ ~110k tokens,
+  // which fits every call with scaffolding to spare and covers a ~6-hour transcript. Cost at
+  // the ceiling is a few dollars per video and only on the rare item that big — the 60k
+  // number was a cost guard from when descriptions ran local and cloud was the exception.
+  cloud: 400000,
   local: 90000,
 } as const;
 

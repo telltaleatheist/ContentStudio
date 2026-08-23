@@ -54,6 +54,7 @@ import {
   describeRouting,
   migrateStoredRouting,
   probeOllamaInventory,
+  resolveChapterModelOption,
   resolveMetadataRouting,
   validateRoutingSelections,
 } from '../services/metadata/metadata-routing';
@@ -1280,13 +1281,26 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       }
       const insightsBlock = resolveInsightsBlockForPromptSet(analytics.analyticsStore, activePromptSet);
 
+      // The summarizer follows the writing-model slot exactly as chapters do
+      // (resolveChapterModelOption): condensation rewrites the words every content field
+      // reads, so the model trusted to write them is the model trusted to condense them —
+      // and a cloud-routed run must not fire up a 17GB local model to do it (measured
+      // 2026-08-23: a 60,695-char podcast spent ~7 minutes in local summarization before
+      // its first cloud call). A disagreeing store falls back to the declared local
+      // constant, never to the Settings provider (that path was the measured defect the
+      // constant replaced).
+      const resolvedRouting = resolveMetadataRouting(migrateStoredRouting(settings.metadataRouting).selections);
+      const summarizerOption = resolveChapterModelOption(resolvedRouting);
+      const summarizationModel =
+        summarizerOption.kind === 'cloud' ? summarizerOption.model : SUMMARIZATION_MODEL;
+
       // Prepare metadata generation parameters
       const metadataParams = {
         inputs: params.inputs,
         mode: params.mode || settings.defaultMode,
         aiProvider: metaProvider, // Use metadata provider as primary
         aiModel: fullModel, // Full prefixed model (e.g., "claude:claude-sonnet-4-5")
-        summarizationModel: SUMMARIZATION_MODEL,
+        summarizationModel,
         metadataModel: fullModel,
         aiApiKey: apiKey,
         aiHost: settings.ollamaHost || 'http://localhost:11434',

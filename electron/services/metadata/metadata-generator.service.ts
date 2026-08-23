@@ -866,12 +866,18 @@ export class MetadataGeneratorService {
       alsoLoads.push({ model: chapterOption.model, what: 'chapters' });
     }
     if (summary !== contentText) {
-      const summarizer = SUMMARIZATION_MODEL.replace(/^ollama:/, '');
-      alsoLoads.push({ model: summarizer, what: 'summarization' });
-      // It has already run by the time this is reached, so this is a statement about what is
-      // resident, not a prediction. Usually the same 27B the fields are routed to, in which
-      // case the lifecycle already holds it and this says nothing new.
-      lifecycle.holdOllamaModel(params.aiHost || 'http://localhost:11434', summarizer, 'summarization');
+      // The summarizer follows the writing slot since 2026-08-23 (ipc-handlers resolves it
+      // through resolveChapterModelOption); only a LOCAL summarizer made anything resident,
+      // so only that case counts against the budget or gets held.
+      const summarizer = (params.summarizationModel || SUMMARIZATION_MODEL);
+      if (summarizer.startsWith('ollama:')) {
+        const bare = summarizer.replace(/^ollama:/, '');
+        alsoLoads.push({ model: bare, what: 'summarization' });
+        // It has already run by the time this is reached, so this is a statement about what
+        // is resident, not a prediction. Usually the same 27B the fields are routed to, in
+        // which case the lifecycle already holds it and this says nothing new.
+        lifecycle.holdOllamaModel(params.aiHost || 'http://localhost:11434', bare, 'summarization');
+      }
     }
 
     const plan = planMetadataUnits({
