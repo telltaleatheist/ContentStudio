@@ -44,7 +44,10 @@ chatgpt api key.txt
 *api key*.txt
 *.bin
 .build-cache/*
+# Dev-mode runtime binaries (runtime-paths.ts reads <repo>/utilities in development):
+# whisper builds in bin/, ggml + onnx models in models/. Neither belongs in git.
 utilities/bin/*
+utilities/models/*
 .claude/*
 .claude/settings.local.json
 creamsicle/.angular/*
