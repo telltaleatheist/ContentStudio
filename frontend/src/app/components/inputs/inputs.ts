@@ -16,7 +16,7 @@ import { MatExpansionModule } from '@angular/material/expansion';
 import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
 import { CdkDragDrop, DragDropModule, moveItemInArray } from '@angular/cdk/drag-drop';
-import { ElectronService } from '../../services/electron';
+import { ElectronService, SavedTranscriptCheck } from '../../services/electron';
 import { TextSubjectDialog } from '../text-subject-dialog/text-subject-dialog';
 import { NotesDialog } from '../notes-dialog/notes-dialog';
 import { SplitReviewDialog, SplitReviewDialogData, SplitReviewDialogResult } from '../split-review-dialog/split-review-dialog';
@@ -123,6 +123,13 @@ export class Inputs implements OnInit, OnDestroy {
     effect(() => {
       this.inputsState.inputItems();
       queueMicrotask(() => void this.scanTranscriptCandidates());
+    });
+
+    // And the saved-transcript question, for the same items and for the same reason:
+    // deferred out of the reactive pass because the probe writes a signal of its own.
+    effect(() => {
+      this.inputsState.inputItems();
+      queueMicrotask(() => void this.probeSavedTranscripts());
     });
   }
 
@@ -433,6 +440,98 @@ export class Inputs implements OnInit, OnDestroy {
   onInputDrop(event: CdkDragDrop<InputItem[]>) {
     if (event.previousIndex !== event.currentIndex) {
       this.inputsState.reorderItems(event.previousIndex, event.currentIndex);
+    }
+  }
+
+  // ==================== SAVED TRANSCRIPTS ====================
+  //
+  // Every Whisper run writes its transcript to the output directory's transcript store,
+  // so a video that has been through the queue before can be run again without paying for
+  // Whisper twice. The row offers that as a checkbox — and offers it ONLY when the store
+  // holds a record whose video stamps still match the file on disk, so a box that appears
+  // is a box that will work. A re-rendered export answers "no record" and gets no box.
+  //
+  // Unticked is the default and always means "transcribe it", which is what the pipeline
+  // did before this existed.
+
+  /** Answers keyed by item.path. Not persisted: it is a fact about disk, re-asked each session. */
+  savedTranscripts = signal<Record<string, SavedTranscriptCheck>>({});
+  /** Paths with a probe in flight, so a burst of arrivals cannot ask the same question twice. */
+  savedTranscriptProbing = signal<string[]>([]);
+
+  /** A video with a usable record. Nothing else is ever offered the choice. */
+  canUseSavedTranscript(item: InputItem): boolean {
+    return item.type === 'video' && this.savedTranscripts()[item.path]?.exists === true;
+  }
+
+  /** Says WHICH transcript the box would reuse — a date and a model, not just "saved". */
+  savedTranscriptTooltip(item: InputItem): string {
+    const check = this.savedTranscripts()[item.path];
+    if (!check?.exists) return '';
+    const when = check.savedAt ? new Date(check.savedAt).toLocaleString() : 'an earlier run';
+    return `Skip Whisper and reuse the transcript made ${when}` +
+      (check.whisperModel ? ` by Whisper ${check.whisperModel}` : '') +
+      '. Untick to transcribe again and replace it.';
+  }
+
+  /**
+   * Ask about every video that has not been asked about yet.
+   *
+   * Same shape as the editor-transcript scan below, and for the same reasons: claim the
+   * whole batch before the first await (arrivals come in bursts and every arrival fires
+   * the effect again), and cover the items sitting in a pending job as well as the ones on
+   * the page, because the queue is what runs.
+   *
+   * A probe that cannot run is recorded as "no record" and logged, never as a record —
+   * offering a checkbox on the strength of a question that failed would put the operator
+   * one click away from a run that fails at the transcription stage.
+   */
+  private async probeSavedTranscripts(): Promise<void> {
+    const byPath = new Map<string, InputItem>();
+    for (const item of this.inputsState.inputItems()) byPath.set(item.path, item);
+    for (const job of this.jobQueue.getPendingJobs()) {
+      for (const item of job.inputs) if (!byPath.has(item.path)) byPath.set(item.path, item);
+    }
+
+    const pending = [...byPath.values()].filter(item =>
+      item.type === 'video' &&
+      !this.savedTranscripts()[item.path] &&
+      !this.savedTranscriptProbing().includes(item.path));
+    if (pending.length === 0) return;
+
+    this.savedTranscriptProbing.set([...this.savedTranscriptProbing(), ...pending.map(i => i.path)]);
+
+    for (const item of pending) {
+      const check = await this.electron.hasSavedTranscript(item.path);
+      this.savedTranscriptProbing.set(this.savedTranscriptProbing().filter(p => p !== item.path));
+      this.savedTranscripts.set({ ...this.savedTranscripts(), [item.path]: check });
+      if (!check.exists && check.reason) {
+        console.log(`[Inputs] No saved transcript to reuse for ${item.displayName}: ${check.reason}`);
+      }
+    }
+  }
+
+  /**
+   * Write the choice onto the item AND onto the same input inside any queued job.
+   *
+   * `addJob` snapshots the items, so without the second half a box ticked after queueing
+   * would never reach the run — exactly the trap `setTranscriptChoice` below documents.
+   */
+  toggleUseSavedTranscript(item: InputItem, useSaved: boolean): void {
+    const items = this.inputsState.inputItems();
+    const index = items.findIndex(it => it.path === item.path);
+    if (index !== -1) {
+      const updated = [...items];
+      updated[index] = { ...updated[index], useSavedTranscript: useSaved };
+      this.inputsState.inputItems.set(updated);
+    }
+
+    for (const job of this.jobQueue.getPendingJobs()) {
+      if (!job.inputs.some(it => it.path === item.path)) continue;
+      this.jobQueue.updateJob(job.id, {
+        inputs: job.inputs.map(it =>
+          it.path === item.path ? { ...it, useSavedTranscript: useSaved } : it),
+      });
     }
   }
 
@@ -1414,6 +1513,18 @@ export class Inputs implements OnInit, OnDestroy {
 
       console.log('Input transcripts being sent:', inputTranscripts);
 
+      // The rows whose "Use saved transcript" box is ticked. Only ticked rows travel:
+      // an absent key means transcribe, which is what every other input does and what
+      // this input did before the box existed. The main process refuses any value other
+      // than `true`, and a ticked box whose record has since gone missing FAILS that item
+      // rather than quietly re-transcribing.
+      const useSavedTranscripts: { [path: string]: boolean } = {};
+      nextJob.inputs.forEach(item => {
+        if (item.type === 'video' && item.useSavedTranscript) {
+          useSavedTranscripts[item.path] = true;
+        }
+      });
+
       const result = await this.electron.generateMetadata({
         inputs,
         promptSet: nextJob.promptSet,
@@ -1421,6 +1532,7 @@ export class Inputs implements OnInit, OnDestroy {
         jobId: nextJob.id,
         jobName: nextJob.name,
         inputTranscripts,
+        useSavedTranscripts,
         showPrompt: opts.showPrompt
       });
 

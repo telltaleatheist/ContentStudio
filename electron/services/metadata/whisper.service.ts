@@ -125,9 +125,14 @@ export class WhisperService extends EventEmitter {
   async transcribeVideo(
     videoPath: string,
     modelName?: string
-  ): Promise<{ jobId: string; srtPath: string; segments: SRTSegment[]; durationSec: number | null }> {
+  ): Promise<{ jobId: string; srtPath: string; segments: SRTSegment[]; durationSec: number | null; model: string }> {
     // Generate unique job ID
     const jobId = crypto.randomBytes(8).toString('hex');
+
+    // Resolved ONCE, and returned with the result. A saved transcript records the model
+    // that produced it, and a caller re-asking `getSelectedWhisperModel()` afterwards
+    // would be recording whatever the setting says by then, not what actually ran.
+    const model = modelName || getSelectedWhisperModel();
 
     // Create temporary directory
     const tempDir = path.join(os.tmpdir(), `whisper-${jobId}`);
@@ -197,7 +202,7 @@ export class WhisperService extends EventEmitter {
       }, 3000); // Update every 3 seconds
 
       const whisperResult = await this.whisper.transcribe(audioPath, tempDir, {
-        model: modelName || getSelectedWhisperModel(),
+        model,
         processId: jobId, // Use jobId so we can correlate progress events
       });
 
@@ -237,7 +242,7 @@ export class WhisperService extends EventEmitter {
       // nothing downstream has to ffprobe the same file a second time to record it.
       // null when that probe failed — which the caller can already see happening in the
       // log above, and which stays a stated absence rather than a guessed number.
-      return { jobId, srtPath: whisperResult.srtPath, segments, durationSec: duration ?? null };
+      return { jobId, srtPath: whisperResult.srtPath, segments, durationSec: duration ?? null, model };
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

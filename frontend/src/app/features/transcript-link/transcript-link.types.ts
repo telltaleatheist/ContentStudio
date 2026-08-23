@@ -173,8 +173,24 @@ export type ContentDeclaration =
   | 'final-only-default'
   | 'final-only-unlinkable';
 
+/**
+ * A saved Whisper transcript a run REUSED instead of transcribing — mirror of
+ * item-identity.ts's SavedTranscriptReuse.
+ */
+export interface SavedTranscriptReuse {
+  source_key: string;
+  saved_at: string;
+  whisper_model: string;
+  record_path: string;
+}
+
 export interface ItemProvenance {
   content_fields: ContentOrigin;
+  /**
+   * The saved transcripts this item's inputs were read from instead of being transcribed
+   * on the run that produced it. Absent (the ordinary case) means Whisper ran.
+   */
+  saved_transcripts?: SavedTranscriptReuse[];
   /** Absent only on items written before linking became optional. */
   content_declaration?: ContentDeclaration;
   content_declaration_reason?: string | null;
@@ -199,6 +215,17 @@ export interface ItemProvenance {
 export function describeProvenance(p: ItemProvenance | null | undefined): string | null {
   if (!p || !p.content_fields) return null;
 
+  // The clause that stops the pane from claiming a transcription that did not happen.
+  // Empty on the ordinary path — a fresh run needs no sentence saying so.
+  const reused = p.saved_transcripts || [];
+  const reuse = reused.length === 1
+    ? ` The transcript was not made on this run: it was reused from the saved record for ` +
+      `${reused[0].source_key}, transcribed ${reused[0].saved_at} by Whisper ${reused[0].whisper_model}.`
+    : reused.length > 1
+      ? ` ${reused.length} of this item’s inputs reused saved transcripts rather than being ` +
+        `transcribed on this run.`
+      : '';
+
   if (p.content_fields === 'final-export-whisper') {
     // The declaration clause is empty for a record written before it existed: an old item
     // cannot answer why, and the likeliest answer is still an invented one.
@@ -210,7 +237,7 @@ export function describeProvenance(p: ItemProvenance | null | undefined): string
           ? ' This input had no editor story to link.'
           : '';
     return 'Content fields generated from the final export’s transcript — includes any ' +
-      `sponsor reads. Chapters from the same transcript.${why}`;
+      `sponsor reads. Chapters from the same transcript.${why}${reuse}`;
   }
 
   const ref = p.transcript_ref;
@@ -224,5 +251,5 @@ export function describeProvenance(p: ItemProvenance | null | undefined): string
     ? ` — ${Math.abs(p.drift_pct).toFixed(1)}% ${p.drift_pct < 0 ? 'longer' : 'shorter'} than the final export`
     : '';
 
-  return `Content from editor transcript ${story}${drift}. Chapters from the final export.`;
+  return `Content from editor transcript ${story}${drift}. Chapters from the final export.${reuse}`;
 }

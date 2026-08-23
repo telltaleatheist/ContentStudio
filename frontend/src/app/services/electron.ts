@@ -29,6 +29,24 @@ import type {
 } from '../features/transcript-link/transcript-link.types';
 
 /**
+ * The main process's answer to "does this video have a saved Whisper transcript?".
+ *
+ * Two-valued on purpose. `exists: true` means a record was found AND the video on disk
+ * still matches the size and mtime it was transcribed from; anything else — no record, an
+ * unreadable one, a video that has been re-rendered since — is `exists: false` with the
+ * reason, because none of those is a transcript this run may reuse. The checkbox appears
+ * only for the first case, so a box that is offered is a box that will work.
+ */
+export interface SavedTranscriptCheck {
+  exists: boolean;
+  /** ISO. When the record was written — i.e. when Whisper actually ran. */
+  savedAt?: string;
+  whisperModel?: string;
+  /** Why there is nothing to reuse. Present exactly when `exists` is false. */
+  reason?: string;
+}
+
+/**
  * The fields publish-set-fields accepts.
  *
  * Exactly the main process's validator table, mirrored. A name that isn't here is
@@ -570,6 +588,7 @@ declare global {
       spreakerClearCredentials: () => Promise<PublishResult<SpreakerStatus>>;
 
       // ==================== TRANSCRIPT LINK (Phase 2) ====================
+      hasSavedTranscript: (videoPath: string) => Promise<SavedTranscriptCheck>;
       transcriptFindCandidates: (videoPath: string) => Promise<PublishResult<CandidateScan>>;
       transcriptProbeDrift: (
         videoPath: string,
@@ -919,10 +938,31 @@ export class ElectronService {
      * having its key omitted — an omitted key means the input was never offered a link.
      */
     inputTranscripts?: { [path: string]: TranscriptLink };
+    /**
+     * The inputs whose "Use saved transcript" box is ticked, keyed by `item.path` and
+     * always `true`. Only ticked rows appear: an absent key means transcribe it, which is
+     * the default for every video and the only state a video with no saved record can be
+     * in. The main process rejects any other value rather than interpret it.
+     */
+    useSavedTranscripts?: { [path: string]: boolean };
     showPrompt?: boolean;
   }): Promise<any> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.generateMetadata(params);
+  }
+
+  /**
+   * Does this video have a saved Whisper transcript that is still a transcript OF it?
+   *
+   * `exists: false` also covers "there is a record but the video has been re-rendered
+   * since" — with the reason, so the caller can log why no checkbox appeared. There is no
+   * offline answer to invent here, so a window without the bridge is stated as such.
+   */
+  async hasSavedTranscript(videoPath: string): Promise<SavedTranscriptCheck> {
+    if (!this.ipcRenderer) {
+      return { exists: false, reason: 'Electron not available' };
+    }
+    return await this.ipcRenderer.hasSavedTranscript(videoPath);
   }
 
   // Run full generation reusing a transcript the backend is holding from a

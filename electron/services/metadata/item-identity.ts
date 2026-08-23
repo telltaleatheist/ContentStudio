@@ -130,6 +130,27 @@ export type ContentOrigin = 'editor-story-transcript' | 'final-export-whisper';
  * `final-only-unlinkable`   — there was no link to make: a text subject, an imported
  *                             transcript, anything with no final export behind it.
  */
+/**
+ * Set on an item whose words and timings were NOT produced by this run: the operator
+ * ticked "Use saved transcript" on the queue row and the pipeline read a stored Whisper
+ * record instead of running Whisper (saved-transcript.service.ts).
+ *
+ * Recorded because the report otherwise reads exactly like a fresh transcription, and the
+ * two are not the same claim: this one says the words were taken on `saved_at`, by
+ * `whisper_model`, from a file whose size and mtime still matched at read time. A reader
+ * who wants to know why a re-run produced byte-identical chapters has the answer here.
+ */
+export interface SavedTranscriptReuse {
+  /** `sourceKeyOf(video)` — the record's name, and the cross-run join key. */
+  source_key: string;
+  /** ISO. When the transcript was written, i.e. when Whisper actually ran. */
+  saved_at: string;
+  /** The model that produced the segments, as the transcribing run resolved it. */
+  whisper_model: string;
+  /** Absolute path of the record that was read, so the operator can go and look at it. */
+  record_path: string;
+}
+
 export type ContentDeclaration =
   | 'linked'
   | 'final-only-declared'
@@ -187,6 +208,15 @@ export interface ItemProvenance {
   drift_sec: number | null;
   /** The same drift as a percentage of the transcript's duration. */
   drift_pct: number | null;
+  /**
+   * The saved transcript records this run REUSED instead of transcribing, one per input
+   * that reused one. Absent (or empty) means every input was transcribed during this run.
+   *
+   * An array because a compilation is one item over N inputs and each of them answers the
+   * question separately — the same reason `transcript_ref` is null there. A single item
+   * that reused a record carries exactly one entry.
+   */
+  saved_transcripts?: SavedTranscriptReuse[];
   /** ISO. When this run recorded the decision. */
   declared_at: string;
 }
@@ -219,6 +249,26 @@ function describeDeclaration(p: ItemProvenance): string {
   }
 }
 
+/**
+ * The clause that stops a report from claiming a transcription that did not happen.
+ *
+ * Empty when this run transcribed, which is the ordinary case and needs no sentence — the
+ * rest of the description already describes a fresh run. Present only when the operator
+ * reused a saved record, because that is the fact a reader cannot recover from anything
+ * else in the file.
+ */
+function describeReuse(p: ItemProvenance): string {
+  const reused = p.saved_transcripts;
+  if (!reused || reused.length === 0) return '';
+  if (reused.length === 1) {
+    const one = reused[0];
+    return ` The transcript was not made on this run: it was reused from the saved record for ` +
+      `${one.source_key}, transcribed ${one.saved_at} by Whisper ${one.whisper_model}.`;
+  }
+  return ` ${reused.length} of this item’s inputs reused saved transcripts rather than being ` +
+    `transcribed on this run.`;
+}
+
 export function describeProvenance(p: ItemProvenance): string {
   if (!p || typeof p !== 'object' || !p.content_fields) {
     throw new Error('describeProvenance requires an ItemProvenance with content_fields');
@@ -226,7 +276,7 @@ export function describeProvenance(p: ItemProvenance): string {
 
   if (p.content_fields === 'final-export-whisper') {
     return 'Content fields generated from the final export’s transcript — includes any ' +
-      `sponsor reads. Chapters from the same transcript.${describeDeclaration(p)}`;
+      `sponsor reads. Chapters from the same transcript.${describeDeclaration(p)}${describeReuse(p)}`;
   }
 
   const ref = p.transcript_ref;
@@ -242,5 +292,5 @@ export function describeProvenance(p: ItemProvenance): string {
     ? ` — ${Math.abs(p.drift_pct).toFixed(1)}% ${p.drift_pct < 0 ? 'longer' : 'shorter'} than the final export`
     : '';
 
-  return `Content from editor transcript ${story}${drift}. Chapters from the final export.`;
+  return `Content from editor transcript ${story}${drift}. Chapters from the final export.${describeReuse(p)}`;
 }
