@@ -5,6 +5,13 @@
 # to it does not change that. The register these want is stated as what to WRITE, and the
 # examples are real hooks and openings taken from descriptions the operator shipped.
 #
+# 2026-08-22: both calls' register lines carried one leftover negated clause naming the wrong
+# subjects, against the law above. It is now stated positively — the doer in every sentence is
+# a person, claim or event on screen — plus the frame that makes the wrong register unreachable:
+# these words publish as the CREATOR'S OWN, about their own video, first person where the
+# creator's actions come up. Operator-directed, same session as the stage 1 label register fix
+# in chapters.yml and the creator-voice rule in pinned-comment.yml.
+#
 # WHAT THEY CARRY, AND WHY THAT CHANGED (2026-08-22). These two calls used to carry NO channel
 # identity and NO editorial rules: `{channel}` was filled with the stored prompt-set SLUG
 # ("youtube-telltale"), and the channel's `## DESCRIPTION` section — two paragraphs, the
@@ -99,8 +106,9 @@ hook: |-
   characters. Name the two or three things above that would draw a viewer in — not all of them —
   and put the words somebody would type into search at the front. Write about the claim, the
   event or the argument itself: the real names from the material go in as possessives or objects
-  inside the sentence, and the thing doing something is always something the viewer can see, not
-  the speaker, the host, the episode or this video.
+  inside the sentence, and the thing doing something is always a person, claim or event the
+  viewer can see on screen. This line publishes under the video as the creator's own words
+  about their own content.
 
   Hooks in exactly the right form:
   "Gene Bailey's chapter on Ziklag tells Christians to weaponize their wounds against trans kids."
@@ -135,8 +143,10 @@ body: |-
 
   Every name you use comes from the material above, and you write about the claims, the events
   and the arguments themselves: the real names go in as possessives or objects, and the thing
-  doing something is always something the viewer can see, not the speaker, the host, the episode
-  or this video.
+  doing something is always a person, claim or event the viewer can see on screen. You are
+  writing this as the creator of the video describing your own content, so where your own
+  actions belong in a sentence they are first person: "I read every page of it so you don't
+  have to."
 
   Sentences in exactly the right form:
   "Every policy branded communist in the segment — universal healthcare, ending private prisons, a green new deal — turns out to be a mainstream position."
