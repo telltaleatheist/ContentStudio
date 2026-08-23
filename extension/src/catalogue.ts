@@ -37,6 +37,16 @@ export interface CatalogueVideo {
   privacy: string;
   isLive: boolean;
   isShort: boolean;
+  /**
+   * Studio's OWN thumbnail URL for this video, or null when the response carried none.
+   *
+   * null is a real answer, not a placeholder: `thumbnailDetails` is read defensively
+   * because this build has not seen every shape Studio can return for it, and a caller
+   * that needs a picture is told plainly that Studio offered no URL rather than being
+   * handed a guessed one. What to draw instead is the caller's decision — see the nav
+   * strip, which falls back to the derived i.ytimg.com URL and says so.
+   */
+  thumbnailUrl: string | null;
 }
 
 export interface AbTestRecord {
@@ -71,15 +81,41 @@ export class CatalogueError extends Error {
 }
 
 /**
- * Injected: the channel's whole catalogue with real publish dates.
+ * Injected: the channel's catalogue with real publish dates.
  *
- * Self-contained — runs in the page, closes over nothing.
+ * Self-contained — runs in the page, closes over nothing. Both arguments arrive through
+ * chrome.scripting's `args`, which is why they are plain data.
+ *
+ * PAGING, and the two callers that want different amounts of it:
+ *
+ * The collector (collector.ts) wants the WHOLE channel and calls with `stopAfter`
+ * undefined, which pages until Studio stops handing out a nextPageToken — unchanged
+ * behaviour, and the result then says `complete: true`.
+ *
+ * The nav strip (nav-source.ts) wants a window around ONE video and cannot wait a minute
+ * for a channel of thousands to come back. It passes `stopAfter`, and paging ends as soon
+ * as that videoId has been seen AND at least `extra` further entries were collected after
+ * it. The result then says `complete: false`, and that flag is not decoration: a truncated
+ * list must never be presented as the end of the channel, because the video after the last
+ * one it holds exists — this call simply stopped asking. Callers that reach the bottom of
+ * a truncated list ask again with a bigger `extra`.
+ *
+ * `complete` is true only when Studio ran out of pages. An early stop, or hitting
+ * MAX_PAGES, both mean there may be more, and both say false.
  */
-export async function fetchCatalogueInPage(channelId: string): Promise<any> {
+export async function fetchCatalogueInPage(
+  channelId: string,
+  stopAfter?: { videoId: string; extra: number },
+): Promise<any> {
   const ORIGIN = 'https://studio.youtube.com';
   const ENDPOINT = 'https://studio.youtube.com/youtubei/v1/creator/list_creator_videos?alt=json';
   const PAGE_SIZE = 100; // server clamps above this
   const MAX_PAGES = 400;
+  /**
+   * The width the nav strip draws a thumbnail at, in CSS pixels — the size the "smallest
+   * variant that is still big enough" rule below is measured against.
+   */
+  const DISPLAY_WIDTH = 128;
 
   const fail = (kind: string, message: string, status?: number) => ({ ok: false, kind, message, status });
 
@@ -113,8 +149,49 @@ export async function fetchCatalogueInPage(channelId: string): Promise<any> {
   }
   const authUser = cfg.get('SESSION_INDEX') != null ? String(cfg.get('SESSION_INDEX')) : '0';
 
+  /**
+   * The best thumbnail URL in a `thumbnailDetails` value, or null if there is none.
+   *
+   * Written DEFENSIVELY because the exact shape has not been observed live: the mask field
+   * was added on the documented innertube convention (`{ thumbnails: [{ url, width,
+   * height }, …]`, ascending by size), and anything that does not match it yields null
+   * rather than a guess. null reaches the UI as "Studio gave us no thumbnail", which is
+   * the truth, and the UI decides what to draw instead.
+   *
+   * Choice: the SMALLEST variant at least as wide as the tile — enough pixels, least
+   * bytes. If none is that wide (or no width was stated at all) the largest available is
+   * used, which for an ascending list is the last entry.
+   */
+  const pickThumbnail = (details: any): string | null => {
+    const list = Array.isArray(details?.thumbnails)
+      ? details.thumbnails
+      : Array.isArray(details)
+        ? details
+        : null;
+    if (!list) return null;
+    const usable = list.filter((t: any) => typeof t?.url === 'string' && t.url);
+    if (usable.length === 0) return null;
+    const widthOf = (t: any) => (Number(t?.width) > 0 ? Number(t.width) : 0);
+    let best: any = null;
+    for (const t of usable) {
+      const w = widthOf(t);
+      if (w >= DISPLAY_WIDTH && (best === null || w < widthOf(best))) best = t;
+    }
+    if (best) return String(best.url);
+    // Nothing wide enough, or no widths stated. Take the widest; with no widths at all
+    // that comparison never fires and the last entry stands, which is the largest under
+    // the ascending convention.
+    let widest: any = usable[usable.length - 1];
+    for (const t of usable) if (widthOf(t) > widthOf(widest)) widest = t;
+    return String(widest.url);
+  };
+
   const videos: any[] = [];
   let pageToken: string | null = null;
+  /** Where `stopAfter.videoId` landed in `videos`, or -1 while it has not been seen. */
+  let stopIndex = -1;
+  /** True only when Studio ran out of pages — see the paging note in the doc comment. */
+  let complete = false;
 
   for (let page = 0; page < MAX_PAGES; page++) {
     const ts = Math.floor(Date.now() / 1000);
@@ -136,6 +213,9 @@ export async function fetchCatalogueInPage(channelId: string): Promise<any> {
         videoId: true, title: true, privacy: true, status: true,
         lengthSeconds: true, timePublishedSeconds: true, draftStatus: true,
         origin: true, contentType: true, livestream: { all: true },
+        // Studio's own thumbnail URLs. Harmless to the collector, which reads named fields
+        // off each entry and never sees this one (toVideoRecords ignores it).
+        thumbnailDetails: { all: true },
       },
     };
     if (pageToken) body.pageToken = pageToken;
@@ -178,14 +258,24 @@ export async function fetchCatalogueInPage(channelId: string): Promise<any> {
         privacy: String(v.privacy || ''),
         isLive: !!v.livestream,
         isShort: String(v.contentType || '').includes('SHORTS'),
+        thumbnailUrl: pickThumbnail(v.thumbnailDetails),
       });
+      if (stopAfter && stopIndex === -1 && v.videoId === stopAfter.videoId) {
+        stopIndex = videos.length - 1;
+      }
     }
 
     pageToken = data.nextPageToken || null;
-    if (!pageToken) break;
+    if (!pageToken) {
+      complete = true;
+      break;
+    }
+    // Early stop: the caller asked for a window around one video and it now has that
+    // video plus `extra` entries below it. More pages exist — `complete` stays false.
+    if (stopAfter && stopIndex !== -1 && videos.length - stopIndex - 1 >= stopAfter.extra) break;
   }
 
-  return { ok: true, videos };
+  return { ok: true, videos, complete };
 }
 
 /**

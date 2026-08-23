@@ -216,7 +216,11 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
       });
       return true;
     }
-    fetchNavListForTab(tabId).then(
+    // `extra` is how deep the strip wants to go — it grows when the operator scrolls past
+    // the end of a truncated list. Anything that is not a positive number is left off so
+    // nav-source's own default stands rather than a nonsense depth being honoured.
+    const extra = typeof message.extra === 'number' && message.extra > 0 ? message.extra : undefined;
+    fetchNavListForTab(tabId, extra).then(
       (data) => sendResponse({ ok: true, data }),
       (err: unknown) => {
         const error = err instanceof Error ? err : new Error(String(err));

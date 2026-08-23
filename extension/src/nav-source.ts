@@ -18,6 +18,7 @@
 
 import { fetchCatalogueInPage } from './catalogue';
 import { readStudioContext } from './collector';
+import { NAV_EXTRA_INITIAL } from './publish/nav-messages';
 import type { NavList, NavVideo } from './publish/nav-strip';
 
 /**
@@ -39,15 +40,25 @@ export class NavSourceError extends Error {
 }
 
 /**
- * Studio's content list for whatever channel the given tab is signed into.
+ * Studio's content list AROUND the video the given tab has open, newest first.
  *
- * Two injections: the context probe says which channel the tab is on, then the catalogue
- * fetch pages that channel's whole list. The channel is READ rather than passed in because
- * the content script has only a videoId — asking it to name a channel would be asking it
- * to guess one.
+ * Two injections: the context probe says which channel the tab is on AND what it is
+ * looking at, then the catalogue fetch pages that channel's list. Both facts are READ from
+ * the tab rather than passed in — the content script's word for either would be a claim
+ * about a page the worker can just look at, and the tab is the thing being injected into.
+ *
+ * NOT the whole channel by default. Paging a channel of thousands takes about a minute,
+ * and the strip needs the open video's neighbours; the fetch is told to stop `extra`
+ * entries past the open video, and the answer says whether it stopped early
+ * (`complete: false`) or genuinely reached the end. When the tab is NOT on a video edit
+ * page there is nothing to centre on, so the whole list is paged — the honest behaviour,
+ * since no window can be chosen without a centre.
  */
-export async function fetchNavListForTab(tabId: number): Promise<NavList> {
-  const channelId = await readChannelId(tabId);
+export async function fetchNavListForTab(
+  tabId: number,
+  extra: number = NAV_EXTRA_INITIAL,
+): Promise<NavList> {
+  const { channelId, videoId } = await readTabContext(tabId);
 
   let result: any;
   try {
@@ -55,7 +66,9 @@ export async function fetchNavListForTab(tabId: number): Promise<NavList> {
       target: { tabId },
       world: 'MAIN',
       func: fetchCatalogueInPage,
-      args: [channelId],
+      // The argument is OMITTED rather than passed as undefined: chrome.scripting
+      // serializes this array, and undefined is not serializable.
+      args: videoId ? [channelId, { videoId, extra }] : [channelId],
     });
     result = results[0]?.result;
   } catch (err) {
@@ -73,11 +86,23 @@ export async function fetchNavListForTab(tabId: number): Promise<NavList> {
     throw new NavSourceError('shape', 'The content-list fetch returned no videos array.');
   }
 
-  return { channelId, videos: result.videos.map(toNavVideo) };
+  // `complete` is required, not optional-with-a-default: a missing flag would default to
+  // some value, and either default is a lie about a list this function did not check.
+  if (typeof result.complete !== 'boolean') {
+    throw new NavSourceError('shape', 'The content-list fetch did not say whether the list is complete.');
+  }
+
+  return { channelId, videos: result.videos.map(toNavVideo), complete: result.complete };
 }
 
-/** Which channel is this tab signed into? Injected probe, MAIN world. */
-async function readChannelId(tabId: number): Promise<string> {
+/**
+ * Which channel is this tab signed into, and which video does it have open?
+ *
+ * One injected probe, MAIN world. `videoId` is null whenever the tab is not on a video
+ * edit page — a fact, not a failure: the caller pages the whole list instead of centring
+ * on a video that isn't there.
+ */
+async function readTabContext(tabId: number): Promise<{ channelId: string; videoId: string | null }> {
   let context: ReturnType<typeof readStudioContext> | undefined;
   try {
     const results = await chrome.scripting.executeScript({
@@ -103,13 +128,15 @@ async function readChannelId(tabId: number): Promise<string> {
   if (!context.channelId) {
     throw new NavSourceError('no-channel', 'Studio has not said which channel this tab is on (CHANNEL_ID is empty).');
   }
-  return context.channelId;
+  // The probe reports the tab's own href; /video/<id>/edit is the shape the strip runs on.
+  const match = /\/video\/([^/?#]+)\//.exec(context.href || '');
+  return { channelId: context.channelId, videoId: match?.[1] ?? null };
 }
 
 /**
  * CatalogueVideo -> NavVideo.
  *
- * The three fields the strip renders, and nothing else. An absent title or publish date
+ * The four fields the strip renders, and nothing else. An absent title or publish date
  * becomes '' rather than dropping the entry: that entry is a DRAFT, it belongs in the list
  * because it is in Studio's, and the strip is written to render one. An absent VIDEO ID is
  * a different matter — there is no video to navigate to — so it fails the whole call
@@ -123,6 +150,9 @@ function toNavVideo(video: any): NavVideo {
     videoId: video.videoId,
     title: typeof video?.title === 'string' ? video.title : '',
     publishedAt: typeof video?.publishedAt === 'string' ? video.publishedAt : '',
+    // Anything that is not a usable URL string becomes null — the strip has a documented
+    // fallback for null, and no fallback for a URL that turns out not to be one.
+    thumbnailUrl: typeof video?.thumbnailUrl === 'string' && video.thumbnailUrl ? video.thumbnailUrl : null,
   };
 }
 

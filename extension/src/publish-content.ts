@@ -19,7 +19,7 @@
 
 import { fillerById, type FillContext, type FillId } from './publish/fillers';
 import { PublishShelf, type PageContext } from './publish/shelf';
-import { NavStrip, type NavStripCallbacks, type NavVideo } from './publish/nav-strip';
+import { NEIGHBOURS, NavStrip, type NavStripCallbacks, type NavVideo } from './publish/nav-strip';
 import type { ItemDetail, ResolveAlternate } from './publish/publish-client';
 // All localhost traffic goes through the service worker — see publish-messages.ts for
 // why a content-script fetch cannot talk to ContentStudio directly.
@@ -35,7 +35,7 @@ import {
 } from './publish/publish-messages';
 // The nav strip's list is NOT a ContentStudio call — it is read from Studio itself, so it
 // travels its own message rather than a publish one. See nav-messages.ts.
-import { requestNavList } from './publish/nav-messages';
+import { NAV_EXTRA_INITIAL, requestNavList } from './publish/nav-messages';
 import {
   detailsFormReady,
   isDetailsPage,
@@ -53,12 +53,35 @@ let navStrip: NavStrip | null = null;
 /**
  * Studio's content list, as the strip draws it.
  *
- * Cached for the tab because it is the same list for every video on the channel, the
- * operator clicks through several in a row, and fetching it pages the whole channel out of
- * Studio 100 videos at a time. Dropped — never quietly reused — when the refresh button is
- * pressed or when the open video is not in it.
+ * Cached for the tab because it is the same list for every video on the channel and the
+ * operator clicks through several in a row. Dropped — never quietly reused — when the
+ * refresh button is pressed or when the cache rule below says it has been outgrown.
  */
 let navList: NavVideo[] | null = null;
+/**
+ * Does `navList` reach the end of the channel?
+ *
+ * The fetch stops early on purpose — paging a whole channel took about a minute, which is
+ * a minute of no strip at all — so the usual answer is NO, and this flag is what keeps a
+ * list that merely stopped from being drawn as a channel that ended. See nav-strip's
+ * NavList doc.
+ */
+let navComplete = false;
+/**
+ * The `extra` the cached list was fetched with: how many entries past the open video were
+ * asked for. Doubling it is how a deeper fetch is requested.
+ */
+let navDepth = NAV_EXTRA_INITIAL;
+/** A deeper fetch is in flight. One at a time — the strip asks on every scroll event. */
+let navMoreInFlight = false;
+/**
+ * A deeper fetch came back no longer than what we already had, so asking again is asking
+ * the same question. Stops the scroll-to-the-bottom loop from firing forever against a
+ * channel that will not grow (MAX_PAGES reached, or Studio handing out a nextPageToken
+ * that yields nothing). The list stays marked truncated, because that is what it is —
+ * this only stops the asking.
+ */
+let navMoreExhausted = false;
 /**
  * Sequence number for the in-flight list fetch.
  *
@@ -282,7 +305,87 @@ function navCallbacks(): NavStripCallbacks {
     // The strip owns the right edge; the shelf steps aside by exactly its width. Held
     // here rather than in either component so neither has to know the other exists.
     onLaneWidth: (px: number) => shelf?.setRightLaneWidth(px),
+
+    // The operator has scrolled near the foot of a truncated list. Fetch more of it,
+    // without disturbing what is on screen. Fires on every scroll event that qualifies,
+    // hence the guards.
+    onNeedMore: () => {
+      void fetchDeeperNavList();
+    },
   };
+}
+
+/**
+ * Is the cached list still the right answer for `videoId`?
+ *
+ * THE RULE, and why it is this one: a list is usable when it contains the open video and
+ * still has room below it. A COMPLETE list always has room — its bottom edge is the
+ * channel's bottom edge, and the strip is right to draw an end there. A TRUNCATED list has
+ * room only while the open video sits comfortably inside it, because its bottom edge is an
+ * artefact of where the fetch stopped: standing near it, the operator would see a list that
+ * appears to end and a down arrow with nowhere to go, neither of which is true.
+ *
+ * "Comfortably" is the same NEIGHBOURS margin the strip guarantees around the open video.
+ * Cheap on purpose — one index comparison, no request — because it runs on every SPA
+ * navigation.
+ */
+function navCacheUsable(videoId: string): boolean {
+  if (!navList) return false;
+  const index = navList.findIndex((v) => v.videoId === videoId);
+  if (index === -1) return false;
+  if (navComplete) return true;
+  return index + NEIGHBOURS + 1 < navList.length;
+}
+
+/**
+ * Ask for more of a truncated list, centred on the same video, and repaint in place.
+ *
+ * Depth DOUBLES each time so a determined scroll reaches the end of a long channel in a
+ * handful of requests rather than a hundred. The strip keeps its scroll position across
+ * the repaint (see NavStrip.render), so the tiles being read do not jump when the new ones
+ * arrive.
+ */
+async function fetchDeeperNavList(): Promise<void> {
+  const videoId = videoEditId();
+  if (!videoId || !navStrip || !navList) return;
+  // Nothing to deepen: the list already reaches the end of the channel, one request is
+  // already out, or the last one came back no bigger than what we had.
+  if (navComplete || navMoreInFlight || navMoreExhausted) return;
+
+  const had = navList.length;
+  const depth = navDepth * 2;
+  navMoreInFlight = true;
+  navStrip.setLoadingMore();
+  const seq = (navRequest += 1);
+  try {
+    const list = await requestNavList(depth);
+    if (seq !== navRequest) return;
+    navDepth = depth;
+    if (list.videos.length <= had && !list.complete) {
+      // Asked deeper, got no more. Say so once and stop asking — see navMoreExhausted.
+      navMoreExhausted = true;
+    }
+    navList = list.videos;
+    navComplete = list.complete;
+    navStrip.setList(videoId, list.videos, list.complete);
+  } catch (error) {
+    if (seq !== navRequest) return;
+    // The list on screen is still good; only the attempt to extend it failed. Keep the
+    // tiles and say what happened in the strip rather than blanking a working navigator —
+    // and stop asking, so a scroll at the bottom does not retry forever in silence.
+    navMoreExhausted = true;
+    navStrip.setMoreFailed(error instanceof Error ? error.message : String(error));
+  } finally {
+    navMoreInFlight = false;
+  }
+}
+
+/** Forget the cached list and everything derived from it. */
+function dropNavList(): void {
+  navList = null;
+  navComplete = false;
+  navDepth = NAV_EXTRA_INITIAL;
+  navMoreExhausted = false;
 }
 
 /**
@@ -316,22 +419,28 @@ async function syncNavStrip(): Promise<void> {
     navStrip = created;
   }
 
-  // A cached list that contains this video is the whole answer — same channel, no call.
-  if (navList?.some((v) => v.videoId === videoId)) {
-    navStrip.setList(videoId, navList);
+  // A cached list that still holds this video, with room below it, is the whole answer —
+  // same channel, no call. See navCacheUsable for what "room" means and why a truncated
+  // list stops counting once the open video nears its bottom edge.
+  if (navList && navCacheUsable(videoId)) {
+    navStrip.setList(videoId, navList, navComplete);
     return;
   }
 
   const seq = (navRequest += 1);
   navStrip.setLoading();
+  // Back to the shallow depth: the fetch re-centres on THIS video, so the deep list that
+  // was built up around the previous one has no bearing on how far past this one to page.
+  dropNavList();
   try {
-    const list = await requestNavList();
+    const list = await requestNavList(navDepth);
     if (seq !== navRequest) return;
     navList = list.videos;
-    navStrip?.setList(videoId, list.videos);
+    navComplete = list.complete;
+    navStrip?.setList(videoId, list.videos, list.complete);
   } catch (error) {
     if (seq !== navRequest) return;
-    navList = null;
+    dropNavList();
     const detail = error instanceof Error ? error.message : String(error);
     const kind = error instanceof PublishBridgeError ? error.kind : null;
     if (kind === 'ytcfg-missing' || kind === 'no-channel' || kind === 'no-sapisid') {
@@ -370,7 +479,7 @@ function callbacks() {
       // Studio's content list at the moment this tab first asked for it, so an upload made
       // since then reaches the strip only by dropping it, which is exactly what the
       // strip's "not in the list" state tells the operator to press.
-      navList = null;
+      dropNavList();
       await Promise.all([resolveCurrentVideo(), syncNavStrip()]);
     },
 
