@@ -15,58 +15,113 @@ disagree, the newer one wins and the older one gets corrected.
 
 ## 1. Goals
 
-*(Proposed 2026-08-23 from the recorded history — Owen corrects and ranks these; nothing
-below is canon until he has.)*
+*(Confirmed and corrected by Owen, 2026-08-23.)*
+
+### The two classes of metadata field
+
+- **Pick-fields** — titles, thumbnail text, pinned comments. Success = enough good
+  options to choose from; individual weak candidates are expected and fine. Anything the
+  operator would otherwise EDIT should instead become a multi-option field.
+- **Ship-fields** — description, chapters, tags, hashtags. Success = publishable exactly
+  as generated. An edit to a ship-field is a pipeline defect, not a workflow step.
 
 ### G1 — Video in, publishable metadata out. THE core goal.
-A finished export (`<date>/complete/<name>.mov`) goes through the pipeline and produces a
-description, ten title candidates, chapters, tags, hashtags, thumbnail-text options and
-pinned-comment options that are **factually right**: every name spelled correctly, every
-claim attributed to the person who actually made it, the channel's own promotions excluded,
-subject-first register throughout. Owen's only job is *picking* among candidates and
-eyeballing — never *correcting*.
-**Definition of done:** several consecutive real videos across all three channels where
-Owen edits nothing.
-**Not the goal:** blocking output on quality checks (see Law 3 — deliver, warn, let the
-operator curate).
+A finished export (`<date>/complete/<name>.mov`) goes through the pipeline and produces
+metadata meeting the per-field bars below. Owen's job is picking among candidates on the
+pick-fields and eyeballing the ship-fields — never correcting.
+**Definition of done:** consecutive real videos across all three channels where every
+ship-field goes out untouched and every pick-field offers enough.
+**Not the goal:** blocking output on quality checks (Law 3 — deliver, warn, curate).
 
-### G2 — One-action publish.
-From a generated item to a live (or scheduled) YouTube video in one action: channel comes
-from the prompt set chosen at generation, thumbnail auto-attached from the sibling
-`thumbnails/` folder (manual override allowed), monetization always on, schedule suggested
-from the release calendar (Telltale Sun/Thu 1PM; Fireside daily 1PM except Sun/Thu 2PM;
-Unfiltered daily 4PM), pushed via the YouTube API (browser-uploaded videos now;
-`videos.insert` when Google's audit approves) or the extension. Spreaker is a secondary
-destination, unproven.
+#### Per-field success bars (Owen-confirmed 2026-08-23)
 
-### G3 — The feedback loop.
-Analytics (API + Studio extension) and A/B results flow back into generation as bounded,
-provenance-carrying evidence blocks. Title-writing guidance changes **only** through A/B
-results (Owen's rule, 2026-08-23) — the loop is the instrument that makes prompt opinions
-falsifiable.
+**Description — ship-field.** The primary is publishable untouched nearly every run; the
+two alternates exist for taste, never repair. One paragraph, 4-6 sentences (chapter list
++ links appended by code below it, never duplicated in prose). Subject-first in every
+clause — the subject is a person/claim/event from inside the video; the speaker never;
+no first person. Factually exact: names spelled right, claims attributed to who said
+them (HOST vs CLIP), nothing invented. No promoted items in any sentence. Sentence 1
+stands alone as the search snippet (phrase in first 60 chars, hook inside 157). Voice:
+the channel's own — confident, direct, slightly pissed; shipped-exemplar register, not
+essay register.
 
-### G4 — One app.
-AutoCutStudio's editor lives inside ContentStudio; ACS retires. Mostly shipped (PR #18).
-Remaining: packaged-build resources, livestream format flag, the story-reorder `sequence`
-bug, ACS round-trip for splits.
+**Titles — pick-field.** Ten candidates, genuinely distinct angles (swap test). The real
+bar: Owen can always find his 3 for the A/B test without rewording any; a great run has
+5-6 contenders. Every candidate SAFE to ship: facts keep their relationships (no
+welding), complete thoughts, sentence case, ≤70 chars with hook in first 45, no promoted
+items. A/B evidence governs shape (no colons/questions/digits while those lose); shape
+guidance changes only via the A/B record (Law 5). Boring is acceptable; wrong is not —
+inclusion bar is truthfulness, not brilliance.
 
-### Standing constraints (shape every goal)
-- Local models where quality permits, cloud where accuracy demands — measured per field,
-  not assumed (see Ledger §Models).
-- Cost and latency are secondary to correctness. Owen: latency "can take as long as it
-  needs. i just need usable results" (2026-08-23).
+**Chapters — ship-field.** The published list goes out untouched. Boundaries where the
+video actually turns; timestamps exact (quote-mapped, never guessed); 0:00 start; ≥3
+chapters or the item says why not. Labels in subject-first topic form naming the span's
+specific people/claims, names spelled right, no narrator framing. Plug segments detected
+and excluded; passing promo mentions never leak into content labels.
+
+**Tags — ship-field** (code-assembled on chaptered items). Owen never looks at them
+twice. 8-12, comma-separated, every tag something the video actually says, brand terms
+present, plausible subject-name misspellings, no promoted items, no pool junk.
+
+**Hashtags — ship-field** (code-derived). Up to 3, each readable in one glance as a real
+topic. Fewer beats invented.
+
+**Thumbnail text — pick-field.** At least one option per run Owen would put on the
+thumbnail he makes BY HAND (thumbnails are manual; no thumbnail A/B). Ten options, 2-4
+words, diverse angles across the video's strongest facts — coverage over polish.
+
+**Pinned comments — pick-field.** One of three postable as written. First person — the
+ONE field in Owen's own voice. References something specific from this video, factually
+grounded, ends in something that provokes replies.
+
+### G2 — One-action publish, with the calendar as a first-class deliverable.
+A **global calendar** showing (a) everything complete but not yet uploaded and (b)
+everything uploaded/filled and scheduled to release. Schedule suggestions come from
+what is already booked plus the open/available days (release slots: Telltale Sun/Thu
+1PM; Fireside daily 1PM, 2PM Sun/Thu; Unfiltered daily 4PM). Once an item is fully
+ready, **one Upload action** moves it to YouTube, fills all metadata, sets the
+thumbnail, and schedules it. Channel comes from the prompt set picked at generation;
+thumbnail auto-attached from the sibling `thumbnails/` folder (manual override);
+monetization always on. API path now (browser-uploaded videos), `videos.insert` when
+the audit approves; extension for what the API cannot do.
+**Fill-anywhere (Owen, 2026-08-23):** any report he picks must be fillable into
+whatever Studio metadata page he is on — match or no match, including a fresh
+livestream filled from a text-subject report. The filename match is a default
+suggestion, never a gate.
+Spreaker is a secondary destination, unproven.
+
+### G3 — The feedback loop: titles only.
+Analytics (API + Studio extension) and A/B results flow back into generation as
+bounded, provenance-carrying evidence blocks. **A/B is titles only** — Owen runs it
+consistently; thumbnails are hand-made and not tested. Title-writing guidance changes
+only through A/B results (Law 5).
+
+### G4 — The editor is FROZEN.
+"Perfect the way it is. No need to change anything right now." Known open items
+(packaging, livestream flag, story-reorder bug, ACS round-trip) stay parked unless one
+bites. This project is about getting metadata right.
+
+### The current focus (Owen, 2026-08-23): prompt tuning via the subagent harness.
+Send the exact production prompts through Haiku, Sonnet, and Opus subagents (stand-ins
+for the billed API), find where the smaller models crack, tune the prompt, re-run.
+Haiku is the canary: a prompt that holds on Haiku is robust — and it measures how close
+the local-model aspiration is.
+
+### Standing constraints
+- **Local models are the destination, cloud is the bridge.** Owen intends a battery of
+  local tests to tune prompts until chapters and descriptions can run locally (local
+  titles are already close). Until the tests say so: cloud for the writing surfaces,
+  local/code for the mechanical ones.
+- Cost and latency secondary to correctness ("it can take as long as it needs. i just
+  need usable results").
 - The operator curates; the system never withholds output.
-- Design posture (PHASE-4-DESIGN.md, applies broadly): "one operator, one Mac Studio,
-  wide display, keyboard-fluent — every trade-off resolves toward density and fewer
-  gestures, not toward whitespace or discoverability-for-newcomers."
-- The A/B feature's own goal statement (AB-TEST-PLAN.md): "after analysis, pick 3 titles
-  (plus description + tags), auto-link the job to the right YouTube draft, push metadata,
-  and set up a 3-variant native title A/B test — per channel, across three channels."
-  Validated end-to-end on a live draft 2026-07-26.
-- The calendar's one purpose (Phase 4): "what is going out, on which channel, when — and
-  what have I not scheduled?"
+- Design posture: one operator, one Mac Studio, wide display, keyboard-fluent — density
+  and fewer gestures over whitespace and discoverability.
+- The calendar's one question: "what is going out, on which channel, when — and what
+  have I not scheduled?"
 
 ---
+
 
 ## 2. Laws
 
