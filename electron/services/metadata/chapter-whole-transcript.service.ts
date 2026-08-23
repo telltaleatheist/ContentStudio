@@ -220,6 +220,18 @@ export interface WholeTranscriptChapterOptions {
    * set's name, and an absent one simply does not appear in the prompt.
    */
   channelName?: string;
+  /**
+   * Cloud transport for both stages, present exactly when the writing model resolved to a
+   * cloud option (resolveChapterModelOption). The caller passes AIManagerService's
+   * runJsonRequest bound to itself; `model` is then the provider-prefixed string that method
+   * routes on ("claude:claude-sonnet-5") rather than an Ollama tag.
+   *
+   * When present, nothing local happens: no context-window sizing (the provider owns its
+   * window), no model residency (`lifecycle` holds nothing), no Ollama traffic. The
+   * local path is otherwise UNTOUCHED — this is a second transport inside `ask()`, not a
+   * second pipeline, and every stage, retry rule and warning reads identically on both.
+   */
+  cloudJson?: (prompt: string, model: string, what: string) => Promise<Record<string, unknown>>;
   onProgress?: (stage: ChapterStage, done: number, total: number) => void;
   cancelCallback?: () => boolean;
   /**
@@ -377,7 +389,10 @@ export class WholeTranscriptChapterService {
     );
 
     // ---- stage 1: the one call ------------------------------------------------
-    this.numCtx = this.runNumCtx(transcript);
+    // The context window is an Ollama concern: sized, ratcheted and GPU-checked only on the
+    // local transport. A cloud provider owns its own window and the sizing would record a
+    // residency for a model that never loads.
+    if (!this.options.cloudJson) this.numCtx = this.runNumCtx(transcript);
     this.options.onProgress?.('chapters', 0, 1);
     const answer = await this.askForChapters(transcript, runtime);
     this.options.onProgress?.('chapters', 1, 1);
@@ -821,6 +836,22 @@ export class WholeTranscriptChapterService {
   ): Promise<Record<string, unknown> | null> {
     this.checkCancelled();
     this.calls++;
+
+    if (this.options.cloudJson) {
+      // Same policy as the local branch: an unusable ANSWER costs the caller one decision
+      // (null), a TRANSPORT failure affects every remaining call and throws. runJsonRequest
+      // folds both into throws, so its two answer-shaped messages are read back apart here.
+      try {
+        return await this.options.cloudJson(prompt, this.options.model, `${what} (chapters)`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes('No JSON object') || message.includes('Unparseable JSON')) {
+          log.warn(`[Chapters] stage "${stage}" got no usable answer: ${message}`);
+          return null;
+        }
+        throw error;
+      }
+    }
 
     const result = await askOllamaJson(this.client, {
       model: this.options.model,

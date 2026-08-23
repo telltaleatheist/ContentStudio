@@ -46,7 +46,7 @@ export class WhisperBridge extends EventEmitter {
   private activeProcesses = new Map<string, WhisperProcessInfo>();
 
   // Supported models
-  static readonly AVAILABLE_MODELS = ['tiny', 'base', 'small', 'medium', 'large'];
+  static readonly AVAILABLE_MODELS = ['tiny', 'base', 'small', 'medium', 'large', 'large-v3', 'large-v3-turbo'];
   static readonly DEFAULT_MODEL = 'base';
 
   constructor(config: WhisperConfig) {
