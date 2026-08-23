@@ -20,7 +20,7 @@
 import { fillerById, type FillContext, type FillId } from './publish/fillers';
 import { PublishShelf, type PageContext } from './publish/shelf';
 import { NavStrip, type NavStripCallbacks, type NavVideo } from './publish/nav-strip';
-import type { ItemDetail } from './publish/publish-client';
+import type { ItemDetail, ResolveAlternate } from './publish/publish-client';
 // All localhost traffic goes through the service worker — see publish-messages.ts for
 // why a content-script fetch cannot talk to ContentStudio directly.
 import {
@@ -78,6 +78,14 @@ let resolvedFor: string | null = null;
  * match, so an SPA navigation within the same video must not silently replace it.
  */
 let manualPick = false;
+/**
+ * Every report sharing this page's filename, the loaded one included, newest first.
+ *
+ * The resolve answer names the OTHERS; the loaded report is added here so the shelf can
+ * draw one list and mark the active member. Kept per page and never persisted — it is a
+ * description of what is on screen, not a preference.
+ */
+let siblings: ResolveAlternate[] = [];
 
 function pageContext(): PageContext {
   return {
@@ -91,6 +99,28 @@ function pageContext(): PageContext {
     // looking at and the shelf offers actions for whichever it is.
     monetizationReady: monetizationSurfaceReady(),
   };
+}
+
+/**
+ * The loaded report as a chooser chip, so it can sit in the same list as the ones it beat.
+ *
+ * Read off the detail rather than the resolve answer because it has to stay true after a
+ * title is picked: the chip says how many are chosen, and a stale count would contradict
+ * the picker two lines below it.
+ */
+function choiceOf(detail: ItemDetail): ResolveAlternate {
+  return {
+    itemId: detail.itemId,
+    label: detail.label,
+    createdAt: detail.createdAt,
+    titleCount: detail.generatedTitles.length,
+    chosenCount: detail.chosenTitles.length,
+  };
+}
+
+/** The sibling list with `detail`'s own chip refreshed in place. Order is preserved. */
+function withChoice(list: ResolveAlternate[], detail: ItemDetail): ResolveAlternate[] {
+  return list.map((s) => (s.itemId === detail.itemId ? choiceOf(detail) : s));
 }
 
 function fillContextOf(detail: ItemDetail): FillContext {
@@ -206,6 +236,7 @@ async function resolveCurrentVideo(): Promise<void> {
     const resolved = await requestResolve(loaded.videoId!, loaded.filename);
     if (!resolved.item) {
       item = null;
+      siblings = [];
       shelf?.setStatus(resolved.reason);
       return;
     }
@@ -220,10 +251,20 @@ async function resolveCurrentVideo(): Promise<void> {
     const invite = detail.generatedTitles.length
       ? `Pick up to ${detail.maxVariants}.`
       : 'This report generated no titles.';
+    // The alternates are the reports this match BEAT; the chooser shows the whole set, so
+    // the loaded one joins them. No alternates means there was nothing to choose between
+    // and the shelf draws no chooser at all.
+    siblings = resolved.alternates.length
+      ? [...resolved.alternates, choiceOf(detail)].sort((a, b) =>
+          (b.createdAt || '').localeCompare(a.createdAt || '') ||
+          b.itemId.localeCompare(a.itemId),
+        )
+      : [];
     shelf?.setItem(
       detail,
       resolved.needsTitles ? `${resolved.reason} ${invite}` : resolved.reason,
       resolved.needsTitles,
+      siblings,
     );
   } catch (error) {
     if (error instanceof PublishBridgeError && error.kind === 'unreachable') {
@@ -338,7 +379,18 @@ function callbacks() {
         const detail = await requestItem(itemId);
         item = detail;
         manualPick = true;
-        shelf?.setItem(detail, 'Picked by hand.');
+        // Two callers, one path. From the filename chooser the list stays up so the choice
+        // stays reversible; from the Reports tab the operator has left that set entirely,
+        // and keeping a chooser that no longer describes what is loaded would be a lie.
+        const fromChooser = siblings.some((s) => s.itemId === itemId);
+        const count = siblings.length;
+        siblings = fromChooser ? withChoice(siblings, detail) : [];
+        shelf?.setItem(
+          detail,
+          fromChooser ? `Picked from the ${count} reports sharing this filename.` : 'Picked by hand.',
+          false,
+          siblings,
+        );
       } catch (error) {
         shelf?.setError(error instanceof Error ? error.message : String(error));
       }
@@ -355,7 +407,10 @@ function callbacks() {
           return;
         }
         item = result.item;
-        shelf?.setItem(result.item, manualPick ? 'Picked by hand.' : 'Saved.');
+        // Picking a title changes this report's chip ("2 picked"), so the list is
+        // refreshed rather than redrawn from the count resolve happened to see.
+        siblings = withChoice(siblings, result.item);
+        shelf?.setItem(result.item, manualPick ? 'Picked by hand.' : 'Saved.', false, siblings);
       } catch (error) {
         shelf?.setError(error instanceof Error ? error.message : String(error));
       }

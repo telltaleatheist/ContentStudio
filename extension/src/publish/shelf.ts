@@ -23,7 +23,7 @@ import {
   type FillSurface,
   type Filler,
 } from './fillers';
-import type { BrowsePage, BrowseRow, ItemDetail } from './publish-client';
+import type { BrowsePage, BrowseRow, ItemDetail, ResolveAlternate } from './publish-client';
 import { DEFAULT_SHELF_PREFS, loadShelfPrefs, saveShelfPrefs, type ShelfPrefs } from './shelf-prefs';
 import { STALE_CONTEXT_MESSAGE, extensionContextAlive } from './publish-messages';
 
@@ -169,6 +169,18 @@ button.primary {
 .row.skeleton:hover { background: transparent; }
 .count { font-size: 10px; padding: 1px 5px; border-radius: 8px; background: #303030; color: #999; }
 .count.set { background: #ff6b35; color: #fff; }
+.alts { margin: 7px 0 2px; }
+.alts .note { color: #8f8f8f; font-size: 11px; margin-bottom: 4px; }
+.alts .altrow { display: flex; flex-wrap: wrap; gap: 4px; }
+button.alt {
+  cursor: pointer; font: inherit; font-size: 10px; padding: 2px 7px; border-radius: 10px;
+  background: #303030; color: #bbb; border: 1px solid #454545;
+}
+button.alt:hover { border-color: #ff6b35; color: #f1f1f1; }
+button.alt.on { background: #2e2419; border-color: #ff6b35; color: #f1f1f1; cursor: default; }
+button.alt .when { font-weight: 600; }
+button.alt .what { color: #8f8f8f; }
+button.alt.on .what { color: #bbb; }
 `;
 
 export interface ShelfCallbacks {
@@ -220,6 +232,15 @@ export class PublishShelf {
   // ---- current-item state
   private item: ItemDetail | null = null;
   private reason = '';
+  /**
+   * Every report that shares this page's filename, INCLUDING the loaded one, newest
+   * first. Empty whenever there was nothing to choose between.
+   *
+   * Per page and never persisted: it describes what the operator is standing in front of,
+   * not a preference. Which one is active is read off `this.item`, so loading another
+   * chip re-marks the list without rebuilding it.
+   */
+  private siblings: ResolveAlternate[] = [];
   private page: PageContext = {
     videoId: null,
     filename: null,
@@ -279,10 +300,15 @@ export class PublishShelf {
    * `demand` means the operator has something to do here (a match with no titles picked).
    * A collapsed shelf expands for that, and only that — expanding on every navigation
    * would make the collapse button useless.
+   *
+   * `siblings` is every report sharing this page's filename, the loaded one included, and
+   * is what the chooser under the status line renders. Empty means the match was
+   * unambiguous and no chooser is drawn.
    */
-  setItem(item: ItemDetail, reason: string, demand = false): void {
+  setItem(item: ItemDetail, reason: string, demand = false, siblings: ResolveAlternate[] = []): void {
     this.item = item;
     this.reason = reason;
+    this.siblings = siblings;
     this.errorText = null;
     this.showAllTitles = false;
     this.logLines = [];
@@ -316,6 +342,7 @@ export class PublishShelf {
   setStatus(text: string): void {
     this.item = null;
     this.reason = '';
+    this.siblings = [];
     this.statusText = text;
     this.errorText = null;
     this.render();
@@ -491,6 +518,9 @@ export class PublishShelf {
       this.body.appendChild(sub);
     }
 
+    // Only when there is a genuine choice. One sibling is the loaded report itself.
+    if (this.siblings.length > 1) this.body.appendChild(this.buildChooser(item));
+
     this.body.appendChild(this.buildChips(item));
     this.body.appendChild(this.buildPicker(item));
     this.body.appendChild(this.buildActions(item));
@@ -511,6 +541,62 @@ export class PublishShelf {
       }
       this.body.appendChild(log);
     }
+  }
+
+  /**
+   * The reports sharing this filename, as chips, the loaded one marked active.
+   *
+   * The match is a DEFAULT (newest wins — see publish-bridge.disambiguate), and this is
+   * where it stops being a verdict. A chip carries the only two facts that tell two runs
+   * of the same video apart: when it was generated and what state its titles are in.
+   *
+   * Clicking one goes through onOpenReport, the same path the Reports tab uses, so a
+   * choice made here is a manual pick in every sense — navigation inside the video will
+   * not silently replace it.
+   */
+  private buildChooser(item: ItemDetail): HTMLElement {
+    const wrap = document.createElement('div');
+    wrap.className = 'alts';
+
+    const note = document.createElement('div');
+    note.className = 'note';
+    note.textContent = `${this.siblings.length} reports share this filename:`;
+    wrap.appendChild(note);
+
+    const row = document.createElement('div');
+    row.className = 'altrow';
+
+    const stamps = siblingStamps(this.siblings);
+
+    for (const [i, sibling] of this.siblings.entries()) {
+      const active = sibling.itemId === item.itemId;
+      const btn = document.createElement('button');
+      btn.className = active ? 'alt on' : 'alt';
+
+      const when = document.createElement('span');
+      when.className = 'when';
+      when.textContent = stamps[i]!;
+
+      const what = document.createElement('span');
+      what.className = 'what';
+      // Three distinct states, none of them collapsed into another: a report that
+      // generated nothing, one nobody has picked from yet, and one with picks.
+      what.textContent =
+        sibling.titleCount === 0
+          ? ' — no titles'
+          : sibling.chosenCount
+            ? ` — ${sibling.chosenCount} picked`
+            : ` — ${sibling.titleCount} titles`;
+
+      btn.append(when, what);
+      btn.title = active ? `Loaded (${sibling.itemId})` : `Load this report instead (${sibling.itemId})`;
+      if (active) btn.disabled = true;
+      else btn.addEventListener('click', () => void this.callbacks.onOpenReport(sibling.itemId));
+      row.appendChild(btn);
+    }
+
+    wrap.appendChild(row);
+    return wrap;
   }
 
   private buildChips(item: ItemDetail): HTMLElement {
@@ -961,10 +1047,34 @@ export class PublishShelf {
   }
 }
 
+/**
+ * Chip labels for one sibling list, disambiguated only as far as they have to be.
+ *
+ * Regenerating four times in a morning gives four reports with the same short date, and
+ * four chips reading "Aug 23" are not a choice anyone can make — so the moment a date
+ * repeats, every chip in the list gains its time. A report with no usable date says so
+ * rather than showing a blank where the others show a date.
+ */
+function siblingStamps(siblings: ResolveAlternate[]): string[] {
+  const dates = siblings.map((s) => shortDate(s.createdAt));
+  const collides = new Set(dates).size !== dates.length;
+  return dates.map((date, i) => {
+    if (!date) return 'undated';
+    return collides ? `${date} ${shortTime(siblings[i]!.createdAt)}`.trim() : date;
+  });
+}
+
 /** `2026-07-26T…` -> `Jul 26`. Empty when the report has no usable date. */
 function shortDate(iso: string): string {
   if (!iso) return '';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+/** `…T09:30:07Z` -> `9:30 AM`, in the operator's locale. Empty on an unusable date. */
+function shortTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
