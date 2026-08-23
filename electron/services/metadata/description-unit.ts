@@ -83,7 +83,7 @@ import { JobModelLifecycle } from './model-lifecycle';
 import { MetadataRoutingOption } from './metadata-routing';
 import { queueAITask } from '../queue-manager.service';
 import { JobCancelledError } from './cancellation';
-import { narratesAnActor } from './chapter-title-quality';
+import { describerClauses } from './chapter-title-quality';
 import { promptAssets, ChannelData } from './prompt-assets';
 import type { MetadataFieldId, MetadataRunContext, MetadataUnit } from './metadata-tasks';
 import type { ModelRunContextBudget } from './metadata-tasks';
@@ -203,6 +203,9 @@ export const DESCRIPTION_PROMPTS = {
   },
   get BODY(): string {
     return promptAssets().pipeline(DESCRIPTION_FILE, 'body');
+  },
+  get BODY_REVISION(): string {
+    return promptAssets().pipeline(DESCRIPTION_FILE, 'body_revision');
   },
 };
 
@@ -328,8 +331,12 @@ export class DescriptionUnit implements MetadataUnit {
     if (hook.length > HOOK_MAX_CHARS) {
       faults.push(`it ran to ${hook.length} characters against the ${HOOK_MAX_CHARS}-character search snippet`);
     }
-    if (narratesAnActor(hook).narrated) {
-      faults.push('it was written about someone covering the subject rather than about the subject');
+    const narrated = describerClauses(hook);
+    if (narrated.length > 0) {
+      faults.push(
+        `it was written about someone covering the subject rather than about the subject ` +
+          `(${narrated.map((clause) => `"${clause}"`).join('; ')})`
+      );
     }
     return faults;
   }
@@ -343,20 +350,39 @@ export class DescriptionUnit implements MetadataUnit {
   private async writeBody(ctx: MetadataRunContext, hook: string): Promise<string> {
     const prompt = this.buildPrompt(DESCRIPTION_PROMPTS.BODY, ctx, hook);
     const first = await this.ask(prompt, 'body', BODY_SCHEMA, BODY_TEMPERATURE, ctx);
-    const faults = this.judgeBody(first, ctx);
-    if (faults.length === 0) return first;
+    const firstFaults = this.judgeBody(first, ctx);
+    if (firstFaults.length === 0) return first;
 
-    const second = await this.ask(prompt, 'body (second attempt)', BODY_SCHEMA, BODY_TEMPERATURE, ctx);
-    if (this.judgeBody(second, ctx).length === 0) {
-      log.info(`[Description] ${ctx.sourceLabel}: re-asked for the body (${faults.join('; ')}); the second answer holds`);
+    // A register fault gets a REVISION, not a re-roll: the same prompt asked twice returned
+    // the same register twice, on two measured runs. The revision call hands the model its own
+    // draft and the judged clauses, which is an edit it can actually perform. A fault that is
+    // only the word count keeps the plain re-ask, where fresh dice are the right tool.
+    const narratedFirst = describerClauses(first);
+    const secondPrompt =
+      narratedFirst.length > 0
+        ? this.buildPrompt(DESCRIPTION_PROMPTS.BODY_REVISION, ctx, hook, {
+            body: first,
+            clauses: narratedFirst.map((clause) => `- "${clause}"`).join('\n'),
+          })
+        : prompt;
+    const what = narratedFirst.length > 0 ? 'body (revision)' : 'body (second attempt)';
+    const second = await this.ask(secondPrompt, what, BODY_SCHEMA, BODY_TEMPERATURE, ctx);
+    const secondFaults = this.judgeBody(second, ctx);
+    if (secondFaults.length === 0) {
+      log.info(`[Description] ${ctx.sourceLabel}: re-asked for the body (${firstFaults.join('; ')}); the second answer holds`);
       return second;
     }
 
+    // Both faulty: the answer with fewer describer clauses is the closer one, and a tie keeps
+    // the first, which is the answer the plain prompt produced.
+    const keepSecond = describerClauses(second).length < narratedFirst.length;
+    const kept = keepSecond ? second : first;
+    const keptFaults = keepSecond ? secondFaults : firstFaults;
     ctx.warn(
-      `the description body was asked for twice and both times ${faults.join(' and ')}; it is kept exactly as ` +
-        `the model wrote it and nothing was reworded`
+      `the description body was asked for twice and both times ${keptFaults.join(' and ')}; the ` +
+        `${keepSecond ? 'revised second' : 'first'} answer is kept exactly as the model wrote it and nothing was reworded`
     );
-    return first;
+    return kept;
   }
 
   private judgeBody(body: string, ctx: MetadataRunContext): string[] {
@@ -366,8 +392,10 @@ export class DescriptionUnit implements MetadataUnit {
     if (words < min || words > max) {
       faults.push(`it ran to ${words} words against the ${min}-${max} word body this channel asks for`);
     }
-    if (narratesAnActor(firstSentence(body)).narrated) {
-      faults.push('it opened by writing about someone covering the subject rather than about the subject');
+    const narrated = describerClauses(body);
+    if (narrated.length > 0) {
+      const shown = narrated.map((clause) => `"${clause.length > 60 ? `${clause.slice(0, 57)}...` : clause}"`);
+      faults.push(`it wrote about someone covering the subject rather than about the subject (${shown.join('; ')})`);
     }
     return faults;
   }
@@ -444,7 +472,12 @@ export class DescriptionUnit implements MetadataUnit {
 
   // ----------------------------------------------------------------------------- prompting
 
-  private buildPrompt(template: string, ctx: MetadataRunContext, hook: string): string {
+  private buildPrompt(
+    template: string,
+    ctx: MetadataRunContext,
+    hook: string,
+    extra: Record<string, string> = {}
+  ): string {
     const assets = promptAssets();
     const channel = this.channel(ctx);
     const [min, max] = bodyWordRange(channel);
@@ -476,6 +509,10 @@ export class DescriptionUnit implements MetadataUnit {
       hookTargetChars: String(HOOK_TARGET_CHARS),
       bodyMinWords: String(min),
       bodyMaxWords: String(max),
+      // The revision call's two slots, empty everywhere else so the one-pass replace below
+      // still fills every name it knows.
+      body: extra.body ?? '',
+      clauses: extra.clauses ?? '',
     };
 
     // ONE PASS over the whole template, so a slot's own free text can never be read as another
@@ -485,7 +522,7 @@ export class DescriptionUnit implements MetadataUnit {
     // unfilled brace in the asset survives to the prompt where it is visible rather than
     // silently blanked.
     return template.replace(
-      /\{(channel|video|coverage|transcript|speaker_tags|pools|rules|hook|hookTargetChars|bodyMinWords|bodyMaxWords)\}/g,
+      /\{(channel|video|coverage|transcript|speaker_tags|pools|rules|hook|hookTargetChars|bodyMinWords|bodyMaxWords|body|clauses)\}/g,
       (_match, key: string) => slots[key]
     );
   }
@@ -616,7 +653,4 @@ function hookPending(): string {
   return promptAssets().pipeline(DESCRIPTION_FILE, 'hook_pending');
 }
 
-function firstSentence(text: string): string {
-  const match = text.match(/^[^.!?]+[.!?]?/);
-  return (match ? match[0] : text).trim();
-}
+
