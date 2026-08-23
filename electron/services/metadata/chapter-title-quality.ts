@@ -33,7 +33,7 @@
  * PURE. No I/O, no model, no config.
  */
 
-import { COMMON_WORDS, extractProperNouns, occursIn } from './entity-extraction';
+import { COMMON_WORDS, extractProperNouns, INNER_FUNCTION_WORDS, occursIn } from './entity-extraction';
 
 /**
  * Nouns that stand in for whoever is talking.
@@ -200,6 +200,45 @@ function firstClause(title: string): string {
   return title.split(/[,;:—–]|\s+(?:and|but|before|while|then)\s+/i)[0].trim();
 }
 
+/**
+ * Clauses of a DESCRIPTION whose grammatical subject is the person or artifact doing the
+ * describing — "we", "I", "the speaker", "this video" — rather than something from inside the
+ * video.
+ *
+ * WHY THIS IS NOT `narratesAnActor`, measured on the first run under the topic-form
+ * description prompts. That check is written for a chapter title, where "Pastor Brad Wells
+ * shares his prayer ministry" is the failure and the narration VERB is the tell. A description
+ * is sentences about claims, so its subjects legitimately argue, claim and say things — "The
+ * Intelligent Design Facebook page argues a Christian God is necessary" is the target register,
+ * and `narratesAnActor` flagged it on the verb alone. On the same run the real failures — "but
+ * we debunk its miracle lies" after the hook's comma, "The speaker exposes" at sentence three —
+ * sat in clauses and sentences the old first-clause / first-sentence plumbing never read. So
+ * this check is the inverse shape: EVERY clause of EVERY sentence is read, and only the
+ * describer SUBJECTS are the tell; verbs are not consulted at all.
+ *
+ * Returns the offending clauses so the warning can name each one rather than the first.
+ */
+export function describerClauses(text: string): string[] {
+  const offending: string[] = [];
+  for (const sentence of text.split(/(?<=[.!?])\s+/)) {
+    for (const clause of sentence.split(/[,;:—–]|\s+(?:and|but|or|yet|so|then|while|though|although|whereas|since|unless|until|before|after|because)\s+/i)) {
+      const words = clause.trim().split(/\s+/).filter(Boolean);
+      if (words.length < 2) continue;
+      const lower = words.map((w) => w.toLowerCase().replace(/[^a-z']/g, ''));
+      let subjectAt = 0;
+      if (ARTICLES.includes(lower[0]) && lower.length > 1) subjectAt = 1;
+      // "I" and "we" only count in subject position at the clause's front; an invented
+      // narrator noun counts wherever the article put it. Possessives are constituents of a
+      // topic noun phrase ("the video's premise"), not subjects, and stay.
+      const isDescriberPronoun = subjectAt === 0 && ['i', 'we'].includes(lower[0]);
+      const isNarratorNoun =
+        !POSSESSIVE.test(words[subjectAt]) && INVENTED_NARRATORS.includes(singular(lower[subjectAt]));
+      if (isDescriberPronoun || isNarratorNoun) offending.push(clause.trim());
+    }
+  }
+  return offending;
+}
+
 /** Proper nouns a title asserts, and whether the chapter's own transcript contains them. */
 export interface GroundingVerdict {
   /** Every proper noun the title used. */
@@ -225,7 +264,27 @@ export interface GroundingVerdict {
  */
 export function groundTitle(title: string, chapterTranscript: string): GroundingVerdict {
   const properNouns = extractProperNouns(title).map((m) => m.text);
-  const ungrounded = properNouns.filter((noun) => !groundedIn(chapterTranscript, noun));
+  const ungrounded: string[] = [];
+  for (const noun of properNouns) {
+    if (groundedIn(chapterTranscript, noun)) continue;
+    // A mention that OPENS the title is capitalized for position as much as for namehood.
+    // The topic-form register opens titles with gerunds ("Debunking Gene Bailey's misreading
+    // of ..."), and the extractor welds that opener onto whatever capitalized run or glued
+    // function word follows it, so the mention "Debunking Gene Bailey" asserts one name, not
+    // two. Position explains the opener; what the title actually asserts is the rest. Measured
+    // on the first run under the topic-form labels: "Debunking the AI-generated intelligent
+    // design Facebook page ..." was reported ungrounded as the "name" "Debunking the
+    // AI-generated" on a chapter whose transcript contains both AI and the page.
+    if (!title.trimStart().replace(/^["'\u2018\u2019\u201C\u201D]+/, '').startsWith(noun.split(/\s+/)[0])) {
+      ungrounded.push(noun);
+      continue;
+    }
+    const rest = noun.split(/\s+/).slice(1);
+    while (rest.length > 0 && INNER_FUNCTION_WORDS.has(rest[0].toLowerCase())) rest.shift();
+    if (rest.length === 0) continue; // nothing but the ambiguous opener: the title asserts no name here
+    const asserted = rest.join(' ');
+    if (!groundedIn(chapterTranscript, asserted)) ungrounded.push(asserted);
+  }
   return { properNouns, ungrounded, grounded: ungrounded.length === 0 };
 }
 

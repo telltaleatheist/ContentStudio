@@ -55,7 +55,7 @@ export interface EntityMention {
  *    sequence, because "So" in "So Paul Petit says" is the opener and "Paul Petit" is the
  *    name, and the sequence logic already separates them.
  */
-const INNER_FUNCTION_WORDS = new Set([
+export const INNER_FUNCTION_WORDS = new Set([
   'of', 'the', 'de', 'la', 'le', 'von', 'van', 'del', 'da', 'bin', 'al',
 ]);
 // DELIBERATELY SHORT, and each omission was measured on a real 67-minute transcript:
