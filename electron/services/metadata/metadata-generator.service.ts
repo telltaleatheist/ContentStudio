@@ -1275,7 +1275,7 @@ export class MetadataGeneratorService {
       // local machinery (context sizing, residency) stands down — see the option's doc.
       cloudJson:
         chapterOption.kind === 'cloud'
-          ? (prompt, cloudModel, what) => aiManager.runJsonRequest(prompt, cloudModel, what)
+          ? (prompt, cloudModel, what, schema) => aiManager.runJsonRequest(prompt, cloudModel, what, schema)
           : undefined,
       // The pipeline HOLDS its model here rather than unloading it when it finishes: the field
       // calls that run next are routed to the same 27B on most channels, and reloading it

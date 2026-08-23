@@ -119,12 +119,48 @@ import {
   OLLAMA_KEEP_ALIVE,
 } from './ollama-json';
 import { JobModelLifecycle } from './model-lifecycle';
+import { CloudAnswerUnusableError } from './ai-manager.service';
 import { formatPrompt } from './system-prompts';
 import { topEntities, transcriptCasing } from './entity-extraction';
 import { groundTitle, narratesAnActor } from './chapter-title-quality';
 
 /** The two stages that make model calls, and therefore the two that report progress. */
 export type ChapterStage = 'chapters' | 'detail';
+
+/**
+ * The answer shape of each stage's call, for the CLOUD transport only.
+ *
+ * The local path deliberately sends no schema — grammar-constraining the decode measurably
+ * destroys the chapter judgment there, because the local model reasons in the same token
+ * stream the grammar constrains. The cloud models think BEFORE the constrained answer, so
+ * the schema only guarantees the answer's syntax (the API's structured outputs) and the
+ * judgment is untouched. Added after the 2026-08-23 runs, where free-form cloud answers
+ * arrived with unterminated strings and trailing commas and cost chapters their details.
+ */
+const CLOUD_STAGE_SCHEMAS: Record<ChapterStage, Record<string, unknown>> = {
+  chapters: {
+    type: 'object',
+    properties: {
+      chapters: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: { label: { type: 'string' }, first_sentence: { type: 'string' } },
+          required: ['label', 'first_sentence'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['chapters'],
+    additionalProperties: false,
+  },
+  detail: {
+    type: 'object',
+    properties: { title: { type: 'string' }, summary: { type: 'string' } },
+    required: ['title', 'summary'],
+    additionalProperties: false,
+  },
+};
 
 // =============================================================================
 // CONSTANTS
@@ -231,7 +267,12 @@ export interface WholeTranscriptChapterOptions {
    * local path is otherwise UNTOUCHED — this is a second transport inside `ask()`, not a
    * second pipeline, and every stage, retry rule and warning reads identically on both.
    */
-  cloudJson?: (prompt: string, model: string, what: string) => Promise<Record<string, unknown>>;
+  cloudJson?: (
+    prompt: string,
+    model: string,
+    what: string,
+    schema?: Record<string, unknown>
+  ) => Promise<Record<string, unknown>>;
   onProgress?: (stage: ChapterStage, done: number, total: number) => void;
   cancelCallback?: () => boolean;
   /**
@@ -839,14 +880,18 @@ export class WholeTranscriptChapterService {
 
     if (this.options.cloudJson) {
       // Same policy as the local branch: an unusable ANSWER costs the caller one decision
-      // (null), a TRANSPORT failure affects every remaining call and throws. runJsonRequest
-      // folds both into throws, so its two answer-shaped messages are read back apart here.
+      // (null), a TRANSPORT failure affects every remaining call and throws. The two are
+      // told apart by TYPE (CloudAnswerUnusableError), never by message text — a message
+      // substring match here misread one truncated answer as transport on 2026-08-23 and
+      // failed the whole run. The stage schema makes the unusable case near-impossible
+      // (structured outputs guarantee valid JSON), so this catch is the backstop.
       try {
-        return await this.options.cloudJson(prompt, this.options.model, `${what} (chapters)`);
+        return await this.options.cloudJson(
+          prompt, this.options.model, `${what} (chapters)`, CLOUD_STAGE_SCHEMAS[stage]
+        );
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (message.includes('No JSON object') || message.includes('Unparseable JSON')) {
-          log.warn(`[Chapters] stage "${stage}" got no usable answer: ${message}`);
+        if (error instanceof CloudAnswerUnusableError) {
+          log.warn(`[Chapters] stage "${stage}" got no usable answer: ${error.message}`);
           return null;
         }
         throw error;
