@@ -75,7 +75,7 @@ import {
   MetadataRoutingTaskId,
   ResolvedMetadataRouting,
 } from './metadata-routing';
-import { DescriptionUnit } from './description-unit';
+import { DESCRIPTION_FIELDS, DescriptionUnit } from './description-unit';
 import {
   assembleTags,
   buildHashtags,
@@ -107,6 +107,7 @@ export type MetadataFieldId =
   | 'titles'
   | 'description'
   | 'description_hook'
+  | 'description_options'
   | 'tags'
   | 'thumbnail_text'
   | 'pinned_comment'
@@ -345,6 +346,14 @@ export const METADATA_FIELD_SECTIONS: Record<MetadataFieldId, MetadataFieldSpec>
   // DescriptionUnit's own call under its own schema. The entry exists so the field id has one
   // registry.
   description_hook: { section: 'DESCRIPTION', shape: '"one string"', schema: stringSchema('description_hook') },
+  // Same story as the hook, and even more so: the alternatives are whole hook+body pairs
+  // DescriptionUnit writes through its OWN two schemas, one candidate at a time. Nothing ever
+  // asks a model for this array, so the schema here is a formality the registry's shape demands.
+  description_options: {
+    section: 'DESCRIPTION',
+    shape: '["string", ...]',
+    schema: stringListSchema('description_options'),
+  },
   tags: { section: 'TAGS', shape: '"comma-separated string"', schema: stringSchema('tags') },
   thumbnail_text: { section: 'THUMBNAIL_TEXT', shape: '["string", ...]', schema: stringListSchema('thumbnail_text') },
   pinned_comment: { section: 'PINNED_COMMENT', shape: '["string", ...]', schema: stringListSchema('pinned_comment') },
@@ -1588,11 +1597,17 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
    */
   const unrouted: MetadataFieldId[] = [];
   for (const [field, spec] of Object.entries(METADATA_FIELD_SECTIONS) as Array<[MetadataFieldId, { section: string }]>) {
-    if (field === 'description_hook') continue;
+    // Everything DescriptionUnit writes, from ITS OWN list rather than named here one at a
+    // time. This used to say `field === 'description_hook'` beside the `description` check
+    // below, and adding a third description field (`description_options`, 2026-08-23) walked
+    // straight into it: the loop saw a field id whose section the channel publishes and which no
+    // routing task owns, and warned that the alternatives would not be generated — in a run that
+    // generated them. One list, two readers, and the next field added to the unit is covered.
+    if (DESCRIPTION_FIELDS.includes(field)) continue;
     if (!available.has(spec.section)) continue;
     if (planned.some((p) => p.field === field)) continue;
-    // Owned by code or by the description unit on every path.
-    if (field === 'description' || field === 'hashtags' || field === 'tags') continue;
+    // Owned by code.
+    if (field === 'hashtags' || field === 'tags') continue;
     unrouted.push(field);
   }
   for (const field of unrouted) {
