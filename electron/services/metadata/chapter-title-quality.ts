@@ -55,6 +55,25 @@ import { COMMON_WORDS, extractProperNouns, INNER_FUNCTION_WORDS, occursIn } from
  * still invents the speaker. A REAL name in the same shape ("Gene Bailey's use of Jabez") and a
  * concrete collective ("The panel's debate over whether the ceasefire holds") are the target
  * register and stay clean — they name something a viewer can see.
+ *
+ * THE PREMISE ABOVE IS NOW CONDITIONAL, and this note records where, because the reasoning in
+ * the second paragraph is load-bearing and speaker tagging (2026-08-23) changed one half of it.
+ * "The transcript does not say which" is true of an untagged transcript and false of a tagged
+ * one: every caption of a tagged transcript carries HOST, CLIP or UNSURE, so "the host" at
+ * subject position is a measurement rather than an invention.
+ *
+ * MEASURED, on the first end-to-end tagged run (u1, job cli-1787472084410-1031f0). The
+ * description got the attribution right for the first time — "the host traces the 13th
+ * Amendment's prisoner exception", where the untagged run had written "Fox News frames the 13th
+ * Amendment's prisoner exception" about a passage the host spoke — and this judge flagged that
+ * exact clause, twice, as an invented narrator. The body was kept as written, which is the
+ * stated policy and the right outcome, but the warning is now noise on precisely the sentences
+ * the tags exist to make possible.
+ *
+ * NOTHING IS CHANGED HERE. Narrowing the list for tagged input is a register decision that
+ * belongs to whoever owns the register work, it needs its own measurement, and a warning on a
+ * paragraph that publishes as written harms no output. It is written down so the next person to
+ * read this comment is not misled by a rationale that half of the app has outgrown.
  */
 const INVENTED_NARRATORS = [
   'speaker', 'host', 'narrator', 'creator', 'youtuber', 'commentator', 'presenter',
