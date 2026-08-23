@@ -294,18 +294,19 @@ export interface MetadataRoutingHost {
 }
 
 /**
- * The chapter pipeline, which is NOT a routable task and still has to be reported.
+ * The two models nobody picks, which still have to be reported.
  *
- * Chapters run on every item that has a timestamped transcript, on a fixed pair of models
- * nobody picks. The modal shows their state anyway, because the warning is the part that
- * was worth keeping when the picker went: a missing generation model means no chapters at
- * all, and a missing embedding model means measurably worse ones on a run that declares it.
+ * Chapters run on every item that has a timestamped transcript, on `generationModel`.
+ * Key-phrase ranking runs on every item, on `keyPhraseModel`. The modal shows both because
+ * the warning is the part that was worth keeping when the picker went: a missing chapter
+ * model means no chapters at all, and a missing embedding model means measurably worse tags
+ * on a run that declares it.
  */
 export interface MetadataRoutingChapters {
   generationModel: string;
-  embeddingModel: string;
+  keyPhraseModel: string;
   generationAvailability: MetadataRoutingAvailability;
-  embeddingAvailability: MetadataRoutingAvailability;
+  keyPhraseAvailability: MetadataRoutingAvailability;
 }
 
 /**

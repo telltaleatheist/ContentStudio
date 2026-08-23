@@ -60,6 +60,7 @@ import { JobCancelledError, isAbortError } from './cancellation';
 import { askOllamaJson, bucketNumCtx, estimateTokens, unloadOllamaModels } from './ollama-json';
 import {
   CHAPTER_PIPELINE_MODELS,
+  KEY_PHRASE_EMBEDDING_MODEL,
   METADATA_ROUTING_OPTIONS,
   MetadataRoutingOption,
   MetadataRoutingTaskId,
@@ -1753,7 +1754,7 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
       ...built.filter((b) => b.local).map((b) => ({ model: b.model, what: b.field })),
       ...alsoLoads,
     ],
-    [CHAPTER_PIPELINE_MODELS.embedding]
+    [KEY_PHRASE_EMBEDDING_MODEL]
   );
   log.info(
     `[MetadataTasks] this run loads ${roster.models.length} local model(s): ${roster.summary}` +

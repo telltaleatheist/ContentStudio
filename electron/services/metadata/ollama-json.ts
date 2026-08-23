@@ -2,10 +2,10 @@
  * One Ollama JSON call, with the thinking-model traps handled once
  *
  * WHY THIS FILE EXISTS. Two very different callers now ask a local qwen model for a JSON
- * object: the chapter pipeline (chapter-embedding.service.ts) and the metadata task units
+ * object: the chapter pipeline (chapter-whole-transcript.service.ts) and the metadata task units
  * (metadata-tasks.ts, since the text fields moved off the deleted headline adapters onto
  * base models). The chapter pipeline learned four things the hard way, all of them
- * documented in CHAPTERING.md's 2026-08-22 addendum, and none of them are guessable from
+ * documented in CHAPTERING.md's 2026-08-22 addenda, and none of them are guessable from
  * the Ollama API docs. A second implementation would rediscover them one production bug at
  * a time, so there is one implementation and both callers use it.
  *
@@ -73,7 +73,7 @@ export interface OllamaJsonRequest {
    * this module produces, so an operator reading the log knows which call failed.
    */
   what: string;
-  /** Log tag, e.g. `[ChapterEmbedding] stage "place"`. */
+  /** Log tag, e.g. `[Chapters] stage "detail"`. */
   logPrefix: string;
   /**
    * A FULL JSON Schema for the answer, sent as Ollama's `format`, instead of the bare
