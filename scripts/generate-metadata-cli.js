@@ -638,7 +638,7 @@ async function main() {
         );
       }
       writeCache(caches.chapters, {
-        version: 1,
+        version: 2,
         video: videoStamp(args.input),
         cachedAt: new Date().toISOString(),
         transcriptCachedAt: transcriptStamp(caches.transcript),
