@@ -694,22 +694,28 @@ export class AIManagerService {
   }
 
   /**
-   * Prepare transcript content for metadata generation.
+   * Prepare transcript content — for COMPILATION MODE, which is the only caller left.
    *
-   * THE RAW TRANSCRIPT IS THE INPUT, on both transports. A transcript up to the provider's
-   * direct-pass ceiling passes through UNCHANGED — the field calls read the video, not a
-   * précis of it — which is cheaper (no summarizer input, no summarizer output, no second
-   * call) and better (verbatim quotes, phrasing and sarcasm survive to the model that has to
-   * write a title out of them).
+   * THE RAW TRANSCRIPT IS THE INPUT everywhere else. A transcript up to the applicable
+   * direct-pass ceiling passes through UNCHANGED — the field calls read the video, not a précis
+   * of it — which is cheaper (no summarizer input, no summarizer output, no second call) and
+   * better (verbatim quotes, phrasing and sarcasm survive to the model that has to write a title
+   * out of them).
    *
-   * SUMMARIZATION NOW FIRES FOR TWO REASONS AND NO OTHERS:
-   *   - the transcript genuinely cannot fit — a multi-hour livestream over the ceiling, where
-   *     evidence extraction in large chunks is the declared degradation and the run logs it;
-   *   - `forceCondense`, for compilation items, whose per-item outputs are joined into one
-   *     combined prompt and so must each be short by construction.
+   * WHAT CHANGED ON 2026-08-23. This method used to fire for two reasons; it now fires for one.
+   * The reason it lost was "the transcript genuinely cannot fit": the per-item metadata path no
+   * longer condenses an over-ceiling transcript here, it reads the CHAPTER DIGEST instead
+   * (chapter-digest.ts), because the operator's ruling was that if something has to stand in for
+   * the video it has to be the chapters. The warning below said the cost of the old behaviour out
+   * loud — "verbatim quotes and phrasing do not survive that step" — and the chapter details do
+   * not pay it, having each been written from their own chapter's raw transcript.
    *
-   * It is no longer the DEFAULT on the local path. It was, and that meant every locally
-   * generated title was written from a summary of the video rather than from the video.
+   * The reason it kept is `forceCondense`: compilation items, whose per-item outputs are joined
+   * into ONE combined prompt and so must each be short by construction, whatever their length.
+   * That mode runs no chapter pipeline, so the digest is not available to it — see
+   * SUMMARIZATION_MODEL in metadata-routing.ts. The over-ceiling branch below is therefore only
+   * reachable through a caller that supplies no ceiling of its own (episode splitting,
+   * compilation packaging) and it is left standing rather than deleted for exactly those.
    */
   async summarizeTranscript(
     transcript: string,
@@ -1115,12 +1121,22 @@ export class AIManagerService {
     }
 
     const promptSetName = this.config.promptSet || this.currentPromptSet.name || 'unknown';
+    /**
+     * The chapter table of contents is passed only on the RAW path.
+     *
+     * On the digest path `ctx.content` already IS that table of contents — the same chapters,
+     * with their timestamps and the same detail prose, under a header that says there is no
+     * fuller transcript below (chapter-digest.ts). Passing the subjects as well would print the
+     * list twice under two different headings, which reads to a model as a video with twice as
+     * much in it. One item, one statement of what it covers.
+     */
+    const digestMode = ctx.contentMode === 'chapter-digest';
     const subject = this.buildSubjectBlock(
       ctx.content,
       ctx.sourceLabel,
       undefined,
-      ctx.chapterSubjects,
-      ctx.chapterDetails
+      digestMode ? undefined : ctx.chapterSubjects,
+      digestMode ? undefined : ctx.chapterDetails
     );
     // Whatever an earlier call in this run wrote that this one has to read — today, the titles
     // the thumbnail text has to avoid repeating.

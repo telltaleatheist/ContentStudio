@@ -158,6 +158,11 @@ Status marks: ✅ in force · ❌ dead (with cause of death) · ⚠️ open/unce
   records the model that ran; reuse is by source identity. *Gotcha:* a sidecar transcribed
   by `base` keeps poisoning runs after the default improves — delete the sidecar to force
   re-transcription.
+- ✅ **Chapters, not summaries, over the ceiling** (2026-08-23, operator-directed). The
+  per-item path no longer summarizes: an over-ceiling transcript's field calls read the
+  chapter digest (list + per-chapter detail), declared in the run's warnings; an
+  over-ceiling item with no chapters FAILS naming both facts. Summarization survives in
+  compilation mode only. See Part II-A #149-154.
 - ✅ **Speaker voice tagging** HOST/CLIP/UNSURE (PR #64/#65): ECAPA/TitaNet verification
   against Owen's enrolled voiceprint; 100% agreement on 253 unambiguous captions; TitaNet
   was the *only* model of four candidates with a usable threshold gap (HOST≥0.65,
@@ -467,13 +472,25 @@ Diagnosis: the failure is the premise, not the tuning — a cosine valley measur
 
 **56. ONE renderer of attributed transcript text** (2026-08-23) — two joiners would render tagged segments flat on one path and screenplay on the other. [transcript-import.service.ts:427-433]
 
-**57. Raw transcript direct-pass replaced summarize-by-default (2026-08-22).** Summarization fires only when the transcript genuinely cannot fit or compilation forces it — "every locally generated title was written from a summary of the video rather than from the video." Ceilings: cloud 60k chars; local 90k (derived from ctx budget). [ai-manager.service.ts:25-41]
+**57. Raw transcript direct-pass replaced summarize-by-default (2026-08-22).** Summarization fires only when the transcript genuinely cannot fit or compilation forces it — "every locally generated title was written from a summary of the video rather than from the video." Ceilings: cloud 60k chars; local 90k (derived from ctx budget). [ai-manager.service.ts:25-41] — *"when it cannot fit" superseded by #149 (2026-08-23): chapter digest, never a summary. Cloud ceiling now 400k.*
 
 **58. `directPassScope` exists because `provider` became a legacy setting** — an all-local run under a cloud `provider` was condensing 62k-char transcripts that fit the local window raw. [ai-manager.service.ts:75-84]
 
 **59. The summarizer model is DECLARED, not routed/from Settings** — a user who had ever configured a cloud model was silently paying that provider to read every transcript on an otherwise all-local run. [metadata-routing.ts:115-129]
 
 **60. No built-in substitute for summarization prompts** — the "helpful assistant" fallback produced a summary with none of the ammunition and no sign anything went wrong; now throws naming file and key. [summarization.yml:10-13]
+
+**149. ⭐ Chapters, not summaries, when the transcript cannot fit (2026-08-23).** Operator's directive, verbatim: *"I don't want summaries. We should try to pass the whole thing in. If we're using summaries instead then it should be in the form of chapters being passed in."* Supersedes #57's "summarize when it cannot fit" with **"chapter digest when it cannot fit."** On the per-item metadata path `summarizeTranscript` no longer fires at all; over the ceiling every field call reads the CHAPTER DIGEST — the published chapter list with each chapter's timestamp, title and detail paragraph. The digest is a condensation the run has already paid for and one written the right way round: each detail comes from ITS OWN chapter's raw transcript (one call per chapter, #11's law), where the blind chunk summarizer sliced at a fixed character count and admitted the cost in its own log line ("verbatim quotes and phrasing do not survive that step"). Two condensations, one free and structurally better, and the pipeline was paying for the worse one. [chapter-digest.ts:1-38]
+
+**150. It is a DECLARED mode, not a degradation.** The run logs and warns *"the transcript is X chars, over the N-char <ceiling> direct-pass ceiling, so the content fields read the chapter digest (M chapters, K chars); verbatim phrasing is preserved inside each chapter's own detail"* — a statement of a mode this pipeline has, pushed into the run's warnings where the operator reads it after the fact (Law 8). The raw path declares nothing, deliberately: a line on every item saying the transcript passed through unchanged would bury the one item where it did not. [metadata-generator.service.ts:840-862]
+
+**151. Over the ceiling with NO chapters FAILS, loudly, naming both facts.** Either fact alone is ordinary — chapterless items are routine (text subject, untimed transcript), over-ceiling items are routine (a six-hour livestream) — but the pair has no condensation anybody agreed to, and truncating or quietly re-summarizing is Law 1's deliberate bug. The error names the character count, the ceiling it is over, the absent chapter list, and what it did *not* do instead. [chapter-digest.ts:121-130]
+
+**152. `contentMode` is a FIELD on the run context, not something inferred from length** (Law 10). Two readers must agree: the subject block drops the separate chapter table of contents when the content already IS one (printing it twice tells a model the video has twice as much in it), and the description's `{transcript}` slot goes EMPTY — the coverage block IS the content on that path, exactly as on a chapterless item. Nothing condensed is ever rendered under the heading "The transcript of the video, in full". [metadata-tasks.ts:147-166; ai-manager.service.ts:1124-1141; description-unit.ts:866-882]
+
+**153. Compilation is the ONE surviving summarizer consumer.** Decided from the code, not by preference: compilation joins every item's output into a single combined prompt, so items must be short by construction (`forceCondense`, never size-dependent), and it runs no chapter pipeline — N items have N chapter lists, which is not one video's table of contents. `summarizeTranscript` and SUMMARIZATION_MODEL therefore stay, scoped and documented to that mode. The summarizer also stopped counting against the two-local-model budget on the per-item path: the digest is assembled in code and loads nothing. [metadata-routing.ts:115-143; ai-manager.service.ts:695-720]
+
+**154. Verified without a model.** `npm run check:digest` (tools/chapter-digest-smoke.js) runs the dist build against a synthetic transcript: under-ceiling → raw transcript byte-for-byte; over-ceiling with chapters → digest content plus the declaration, and the assembled field prompt states what the video covers exactly once; over-ceiling without chapters → the loud failure. No transport stub was needed — no model is reached, which is itself the point.
 
 ### Speaker tagging (2026-08-23)
 

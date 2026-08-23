@@ -102,6 +102,42 @@ chapter_subjects_context: |2
   not spend real time on it.
   ===
 
+# The CHAPTER DIGEST — what the content slot carries on an item whose transcript is over the
+# direct-pass ceiling.
+#
+# WHY IT EXISTS. Over the ceiling the pipeline used to run a blind chunk summarizer and hand the
+# field calls its output; the summarizer's own log line admitted what that cost ("verbatim quotes
+# and phrasing do not survive that step"), and the operator's ruling on 2026-08-23 was: "I don't
+# want summaries. We should try to pass the whole thing in. If we're using summaries instead then
+# it should be in the form of chapters being passed in." The chapter list is a condensation the
+# pipeline has ALREADY paid for and that was written the right way round - each chapter's
+# paragraph comes from that chapter's OWN raw transcript, one call per chapter, so the specifics
+# inside it are the video's words rather than a paraphrase of a paraphrase.
+#
+# It REPLACES `chapter_subjects_context` on that path rather than sitting beside it: both render
+# the same table of contents, and printing it twice would tell the model the video has twice as
+# much in it as it does. So this block carries the same "let the list decide what the video is
+# about" instruction, plus the timestamps and the statement that there is no fuller transcript in
+# this prompt.
+#
+# Placeholder: {chapterList}
+chapter_digest: |2
+
+  === WHAT THIS VIDEO ACTUALLY COVERS ===
+  This video's transcript is longer than one call can read, so what follows is the video
+  in chapter form: every chapter in order, the time it starts, and what happens in it.
+  Each chapter's indented paragraph was written from that chapter's own section of the
+  transcript, so the specifics in it - the names, the claims, the numbers - are the
+  video's own and can be used as such.
+
+  {chapterList}
+
+  This IS the video, as much of it as this call gets; there is no fuller transcript below.
+  Let this list decide what the video is ABOUT. Weight it by how much of the video each
+  subject takes up, and stay inside it - if something is not in this list, the video did
+  not spend real time on it. Take your specifics from the paragraphs.
+  ===
+
 # OUTPUT FORMAT for ONE group, naming only that group's keys.
 #
 # Placeholder: {keyLines}

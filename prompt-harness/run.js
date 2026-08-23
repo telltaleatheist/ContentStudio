@@ -174,6 +174,10 @@ async function main() {
   const warnings = [];
   const ctx = {
     content: transcript,
+    // The harness always hands over a whole transcript, so it states the raw mode rather than
+    // leaving the field off: `contentMode` is what the subject block and the description's
+    // transcript slot both read, and an absent value is a third state neither of them has.
+    contentMode: 'raw-transcript',
     sourceLabel: args.source,
     chapterSubjects: [],
     chapterDetails: [],

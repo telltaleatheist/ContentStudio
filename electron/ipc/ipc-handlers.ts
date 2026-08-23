@@ -1247,7 +1247,8 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
        * first is gone: those items are routed like all the others, against the routing table
        * the operator sets in the routing dialog. The second is gone too — summarization runs on
        * SUMMARIZATION_MODEL, declared in metadata-routing.ts, so a transcript is not silently
-       * read by a cloud provider on a run whose every visible field is local.
+       * read by a cloud provider on a run whose every visible field is local; and as of
+       * 2026-08-23 it runs for COMPILATION ONLY.
        *
        * What is left is COMPILATION packaging, which is a declared mode the operator selects,
        * and the provider clients this service constructs. That is why `fullModel` is still
@@ -1255,8 +1256,8 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
        */
       log.info(
         `[IPC] Settings AI model ${fullModel} (provider: ${aiProvider}, model: ${aiModel}) is used for COMPILATION ` +
-          `packaging only; per-field metadata follows the routing table and summarization runs on ` +
-          `${SUMMARIZATION_MODEL}`
+          `packaging only; per-field metadata follows the routing table, and summarization — now ` +
+          `compilation's alone — runs on ${SUMMARIZATION_MODEL}`
       );
 
       // Performance-feedback loop: when the active prompt set maps to a
@@ -1289,6 +1290,12 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       // its first cloud call). A disagreeing store falls back to the declared local
       // constant, never to the Settings provider (that path was the measured defect the
       // constant replaced).
+      //
+      // IT IS RESOLVED FOR COMPILATION MODE ONLY, as of the same day. The per-item path stopped
+      // summarizing entirely: over the direct-pass ceiling its field calls read the chapter
+      // digest (chapter-digest.ts), so on an individual run this value is carried and never
+      // used. Compilation joins every item into one prompt and has no chapter list to digest,
+      // which is why the resolution stays here rather than moving into that branch.
       const resolvedRouting = resolveMetadataRouting(migrateStoredRouting(settings.metadataRouting).selections);
       const summarizerOption = resolveChapterModelOption(resolvedRouting);
       const summarizationModel =

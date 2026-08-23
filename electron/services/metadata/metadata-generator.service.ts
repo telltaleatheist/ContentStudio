@@ -27,7 +27,6 @@ import {
   MetadataRoutingSelections,
   MetadataRoutingTaskId,
   ResolvedMetadataRouting,
-  SUMMARIZATION_MODEL,
   resolveChapterModelOption,
   resolveMetadataRouting,
   routingOption,
@@ -35,6 +34,7 @@ import {
 import type { ModelRosterEntry } from './metadata-tasks';
 import { JobModelLifecycle } from './model-lifecycle';
 import { excludePromoChapters } from './promo-chapters';
+import { FieldContentDecision, digestChaptersOf, resolveFieldContent } from './chapter-digest';
 import { topEntities, transcriptCasing } from './entity-extraction';
 import { rankKeyPhrases } from './key-phrases';
 import axios from 'axios';
@@ -254,16 +254,25 @@ export class MetadataGeneratorService {
       const inputHandler = new InputHandlerService(
         whisperService, runOutputDir, params.progressCallback, speakerTagger);
 
+      /**
+       * The transcript's direct-pass ceiling follows the ROUTED field models, not the legacy
+       * provider setting: an all-local run gets the local (90k) window even when the Settings
+       * provider is a cloud one. Any routed cloud field → the cloud ceiling.
+       *
+       * Resolved ONCE here and used twice — by the AI manager (whose compilation summarizer
+       * measures against it) and by `resolveFieldContent` per item. Computing it twice would be
+       * two places that can disagree about whether an item fits.
+       */
+      const transcriptCeiling: 'local' | 'cloud' =
+        (Object.entries(this.routing(params)) as [MetadataRoutingTaskId, string][])
+          .every(([taskId, optionId]) => routingOption(taskId, optionId).kind === 'local')
+          ? 'local'
+          : 'cloud';
+
       // Initialize AI Manager
       const aiConfig: AIConfig = {
         provider: params.aiProvider,
-        // The transcript's direct-pass ceiling follows the ROUTED field models, not the
-        // legacy provider above: an all-local run gets the local (90k) window even when
-        // the Settings provider is a cloud one. Any routed cloud field → cost ceiling.
-        transcriptCeiling: (Object.entries(this.routing(params)) as [MetadataRoutingTaskId, string][])
-          .every(([taskId, optionId]) => routingOption(taskId, optionId).kind === 'local')
-          ? 'local'
-          : 'cloud',
+        transcriptCeiling,
         model: params.aiModel, // Legacy support
         summarizationModel: params.summarizationModel,
         metadataModel: params.metadataModel,
@@ -422,7 +431,7 @@ export class MetadataGeneratorService {
             const item = contentItems[i];
             const sourceLabel = item.source || `item_${i + 1}`;
 
-            const { subjects, details } = await this.resolveChapters(
+            const { chapters, subjects, details } = await this.resolveChapters(
               item,
               aiManager,
               params,
@@ -433,14 +442,22 @@ export class MetadataGeneratorService {
               computedChapters
             );
 
-            this.throwIfCancelled(params, `before summarizing ${sourceLabel} for the prompt`);
             params.progressCallback?.('generating', 'Assembling prompt...', 80, undefined, i);
-            const summary = await aiManager.summarizeTranscript(this.contentTextOf(item).text, sourceLabel);
+            // Resolved exactly as the real run resolves it, and it makes NO model call — that
+            // is the point of the digest replacing the summarizer here. This flow used to run
+            // a whole summarization pass just to show a prompt.
+            const fieldContent = resolveFieldContent({
+              transcript: this.contentTextOf(item).text,
+              sourceLabel,
+              ceiling: transcriptCeiling,
+              chapters: digestChaptersOf(chapters),
+            });
+            this.declareFieldContent(fieldContent, warnings);
 
             // The same planning the real run does, so the user reads the prompts that will
             // actually be sent — one labelled block per unit, chapters or no chapters.
             const taskRun = await this.resolveTaskRun(
-              aiManager, params, item, sourceLabel, summary, warnings, lifecycle, subjects, details);
+              aiManager, params, item, sourceLabel, fieldContent, warnings, lifecycle, subjects, details);
             prompts.push(...buildTaskPromptsForDisplay(taskRun));
           }
         }
@@ -597,10 +614,23 @@ export class MetadataGeneratorService {
           );
 
           // ---- Everything else, conditioned on those chapters -----------------
-          this.throwIfCancelled(params, `before summarizing ${sourceLabel}`);
+          //
+          // NO MODEL CALL HAPPENS HERE ANY MORE. This is where the blind chunk summarizer used
+          // to run on anything over the direct-pass ceiling, spending minutes shedding the
+          // verbatim phrasing the ship-field bars are written in. Over the ceiling the field
+          // calls now read the CHAPTER DIGEST — the list this item's chapter pipeline already
+          // produced, each chapter's detail written from its own raw transcript — and an item
+          // that is over the ceiling with no chapters fails loudly rather than being condensed
+          // by something nobody chose (chapter-digest.ts).
           console.log(`[MetadataGenerator] Sending generating phase: Analyzing content for item ${i}`);
           params.progressCallback?.('generating', `Analyzing content ${i + 1}/${contentItems.length}...`, 60, undefined, i);
-          const summary = await aiManager.summarizeTranscript(this.contentTextOf(item).text, sourceLabel);
+          const fieldContent = resolveFieldContent({
+            transcript: this.contentTextOf(item).text,
+            sourceLabel,
+            ceiling: transcriptCeiling,
+            chapters: digestChaptersOf(chapters),
+          });
+          this.declareFieldContent(fieldContent, warnings);
 
           this.throwIfCancelled(params, `before generating metadata for ${sourceLabel}`);
           console.log(`[MetadataGenerator] Sending generating phase: Generating metadata for item ${i}`);
@@ -611,7 +641,7 @@ export class MetadataGeneratorService {
           // rather than the operator's subject line) and who writes the tags, and both of those
           // are logged — they no longer change which code path the item takes.
           const taskRun = await this.resolveTaskRun(
-            aiManager, params, item, sourceLabel, summary, warnings, lifecycle, chapterSubjects, chapterDetails);
+            aiManager, params, item, sourceLabel, fieldContent, warnings, lifecycle, chapterSubjects, chapterDetails);
           const metadata = await runMetadataTasks(aiManager, taskRun);
 
           // Add title and source info. `_is_compilation` is written on BOTH branches now:
@@ -809,6 +839,28 @@ export class MetadataGeneratorService {
   }
 
   /**
+   * Say out loud which content mode this item is in (Law 8), or say nothing at all.
+   *
+   * The raw path carries no declaration and that is not an omission: it is what the pipeline
+   * does, and a line on every item saying "the transcript passed through unchanged" would bury
+   * the one item where it did not. The digest path pushes its declaration into the run's
+   * warnings, which is the only place the operator reads what happened to an item after the
+   * report is written — a STATEMENT of a mode this pipeline has, not an apology for one it fell
+   * into. There is no third case: the pair that has no answer threw before this was reached.
+   */
+  private static declareFieldContent(decision: FieldContentDecision, warnings: string[]): void {
+    if (decision.mode === 'raw-transcript') {
+      console.log(
+        `[MetadataGenerator] direct pass: ${decision.content.length} chars of raw transcript reach every field call`
+      );
+      return;
+    }
+    log.warn(`[MetadataGenerator] ${decision.declaration}`);
+    console.warn(`[MetadataGenerator] ${decision.declaration}`);
+    warnings.push(decision.declaration);
+  }
+
+  /**
    * Set up this item's routed run. EVERY individual item takes one.
    *
    * WHAT THIS METHOD USED TO DO, because its absence is the change: it decided whether an item
@@ -833,7 +885,8 @@ export class MetadataGeneratorService {
     params: GenerationParams,
     item: ContentItem,
     sourceLabel: string,
-    summary: string,
+    /** What the field calls read, and which of the two declared modes it is (chapter-digest.ts). */
+    fieldContent: FieldContentDecision,
     warnings: string[],
     lifecycle: JobModelLifecycle,
     chapterSubjects?: string[],
@@ -865,20 +918,11 @@ export class MetadataGeneratorService {
     if (hasChapters && chapterOption.kind === 'local') {
       alsoLoads.push({ model: chapterOption.model, what: 'chapters' });
     }
-    if (summary !== contentText) {
-      // The summarizer follows the writing slot since 2026-08-23 (ipc-handlers resolves it
-      // through resolveChapterModelOption); only a LOCAL summarizer made anything resident,
-      // so only that case counts against the budget or gets held.
-      const summarizer = (params.summarizationModel || SUMMARIZATION_MODEL);
-      if (summarizer.startsWith('ollama:')) {
-        const bare = summarizer.replace(/^ollama:/, '');
-        alsoLoads.push({ model: bare, what: 'summarization' });
-        // It has already run by the time this is reached, so this is a statement about what
-        // is resident, not a prediction. Usually the same 27B the fields are routed to, in
-        // which case the lifecycle already holds it and this says nothing new.
-        lifecycle.holdOllamaModel(params.aiHost || 'http://localhost:11434', bare, 'summarization');
-      }
-    }
+    // THE SUMMARIZER USED TO BE A THIRD ENTRY HERE, held resident for the length of the job on
+    // any item over the direct-pass ceiling. It is gone from this path entirely: the over-ceiling
+    // mode is now the chapter digest, which is assembled in code from a list the chapter model
+    // already wrote, so it loads nothing. The only model an over-ceiling item pulls in beyond its
+    // routed fields is the chapter model, counted directly above.
 
     const plan = planMetadataUnits({
       routing: this.routing(params),
@@ -903,7 +947,8 @@ export class MetadataGeneratorService {
     return {
       plan,
       ctx: {
-        content: summary,
+        content: fieldContent.content,
+        contentMode: fieldContent.mode,
         sourceLabel,
         chapterSubjects: subjects,
         chapterDetails: chapterDetails || [],
@@ -912,10 +957,12 @@ export class MetadataGeneratorService {
         entities: pools.entities,
         keyPhrases: pools.keyPhrases,
         contentText,
-        // Whether the two content slots above are screenplay-labelled. Note that `content` is
-        // the SUMMARY on the rare over-ceiling item, where the labels survive only as far as the
-        // summarizer carried them; on the ordinary direct-passed item the summary IS the content
-        // text and this describes both exactly.
+        // Whether the two content slots above are screenplay-labelled. On the ordinary
+        // direct-passed item `content` IS `contentText` and this describes both exactly. On an
+        // over-ceiling item `content` is the chapter digest, whose details are prose rather than
+        // labelled turns — and the one place that matters, the description's speaker-tag block,
+        // is gated on the transcript slot being rendered at all, which the digest mode turns off
+        // (description-unit.ts transcriptBlock).
         contentSpeakerTagged: resolvedContent.speakerTagged,
         // Filled by runMetadataTasks as each call returns, and read by the calls that take an
         // earlier field as input data — the thumbnail call reading the titles. It starts empty
@@ -1358,8 +1405,9 @@ export class MetadataGeneratorService {
   /**
    * THE SPLIT. The one place that decides which transcript feeds a CONTENT field.
    *
-   * Every `summarizeTranscript` call in this service goes through here, and nothing else
-   * does. That is deliberate and it is the whole safety argument for the two-source
+   * Every content read in this service goes through here — the field content resolution on
+   * the per-item path, the `summarizeTranscript` calls on the compilation path — and nothing
+   * else does. That is deliberate and it is the whole safety argument for the two-source
    * design: the chapter pipeline reads `item.srtSegments` and never calls this, so a
    * linked run and an unlinked run of the same video produce byte-identical chapters
    * while their titles/description/tags differ (spec §5, PR 5's acceptance test).
