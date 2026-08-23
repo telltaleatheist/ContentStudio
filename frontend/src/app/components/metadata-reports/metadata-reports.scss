@@ -1505,3 +1505,27 @@ input[type='time'].control { width: 92px; flex: none; }
   background-clip: content-box;
 }
 .pane-body::-webkit-scrollbar-thumb:hover { background: var(--rp-ink-3); background-clip: content-box; }
+
+// The prompt-trace asset: each entry is a sub-toggled full prompt, rendered verbatim.
+.prompt-entry {
+  border-top: 1px solid var(--border-color, rgba(128, 128, 128, 0.2));
+
+  .prompt-head { padding-left: 8px; }
+}
+
+.prompt-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 480px;
+  overflow-y: auto;
+  cursor: pointer;
+  background: var(--surface-sunken, rgba(128, 128, 128, 0.06));
+  border-radius: 6px;
+
+  &.copied { outline: 1px solid var(--accent, #4a90d9); }
+}

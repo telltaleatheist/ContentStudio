@@ -683,6 +683,41 @@
                   }
                 </div>
               }
+
+              <!-- Every prompt the run sent for this item, exactly as the model read it —
+                   recorded by the generator (_prompt_trace) so a bad field can be judged
+                   against its real input instead of guessed at. Absent on items generated
+                   before the trace existed, and the section then simply doesn't render. -->
+              @if (promptTrace().length > 0) {
+                <div class="asset">
+                  <button class="asset-head" (click)="toggleAsset('prompt-trace')">
+                    <mat-icon>terminal</mat-icon>
+                    <span class="asset-name">Prompts sent to the AI</span>
+                    <span class="cnt num">{{ promptTrace().length }}</span>
+                    <span class="chev">{{ isAssetOpen('prompt-trace') ? '▴' : '▾' }}</span>
+                  </button>
+                  @if (isAssetOpen('prompt-trace')) {
+                    <div class="asset-body">
+                      @for (p of promptTrace(); track $index; let i = $index) {
+                        <div class="prompt-entry">
+                          <button class="asset-head prompt-head" (click)="toggleAsset('prompt-' + i)">
+                            <span class="asset-n num">{{ i + 1 }}</span>
+                            <span class="asset-name">{{ p.what }}</span>
+                            <span class="cnt num">{{ p.model }} · {{ formatPromptSize(p.chars) }}</span>
+                            <span class="chev">{{ isAssetOpen('prompt-' + i) ? '▴' : '▾' }}</span>
+                          </button>
+                          @if (isAssetOpen('prompt-' + i)) {
+                            <pre class="prompt-text"
+                                 [class.copied]="isCopied('prompt-copy-' + i)"
+                                 (click)="copyToClipboard(p.prompt, 'prompt-copy-' + i)"
+                                 title="Click to copy">{{ p.prompt }}</pre>
+                          }
+                        </div>
+                      }
+                    </div>
+                  }
+                </div>
+              }
             </section>
           }
         }
