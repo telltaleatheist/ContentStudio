@@ -18,6 +18,7 @@ import type {
   PendingFillItem,
   ResolveOutcome,
   SetTitlesResult,
+  VideoNav,
 } from './publish-client';
 
 export type PublishMessage =
@@ -26,7 +27,8 @@ export type PublishMessage =
   | { type: 'publish-filled'; itemId: string; videoId: string }
   | { type: 'publish-reports'; offset: number; limit: number; query: string }
   | { type: 'publish-item'; itemId: string }
-  | { type: 'publish-titles'; itemId: string; titles: string[] };
+  | { type: 'publish-titles'; itemId: string; titles: string[] }
+  | { type: 'video-nav'; videoId: string };
 
 export type PublishResponse<T> =
   | { ok: true; data: T }
@@ -44,6 +46,7 @@ const PUBLISH_MESSAGE_TYPES: ReadonlySet<string> = new Set<PublishMessage['type'
   'publish-reports',
   'publish-item',
   'publish-titles',
+  'video-nav',
 ]);
 
 export function isPublishMessage(message: unknown): message is PublishMessage {
@@ -143,4 +146,14 @@ export function requestItem(itemId: string): Promise<ItemDetail> {
 
 export function requestSaveTitles(itemId: string, titles: string[]): Promise<SetTitlesResult> {
   return send<SetTitlesResult>({ type: 'publish-titles', itemId, titles });
+}
+
+/**
+ * The channel's video list around `videoId`, for the nav strip.
+ *
+ * Goes through the worker for the same reason as everything else here: a content-script
+ * fetch would arrive at ContentStudio with Studio's own Origin and be refused.
+ */
+export function requestVideoNav(videoId: string): Promise<VideoNav> {
+  return send<VideoNav>({ type: 'video-nav', videoId });
 }

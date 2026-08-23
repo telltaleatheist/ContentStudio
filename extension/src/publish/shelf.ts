@@ -44,7 +44,10 @@ const CSS = `
   font: 12px/1.4 Roboto, system-ui, -apple-system, sans-serif;
   color: #f1f1f1;
 }
-.shell.right { right: 16px; }
+/* --cs-right-lane is set by setRightLaneWidth() when another overlay owns the right
+   edge (the video nav strip). Defaults to 0, so the shelf sits where it always did on
+   every page that has no strip. */
+.shell.right { right: calc(16px + var(--cs-right-lane, 0px)); }
 .shell.left { left: 16px; }
 .card {
   width: 320px; max-height: 72vh; display: flex; flex-direction: column;
@@ -900,6 +903,21 @@ export class PublishShelf {
   }
 
   // ------------------------------------------------------------------- prefs
+
+  /**
+   * Reserve `px` of the right edge for another overlay, so the two never sit on top of
+   * each other.
+   *
+   * The nav strip is a fixed rail on the right and the shelf can be on the right too, so
+   * ONE of them has to move. The shelf moves, because the strip's whole point is to be on
+   * the screen edge and the shelf is already free-floating. It is a CSS custom property
+   * rather than a stored preference: it is a fact about what else is on the page right
+   * now, not a choice the operator made, and it must not survive into a page with no
+   * strip. Ignored while the shelf is on the left, where there is nothing to avoid.
+   */
+  setRightLaneWidth(px: number): void {
+    this.host.style.setProperty('--cs-right-lane', `${px}px`);
+  }
 
   private async setSide(side: ShelfPrefs['side']): Promise<void> {
     this.prefs = { ...this.prefs, side };

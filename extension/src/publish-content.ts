@@ -18,7 +18,8 @@
 
 import { fillerById, type FillContext, type FillId } from './publish/fillers';
 import { PublishShelf, type PageContext } from './publish/shelf';
-import type { ItemDetail } from './publish/publish-client';
+import { NavStrip, type NavStripCallbacks } from './publish/nav-strip';
+import type { ItemDetail, NavVideo } from './publish/publish-client';
 // All localhost traffic goes through the service worker — see publish-messages.ts for
 // why a content-script fetch cannot talk to ContentStudio directly.
 import {
@@ -30,12 +31,38 @@ import {
   requestReports,
   requestResolve,
   requestSaveTitles,
+  requestVideoNav,
 } from './publish/publish-messages';
-import { detailsFormReady, isDetailsPage, looksLikeDraft, readFilename, videoIdFromUrl } from './publish/page';
+import {
+  detailsFormReady,
+  isDetailsPage,
+  looksLikeDraft,
+  readFilename,
+  videoEditId,
+  videoIdFromUrl,
+} from './publish/page';
 import { isMonetizationUrl, monetizationSurfaceReady } from './publish/monetization';
 import { waitFor } from './publish/dom';
 
 let shelf: PublishShelf | null = null;
+/** The right-edge video navigator. Mounted only on /video/<id>/edit — see syncNavStrip. */
+let navStrip: NavStrip | null = null;
+/**
+ * The channel's video list the strip draws from.
+ *
+ * Cached for the tab because it is the same list for every video on the channel, and the
+ * operator clicks through several in a row. Dropped — never quietly reused — when the
+ * refresh button is pressed or when the open video is not in it.
+ */
+let navList: NavVideo[] | null = null;
+/**
+ * Sequence number for the in-flight list fetch.
+ *
+ * Studio navigation is faster than a localhost round trip, so a reply can arrive after
+ * the operator has already moved on. Painting it would highlight the wrong video and aim
+ * both arrows at the wrong neighbours, so a superseded reply is dropped.
+ */
+let navRequest = 0;
 
 /** The report currently loaded in the shelf. */
 let item: ItemDetail | null = null;
@@ -204,6 +231,75 @@ async function resolveCurrentVideo(): Promise<void> {
   }
 }
 
+function navCallbacks(): NavStripCallbacks {
+  return {
+    // The strip owns the right edge; the shelf steps aside by exactly its width. Held
+    // here rather than in either component so neither has to know the other exists.
+    onLaneWidth: (px: number) => shelf?.setRightLaneWidth(px),
+  };
+}
+
+/**
+ * Mount, update or remove the nav strip for the page we are now on.
+ *
+ * Never throws: it is called fire-and-forget from the navigation watcher, and every state
+ * it can end up in is one it shows on screen.
+ */
+async function syncNavStrip(): Promise<void> {
+  const videoId = videoEditId();
+
+  // Not a standalone edit page (channel lists, the upload wizard, analytics…). The strip
+  // navigates between videos, which is meaningless — and in the wizard destructive — off
+  // the edit page, so it comes down entirely and gives the shelf its lane back.
+  if (!videoId) {
+    navStrip?.destroy();
+    navStrip = null;
+    return;
+  }
+
+  if (!navStrip) {
+    const created = new NavStrip(navCallbacks());
+    try {
+      await created.mount();
+    } catch (error) {
+      // Same reasoning as the shelf's mount: an overlay that silently fails to appear is
+      // indistinguishable from one that was never built.
+      console.error('[ContentStudio] the video nav strip could not mount:', error);
+      return;
+    }
+    navStrip = created;
+  }
+
+  // A cached list that contains this video is the whole answer — same channel, no call.
+  if (navList?.some((v) => v.videoId === videoId)) {
+    navStrip.setList(videoId, navList);
+    return;
+  }
+
+  const seq = (navRequest += 1);
+  navStrip.setLoading();
+  try {
+    const nav = await requestVideoNav(videoId);
+    if (seq !== navRequest) return;
+    navList = nav.videos;
+    navStrip?.setList(videoId, nav.videos);
+  } catch (error) {
+    if (seq !== navRequest) return;
+    navList = null;
+    const kind = error instanceof PublishBridgeError ? error.kind : null;
+    if (kind === 'unreachable') {
+      // The app being closed is a normal state, not a fault.
+      navStrip?.setNotice('ContentStudio app not reachable');
+      return;
+    }
+    if (kind === 'not-in-store') {
+      navStrip?.setNotice('Not in ContentStudio\u2019s video list \u2014 press \u27f3 after the collector runs.');
+      return;
+    }
+    navStrip?.setError(error instanceof Error ? error.message : String(error));
+  }
+}
+
 function callbacks() {
   return {
     onFill: async (ids: FillId[]) => {
@@ -224,7 +320,11 @@ function callbacks() {
       // inside the wizard without the URL changing.
       manualPick = false;
       resolvedFor = videoIdFromUrl();
-      await resolveCurrentVideo();
+      // The refresh button is also the nav strip's: it is the only way to pick up videos
+      // the 6-hour collector has published since this tab was opened, which is exactly
+      // what the strip's "not in the list" state tells the operator to press.
+      navList = null;
+      await Promise.all([resolveCurrentVideo(), syncNavStrip()]);
     },
 
     onOpenReport: async (itemId: string) => {
@@ -263,6 +363,11 @@ function callbacks() {
 async function onNavigation(): Promise<void> {
   const videoId = videoIdFromUrl();
   shelf?.setPageContext(pageContext());
+
+  // The strip follows the URL and nothing else — it has no report to resolve and no
+  // manual pick to respect — so it syncs on every navigation, including the ones the
+  // shelf deliberately ignores below. Fire-and-forget: it renders its own failures.
+  void syncNavStrip();
 
   // The operator's own pick outranks anything we'd infer from the page.
   if (manualPick) return;

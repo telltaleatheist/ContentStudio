@@ -26,6 +26,19 @@ export function videoIdFromUrl(): string | null {
   return udvid && udvid.trim() ? udvid : null;
 }
 
+/**
+ * The video id ONLY when Studio is on the standalone edit page /video/<id>/edit.
+ *
+ * Narrower than videoIdFromUrl() on purpose: the nav strip navigates BETWEEN videos, and
+ * the upload wizard is a modal over the channel content list with its own unsaved state.
+ * Throwing a hard navigation at it would drop whatever the operator had half-entered, so
+ * the strip is simply not mounted there.
+ */
+export function videoEditId(): string | null {
+  const match = location.pathname.match(/\/video\/([^/]+)\/edit/);
+  return match?.[1] ?? null;
+}
+
 /** True wherever the video metadata form is available — either entry point. */
 export function isDetailsPage(): boolean {
   if (/\/video\/[^/]+\/edit/.test(location.pathname)) return true;
