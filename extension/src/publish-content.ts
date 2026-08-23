@@ -296,6 +296,12 @@ async function syncNavStrip(): Promise<void> {
       navStrip?.setNotice('Not in ContentStudio\u2019s video list \u2014 press \u27f3 after the collector runs.');
       return;
     }
+    if (kind === 'unavailable') {
+      // The app answered but predates the video-nav route: an update problem, not a data
+      // one, and the operator fixes it at the app, not here.
+      navStrip?.setNotice('ContentStudio is running an older build \u2014 restart or update the app.');
+      return;
+    }
     navStrip?.setError(error instanceof Error ? error.message : String(error));
   }
 }

@@ -14,7 +14,10 @@
 //   videoCreatorExperiment.experimentArmData[].title   the variant titles
 //   videoCreatorExperiment.result.armResults[]         { arm, watchtimeFraction }
 //   videoCreatorExperiment.result.winnerArm            which one won
-//   videoCreatorExperiment.result.resultState          WINNER | NO_WINNER
+//   videoCreatorExperiment.result.resultState          CREATOR_EXPERIMENT_RESULT_STATE_*
+//                                                      (WINNER | NO_WINNER |
+//                                                       NOT_CONCLUSIVE_YET | NOT_ENOUGH_DATA
+//                                                       — wire format captured 2026-08-23)
 //
 // which is exactly the shape VideoVerdict.abTest has been waiting for since the analytics
 // design was written. Batches of 50 ids (100 returns HTTP 400).
@@ -297,20 +300,17 @@ export async function fetchExperimentsInPage(channelId: string, videoIds: string
       // `resultState` is the field that says it outright, and it has been documented in this
       // file's own header since the day the loop was written (see the endpoint notes above).
       // It was simply never read.
-      const state = result.resultState;
-      if (state === 'NO_WINNER') continue;
+      // The wire format, finally captured live on 2026-08-23 by the fail-loud guard below:
+      // every value carries the CREATOR_EXPERIMENT_RESULT_STATE_ prefix. Observed set:
+      // WINNER, NO_WINNER, NOT_CONCLUSIVE_YET, NOT_ENOUGH_DATA. Stripping the prefix (rather
+      // than matching prefixed strings) also keeps a bare value working should Studio ever
+      // drop the prefix the way its already-normalized copies do.
+      const state = String(result.resultState).replace(/^CREATOR_EXPERIMENT_RESULT_STATE_/, '');
+      // Decided-without-a-winner and the two still-undecided states all mean the same thing
+      // here: there is no winner to record. Only a genuinely unknown value stops the run.
+      if (state === 'NO_WINNER' || state === 'NOT_CONCLUSIVE_YET' || state === 'NOT_ENOUGH_DATA') continue;
       if (state !== 'WINNER') {
-        // NOT a skip, and not a guess in either direction. Nobody has yet captured a raw
-        // response, so whether the live value is bare (`WINNER`) or carries the
-        // `CREATOR_EXPERIMENT_RESULT_STATE_` prefix that neighbouring enums do is unknown —
-        // two independent proofs were offered for opposite answers and both turned out to
-        // read an already-normalized copy rather than the wire format.
-        //
-        // Guessing bare and being wrong collects NOTHING, silently, forever. Guessing
-        // prefixed and being wrong does the same. Refusing to guess collects the answer: the
-        // first real response names the actual string in an error the operator can read, and
-        // the one-word fix follows from it.
-        unrecognized.add(String(state));
+        unrecognized.add(String(result.resultState));
         continue;
       }
       const winnerIdx = armIndex(result.winnerArm);
@@ -353,11 +353,11 @@ export async function fetchExperimentsInPage(channelId: string, videoIds: string
     return fail(
       'unrecognized-result-state',
       `get_creator_videos returned resultState value(s) this build does not recognise: ` +
-      `${[...unrecognized].map((s) => JSON.stringify(s)).join(', ')}. Expected 'WINNER' or ` +
-      `'NO_WINNER'. No A/B results were recorded from this pass. If the value above is a ` +
-      `prefixed form of one of those, extension/src/catalogue.ts needs the prefix stripped ` +
-      `before the comparison — the exact wire format has never been captured, which is why ` +
-      `this refuses to guess.`,
+      `${[...unrecognized].map((s) => JSON.stringify(s)).join(', ')}. Known values (with or ` +
+      `without the CREATOR_EXPERIMENT_RESULT_STATE_ prefix, which is stripped before ` +
+      `comparison): WINNER, NO_WINNER, NOT_CONCLUSIVE_YET, NOT_ENOUGH_DATA. No A/B results ` +
+      `were recorded from this pass — YouTube has grown a new state and ` +
+      `extension/src/catalogue.ts needs to learn what it means.`,
     );
   }
 

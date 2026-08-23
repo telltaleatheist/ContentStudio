@@ -316,9 +316,21 @@ export async function fetchVideoNav(videoId: string): Promise<VideoNav> {
     body = await call<VideoNav>(`/analytics/video-nav?${params.toString()}`);
   } catch (error) {
     if (error instanceof PublishClientError && error.status === 404) {
+      // Two different 404s reach here and they must not blur: the route answering "I have
+      // never seen this video" (its exact error string), and an app build OLD ENOUGH not
+      // to have the route at all, whose catch-all says "No such endpoint". Telling the
+      // operator to wait for the collector when the actual fix is restarting the app
+      // would send them down the wrong road.
+      if (error.message === 'video not in analytics store') {
+        throw new PublishClientError(
+          'not-in-store',
+          `ContentStudio's video list does not contain ${videoId}`,
+          404,
+        );
+      }
       throw new PublishClientError(
-        'not-in-store',
-        `ContentStudio's video list does not contain ${videoId}`,
+        'unavailable',
+        'ContentStudio is running a build without /analytics/video-nav. Restart or update the app.',
         404,
       );
     }
