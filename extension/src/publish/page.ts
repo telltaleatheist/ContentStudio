@@ -7,6 +7,7 @@
 // obtainable, which is what makes matching an exact join instead of fuzzy guesswork.
 
 import { visible, visibleAll } from './dom';
+import { isLivestreamUrl, livestreamDetailsReady } from './livestream';
 
 /**
  * The video currently open for editing.
@@ -31,6 +32,25 @@ export function isDetailsPage(): boolean {
   if (/\/video\/[^/]+\/edit/.test(location.pathname)) return true;
   // Upload wizard: only counts once a specific video is open (udvid present).
   return /\/videos\/upload\/?$/.test(location.pathname) && !!videoIdFromUrl();
+}
+
+/**
+ * True on Studio's live surfaces — the control room and the channel live dashboard.
+ *
+ * DELIBERATELY SEPARATE from isDetailsPage rather than folded into it. isDetailsPage
+ * answers "the upload/edit metadata form is here, and its filename sidebar with it", and
+ * two callers depend on exactly that: resolveCurrentVideo waits up to 15 seconds for the
+ * form before reading the sidebar off it, and the filename join needs the sidebar to
+ * exist. Neither holds on a live surface — the control room prints no filename sidebar at
+ * all, and its details form is behind an Edit control the operator may never have opened —
+ * so a live page that answered true to isDetailsPage would sit in a fifteen-second wait
+ * and then report a page that is loaded fine as "Studio has not finished loading".
+ *
+ * See livestream.ts for why the FORM is found by shape rather than by this URL: the live
+ * dashboard opens stream details in a dialog over the same href.
+ */
+export function isLivestreamPage(): boolean {
+  return isLivestreamUrl();
 }
 
 /**
@@ -89,10 +109,19 @@ export function hasUnsavedChanges(): boolean {
  * guaranteed on a video that already HAS a title (published and scheduled videos, which
  * are valid fill targets — only YouTube's A/B test needs a non-draft). The metadata editor
  * element is the structural fact; the title box is the fast path.
+ *
+ * A THIRD check, added for the live surfaces, and it is the weakest of the three on
+ * purpose. `ytcp-video-metadata-editor` is the upload/edit form's own host element and is
+ * not guaranteed to be what Studio renders inside the live control room or the live
+ * dashboard's edit dialog, so those forms are recognised by their SHAPE instead — see
+ * livestream.ts, which is scoped to Studio's live routes and dumps the markup it found on
+ * every miss. It runs last because the first two are verified live and this one is not:
+ * on the surfaces that were verified, this branch is never reached.
  */
 export function detailsFormReady(): boolean {
   return (
     !!visible('div#textbox[aria-label^="Add a title"]') ||
-    !!visible('ytcp-video-metadata-editor')
+    !!visible('ytcp-video-metadata-editor') ||
+    livestreamDetailsReady()
   );
 }

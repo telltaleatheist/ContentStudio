@@ -18,6 +18,7 @@
 //     `aria-label="Add title N"` only used as a confirmation, because that label is
 //     localized English and would break on a non-English Studio.
 
+import { findLivestreamFields } from './livestream';
 import {
   findMonetizationRadios,
   monetizationAvailability,
@@ -143,6 +144,47 @@ const SEL = {
   showMoreToggle: 'ytcp-video-metadata-editor ytcp-button#toggle-button',
 };
 
+// ------------------------------------------------------- title / description lookup
+
+/** A located field, or the reason the page has none. Never a bare null — see below. */
+type FieldLookup = { found: true; el: HTMLElement } | { found: false; reason: string };
+
+/**
+ * Where the two free-text fields are, or the reason there are none here.
+ *
+ * TWO ANCHORS, VERIFIED FIRST. `SEL.mainTitle` / `SEL.description` are the selectors
+ * recon confirmed live in the upload wizard and on /video/<id>/edit, and they stay the
+ * first thing tried so that nothing about those two surfaces changes. The second anchor
+ * is livestream.ts's shape-based read, which exists because the operator's pre-stream
+ * workflow fills a form Studio renders on a different route inside hosts nobody has
+ * verified — and which is UNVERIFIED and says so, dumping the markup it actually found
+ * whenever it misses.
+ *
+ * The reason strings concatenate BOTH failures rather than reporting only the second.
+ * "Title field not on this page" on a page that visibly has a title field is the kind of
+ * message that sends someone reading the wrong file; naming the selector that missed and
+ * then what the shape-based read saw instead names the actual disagreement.
+ */
+function findTitleField(): FieldLookup {
+  const verified = visible<HTMLElement>(SEL.mainTitle);
+  if (verified) return { found: true, el: verified };
+
+  const live = findLivestreamFields();
+  if (live.found) return { found: true, el: live.title };
+
+  return { found: false, reason: `no ${SEL.mainTitle} on this page. ${live.reason}` };
+}
+
+function findDescriptionField(): FieldLookup {
+  const verified = visible<HTMLElement>(SEL.description);
+  if (verified) return { found: true, el: verified };
+
+  const live = findLivestreamFields();
+  if (live.found) return { found: true, el: live.description };
+
+  return { found: false, reason: `no ${SEL.description} on this page. ${live.reason}` };
+}
+
 /**
  * Studio hides tags / altered-content / paid-promotion behind "Show more"; those fields
  * do not exist in the DOM until it's expanded. Idempotent — if the fields are already
@@ -159,6 +201,27 @@ async function ensureAdvancedExpanded(): Promise<void> {
   showMore.click();
   await waitFor(() => visible(SEL.tagsInput), 'the advanced fields to expand');
 }
+
+/**
+ * Whether the advanced section (tags, altered content, paid promotion) exists here at all.
+ *
+ * THE SAME PREDICATE ensureAdvancedExpanded uses, read rather than acted on, so the three
+ * fillers behind that section can answer detect() honestly instead of offering a button
+ * whose only possible outcome is that function's throw. It matters now because the live
+ * metadata forms do not carry an advanced section: without this, every "Fill everything"
+ * on a stream would end with three red lines about a "Show more" control that was never
+ * going to be there.
+ *
+ * Deliberately NOT a new rule — if these two ever disagree, the button lies about what it
+ * can do, so they are written as one test read twice.
+ */
+function advancedSectionReachable(): boolean {
+  return !!visible(SEL.tagsInput) || !!visible(SEL.showMoreToggle) || !!buttonByText(/show more/i);
+}
+
+/** The one wording for "this form has no advanced section", shared by its three fillers. */
+const NO_ADVANCED_SECTION =
+  'This form has no advanced section — no tags input and no "Show more" control on the page';
 
 // ---------------------------------------------------------------- A/B dialog
 
@@ -244,13 +307,15 @@ const titleFiller: Filler = {
   surface: 'details',
   detect(ctx) {
     if (!ctx.titles.length) return { available: false, reason: 'No titles chosen for this item' };
-    if (!visible(SEL.mainTitle)) return { available: false, reason: 'Title field not on this page' };
+    const field = findTitleField();
+    if (!field.found) return { available: false, reason: field.reason };
     return { available: true };
   },
   async fill(ctx) {
     try {
-      const main = visible<HTMLElement>(SEL.mainTitle);
-      if (!main) throw new FillError(`Title field not found (${SEL.mainTitle})`);
+      const field = findTitleField();
+      if (!field.found) throw new FillError(field.reason);
+      const main = field.el;
 
       const primary = ctx.titles[0];
       if (!primary) throw new FillError('No titles to fill');
@@ -346,13 +411,15 @@ const descriptionFiller: Filler = {
   surface: 'details',
   detect(ctx) {
     if (!ctx.description.trim()) return { available: false, reason: 'No description for this item' };
-    if (!visible(SEL.description)) return { available: false, reason: 'Description field not on this page' };
+    const field = findDescriptionField();
+    if (!field.found) return { available: false, reason: field.reason };
     return { available: true };
   },
   async fill(ctx) {
     try {
-      const el = visible<HTMLElement>(SEL.description);
-      if (!el) throw new FillError(`Description field not found (${SEL.description})`);
+      const field = findDescriptionField();
+      if (!field.found) throw new FillError(field.reason);
+      const el = field.el;
 
       setContentEditable(el, ctx.description);
       await sleep(300);
@@ -376,6 +443,7 @@ const tagsFiller: Filler = {
   surface: 'details',
   detect(ctx) {
     if (!ctx.tags.trim()) return { available: false, reason: 'No tags for this item' };
+    if (!advancedSectionReachable()) return { available: false, reason: NO_ADVANCED_SECTION };
     return { available: true };
   },
   async fill(ctx) {
@@ -446,6 +514,7 @@ function radioFiller(
     // Both standing-default answers live in the details form's advanced section.
     surface: 'details',
     detect() {
+      if (!advancedSectionReachable()) return { available: false, reason: NO_ADVANCED_SECTION };
       return { available: true };
     },
     async fill() {
