@@ -19,6 +19,8 @@
  * merge) by supplying two functions.
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   PublishStoreService,
   GeneratedFallback,
@@ -28,11 +30,13 @@ import {
 import {
   MAX_AB_VARIANTS,
   MAX_TITLE_LENGTH,
+  MONETIZATION_ALWAYS_ON,
   PublishStatus,
   emptyChosenMetadata,
   normalizeForMatch,
   validateChosenTitles,
 } from './publish-types';
+import { validateThumbnailFile } from './thumbnail-validate';
 
 /** One item the extension can fill, with everything it needs to do it. */
 export interface PendingFillItem {
@@ -49,13 +53,48 @@ export interface PendingFillItem {
   videoId: string | null;
   status: string;
   /**
-   * The operator's monetization intent, three-valued: true = turn it on, false = turn it
-   * off, null = no decision recorded, leave Studio's control alone. The Data API cannot
-   * write this field at all, which is why it travels to the extension.
+   * Monetization. Always true — the Data API cannot write this field at all, which is why
+   * it travels to the extension, and it is no longer a per-item choice
+   * (MONETIZATION_ALWAYS_ON). It is still SENT rather than dropped because extension
+   * builds from 0.2.1 refuse a payload without it (publish-client's requireMonetize), and
+   * a field removal would break every installed copy on the day the app updated.
    */
-  monetize: boolean | null;
+  monetize: true;
+  /**
+   * Whether this item has a thumbnail for the extension to set in Studio.
+   *
+   * A flag, not a path and not the bytes. The bytes are fetched separately
+   * (`GET /publish/thumbnail`) because they are up to 2 MiB per item and this list is
+   * every actionable item at once; a path would name a file on Callisto that a browser
+   * extension can never open.
+   */
+  hasThumbnail: boolean;
   /** Display label for the extension's list. */
   label: string;
+}
+
+/**
+ * One thumbnail, as the browser extension can consume it.
+ *
+ * BASE64, and that is not laziness. The extension's content script cannot fetch
+ * 127.0.0.1 itself — Studio is https and the ingest server's CSRF whitelist rejects every
+ * http(s) Origin on purpose — so every byte travels content-script <- service-worker <-
+ * localhost, and `chrome.runtime.sendMessage` serializes as JSON: an ArrayBuffer or a
+ * Blob does not survive the hop. Base64 in the existing JSON envelope goes through the
+ * transport that is already there, rather than adding a binary route to the ingest server
+ * whose reply the extension could not carry across its own message channel anyway.
+ *
+ * `filename` travels because Studio's thumbnail input is a real <input type="file"> and
+ * the File constructed from these bytes needs a name; using the export's own name means
+ * the name Studio shows is the name on disk.
+ */
+export interface PublishThumbnail {
+  itemId: string;
+  filename: string;
+  mime: 'image/png' | 'image/jpeg';
+  /** Decoded length in bytes, so the extension can check what it reassembled. */
+  bytes: number;
+  base64: string;
 }
 
 export interface ResolveOutcome {
@@ -122,8 +161,10 @@ export interface ItemDetail {
   sourceFilename: string | null;
   status: PublishStatus | 'none';
   videoId: string | null;
-  /** Monetization intent. null (including "no record at all") means: do not touch it. */
-  monetize: boolean | null;
+  /** Monetization. Always true, including for an item with no record at all. */
+  monetize: true;
+  /** Whether there is a thumbnail to fetch for this item. See PublishThumbnail. */
+  hasThumbnail: boolean;
   /** Sent along so the shelf never hard-codes YouTube's limits. */
   maxVariants: number;
   maxTitleLength: number;
@@ -165,6 +206,7 @@ export class PublishBridge {
       videoId: r.videoId,
       status: r.status,
       monetize: r.monetize,
+      hasThumbnail: r.hasThumbnail,
       label: r.sourceFilename || r.titles[0] || itemId,
     };
   }
@@ -252,10 +294,43 @@ export class PublishBridge {
       sourceFilename,
       status: chosen ? chosen.status : 'none',
       videoId: chosen ? chosen.videoId : null,
-      // No selection record means no decision has been made, which is exactly null.
-      monetize: chosen ? chosen.monetize : null,
+      // The constant, not the record — the same value an item with no record at all gets,
+      // because monetization does not depend on whether anyone has opened this item.
+      monetize: MONETIZATION_ALWAYS_ON,
+      // No record means nothing has been attached and nothing auto-discovered yet, which
+      // is honestly "no thumbnail to fetch" — the first write is what runs discovery.
+      hasThumbnail: chosen ? chosen.thumbnailPath !== null : false,
       maxVariants: MAX_AB_VARIANTS,
       maxTitleLength: MAX_TITLE_LENGTH,
+    };
+  }
+
+  /**
+   * The bytes of one item's thumbnail, for the extension to hand to Studio's file input.
+   *
+   * RE-VALIDATED HERE, not trusted from the record. The path points at Callisto and the
+   * record's `thumbnailMeta` describes the file as it was when it was accepted, which may
+   * have been days ago; this is the same rule youtube-push follows before a
+   * `thumbnails.set`, and it is the reason the two paths cannot disagree about what a
+   * usable thumbnail is.
+   *
+   * `null` means the item has no thumbnail — a state, not a failure, and the extension's
+   * step simply reports that there is nothing to set. A thumbnail that IS recorded and
+   * cannot be read THROWS, because that is a broken record rather than an empty one, and
+   * a null would tell the operator the video was never meant to have an image.
+   */
+  async getThumbnail(itemId: string): Promise<PublishThumbnail | null> {
+    const chosen = this.store.get(itemId);
+    if (!chosen || !chosen.thumbnailPath) return null;
+
+    const { meta } = validateThumbnailFile(chosen.thumbnailPath);
+    const bytes = fs.readFileSync(chosen.thumbnailPath);
+    return {
+      itemId,
+      filename: path.basename(chosen.thumbnailPath),
+      mime: meta.mime,
+      bytes: bytes.length,
+      base64: bytes.toString('base64'),
     };
   }
 
@@ -400,6 +475,7 @@ export class PublishBridge {
       videoId: r.videoId,
       status: r.status,
       monetize: r.monetize,
+      hasThumbnail: r.hasThumbnail,
       label: r.sourceFilename || r.titles[0] || itemId,
     };
   }

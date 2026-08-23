@@ -6,6 +6,7 @@
 //   GET  /publish/reports  -> ?offset&limit&q -> BrowsePage
 //   GET  /publish/item     -> ?itemId -> { item: ItemDetail }
 //   POST /publish/titles   -> body { itemId, titles } -> SetTitlesResult
+//   GET  /publish/thumbnail-> ?itemId -> { thumbnail: PublishThumbnail | null }
 //
 // EVERY route names ONE generated item by its permanent `itemId`. They used to take a
 // (jobId, itemIndex) pair; the index was a position in the job's items[] array, so
@@ -36,12 +37,44 @@ export interface PendingFillItem {
   videoId: string | null;
   status: string;
   /**
-   * The operator's monetization intent: true = turn it on in Studio, false = turn it
-   * off, null = no decision recorded, so the monetization control is not touched.
-   * ContentStudio 1.1+ / this extension 0.2.1+.
+   * Monetization. ContentStudio 1.1+ always sends `true`: monetization is on for every
+   * video and stopped being a per-item decision on 2026-08-23.
+   *
+   * The TYPE stays three-valued because this extension can be talking to an older app
+   * that still sends `false` or `null`, and a type that could not express what arrives
+   * would be a lie about the wire. Nothing READS it any more — the monetization step runs
+   * on every video regardless — but requireMonetize still refuses `undefined`, which is
+   * an app so old the field does not exist at all.
    */
   monetize: boolean | null;
+  /**
+   * Whether ContentStudio has a thumbnail for this item.
+   *
+   * Optional on the wire, and that is a version fact rather than a hedge: an app older
+   * than the thumbnail step does not send it, and `undefined` there means "this app
+   * cannot serve thumbnails", which the thumbnail filler reports as its reason for being
+   * unavailable. It is never read as `false` — see thumbnailAvailability.
+   */
+  hasThumbnail?: boolean;
   label: string;
+}
+
+/**
+ * One thumbnail's bytes, as ContentStudio serves them.
+ *
+ * Base64 because the whole round trip is JSON: a content script cannot reach 127.0.0.1
+ * (see publish-messages.ts), so the bytes come through the service worker's
+ * chrome.runtime message channel, which serializes as JSON and drops ArrayBuffers and
+ * Blobs. Decoded back to bytes in thumbnail.ts, right before the File is built.
+ */
+export interface PublishThumbnail {
+  itemId: string;
+  /** The export's own filename — what Studio shows beside the picked image. */
+  filename: string;
+  mime: 'image/png' | 'image/jpeg';
+  /** Decoded length, checked against what base64 actually produced. */
+  bytes: number;
+  base64: string;
 }
 
 export interface ResolveOutcome {
@@ -91,8 +124,10 @@ export interface ItemDetail {
   sourceFilename: string | null;
   status: string;
   videoId: string | null;
-  /** Monetization intent; null (including "no selection record") means: leave it alone. */
+  /** Monetization. Always true from ContentStudio 1.1+ — see PendingFillItem.monetize. */
   monetize: boolean | null;
+  /** Whether ContentStudio has a thumbnail for this item. See PendingFillItem. */
+  hasThumbnail?: boolean;
   maxVariants: number;
   maxTitleLength: number;
 }
@@ -276,4 +311,47 @@ export async function saveTitles(itemId: string, titles: string[]): Promise<SetT
   // The success shape carries a full ItemDetail, which is what the shelf then fills from.
   if (body.ok) requireMonetize(body.item.monetize, '/publish/titles');
   return body;
+}
+
+/**
+ * The bytes of one item's thumbnail, or null when it has none.
+ *
+ * `null` is a normal answer and is NOT an error: an item without a thumbnail is a video
+ * that goes up with Studio's auto-generated frame, which is a state the operator can
+ * legitimately be in. What IS refused is a body that does not answer the question at all,
+ * because "we could not tell" must never read as "there is none".
+ *
+ * The base64 is not decoded here. This module's job is the wire; turning bytes into a
+ * File is the DOM's job, and it happens in thumbnail.ts where the File is used.
+ */
+export async function fetchThumbnail(itemId: string): Promise<PublishThumbnail | null> {
+  const params = new URLSearchParams({ itemId });
+  const body = await call<{ thumbnail?: PublishThumbnail | null }>(
+    `/publish/thumbnail?${params.toString()}`,
+  );
+  if (!body || !('thumbnail' in body)) {
+    throw new PublishClientError(
+      'unexpected-response',
+      `/publish/thumbnail returned a body with no "thumbnail" key. If ContentStudio is ` +
+        `older than the thumbnail step, update it — this extension will not guess that ` +
+        `the item has no image.`,
+    );
+  }
+  const thumbnail = body.thumbnail ?? null;
+  if (thumbnail === null) return null;
+
+  if (typeof thumbnail.base64 !== 'string' || !thumbnail.base64) {
+    throw new PublishClientError(
+      'unexpected-response',
+      `/publish/thumbnail said item ${itemId} has a thumbnail but sent no bytes.`,
+    );
+  }
+  if (thumbnail.mime !== 'image/png' && thumbnail.mime !== 'image/jpeg') {
+    throw new PublishClientError(
+      'unexpected-response',
+      `/publish/thumbnail sent ${JSON.stringify(thumbnail.mime)}, which is not one of the ` +
+        `two types YouTube accepts. Nothing was set.`,
+    );
+  }
+  return thumbnail;
 }

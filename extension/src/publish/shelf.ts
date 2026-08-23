@@ -23,7 +23,7 @@ import {
   type FillSurface,
   type Filler,
 } from './fillers';
-import type { BrowsePage, BrowseRow, ItemDetail } from './publish-client';
+import type { BrowsePage, BrowseRow, ItemDetail, PublishThumbnail } from './publish-client';
 import { DEFAULT_SHELF_PREFS, loadShelfPrefs, saveShelfPrefs, type ShelfPrefs } from './shelf-prefs';
 import { STALE_CONTEXT_MESSAGE, extensionContextAlive } from './publish-messages';
 
@@ -176,6 +176,15 @@ export interface ShelfCallbacks {
   onSaveTitles(titles: string[]): Promise<void>;
   /** Fetch one page of the report index. */
   onFetchReports(offset: number, limit: number, query: string): Promise<BrowsePage>;
+  /**
+   * Fetch one item's thumbnail bytes, or null when it has none.
+   *
+   * A callback like every other localhost call the shelf needs, for the reason they all
+   * are: the shelf renders and the content script owns the transport. It is passed
+   * THROUGH to the thumbnail filler rather than called here — the shelf never looks at
+   * the bytes.
+   */
+  onLoadThumbnail(itemId: string): Promise<PublishThumbnail | null>;
 }
 
 type Tab = 'current' | 'reports';
@@ -623,7 +632,11 @@ export class PublishShelf {
       titles: item.chosenTitles.length ? item.chosenTitles : item.generatedTitles.slice(0, item.maxVariants),
       description: item.description,
       tags: item.tags,
-      monetize: item.monetize,
+      hasThumbnail: item.hasThumbnail,
+      // Only ever CALLED by a filler's fill(), never by the detect() below — this context
+      // is rebuilt on every render and fetching an image to decide whether to draw a
+      // button would pull megabytes across the message channel on every repaint.
+      loadThumbnail: () => this.callbacks.onLoadThumbnail(item.itemId),
     };
 
     // Only the actions this page can actually take. An action for the OTHER panel is not

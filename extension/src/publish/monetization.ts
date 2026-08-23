@@ -183,9 +183,11 @@ export type MonetizationPlan =
 /**
  * The whole decision, as a pure function of what is on the page and what was asked for.
  *
- * `want` is never null here — a null intent means the operator recorded no decision, and
- * that case never reaches a plan at all (see monetizationAvailability). Passing it would
- * be asking "which button do I press to press no button".
+ * `want` is a parameter rather than a hard-coded `true`, even though every caller now
+ * passes true (MONETIZATION_ALWAYS_ON): the on/off pair matching below is symmetric, and
+ * the tests that pin down which radio is which exercise both directions. Wiring the
+ * policy in here would make the off case unreachable and therefore unverifiable, and the
+ * policy lives one layer up where it can be read.
  */
 export function planMonetization(radios: RadioFacts[], want: boolean): MonetizationPlan {
   const pair = matchOnOffPair(radios);
@@ -209,20 +211,20 @@ export function planMonetization(radios: RadioFacts[], want: boolean): Monetizat
 /**
  * Should the monetization action be offered at all?
  *
- * Two independent reasons it might not be, and they get DIFFERENT wording because they
- * need different things from the operator: one is a missing decision in ContentStudio,
- * the other is being on the wrong Studio tab.
+ * ONE reason left, and losing the other one is the point. This used to take the operator's
+ * three-valued intent as well, and refuse when it was null ("no monetization decision on
+ * this report"). Monetization is no longer a per-item decision — it is on for every video
+ * on all three channels (the app's MONETIZATION_ALWAYS_ON) — so there is no state in which
+ * this extension has nothing to say about it, and the only question left is whether the
+ * control is in front of the operator.
+ *
+ * The signature keeps `surfacePresent` as its whole input rather than being replaced by a
+ * bare boolean check at the call site, because the REASON is what the shelf renders on a
+ * disabled button, and that sentence belongs beside the rule that produces it.
  */
 export function monetizationAvailability(
-  intent: boolean | null,
   surfacePresent: boolean,
 ): { available: true } | { available: false; reason: string } {
-  if (intent === null) {
-    return {
-      available: false,
-      reason: 'No monetization decision on this report — set it in ContentStudio\'s Publish panel',
-    };
-  }
   if (!surfacePresent) {
     return {
       available: false,

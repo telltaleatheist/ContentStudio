@@ -69,6 +69,12 @@ export interface PublishRoutes {
   listReports(offset: number, limit: number, query: string): Promise<unknown>;
   /** Full detail for one item, including every generated title (the shelf's picker). */
   getItem(itemId: string): Promise<unknown>;
+  /**
+   * One item's thumbnail as bytes the extension can rebuild into a File, or null when it
+   * has none. Structural like everything else here — this file knows nothing about what a
+   * thumbnail is, only that the publish module can produce one.
+   */
+  getThumbnail(itemId: string): Promise<unknown>;
   /** The shelf writing back the chosen A/B variant set. */
   setTitles(itemId: string, titles: string[]): Promise<unknown>;
 }
@@ -407,6 +413,32 @@ export class IngestServerService {
             return;
           }
           this.sendJson(res, 200, { item });
+          return;
+        }
+
+        // One item's thumbnail bytes, base64 in the ordinary JSON envelope.
+        //
+        // JSON rather than a binary response on purpose: the extension's content script
+        // cannot reach this server (Studio is https and the CSRF whitelist below rejects
+        // every http(s) Origin), so the bytes have to travel through the service worker's
+        // chrome.runtime message channel, which serializes as JSON. A binary body would
+        // just have to be re-encoded one hop later. See PublishThumbnail.
+        //
+        // `{thumbnail: null}` with a 200 is the answer for an item that has no thumbnail:
+        // that is a state, not a missing resource, and a 404 would make it look like the
+        // item itself was gone.
+        if (req.method === 'GET' && url === '/publish/thumbnail') {
+          const params = this.queryOf(req);
+          if (params.has('itemIndex')) {
+            this.sendJson(res, 400, { error: legacyShapeError('itemIndex') });
+            return;
+          }
+          const itemId = params.get('itemId');
+          if (!itemId) {
+            this.sendJson(res, 400, { error: 'itemId is required' });
+            return;
+          }
+          this.sendJson(res, 200, { thumbnail: await this.publishRoutes.getThumbnail(itemId) });
           return;
         }
 

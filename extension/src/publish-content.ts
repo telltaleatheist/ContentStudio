@@ -30,6 +30,7 @@ import {
   requestReports,
   requestResolve,
   requestSaveTitles,
+  requestThumbnail,
 } from './publish/publish-messages';
 import { detailsFormReady, isDetailsPage, looksLikeDraft, readFilename, videoIdFromUrl } from './publish/page';
 import { isMonetizationUrl, monetizationSurfaceReady } from './publish/monetization';
@@ -70,9 +71,14 @@ function fillContextOf(detail: ItemDetail): FillContext {
       : detail.generatedTitles.slice(0, detail.maxVariants),
     description: detail.description,
     tags: detail.tags,
-    // Straight through, three-valued. null means the operator recorded no decision, and
-    // the monetization filler then refuses rather than picking one.
-    monetize: detail.monetize,
+    // Straight through, INCLUDING undefined. An app too old to send the field is a
+    // different situation from an item with no image, and the filler says so differently;
+    // reading absence as `false` here would collapse the two and tell the operator their
+    // report has no thumbnail when the truth is that the app cannot serve one.
+    hasThumbnail: detail.hasThumbnail,
+    // Bound to THIS item's id, and fetched only if the thumbnail action actually runs —
+    // the bytes are up to 2 MiB and most fills never touch them.
+    loadThumbnail: () => requestThumbnail(detail.itemId),
   };
 }
 
@@ -247,6 +253,8 @@ function callbacks() {
 
     onFetchReports: (offset: number, limit: number, query: string) =>
       requestReports(offset, limit, query),
+
+    onLoadThumbnail: (itemId: string) => requestThumbnail(itemId),
   };
 }
 
