@@ -55,6 +55,7 @@ instructions: |-
     - Simple declarative (just state the damning fact plainly)
   {title_format}
   - Front-load the subject name OR the plain-language reframe in the first 3-5 words. Where the subject's own terminology belongs in the title at all, it follows the reframe.
+  - Sentence case, exactly like these: "Braden Sorbo bragged about calling ICE on 23 people"; "Right-wing media blew up a case to cover a hate crime". The first word and real names take capitals, and every other word is lowercase — a capitalized word mid-title is a claim that it is somebody's name.
   - Include at least one simple declarative title and one short punchy title (4-6 words).
   - TRANSCRIPT/SUMMARY inputs: anchor at least 5 titles to specific moments, claims, or quotes from the input
   - SHORT DESCRIPTION inputs: keep to the quotes, admissions and reactions the input states or clearly implies
@@ -76,6 +77,7 @@ default_title_format: |-
 # cross-field check becomes followable again.
 self_check:
   - "Each title: hook inside the first 45 characters, none over 70 total"
+  - "Each title in sentence case: capitals on the first word and real names only"
   - "Swap test: no two titles interchangeable"
 
 overrides:
@@ -92,7 +94,7 @@ overrides:
         - Challenge/confrontation (direct address to subject or audience)
       {title_format}
       - Front-load the subject name OR the accusation in the first 3-4 words
-      - Fragments over complete sentences — "Pastor's worst lie" is the shape
+      - Fragments over complete sentences — "Pastor's worst lie" is the shape, and its case is the case: capitals on the first word and real names only
       - TRANSCRIPT/CLIP inputs: anchor titles to the actual moment in the clip
       - SHORT DESCRIPTION inputs: keep to the quotes and reactions the input states or clearly implies
       - Person-focused titles lead with the name only where the person is recognizable. Otherwise lead with what they said or did.
@@ -120,6 +122,7 @@ overrides:
       {title_format}
       - At least 2 titles must be EVERGREEN-framed: the durable claim or doctrine someone will still type into a search box a year from now, fact-checked, rather than the news hook
       - Full names spelled out correctly, no nicknames alone, no episode numbers, no show name, no emojis
+      - Sentence case: capitals on the first word and real names only
       - Front-load the subject name OR the plain-language reframe in the first 3-5 words
       - TRANSCRIPT/SUMMARY inputs: anchor at least 5 titles to specific claims, arguments, or quotes from the input
       - SHORT DESCRIPTION inputs: keep to the quotes, admissions and reactions the input states or clearly implies

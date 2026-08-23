@@ -1203,6 +1203,52 @@ export class AIManagerService {
   }
 
   /**
+   * Escape raw control characters that sit INSIDE string literals, and touch nothing else.
+   *
+   * Escape state is tracked so an already-escaped sequence passes through unchanged, and
+   * text outside quotes — where a control character is legal JSON whitespace — is left
+   * exactly as it came. Used only after a strict parse has failed (runJsonRequest below).
+   */
+  private static escapeControlCharsInJsonStrings(text: string): string {
+    let out = '';
+    let inString = false;
+    let escaped = false;
+    for (const ch of text) {
+      if (inString) {
+        if (escaped) {
+          out += ch;
+          escaped = false;
+          continue;
+        }
+        if (ch === '\\') {
+          out += ch;
+          escaped = true;
+          continue;
+        }
+        if (ch === '"') {
+          inString = false;
+          out += ch;
+          continue;
+        }
+        const code = ch.charCodeAt(0);
+        if (code < 0x20) {
+          out +=
+            code === 0x0a ? '\\n' :
+            code === 0x0d ? '\\r' :
+            code === 0x09 ? '\\t' :
+            `\\u${code.toString(16).padStart(4, '0')}`;
+          continue;
+        }
+        out += ch;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      out += ch;
+    }
+    return out;
+  }
+
+  /**
    * One cloud request whose answer is a SMALL JSON OBJECT that is not a metadata package.
    *
    * `runMetadataRequest` above cannot serve this: it runs the answer through
@@ -1228,7 +1274,23 @@ export class AIManagerService {
       throw new Error(`No JSON object in the answer to ${what} from "${model}": ${response.slice(0, 200)}`);
     }
     try {
-      const parsed = JSON.parse(match[0]);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(match[0]);
+      } catch (strictError: any) {
+        // A cloud model legitimately writes a literal newline inside a JSON string when the
+        // value is prose — Ollama's format:json grammar can never emit one, so only this path
+        // meets them. Strict parse first; on failure, control characters INSIDE string
+        // literals are escaped and the parse is tried once more. Anything still unparseable
+        // after that is a genuinely malformed answer and fails exactly as before. Measured on
+        // the first cloud chapter run (2026-08-23): a valid detail answer was discarded for
+        // one raw newline, and the 0:00 chapter shipped titled by its own opening words.
+        parsed = JSON.parse(AIManagerService.escapeControlCharsInJsonStrings(match[0]));
+        log.info(
+          `[AIManager] the answer to ${what} parsed only after escaping raw control characters ` +
+            `inside its string literals (strict parse: ${strictError?.message || strictError})`
+        );
+      }
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         throw new Error(`the answer parsed to ${JSON.stringify(parsed)}, which is not an object`);
       }
