@@ -55,6 +55,10 @@ instructions: |-
     - Simple declarative (just state the damning fact plainly)
   {title_format}
   - Front-load the subject name OR the plain-language reframe in the first 3-5 words. Where the subject's own terminology belongs in the title at all, it follows the reframe.
+  - ONE CONNECTED THOUGHT PER TITLE. A title is a single claim, or a chain where each part explains or raises the stakes of the same story. A multi-sentence title must escalate: each sentence tells the reader more about the one before it. If the sentences could headline two different videos, keep the stronger one and build the title from it alone.
+  - FACTS KEEP THEIR REAL RELATIONSHIPS. Use a specific number, conviction, or quote only in the relationship the input establishes for it. A real dollar figure attached to the wrong noun makes the whole title false even though the number is true.
+  - COMPLETE THE THOUGHT. Every title ends on the word that finishes its idea. If the full thought won't fit the ceiling, recast the title shorter from the start — never clip the final noun phrase and leave the thought dangling.
+  - Read each title aloud before keeping it. It must parse on first hearing as a full sentence a person would actually say — a subject doing something concrete — not a compressed stack of nouns and attributes.
   - Include at least one simple declarative title and one short punchy title (4-6 words).
   - TRANSCRIPT/SUMMARY inputs: anchor at least 5 titles to specific moments, claims, or quotes from the input
   - SHORT DESCRIPTION inputs: keep to the quotes, admissions and reactions the input states or clearly implies
@@ -77,6 +81,9 @@ default_title_format: |-
 self_check:
   - "Each title: hook inside the first 45 characters, none over 70 total"
   - "Swap test: no two titles interchangeable"
+  - "Each title is one connected thought — multi-part titles escalate one story, never stack unrelated facts"
+  - "Each specific fact (dollar amounts, convictions, quotes) appears in the relationship the input gives it"
+  - "No title merely reports that something happened or was covered — each carries the video's accusation"
 
 overrides:
   shorts:
@@ -121,6 +128,9 @@ overrides:
       - At least 2 titles must be EVERGREEN-framed: the durable claim or doctrine someone will still type into a search box a year from now, fact-checked, rather than the news hook
       - Full names spelled out correctly, no nicknames alone, no episode numbers, no show name, no emojis
       - Front-load the subject name OR the plain-language reframe in the first 3-5 words
+      - ONE CONNECTED THOUGHT PER TITLE. A title is a single claim, or a chain where each part explains or raises the stakes of the same story. If two parts of a title could headline two different episodes, keep the stronger one and build the title from it alone.
+      - FACTS KEEP THEIR REAL RELATIONSHIPS. Use a specific number, conviction, or quote only in the relationship the input establishes for it. A real dollar figure attached to the wrong noun makes the whole title false even though the number is true.
+      - COMPLETE THE THOUGHT, and read each title aloud before keeping it: it must parse on first hearing as a full sentence a person would say, ending on the word that finishes its idea.
       - TRANSCRIPT/SUMMARY inputs: anchor at least 5 titles to specific claims, arguments, or quotes from the input
       - SHORT DESCRIPTION inputs: keep to the quotes, admissions and reactions the input states or clearly implies
       - Person-focused titles lead with recognizable names. Where the subject is not widely known, lead with what they DID or CLAIMED and let the name follow.
@@ -129,5 +139,6 @@ overrides:
       - Length: 70 characters is the ceiling, and around 60 is the sweet spot. The searchable core — the name, the claim, or the reframe — sits inside the FIRST 30-40 characters; mobile list views cut from the end.
     self_check:
       - "Each title: searchable core inside the first 40 characters, none over 70 total, no episode numbers, no emojis, no show name"
+      - "Each title is one connected thought, every specific fact in the relationship the input gives it"
       - "At least 2 evergreen-framed titles present"
       - "Swap test: no two titles interchangeable"
