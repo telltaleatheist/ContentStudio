@@ -58,7 +58,7 @@ import { COMMON_WORDS, extractProperNouns, INNER_FUNCTION_WORDS, occursIn } from
  */
 const INVENTED_NARRATORS = [
   'speaker', 'host', 'narrator', 'creator', 'youtuber', 'commentator', 'presenter',
-  'video', 'channel', 'podcast', 'episode',
+  'video', 'channel', 'podcast', 'episode', 'transcript', 'summary', 'segment', 'content',
 ];
 
 const ACTOR_NOUNS = [

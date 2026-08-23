@@ -196,17 +196,19 @@ body: |-
   opening line rather than restating it or its examples.
 
   Every name you use comes from the material above, and you write about the claims, the events
-  and the arguments themselves. The description is a summary of what the video is about, written
-  about the content itself: the real names go in as possessives or objects, and the subject of
-  every clause of every sentence is a person, claim or event from inside the video — the page
-  making the claim, the argument under examination, the evidence that undoes it.
+  and the arguments themselves. This is a YouTube description that sells the video to a stranger
+  scrolling past, in the channel's own confident voice: the real names go in as possessives or
+  objects, the subject of every clause of every sentence is a person, claim or event from inside
+  the video — the page making the claim, the argument under examination, the evidence that
+  undoes it — and that subject DOES something, with a finite active verb, in every sentence.
 
   Sentences in exactly the right form:
   "Every policy branded communist in the segment — universal healthcare, ending private prisons, a green new deal — turns out to be a mainstream position."
   "The book never says the quiet part outright, but the call to get 'truly psychotic' for God's blessing leaves almost nothing to interpretation."
 
-  No links and no timestamps: the chapter block and the standing links are assembled by code
-  afterwards.
+  No links and no timestamps: the chapter block, the standing links and the book and Patreon
+  promotions are assembled by code afterwards, so the body describes the content the video
+  examines and leaves every plug to that block.
 
   Output exactly this shape and nothing else:
   {"body": "..."}

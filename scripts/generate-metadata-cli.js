@@ -128,6 +128,9 @@ Field selection (no flag = every field the channel publishes):
 
 Everything else:
   --channel <id>       Channel (prompt set) id. Default: the 'promptSet' in the app settings.
+  --route <f>=<m>      Route one field to one model for THIS run (repeatable), validated
+                       against the app's own option lists, e.g. --route description=qwen38-27b.
+                       The stored routing is never modified.
   --assets <dir>       Prompt assets root. Default: <repo>/electron/assets/prompts.
   --output-dir <dir>   Where the job's report .txt/.json go. Default: the app's outputDirectory.
   --out <path>         Also write the assembled report text here.
@@ -161,6 +164,7 @@ function parseArgs(argv) {
     else if (a === '--channel') args.channel = argv[++i];
     else if (a === '--assets') args.assets = path.resolve(argv[++i]);
     else if (a === '--output-dir') args.outputDir = path.resolve(argv[++i]);
+    else if (a === '--route') (args.routes = args.routes || []).push(argv[++i]);
     else if (a === '--out') args.out = path.resolve(argv[++i]);
     else if (a === '--no-insights') args.noInsights = true;
     else if (a === '--recompute-insights') args.recomputeInsights = true;
@@ -372,6 +376,20 @@ async function main() {
   const resolvedRouting = routing.resolveMetadataRouting(
     routing.migrateStoredRouting(settings.metadataRouting).selections
   );
+  // --route field=model overrides the STORED routing for this run only, validated against the
+  // same option lists the app's routing modal offers, so the CLI cannot route a field to a
+  // model the app itself could not.
+  for (const spec of args.routes || []) {
+    const eq = spec.indexOf('=');
+    if (eq < 1) fail(`--route wants field=model, got "${spec}"`);
+    const field = spec.slice(0, eq);
+    const model = spec.slice(eq + 1);
+    const task = routing.METADATA_ROUTING_TASKS.find((t) => t.id === field);
+    if (!task) fail(`--route: "${field}" is not a routed field. Routed fields: ${routing.METADATA_ROUTING_TASKS.map((t) => t.id).join(', ')}`);
+    if (!task.options.includes(model)) fail(`--route: "${model}" is not an option for ${field}. Options: ${task.options.join(', ')}`);
+    resolvedRouting[field] = model;
+    console.error(`ROUTE OVERRIDE: ${field} -> ${model} (stored routing not modified)`);
+  }
 
   const outputDir = args.outputDir || settings.outputDirectory;
   if (!outputDir) fail('No output directory: pass --output-dir, or set one in the app settings.');
