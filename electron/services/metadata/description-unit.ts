@@ -42,12 +42,32 @@
  * operator's text subject instead of the chapter list — the same two calls, the same schemas,
  * the same failure policy, over the only description of the video that exists.
  *
- * WHAT THEY DO NOT CARRY, stated because it is a real editorial cost and a deliberate one:
- * the channel's `## DESCRIPTION` section. That section is two paragraphs, a soft CTA, a
- * banned-phrase list and a voice note, and loading fifteen editorial bullets onto a
- * schema-constrained small model is exactly the over-specification §5 says these calls exist to
- * avoid. The channel reaches these prompts as the channel NAME in the context line. The section
- * itself still runs, in full, on the compilation call.
+ * WHAT THEY CARRY ABOUT THE CHANNEL, and why that is the opposite of what this comment used to
+ * say. These two calls used to carry NO editorial brief at all: the channel's `## DESCRIPTION`
+ * section was deliberately withheld — two paragraphs, the above-the-fold snippet rule, the
+ * search-context paragraph, the soft CTA, the voice note and the banned-phrase list — on §5's
+ * argument that fifteen editorial bullets over-specify a schema-constrained small model, and
+ * the channel reached the prompts as the "channel NAME in the context line", which in fact was
+ * the stored SLUG ("youtube-telltale").
+ *
+ * That arrangement produced exactly one description in production before the operator stopped
+ * the run (job-1787440820706-wk0cej99g, 2026-08-22 19:30): 324 words, one paragraph, a
+ * third-person synopsis of the narrator — "The episode opens with O. Morgan dissecting ... The
+ * host then addresses ... Morgan questions" — with no second paragraph, no search context and
+ * no CTA. `judgeBody` caught the register, re-asked once, and kept the second failure as
+ * written, which is the stated policy and did nothing for the operator.
+ *
+ * The relevant part of the measurement is that IT IS NOT A SMALL-MODEL RESULT. These prompts go
+ * to Claude Sonnet and Opus unchanged whenever the description is routed to the cloud — the
+ * class below is one class for both transports — so an unbriefed call writes an unbriefed
+ * description on any model. §5's over-specification argument is about JUDGMENT tasks; the brief
+ * for a document is not over-specification, it is the specification.
+ *
+ * So both calls now take `{channel}` (the channel's real name and its own focus paragraph) and
+ * `{rules}` (that same `## DESCRIPTION` section, whole), and each prompt states which part of
+ * the section it writes: the hook writes sentence 1 of paragraph 1, the body writes the rest and
+ * is shown the hook so it carries on from it instead of restating it. The section still runs, in
+ * full, on the compilation call as well.
  *
  * FAILURE POLICY. A hook over the 150-character cap or prose in the wrong register is asked
  * for ONE more time and then KEPT AS WRITTEN with a declared warning on the run. Nothing here
@@ -63,7 +83,7 @@ import { MetadataRoutingOption } from './metadata-routing';
 import { queueAITask } from '../queue-manager.service';
 import { JobCancelledError } from './cancellation';
 import { narratesAnActor } from './chapter-title-quality';
-import { promptAssets } from './prompt-assets';
+import { promptAssets, ChannelData } from './prompt-assets';
 import type { MetadataFieldId, MetadataRunContext, MetadataUnit } from './metadata-tasks';
 import type { ModelRunContextBudget } from './metadata-tasks';
 import type { AIManagerService } from './ai-manager.service';
@@ -87,15 +107,32 @@ export const HOOK_MAX_CHARS = 150;
 const HOOK_TARGET_CHARS = 140;
 
 /**
- * Spec §1.2: shorter than this is not a body, longer stops being read.
+ * Spec §1.2's range, now READ FROM THE CHANNEL rather than fixed here.
  *
  * A TARGET, checked in code, because a big model ignores it in the prompt — Briefcase measured
  * a 27b writing 353 words against this exact instruction while a 4b hit 211 naturally. Over or
  * under is a DECLARED WARNING and the paragraph publishes as written; nothing here truncates a
  * body to fit a number.
+ *
+ * IT MOVED because these two calls now carry the channel's own `## DESCRIPTION` rules, and
+ * those rules disagree about length by design: a YouTube description is two paragraphs, a
+ * Spreaker episode note says 150-250 words in its own text, and a Shorts description is two or
+ * three sentences. One constant here would have made the prompt and the rules contradict each
+ * other on two channels out of three. The pair lives in shared/fields/description.yml
+ * (`body_words`), the prompt substitutes both ends of it, and `judgeBody` measures against the
+ * same pair — which is the invariant the old constants were here to hold.
  */
-export const BODY_MIN_WORDS = 150;
-export const BODY_MAX_WORDS = 300;
+function bodyWordRange(channel: ChannelData): [number, number] {
+  const range = promptAssets().field(channel, 'description').wordRange;
+  if (!range) {
+    throw new Error(
+      `The description body for channel "${channel.id}" has no word range: shared/fields/description.yml ` +
+        `declares no "body_words" for field variant "${channel.fieldVariant}". The prompt asks for that range ` +
+        `and the run warns against it, so there is no number to fall back to.`
+    );
+  }
+  return range;
+}
 
 /**
  * Spec §5's temperatures. Local only — `askOllamaJson` sends them as Ollama options, and
@@ -164,10 +201,7 @@ export const DESCRIPTION_PROMPTS = {
       .replace(/\{hookTargetChars\}/g, () => String(HOOK_TARGET_CHARS));
   },
   get BODY(): string {
-    return promptAssets()
-      .pipeline(DESCRIPTION_FILE, 'body')
-      .replace(/\{bodyMinWords\}/g, () => String(BODY_MIN_WORDS))
-      .replace(/\{bodyMaxWords\}/g, () => String(BODY_MAX_WORDS));
+    return promptAssets().pipeline(DESCRIPTION_FILE, 'body');
   },
 };
 
@@ -228,8 +262,8 @@ export class DescriptionUnit implements MetadataUnit {
       budget.register('description', (ctx) =>
         estimateTokens(
           Math.max(
-            this.buildPrompt(DESCRIPTION_PROMPTS.HOOK, ctx).length,
-            this.buildPrompt(DESCRIPTION_PROMPTS.BODY, ctx).length
+            this.buildPrompt(DESCRIPTION_PROMPTS.HOOK, ctx, hookPending()).length,
+            this.buildPrompt(DESCRIPTION_PROMPTS.BODY, ctx, hookPending()).length
           )
         ) + NUM_PREDICT
       );
@@ -242,16 +276,16 @@ export class DescriptionUnit implements MetadataUnit {
     return (
       `# DESCRIPTION HOOK (${this.option.model}, ` +
       `${this.option.kind === 'local' ? `schema-constrained, temperature ${HOOK_TEMPERATURE}` : 'JSON, provider defaults'})\n\n` +
-      this.buildPrompt(DESCRIPTION_PROMPTS.HOOK, ctx) +
+      this.buildPrompt(DESCRIPTION_PROMPTS.HOOK, ctx, hookPending()) +
       `\n\n# DESCRIPTION BODY (${this.option.model}, ` +
       `${this.option.kind === 'local' ? `schema-constrained, temperature ${BODY_TEMPERATURE}` : 'JSON, provider defaults'})\n\n` +
-      this.buildPrompt(DESCRIPTION_PROMPTS.BODY, ctx)
+      this.buildPrompt(DESCRIPTION_PROMPTS.BODY, ctx, hookPending())
     );
   }
 
   async generate(ctx: MetadataRunContext): Promise<Record<string, unknown>> {
     const hook = await this.writeHook(ctx);
-    const body = await this.writeBody(ctx);
+    const body = await this.writeBody(ctx, hook);
     return { description_hook: hook, description: body };
   }
 
@@ -271,7 +305,7 @@ export class DescriptionUnit implements MetadataUnit {
    * sentence the model did not write, ending mid-clause, in the one line YouTube shows first.
    */
   private async writeHook(ctx: MetadataRunContext): Promise<string> {
-    const prompt = this.buildPrompt(DESCRIPTION_PROMPTS.HOOK, ctx);
+    const prompt = this.buildPrompt(DESCRIPTION_PROMPTS.HOOK, ctx, hookPending());
     const first = await this.ask(prompt, 'hook', HOOK_SCHEMA, HOOK_TEMPERATURE, ctx);
     const faults = this.judgeHook(first);
     if (faults.length === 0) return first;
@@ -306,14 +340,14 @@ export class DescriptionUnit implements MetadataUnit {
    * The word count is a SPEC RANGE, not a hard limit — a 310-word body is a warning, not a
    * failure, and it publishes.
    */
-  private async writeBody(ctx: MetadataRunContext): Promise<string> {
-    const prompt = this.buildPrompt(DESCRIPTION_PROMPTS.BODY, ctx);
+  private async writeBody(ctx: MetadataRunContext, hook: string): Promise<string> {
+    const prompt = this.buildPrompt(DESCRIPTION_PROMPTS.BODY, ctx, hook);
     const first = await this.ask(prompt, 'body', BODY_SCHEMA, BODY_TEMPERATURE, ctx);
-    const faults = this.judgeBody(first);
+    const faults = this.judgeBody(first, ctx);
     if (faults.length === 0) return first;
 
     const second = await this.ask(prompt, 'body (second attempt)', BODY_SCHEMA, BODY_TEMPERATURE, ctx);
-    if (this.judgeBody(second).length === 0) {
+    if (this.judgeBody(second, ctx).length === 0) {
       log.info(`[Description] ${ctx.sourceLabel}: re-asked for the body (${faults.join('; ')}); the second answer holds`);
       return second;
     }
@@ -325,11 +359,12 @@ export class DescriptionUnit implements MetadataUnit {
     return first;
   }
 
-  private judgeBody(body: string): string[] {
+  private judgeBody(body: string, ctx: MetadataRunContext): string[] {
     const faults: string[] = [];
+    const [min, max] = bodyWordRange(this.channel(ctx));
     const words = body.split(/\s+/).filter(Boolean).length;
-    if (words < BODY_MIN_WORDS || words > BODY_MAX_WORDS) {
-      faults.push(`it ran to ${words} words against the ${BODY_MIN_WORDS}-${BODY_MAX_WORDS} word body`);
+    if (words < min || words > max) {
+      faults.push(`it ran to ${words} words against the ${min}-${max} word body this channel asks for`);
     }
     if (narratesAnActor(firstSentence(body)).narrated) {
       faults.push('it opened by writing about someone covering the subject rather than about the subject');
@@ -409,7 +444,10 @@ export class DescriptionUnit implements MetadataUnit {
 
   // ----------------------------------------------------------------------------- prompting
 
-  private buildPrompt(template: string, ctx: MetadataRunContext): string {
+  private buildPrompt(template: string, ctx: MetadataRunContext, hook: string): string {
+    const assets = promptAssets();
+    const channel = this.channel(ctx);
+    const [min, max] = bodyWordRange(channel);
     const pools = [
       ctx.entities.length > 0 ? `Names: ${ctx.entities.join(', ')}` : '',
       ctx.keyPhrases.length > 0 ? `Phrases: ${ctx.keyPhrases.join(', ')}` : '',
@@ -417,14 +455,49 @@ export class DescriptionUnit implements MetadataUnit {
       .filter(Boolean)
       .join('\n');
 
-    // `coverage`, `transcript` and `pools` are substituted before the free text they contain
-    // can be read as a placeholder, and nothing after them re-runs the substitution.
-    return template
-      .replace(/\{channel\}/g, () => ctx.promptSetName)
-      .replace(/\{video\}/g, () => ctx.videoTitle || ctx.sourceLabel)
-      .replace(/\{coverage\}/g, () => this.coverageBlock(ctx))
-      .replace(/\{transcript\}/g, () => this.transcriptBlock(ctx))
-      .replace(/\{pools\}/g, () => pools || '(none)');
+    const slots: Record<string, string> = {
+      // The channel's real name and its own focus paragraph, replacing the stored SLUG these
+      // prompts used to be handed. "youtube-telltale" told a model nothing about the channel.
+      channel: assets
+        .pipeline(DESCRIPTION_FILE, 'channel_block')
+        .replace(/\{name\}/g, () => channel.name)
+        .replace(/\{focus\}/g, () => channel.channelFocus.trim()),
+      video: ctx.videoTitle || ctx.sourceLabel,
+      coverage: this.coverageBlock(ctx),
+      transcript: this.transcriptBlock(ctx),
+      pools: pools || '(none)',
+      // The channel's `## DESCRIPTION` section, whole. See the note at the top of this file and
+      // the one in shared/pipeline/description.yml for what withholding it measured out at.
+      rules: assets
+        .pipeline(DESCRIPTION_FILE, 'rules_block')
+        .replace(/\{items\}/g, () => assets.fieldSection(channel, 'description')),
+      hook,
+      hookTargetChars: String(HOOK_TARGET_CHARS),
+      bodyMinWords: String(min),
+      bodyMaxWords: String(max),
+    };
+
+    // ONE PASS over the whole template, so a slot's own free text can never be read as another
+    // slot. A chained `.replace` cannot promise that: every link in the chain rescans the text
+    // the previous links inserted, and a transcript that happens to contain "{pools}" would be
+    // substituted into. The regex names the slots this file fills and nothing else, so an
+    // unfilled brace in the asset survives to the prompt where it is visible rather than
+    // silently blanked.
+    return template.replace(
+      /\{(channel|video|coverage|transcript|pools|rules|hook|hookTargetChars|bodyMinWords|bodyMaxWords)\}/g,
+      (_match, key: string) => slots[key]
+    );
+  }
+
+  /**
+   * This run's channel, from the prompt assets.
+   *
+   * `ctx.promptSetName` is the stored prompt-set id, which in this app IS the channel id, so an
+   * unknown one throws inside `channel()` naming the ids that exist. Nothing here defaults to a
+   * channel: a description written to some other channel's rules is worse than no description.
+   */
+  private channel(ctx: MetadataRunContext): ChannelData {
+    return promptAssets().channel(ctx.promptSetName);
   }
 
   /**
@@ -479,6 +552,19 @@ export class DescriptionUnit implements MetadataUnit {
     }
     return assets.pipeline(DESCRIPTION_FILE, 'coverage_subject').replace(/\{items\}/g, () => subject);
   }
+}
+
+/**
+ * What the `{hook}` slot carries where the hook does not exist yet.
+ *
+ * TWO CALLERS, both of which assemble the body prompt before any call has run: the "Show
+ * prompt" preview and the context-window estimate. Neither can be given the real hook, and
+ * neither is a run — a real run writes the hook first and hands it to `writeBody`. The line
+ * says so, in the assets, rather than leaving an empty pair of quotes that reads as a hook the
+ * model was asked to continue from.
+ */
+function hookPending(): string {
+  return promptAssets().pipeline(DESCRIPTION_FILE, 'hook_pending');
 }
 
 function firstSentence(text: string): string {
