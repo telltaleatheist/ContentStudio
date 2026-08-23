@@ -1296,6 +1296,17 @@ export class MetadataGeneratorService {
     const CHAPTER_TASK_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 
     try {
+      // On the CLOUD transport the pipeline must not hold the AI queue slot: every one of
+      // its calls goes through aiManager.makeRequest, which takes that single slot ITSELF
+      // — and makeRequest's own contract forbids callers wrapping it in queueAITask, because
+      // nesting deadlocks the 1-slot pool (measured on the first cloud chapter run,
+      // 2026-08-23: the chapters task held the slot while its first request sat queued
+      // behind it forever). The slot the local path takes is Ollama OOM protection, and a
+      // cloud run loads nothing.
+      if (chapterOption.kind === 'cloud') {
+        armStallNotice();
+        return await chapterer.generate(item.srtSegments!);
+      }
       return await queueAITask(
         `chapters-${params.jobId || 'job'}-${itemIndex}`,
         `Chapters: ${label}`,
