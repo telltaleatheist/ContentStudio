@@ -612,7 +612,7 @@ export class DescriptionUnit implements MetadataUnit {
     // the same register twice, on two measured runs. The revision call hands the model its own
     // draft and the judged clauses, which is an edit it can actually perform. A fault that is
     // only the word count keeps the plain re-ask, where fresh dice are the right tool.
-    const narratedFirst = describerClauses(first);
+    const narratedFirst = this.narratedOutsideCloser(first);
     const secondPrompt =
       narratedFirst.length > 0
         ? this.buildPrompt(DESCRIPTION_PROMPTS.BODY_REVISION, ctx, hook, {
@@ -630,7 +630,7 @@ export class DescriptionUnit implements MetadataUnit {
 
     // Both faulty: the answer with fewer describer clauses is the closer one, and a tie keeps
     // the first, which is the answer the plain prompt produced.
-    const keepSecond = describerClauses(second).length < narratedFirst.length;
+    const keepSecond = this.narratedOutsideCloser(second).length < narratedFirst.length;
     const kept = keepSecond ? second : first;
     const keptFaults = keepSecond ? secondFaults : firstFaults;
     ctx.warn(
@@ -643,6 +643,26 @@ export class DescriptionUnit implements MetadataUnit {
     return { text: kept, faults: keptFaults };
   }
 
+  /**
+   * Describer clauses everywhere EXCEPT the final sentence.
+   *
+   * The rules hand the final sentence to the channel by name — "Final sentence: Channel
+   * positioning or soft CTA" — and the operator's own approved production description
+   * closes "…feeding this channel's steady takedown of religious grifters". Measured
+   * 2026-08-23 (job-1787520736309, and reproduced across three models in the subagent
+   * harness): the judge flagged that exact closing register on ALL THREE bodies of the
+   * run, spending three revision calls to churn sentences that were following the brief.
+   * A describer clause in the closer is the brief being followed; one anywhere else is
+   * still the failure this check exists for.
+   */
+  private narratedOutsideCloser(body: string): string[] {
+    const clauses = describerClauses(body);
+    if (clauses.length === 0) return clauses;
+    const sentences = body.match(/[^.!?]+[.!?]+/g) || [body];
+    const closer = sentences[sentences.length - 1] || '';
+    return clauses.filter((clause) => !closer.includes(clause));
+  }
+
   private judgeBody(body: string, ctx: MetadataRunContext): string[] {
     const faults: string[] = [];
     const [min, max] = bodyWordRange(this.channel(ctx));
@@ -650,7 +670,7 @@ export class DescriptionUnit implements MetadataUnit {
     if (words < min || words > max) {
       faults.push(`${LENGTH_FAULT}${words} words against the ${min}-${max} word body this channel asks for`);
     }
-    const narrated = describerClauses(body);
+    const narrated = this.narratedOutsideCloser(body);
     if (narrated.length > 0) {
       const shown = narrated.map((clause) => `"${clause.length > 60 ? `${clause.slice(0, 57)}...` : clause}"`);
       faults.push(`it wrote about someone covering the subject rather than about the subject (${shown.join('; ')})`);
