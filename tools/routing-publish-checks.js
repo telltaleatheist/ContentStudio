@@ -309,6 +309,15 @@ check('a filename without a part number gets the literal pN and a warning; one w
   if (!noSubject.warning) throw new Error('the missing subject did not warn');
 });
 
+check('the titles call reads the transcript, not the chapter digest; other fields keep the chapter list', () => {
+  if (tasks.subjectCarriesChapters('titles')) {
+    throw new Error('the titles subject block grew the chapter table of contents back');
+  }
+  for (const field of ['description', 'thumbnail_text', 'pinned_comment', 'clip_suggestions']) {
+    if (!tasks.subjectCarriesChapters(field)) throw new Error(`${field} lost its chapter list`);
+  }
+});
+
 check('only unfiltered declares a tail template, and it carries both slots', () => {
   const unfiltered = assets.channel('youtube-unfiltered');
   if (!unfiltered.titleTailFromFilename) throw new Error('unfiltered lost its title_tail_from_filename');

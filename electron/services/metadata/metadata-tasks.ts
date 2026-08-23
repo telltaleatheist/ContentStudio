@@ -282,6 +282,18 @@ interface MetadataFieldSpec {
   section: string;
   shape: string;
   /**
+   * This field's subject block SKIPS the chapter table of contents.
+   *
+   * Titles set it. The chapter list is a compressed digest whose block tells the model to
+   * "stay inside it", and a model writing titles from a digest welds its adjacent facts into
+   * claims the transcript never made — the operator's Katie Suza review caught exactly that,
+   * and the well-regarded early-August titles were written with no chapter block at all
+   * (buildSubjectBlock grew chapter injection later). The transcript IS the titles input; the
+   * chapter list still reaches title GROUNDING (titleGroundingText), which is a check, not an
+   * input.
+   */
+  subjectOmitsChapters?: boolean;
+  /**
    * Ollama's `format` for a call that returns ONLY this field.
    *
    * SHAPE ONLY — a key, and whether its value is a string or a list of strings. No
@@ -313,7 +325,7 @@ function stringListSchema(key: string): Record<string, unknown> {
 }
 
 export const METADATA_FIELD_SECTIONS: Record<MetadataFieldId, MetadataFieldSpec> = {
-  titles: { section: 'TITLES', shape: '["string", ...]', schema: stringListSchema('titles') },
+  titles: { section: 'TITLES', shape: '["string", ...]', schema: stringListSchema('titles'), subjectOmitsChapters: true },
   description: { section: 'DESCRIPTION', shape: '"one string"', schema: stringSchema('description') },
   // Not a prompt-set section and never sent as a field call: the hook comes out of
   // DescriptionUnit's own call under its own schema. The entry exists so the field id has one
@@ -326,6 +338,11 @@ export const METADATA_FIELD_SECTIONS: Record<MetadataFieldId, MetadataFieldSpec>
   hashtags: { section: 'HASHTAGS', shape: '"#One #Two #Three"', schema: stringSchema('hashtags') },
   spoken_keywords: { section: 'SPOKEN_KEYWORDS', shape: '["string", ...]', schema: stringListSchema('spoken_keywords') },
 };
+
+/** Whether this field's subject block carries the chapter table of contents. */
+export function subjectCarriesChapters(field: MetadataFieldId): boolean {
+  return !METADATA_FIELD_SECTIONS[field]?.subjectOmitsChapters;
+}
 
 export function buildOutputFormat(fields: MetadataFieldId[]): string {
   const keyLines = fields.map((f) => `  "${f}": ${METADATA_FIELD_SECTIONS[f].shape}`).join(',\n');
