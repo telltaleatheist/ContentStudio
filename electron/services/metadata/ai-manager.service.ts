@@ -195,6 +195,18 @@ export interface PromptSet {
   channel_tags?: string[];
 }
 
+/**
+ * A cloud call whose ANSWER was unusable — no complete JSON object, unparseable after
+ * repair, or parsed to a non-object. Distinct from a transport failure on purpose: the
+ * chapter pipeline's policy is one decision per unusable answer (a re-ask or a declared
+ * degradation) versus a throw for transport, and it used to tell the two apart by
+ * substring-matching this service's error MESSAGES. That coupling broke the first time a
+ * message was reworded (2026-08-23: "No complete JSON object" no longer contained
+ * "No JSON object", so one truncated detail answer was misread as transport and killed the
+ * whole chapter run). The TYPE is the contract now; the message is free to be descriptive.
+ */
+export class CloudAnswerUnusableError extends Error {}
+
 export class AIManagerService {
   /**
    * Every prompt this instance has sent through makeRequest, in send order — what the call
@@ -1222,6 +1234,40 @@ export class AIManagerService {
   }
 
   /**
+   * A caller's JSON Schema, made valid for the API's structured outputs.
+   *
+   * The schemas this app already holds were written for Ollama's grammar decoding, which
+   * tolerates hints structured outputs rejects: length/numeric bounds (`maxLength`,
+   * `minimum`, ...) are unsupported there, and every object must declare
+   * `additionalProperties: false` plus a `required` list. This walks the schema, drops the
+   * unsupported hints (they were advisory on the local path too — the code enforces the
+   * real caps), and stamps the two object requirements. The caller's schema object is not
+   * mutated.
+   */
+  private static toStructuredOutputSchema(schema: Record<string, unknown>): Record<string, unknown> {
+    const UNSUPPORTED = new Set([
+      'minLength', 'maxLength', 'pattern', 'minimum', 'maximum', 'exclusiveMinimum',
+      'exclusiveMaximum', 'multipleOf', 'minItems', 'maxItems', 'uniqueItems',
+      'minProperties', 'maxProperties',
+    ]);
+    const walk = (node: unknown): unknown => {
+      if (Array.isArray(node)) return node.map(walk);
+      if (!node || typeof node !== 'object') return node;
+      const out: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+        if (UNSUPPORTED.has(key)) continue;
+        out[key] = walk(value);
+      }
+      if (out.type === 'object' && out.properties && typeof out.properties === 'object') {
+        out.additionalProperties = false;
+        if (!Array.isArray(out.required)) out.required = Object.keys(out.properties as Record<string, unknown>);
+      }
+      return out;
+    };
+    return walk(schema) as Record<string, unknown>;
+  }
+
+  /**
    * Escape raw control characters that sit INSIDE string literals, and touch nothing else.
    *
    * Escape state is tracked so an already-escaped sequence passes through unchanged, and
@@ -1282,16 +1328,35 @@ export class AIManagerService {
    * re-asks once and then keeps what it got — and a retry buried here would spend a second call
    * before that policy ever saw the first answer.
    */
-  async runJsonRequest(prompt: string, model: string, what: string): Promise<Record<string, unknown>> {
+  async runJsonRequest(
+    prompt: string,
+    model: string,
+    what: string,
+    /**
+     * JSON Schema for the answer. When present and the model is a Claude one, the request
+     * runs under the API's structured outputs (`output_config.format`), which GUARANTEES
+     * syntactically valid JSON matching the schema — the whole malformed-answer class the
+     * repairs below exist for (raw newlines, trailing commas, unterminated strings, all
+     * measured on the 2026-08-23 cloud runs) cannot occur. Extraction and repair stay for
+     * schema-less callers and non-Claude providers.
+     *
+     * Constraining the OUTPUT does not constrain the REASONING, which is what made schemas
+     * a measured harm on the local grammar-decoded chapter path: on the cloud models this
+     * app routes to, thinking runs before the constrained answer and is untouched by it.
+     */
+    schema?: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
     await this.ensureProviderReady(model);
-    const response = await this.makeRequest(prompt, model, 300, what);
+    const response = await this.makeRequest(prompt, model, 300, what, schema);
     if (!response) {
       throw new Error(`No response from "${model}" for ${what}`);
     }
     const extracted = AIManagerService.extractFirstJsonObject(response);
     if (!extracted) {
       log.warn(`[AIManager] the answer to ${what} from "${model}" holds no complete JSON object:\n${response}`);
-      throw new Error(`No complete JSON object in the answer to ${what} from "${model}" (full answer in the log above)`);
+      throw new CloudAnswerUnusableError(
+        `No complete JSON object in the answer to ${what} from "${model}" (full answer in the log above)`
+      );
     }
     try {
       let parsed: unknown;
@@ -1319,7 +1384,7 @@ export class AIManagerService {
       return parsed as Record<string, unknown>;
     } catch (error: any) {
       log.warn(`[AIManager] the full unparseable answer to ${what} from "${model}":\n${response}`);
-      throw new Error(
+      throw new CloudAnswerUnusableError(
         `Unparseable JSON in the answer to ${what} from "${model}": ${error?.message || error} ` +
           `(the full answer is in the log above this error)`
       );
@@ -1721,7 +1786,9 @@ export class AIManagerService {
     prompt: string,
     model: string,
     timeout: number = 600,
-    what: string = 'AI request'
+    what: string = 'AI request',
+    /** Structured-output schema, honored on the Claude route only — see runJsonRequest. */
+    schema?: Record<string, unknown>
   ): Promise<string | null> {
     const requestId = Math.random().toString(36).substring(7);
     const timestamp = new Date().toISOString();
@@ -1756,7 +1823,7 @@ export class AIManagerService {
             return await this.makeOpenAIRequest(prompt, model.replace('openai:', ''));
           } else if (model.startsWith('claude:')) {
             console.log(`[AIManager]   Provider: Claude`);
-            return await this.makeClaudeRequest(prompt, model.replace('claude:', ''));
+            return await this.makeClaudeRequest(prompt, model.replace('claude:', ''), schema);
           } else if (model.startsWith('ollama:')) {
             console.log(`[AIManager]   Provider: Ollama`);
             return await this.makeOllamaRequest(prompt, model.replace('ollama:', ''), timeout);
@@ -1920,7 +1987,7 @@ export class AIManagerService {
   /**
    * Make request to Claude
    */
-  private async makeClaudeRequest(prompt: string, model: string): Promise<string | null> {
+  private async makeClaudeRequest(prompt: string, model: string, schema?: Record<string, unknown>): Promise<string | null> {
     if (!this.anthropicClient) {
       throw new Error('Claude client not initialized');
     }
@@ -1929,17 +1996,31 @@ export class AIManagerService {
       // Map friendly name to actual API model name
       const actualModel = this.mapClaudeModelName(model);
 
-      const response = await this.anthropicClient.messages.create(
-        {
-          model: actualModel,
-          max_tokens: 16000,
-          system: 'You are a helpful assistant. When asked to return JSON, output ONLY valid JSON with no markdown, no commentary, and no extra text. Start your response with { and end with }.',
-          messages: [{ role: 'user', content: prompt }],
-        },
+      const params: Record<string, unknown> = {
+        model: actualModel,
+        max_tokens: 16000,
+        messages: [{ role: 'user', content: prompt }],
+      };
+      if (schema) {
+        // Structured outputs: the API constrains the answer to this schema, so the JSON is
+        // valid by construction. The "end with }" system nudge is deliberately absent on
+        // this branch — it is the prompt-side workaround the schema supersedes, and it was
+        // itself implicated in Sonnet dropping the closing quote of the last string to make
+        // the answer literally end with "}" (the 2026-08-23 chapter-detail failures).
+        params.output_config = {
+          format: { type: 'json_schema', schema: AIManagerService.toStructuredOutputSchema(schema) },
+        };
+      } else {
+        params.system =
+          'You are a helpful assistant. When asked to return JSON, output ONLY valid JSON with no markdown, no commentary, and no extra text. Start your response with { and end with }.';
+      }
+
+      const response = (await this.anthropicClient.messages.create(
+        params as never,
         // The signal is the whole point of the cancel path: without it a cancel during
         // this call is billed in full and the answer is thrown away.
         { signal: this.config.abortSignal }
-      );
+      )) as Anthropic.Message;
 
       // Log why Claude stopped
       log.info(`[AIManager] Claude stop_reason: ${response.stop_reason}`);

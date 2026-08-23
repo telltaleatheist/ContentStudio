@@ -670,7 +670,13 @@ export class DescriptionUnit implements MetadataUnit {
     const key = Object.keys(schema.properties as Record<string, unknown>)[0];
     const value = this.client
       ? await this.askLocal(prompt, what, schema, temperature, ctx)
-      : await this.aiManager.runJsonRequest(prompt, this.option.model, `the description ${what} for ${ctx.sourceLabel}`);
+      : await this.aiManager.runJsonRequest(
+          prompt, this.option.model, `the description ${what} for ${ctx.sourceLabel}`,
+          // The same schema the local call decodes under, honored on the cloud path as
+          // structured outputs since 2026-08-23 — the API then guarantees the JSON parses,
+          // which free-form cloud answers measurably did not (the f2/f3 runs).
+          schema
+        );
 
     const answer = value[key];
     if (typeof answer !== 'string' || answer.trim().length === 0) {
