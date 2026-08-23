@@ -29,6 +29,7 @@ import {
   routingOption,
 } from './metadata-routing';
 import type { ModelRosterEntry } from './metadata-tasks';
+import { JobModelLifecycle } from './model-lifecycle';
 import { excludePromoChapters } from './promo-chapters';
 import { topEntities, transcriptCasing } from './entity-extraction';
 import { rankKeyPhrases } from './key-phrases';
@@ -172,6 +173,20 @@ export class MetadataGeneratorService {
     // (the show-prompt flow never initializes one).
     let outputHandler: OutputHandlerService | undefined;
     let jobId: string | undefined;
+
+    /**
+     * THIS JOB's model residence: one object for the whole job, released once in the finally
+     * below.
+     *
+     * Every stage used to release its own model as it finished — the chapter pipeline, then
+     * each field unit, then the description unit — and the next stage, usually on the SAME
+     * model, re-streamed ~17GB of weights into unified memory and froze the operator's machine
+     * for the length of the load. The stages now DECLARE what they made resident here and
+     * nothing releases anything until the job is over, which is what the 10-minute keep-alive
+     * in ollama-json.ts was always for. It also carries the num_ctx ratchet, so two stages
+     * sharing a model cannot reload it by sizing their windows independently.
+     */
+    const lifecycle = new JobModelLifecycle();
 
     console.log('[MetadataGenerator] Starting generation...');
     console.log('[MetadataGenerator] Inputs:', params.inputs.length);
@@ -359,6 +374,7 @@ export class MetadataGeneratorService {
               i,
               contentItems.length,
               warnings,
+              lifecycle,
               computedChapters
             );
 
@@ -369,7 +385,7 @@ export class MetadataGeneratorService {
             // The same planning the real run does, so the user reads the prompts that will
             // actually be sent — one labelled block per unit, chapters or no chapters.
             const taskRun = await this.resolveTaskRun(
-              aiManager, params, item, sourceLabel, summary, warnings, subjects, details);
+              aiManager, params, item, sourceLabel, summary, warnings, lifecycle, subjects, details);
             prompts.push(...buildTaskPromptsForDisplay(taskRun));
           }
         }
@@ -513,6 +529,7 @@ export class MetadataGeneratorService {
             i,
             contentItems.length,
             warnings,
+            lifecycle,
             computedChapters
           );
 
@@ -531,7 +548,7 @@ export class MetadataGeneratorService {
           // rather than the operator's subject line) and who writes the tags, and both of those
           // are logged — they no longer change which code path the item takes.
           const taskRun = await this.resolveTaskRun(
-            aiManager, params, item, sourceLabel, summary, warnings, chapterSubjects, chapterDetails);
+            aiManager, params, item, sourceLabel, summary, warnings, lifecycle, chapterSubjects, chapterDetails);
           const metadata = await runMetadataTasks(aiManager, taskRun);
 
           // Add title and source info. `_is_compilation` is written on BOTH branches now:
@@ -680,6 +697,11 @@ export class MetadataGeneratorService {
         success: false,
         error: errorMessage,
       };
+    } finally {
+      // The ONE release, and the only one in the app. Finished, failed and cancelled all land
+      // here, so the operator's memory comes back exactly once per job whatever ended it —
+      // including the show-prompt flow above, which runs the chapter pipeline for real.
+      await lifecycle.releaseAll();
     }
   }
 
@@ -748,6 +770,7 @@ export class MetadataGeneratorService {
     sourceLabel: string,
     summary: string,
     warnings: string[],
+    lifecycle: JobModelLifecycle,
     chapterSubjects?: string[],
     chapterDetails?: string[]
   ): Promise<MetadataTaskRun> {
@@ -772,7 +795,12 @@ export class MetadataGeneratorService {
     const alsoLoads: ModelRosterEntry[] = [];
     if (hasChapters) alsoLoads.push({ model: CHAPTER_PIPELINE_MODELS.generation, what: 'chapters' });
     if (summary !== contentText) {
-      alsoLoads.push({ model: SUMMARIZATION_MODEL.replace(/^ollama:/, ''), what: 'summarization' });
+      const summarizer = SUMMARIZATION_MODEL.replace(/^ollama:/, '');
+      alsoLoads.push({ model: summarizer, what: 'summarization' });
+      // It has already run by the time this is reached, so this is a statement about what is
+      // resident, not a prediction. Usually the same 27B the fields are routed to, in which
+      // case the lifecycle already holds it and this says nothing new.
+      lifecycle.holdOllamaModel(params.aiHost || 'http://localhost:11434', summarizer, 'summarization');
     }
 
     const plan = planMetadataUnits({
@@ -782,6 +810,7 @@ export class MetadataGeneratorService {
       hasInsights: Boolean(params.insightsBlock),
       hasChapters,
       alsoLoads,
+      lifecycle,
       abortSignal: params.cancelSignal,
     });
     console.log(
@@ -904,6 +933,7 @@ export class MetadataGeneratorService {
     itemIndex: number,
     itemCount: number,
     warnings: string[],
+    lifecycle: JobModelLifecycle,
     sink?: { [sourceLabel: string]: ChapterPipelineResult }
   ): Promise<ChapterOutcome> {
     const sourceLabel = item.source || `item_${itemIndex + 1}`;
@@ -931,7 +961,7 @@ export class MetadataGeneratorService {
     params.progressCallback?.('generating', `Finding chapters ${itemIndex + 1}/${itemCount}...`, 0, undefined, itemIndex);
 
     try {
-      const result = await this.generateChapters(item, params, itemIndex, itemCount);
+      const result = await this.generateChapters(item, params, itemIndex, itemCount, lifecycle);
 
       // Degradations the pipeline recovered from rather than threw on. Surfaced even
       // when the chapters below are then dropped for being too few — the user asked
@@ -1060,7 +1090,8 @@ export class MetadataGeneratorService {
     item: ContentItem,
     params: GenerationParams,
     itemIndex: number,
-    itemCount: number
+    itemCount: number,
+    lifecycle: JobModelLifecycle
   ) {
     if (!item.srtSegments || item.srtSegments.length === 0) {
       throw new Error('Chapter generation needs a timestamped transcript');
@@ -1152,6 +1183,10 @@ export class MetadataGeneratorService {
     const chapterer = new WholeTranscriptChapterService({
       host,
       model,
+      // The pipeline HOLDS its model here rather than unloading it when it finishes: the field
+      // calls that run next are routed to the same 27B on most channels, and reloading it
+      // between the two stages is the freeze this job stopped paying for.
+      lifecycle,
       // Sizes its own context window from the largest prompt the run will send; a
       // configured value can only raise that floor, never lower it.
       numCtx: params.chapterNumCtx,
