@@ -284,7 +284,18 @@ export function deriveAbTitleRules(
  * reads to a model as "nothing to avoid", which is the opposite of what an empty
  * derivation means.
  */
-export function renderAbTitleRulesBlock(derivation: AbTitleRulesDerivation): string {
+/**
+ * @param options.exemplars false renders the AGGREGATE RULES without the EXEMPLARS section.
+ *   The compact generation-time block (insights-guidelines.ts) uses this: exemplars are
+ *   literal titles of OTHER videos, which is exactly the subject leakage the distilled
+ *   guidelines exist to keep out of generation calls — the rules are the Law-5 evidence
+ *   and stay verbatim either way, and the FULL render (distiller input, debug surfaces)
+ *   keeps the exemplars.
+ */
+export function renderAbTitleRulesBlock(
+  derivation: AbTitleRulesDerivation,
+  options?: { exemplars?: boolean }
+): string {
   const asOf = isoDate(derivation.derivedAt);
   const lines: string[] = [];
 
@@ -319,6 +330,10 @@ export function renderAbTitleRulesBlock(derivation: AbTitleRulesDerivation): str
         `structural traits cleared the evidence threshold across ${derivation.decidedTests} decided tests. ` +
         `Absence of a rule is not permission to invent one.`
     );
+  }
+
+  if (options?.exemplars === false) {
+    return lines.join('\n');
   }
 
   lines.push('');

@@ -1,0 +1,44 @@
+# The guidelines distiller — the analytics loop's second stage.
+#
+# WHY THIS CALL EXISTS (operator, 2026-08-24): the CHANNEL PERFORMANCE DATA block used to
+# ride into every insight-carrying generation call whole — ~6k characters of OTHER videos'
+# literal titles and stats. That stretches the generation call's context and, worse, seeds
+# it with unrelated subjects: a prompt example naming a real person or topic leaks into
+# outputs about a DIFFERENT unnamed subject of the same archetype (the measured risk the
+# chapter examples are nameless for). So the raw evidence goes to THIS one call instead,
+# which writes the transferable lessons, and only the lessons ride along in generation.
+#
+# The distilled lines are CACHED per channel (guidelines.json beside insights.json) and
+# keyed to a hash of this call's exact input, so this call runs only when the evidence
+# actually changed — a cache hit is the overwhelmingly common path.
+#
+# SUBJECT-FREE IS THE CONTRACT. The block below demands pattern-level lessons with no
+# topic, name, or recognizable phrasing from any example title, in positive form (law 4):
+# each line says what to do, grounded in what won or lost.
+#
+# Placeholder: {performance_data}
+guidelines_distiller: |-
+  Below is one YouTube channel's real performance evidence: its baselines, its
+  best- and worst-performing titles with their measurements, its decided A/B title
+  tests, and its search data.
+
+  {performance_data}
+
+  Study what the winners did and what the losers did, and write the lessons a title
+  writer should carry into their NEXT video — which will be about a different subject
+  entirely. That coming video is the whole point, so every lesson must transfer:
+
+  - Each lesson is one line, stated as what to do, grounded in the evidence above.
+    Where the evidence shows a strength, the lesson says how to repeat it; where it
+    shows a weakness, the lesson says what to do instead.
+  - Lessons describe PATTERNS — framing, structure, specificity, emotional register,
+    phrasing shape, length — never content. No topic, person, place, organization, or
+    recognizable phrase from any title above may appear in any lesson. A lesson that
+    names one only fits videos about that subject, and it will be read while writing
+    about something else.
+  - Where the A/B evidence and the view data point the same way, one lesson saying so
+    is worth more than two saying it separately.
+  - 5 to 10 lessons, ordered most-load-bearing first.
+
+  Output the lessons, one per line, each starting with "- ", and nothing else: no
+  headings, no numbering, no commentary.
