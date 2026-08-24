@@ -630,7 +630,7 @@ Diagnosis: the failure is the premise, not the tuning — a cosine valley measur
 
 **124. JSON extraction by brace depth, never regex** — first-{-to-last-} broke both directions; and the 200-char error snippet made two cloud failures diagnosis-by-guesswork, so the WHOLE answer logs now. [ai-manager.service.ts:1366-1371]
 
-**125. No sampling parameters on any cloud path** — newer Claude/OpenAI models reject them. [ai-manager.service.ts:1327-1330]
+**125. ~~No sampling parameters on any cloud path~~ OVERTURNED 2026-08-24: temperature IS sent on the Claude route** — the old premise ("newer models reject them") is true of newer OpenAI models and of Claude only WITH extended thinking, which these calls never use. Running the spec's temperature-0 chapter calls at the API default 1.0 was the root cause of the close-quote runaways (Sonnet samples prose-token .” over JSON-token ." at the end of a long string; the schema grammar then masks end-of-message and the model brace-spams to the token ceiling). Temperature now threads from both cloud JSON call sites (chapters: 0 / re-ask 0.3; description: spec §5 temps) through runJsonRequest into the Claude request. The OpenAI route still sends none. Netting kept for the residual on deliberately-warm calls: stop_sequences ['}}}}}'], max_tokens 4000 brake, truncation recovery. [ai-manager.service.ts runJsonRequest/makeClaudeRequest]
 
 **126. `channel_tags` append closes the hole the tags adapter opens** — its trained prompt says channel/creator names are appended separately; without the append a local tag list never names the channel. YouTube counts 500 chars over the joined list; multi-word tags cost two extra (quoted). [ai-manager.service.ts:1494-1520]
 
