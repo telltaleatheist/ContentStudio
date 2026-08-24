@@ -505,7 +505,11 @@ export class DescriptionUnit implements MetadataUnit {
       return { hook: first.hook, hookFaults: [], body: first.body, bodyFaults: [] };
     }
 
-    const narratedFirst = this.narratedOutsideCloser(first.body);
+    // EVERY sentence is judged, the closer included: the channel-positioning final sentence
+    // the judge used to exempt was required by a rule the operator overruled on 2026-08-24
+    // ("This is a description of the video, not my channel") — a channel-pitching closer is
+    // now the register fault the judge always thought it was.
+    const narratedFirst = describerClauses(first.body);
     if (firstHookFaults.length === 0 && narratedFirst.length > 0) {
       // Register-only body fault: the targeted revision, keeping the hook (a blind re-ask
       // returns the same register twice — measured, see the revision prompt's own note).
@@ -523,7 +527,7 @@ export class DescriptionUnit implements MetadataUnit {
       }
       // Both faulty: the answer with fewer describer clauses is the closer one; a tie keeps
       // the first, which is the answer the plain prompt produced.
-      const keepRevised = this.narratedOutsideCloser(revised).length < narratedFirst.length;
+      const keepRevised = describerClauses(revised).length < narratedFirst.length;
       const body = keepRevised ? revised : first.body;
       const bodyFaults = keepRevised ? revisedFaults : firstBodyFaults;
       ctx.warn(
@@ -628,14 +632,6 @@ export class DescriptionUnit implements MetadataUnit {
    * A describer clause in the closer is the brief being followed; one anywhere else is
    * still the failure this check exists for.
    */
-  private narratedOutsideCloser(body: string): string[] {
-    const clauses = describerClauses(body);
-    if (clauses.length === 0) return clauses;
-    const sentences = body.match(/[^.!?]+[.!?]+/g) || [body];
-    const closer = sentences[sentences.length - 1] || '';
-    return clauses.filter((clause) => !closer.includes(clause));
-  }
-
   private judgeBody(body: string, ctx: MetadataRunContext): string[] {
     const faults: string[] = [];
     const [min, max] = bodyWordRange(this.channel(ctx));
@@ -643,7 +639,7 @@ export class DescriptionUnit implements MetadataUnit {
     if (words < min || words > max) {
       faults.push(`${LENGTH_FAULT}${words} words against the ${min}-${max} word body this channel asks for`);
     }
-    const narrated = this.narratedOutsideCloser(body);
+    const narrated = describerClauses(body);
     if (narrated.length > 0) {
       const shown = narrated.map((clause) => `"${clause.length > 60 ? `${clause.slice(0, 57)}...` : clause}"`);
       faults.push(`it wrote about someone covering the subject rather than about the subject (${shown.join('; ')})`);
