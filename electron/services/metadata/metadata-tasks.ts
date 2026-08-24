@@ -69,6 +69,7 @@ import { queueAITask } from '../queue-manager.service';
 import { JobCancelledError, isAbortError } from './cancellation';
 import { bucketNumCtx, estimateTokens } from './ollama-json';
 import { askOllamaPlain, parseLines } from './plain-call';
+import { DigestChapter } from './chapter-digest';
 import { JobModelLifecycle } from './model-lifecycle';
 import {
   CHAPTER_PIPELINE_MODELS,
@@ -177,6 +178,14 @@ export interface MetadataRunContext {
    * from. Nothing new is computed to get them here.
    */
   chapterDetails: string[];
+  /**
+   * The digest form of the published chapters (timestamp, title, detail), for a call that
+   * reads the video in chapter form BY CHOICE rather than because the transcript was over
+   * the ceiling. The titles call does (2026-08-24: titles written from chapters matched the
+   * transcript-fed titles on every hard check at a third less prompt); a chapterless item
+   * carries an empty list here, and such a call falls back to the transcript it always read.
+   */
+  digestChapters: DigestChapter[];
   /** The video's title or filename. Context seeding for the description calls (spec §6.1 lever 2). */
   videoTitle: string;
   /** The loaded prompt set, which in this app IS the channel. */

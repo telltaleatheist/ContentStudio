@@ -18,6 +18,11 @@ import { promptAssets } from './prompt-assets';
 const SYSTEM_FILE = 'system.yml';
 
 export const SYSTEM_PROMPTS = {
+  /** The digest under its chosen-not-forced header — the titles call's content whenever chapters exist. */
+  get CHAPTER_DIGEST_CHOSEN(): string {
+    return promptAssets().pipeline(SYSTEM_FILE, 'chapter_digest_chosen');
+  },
+
   /** The plain-text header every field call carries (no-JSON ruling, 2026-08-24). */
   get PLAIN_SYSTEM(): string {
     return promptAssets().pipeline(SYSTEM_FILE, 'plain_system');

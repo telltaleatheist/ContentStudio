@@ -231,6 +231,8 @@ function ctxFor(decision) {
     sourceLabel: 'six-hour-stream.mov',
     chapterSubjects: CHAPTERS.map((c) => c.title),
     chapterDetails: CHAPTERS.map((c) => c.detail || ''),
+    // The digest form the titles call reads by choice (2026-08-24) — same chapters.
+    digestChapters: CHAPTERS.map((c) => ({ timestamp: c.timestamp, title: c.title, detail: c.detail || '' })),
     videoTitle: 'The parish that rents out its prisoners',
     promptSetName: 'youtube-telltale',
     entities: ['Louisiana', 'Fox News'],
@@ -257,6 +259,7 @@ const manager = new aiManagerModule.AIManagerService({
 manager.loadPrompts();
 
 const TITLES_SPEC = { field: 'titles', model: 'claude:sonnet', insights: false, inputFields: [] };
+const PINNED_SPEC = { field: 'pinned_comment', model: 'claude:sonnet', insights: false, inputFields: [] };
 
 check('the field prompt states what the video covers ONCE, not twice', () => {
   const digestPrompt = manager.buildMetadataFieldPrompt(TITLES_SPEC, ctxFor(overDecision));
@@ -265,10 +268,25 @@ check('the field prompt states what the video covers ONCE, not twice', () => {
   eq(countOf(digestPrompt, CHAPTERS[0].detail), 1, 'and each chapter detail appears once');
   has(digestPrompt, '0:00', 'the digest keeps the timestamps the chapter block never had');
 
-  // The raw path is unchanged: the chapter block, and the transcript beside it.
-  const rawPrompt = manager.buildMetadataFieldPrompt(TITLES_SPEC, ctxFor(rawDecision));
+  // TITLES read the video in chapter form BY CHOICE whenever chapters exist (2026-08-24):
+  // under the ceiling, with chapters, the titles prompt carries the chosen-digest header
+  // and NO transcript — and still states the coverage exactly once.
+  const titlesRaw = manager.buildMetadataFieldPrompt(TITLES_SPEC, ctxFor(rawDecision));
+  eq(countOf(titlesRaw, '=== WHAT THIS VIDEO ACTUALLY COVERS ==='), 1, 'the chosen digest, once');
+  has(titlesRaw, 'What follows is the video in chapter form', 'under the chosen-not-forced header');
+  hasNot(titlesRaw, 'longer than one call can read', 'which never claims the transcript was too long');
+  hasNot(titlesRaw, rawDecision.content, 'and the transcript is not in the prompt');
+  has(titlesRaw, '0:00', 'the timestamps ride with it');
+
+  // Every OTHER field's raw path is unchanged: the chapter block, and the transcript beside it.
+  const rawPrompt = manager.buildMetadataFieldPrompt(PINNED_SPEC, ctxFor(rawDecision));
   eq(countOf(rawPrompt, '=== WHAT THIS VIDEO ACTUALLY COVERS ==='), 1, 'the chapter block, once');
   has(rawPrompt, rawDecision.content, 'and the whole raw transcript');
+
+  // A chapterless item's titles keep the transcript — there is nothing else to stand on.
+  const chapterless = { ...ctxFor(rawDecision), chapterSubjects: [], chapterDetails: [], digestChapters: [] };
+  const titlesNoChapters = manager.buildMetadataFieldPrompt(TITLES_SPEC, chapterless);
+  has(titlesNoChapters, rawDecision.content, 'the chapterless titles prompt still carries the transcript');
 });
 
 check("the description's transcript slot is EMPTY on the digest path", () => {

@@ -12,6 +12,7 @@ import axios, { AxiosInstance } from 'axios';
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import * as log from 'electron-log';
+import { renderChapterList } from './chapter-digest';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import { METADATA_FIELDS } from './metadata-fields';
 import {
@@ -1146,13 +1147,33 @@ export class AIManagerService {
      * much in it. One item, one statement of what it covers.
      */
     const digestMode = ctx.contentMode === 'chapter-digest';
-    const subject = this.buildSubjectBlock(
-      ctx.content,
-      ctx.sourceLabel,
-      undefined,
-      digestMode ? undefined : ctx.chapterSubjects,
-      digestMode ? undefined : ctx.chapterDetails
-    );
+    // TITLES READ THE VIDEO IN CHAPTER FORM whenever chapters exist — a choice, not a
+    // ceiling (operator, 2026-08-24: "wire it in", after the measured f3 side-by-side where
+    // chapter-fed titles matched transcript-fed titles on every hard check and pulled
+    // sharper specifics from the details, at a third less prompt). The digest content
+    // replaces the transcript AND the separate chapter table (one statement of what the
+    // video covers, same rule as digest mode), under the chosen-not-forced header, because
+    // "this transcript is longer than one call can read" would be false here. A chapterless
+    // item has an empty digest and keeps the transcript — there is nothing else to stand on.
+    const titlesOnChapters =
+      spec.field === 'titles' && !digestMode && ctx.digestChapters.length > 0;
+    const subject = titlesOnChapters
+      ? this.buildSubjectBlock(
+          formatPrompt(SYSTEM_PROMPTS.CHAPTER_DIGEST_CHOSEN, {
+            chapterList: renderChapterList(ctx.digestChapters),
+          }),
+          ctx.sourceLabel,
+          undefined,
+          undefined,
+          undefined
+        )
+      : this.buildSubjectBlock(
+          ctx.content,
+          ctx.sourceLabel,
+          undefined,
+          digestMode ? undefined : ctx.chapterSubjects,
+          digestMode ? undefined : ctx.chapterDetails
+        );
     // Whatever an earlier call in this run wrote that this one has to read — today, the titles
     // the thumbnail text has to avoid repeating.
     const inputData = buildInputDataBlock(spec, ctx, options);
@@ -1165,12 +1186,15 @@ export class AIManagerService {
 
     // Channel performance data speaks to titles, thumbnails and packaging — the fields it
     // was distilled from. Which call carries it is decided when the run is planned, not
-    // here (see planMetadataUnits).
-    const insightsSuffix = spec.insights && this.config.insightsBlock ? `\n\n${this.config.insightsBlock}` : '';
+    // here (see planMetadataUnits). It rides BEFORE the instructions: the last thing the
+    // model reads must be the rules and the self-check, not a stats dump — appended-after
+    // was measured 2026-08-24 as the layout, and the f3 side-by-side with the block moved
+    // above the rules held every check.
+    const insightsBlock = spec.insights && this.config.insightsBlock ? `\n\n${this.config.insightsBlock}` : '';
 
     return (
       `${SYSTEM_PROMPTS.PLAIN_SYSTEM}\n\n${this.fillSubject(subject)}` +
-      `${inputData ? `\n${inputData}` : ''}\n\n${instructions.text}${insightsSuffix}`
+      `${inputData ? `\n${inputData}` : ''}${insightsBlock}\n\n${instructions.text}`
     );
   }
 

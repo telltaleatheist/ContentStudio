@@ -83,18 +83,21 @@ export interface DigestChapter {
  * detail), and dropping the chapter here would take a span of the video out of the digest to
  * punish a missing sentence.
  */
-export function renderChapterDigest(chapters: DigestChapter[]): string {
+export function renderChapterList(chapters: DigestChapter[]): string {
   if (chapters.length === 0) {
-    throw new Error('renderChapterDigest was called with no chapters; the caller decides that case, not this');
+    throw new Error('renderChapterList was called with no chapters; the caller decides that case, not this');
   }
-  const chapterList = chapters
+  return chapters
     .map((chapter, i) => {
       const detail = (chapter.detail || '').trim();
       const head = `${i + 1}. ${chapter.timestamp} - ${chapter.title}`;
       return detail ? `${head}\n   ${detail}` : head;
     })
     .join('\n');
-  return formatPrompt(SYSTEM_PROMPTS.CHAPTER_DIGEST, { chapterList });
+}
+
+export function renderChapterDigest(chapters: DigestChapter[]): string {
+  return formatPrompt(SYSTEM_PROMPTS.CHAPTER_DIGEST, { chapterList: renderChapterList(chapters) });
 }
 
 /**

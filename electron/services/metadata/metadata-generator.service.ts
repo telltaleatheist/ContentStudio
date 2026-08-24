@@ -34,7 +34,7 @@ import {
 import type { ModelRosterEntry } from './metadata-tasks';
 import { JobModelLifecycle } from './model-lifecycle';
 import { excludePromoChapters } from './promo-chapters';
-import { FieldContentDecision, digestChaptersOf, resolveFieldContent } from './chapter-digest';
+import { DigestChapter, FieldContentDecision, digestChaptersOf, resolveFieldContent } from './chapter-digest';
 import { topEntities, transcriptCasing } from './entity-extraction';
 import { rankKeyPhrases } from './key-phrases';
 import axios from 'axios';
@@ -457,7 +457,8 @@ export class MetadataGeneratorService {
             // The same planning the real run does, so the user reads the prompts that will
             // actually be sent — one labelled block per unit, chapters or no chapters.
             const taskRun = await this.resolveTaskRun(
-              aiManager, params, item, sourceLabel, fieldContent, warnings, lifecycle, subjects, details);
+              aiManager, params, item, sourceLabel, fieldContent, warnings, lifecycle, subjects, details,
+              digestChaptersOf(chapters));
             prompts.push(...buildTaskPromptsForDisplay(taskRun));
           }
         }
@@ -641,7 +642,8 @@ export class MetadataGeneratorService {
           // rather than the operator's subject line) and who writes the tags, and both of those
           // are logged — they no longer change which code path the item takes.
           const taskRun = await this.resolveTaskRun(
-            aiManager, params, item, sourceLabel, fieldContent, warnings, lifecycle, chapterSubjects, chapterDetails);
+            aiManager, params, item, sourceLabel, fieldContent, warnings, lifecycle, chapterSubjects, chapterDetails,
+            digestChaptersOf(chapters));
           const metadata = await runMetadataTasks(aiManager, taskRun);
 
           // Add title and source info. `_is_compilation` is written on BOTH branches now:
@@ -890,7 +892,9 @@ export class MetadataGeneratorService {
     warnings: string[],
     lifecycle: JobModelLifecycle,
     chapterSubjects?: string[],
-    chapterDetails?: string[]
+    chapterDetails?: string[],
+    /** The digest form of this item's published chapters, for the calls that CHOOSE to read them. */
+    digestChapters?: DigestChapter[]
   ): Promise<MetadataTaskRun> {
     const subjects = chapterSubjects || [];
     const hasChapters = subjects.length > 0;
@@ -952,6 +956,7 @@ export class MetadataGeneratorService {
         sourceLabel,
         chapterSubjects: subjects,
         chapterDetails: chapterDetails || [],
+        digestChapters: digestChapters || [],
         videoTitle: this.getCleanTitle(item),
         promptSetName: params.promptSet || 'unknown',
         entities: pools.entities,
