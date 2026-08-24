@@ -7,6 +7,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawn } from 'child_process';
 import * as yaml from 'js-yaml';
 import axios, { AxiosInstance } from 'axios';
 import OpenAI from 'openai';
@@ -1209,6 +1210,11 @@ export class AIManagerService {
    * somewhere that is configured.
    */
   private async ensureProviderReady(model: string): Promise<void> {
+    if (model.startsWith('claude-cli:')) {
+      // The `claude -p` transport needs no client and no API key — the binary either runs
+      // or the call throws loudly at spawn time, naming what to fix. Nothing to prepare.
+      return;
+    }
     if (model.startsWith('claude:')) {
       if (this.anthropicClient) return;
       const key = this.config.cloudApiKeys?.claude
@@ -1701,6 +1707,12 @@ export class AIManagerService {
           if (model.startsWith('openai:')) {
             console.log(`[AIManager]   Provider: OpenAI`);
             return await this.makeOpenAIRequest(prompt, model.replace('openai:', ''));
+          } else if (model.startsWith('claude-cli:')) {
+            // The subscription rung: same Sonnet, through the `claude -p` CLI instead of
+            // the metered API. Checked before nothing it could shadow — 'claude-cli:'
+            // matches neither 'claude:' nor 'ollama:'.
+            console.log(`[AIManager]   Provider: claude -p (subscription)`);
+            return await this.makeClaudeCliRequest(prompt, plain);
           } else if (model.startsWith('claude:')) {
             console.log(`[AIManager]   Provider: Claude`);
             return await this.makeClaudeRequest(prompt, model.replace('claude:', ''), plain);
@@ -1863,6 +1875,76 @@ export class AIManagerService {
     };
 
     return modelMap[friendlyName] || friendlyName;
+  }
+
+  /**
+   * The `claude -p` transport — the routing modal's subscription rung (operator, 2026-08-24).
+   *
+   * The SAME contract as makeClaudeRequest, reached through the Claude Code CLI on the
+   * operator's subscription instead of the metered API key: the plain/JSON system split is
+   * carried over via --system-prompt, and the model is ALWAYS sonnet — that is the option's
+   * declared meaning, not a default.
+   *
+   * FAILS LOUDLY, never falls through to the API: a spawn error (binary not on PATH — a GUI
+   * launch does not inherit the shell's PATH) or a nonzero exit throws naming the fix.
+   * Falling back to the API would silently bill the key this transport exists to protect.
+   *
+   * Cancellation kills the child; unlike the API path there is no server-side abort, so the
+   * kill is the whole cancel.
+   */
+  private makeClaudeCliRequest(prompt: string, plain?: boolean): Promise<string | null> {
+    const system = plain
+      ? SYSTEM_PROMPTS.PLAIN_SYSTEM
+      : 'You are a helpful assistant. When asked to return JSON, output ONLY valid JSON with no markdown, no commentary, and no extra text. Start your response with { and end with }.';
+    log.info(`[AIManager] claude -p --model sonnet (${prompt.length} chars, ${plain ? 'plain' : 'json'})`);
+
+    return new Promise<string | null>((resolve, reject) => {
+      const child = spawn('claude', ['-p', '--model', 'sonnet', '--system-prompt', system], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        // A run inside a Claude Code session must not inherit its entrypoint state.
+        env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: undefined } as NodeJS.ProcessEnv,
+      });
+
+      const abortSignal = this.config.abortSignal;
+      const onAbort = () => child.kill('SIGTERM');
+      abortSignal?.addEventListener('abort', onAbort, { once: true });
+      // The API path is bounded by the Anthropic SDK's own 10-minute request timeout; an
+      // unbounded spawn would let one hung CLI call hold the 1-slot AI queue forever.
+      let timedOut = false;
+      const timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); }, 10 * 60 * 1000);
+
+      let out = '';
+      let err = '';
+      child.stdout.on('data', (d) => { out += d; });
+      child.stderr.on('data', (d) => { err += d; });
+      child.on('error', (error: NodeJS.ErrnoException) => {
+        clearTimeout(timer);
+        abortSignal?.removeEventListener('abort', onAbort);
+        reject(
+          error.code === 'ENOENT'
+            ? new Error(
+                `the claude-cli transport could not find the \`claude\` binary on this process's PATH — ` +
+                  `launch the app from a terminal where \`claude\` runs, or route this field to a different model`
+              )
+            : error
+        );
+      });
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        abortSignal?.removeEventListener('abort', onAbort);
+        if (abortSignal?.aborted) {
+          reject(new JobCancelledError('the claude -p request was killed mid-flight'));
+        } else if (timedOut) {
+          reject(new Error('claude -p was killed after 10 minutes without answering'));
+        } else if (code !== 0) {
+          reject(new Error(`claude -p exited ${code}: ${err.trim() || '(no stderr)'}`));
+        } else {
+          log.info(`[AIManager] claude -p answered (${out.trim().length} chars)`);
+          resolve(out.trim());
+        }
+      });
+      child.stdin.end(prompt);
+    });
   }
 
   /**
