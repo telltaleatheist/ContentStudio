@@ -60,8 +60,10 @@ const Module = require('module');
 const REPO_ROOT = path.join(__dirname, '..');
 const DIST = path.join(REPO_ROOT, 'dist', 'main');
 const SHIM = path.join(__dirname, '_electron-shim-real-userdata.js');
-const SCRATCH = '/private/tmp/claude-501/-Volumes-Callisto-Projects-ContentStudio/6916f82d-8b3a-45a6-b254-fd2e7991e264/scratchpad';
-const CACHE_DIR = path.join(SCRATCH, 'transcript-cache');
+// Durable, session-independent: caches are test fixtures ("set them aside for future use",
+// operator 2026-08-24) and must not die with a Claude session's scratchpad.
+const SCRATCH = '/Volumes/Callisto/ContentStudio/.contentstudio/cli-cache';
+const CACHE_DIR = SCRATCH;
 
 // The compiled main process imports `electron` and `electron-log`, neither of which loads
 // outside an Electron runtime. The shim answers with the SAME values Electron would on this
