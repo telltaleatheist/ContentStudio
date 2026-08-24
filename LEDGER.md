@@ -131,7 +131,7 @@ Standing rules with their origin. These override convenience every time.
 |---|-----|--------|
 | 1 | **No fallbacks.** A fallback is an unexpected code path in production — a deliberately programmed bug. Fail loudly, name what's missing. Deliberate alternates are fine only as *declared, logged modes*. | Owen, 2026-07-26 |
 | 2 | **All prompts live in `electron/assets/prompts/`.** Code assembles, never authors. Owen never searches the codebase to change a prompt. Tunable lexicons are data files in the tree. | PR #52; re-affirmed 2026-08-22 |
-| 3 | **Deliver output; the operator curates.** No blocking quality gates. The invented-name guard was removed (2026-08-19: "it happened once. ill decide if the title should be kept"). Checks may warn — one re-ask then a declared warning — never refuse. | Owen, 2026-08-19 |
+| 3 | **Deliver output; the operator curates.** No blocking quality gates, and NO RE-ASKS (2026-08-24: "i dont think we should be re-asking. let it fail... the fact that it's re-asking is a programmed in bug" — the u2 audit measured 8 re-asks in one run, every one a wasted duplicate call). Checks WARN on the kept answer, never refuse, never ask twice; an unusable answer fails loudly and the fix goes to the source. | Owen, 2026-08-19; re-asks removed 2026-08-24 |
 | 4 | **Positive form only in prompts.** State the wanted form with correct examples; a model shown a wrong form reproduces it. Wrong-register text appears only as the input of a revision call. | prompt tree, 2026-08-22 |
 | 5 | **Title-writing guidance changes only via A/B tests.** Analysis-step and mechanics changes are fine; phrasing/selection bullets are not. | Owen, 2026-08-23 |
 | 6 | **Chapters: the model never emits a timestamp.** It quotes a verbatim sentence; code maps the quote to a time. The chapter *count* is the model's, from content — never computed in code. | CHAPTERING.md; chapter service |
@@ -435,7 +435,7 @@ Diagnosis: the failure is the premise, not the tuning — a cosine valley measur
 
 **28. THE TITLE RULE.** Each chapter's title has exactly ONE source — stage 1's label, or the detail call's title only for a chapter stage 1 did not label (normally the 0:00 opening). The detail call's title is otherwise DISCARDED. [chapter-whole-transcript.service.ts:78-93; chapters.yml:113-119]
 
-**29. A re-ask is a different SAMPLE, never shows the model its own wrong answer** (operator's ruling); and a title from the chapter call gets no re-ask, because re-sampling one whole-video call to fix one title moves every other chapter. [chapter-whole-transcript.service.ts:205-214]
+**29. ~~A re-ask is a different SAMPLE~~ OVERTURNED 2026-08-24: there are no re-asks.** All re-ask machinery (stage-1 second ask, detail title re-ask, description second attempt / body revision / option redraw) was removed as programmed-in fallbacks the operator never chose. Judge faults warn on the kept answer; unusable answers throw. The half that survives: a revision-style prompt must never quote the rejected answer back — moot while nothing is asked twice, binding if anything ever is again.
 
 **30. No JSON schema on local chapter calls; schema on the cloud transport.** Grammar-constraining the decode measurably destroys the local chapter judgment (reasoning shares the constrained token stream); cloud models think BEFORE the constrained answer. Added after the 2026-08-23 runs. [chapter-whole-transcript.service.ts:130-138]
 

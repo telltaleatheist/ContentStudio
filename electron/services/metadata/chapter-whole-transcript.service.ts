@@ -254,7 +254,6 @@ interface WorkingChapter {
 /** What one stage-1 window came back with. */
 interface WindowAnswer {
   claims: ChapterClaim[];
-  retried: boolean;
 }
 
 // =============================================================================
@@ -588,10 +587,11 @@ export class WholeTranscriptChapterService {
   /**
    * ONE window's stage-1 call: its transcript slice in, opening-sentence lines out.
    *
-   * ONE re-ask when the answer is unusable, and then the run THROWS. That is not a fallback
-   * and there is nothing to degrade to — these calls ARE the chapter list. resolveChapters
-   * records `chaptersSkipped` with this message on it, so the item says out loud that it has
-   * no chapters and why, which is a state the user sees.
+   * ONE ask, and an unusable answer THROWS — no re-ask (operator, 2026-08-24: "let it fail
+   * and we'll tweak things until it's right"; a retry is a fallback covering the failure the
+   * prompt should be fixed for). These calls ARE the chapter list; resolveChapters records
+   * `chaptersSkipped` with this message on it, so the item says out loud that it has no
+   * chapters and why, which is a state the user sees and fixes at the source.
    */
   private async askWindow(windowCues: Cue[], windowNumber: number): Promise<WindowAnswer> {
     const spanSeconds = windowCues[windowCues.length - 1].endSec - windowCues[0].startSec;
@@ -604,33 +604,18 @@ export class WholeTranscriptChapterService {
     });
     const what = windowNumber > 1 ? `this video's chapters, window ${windowNumber}` : "this video's chapters";
 
-    const send = async (retried: boolean): Promise<WindowAnswer | null> => {
-      const text = await this.ask('chapters', prompt, retried ? `${what}, second attempt` : what, CHAPTERS_TIMEOUT_MS);
-      if (!text) return null;
+    const text = await this.ask('chapters', prompt, what, CHAPTERS_TIMEOUT_MS);
+    if (text) {
       try {
-        return { claims: readQuoteLines(text, `${what} (chapters)`), retried };
+        return { claims: readQuoteLines(text, `${what} (chapters)`) };
       } catch (error) {
         log.warn(`[Chapters] ${error instanceof Error ? error.message : String(error)}`);
-        return null;
       }
-    };
-
-    const first = await send(false);
-    if (first) return first;
-
-    log.warn(`[Chapters] no usable boundary list on the first ask; re-asking once`);
-    const second = await send(true);
-    if (second) {
-      this.warn(
-        `the chapter call had to be asked twice — the first answer carried no usable boundary — so this ` +
-          `video's chapters come from a second sample, and asking again may not reproduce them`
-      );
-      return second;
     }
-
     throw new Error(
-      `The chapter call on ${this.options.model} returned no usable boundary list, twice (see the log for ` +
-        `what came back). Nothing is substituted for it: this call is the chapter list.`
+      `The chapter call on ${this.options.model} returned no usable boundary list (see the log for what ` +
+        `came back). Nothing is substituted and nothing is re-asked: this call is the chapter list, and ` +
+        `the fix belongs at the source — the prompt, the window size, or the model.`
     );
   }
 
@@ -698,27 +683,19 @@ export class WholeTranscriptChapterService {
         );
       }
 
-      // EVERY chapter is named by its detail call now — stage 1 stopped producing labels
-      // when its answer became bare quote lines — so every title gets the two checks and the
-      // one re-ask a second sample can change.
+      // EVERY chapter is named by its detail call — and judged ONCE, never re-asked
+      // (operator, 2026-08-24). A fault is a warning on the kept answer: the operator
+      // curates it, and a fault that recurs is a prompt problem to fix at the source, not
+      // something a second roll of the same dice should paper over — the u2 audit measured
+      // eight re-asks in one run, every one a wasted duplicate call.
       let titleSource: WorkingChapter['titleSource'] = 'detail call';
       const faults = title ? this.judgeTitle(title, raw) : [];
       if (title && faults.length > 0) {
-        const second = await this.askDetail(prompt, `${what}, second attempt`);
-        const secondFaults = second.title ? this.judgeTitle(second.title, raw) : ['it came back with no title'];
-        if (second.title && secondFaults.length === 0) {
-          log.info(`[Chapters] ${what}: re-asked (${faults.join('; ')}) and the second answer holds`);
-          title = second.title;
-          detail = second.detail || detail;
-        } else {
-          // Both attempts failed the same class of check. The FIRST answer is kept — it is
-          // the one the run's own sampling produced — and the run says so.
-          this.warn(
-            `the chapter at ${formatClock(startSec)} is titled "${title}", which was asked for twice and ` +
-              `both times ${faults.join(' and ')}; the model's answer is kept as written and nothing was ` +
-              `rewritten, so this title is worth a look before publishing`
-          );
-        }
+        this.warn(
+          `the chapter at ${formatClock(startSec)} is titled "${title}", and ${faults.join(' and ')}; the ` +
+            `model's answer is kept as written and nothing was rewritten, so this title is worth a look ` +
+            `before publishing`
+        );
       }
 
       if (!title) {

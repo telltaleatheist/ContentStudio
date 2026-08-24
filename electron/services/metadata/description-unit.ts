@@ -255,21 +255,19 @@ const CALL_TIMEOUT_MS = 300_000;
 const KEEP_ALIVE = '10m';
 
 /**
- * The candidate prompt and the body-revision prompt, from prompts/shared/pipeline/description.yml.
+ * The candidate prompt, from prompts/shared/pipeline/description.yml.
  *
- * Getters, so a missing file or key throws naming both at the moment the prompt is wanted, and
- * the character and word budgets are substituted from THIS FILE'S constants and the channel's
- * own `body_words` — the number the prompt asks for and the number the code measures cannot
- * drift apart.
+ * A getter, so a missing file or key throws naming both at the moment the prompt is wanted,
+ * and the character budget is substituted from THIS FILE'S constant — the number the prompt
+ * asks for and the number the code measures cannot drift apart. (The body-revision prompt
+ * died with the re-ask machinery, 2026-08-24: a judge fault is a warning now, not a second
+ * call.)
  */
 export const DESCRIPTION_PROMPTS = {
   get CANDIDATE(): string {
     return promptAssets()
       .pipeline(DESCRIPTION_FILE, 'candidate')
       .replace(/\{hookTargetChars\}/g, () => String(HOOK_TARGET_CHARS));
-  },
-  get BODY_REVISION(): string {
-    return promptAssets().pipeline(DESCRIPTION_FILE, 'body_revision');
   },
 };
 
@@ -407,11 +405,9 @@ export class DescriptionUnit implements MetadataUnit {
         // the way something already written opens. Both get exactly one more go and no more — a
         // loop that re-rolled until it was happy would spend minutes chasing a model that has
         // settled, and two good options are worth more than three expensive ones.
-        const firstProblem = unusableReason(candidate) ?? this.duplicateReason(candidate, written);
-        if (firstProblem) {
-          log.info(`[Description] ${ctx.sourceLabel}: option ${n} was drawn again — ${firstProblem}`);
-          candidate = await this.writePair(ctx, `option ${n} (re-drawn)`);
-        }
+        // No redraw (operator, 2026-08-24: no re-asks anywhere): an unusable option is
+        // dropped below and a duplicate is kept and declared — both are curation, not
+        // second calls.
 
         // The two reasons part company here. A DUPLICATE opening is kept if it comes back twice:
         // three descriptions that share a lead are still three descriptions, and the operator can
@@ -465,124 +461,27 @@ export class DescriptionUnit implements MetadataUnit {
   }
 
   /**
-   * One complete description: ONE call, judged on both of its parts.
+   * One complete description: ONE call, judged on both of its parts, NEVER re-asked.
    *
-   * THE ONE-RE-ASK POLICY, adapted to the single call. A first answer whose faults are ONLY
-   * the body slipping register gets the targeted REVISION (the model is handed its own body
-   * and the flagged clauses; the hook is kept — measured 2026-08-23, a blind re-ask returns
-   * the same register twice). Any other fault — a hook fault, a word count, or both at once —
-   * gets one fresh draw of the whole answer, where fresh dice are the right tool. Nothing is
-   * asked a third time; whichever answer offends less is kept, with its faults declared.
-   *
-   * A first answer that cannot be PARSED (no blank line — the model did not write a
-   * standalone opening line) is unusable rather than judged, and spends the same one re-ask;
-   * two in a row throw, and the caller's policy decides what that costs (the primary fails
-   * the item, an option is dropped with a warning).
+   * THE RE-ASK MACHINERY IS GONE (operator, 2026-08-24): "i dont think we should be
+   * re-asking. i think we should let it fail. thats a band aid thats covering up real
+   * failure points... the fact that it's re-asking is a programmed in bug." A judge fault is
+   * a WARNING on the answer, kept exactly as written, for the operator and the prompt-tuning
+   * loop to fix at the source; an answer that cannot be PARSED (no blank line) throws, and
+   * the caller's policy decides what that costs — the primary fails the item loudly, an
+   * option is dropped with a warning. One call per candidate, always.
    */
   private async writePair(ctx: MetadataRunContext, tag: string): Promise<DescriptionCandidate> {
     const prompt = this.buildPrompt(DESCRIPTION_PROMPTS.CANDIDATE, ctx, '');
-
-    let first: { hook: string; body: string };
-    try {
-      first = await this.askCandidate(prompt, `${tag} description`, ctx);
-    } catch (error) {
-      if (error instanceof JobCancelledError) throw error;
-      log.warn(
-        `[Description] ${ctx.sourceLabel}: ${error instanceof Error ? error.message : String(error)}; re-asking once`
-      );
-      const second = await this.askCandidate(prompt, `${tag} description (second attempt)`, ctx);
-      return {
-        hook: second.hook,
-        hookFaults: this.judgeHook(second.hook),
-        body: second.body,
-        bodyFaults: this.judgeBody(second.body, ctx),
-      };
-    }
-
-    const firstHookFaults = this.judgeHook(first.hook);
-    const firstBodyFaults = this.judgeBody(first.body, ctx);
-    if (firstHookFaults.length === 0 && firstBodyFaults.length === 0) {
-      return { hook: first.hook, hookFaults: [], body: first.body, bodyFaults: [] };
-    }
-
-    // EVERY sentence is judged, the closer included: the channel-positioning final sentence
-    // the judge used to exempt was required by a rule the operator overruled on 2026-08-24
-    // ("This is a description of the video, not my channel") — a channel-pitching closer is
-    // now the register fault the judge always thought it was.
-    const narratedFirst = describerClauses(first.body);
-    if (firstHookFaults.length === 0 && narratedFirst.length > 0) {
-      // Register-only body fault: the targeted revision, keeping the hook (a blind re-ask
-      // returns the same register twice — measured, see the revision prompt's own note).
-      const revisionPrompt = this.buildPrompt(DESCRIPTION_PROMPTS.BODY_REVISION, ctx, first.hook, {
-        body: first.body,
-        clauses: narratedFirst.map((clause) => `- "${clause}"`).join('\n'),
-      });
-      const revised = await this.askPlain(revisionPrompt, `${tag} body (revision)`, ctx);
-      const revisedFaults = this.judgeBody(revised, ctx);
-      if (revisedFaults.length === 0) {
-        log.info(
-          `[Description] ${ctx.sourceLabel}: revised the ${tag} body (${firstBodyFaults.join('; ')}); the revision holds`
-        );
-        return { hook: first.hook, hookFaults: [], body: revised, bodyFaults: [] };
-      }
-      // Both faulty: the answer with fewer describer clauses is the closer one; a tie keeps
-      // the first, which is the answer the plain prompt produced.
-      const keepRevised = describerClauses(revised).length < narratedFirst.length;
-      const body = keepRevised ? revised : first.body;
-      const bodyFaults = keepRevised ? revisedFaults : firstBodyFaults;
+    const pair = await this.askCandidate(prompt, `${tag} description`, ctx);
+    const hookFaults = this.judgeHook(pair.hook);
+    const bodyFaults = this.judgeBody(pair.body, ctx);
+    if (hookFaults.length > 0 || bodyFaults.length > 0) {
       ctx.warn(
-        `the description ${tag} body was asked for twice and both times ${bodyFaults.join(' and ')}; the ` +
-          `${keepRevised ? 'revised second' : 'first'} answer is kept exactly as the model wrote it and nothing was reworded`
+        `the description ${tag} ${[...hookFaults, ...bodyFaults].join(' and ')}; it is kept exactly as the ` +
+          `model wrote it and nothing was reworded — fix the prompt, not the answer`
       );
-      return { hook: first.hook, hookFaults: [], body, bodyFaults };
     }
-
-    // A hook fault, a bare word-count fault, or both: one fresh draw of the whole answer.
-    let second: { hook: string; body: string };
-    try {
-      second = await this.askCandidate(prompt, `${tag} description (second attempt)`, ctx);
-    } catch (error) {
-      if (error instanceof JobCancelledError) throw error;
-      log.warn(
-        `[Description] ${ctx.sourceLabel}: the ${tag} re-draw was unusable ` +
-          `(${error instanceof Error ? error.message : String(error)}); keeping the first answer`
-      );
-      return this.keptWithWarning(ctx, tag, first, firstHookFaults, firstBodyFaults);
-    }
-    const secondHookFaults = this.judgeHook(second.hook);
-    const secondBodyFaults = this.judgeBody(second.body, ctx);
-    if (secondHookFaults.length === 0 && secondBodyFaults.length === 0) {
-      log.info(
-        `[Description] ${ctx.sourceLabel}: re-asked for the ${tag} description ` +
-          `(${[...firstHookFaults, ...firstBodyFaults].join('; ')}); the second answer holds`
-      );
-      return { hook: second.hook, hookFaults: [], body: second.body, bodyFaults: [] };
-    }
-
-    // Both draws faulty: fewer faults wins, a tie keeps the first.
-    const keepSecond =
-      secondHookFaults.length + secondBodyFaults.length < firstHookFaults.length + firstBodyFaults.length;
-    return this.keptWithWarning(
-      ctx,
-      tag,
-      keepSecond ? second : first,
-      keepSecond ? secondHookFaults : firstHookFaults,
-      keepSecond ? secondBodyFaults : firstBodyFaults
-    );
-  }
-
-  /** Keep an answer its judges still object to, exactly as written, and say so on the run. */
-  private keptWithWarning(
-    ctx: MetadataRunContext,
-    tag: string,
-    pair: { hook: string; body: string },
-    hookFaults: string[],
-    bodyFaults: string[]
-  ): DescriptionCandidate {
-    ctx.warn(
-      `the description ${tag} was asked for twice and both times ${[...hookFaults, ...bodyFaults].join(' and ')}; ` +
-        `it is kept exactly as the model wrote it and nothing was shortened or reworded`
-    );
     return { hook: pair.hook, hookFaults, body: pair.body, bodyFaults };
   }
 
