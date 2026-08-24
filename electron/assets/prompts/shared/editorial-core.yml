@@ -73,7 +73,9 @@ blocks:
 
       The reframe should pass this test: if you said it to someone at a bar who knows nothing about the topic, would they immediately understand why it matters? Policy jargon and religious terminology fail this test. Plain descriptions of what's actually happening to real people pass it.
 
-      Lead with YOUR reframe of what the subject's language actually means to ordinary people. The subject's own terminology can appear as a secondary element, after the reframe has done its work.
+      - Lead with YOUR reframe of what the subject's language actually means to ordinary people. The subject's own terminology can appear as a secondary element, after the reframe has done its work.
+
+      - Be the prosecutor, not the journalist. Take a stance. Make an accusation the input supports.
 
   - id: title_philosophy
     text: |-
@@ -102,10 +104,8 @@ blocks:
     text: |-
       ## VOICE
 
-      - Confident bordering on cocky — you've done the research, they haven't
       - Mocking toward grifters, never toward victims
       - Direct. Blunt. No academic hedging.
-      - You're pissed off because these people hurt real humans, and it shows
       - You sound like a person, not a content machine. No polished marketing copy. No AI-smooth phrasing.
 
   - id: no_ai_isms
@@ -169,6 +169,17 @@ blocks:
 # string "omit" drops the block entirely for that variant. Anything not named takes the
 # shared text above, which is the point of the file.
 variants:
+  # The DEFAULT editorial after the operator's read-through of the assembled titles prompt
+  # (2026-08-24): four blocks cut — the illustration notice (its referent, the in-core title
+  # examples, left with title_philosophy), input awareness, the internal-analysis step
+  # (adaptive thinking does this natively now), and the title philosophy (its load-bearing
+  # prosecutor line moved up into reframing). Unfiltered/shorts/spreaker keep their variants.
+  default:
+    illustration_notice: omit
+    input_awareness: omit
+    internal_analysis: omit
+    title_philosophy: omit
+
   # Unfiltered posts long multi-part livestreams. The only thing that changes is what a title
   # is promising — a conversation to settle into rather than a six-minute payoff.
   unfiltered:
