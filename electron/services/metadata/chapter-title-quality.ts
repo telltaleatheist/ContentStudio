@@ -386,7 +386,42 @@ export function groundViewerTitle(title: string, groundingText: string): Groundi
 function groundedIn(transcript: string, surface: string): boolean {
   if (occursIn(transcript, surface)) return true;
   const words = surface.split(/\s+/).filter((w) => w.replace(/[^A-Za-z0-9]/g, '').length > 1);
-  return words.length > 0 && words.every((word) => occursIn(transcript, word));
+  return words.length > 0 && words.every((word) => occursIn(transcript, word) || nearMissIn(transcript, word));
+}
+
+/**
+ * Transcription variance is not invention: "Lang" against a transcript whose decoder wrote
+ * "Lane", "Bayon" against "Bayoun". A genuinely invented person is essentially never one
+ * letter from a transcript token, but a garbled decode of a real name almost always is —
+ * measured on the u2 run (2026-08-24), where every one of eight grounding re-asks was the
+ * checker flagging the CORRECT name against its own transcript's garble, a wasted call each.
+ * The test: some transcript token of the same first letter and near length sits within one
+ * edit of the title's word. Tokens under 4 letters stay exact — at that length one edit is a
+ * different word, not a variant.
+ */
+function nearMissIn(transcript: string, word: string): boolean {
+  const target = word.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (target.length < 4) return false;
+  const tokens = transcript.toLowerCase().split(/[^a-z0-9]+/);
+  for (const token of tokens) {
+    if (token.length < 4 || token[0] !== target[0]) continue;
+    if (Math.abs(token.length - target.length) > 1) continue;
+    if (editDistanceAtMostOne(token, target)) return true;
+  }
+  return false;
+}
+
+function editDistanceAtMostOne(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (Math.abs(a.length - b.length) > 1) return false;
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  let i = 0, j = 0, edits = 0;
+  while (i < short.length && j < long.length) {
+    if (short[i] === long[j]) { i++; j++; continue; }
+    if (++edits > 1) return false;
+    if (short.length === long.length) { i++; j++; } else { j++; }
+  }
+  return edits + (long.length - j) <= 1;
 }
 
 /**

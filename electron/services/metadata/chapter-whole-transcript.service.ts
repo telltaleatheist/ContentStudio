@@ -297,6 +297,8 @@ export class WholeTranscriptChapterService {
   private readonly options: WholeTranscriptChapterOptions;
   private readonly warnings: string[] = [];
   private calls = 0;
+  /** The whole video, single-spaced — the grounding context judgeTitle checks names against. */
+  private wholeTranscriptText = '';
   private numCtx = 0;
   private speakerTagged = false;
   private groundingUsable = false;
@@ -323,6 +325,7 @@ export class WholeTranscriptChapterService {
     }
 
     const cues = buildCues(srtSegments);
+    this.wholeTranscriptText = plainTranscript(cues);
     const durationSeconds = cues[cues.length - 1].endSec;
     const band = cadenceBandFor(durationSeconds);
 
@@ -771,11 +774,18 @@ export class WholeTranscriptChapterService {
     const faults: string[] = [];
 
     if (this.groundingUsable) {
-      const grounding = groundTitle(title, chapterTranscript);
+      // Grounded against the WHOLE video plus its title, not the chapter's slice alone. The
+      // per-slice test read as rigor and measured as waste: on u2 (2026-08-24) all eight
+      // grounding re-asks flagged the video's own subject — named in the FILENAME the prompt
+      // itself carries — because a 23-second outro slice happened not to repeat it. The model
+      // legitimately knows the video title and the threaded context; a name is invented when
+      // the VIDEO never contains it, which still catches world-knowledge names and the
+      // prompt-example leak this check exists for.
+      const grounding = groundTitle(title, `${this.options.videoTitle || ''}\n${chapterTranscript}\n${this.wholeTranscriptText}`);
       if (!grounding.grounded) {
         faults.push(
-          `it names ${grounding.ungrounded.map((n) => `"${n}"`).join(', ')}, which this chapter's own ` +
-            `transcript does not contain`
+          `it names ${grounding.ungrounded.map((n) => `"${n}"`).join(', ')}, which this video ` +
+            `does not contain`
         );
       }
     }
