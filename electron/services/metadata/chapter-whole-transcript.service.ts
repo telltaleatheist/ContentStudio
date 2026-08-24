@@ -202,17 +202,15 @@ const DETAIL_TIMEOUT_MS = 600_000;
  */
 const ENTITY_SCAFFOLD_LIMIT = 8;
 
-/**
- * The sampling a SECOND look uses.
- *
- * The run asks at temperature 0 with seed 0, so re-sending an identical prompt unchanged
- * would return an identical answer — a re-ask that cannot produce a different result is not a
- * re-ask. A different seed and a little temperature is what makes it a second SAMPLE. Nothing
- * about the prompt changes: per the operator's ruling a re-ask never quotes the rejected
- * answer back and never describes what was wrong with it, because a prompt that shows a model
- * the wrong form teaches it that form.
+/*
+ * No sampling parameters are set anywhere in this pipeline (operator's ruling 2026-08-24:
+ * provider defaults everywhere; a model that cannot perform there is replaced, not tuned).
+ * At default sampling every ask is already a fresh draw, so a re-ask IS a second sample with
+ * no seed juggling — the earlier temperature-0/seed-0 measurement design is superseded. The
+ * re-ask prompt still never quotes the rejected answer back and never describes what was
+ * wrong with it, because a prompt that shows a model the wrong form teaches it that form.
  */
-const RE_ASK_SAMPLING = { temperature: 0.3, seed: 1 };
+
 
 /**
  * Above this the KV cache spills off the GPU and every token slows down. It is a PERFORMANCE
@@ -560,13 +558,12 @@ export class WholeTranscriptChapterService {
       transcript,
     });
 
-    const send = async (retried: boolean, sampling?: { temperature: number; seed: number }) => {
+    const send = async (retried: boolean) => {
       const result = await this.ask(
         'chapters',
         prompt,
         retried ? "this video's chapters, second attempt" : "this video's chapters",
-        CHAPTERS_TIMEOUT_MS,
-        sampling
+        CHAPTERS_TIMEOUT_MS
       );
       if (!result) return null;
       const { claims, malformed } = readClaims(result);
@@ -581,7 +578,7 @@ export class WholeTranscriptChapterService {
     if (first) return first;
 
     log.warn(`[Chapters] no usable chapter list on the first ask; re-asking once at a different sample`);
-    const second = await send(true, RE_ASK_SAMPLING);
+    const second = await send(true);
     if (second) {
       this.warn(
         `the chapter call had to be asked twice — the first answer carried no usable chapter — so this ` +
@@ -671,7 +668,7 @@ export class WholeTranscriptChapterService {
         // The one title a second sample can change, so the one that gets a re-ask.
         const faults = title ? this.judgeTitle(title, raw) : [];
         if (title && faults.length > 0) {
-          const second = await this.ask('detail', prompt, `${what}, second attempt`, DETAIL_TIMEOUT_MS, RE_ASK_SAMPLING);
+          const second = await this.ask('detail', prompt, `${what}, second attempt`, DETAIL_TIMEOUT_MS);
           const retitled = WholeTranscriptChapterService.readString(second?.title);
           const secondFaults = retitled ? this.judgeTitle(retitled, raw) : ['it came back with no title'];
           if (retitled && secondFaults.length === 0) {
@@ -884,13 +881,7 @@ export class WholeTranscriptChapterService {
     stage: ChapterStage,
     prompt: string,
     what: string,
-    timeoutMs: number,
-    /**
-     * Sampling for a SECOND look at the same prompt. Omitted everywhere the run is taking a
-     * measurement, which is everywhere but a re-ask: temperature 0 and a pinned seed are what
-     * make a quote resolve to the same sentence every run.
-     */
-    sampling?: { temperature: number; seed: number }
+    timeoutMs: number
   ): Promise<Record<string, unknown> | null> {
     this.checkCancelled();
     this.calls++;
@@ -920,8 +911,6 @@ export class WholeTranscriptChapterService {
       prompt,
       numCtx: this.numCtx,
       numPredict: NUM_PREDICT,
-      temperature: sampling?.temperature ?? 0,
-      seed: sampling?.seed ?? 0,
       keepAlive: KEEP_ALIVE,
       timeoutMs,
       signal: this.options.abortSignal,

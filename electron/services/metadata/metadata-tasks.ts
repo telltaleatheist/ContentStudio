@@ -529,19 +529,6 @@ const LOCAL_FIELD_KEEP_ALIVE = '10m';
 const LOCAL_FIELD_TIMEOUT_MS = 600_000;
 
 /**
- * Writing is not measuring.
- *
- * The chapter pipeline runs at temperature 0 because it is taking measurements — the same
- * junction must resolve to the same sentence every time. A field call is being asked to WRITE,
- * and at temperature 0 it writes the same title for every video whose subjects rhyme. 0.7 is
- * the temperature this app's local generation has always used.
- *
- * No seed is sent, deliberately. A pinned seed would make "regenerate" return the identical
- * answer, which is the one thing the operator presses it for.
- */
-const LOCAL_FIELD_TEMPERATURE = 0.7;
-
-/**
  * Headroom for input data a sizing pass cannot see yet.
  *
  * The budget is resolved when the FIRST call on a model runs, and at that moment the thumbnail
@@ -819,7 +806,6 @@ export class LocalFieldUnit implements MetadataUnit {
           prompt,
           numCtx,
           numPredict: LOCAL_FIELD_NUM_PREDICT,
-          temperature: LOCAL_FIELD_TEMPERATURE,
           // One key, one shape. See METADATA_FIELD_SECTIONS.schema for what it deliberately
           // does NOT constrain.
           schema: METADATA_FIELD_SECTIONS[this.spec.field].schema,
@@ -981,8 +967,8 @@ const ADAPTER_TIMEOUT_MS = 300_000;
 const TITLE_CANDIDATES = 6;
 /** A title is one line; 64 tokens is generous for 70 characters and cheap to sample. */
 const TITLE_NUM_PREDICT = 64;
-/** The titles adapter's evaluated sampling settings. Not greedy — see the class comment. */
-const TITLE_SAMPLING = { temperature: 0.7, top_p: 0.9, num_predict: TITLE_NUM_PREDICT };
+/** The titles call's output budget. Sampling itself is the provider's default — see the class comment. */
+const TITLE_OPTIONS = { num_predict: TITLE_NUM_PREDICT };
 
 /**
  * The seam's second implementation: one fine-tuned adapter, on a local Ollama-shaped host.
@@ -992,13 +978,11 @@ const TITLE_SAMPLING = { temperature: 0.7, top_p: 0.9, num_predict: TITLE_NUM_PR
  * (the 32B titles model is an MLX shim on its own port), and each one it makes resident is
  * declared to the JOB, which releases them together when the job ends.
  *
- * Decoding differs by task, and deliberately:
- *   description, tags — greedy (`temperature 0`), because a metadata run that returns a
- *     different description each time it is re-run cannot be reviewed, and greedy is what
- *     those adapters were evaluated at.
- *   titles — SAMPLED (temperature 0.7 / top_p 0.9), because the field is a LIST of
- *     alternatives. Greedy decoding would return the same title six times; the point of
- *     six candidates is six different bets.
+ * Decoding is the provider's default for every task (operator's ruling 2026-08-24: no
+ * sampling parameters anywhere — a model that cannot perform at its defaults is replaced,
+ * not tuned). This superseded the adapters' evaluated settings (greedy for description and
+ * tags, 0.7/top_p 0.9 for titles); default sampling still gives the titles call the six
+ * different bets its six candidates exist for.
  *
  * They answer in PLAIN TEXT, not JSON. That is the whole shape difference from the cloud
  * unit: no JSON parse, no key registry, no repair loop — a description is a description,
@@ -1065,8 +1049,8 @@ export class LocalAdapterUnit implements MetadataUnit {
   describePrompt(ctx: MetadataRunContext): string {
     const messages = this.buildConversation(ctx);
     const decoding = this.task === 'titles'
-      ? `temperature ${TITLE_SAMPLING.temperature}, top_p ${TITLE_SAMPLING.top_p}, ${TITLE_CANDIDATES} candidates`
-      : 'temperature 0';
+      ? `provider default sampling, ${TITLE_CANDIDATES} candidates`
+      : 'provider default sampling';
     return (
       `# LOCAL ADAPTER: ${this.model} @ ${this.host} (ollama /api/chat, think:false, ${decoding})\n\n` +
       messages.map((m) => `--- ${m.role.toUpperCase()} ---\n${m.content}`).join('\n\n')
@@ -1081,7 +1065,7 @@ export class LocalAdapterUnit implements MetadataUnit {
       return { titles: await this.generateTitles(messages, ctx) };
     }
 
-    const answer = await this.chat(messages, ctx.sourceLabel, { temperature: 0 });
+    const answer = await this.chat(messages, ctx.sourceLabel, {});
 
     return this.task === 'description'
       ? splitDescriptionAndHashtags(answer, this.task, this.model, ctx.sourceLabel)
@@ -1202,7 +1186,7 @@ export class LocalAdapterUnit implements MetadataUnit {
   private async generateTitles(messages: ChatMessage[], ctx: MetadataRunContext): Promise<string[]> {
     const raw: string[] = [];
     for (let i = 0; i < TITLE_CANDIDATES; i++) {
-      raw.push(await this.chat(messages, ctx.sourceLabel, TITLE_SAMPLING));
+      raw.push(await this.chat(messages, ctx.sourceLabel, TITLE_OPTIONS));
     }
 
     const seen = new Set<string>();

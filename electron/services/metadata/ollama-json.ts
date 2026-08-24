@@ -69,8 +69,6 @@ export interface OllamaJsonRequest {
   numCtx: number;
   /** Output budget. Sized for THINKING, not for the answer — see the callers. */
   numPredict: number;
-  temperature?: number;
-  seed?: number;
   keepAlive?: string;
   timeoutMs: number;
   signal?: AbortSignal;
@@ -189,11 +187,8 @@ export async function askOllamaJson(
         keep_alive: request.keepAlive || OLLAMA_KEEP_ALIVE,
         // Trap 2: no `think` key. Adding one relocates the reasoning into `response`.
         options: {
-          temperature: request.temperature ?? 0,
-          // Sent ONLY when the caller asked for one. A pinned seed makes a measurement
-          // repeatable (chaptering wants that) and makes a regeneration pointless (metadata
-          // does not), so the choice belongs to the caller and there is no default.
-          ...(request.seed === undefined ? {} : { seed: request.seed }),
+          // No temperature, no seed — the model's own defaults (operator's ruling 2026-08-24: no sampling parameters anywhere — every model runs at its provider defaults, and a model that cannot perform there is replaced, not tuned). num_ctx and
+          // num_predict are BUDGETS, not sampling, and stay.
           num_ctx: request.numCtx,
           num_predict: request.numPredict,
         },

@@ -85,9 +85,9 @@
  * is still `description` + `description_hook`. Nothing downstream learned a new shape: the
  * composer, the publish pipeline, the carry-forward and every stored report read the fields they
  * always read. The alternatives are additive, in `description_options`, each a WHOLE pair: its
- * own hook, drawn at this app's variety temperature, then a body written to continue that hook
- * at the primary's. Where the variety comes from and why it is confined to the hook is measured
- * on OPTION_HOOK_TEMPERATURE below.
+ * own hook, then a body written to continue that hook. Every draw runs at the provider's
+ * default sampling (operator's ruling 2026-08-24), which is where the variety between
+ * candidates comes from.
  *
  * An extra is also dropped when its body comes back the wrong LENGTH twice — measured on the
  * channel's own `body_words`. The primary keeps a wrong-length body because the operator needs
@@ -169,13 +169,15 @@ function bodyWordRange(channel: ChannelData): [number, number] {
   return range;
 }
 
-/**
- * Spec §5's temperatures. Local only — `askOllamaJson` sends them as Ollama options, and
- * NOTHING sends a sampling parameter to a cloud provider (newer Claude and OpenAI models 400
- * on them, and the cloud branch below has no options block at all).
+/*
+ * NO TEMPERATURES ARE SET HERE ANY MORE — operator's ruling 2026-08-24: no sampling
+ * parameters anywhere, every model at its provider defaults, and a model that cannot
+ * perform there is replaced rather than tuned. This superseded spec §5's per-call
+ * temperatures (hook 0.4, body 0.2, option hooks 0.7). The one measurement that ruling
+ * put at risk — option bodies at 0.7 on qwen3.8:27b came back "..." or cut mid-clause
+ * (2 usable of 6) while 0.2 held (3 of 3) — is under re-test at defaults per the same
+ * ruling; the drop rules below are what stand behind a bad draw either way.
  */
-const HOOK_TEMPERATURE = 0.4;
-const BODY_TEMPERATURE = 0.2;
 
 /**
  * How many descriptions the operator gets to choose from, the primary included.
@@ -188,42 +190,7 @@ const BODY_TEMPERATURE = 0.2;
  */
 const DESCRIPTION_CANDIDATES = 3;
 
-/**
- * The sampling the EXTRA candidates are drawn at — HIGH ON THE HOOK, UNCHANGED ON THE BODY.
- *
- * THE HOOK IS WHERE THE VARIETY HAS TO COME FROM, and it is the only place it needs to. Each
- * candidate's body is written to continue ITS OWN hook, so two different opening lines produce
- * two different descriptions whatever the body is decoded at. The hook is also the part the
- * operator is really choosing between: it is the search snippet and everything above the fold.
- * 0.7 is this app's variety setting, the one the titles adapter samples at, for the reason
- * stated there.
- *
- * THE BODY STAYS AT THE PRIMARY'S 0.2, and that is a measurement, not caution. Sampling the body
- * at 0.7 as well was the first thing tried, over three runs of the same video on qwen3.8:27b:
- *
- *   option bodies at 0.7   2 usable out of 6 — two came back as the single token "...", two
- *                          stopped mid-clause ("...primary win is framed as a battle against a")
- *   primary bodies at 0.2  3 usable out of 3
- *
- * Both failure modes are one failure: a 250-word answer under a JSON schema, on a model that
- * reasons first inside the same num_predict budget, has no slack for high-temperature decoding,
- * and it either abandons the answer or runs out of budget partway through it. The titles
- * adapter's 0.7 is evaluated on a 64-token single line, which is a different call.
- *
- * The drop rules below still stand behind this. They caught every one of those four, which is
- * how the numbers above exist, and they are what keeps a bad draw out of the operator's choices
- * rather than something to be relied on for every draw.
- *
- * No seed is pinned. ollama-json's seed comment has the argument: a pinned seed makes a
- * measurement repeatable and makes a regeneration pointless. Two options drawn under one seed
- * would be one option twice, and re-running for a fresh set is the whole workflow.
- *
- * ON A CLOUD MODEL nothing sends a sampling parameter at all (see the note on these constants),
- * so the extras there vary by the provider's own default temperature rather than by these. They
- * still vary; they are just not varying by a number this file chose.
- */
-const OPTION_HOOK_TEMPERATURE = 0.7;
-const OPTION_BODY_TEMPERATURE = BODY_TEMPERATURE;
+/* Option draws use the same provider-default sampling as everything else — see the ruling above. */
 
 /**
  * How the body judge opens its word-count complaint.
@@ -348,8 +315,9 @@ export const DESCRIPTION_FIELDS: MetadataFieldId[] = ['description_hook', 'descr
  * ONE class for local and cloud rather than two, which is the opposite of how the prompt-set
  * groups are built (CloudGroupUnit / LocalGroupUnit) — and deliberately, because the
  * difference here is four lines rather than a prompt shape. The prompts are identical, the
- * inputs are identical, and the only divergence is that the local branch sends a JSON Schema
- * and two temperatures while the cloud branch sends neither.
+ * inputs are identical, and the only divergence is the transport: the local branch decodes
+ * under a JSON Schema grammar and sizes its own context window; the cloud branch sends the
+ * same schema as structured outputs and sizes nothing.
  */
 export class DescriptionUnit implements MetadataUnit {
   readonly label: string;
@@ -411,24 +379,24 @@ export class DescriptionUnit implements MetadataUnit {
   describePrompt(ctx: MetadataRunContext): string {
     return (
       `# ${DESCRIPTION_CANDIDATES} DESCRIPTIONS ARE WRITTEN FROM THESE TWO PROMPTS.\n` +
-      `# The primary at the temperatures below; ${DESCRIPTION_CANDIDATES - 1} alternative(s) at ` +
-      `${OPTION_HOOK_TEMPERATURE} on the hook, each with a body written to continue it. The prompts\n` +
-      `# are identical for all of them — only the sampling differs — so they are shown once.\n\n` +
+      `# The primary and ${DESCRIPTION_CANDIDATES - 1} alternative(s), each with a body written to\n` +
+      `# continue its own hook. The prompts are identical for all of them — every draw runs at the\n` +
+      `# provider's default sampling — so they are shown once.\n\n` +
       `# DESCRIPTION HOOK (${this.option.model}, ` +
-      `${this.option.kind === 'local' ? `schema-constrained, temperature ${HOOK_TEMPERATURE}` : 'JSON, provider defaults'})\n\n` +
+      `${this.option.kind === 'local' ? 'schema-constrained' : 'JSON'}, provider default sampling)\n\n` +
       this.buildPrompt(DESCRIPTION_PROMPTS.HOOK, ctx, hookPending()) +
       `\n\n# DESCRIPTION BODY (${this.option.model}, ` +
-      `${this.option.kind === 'local' ? `schema-constrained, temperature ${BODY_TEMPERATURE}` : 'JSON, provider defaults'})\n\n` +
+      `${this.option.kind === 'local' ? 'schema-constrained' : 'JSON'}, provider default sampling)\n\n` +
       this.buildPrompt(DESCRIPTION_PROMPTS.BODY, ctx, hookPending())
     );
   }
 
   async generate(ctx: MetadataRunContext): Promise<Record<string, unknown>> {
-    // THE PRIMARY IS UNCHANGED. Same two calls, same temperatures, same judging, same fields —
+    // THE PRIMARY IS UNCHANGED. Same two calls, same judging, same fields —
     // `description` and `description_hook` mean exactly what they meant before this unit could
     // produce more than one, so the composer, the publish pipeline, the carry-forward and every
     // stored report are untouched by what follows.
-    const primary = await this.writePair(ctx, 'primary', HOOK_TEMPERATURE, BODY_TEMPERATURE);
+    const primary = await this.writePair(ctx, 'primary');
     // The primary publishes whatever it wrote, faults and all, exactly as it always has.
 
     const options = await this.writeOptions(ctx, primary);
@@ -470,7 +438,7 @@ export class DescriptionUnit implements MetadataUnit {
 
     for (let n = 2; n <= DESCRIPTION_CANDIDATES; n++) {
       try {
-        let candidate = await this.writePair(ctx, `option ${n}`, OPTION_HOOK_TEMPERATURE, OPTION_BODY_TEMPERATURE);
+        let candidate = await this.writePair(ctx, `option ${n}`);
 
         // ONE RE-DRAW, for either reason a first draw disappoints: it is unusable, or it opens
         // the way something already written opens. Both get exactly one more go and no more — a
@@ -479,8 +447,7 @@ export class DescriptionUnit implements MetadataUnit {
         const firstProblem = unusableReason(candidate) ?? this.duplicateReason(candidate, written);
         if (firstProblem) {
           log.info(`[Description] ${ctx.sourceLabel}: option ${n} was drawn again — ${firstProblem}`);
-          candidate = await this.writePair(
-            ctx, `option ${n} (re-drawn)`, OPTION_HOOK_TEMPERATURE, OPTION_BODY_TEMPERATURE);
+          candidate = await this.writePair(ctx, `option ${n} (re-drawn)`);
         }
 
         // The two reasons part company here. A DUPLICATE opening is kept if it comes back twice:
@@ -515,9 +482,8 @@ export class DescriptionUnit implements MetadataUnit {
     }
 
     log.info(
-      `[Description] ${ctx.sourceLabel}: ${options.length + 1} description(s) — the primary at ` +
-        `${HOOK_TEMPERATURE}/${BODY_TEMPERATURE} and ${options.length} alternative(s) at ` +
-        `${OPTION_HOOK_TEMPERATURE}/${OPTION_BODY_TEMPERATURE}`
+      `[Description] ${ctx.sourceLabel}: ${options.length + 1} description(s) — the primary and ` +
+        `${options.length} alternative(s), all at provider default sampling`
     );
     return options;
   }
@@ -536,14 +502,9 @@ export class DescriptionUnit implements MetadataUnit {
   }
 
   /** One complete description: a hook, then the body that was written to continue it. */
-  private async writePair(
-    ctx: MetadataRunContext,
-    tag: string,
-    hookTemperature: number,
-    bodyTemperature: number
-  ): Promise<DescriptionCandidate> {
-    const hook = await this.writeHook(ctx, tag, hookTemperature);
-    const body = await this.writeBody(ctx, hook.text, tag, bodyTemperature);
+  private async writePair(ctx: MetadataRunContext, tag: string): Promise<DescriptionCandidate> {
+    const hook = await this.writeHook(ctx, tag);
+    const body = await this.writeBody(ctx, hook.text, tag);
     return { hook: hook.text, hookFaults: hook.faults, body: body.text, bodyFaults: body.faults };
   }
 
@@ -557,13 +518,13 @@ export class DescriptionUnit implements MetadataUnit {
    * still over, the long hook is KEPT and the run says so. Truncating it would produce a
    * sentence the model did not write, ending mid-clause, in the one line YouTube shows first.
    */
-  private async writeHook(ctx: MetadataRunContext, tag: string, temperature: number): Promise<JudgedText> {
+  private async writeHook(ctx: MetadataRunContext, tag: string): Promise<JudgedText> {
     const prompt = this.buildPrompt(DESCRIPTION_PROMPTS.HOOK, ctx, hookPending());
-    const first = await this.ask(prompt, `${tag} hook`, HOOK_SCHEMA, temperature, ctx);
+    const first = await this.ask(prompt, `${tag} hook`, HOOK_SCHEMA, ctx);
     const faults = this.judgeHook(first);
     if (faults.length === 0) return { text: first, faults: [] };
 
-    const second = await this.ask(prompt, `${tag} hook (second attempt)`, HOOK_SCHEMA, temperature, ctx);
+    const second = await this.ask(prompt, `${tag} hook (second attempt)`, HOOK_SCHEMA, ctx);
     if (this.judgeHook(second).length === 0) {
       log.info(`[Description] ${ctx.sourceLabel}: re-asked for the ${tag} hook (${faults.join('; ')}); the second answer holds`);
       return { text: second, faults: [] };
@@ -604,14 +565,9 @@ export class DescriptionUnit implements MetadataUnit {
    * The word count is a SPEC RANGE, not a hard limit — a 310-word body is a warning, not a
    * failure, and it publishes.
    */
-  private async writeBody(
-    ctx: MetadataRunContext,
-    hook: string,
-    tag: string,
-    temperature: number
-  ): Promise<JudgedText> {
+  private async writeBody(ctx: MetadataRunContext, hook: string, tag: string): Promise<JudgedText> {
     const prompt = this.buildPrompt(DESCRIPTION_PROMPTS.BODY, ctx, hook);
-    const first = await this.ask(prompt, `${tag} body`, BODY_SCHEMA, temperature, ctx);
+    const first = await this.ask(prompt, `${tag} body`, BODY_SCHEMA, ctx);
     const firstFaults = this.judgeBody(first, ctx);
     if (firstFaults.length === 0) return { text: first, faults: [] };
 
@@ -628,7 +584,7 @@ export class DescriptionUnit implements MetadataUnit {
           })
         : prompt;
     const what = narratedFirst.length > 0 ? `${tag} body (revision)` : `${tag} body (second attempt)`;
-    const second = await this.ask(secondPrompt, what, BODY_SCHEMA, temperature, ctx);
+    const second = await this.ask(secondPrompt, what, BODY_SCHEMA, ctx);
     const secondFaults = this.judgeBody(second, ctx);
     if (secondFaults.length === 0) {
       log.info(`[Description] ${ctx.sourceLabel}: re-asked for the ${tag} body (${firstFaults.join('; ')}); the second answer holds`);
@@ -691,12 +647,11 @@ export class DescriptionUnit implements MetadataUnit {
     prompt: string,
     what: string,
     schema: Record<string, unknown>,
-    temperature: number,
     ctx: MetadataRunContext
   ): Promise<string> {
     const key = Object.keys(schema.properties as Record<string, unknown>)[0];
     const value = this.client
-      ? await this.askLocal(prompt, what, schema, temperature, ctx)
+      ? await this.askLocal(prompt, what, schema, ctx)
       : await this.aiManager.runJsonRequest(
           prompt, this.option.model, `the description ${what} for ${ctx.sourceLabel}`,
           // The same schema the local call decodes under, honored on the cloud path as
@@ -719,7 +674,6 @@ export class DescriptionUnit implements MetadataUnit {
     prompt: string,
     what: string,
     schema: Record<string, unknown>,
-    temperature: number,
     ctx: MetadataRunContext
   ): Promise<Record<string, unknown>> {
     // One num_ctx for the whole MODEL for the whole RUN (ollama-json trap 4) — not one per
@@ -737,7 +691,6 @@ export class DescriptionUnit implements MetadataUnit {
           prompt,
           numCtx,
           numPredict: NUM_PREDICT,
-          temperature,
           schema,
           keepAlive: KEEP_ALIVE,
           timeoutMs: CALL_TIMEOUT_MS,
