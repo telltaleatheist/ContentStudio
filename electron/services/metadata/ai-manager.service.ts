@@ -1375,7 +1375,23 @@ export class AIManagerService {
     if (!response) {
       throw new Error(`No response from "${model}" for ${what}`);
     }
-    const extracted = AIManagerService.extractFirstJsonObject(response);
+    let extracted = AIManagerService.extractFirstJsonObject(response);
+    if (!extracted) {
+      // The object never closes. One real cause, seen repeatedly on Sonnet chapter-detail
+      // calls (2026-08-23/24): the model finishes the content, writes a typographic ” where
+      // the string's closing " belongs, and then — unable to legally end the object — emits
+      // closing braces until max_tokens. The whole answer is present in that prefix, so a
+      // truncated answer gets ONE structural recovery before it is declared unusable.
+      extracted = AIManagerService.recoverTruncatedObject(response);
+      if (extracted) {
+        log.warn(
+          `[AIManager] the answer to ${what} from "${model}" was truncated mid-structure (an unterminated ` +
+            `string or unclosed scope); its degenerate tail was peeled and the open scopes closed — the ` +
+            `recovered object is used, and this answer is worth an eyeball in the log below`
+        );
+        log.warn(`[AIManager] the truncated answer to ${what}:\n${response.slice(0, 2000)}`);
+      }
+    }
     if (!extracted) {
       log.warn(`[AIManager] the answer to ${what} from "${model}" holds no complete JSON object:\n${response}`);
       throw new CloudAnswerUnusableError(
@@ -1451,6 +1467,64 @@ export class AIManagerService {
       }
     }
     return null;
+  }
+
+  /**
+   * Close a truncated top-level object so its surviving content can be read.
+   *
+   * Reached ONLY after extractFirstJsonObject found no complete object, so a valid answer
+   * can never be rewritten by this. The shape it repairs is a max_tokens truncation whose
+   * prefix holds the whole answer: the tail is peeled of the junk a failing close emits
+   * (brace/bracket runs, typographic quotes, whitespace — all inside the never-closed
+   * string, which is why extraction refused it), the string is closed if one is open, a
+   * dangling comma or colon-value seam is dropped, and every open scope is closed in
+   * order. Null when there is no `{` at all or the result is structurally hopeless; the
+   * caller then fails exactly as before.
+   */
+  private static recoverTruncatedObject(text: string): string | null {
+    const start = text.indexOf('{');
+    if (start === -1) return null;
+
+    // Peel the degenerate tail: closing braces/brackets, typographic quote junk and
+    // whitespace. On a truncation these are string content or over-closes, never needed
+    // syntax — the scopes are re-closed properly below, from the parse state.
+    let body = text.slice(start);
+    body = body.replace(/[\s}\]“”‘’《》〈〉>）]+$/u, '');
+    if (body.length <= 1) return null;
+
+    // Walk what remains and record the open scopes and string state at the cut.
+    const stack: string[] = [];
+    let inString = false;
+    let escaped = false;
+    for (const ch of body) {
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === '{' || ch === '[') stack.push(ch === '{' ? '}' : ']');
+      else if (ch === '}' || ch === ']') {
+        if (stack.pop() !== ch) return null; // mismatched nesting: not a truncation, garbage
+      }
+    }
+    if (stack.length === 0) return null; // closed on its own: extraction would have taken it
+
+    if (escaped) body = body.slice(0, -1); // a lone trailing backslash cannot stay
+    if (inString) {
+      body += '"';
+      // The string the cut landed in may be a KEY, not a value: inside an object scope,
+      // a final string preceded by `{` or `,` has no colon coming, so it goes.
+      if (stack[stack.length - 1] === '}') {
+        const key = body.match(/[{,]\s*"(?:[^"\\]|\\.)*"$/);
+        if (key) body = body.slice(0, body.length - key[0].length + 1);
+      }
+    }
+    // Truncated between tokens: a dangling comma, or a key whose value never arrived.
+    const dangling = body.match(/,\s*$|,?\s*"(?:[^"\\]|\\.)*"\s*:\s*$/);
+    if (dangling) body = body.slice(0, body.length - dangling[0].length);
+    return body + stack.reverse().join('');
   }
 
   /**
