@@ -369,7 +369,7 @@ async function main() {
       'markdown, no commentary, and no extra text. Start your response with { and end with }.';
     AIManagerService.prototype.makeClaudeRequest = function (prompt, model, plain) {
       const system = plain ? SYSTEM_PROMPTS.PLAIN_SYSTEM : JSON_NUDGE;
-      console.error(`  [claude-cli] ${model} -> claude -p --model sonnet (${prompt.length} chars)`);
+      console.error(`  [claude-cli] ${model} -> claude -p --model opus (${prompt.length} chars)`);
       return new Promise((resolve, reject) => {
         const child = spawn('claude', ['-p', '--model', 'sonnet', '--system-prompt', system], {
           stdio: ['pipe', 'pipe', 'pipe'],

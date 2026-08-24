@@ -173,7 +173,13 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    * API fallback, deliberately: falling back would silently bill the key this option
    * exists to protect.
    */
-  'claude-cli': { kind: 'cloud', label: 'claude -p (Sonnet, subscription)', model: 'claude-cli:sonnet' },
+  'claude-cli': { kind: 'cloud', label: 'claude -p (Opus, subscription)', model: 'claude-cli:opus' },
+  /**
+   * The Sonnet rung of the same transport, split out 2026-08-24 when the operator asked
+   * the claude -p rung to run Opus for an in-app comparison. Same key-free spawn, same
+   * no-fallback rule; only the CLI model alias differs.
+   */
+  'claude-cli-sonnet': { kind: 'cloud', label: 'claude -p (Sonnet, subscription)', model: 'claude-cli:sonnet' },
   /**
    * The cheap cloud rung, added 2026-08-24. The prompt harness ran the production prompts
    * against it (tools/prompt-tune, cycle 1): descriptions and chapter details held at n=2
@@ -330,14 +336,14 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      */
     id: 'titles',
     label: 'Titles',
-    options: ['qwen38-27b', 'headline-titles-32b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli'],
+    options: ['qwen38-27b', 'headline-titles-32b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
     defaultOptionId: 'qwen38-27b',
     modal: true,
   },
   {
     id: 'description',
     label: 'Description',
-    options: ['qwen38-27b', 'qwen35-9b', 'qwen35-4b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli'],
+    options: ['qwen38-27b', 'qwen35-9b', 'qwen35-4b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
     // 27B as of 2026-08-23, up from the 9B: the 9B default shipped a description that
     // misattributed the video's claims and invented facts (the f2-braeden-sorbo
     // comparison). 9b/4b remain offered for the A/B.
@@ -362,7 +368,7 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      */
     id: 'chapters',
     label: 'Chapters',
-    options: ['qwen38-27b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli'],
+    options: ['qwen38-27b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
     defaultOptionId: 'qwen38-27b',
     modal: true,
   },
@@ -386,7 +392,7 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      */
     id: 'tags',
     label: 'Tags',
-    options: ['qwen35-9b', 'qwen35-4b', 'qwen38-27b', 'sonnet5', 'opus5', 'claude-cli'],
+    options: ['qwen35-9b', 'qwen35-4b', 'qwen38-27b', 'sonnet5', 'opus5', 'claude-cli', 'claude-cli-sonnet'],
     defaultOptionId: 'qwen35-9b',
     // NOT a modal row — the operator's "if we use 9b for something then leave it". The
     // 9b/4b A/B stays a stored per-task entry set outside the modal, as it always was.
@@ -397,7 +403,7 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     label: 'Thumbnail text',
     // 27B by default: the output is three words and the judgement behind them is the whole
     // video, so the cheaper model saves nothing worth having here.
-    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli'],
+    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
     defaultOptionId: 'qwen38-27b',
     modal: true,
   },
@@ -412,7 +418,7 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      */
     id: 'pinned_comment',
     label: 'Pinned comment',
-    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli'],
+    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
     defaultOptionId: 'qwen38-27b',
     modal: true,
   },
@@ -421,7 +427,7 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     label: 'Clip suggestions',
     // 27B by default: picking the clippable moments means holding the whole transcript in
     // one head, which is the shape the smaller model is worst at.
-    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli'],
+    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
     defaultOptionId: 'qwen38-27b',
     modal: true,
   },

@@ -1708,11 +1708,12 @@ export class AIManagerService {
             console.log(`[AIManager]   Provider: OpenAI`);
             return await this.makeOpenAIRequest(prompt, model.replace('openai:', ''));
           } else if (model.startsWith('claude-cli:')) {
-            // The subscription rung: same Sonnet, through the `claude -p` CLI instead of
-            // the metered API. Checked before nothing it could shadow — 'claude-cli:'
+            // The subscription rung: Claude through the `claude -p` CLI instead of the
+            // metered API. The suffix is the CLI's model alias ('opus', 'sonnet'), passed
+            // through verbatim. Checked before nothing it could shadow — 'claude-cli:'
             // matches neither 'claude:' nor 'ollama:'.
             console.log(`[AIManager]   Provider: claude -p (subscription)`);
-            return await this.makeClaudeCliRequest(prompt, plain);
+            return await this.makeClaudeCliRequest(prompt, model.replace('claude-cli:', ''), plain);
           } else if (model.startsWith('claude:')) {
             console.log(`[AIManager]   Provider: Claude`);
             return await this.makeClaudeRequest(prompt, model.replace('claude:', ''), plain);
@@ -1892,14 +1893,14 @@ export class AIManagerService {
    * Cancellation kills the child; unlike the API path there is no server-side abort, so the
    * kill is the whole cancel.
    */
-  private makeClaudeCliRequest(prompt: string, plain?: boolean): Promise<string | null> {
+  private makeClaudeCliRequest(prompt: string, cliModel: string, plain?: boolean): Promise<string | null> {
     const system = plain
       ? SYSTEM_PROMPTS.PLAIN_SYSTEM
       : 'You are a helpful assistant. When asked to return JSON, output ONLY valid JSON with no markdown, no commentary, and no extra text. Start your response with { and end with }.';
-    log.info(`[AIManager] claude -p --model sonnet (${prompt.length} chars, ${plain ? 'plain' : 'json'})`);
+    log.info(`[AIManager] claude -p --model ${cliModel} (${prompt.length} chars, ${plain ? 'plain' : 'json'})`);
 
     return new Promise<string | null>((resolve, reject) => {
-      const child = spawn('claude', ['-p', '--model', 'sonnet', '--system-prompt', system], {
+      const child = spawn('claude', ['-p', '--model', cliModel, '--system-prompt', system], {
         stdio: ['pipe', 'pipe', 'pipe'],
         // A run inside a Claude Code session must not inherit its entrypoint state.
         env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: undefined } as NodeJS.ProcessEnv,

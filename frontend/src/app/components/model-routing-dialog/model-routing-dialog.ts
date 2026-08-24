@@ -66,6 +66,35 @@ export type ModelRoutingDialogResult = boolean | undefined;
           }
         }
 
+        <!-- One pick, every row: only options offered by EVERY field below are listed,
+             so "all" always means all. Shows the shared choice when the rows agree and
+             goes blank when they diverge. Save still commits, same as the rows. -->
+        <div class="routing-row change-all-row">
+          <div class="field-label">
+            <span class="task-label">All fields</span>
+            <span class="task-sub">Sets every row below at once.</span>
+          </div>
+          <mat-form-field appearance="outline" subscriptSizing="dynamic" class="task-select">
+            <mat-select
+              placeholder="Change all to…"
+              [value]="uniformSelection()"
+              (selectionChange)="selectAll($event.value)"
+              aria-label="Change all fields">
+              @for (option of universalOptions(); track option.id) {
+                <mat-option [value]="option.id">
+                  {{ option.label }}
+                  @if (option.availability === 'not-installed') {
+                    <span class="option-flag missing">— not installed</span>
+                  }
+                  @if (option.availability === 'unknown') {
+                    <span class="option-flag unknown">— unknown</span>
+                  }
+                </mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+        </div>
+
         <!-- One row per big field, each set to whatever the operator wants (per-field
              routing, 2026-08-24). Fields the small models own (tags) are not rows: their
              stored entries pass through Save untouched. -->
@@ -196,6 +225,17 @@ export type ModelRoutingDialogResult = boolean | undefined;
       font-weight: 500;
     }
 
+    .task-sub {
+      color: var(--text-secondary);
+      font-size: 12px;
+    }
+
+    .change-all-row {
+      border-bottom: 1px solid var(--border-color, rgba(128, 128, 128, 0.3));
+      padding-bottom: 12px;
+      margin-bottom: 8px;
+    }
+
     .task-select { width: 300px; flex: 0 0 auto; }
 
     .host-banner {
@@ -322,6 +362,38 @@ export class ModelRoutingDialog implements OnInit {
       this.error.set(this.describe(err));
       this.phase.set('error');
     }
+  }
+
+  /**
+   * The change-all menu: only options every modal row offers. Fields keep deliberately
+   * different menus (chapters is capable-rungs-only), so an option missing anywhere is
+   * not offered here at all — a change-all that skipped fields would be a quiet lie.
+   */
+  readonly universalOptions = computed(() => {
+    const rows = this.modalTasks();
+    if (!rows.length) return [];
+    return rows[0].options.filter(option =>
+      rows.every(task => task.options.some(candidate => candidate.id === option.id))
+    );
+  });
+
+  /** The one option every row currently shares, or null so the change-all select goes blank. */
+  readonly uniformSelection = computed(() => {
+    const rows = this.modalTasks();
+    if (!rows.length) return null;
+    const selections = this.selections();
+    const first = selections[rows[0].id];
+    return first && rows.every(task => selections[task.id] === first) ? first : null;
+  });
+
+  /** One pick writes every visible row. Save still commits, same as the single rows. */
+  selectAll(optionId: string): void {
+    if (!optionId) return;
+    this.selections.update(current => {
+      const next = { ...current };
+      for (const task of this.modalTasks()) next[task.id] = optionId;
+      return next;
+    });
   }
 
   /** The chosen option's view, so the row can report ITS availability. */
