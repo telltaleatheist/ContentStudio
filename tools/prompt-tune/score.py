@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Hard checks over the harness outputs; prints a per-video, per-model grid."""
+"""Hard checks over the harness outputs; prints a per-video, per-model grid.
+
+PLAIN-TEXT FORMATS since 2026-08-24 (the no-JSON refactor): a chapters-stage1 answer is one
+verbatim opening sentence per line; a description-candidate answer is the hook, a blank line,
+the body. Titles answers are one title per line (the traced titles prompt may still be the
+old JSON group call — `titles-group-STALE` — so the titles reader accepts both shapes).
+Output files keep the .json extension for continuity but hold whatever the model wrote.
+"""
 import json, re, glob, os, sys
 
 HARNESS = os.path.dirname(os.path.abspath(__file__))
@@ -12,18 +19,10 @@ NARRATOR = [r'\bthe speaker\b', r'\bthe host\b', r'\bthe narrator\b', r'\bthis c
             r'\bthe creator\b', r'\bwe examine\b', r'\bwe debunk\b', r'\bI debunk\b', r'\bI dismantle\b']
 LEAK_NAMES = ['gene bailey', 'ziklag', 'satanic temple']  # prompt example names that must not leak
 
-def load(path):
-    raw = open(path).read().strip()
-    raw = re.sub(r'^```(json)?\s*|\s*```$', '', raw)
-    try:
-        return json.loads(raw), None
-    except Exception as e:
-        # tolerate repairs the pipeline itself applies
-        try:
-            fixed = re.sub(r',(\s*[}\]])', r'\1', raw)
-            return json.loads(fixed), 'trailing-comma repaired'
-        except Exception:
-            return None, f'UNPARSEABLE: {e}'
+LIST_MARKER = re.compile(r'^\s*(?:[-*•]\s+|\d{1,3}[.)]\s+)')
+
+def read_lines(raw):
+    return [LIST_MARKER.sub('', l).strip() for l in raw.split('\n') if LIST_MARKER.sub('', l).strip()]
 
 def transcript_for(video):
     p = open(os.path.join(PROMPTS, f'{video}--chapters-stage1.txt' if video.startswith('f') else '')).read()
@@ -48,51 +47,54 @@ rows = []
 for path in sorted(glob.glob(os.path.join(OUTPUTS, '*.json'))):
     base = os.path.basename(path)[:-5]
     vid, stage, model = base.split('--')
-    data, err = load(path)
+    raw = open(path).read().strip()
+    raw = re.sub(r'^```(json)?\s*|\s*```$', '', raw)
+    raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.S).strip()
     notes = []
     verdict = 'OK'
-    if err and data is None:
-        rows.append((vid, stage, model, 'FAIL', err[:60])); continue
-    if err: notes.append(err)
 
     if stage == 'chapters-stage1':
-        ch = data.get('chapters')
-        if not isinstance(ch, list):
-            rows.append((vid, stage, model, 'FAIL', 'no chapters array')); continue
-        tx = transcript_for(VIDEO_KEYS[vid])
-        tx_norm = ' '.join(tx.split())
-        unmapped = [c['label'][:30] for c in ch if ' '.join(str(c.get('first_sentence','')).split()) not in tx_norm]
-        badlen = [c['label'][:30] for c in ch if not (35 <= len(str(c.get('label',''))) <= 90)]
-        leaks = [n for n in LEAK_NAMES for c in ch if n in str(c.get('label','')).lower()]
-        promo_labeled = any('plug' in str(c.get('label','')).lower() or 'promotion' in str(c.get('label','')).lower() for c in ch)
-        narr = [h for c in ch for h in narrator_hits(str(c.get('label','')))]
-        notes.append(f"n={len(ch)}")
+        quotes = read_lines(raw)
+        if not quotes:
+            rows.append((vid, stage, model, 'FAIL', 'no boundary lines at all')); continue
+        tx_norm = ' '.join(transcript_for(VIDEO_KEYS[vid]).split())
+        unmapped = [q[:40] for q in quotes if ' '.join(q.split()) not in tx_norm]
+        short = [q for q in quotes if len(q.split()) < 6]
+        leaks = [n for n in LEAK_NAMES for q in quotes if n in q.lower()]
+        notes.append(f"n={len(quotes)}")
         if unmapped: verdict='WARN'; notes.append(f"unmappable_quotes={len(unmapped)}")
-        if badlen: notes.append(f"label_len_off={len(badlen)}")
+        if short: verdict='WARN'; notes.append(f"under_6_words={len(short)}")
         if leaks: verdict='FAIL'; notes.append(f"EXAMPLE_LEAK={leaks}")
-        if narr: verdict='WARN'; notes.append(f"narrator={narr}")
-        notes.append('plug-chapter:' + ('yes' if promo_labeled else 'no'))
-    elif stage == 'description-hook':
-        hook = str(data.get('hook',''))
-        if not hook: rows.append((vid, stage, model, 'FAIL', 'no hook')); continue
-        if len(hook) > 157: verdict='WARN'; notes.append(f"len={len(hook)}>157")
-        else: notes.append(f"len={len(hook)}")
-        if promo_hits(hook): verdict='FAIL'; notes.append(f"PROMO={promo_hits(hook)}")
-        if narrator_hits(hook): verdict='WARN'; notes.append(f"narrator={narrator_hits(hook)}")
-        if not hook.rstrip().endswith(('.', '!', '?')): verdict='WARN'; notes.append('no terminal punct')
-    elif stage == 'description-body':
-        body = str(data.get('body',''))
-        if not body: rows.append((vid, stage, model, 'FAIL', 'no body')); continue
+    elif stage == 'description-candidate':
+        m = re.search(r'\n\s*\n', raw)
+        if not m:
+            rows.append((vid, stage, model, 'FAIL', 'no blank line between hook and body')); continue
+        hook = raw[:m.start()].replace('\n', ' ').strip()
+        body = raw[m.end():].strip()
+        if not hook or not body:
+            rows.append((vid, stage, model, 'FAIL', 'empty hook or body around the blank line')); continue
+        notes.append(f"hook_len={len(hook)}")
+        if len(hook) > 157: verdict='WARN'; notes.append('hook>157')
+        if not hook.rstrip().endswith(('.', '!', '?')): verdict='WARN'; notes.append('hook: no terminal punct')
         wc = len(body.split())
-        notes.append(f"words={wc}")
-        if not (60 <= wc <= 200): verdict='WARN'; notes.append('outside 60-200')
-        if promo_hits(body): verdict='FAIL'; notes.append(f"PROMO={promo_hits(body)}")
-        if narrator_hits(body): verdict='WARN'; notes.append(f"narrator={narrator_hits(body)}")
+        notes.append(f"body_words={wc}")
+        if not (60 <= wc <= 200): verdict='WARN'; notes.append('body outside 60-200')
+        whole = f'{hook} {body}'
+        if promo_hits(whole): verdict='FAIL'; notes.append(f"PROMO={promo_hits(whole)}")
+        if narrator_hits(whole): verdict='WARN'; notes.append(f"narrator={narrator_hits(whole)}")
         if 'http' in body: verdict='FAIL'; notes.append('contains link')
     elif stage == 'titles':
-        titles = data.get('titles')
-        if not isinstance(titles, list):
-            rows.append((vid, stage, model, 'FAIL', f"no titles array (keys={list(data.keys())[:6]})")); continue
+        # Accept both shapes: plain lines (current) and the stale group call's JSON object.
+        titles = None
+        if raw.lstrip().startswith('{'):
+            try:
+                titles = json.loads(re.sub(r',(\s*[}\]])', r'\1', raw)).get('titles')
+            except Exception:
+                titles = None
+        if titles is None:
+            titles = read_lines(raw)
+        if not titles:
+            rows.append((vid, stage, model, 'FAIL', 'no titles at all')); continue
         notes.append(f"n={len(titles)}")
         over70 = [t for t in titles if len(t) > 70]
         colons = [t for t in titles if ':' in t]
@@ -106,9 +108,11 @@ for path in sorted(glob.glob(os.path.join(OUTPUTS, '*.json'))):
         if digits: notes.append(f"digits={len(digits)}")
         if titlecase: verdict='WARN'; notes.append(f"TitleCase={len(titlecase)}")
         if promo: verdict='FAIL'; notes.append(f"PROMO={len(promo)}")
+    else:
+        rows.append((vid, stage, model, 'FAIL', f'unknown stage "{stage}"')); continue
     rows.append((vid, stage, model, verdict, '; '.join(notes)))
 
-order = {'chapters-stage1':0,'description-hook':1,'description-body':2,'titles':3}
+order = {'chapters-stage1':0,'description-candidate':1,'titles':2}
 morder = {'haiku':0,'sonnet':1,'opus':2}
 rows.sort(key=lambda r: (r[0], order.get(r[1],9), morder.get(r[2],9)))
 cur = None

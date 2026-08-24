@@ -1426,10 +1426,9 @@ export class AIManagerService {
    * and returned nothing has failed, and an empty array is not the same answer as a
    * missing key.
    *
-   * PUBLIC because LocalFieldUnit (metadata-tasks.ts) has to run the identical parse. It is
-   * not just JSON.parse — it is four stages of repair against the shapes models actually
-   * return — and a local group that parsed its answer any other way would accept and reject
-   * different responses than the cloud group running the same prompt.
+   * Its one caller is the COMPILATION path (runMetadataRequest) — the routed field calls
+   * answer in plain text and never come through here. It is not just JSON.parse — it is four
+   * stages of repair against the shapes models actually return.
    */
   parseMetadataResponse(response: string): { metadata: MetadataResult; presentKeys: Set<string> } {
     try {
