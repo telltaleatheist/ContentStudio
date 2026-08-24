@@ -14,7 +14,8 @@
  * electron/services/**; this file assembles parameter objects, caches what the app throws away,
  * and prints what came back.
  *
- * THREE DELIBERATE OVERRIDES, each printed loudly at startup:
+ * FOUR DELIBERATE OVERRIDES, each printed loudly at startup (the fourth, --claude-cli, is
+ * documented at its patch site below):
  *
  *  1. --assets. The app reads its prompt tree from `<userData>/prompt_sets/prompts`, which is a
  *     COPY installed at startup, so an unshipped edit under electron/assets/prompts is invisible
@@ -134,6 +135,9 @@ Everything else:
                        against the app's own option lists, e.g. --route description=qwen38-27b.
                        The stored routing is never modified.
   --assets <dir>       Prompt assets root. Default: <repo>/electron/assets/prompts.
+  --claude-cli         Send every Claude call through \`claude -p --model sonnet\` (the Claude
+                       Code subscription) instead of the metered API. ALWAYS sonnet, whatever
+                       the routing named. Test runs only; printed loudly.
   --output-dir <dir>   Where the job's report .txt/.json go. Default: the app's outputDirectory.
   --out <path>         Also write the assembled report text here.
   --no-insights        Run without the CHANNEL PERFORMANCE DATA block.
@@ -175,6 +179,7 @@ function parseArgs(argv) {
     else if (a === '--transcribe') args.transcribe = true;
     else if (a === '--chapters') args.freshChapters = true;
     else if (a === '--show-prompts') args.showPrompts = true;
+    else if (a === '--claude-cli') args.claudeCli = true;
     else if (FIELD_FLAGS[a]) args.fields.push(FIELD_FLAGS[a]);
     else fail(`Unknown option: ${a}  (--help for usage)`);
   }
@@ -343,6 +348,60 @@ async function main() {
     require(path.join(DIST, 'services/metadata/speaker-tagging.service.js'));
   const { getRuntimePaths } = require(path.join(DIST, 'lib/bridges/index.js'));
 
+  // ---- --claude-cli: the fourth deliberate override, printed loudly below --------------
+  //
+  // Every Claude API call this run would make goes through `claude -p --model sonnet`
+  // instead — the operator's Claude Code subscription, not the metered API key (operator,
+  // 2026-08-24: "until we get this right, set it to claude -p so I'm not burning through
+  // API use on tests; just sonnet for now"). ONE patch point covers the whole pipeline:
+  // every cloud call — field units and both chapter stages — funnels through
+  // AIManagerService.makeClaudeRequest (runPlainRequest routes there, and the chapter
+  // service's cloudPlain IS runPlainRequest). The system prompt and the plain/JSON split
+  // are carried over exactly; the model is ALWAYS sonnet, whatever the routing named, and
+  // the banner says so. A failed spawn throws with the CLI's stderr — this is a transport
+  // swap for test runs, not a fallback, and it has no fallback of its own.
+  if (args.claudeCli) {
+    const { AIManagerService } = require(path.join(DIST, 'services/metadata/ai-manager.service.js'));
+    const { SYSTEM_PROMPTS } = require(path.join(DIST, 'services/metadata/system-prompts.js'));
+    const { spawn } = require('child_process');
+    const JSON_NUDGE =
+      'You are a helpful assistant. When asked to return JSON, output ONLY valid JSON with no ' +
+      'markdown, no commentary, and no extra text. Start your response with { and end with }.';
+    AIManagerService.prototype.makeClaudeRequest = function (prompt, model, plain) {
+      const system = plain ? SYSTEM_PROMPTS.PLAIN_SYSTEM : JSON_NUDGE;
+      console.error(`  [claude-cli] ${model} -> claude -p --model sonnet (${prompt.length} chars)`);
+      return new Promise((resolve, reject) => {
+        const child = spawn('claude', ['-p', '--model', 'sonnet', '--system-prompt', system], {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          // A nested `claude` must not inherit this session's entrypoint state.
+          env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: undefined },
+        });
+        let out = '';
+        let err = '';
+        child.stdout.on('data', (d) => { out += d; });
+        child.stderr.on('data', (d) => { err += d; });
+        child.on('error', reject);
+        child.on('close', (code) => {
+          if (code !== 0) {
+            reject(new Error(`claude -p exited ${code} for a ${model} call: ${err.trim() || '(no stderr)'}`));
+          } else {
+            resolve(out.trim());
+          }
+        });
+        child.stdin.end(prompt);
+      });
+    };
+    // initializeClaude's connection test is itself a billed API call; with the transport
+    // swapped it tests nothing this run will use. The client is still constructed so every
+    // "is Claude ready" check in the pipeline answers the same as a real run.
+    AIManagerService.prototype.initializeClaude = async function () {
+      const Anthropic = require(path.join(REPO_ROOT, 'node_modules', '@anthropic-ai', 'sdk'));
+      this.anthropicClient = new (Anthropic.default || Anthropic)({ apiKey: this.config.apiKey || 'claude-cli' });
+      console.error('  [claude-cli] initializeClaude: connection test skipped (transport is claude -p)');
+      return true;
+    };
+  }
+
   // ipc-handlers.ts:760 — the selected Whisper model comes from the store.
   if (!settings.whisperModel) {
     fail(`The app's settings name no whisperModel; the app would transcribe with a model this ` +
@@ -437,6 +496,14 @@ async function main() {
   console.error(`\n${bar}`);
   console.error('generate-metadata-cli — the REAL pipeline, driven from the terminal');
   console.error(bar);
+  if (args.claudeCli) {
+    console.error('');
+    console.error('  ** CLAUDE TRANSPORT OVERRIDE (--claude-cli) **');
+    console.error('     Every Claude call goes through `claude -p --model sonnet` — the Claude Code');
+    console.error('     subscription, NOT the metered API key. ALWAYS sonnet, whatever the routing');
+    console.error('     named. Calls to other providers (ollama etc.) are untouched.');
+    console.error('');
+  }
   console.error(`  input:       ${args.input}`);
   console.error(`  channel:     ${channel}`);
   console.error(`  prompts:     ${args.assets}`);

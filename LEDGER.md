@@ -455,7 +455,9 @@ Diagnosis: the failure is the premise, not the tuning — a cosine valley measur
 
 **38. The cloud chapter path must NOT hold the AI queue slot** — nesting `queueAITask` around `makeRequest` deadlocks the 1-slot pool; measured on the first cloud chapter run. [metadata-generator.service.ts:1313-1318]
 
-### Chapter-title quality (measure + re-ask, never a filter)
+**155. The closing stretch gets a positive-form rule of its own (2026-08-24).** u2's outro came back "The closing prayer and the creator's final reaction" — a reaction segment named by its speaker. Both stage-3 bodies now state that the closing stretch is a chapter of content like the rest, titled by the thing it closes on and the verdict passed on it, with two worked examples in the Gene Bailey register. Measured on Sonnet arms against u2's outro slice (exact rendered production prompt): v1 of the rule left the narrator noun in 2 of 3 titles; the verdict-form restatement got 3 of 3 titles free of narrator nouns (one still warned, correctly, for sentence form). Old prompt: 0 of 2 clean. [shared/pipeline/chapters.yml]
+
+### Chapter-title quality (measure + warn, never a filter — re-asks removed 2026-08-24)
 
 **39. POSITIVE FORM ONLY (operator's ruling, 2026-08-22).** Prompts state the wanted style with correct examples; the register vocabulary lists exist so CODE can recognise failure afterwards — none of that vocabulary may appear in a prompt. Tree-wide. [chapter-title-quality.ts:23-27 et al.]
 
@@ -474,6 +476,10 @@ Diagnosis: the failure is the premise, not the tuning — a cosine valley measur
 **46. `describerClauses` is the INVERSE shape of `narratesAnActor`.** The old check flagged the target register on the verb alone while real failures sat in clauses the first-clause plumbing never read. Now: every clause of every sentence, describer SUBJECTS only, verbs not consulted. [chapter-title-quality.ts:222-239]
 
 **47. The three-number title metric** (generic / entities-per-title / narrated) — kept independent because the motivating run scored well on entities and badly on register; a combined score hides exactly that. Baseline: 1/7 generic, ~1.6 entities/title, 3/7 narrated. [chapter-title-quality.ts:392-402]
+
+**156. `narratesAnActor` reads the WHOLE title (2026-08-24).** The first-clause-only read passed "The closing prayer and the creator's final reaction" and "..., and the host's closing reaction to the sermon" — the exact possessive-narrator form the list's own header names as a failure — so the operator's belief that the judge warned on outro narrators was false. Two widenings, both restricted to the INVENTED-NARRATOR family because "the pastor's mongrel slur" in a later clause is target register: a possessive invented narrator flags wherever it stands ("followed by the host's..." has no clause break before the narrator), and an invented narrator at a later clause's subject position flags. The wider actor-noun/pronoun/narration-verb patterns stay first-clause-only — run per clause they misread trailing noun phrases ("the witchcraft claim" became subject-plus-verb). 20-case regression + all 31 cached fixture titles: the one bad u2 title flags, zero false positives. [chapter-title-quality.ts:155-190]
+
+**157. The clause-final bare-form exemption** — 'claim' is in NARRATION_VERBS, so "The bridge contract claim, rebutted" (the operator's own worked example in the prompt bodies) was flagged as actor-verb from the day the check existed. A finite verb after a singular subject carries -s ("the host reacts"); a clause-final bare form is a head noun. [chapter-title-quality.ts pattern-2 exemptions]
 
 ### Transcription
 
@@ -910,6 +916,8 @@ Diagnosis: the failure is the premise, not the tuning — a cosine valley measur
 **95. Per-field generation measured live 2026-08-22** — six calls, two model loads; num_ctx pinned per model per run. Prompt sizes on record: legacy single call 22,063 chars → three-call 36,378 → per-field 73,516. [prompt-artifacts/PERFIELD-timings.md]
 
 **96. `prompt-harness/variants/` deleted** — a variant is now a copy of the prompt tree. [prompt-harness/README.md]
+
+**158. `--claude-cli`: the test CLI's fourth loud override (operator, 2026-08-24: "until we get this right, set it to claude -p so I'm not burning through API use on tests; just sonnet for now").** Every Claude call in a CLI test run goes through `claude -p --model sonnet` — the Claude Code subscription, never the metered key — via ONE patch point (everything cloud funnels through `AIManagerService.makeClaudeRequest`; the chapter service's `cloudPlain` IS `runPlainRequest`). Always sonnet whatever the routing named; `initializeClaude`'s billed connection test is skipped; a failed spawn throws with stderr. A transport swap for tests, not a fallback. Verified end-to-end on f3 thumbnail-text. [scripts/generate-metadata-cli.js]
 
 ### Doc hygiene (staleness is itself a recorded state — see Part I §4 for the worklist)
 
