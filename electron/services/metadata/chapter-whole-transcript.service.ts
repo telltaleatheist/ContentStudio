@@ -436,6 +436,20 @@ export class WholeTranscriptChapterService {
    * Both are ceilings on the same thing — how much transcript one call may carry — expressed
    * in the unit each transport is bounded in.
    */
+  /**
+   * The TRACTABILITY cap on a stage-1 window, in transcript words.
+   *
+   * The rolling window was built for context limits, but the binding limit turned out to be
+   * REASONING: the boundary decisions in one call scale superlinearly with the span it holds,
+   * and the thinking scales with them. Measured on 2026-08-24: a 13-minute window succeeds
+   * every time (f3, ~3.8k output tokens, both transports); a 42-minute window fails every
+   * time (u2 — 8k of inline thinking truncated on the system-prompt build, then the full 16k
+   * adaptive budget spent without reaching an answer). ~2,800 words is ~15-17 minutes of
+   * speech: comfortably inside the measured-good regime, so a long video runs as a few
+   * tractable windows chained by last-boundary instead of one call that drowns.
+   */
+  private static readonly STAGE1_WINDOW_WORDS = 2800;
+
   private windowWordBudget(): number {
     const overheadChars = CHAPTER_PROMPTS.WHOLE_TRANSCRIPT_CHAPTERS.length + this.promotedItemsLine().length + 64;
     if (this.options.cloudPlain) {
@@ -448,10 +462,16 @@ export class WholeTranscriptChapterService {
       }
       // ~6 chars per English word incl. the space; deliberately conservative so a window is
       // never refused by the provider for length.
-      return Math.floor((ceiling - overheadChars) / 6);
+      return Math.min(
+        Math.floor((ceiling - overheadChars) / 6),
+        WholeTranscriptChapterService.STAGE1_WINDOW_WORDS
+      );
     }
     const promptTokenBudget = CTX_MAX - NUM_PREDICT - 512 - estimateTokens(overheadChars);
-    return Math.floor(promptTokenBudget / TOKENS_PER_WORD);
+    return Math.min(
+      Math.floor(promptTokenBudget / TOKENS_PER_WORD),
+      WholeTranscriptChapterService.STAGE1_WINDOW_WORDS
+    );
   }
 
   /** The exclusive cue index where a window starting at `from` runs out of word budget. */
