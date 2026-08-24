@@ -126,6 +126,14 @@ export class WhisperBridge extends EventEmitter {
       processId?: string;
       language?: string;
       translate?: boolean;
+      /**
+       * Whisper's initial decoder prompt — vocabulary seeding, not instructions. The one
+       * seed this app sends is the video's own filename title: a decoder that has seen
+       * "jake lang" writes Jake Lang where an unseeded one wrote "Jake Lane" (u2,
+       * 2026-08-24, operator: "the file was named jake lang. could we seed it with that
+       * as a proper noun?").
+       */
+      initialPrompt?: string;
     }
   ): Promise<WhisperResult> {
     const processId = options?.processId || crypto.randomBytes(8).toString('hex');
@@ -153,6 +161,11 @@ export class WhisperBridge extends EventEmitter {
       // Translation mode (to English)
       if (options?.translate) {
         args.push('--translate');
+      }
+
+      // Vocabulary seeding — see the option's doc above.
+      if (options?.initialPrompt && options.initialPrompt.trim().length > 0) {
+        args.push('--prompt', options.initialPrompt.trim());
       }
 
       log.info(`[WhisperBridge] [${processId}] Starting: whisper-cli ${args.join(' ')}`);

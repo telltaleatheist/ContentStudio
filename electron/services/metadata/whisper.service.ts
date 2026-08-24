@@ -223,6 +223,10 @@ export class WhisperService extends EventEmitter {
       const whisperResult = await this.whisper.transcribe(audioPath, tempDir, {
         model,
         processId: jobId, // Use jobId so we can correlate progress events
+        // The filename IS metadata the operator wrote: "u2 - jake lang.mov" names the
+        // person on screen, and seeding the decoder with it is what turns "Jake Lane"
+        // into Jake Lang at the source instead of asking every downstream call to guess.
+        initialPrompt: path.basename(videoPath, path.extname(videoPath)).replace(/^[a-z]?\d+\s*-\s*/i, ''),
       });
 
       clearInterval(progressTimer);
