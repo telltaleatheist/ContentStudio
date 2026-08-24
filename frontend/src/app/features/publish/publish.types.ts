@@ -467,6 +467,13 @@ export interface ReportIndexEntry {
   itemIndex: number;
   txtFolder: string | null;
   txtFilePath: string | null;
+  /**
+   * The channel this row's prompt set routes to, resolved at index time — the routing
+   * decision made at generation, visible before any record exists. A stored channelId
+   * always wins over it.
+   */
+  promptSetChannelId: string | null;
+  promptSetChannelName: string | null;
   publish: PublishFacts | null;
   /** Why this item's selection record could not be read, or null. The row still exists. */
   publishFault: string | null;

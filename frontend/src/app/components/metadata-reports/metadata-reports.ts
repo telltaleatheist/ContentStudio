@@ -90,6 +90,12 @@ interface MetadataReport {
   titleCount?: number;
   /** This item's publish record as the index joined it, or null when it has none yet. */
   facts?: PublishFacts | null;
+  /**
+   * The channel the prompt set routes to — the routing decision made at generation,
+   * carried so the row is answered before any record exists. Stored channelId wins.
+   */
+  promptSetChannelId?: string | null;
+  promptSetChannelName?: string | null;
   /** Why this item's publish record could not be read. The row still exists. */
   publishFault?: string | null;
 }
@@ -436,7 +442,9 @@ export class MetadataReports implements OnInit {
     const counts = new Map<string, number>();
     let unrouted = 0;
     for (const entry of this.reportIndex()) {
-      const id = entry.publish?.channelId ?? null;
+      // Stored channel first, then the prompt-set routing — the same answer the row's
+      // dot and the filter give, so a chip's count matches what clicking it shows.
+      const id = entry.publish?.channelId ?? entry.promptSetChannelId ?? null;
       if (id === null) {
         unrouted++;
         continue;
@@ -475,7 +483,9 @@ export class MetadataReports implements OnInit {
 
     const channel = this.channelFilter();
     if (channel) {
-      const id = report.facts?.channelId ?? null;
+      // The same answer the row's dot gives: stored channel first, then the prompt-set
+      // routing — a row the dot calls "Routed to X" must appear under X's filter.
+      const id = report.facts?.channelId ?? report.promptSetChannelId ?? null;
       if (channel === 'unrouted') {
         if (id !== null) return false;
       } else if (id !== channel) {
@@ -650,11 +660,22 @@ export class MetadataReports implements OnInit {
             ? { key: 'titles', state: 'warn', label: 'No title picked — variant 1 is the video title.' }
             : { key: 'titles', state: 'unset', label: `${ab} of ${MAX_AB_VARIANTS} A/B variants picked` };
 
+    // The prompt set answers the channel BEFORE any record exists — the routing decision
+    // was made at generation when the operator picked the prompt set (2026-08-24). A
+    // stored channelId still wins; the amber survives only for an item nothing routes.
     const channel: RowDot = facts?.isPodcast
       ? { key: 'channel', state: 'set', label: `Routed to ${SPREAKER_DESTINATION_LABEL}` }
       : facts?.channelId
         ? { key: 'channel', state: 'set', label: `Routed to ${this.channelNameFor(facts.channelId)}` }
-        : { key: 'channel', state: 'warn', label: 'Not routed to a destination yet.' };
+        : report.promptSetChannelName
+          ? {
+              key: 'channel',
+              state: 'set',
+              label:
+                `Routed to ${report.promptSetChannelName} — from prompt set ` +
+                `"${report.promptSet}"; recorded with the first save.`,
+            }
+          : { key: 'channel', state: 'warn', label: 'Not routed to a destination yet.' };
 
     // One state on YouTube, because there is one answer: monetization is on for every
     // video. The dot is kept rather than dropped from the row — a fact row that stops
@@ -679,7 +700,14 @@ export class MetadataReports implements OnInit {
         : { key: 'link', state: 'warn', label: 'No Spreaker episode yet.' }
       : facts?.videoId
         ? { key: 'link', state: 'set', label: `Linked to video ${facts.videoId}` }
-        : { key: 'link', state: 'warn', label: 'Not linked to a YouTube video yet.' };
+        : // Hollow, not amber (2026-08-24): an unlinked draft is a FACT about where the
+          // browser-side upload stands, not a fault this page can act on. The open item's
+          // meter still ambers it when it is the one thing holding a dispatch.
+          {
+            key: 'link',
+            state: 'unset',
+            label: 'Not linked to a YouTube video yet — upload the draft in the browser, then link it here.',
+          };
 
     return [titles, channel, money, when, thumb, link];
   }
@@ -747,14 +775,19 @@ export class MetadataReports implements OnInit {
         hint: 'The channel this item is routed to.',
       });
     } else if (this.publish.channelIsSuggested()) {
+      // The routing decision was made at generation, when the prompt set was picked
+      // (2026-08-24) — the suggestion IS the answer, and the auto-route writes it into
+      // the record on the first save of anything. Not 'warn': there is no decision left
+      // to make here.
+      const suggestedId = this.publish.selectedChannelId();
       ticks.push({
         key: 'channel',
         label: 'Channel',
-        state: 'warn',
-        value: 'suggested only',
+        state: 'set',
+        value: suggestedId ? this.channelNameFor(suggestedId) : 'routed',
         hint:
-          `${this.publish.channelNote() ?? ''} It is pre-selected but NOT stored, so ` +
-          'nothing can be dispatched until you confirm it.',
+          `${this.publish.channelNote() ?? ''} Routed from the prompt set picked at ` +
+          'generation; recorded with the first save.',
       });
     } else {
       ticks.push({
@@ -868,10 +901,14 @@ export class MetadataReports implements OnInit {
       });
     } else {
       const videoId = this.publish.videoId();
+      // Unlinked is hollow, not amber (2026-08-24): the upload happens in the browser,
+      // so there is nothing on this page to do about it until dispatch time — and the
+      // disagreement check below still ambers this tick the moment it is the one thing
+      // refusing the button.
       ticks.push({
         key: 'link',
         label: 'Link',
-        state: videoId ? 'set' : 'warn',
+        state: videoId ? 'set' : 'unset',
         value: videoId ?? 'no video',
         hint: videoId
           ? `Writes to video ${videoId}. Nothing here uploads video.`
@@ -2188,6 +2225,8 @@ export class MetadataReports implements OnInit {
           sourceFilename: entry.sourceFilename,
           titleCount: entry.titleCount,
           facts: entry.publish,
+          promptSetChannelId: entry.promptSetChannelId,
+          promptSetChannelName: entry.promptSetChannelName,
           publishFault: entry.publishFault,
         })),
       );

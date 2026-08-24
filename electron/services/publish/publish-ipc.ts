@@ -157,6 +157,17 @@ export interface ReportIndexEntry {
   itemIndex: number;
   txtFolder: string | null;
   txtFilePath: string | null;
+  /**
+   * The channel this row's prompt set routes to, resolved from the registry at index
+   * time, or null when nothing claims it. THE ROUTING DECISION WAS MADE AT GENERATION
+   * (operator, 2026-08-24): picking the prompt set picked the channel, so the list shows
+   * the channel as answered from the very first render — the record still gets its own
+   * channelId written by the auto-route on the first save, and a stored channel always
+   * wins over this. Carried at the entry level, not inside `publish`, because the rows
+   * that need it most are exactly the ones with no record yet.
+   */
+  promptSetChannelId: string | null;
+  promptSetChannelName: string | null;
   publish: PublishFacts | null;
   /**
    * Why this item's selection record could not be read, or null.
@@ -401,9 +412,37 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       const byItem = new Map(records.map((r) => [r.itemId, r]));
       const faultByItem = new Map(faults.map((f) => [f.itemId, f.message]));
 
+      // Prompt-set routing, once per distinct prompt set rather than once per row. An
+      // ambiguous registry THROWS in the resolver (two channels claiming one set is a
+      // config error) — here that lands in `problems` naming the prompt set, and the
+      // rows carry null rather than the whole index failing.
+      const channels = listChannels();
+      const routeMemo = new Map<string, { channelId: string | null; name: string | null }>();
+      const routeFor = (promptSet: string | null): { channelId: string | null; name: string | null } => {
+        if (!promptSet || !promptSet.trim()) return { channelId: null, name: null };
+        const memoed = routeMemo.get(promptSet);
+        if (memoed) return memoed;
+        let resolved: { channelId: string | null; name: string | null };
+        try {
+          const r = resolveChannelForPromptSet(promptSet, channels);
+          resolved = { channelId: r.channelId, name: r.name };
+        } catch (error: any) {
+          index.problems.push({
+            file: `prompt-set "${promptSet}"`,
+            message: error?.message || String(error),
+          });
+          resolved = { channelId: null, name: null };
+        }
+        routeMemo.set(promptSet, resolved);
+        return resolved;
+      };
+
       const entries: ReportIndexEntry[] = index.rows.map((row): ReportIndexEntry => {
         const record = byItem.get(row.itemId) ?? null;
+        const routed = routeFor(row.promptSet);
         return {
+          promptSetChannelId: routed.channelId,
+          promptSetChannelName: routed.name,
           itemId: row.itemId,
           jobId: row.jobId,
           label: row.label,
