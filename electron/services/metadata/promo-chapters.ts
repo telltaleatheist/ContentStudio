@@ -43,6 +43,14 @@ const PROMO_PATTERN =
   /\b(?:patreon|sponsor|sponsors|sponsored|sponsorship|plug|plugs|promo|promos|sign[-\s]?off|sign[-\s]?offs|signoff|signoffs|ad read|ad reads|advertisement|advertisements|channel link|channel links|merch|merchandise|membership|memberships|subscribe push|superchat|superchats)\b/i;
 
 /** Why one chapter was excluded — the word that matched its label, for the log line. */
+/** A chapter's span in whole seconds, or null when its end is not recorded. */
+function spanSeconds(chapter: Chapter): number | null {
+  if (!chapter.endTimestamp) return null;
+  const toSec = (ts: string) => ts.split(':').reduce((acc, part) => acc * 60 + Number(part), 0);
+  const span = toSec(chapter.endTimestamp) - toSec(chapter.timestamp);
+  return Number.isFinite(span) && span >= 0 ? span : null;
+}
+
 function promoMatch(chapter: Chapter): string | undefined {
   const hit = chapter.title.match(PROMO_PATTERN);
   return hit ? hit[0] : undefined;
@@ -106,6 +114,20 @@ export function excludePromoChapters(
       excluded.push({ ...chapter, isPromo: true });
       reasons.push(`"${chapter.title}" (${chapter.timestamp}, matched "${matched}")`);
       return;
+    }
+    // The sliver warning (2026-08-24, measured on "3 - islam"): stage 1's prompt states a
+    // half-minute floor for content chapters, and an 11-second orphan — an introduction a
+    // promotion cut off from the thing it introduced — still slips through about one run in
+    // four. Kept exactly as written (no merges, no re-asks); the warning is the operator's
+    // pointer to the one chapter worth an eyeball. Promo chapters are exempt on purpose: a
+    // 26-second plug is a legitimate chapter, which is why this sits AFTER the promo match.
+    const span = spanSeconds(chapter);
+    if (span !== null && span < 30) {
+      warnings.push(
+        `the chapter at ${chapter.timestamp} ("${chapter.title}") covers only ${span}s of video, under the ` +
+          `half-minute floor the chapter prompt asks for — usually a few seconds of connective tissue the ` +
+          `model cut loose; it is kept as written and worth an eyeball before publishing`
+      );
     }
     content.push(chapter);
     contentSubjects.push(subjects[i]);
