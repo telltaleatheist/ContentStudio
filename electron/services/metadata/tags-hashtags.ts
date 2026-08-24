@@ -113,6 +113,7 @@ export function assembleTags(inputs: TagInputs): TagAssembly {
     const key = candidate.tag.toLowerCase();
     if (seen.has(key)) continue;
     if (isGenericSingleWord(candidate.tag)) continue;
+    if (isNoiseCandidate(candidate.tag, inputs.contentText)) continue;
     if (candidate.requiresContent && !occursIn(inputs.contentText, candidate.tag)) {
       notInContent.push(candidate.tag);
       continue;
@@ -158,6 +159,40 @@ const GENERIC_SINGLE_WORDS = new Set([
 
 function isGenericSingleWord(tag: string): boolean {
   return !tag.includes(' ') && GENERIC_SINGLE_WORDS.has(tag.toLowerCase());
+}
+
+/**
+ * Candidate hygiene, measured on the u2 run (2026-08-24) whose tag list shipped "God God",
+ * "jesus fucking christ", "we've rebelled against god" and "Watch". Every one of these came
+ * honestly out of the content text — the pools measure a spoken transcript, and a spoken
+ * transcript contains stammered repeats, the host's profanity and conversational fragments —
+ * so the filter runs on the CANDIDATES, where quality lives, not on the output.
+ *
+ *  - A phrase that repeats a word back-to-back is a stammer, not a search term.
+ *  - A phrase with a verb contraction ("we've", "don't", "they're") is a sentence fragment
+ *    someone said, not a phrase anyone types into search. Possessives ("god's people")
+ *    survive: the test is the contraction letters after the apostrophe, not the apostrophe.
+ *  - Profanity is the host's register, and a tag is search metadata: the video says it, the
+ *    tag list doesn't.
+ *  - A single word that is not on the generic list still needs to LOOK like a name to spend
+ *    a slot: it must appear capitalized mid-sentence somewhere in the content. "Watch" was a
+ *    sentence-start capture; "Roswell" passes.
+ */
+const TAG_PROFANITY = /\b(fuck\w*|shit\w*|goddamn\w*|asshole\w*|bitch\w*|cunt\w*)\b/i;
+const VERB_CONTRACTION = /\w'(ve|re|ll|d|m)\b|n't\b/i;
+
+function isNoiseCandidate(tag: string, contentText: string): boolean {
+  const words = tag.toLowerCase().split(/\s+/);
+  for (let i = 1; i < words.length; i++) {
+    if (words[i] === words[i - 1]) return true;
+  }
+  if (TAG_PROFANITY.test(tag)) return true;
+  if (VERB_CONTRACTION.test(tag)) return true;
+  if (!tag.includes(' ') && !/^[0-9]/.test(tag)) {
+    const midSentence = new RegExp(`[^.!?\\n]\\s+${tag.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\b`);
+    if (!midSentence.test(contentText)) return true;
+  }
+  return false;
 }
 
 /**

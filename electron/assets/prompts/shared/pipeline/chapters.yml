@@ -120,6 +120,7 @@ summarize_chapter: |-
 
   For both fields:
   - Say what is there, plainly. Straight description, no colons, no part numbers.
+  - Attribution follows the first person: a testimony, a conversion story, a claim told in "I" belongs to the person telling it — never to the person it is addressed to, prayed over, or told about. Where the video's own commentary names who is speaking ("he's talking to Jake right now", "this is the pastor"), that identification governs. And every characterization of who is being addressed and whose money, land, group or grievance is meant comes from the words in the transcript: an audience or a group the transcript does not name stays unnamed.
   - Name the concrete subject matter of this stretch specifically enough that the answer could not be swapped with a chapter of any other video.
   - A sponsor read, a Patreon plug, a channel promo or a sign-off simply says that is what it is. The creator's own promotions — {promoted_items} — follow that rule: a stretch that IS one of them says so ("Patreon plug and a promotion of the book God's People"), and one mentioned in passing stays out of the title and the summary, which name the content around it.
   {entity_scaffold}
@@ -181,6 +182,7 @@ summarize_chapter_tagged: |-
 
   For both fields:
   - Say what is there, plainly. Straight description, no colons, no part numbers.
+  - Attribution follows the first person: a testimony, a conversion story, a claim told in "I" belongs to the person telling it — never to the person it is addressed to, prayed over, or told about. Where the video's own commentary names who is speaking ("he's talking to Jake right now", "this is the pastor"), that identification governs. And every characterization of who is being addressed and whose money, land, group or grievance is meant comes from the words in the transcript: an audience or a group the transcript does not name stays unnamed.
   - Name the concrete subject matter of this stretch specifically enough that the answer could not be swapped with a chapter of any other video.
   - A sponsor read, a Patreon plug, a channel promo or a sign-off simply says that is what it is. The creator's own promotions — {promoted_items} — follow that rule: a stretch that IS one of them says so ("Patreon plug and a promotion of the book God's People"), and one mentioned in passing stays out of the title and the summary, which name the content around it.
   {entity_scaffold}

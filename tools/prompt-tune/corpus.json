@@ -1,4 +1,14 @@
 [
-  { "key": "f3-intelligent-design", "job": "/Volumes/Callisto/ContentStudio/.contentstudio/metadata/job-1787520736309-gejdwf8rw.json" },
-  { "key": "f1-ten-commandments", "job": "/Volumes/Callisto/ContentStudio/.contentstudio/metadata/job-1787517888045-cxogg2v6j.json" }
+ {
+  "key": "f3-intelligent-design",
+  "job": "/Volumes/Callisto/ContentStudio/.contentstudio/metadata/job-1787520736309-gejdwf8rw.json"
+ },
+ {
+  "key": "f1-ten-commandments",
+  "job": "/Volumes/Callisto/ContentStudio/.contentstudio/metadata/job-1787517888045-cxogg2v6j.json"
+ },
+ {
+  "key": "u2-jake-lang",
+  "job": "/Volumes/Callisto/ContentStudio/.contentstudio/metadata/job-1787594323997-665p7kabm.json"
+ }
 ]

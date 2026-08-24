@@ -35,6 +35,12 @@ const pipelineDesc = yaml.load(fs.readFileSync(path.join(REPO, 'electron/assets/
 const CORPUS = JSON.parse(fs.readFileSync(path.join(__dirname, 'corpus.json'), 'utf8'));
 
 /** Slice `text` between `after` and `before` markers; both must exist or we throw naming them. */
+function requireIndex(text, marker, label) {
+  const i = text.indexOf(marker);
+  if (i === -1) throw new Error(`marker not found (${label}): ${JSON.stringify(marker.slice(0, 60))}`);
+  return i;
+}
+
 function between(text, after, before, label) {
   const a = text.indexOf(after);
   if (a === -1) throw new Error(`marker not found (${label}): ${JSON.stringify(after.slice(0, 60))}`);
@@ -64,10 +70,16 @@ for (const video of CORPUS) {
     duration, promoted_items: promoted, transcript,
   });
 
-  // ---- description hook/body: extract the filled input blocks, refill current templates.
-  const hookTrace = byWhat('primary hook').prompt;
-  const bodyTrace = byWhat('primary body for').prompt; // 'for' excludes the revision entry
-  const channelBlock = between(hookTrace, 'Output JSON only.\n\n', '\n\nVideo: ', 'channel block');
+  // ---- description: extract the filled input blocks, refill current templates.
+  // Two trace eras: the JSON era ran two calls ('primary hook' + 'primary body'); the
+  // plain-text era (2026-08-24 onward) runs one ('primary description'). Inputs extract
+  // from whichever this job recorded.
+  const candidateEra = byWhat('primary description');
+  const hookTrace = (candidateEra || byWhat('primary hook')).prompt;
+  const bodyTrace = candidateEra ? hookTrace : byWhat('primary body for').prompt;
+  const channelBlock = candidateEra
+    ? hookTrace.slice(0, requireIndex(hookTrace, '\n\nVideo: ', 'channel block'))
+    : between(hookTrace, 'Output JSON only.\n\n', '\n\nVideo: ', 'channel block');
   const videoLine = between(hookTrace, '\n\nVideo: ', '\n', 'video line');
   // Coverage has two real modes (chapter list / operator subject) and a third real state:
   // a run whose chapters failed has none. Extract whichever the trace shows.
@@ -90,7 +102,10 @@ for (const video of CORPUS) {
     ? between(hookTrace, 'The transcript of the video, in full:\n', 'Names and phrases from the video', 'desc transcript').replace(/\n+$/, '')
     : '';
   const pools = between(hookTrace, 'Names and phrases from the video, to draw on where they fit:\n', "\n\nThe channel's rules", 'pools');
-  const recordedHook = between(bodyTrace, 'The opening line is already written, and it will stand above what you write:\n"', '"\n', 'recorded hook');
+  // Only the JSON era recorded a separate hook; the candidate era's one call has none.
+  const recordedHook = candidateEra
+    ? ''
+    : between(bodyTrace, 'The opening line is already written, and it will stand above what you write:\n"', '"\n', 'recorded hook');
 
   const rules = pipelineDesc.rules_block.replace('{items}', () => promptAssets().fieldSection(channel, 'description'));
   const transcriptBlock = descTranscript ? pipelineDesc.transcript_block.replace('{items}', () => descTranscript) : '';
