@@ -30,6 +30,7 @@ import * as log from 'electron-log';
 export type MetadataRoutingTaskId =
   | 'titles'
   | 'description'
+  | 'chapters'
   | 'tags'
   | 'thumbnail_text'
   | 'pinned_comment'
@@ -162,6 +163,13 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
   sonnet5: { kind: 'cloud', label: 'Claude Sonnet 5', model: 'claude:claude-sonnet-5' },
   opus5: { kind: 'cloud', label: 'Claude Opus 5', model: 'claude:claude-opus-5' },
   /**
+   * The cheap cloud rung, added 2026-08-24. The prompt harness ran the production prompts
+   * against it (tools/prompt-tune, cycle 1): descriptions and chapter details held at n=2
+   * with zero factual-check failures. Offered on every big field so the operator can run
+   * that comparison for real; not a default anywhere until it earns one.
+   */
+  haiku45: { kind: 'cloud', label: 'Claude Haiku 4.5', model: 'claude:claude-haiku-4-5' },
+  /**
    * The local default for the text fields as of 2026-08-22.
    *
    * It replaces the headline-14b adapters, which are not a choice any more: their base
@@ -243,6 +251,14 @@ export interface MetadataRoutingTask {
   options: string[];
   /** Runs when the stored setting has no entry for this task. Must be in `options`. */
   defaultOptionId: string;
+  /**
+   * Rendered as a row in the routing modal. The big determinative fields are rows
+   * (operator's direction, 2026-08-24: "the big models that determine things like titles -
+   * i should be able to set those to whatever"); the small-model work is not ("if we use
+   * 9b for something then leave it") — tags stay a stored-entry-only setting exactly as
+   * the old slot design left them.
+   */
+  modal: boolean;
 }
 
 /**
@@ -302,17 +318,41 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      */
     id: 'titles',
     label: 'Titles',
-    options: ['qwen38-27b', 'headline-titles-32b', 'sonnet5', 'opus5'],
+    options: ['qwen38-27b', 'headline-titles-32b', 'sonnet5', 'opus5', 'haiku45'],
     defaultOptionId: 'qwen38-27b',
+    modal: true,
   },
   {
     id: 'description',
     label: 'Description',
-    options: ['qwen35-9b', 'qwen35-4b', 'qwen38-27b', 'sonnet5', 'opus5'],
-    // 27B as of 2026-08-23, up from the 9B, and into the writing-model slot: the 9B default
-    // shipped a description that misattributed the video's claims and invented facts (the
-    // f2-braeden-sorbo comparison). 9b/4b remain offered for the A/B, as hand-set entries.
+    options: ['qwen38-27b', 'qwen35-9b', 'qwen35-4b', 'sonnet5', 'opus5', 'haiku45'],
+    // 27B as of 2026-08-23, up from the 9B: the 9B default shipped a description that
+    // misattributed the video's claims and invented facts (the f2-braeden-sorbo
+    // comparison). 9b/4b remain offered for the A/B.
     defaultOptionId: 'qwen38-27b',
+    modal: true,
+  },
+  {
+    /**
+     * A ROUTED TASK AGAIN as of 2026-08-24, which reverses 2026-08-22 — deliberately, and
+     * for a different reason than the routing it replaces. Chapters stopped being routed
+     * when the dead architectures left one pipeline with one model; then chapters followed
+     * the writing-model slot as a projection (the chapter labels are what the description
+     * conditions on, so the model trusted with one was trusted with the other). The
+     * operator's per-field direction dissolves the slot, so the projection has nothing to
+     * project from — chapters get their own row, defaulting to the same local model the
+     * projection defaulted to. The compilation summarizer follows THIS field's selection
+     * (ipc-handlers), because condensation rewrites the words every content field reads.
+     *
+     * Only the capable rungs are offered: the 9B on chapters was HALF of the measured
+     * 2026-08-23 failure stack (whisper base + 9B routing, metadata-pipeline comparison),
+     * and offering it here would sell the exact regression that comparison caught.
+     */
+    id: 'chapters',
+    label: 'Chapters',
+    options: ['qwen38-27b', 'sonnet5', 'opus5', 'haiku45'],
+    defaultOptionId: 'qwen38-27b',
+    modal: true,
   },
   {
     /**
@@ -336,14 +376,18 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     label: 'Tags',
     options: ['qwen35-9b', 'qwen35-4b', 'qwen38-27b', 'sonnet5', 'opus5'],
     defaultOptionId: 'qwen35-9b',
+    // NOT a modal row — the operator's "if we use 9b for something then leave it". The
+    // 9b/4b A/B stays a stored per-task entry set outside the modal, as it always was.
+    modal: false,
   },
   {
     id: 'thumbnail_text',
     label: 'Thumbnail text',
     // 27B by default: the output is three words and the judgement behind them is the whole
     // video, so the cheaper model saves nothing worth having here.
-    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5'],
+    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45'],
     defaultOptionId: 'qwen38-27b',
+    modal: true,
   },
   {
     /**
@@ -356,104 +400,34 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      */
     id: 'pinned_comment',
     label: 'Pinned comment',
-    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5'],
+    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45'],
     defaultOptionId: 'qwen38-27b',
+    modal: true,
   },
   {
     id: 'clip_suggestions',
     label: 'Clip suggestions',
     // 27B by default: picking the clippable moments means holding the whole transcript in
     // one head, which is the shape the smaller model is worst at.
-    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5'],
+    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45'],
     defaultOptionId: 'qwen38-27b',
+    modal: true,
   },
 ];
 
 /**
- * THE ONE CHOICE THE MODAL OFFERS: which model is the big one.
+ * Which model the chapter pipeline runs on: the `chapters` task's own selection.
  *
- * The operator's decision is not "which model writes pinned comments" — it is "does this
- * run think on the local 27B or on a Claude model". This slot names that decision: the
- * four packaging fields move together, and picking here writes the same per-task entries
- * into the same store, resolved by the same code. It ADDS no state — it is a projection
- * of `metadataRouting`, and a store whose four fields disagree (a hand-set per-field
- * entry, e.g. titles on the 32B adapter) renders the slot as CUSTOM rather than being
- * rewritten to agree.
- *
- * The DESCRIPTION is in the slot as of 2026-08-23. It was held out with tags as a
- * "mechanical field" on the argument that a schema-constrained call is small-model work —
- * and the measured run that argument produced misattributed the video's own claims to the
- * wrong speaker and invented facts ("serial rapist") on qwen3.5:9b, on a video where the
- * same prompt on the slot's cloud options was publishable (the 10-way comparison in
- * /Volumes/Callisto/ContentStudio/f2 - braeden sorbo/model-comparison-2026-08-23.md).
- * A description ships verbatim, so it is exactly as intensive as the packaging fields and
- * moves with them.
- *
- * TAGS stay out of the slot and out of the modal: on a chaptered item they are assembled
- * in code from the pools and use no model at all, and on a chapterless one they are the
- * one genuinely mechanical call left. Rerouting them — the 9b/4b A/B — is a stored
- * per-task entry set outside the modal, validated exactly like every other selection.
- *
- * CHAPTERS follow the slot too (resolveChapterModelOption below): the chapter labels are
- * the names-and-claims prose the description conditions on, so a slot routed to a cloud
- * model with chapters left on the 27B would hand that cloud model garbled inputs.
- */
-export interface MetadataRoutingSlot {
-  id: 'big';
-  label: string;
-  /** The routed tasks this slot sets together. */
-  taskIds: MetadataRoutingTaskId[];
-  /** Offered on the slot's picker. Each must be offered by EVERY task in `taskIds`. */
-  optionIds: string[];
-}
-
-export const METADATA_ROUTING_SLOTS: MetadataRoutingSlot[] = [
-  {
-    id: 'big',
-    label: 'Model',
-    taskIds: ['titles', 'description', 'thumbnail_text', 'pinned_comment', 'clip_suggestions'],
-    optionIds: ['qwen38-27b', 'sonnet5', 'opus5'],
-  },
-];
-
-/**
- * Which model the chapter pipeline runs on: the slot's agreed option, else the declared
- * local default.
- *
- * Chapters stopped being a routed task on 2026-08-22 and this does NOT re-route them as
- * one — there is still no per-task chapter entry to store, migrate or mis-set. The chapter
- * model is a PROJECTION of the writing-model slot, for the reason the slot's header states:
- * chapter labels are what the description conditions on, and the model trusted to write the
- * one is the model trusted to write the other.
- *
- * A store whose slot tasks disagree (hand-set per-field entries) projects to no single
- * writing model, and chapters then run on CHAPTER_PIPELINE_MODELS.generation exactly as
- * before this function existed — the declared constant, not a guess among the entries.
+ * HISTORY, because this function has now pointed at three different truths: chapters were a
+ * routed task (pre-2026-08-22), then a projection of the writing-model slot (the slot's four
+ * packaging fields plus description moved together, and chapters followed their agreement,
+ * falling to the declared local constant when a hand-set store disagreed). The slot is gone
+ * — the modal is per-field as of 2026-08-24 — so chapters are a routed task again and this
+ * is a plain table read. The name and signature survive because four call sites (the two
+ * chapter runs, the two-model budget, the compilation summarizer) built on them.
  */
 export function resolveChapterModelOption(resolved: ResolvedMetadataRouting): MetadataRoutingOption {
-  const slot = METADATA_ROUTING_SLOTS[0];
-  const picks = slot.taskIds.map((taskId) => resolved[taskId]);
-  const agreed =
-    picks.every((id) => id === picks[0]) && slot.optionIds.includes(picks[0]) ? picks[0] : null;
-  if (agreed) return METADATA_ROUTING_OPTIONS[agreed];
-  return { kind: 'local', label: 'Qwen 27B', model: CHAPTER_PIPELINE_MODELS.generation, promptStyle: 'prompt-set' };
-}
-
-// The slot is a projection of the task table, so a mismatch between them is a registry
-// bug, and it fails HERE at load rather than as a phantom option in the modal.
-for (const slot of METADATA_ROUTING_SLOTS) {
-  for (const taskId of slot.taskIds) {
-    const task = METADATA_ROUTING_TASKS.find((t) => t.id === taskId);
-    if (!task) throw new Error(`Routing slot "${slot.id}" names unknown task "${taskId}"`);
-    for (const optionId of slot.optionIds) {
-      if (!task.options.includes(optionId)) {
-        throw new Error(
-          `Routing slot "${slot.id}" offers "${optionId}", which task "${taskId}" does not — ` +
-            `a slot may only offer what every one of its tasks offers`
-        );
-      }
-    }
-  }
+  return routingOption('chapters', resolved.chapters);
 }
 
 /**
@@ -471,9 +445,10 @@ for (const slot of METADATA_ROUTING_SLOTS) {
  * commit, or existing installs break on upgrade.
  */
 export const REMOVED_ROUTING_TASKS: Record<string, string> = {
-  chapters:
-    'chapters are no longer routed — the embedding pipeline is the only chaptering ' +
-    'architecture and it runs on every item that has a timestamped transcript',
+  // `chapters` was in this map from 2026-08-22 to 2026-08-24 ("no longer routed"); it is a
+  // routed task again, so a stored chapters entry is validated like any other. Its DEAD
+  // OPTION ids from the removed architectures stay in REMOVED_ROUTING_OPTIONS below and are
+  // still dropped with a notice.
 };
 
 export const REMOVED_ROUTING_OPTIONS: Record<string, string> = {
@@ -641,6 +616,35 @@ export function migrateStoredRouting(stored: unknown): MetadataRoutingMigration 
     selections[taskId as MetadataRoutingTaskId] = optionId;
   }
 
+  // THE SLOT'S LAST ACT (2026-08-24). Until this build, chapters were not stored — they ran
+  // on the writing-model slot's PROJECTION: when titles, description, thumbnail, pinned and
+  // clips all resolved to one slot option, chapters followed it; otherwise the local
+  // constant. A store from that era where the projection agreed on a CLOUD model would,
+  // without this, silently drop its chapters back to the local default — the exact
+  // "silently get something else" this module exists to prevent. So the projection is
+  // computed ONE more time, here, and written down as the chapters entry it always
+  // effectively was. Local agreement needs no entry: it equals the shipped default.
+  if (!('chapters' in selections)) {
+    const exSlotTasks: MetadataRoutingTaskId[] = [
+      'titles', 'description', 'thumbnail_text', 'pinned_comment', 'clip_suggestions',
+    ];
+    const exSlotOptions = ['qwen38-27b', 'sonnet5', 'opus5'];
+    const picks = exSlotTasks.map(
+      (id) => selections[id] || METADATA_ROUTING_TASKS.find((task) => task.id === id)!.defaultOptionId
+    );
+    const agreed =
+      picks.every((id) => id === picks[0]) && exSlotOptions.includes(picks[0]) ? picks[0] : null;
+    const chaptersDefault = METADATA_ROUTING_TASKS.find((task) => task.id === 'chapters')!.defaultOptionId;
+    if (agreed && agreed !== chaptersDefault) {
+      selections.chapters = agreed;
+      notices.push(
+        `wrote metadataRouting.chapters = "${agreed}": chapters used to follow the writing-model ` +
+          `slot's agreement, the slot is gone (per-field routing), and this store's fields agreed ` +
+          `on that option — recorded so the next run chapters on the same model as the last one`
+      );
+    }
+  }
+
   const changed = notices.length > 0;
   for (const notice of notices) {
     log.warn(`[MetadataRouting] settings migration: ${notice}`);
@@ -752,6 +756,8 @@ export interface MetadataRoutingTaskView {
   label: string;
   options: MetadataRoutingOptionView[];
   selectedOptionId: string;
+  /** Rendered as a row in the modal. False = stored-entry-only (tags). */
+  modal: boolean;
 }
 
 /** The state of the Ollama host every plain-local option was judged against. */
@@ -787,21 +793,7 @@ export interface MetadataRoutingChaptersView {
   keyPhraseAvailability: MetadataRoutingAvailability;
 }
 
-/**
- * One slot, resolved against this store. `selectedOptionId` is the option every task in
- * the slot points at — or null when they disagree, which the modal renders as MIXED and
- * never silently reconciles.
- */
-export interface MetadataRoutingSlotView {
-  id: string;
-  label: string;
-  taskIds: string[];
-  options: MetadataRoutingOptionView[];
-  selectedOptionId: string | null;
-}
-
 export interface MetadataRoutingView {
-  slots: MetadataRoutingSlotView[];
   tasks: MetadataRoutingTaskView[];
   localModels: MetadataRoutingHostView;
   chapters: MetadataRoutingChaptersView;
@@ -837,7 +829,7 @@ function optionView(id: string, inventory: OllamaInventory): MetadataRoutingOpti
  * The whole table plus this store's selections, in the shape the modal consumes.
  *
  * FROZEN contract (metadata-routing:get). The frontend is written against exactly this,
- * so the registry may gain tasks, options and slots without the payload changing shape.
+ * so the registry may gain tasks and options without the payload changing shape.
  *
  * Each option carries whether its model is actually installed, because a routing that
  * names a model the machine does not have looks exactly like one that works until the
@@ -858,30 +850,17 @@ export function buildRoutingView(stored: unknown, inventory: OllamaInventory): M
       : 'not-installed';
   };
   return {
-    slots: METADATA_ROUTING_SLOTS.map((slot) => {
-      const picks = slot.taskIds.map((taskId) => resolved[taskId]);
-      // Agreed AND offered on the slot itself; agreement on a per-field-only model (both
-      // mechanical fields on a cloud model, say) is a Custom state, not a phantom option.
-      const agreed =
-        picks.every((id) => id === picks[0]) && slot.optionIds.includes(picks[0]) ? picks[0] : null;
-      return {
-        id: slot.id,
-        label: slot.label,
-        taskIds: [...slot.taskIds],
-        options: slot.optionIds.map((id) => optionView(id, inventory)),
-        selectedOptionId: agreed,
-      };
-    }),
     tasks: METADATA_ROUTING_TASKS.map((task) => ({
       id: task.id,
       label: task.label,
       options: task.options.map((id) => optionView(id, inventory)),
       selectedOptionId: resolved[task.id],
+      modal: task.modal,
     })),
     chapters: (() => {
-      // The model chapters will actually run on: the slot's projection, reported by the
-      // same function generation consults, so the modal can never say one model while the
-      // run uses another.
+      // The model chapters will actually run on: the chapters row's selection, reported by
+      // the same function generation consults, so the modal can never say one model while
+      // the run uses another.
       const chapterOption = resolveChapterModelOption(resolved);
       return {
         generationModel: chapterOption.model,

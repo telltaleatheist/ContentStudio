@@ -1811,6 +1811,9 @@ export class AIManagerService {
    */
   private mapClaudeModelName(friendlyName: string): string {
     const modelMap: { [key: string]: string } = {
+      // Haiku 4.5 — the routing's cheap cloud rung (haiku45). The alias-less dated id is
+      // the one the API is guaranteed to accept.
+      'claude-haiku-4-5': 'claude-haiku-4-5-20251001',
       // Claude 4 models
       'claude-sonnet-4': 'claude-sonnet-4-20250514',
       'claude-opus-4': 'claude-opus-4-20250514',

@@ -102,7 +102,7 @@ export interface GenerationParams {
    *
    * This is the ONLY input that decides which model writes which field — and, since
    * 2026-08-23, the chapter model with them: chapters are still not a routed task, but they
-   * run on the writing-model slot's projection of this table (resolveChapterModelOption),
+   * run on the routing's own `chapters` entry (resolveChapterModelOption),
    * falling back to CHAPTER_PIPELINE_MODELS when the slot's tasks disagree.
    */
   metadataRouting?: MetadataRoutingSelections;
@@ -913,7 +913,7 @@ export class MetadataGeneratorService {
      */
     const alsoLoads: ModelRosterEntry[] = [];
     // The chapter model counts against the local two-model budget only when it IS local —
-    // a slot routed to a cloud option made nothing resident.
+    // chapters routed to a cloud option make nothing resident.
     const chapterOption = resolveChapterModelOption(resolveMetadataRouting(params.metadataRouting));
     if (hasChapters && chapterOption.kind === 'local') {
       alsoLoads.push({ model: chapterOption.model, what: 'chapters' });
@@ -1235,11 +1235,10 @@ export class MetadataGeneratorService {
       throw new Error('Chapter generation needs a timestamped transcript');
     }
 
-    // Still not a routed TASK — there is no chapter entry in the store — but no longer a
-    // fixed constant either: the chapter model is the writing-model slot's projection
-    // (resolveChapterModelOption), because the labels this pipeline writes are the inputs
-    // the description conditions on. A store whose slot tasks disagree projects to the
-    // declared CHAPTER_PIPELINE_MODELS default, exactly the pre-slot behavior.
+    // A routed task again as of 2026-08-24: the chapter model is the routing's own
+    // `chapters` entry (resolveChapterModelOption), set per-field in the modal. The labels
+    // this pipeline writes are the inputs the description conditions on, so the row
+    // defaults to the same capable local model the old slot projection defaulted to.
     const chapterOption = resolveChapterModelOption(resolveMetadataRouting(params.metadataRouting));
     const model = chapterOption.model;
     const host = params.aiHost || 'http://localhost:11434';
