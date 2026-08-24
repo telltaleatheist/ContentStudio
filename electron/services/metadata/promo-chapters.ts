@@ -30,20 +30,22 @@ import { Chapter } from './chapter-generator.service';
  * The promo vocabulary, as the user specified it.
  *
  * Word-boundary alternation over one case-insensitive regex, matched against the
- * chapter's `title` (stage 4's `about`) and its `detail` prose. Inflections are spelled
- * out rather than reached with a prefix match: `\bplugs?\b` must not fire on "plugged
- * in", and `\bpromos?\b` must not fire on "promotion of a book" — those are content.
+ * chapter's `title` (stage 4's `about`) ONLY — never its `detail` prose. The prompt
+ * contract makes a real plug segment be NAMED as one ("Patreon plug and ..."), so the
+ * label is the reliable signal; the detail of a long content chapter legitimately
+ * mentions the brief plug interspersed inside it ("interspersed is a brief Patreon
+ * plug"), and matching prose excluded four content chapters of a compilation as ads
+ * (podcast 1, 2026-08-23). Inflections are spelled out rather than reached with a
+ * prefix match: `\bplugs?\b` must not fire on "plugged in", and `\bpromos?\b` must not
+ * fire on "promotion of a book" — those are content.
  */
 const PROMO_PATTERN =
   /\b(?:patreon|sponsor|sponsors|sponsored|sponsorship|plug|plugs|promo|promos|sign[-\s]?off|sign[-\s]?offs|signoff|signoffs|ad read|ad reads|advertisement|advertisements|channel link|channel links|merch|merchandise|membership|memberships|subscribe push|superchat|superchats)\b/i;
 
-/** Why one chapter was excluded — the words that matched, for the log line. */
+/** Why one chapter was excluded — the word that matched its label, for the log line. */
 function promoMatch(chapter: Chapter): string | undefined {
-  for (const field of [chapter.title, chapter.detail || '']) {
-    const hit = field.match(PROMO_PATTERN);
-    if (hit) return hit[0];
-  }
-  return undefined;
+  const hit = chapter.title.match(PROMO_PATTERN);
+  return hit ? hit[0] : undefined;
 }
 
 export function isPromoChapter(chapter: Chapter): boolean {
