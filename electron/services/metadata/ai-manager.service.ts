@@ -1308,6 +1308,19 @@ export class AIManagerService {
    * transport's `ok: false` is — and throws on transport failure, which affects every
    * remaining call. Same split as everywhere else, typed by shape rather than message text.
    */
+  /**
+   * The resolved COMPACT insights block, set once per run after guideline resolution —
+   * which needs this instance's transports, so it cannot ride in on the constructor config
+   * (insights-guidelines.ts has the order of events).
+   */
+  setInsightsBlock(block: string): void {
+    this.config.insightsBlock = block;
+  }
+
+  hasInsightsBlock(): boolean {
+    return Boolean(this.config.insightsBlock);
+  }
+
   async runPlainRequest(prompt: string, model: string, what: string): Promise<string | null> {
     await this.ensureProviderReady(model);
     const response = await this.makeRequest(prompt, model, 300, what, true);

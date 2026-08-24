@@ -26,6 +26,7 @@ import {
   KEY_PHRASE_EMBEDDING_MODEL,
   MetadataRoutingSelections,
   MetadataRoutingTaskId,
+  METADATA_ROUTING_OPTIONS,
   ResolvedMetadataRouting,
   resolveChapterModelOption,
   resolveMetadataRouting,
@@ -37,6 +38,13 @@ import { excludePromoChapters } from './promo-chapters';
 import { DigestChapter, FieldContentDecision, digestChaptersOf, resolveFieldContent } from './chapter-digest';
 import { topEntities, transcriptCasing } from './entity-extraction';
 import { rankKeyPhrases } from './key-phrases';
+import { askOllamaPlain } from './plain-call';
+import { bucketNumCtx, estimateTokens } from './ollama-json';
+import { SYSTEM_PROMPTS } from './system-prompts';
+import { PreparedChannelInsights, resolveGuidelinesBlock } from '../analytics/insights-guidelines';
+
+/** Lessons are 5-10 lines; the budget is sized for a local model's thinking, not the answer. */
+const GUIDELINES_NUM_PREDICT = 2048;
 import axios from 'axios';
 import { JobCancelledError } from './cancellation';
 import type { TranscriptRef } from '../publish/publish-types';
@@ -80,9 +88,13 @@ export interface GenerationParams {
    */
   jobId: string;
   jobName?: string;
-  // Pre-resolved "CHANNEL PERFORMANCE DATA" block from the analytics feedback
-  // loop (appended to the metadata prompt); undefined = omit (expected state).
-  insightsBlock?: string;
+  /**
+   * The analytics feedback loop's prepared evidence (insights-guidelines.ts), or undefined
+   * to omit — the same expected state the old pre-rendered block had. The COMPACT block the
+   * prompts carry is resolved HERE, inside generation, because resolution may make the one
+   * distillation call and that call runs on the titles field's routed transport.
+   */
+  insights?: PreparedChannelInsights;
   /**
    * The operator's Phase-2 link decision per input, keyed by the input's absolute path.
    * A `TranscriptRef` means "the content fields should
@@ -281,7 +293,8 @@ export class MetadataGeneratorService {
         host: params.aiHost,
         promptSet: params.promptSet,
         promptSetsDir: params.promptSetsDir,
-        insightsBlock: params.insightsBlock,
+        // insightsBlock is NOT set here: it is resolved right after construction, below,
+        // because resolving it may spend the one distillation call on a routed transport.
         abortSignal: params.cancelSignal,
       };
 
@@ -289,6 +302,19 @@ export class MetadataGeneratorService {
       const aiManager = new AIManagerService(aiConfig);
       log.info('[MetadataGenerator] Initializing AI manager...');
       const initialized = await aiManager.initialize();
+
+      if (initialized && params.insights) {
+        // The channel's evidence becomes the compact block every insight-carrying call
+        // rides: cached lessons on the common path, the placeholder on a dry run, or the
+        // ONE distillation call — on the titles field's routed transport, because titles
+        // are what the lessons serve.
+        aiManager.setInsightsBlock(
+          await resolveGuidelinesBlock(params.insights, {
+            dryRun: Boolean(params.showPrompt),
+            ...this.guidelinesTransport(aiManager, params),
+          })
+        );
+      }
 
       if (!initialized) {
         log.error('[MetadataGenerator] AI manager initialization failed');
@@ -932,7 +958,7 @@ export class MetadataGeneratorService {
       routing: this.routing(params),
       defaultHost: params.aiHost || 'http://localhost:11434',
       aiManager,
-      hasInsights: Boolean(params.insightsBlock),
+      hasInsights: aiManager.hasInsightsBlock(),
       hasChapters,
       alsoLoads,
       lifecycle,
@@ -1049,6 +1075,67 @@ export class MetadataGeneratorService {
    */
   private static routing(params: GenerationParams): ResolvedMetadataRouting {
     return resolveMetadataRouting(params.metadataRouting);
+  }
+
+  /**
+   * The distillation call's transport: the TITLES field's routed option, because the
+   * guidelines exist to serve the titles call. Cloud goes through the plain cloud request
+   * (which carries the plain system contract); a local base model goes through the same
+   * plain Ollama shape the field calls use. A titles routing whose promptStyle is
+   * 'adapter' cannot take an instruction prompt at all — that is a routing conflict this
+   * run cannot resolve for the operator, and it throws naming both facts (no fallbacks:
+   * distilling on some OTHER field's model would be a decision nobody made).
+   */
+  private static guidelinesTransport(
+    aiManager: AIManagerService,
+    params: GenerationParams
+  ): { model: string; distill: (prompt: string, what: string) => Promise<string | null> } {
+    const optionId = this.routing(params).titles;
+    const option = METADATA_ROUTING_OPTIONS[optionId];
+    if (!option) {
+      throw new Error(`The titles routing names unknown option "${optionId}", so the guidelines distiller has no transport`);
+    }
+    if (option.kind === 'cloud') {
+      return {
+        model: option.model,
+        distill: (prompt, what) => aiManager.runPlainRequest(prompt, option.model, what),
+      };
+    }
+    if (option.promptStyle === 'adapter') {
+      throw new Error(
+        `Titles are routed to the trained adapter "${option.model}", which takes its own conversation ` +
+          `shape, not an instruction prompt — so the guidelines distiller has no transport. Route titles ` +
+          `to a base or cloud model for this run, or run without insights (--no-insights).`
+      );
+    }
+    const host = option.host || params.aiHost || 'http://localhost:11434';
+    return {
+      model: option.model,
+      distill: async (prompt, what) => {
+        const fullPrompt = `${SYSTEM_PROMPTS.PLAIN_SYSTEM}\n\n${prompt}`;
+        const result = await askOllamaPlain(axios.create({ baseURL: host }), {
+          model: option.model,
+          prompt: fullPrompt,
+          numCtx: bucketNumCtx({
+            promptTokens: estimateTokens(fullPrompt.length),
+            numPredict: GUIDELINES_NUM_PREDICT,
+            max: 32768,
+            logPrefix: '[InsightsGuidelines]',
+            what,
+          }),
+          numPredict: GUIDELINES_NUM_PREDICT,
+          timeoutMs: 600_000,
+          signal: params.cancelSignal,
+          what,
+          logPrefix: '[InsightsGuidelines]',
+        });
+        if (!result.ok) {
+          log.warn(`[InsightsGuidelines] ${what}: ${result.detail}`);
+          return null;
+        }
+        return result.text;
+      },
+    };
   }
 
   /**
