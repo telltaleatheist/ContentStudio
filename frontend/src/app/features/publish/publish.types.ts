@@ -314,6 +314,11 @@ export interface ChosenMetadata {
   jobId: string;
   /** Ordered. Index 0 becomes the main title AND A/B variant 1. */
   chosenTitles: string[];
+  /**
+   * Inline edits to generated titles: generated text -> what the list shows instead.
+   * `{}` when nothing is edited; the key goes stale on regeneration, which is the revert.
+   */
+  titleEdits: Record<string, string>;
   descriptionOverride: string | null;
   /**
    * Whether the chapter block is part of the composed description that gets pushed.

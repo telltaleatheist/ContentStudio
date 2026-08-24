@@ -54,6 +54,11 @@ export interface SavedTranscriptCheck {
  * is deliberately absent because it has its own channel (it is validated against a file).
  */
 export interface PublishFields {
+  /**
+   * The whole title-edit map, replaced atomically: generated title text -> the
+   * operator's replacement. {} clears every edit.
+   */
+  titleEdits?: Record<string, string>;
   /** null clears the override, restoring the generated description. */
   descriptionOverride?: string | null;
   /** null clears the override, restoring the generated tags. */

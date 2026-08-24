@@ -210,6 +210,9 @@ export class PublishState {
   /** Ordered chosen titles; empty when nothing is selected. */
   readonly chosenTitles = computed(() => this._selection()?.chosenTitles ?? []);
 
+  /** Generated title text -> the operator's replacement. Empty when nothing is edited. */
+  readonly titleEdits = computed<Record<string, string>>(() => this._selection()?.titleEdits ?? {});
+
   readonly chosenCount = computed(() => this.chosenTitles().length);
 
   readonly isFull = computed(() => this.chosenCount() >= MAX_AB_VARIANTS);
@@ -914,32 +917,28 @@ export class PublishState {
   }
 
   /**
-   * Save an inline title edit.
+   * Save an inline title edit — the pencil REPLACES the title, permanently (operator,
+   * 2026-08-24).
    *
-   * Handles both rows the operator can edit:
-   *   - an already-CHOSEN title  -> replaced in place, keeping its variant position
-   *   - a not-yet-chosen title   -> picked, using the edited text
+   * The edit is stored in `titleEdits` keyed by the GENERATED text, so the row shows the
+   * replacement on every future load; the job's report is never touched — it stays
+   * pristine so an item can be regenerated, and a regenerated title list carries no
+   * stale edits because its keys no longer match. Editing the text back to the generated
+   * original deletes the entry, which is the revert.
    *
-   * The second case exists because a generated title longer than YouTube's limit cannot
-   * be picked at all, so if editing only worked on chosen titles that one would be
-   * permanently unusable. Editing it is exactly how you'd fix it.
-   *
-   * The generated set in the job's report is never touched — it stays pristine so an item
-   * can be regenerated. The edit lives in the chosen-title set only.
+   * When the edited title is already a chosen A/B variant, the variant is replaced in
+   * place, keeping its position. An UNCHOSEN title is edited without being picked — the
+   * pencil is an edit, not a pick (this replaces the old auto-pick behaviour, which made
+   * a tidy-up silently occupy an A/B slot).
    */
-  async saveTitleEdit(originalTitle: string, editedTitle: string): Promise<void> {
+  async saveTitleEdit(generatedTitle: string, displayedTitle: string, editedTitle: string): Promise<void> {
     const t = this.target('edit a title');
     if (!t) return;
 
-    const current = this.chosenTitles();
-    const index = current.indexOf(originalTitle);
-    const wasChosen = index !== -1;
-
     const trimmed = editedTitle.trim();
 
-    // Opening the editor and closing it unchanged must not pick anything. Nothing changed,
-    // so nothing changes.
-    if (trimmed === originalTitle.trim() && !wasChosen) return;
+    // Opening the editor and closing it unchanged changes nothing.
+    if (trimmed === displayedTitle.trim()) return;
 
     if (!trimmed) {
       this._error.set('A title cannot be empty.');
@@ -950,25 +949,32 @@ export class PublishState {
       return;
     }
 
+    const current = this.chosenTitles();
+    const index = current.indexOf(displayedTitle);
     const duplicateAt = current.indexOf(trimmed);
     if (duplicateAt !== -1 && duplicateAt !== index) {
       this._error.set('That title is already one of the variants.');
       return;
     }
 
-    if (wasChosen) {
+    // The whole map is replaced atomically (the validator's contract). Editing back to
+    // the generated text removes the entry rather than storing a no-op edit.
+    const edits: Record<string, string> = { ...this.titleEdits() };
+    if (trimmed === generatedTitle.trim()) {
+      delete edits[generatedTitle];
+    } else {
+      edits[generatedTitle] = trimmed;
+    }
+    await this.setFields({ titleEdits: edits });
+    if (this._error()) return;
+
+    // The chosen variant follows the text it was picked as, in place.
+    if (index !== -1) {
       await this.persistTitles(
         t,
         current.map((title, i) => (i === index ? trimmed : title))
       );
-      return;
     }
-
-    if (current.length >= MAX_AB_VARIANTS) {
-      this._error.set(`You can test at most ${MAX_AB_VARIANTS} titles. Deselect one first.`);
-      return;
-    }
-    await this.persistTitles(t, [...current, trimmed]);
   }
 
   private async persistTitles(itemId: string, titles: string[]): Promise<void> {

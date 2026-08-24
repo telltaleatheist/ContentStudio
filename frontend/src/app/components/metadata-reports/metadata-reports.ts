@@ -1992,7 +1992,13 @@ export class MetadataReports implements OnInit {
     event?.stopPropagation();
     if (this.editingTitleIndex() === null) return;
 
-    await this.publish.saveTitleEdit(this.getTitleText(original), this.titleDraft());
+    // The generated text is the edit's permanent key; the displayed text is what a
+    // chosen variant was picked as. They differ exactly when re-editing an edited title.
+    await this.publish.saveTitleEdit(
+      this.rawTitleText(original),
+      this.getTitleText(original),
+      this.titleDraft()
+    );
     // A rejected edit leaves the error banner up and the editor open, so the operator can
     // fix it rather than losing what they typed.
     if (this.publish.error()) return;
@@ -2624,7 +2630,8 @@ export class MetadataReports implements OnInit {
     return tags.join(', ');
   }
 
-  getTitleText(title: any): string {
+  /** The GENERATED text of a title row, exactly as the report recorded it. */
+  rawTitleText(title: any): string {
     // Handle both string format and object format {text: "...", style: "..."}
     if (typeof title === 'string') {
       return title;
@@ -2633,6 +2640,22 @@ export class MetadataReports implements OnInit {
       return title.text;
     }
     return String(title);
+  }
+
+  /**
+   * What a title row SHOWS and OFFERS: the operator's stored edit when one exists
+   * (record.titleEdits, keyed by the generated text), else the generated text. Every
+   * consumer — the list row, the slate's row lookup, pick/copy/keyboard — reads this,
+   * so an edited title is one title everywhere.
+   */
+  getTitleText(title: any): string {
+    const raw = this.rawTitleText(title);
+    return this.publish.titleEdits()[raw] ?? raw;
+  }
+
+  /** True when this row's text is an operator edit rather than the generated text. */
+  isTitleEdited(title: any): boolean {
+    return this.rawTitleText(title) in this.publish.titleEdits();
   }
 
   getDescriptionText(description: any): string {

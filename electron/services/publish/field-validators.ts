@@ -14,7 +14,7 @@
  */
 
 import { RoutableChannel, findChannelById } from './channel-routing';
-import { ChosenMetadata, validatePublishAt } from './publish-types';
+import { ChosenMetadata, MAX_TITLE_LENGTH, validatePublishAt } from './publish-types';
 
 /** A short, safe rendering of whatever the caller actually sent. */
 export function describeValue(value: unknown): string {
@@ -58,6 +58,42 @@ export interface FieldContext {
  * be a bug report with no information in it.
  */
 const FIELD_VALIDATORS: Record<string, (value: unknown, ctx: FieldContext) => FieldPatch> = {
+  /**
+   * The whole title-edit map, replaced atomically: generated text -> edited text. An
+   * empty object means nothing is edited. Values are trimmed and held to YouTube's
+   * title limit here for the same reason chosenTitles are — an over-long edit stored
+   * silently would surface as an API refusal weeks later.
+   */
+  titleEdits(value) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(
+        `titleEdits must be an object mapping generated title text to its edited ` +
+        `replacement ({} clears every edit); got ${describeValue(value)}.`
+      );
+    }
+    const cleaned: Record<string, string> = {};
+    for (const [original, edited] of Object.entries(value as Record<string, unknown>)) {
+      if (!original.trim()) {
+        throw new Error('titleEdits keys must be the generated title text; got an empty key.');
+      }
+      if (typeof edited !== 'string' || !edited.trim()) {
+        throw new Error(
+          `titleEdits[${JSON.stringify(original)}] must be non-empty replacement text; ` +
+          `got ${describeValue(edited)}.`
+        );
+      }
+      const trimmed = edited.trim();
+      if (trimmed.length > MAX_TITLE_LENGTH) {
+        throw new Error(
+          `titleEdits[${JSON.stringify(original)}] is ${trimmed.length} characters; ` +
+          `YouTube's title limit is ${MAX_TITLE_LENGTH}.`
+        );
+      }
+      cleaned[original] = trimmed;
+    }
+    return { titleEdits: cleaned };
+  },
+
   /** null clears the override, restoring the generated description. */
   descriptionOverride(value) {
     if (value !== null && typeof value !== 'string') {

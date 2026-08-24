@@ -378,8 +378,10 @@
                 @for (title of metadata()!.titles; track $index; let i = $index) {
                   @if (isEditingTitle(i)) {
                     <!-- Enter saves, Escape cancels, and the pencil/copy pair becomes ✓/✕
-                         in the same place so nothing shifts under the cursor. The edit is
-                         stored as an A/B variant; the generated report is never rewritten. -->
+                         in the same place so nothing shifts under the cursor. The edit
+                         REPLACES this row's title permanently (record.titleEdits, keyed by
+                         the generated text); the generated report file is never rewritten,
+                         and editing back to the generated text is the revert. -->
                     <div class="s editing" [attr.data-title-row]="i">
                       <span class="s-n num" [class.picked]="!!titleVariantNumber(title)">
                         {{ titleVariantNumber(title) ?? i + 1 }}
@@ -413,6 +415,10 @@
                         {{ titleVariantNumber(title) ?? i + 1 }}
                       </span>
                       <span class="s-t">{{ getTitleText(title) }}</span>
+                      @if (isTitleEdited(title)) {
+                        <span class="slot-tag"
+                              title="You edited this. Edit it back to the generated text to restore it — regenerating the item also clears edits.">edited</span>
+                      }
                       <span class="s-len num">{{ getTitleText(title).length }}</span>
                       <span class="s-acts">
                         <button class="s-act" (click)="startEditTitle(title, i, $event)" title="Edit this title">✎</button>

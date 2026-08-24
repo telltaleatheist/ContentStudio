@@ -309,6 +309,17 @@ export interface ChosenMetadata {
   /** Ordered A/B variants; index 0 becomes the video's main title. Length <= MAX_AB_VARIANTS. */
   chosenTitles: string[];
 
+  /**
+   * Inline edits to GENERATED titles (operator, 2026-08-24: the pencil "properly replaces
+   * the old one with the new one... permanently"). Keyed by the exact generated text; the
+   * value is what the titles list shows and offers in its place. The job's report stays
+   * pristine — same law as descriptionOverride/tagsOverride — and the key going stale on
+   * regeneration is the intended revert: a fresh title list carries no edits. Strictly an
+   * object, never absent — `{}` means nothing is edited, written explicitly by
+   * emptyChosenMetadata and filled in by upgradeStoredMetadata.
+   */
+  titleEdits: Record<string, string>;
+
   /** null = not edited, fall back to the generated description. */
   descriptionOverride: string | null;
 
@@ -715,6 +726,7 @@ export function emptyChosenMetadata(itemId: string, jobId: string): ChosenMetada
     itemId,
     jobId,
     chosenTitles: [],
+    titleEdits: {},
     descriptionOverride: null,
     chaptersInDescription: true,
     tagsOverride: null,
@@ -782,6 +794,7 @@ export function upgradeStoredMetadata(record: ChosenMetadata): ChosenMetadata {
   const stored = record as unknown as Record<string, unknown>;
   const upgraded: ChosenMetadata = { ...record };
 
+  if (!('titleEdits' in stored)) upgraded.titleEdits = {};
   if (!('publishAt' in stored)) upgraded.publishAt = null;
   if (!('publishAtSetAt' in stored)) upgraded.publishAtSetAt = null;
   if (!('thumbnailPath' in stored)) upgraded.thumbnailPath = null;
