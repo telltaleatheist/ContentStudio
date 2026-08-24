@@ -2123,6 +2123,14 @@ export class AIManagerService {
         params.output_config = {
           format: { type: 'json_schema', schema: AIManagerService.toStructuredOutputSchema(schema) },
         };
+        // The runaway brake's fast trigger. The schema grammar masks end-of-message until
+        // the JSON completes, so a model that writes ” where a string's closing " belongs
+        // is trapped emitting } (legal string content) to the token ceiling — 90-150s per
+        // glitched call on 2026-08-23. No answer under these schemas legitimately contains
+        // five consecutive closing braces (the deepest real closing run is "}]}"), so this
+        // halts the runaway at its first breath; runJsonRequest's truncation recovery then
+        // rebuilds the object from the prefix, which holds the whole answer.
+        params.stop_sequences = ['}}}}}'];
       } else {
         params.system =
           'You are a helpful assistant. When asked to return JSON, output ONLY valid JSON with no markdown, no commentary, and no extra text. Start your response with { and end with }.';
