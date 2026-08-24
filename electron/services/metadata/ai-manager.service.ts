@@ -203,18 +203,6 @@ export interface PromptSet {
   channel_tags?: string[];
 }
 
-/**
- * A cloud call whose ANSWER was unusable — no complete JSON object, unparseable after
- * repair, or parsed to a non-object. Distinct from a transport failure on purpose: the
- * chapter pipeline's policy is one decision per unusable answer (a re-ask or a declared
- * degradation) versus a throw for transport, and it used to tell the two apart by
- * substring-matching this service's error MESSAGES. That coupling broke the first time a
- * message was reworded (2026-08-23: "No complete JSON object" no longer contained
- * "No JSON object", so one truncated detail answer was misread as transport and killed the
- * whole chapter run). The TYPE is the contract now; the message is free to be descriptive.
- */
-export class CloudAnswerUnusableError extends Error {}
-
 export class AIManagerService {
   /**
    * Every prompt this instance has sent through makeRequest, in send order — what the call
@@ -1285,86 +1273,6 @@ export class AIManagerService {
   }
 
   /**
-   * A caller's JSON Schema, made valid for the API's structured outputs.
-   *
-   * The schemas this app already holds were written for Ollama's grammar decoding, which
-   * tolerates hints structured outputs rejects: length/numeric bounds (`maxLength`,
-   * `minimum`, ...) are unsupported there, and every object must declare
-   * `additionalProperties: false` plus a `required` list. This walks the schema, drops the
-   * unsupported hints (they were advisory on the local path too — the code enforces the
-   * real caps), and stamps the two object requirements. The caller's schema object is not
-   * mutated.
-   */
-  private static toStructuredOutputSchema(schema: Record<string, unknown>): Record<string, unknown> {
-    const UNSUPPORTED = new Set([
-      'minLength', 'maxLength', 'pattern', 'minimum', 'maximum', 'exclusiveMinimum',
-      'exclusiveMaximum', 'multipleOf', 'minItems', 'maxItems', 'uniqueItems',
-      'minProperties', 'maxProperties',
-    ]);
-    const walk = (node: unknown): unknown => {
-      if (Array.isArray(node)) return node.map(walk);
-      if (!node || typeof node !== 'object') return node;
-      const out: Record<string, unknown> = {};
-      for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
-        if (UNSUPPORTED.has(key)) continue;
-        out[key] = walk(value);
-      }
-      if (out.type === 'object' && out.properties && typeof out.properties === 'object') {
-        out.additionalProperties = false;
-        if (!Array.isArray(out.required)) out.required = Object.keys(out.properties as Record<string, unknown>);
-      }
-      return out;
-    };
-    return walk(schema) as Record<string, unknown>;
-  }
-
-  /**
-   * Escape raw control characters that sit INSIDE string literals, and touch nothing else.
-   *
-   * Escape state is tracked so an already-escaped sequence passes through unchanged, and
-   * text outside quotes — where a control character is legal JSON whitespace — is left
-   * exactly as it came. Used only after a strict parse has failed (runJsonRequest below).
-   */
-  private static escapeControlCharsInJsonStrings(text: string): string {
-    let out = '';
-    let inString = false;
-    let escaped = false;
-    for (const ch of text) {
-      if (inString) {
-        if (escaped) {
-          out += ch;
-          escaped = false;
-          continue;
-        }
-        if (ch === '\\') {
-          out += ch;
-          escaped = true;
-          continue;
-        }
-        if (ch === '"') {
-          inString = false;
-          out += ch;
-          continue;
-        }
-        const code = ch.charCodeAt(0);
-        if (code < 0x20) {
-          out +=
-            code === 0x0a ? '\\n' :
-            code === 0x0d ? '\\r' :
-            code === 0x09 ? '\\t' :
-            `\\u${code.toString(16).padStart(4, '0')}`;
-          continue;
-        }
-        out += ch;
-        continue;
-      }
-      if (ch === '"') inString = true;
-      out += ch;
-    }
-    return out;
-  }
-
-  /**
    * One cloud request whose answer is PLAIN TEXT — the transport for every plain-format call
    * (operator's ruling 2026-08-24: no JSON for these calls unless absolutely necessary).
    *
@@ -1378,238 +1286,13 @@ export class AIManagerService {
    */
   async runPlainRequest(prompt: string, model: string, what: string): Promise<string | null> {
     await this.ensureProviderReady(model);
-    const response = await this.makeRequest(prompt, model, 300, what, undefined, true);
+    const response = await this.makeRequest(prompt, model, 300, what, true);
     const text = stripThinking(response || '');
     if (text.length === 0) {
       log.warn(`[AIManager] the answer to ${what} from "${model}" came back empty`);
       return null;
     }
     return text;
-  }
-
-  /**
-   * One cloud request whose answer is a SMALL JSON OBJECT that is not a metadata package.
-   *
-   * `runMetadataRequest` above cannot serve this: it runs the answer through
-   * normalizeMetadataKeys, which fills the whole field registry and would turn `{"hook": ...}`
-   * into a MetadataResult with an empty everything. The description calls (description-unit.ts)
-   * ask for one key at a time under their own schema, so they need the object as it came back.
-   *
-   * NO SAMPLING PARAMETERS are sent on any path — every provider runs at its own defaults
-   * (operator's ruling, 2026-08-24, superseding spec §5's per-call temperatures; the API
-   * docs checked that day do NOT deprecate temperature, so this is a uniformity decision,
-   * not an API constraint). The close-quote runaway that briefly motivated cloud
-   * temperature 0 is instead held by the prompt-side quote rule in makeClaudeRequest and
-   * the netting: stop_sequences, the 4000-token brake, and truncation recovery.
-   *
-   * ONE attempt. The caller's policy for an unusable answer is its own — the description unit
-   * re-asks once and then keeps what it got — and a retry buried here would spend a second call
-   * before that policy ever saw the first answer.
-   */
-  async runJsonRequest(
-    prompt: string,
-    model: string,
-    what: string,
-    /**
-     * JSON Schema for the answer. When present and the model is a Claude one, the request
-     * runs under the API's structured outputs (`output_config.format`), which GUARANTEES
-     * syntactically valid JSON matching the schema — the whole malformed-answer class the
-     * repairs below exist for (raw newlines, trailing commas, unterminated strings, all
-     * measured on the 2026-08-23 cloud runs) cannot occur. Extraction and repair stay for
-     * schema-less callers and non-Claude providers.
-     *
-     * Constraining the OUTPUT does not constrain the REASONING, which is what made schemas
-     * a measured harm on the local grammar-decoded chapter path: on the cloud models this
-     * app routes to, thinking runs before the constrained answer and is untouched by it.
-     */
-    schema?: Record<string, unknown>
-  ): Promise<Record<string, unknown>> {
-    await this.ensureProviderReady(model);
-    const response = await this.makeRequest(prompt, model, 300, what, schema);
-    if (!response) {
-      throw new Error(`No response from "${model}" for ${what}`);
-    }
-    let extracted = AIManagerService.extractFirstJsonObject(response);
-    if (!extracted) {
-      // The object never closes. One real cause, seen repeatedly on Sonnet chapter-detail
-      // calls (2026-08-23/24): the model finishes the content, writes a typographic ” where
-      // the string's closing " belongs, and then — unable to legally end the object — emits
-      // closing braces until max_tokens. The whole answer is present in that prefix, so a
-      // truncated answer gets ONE structural recovery before it is declared unusable.
-      extracted = AIManagerService.recoverTruncatedObject(response);
-      if (extracted) {
-        log.warn(
-          `[AIManager] the answer to ${what} from "${model}" was truncated mid-structure (an unterminated ` +
-            `string or unclosed scope); its degenerate tail was peeled and the open scopes closed — the ` +
-            `recovered object is used, and this answer is worth an eyeball in the log below`
-        );
-        log.warn(`[AIManager] the truncated answer to ${what}:\n${response.slice(0, 2000)}`);
-      }
-    }
-    if (!extracted) {
-      log.warn(`[AIManager] the answer to ${what} from "${model}" holds no complete JSON object:\n${response}`);
-      throw new CloudAnswerUnusableError(
-        `No complete JSON object in the answer to ${what} from "${model}" (full answer in the log above)`
-      );
-    }
-    try {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(extracted);
-      } catch (strictError: any) {
-        // A cloud model legitimately writes JSON no grammar-constrained local call ever
-        // produces: a literal newline inside a string (the value is prose), a trailing comma
-        // before the closing brace. Strict parse first; on failure, both repairs are applied
-        // and the parse is tried once more. Anything still unparseable is a genuinely
-        // malformed answer and fails as before — with the WHOLE answer logged, because the
-        // 200-character snippet made the first two cloud runs' failures (2026-08-23, the f3
-        // and f2 chapter details) a diagnosis by guesswork.
-        parsed = JSON.parse(
-          AIManagerService.stripTrailingCommas(AIManagerService.escapeControlCharsInJsonStrings(extracted))
-        );
-        log.info(
-          `[AIManager] the answer to ${what} parsed only after repair — control characters in string ` +
-            `literals escaped, trailing commas stripped (strict parse: ${strictError?.message || strictError})`
-        );
-      }
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error(`the answer parsed to ${JSON.stringify(parsed)}, which is not an object`);
-      }
-      return parsed as Record<string, unknown>;
-    } catch (error: any) {
-      log.warn(`[AIManager] the full unparseable answer to ${what} from "${model}":\n${response}`);
-      throw new CloudAnswerUnusableError(
-        `Unparseable JSON in the answer to ${what} from "${model}": ${error?.message || error} ` +
-          `(the full answer is in the log above this error)`
-      );
-    }
-  }
-
-  /**
-   * The FIRST complete top-level JSON object in the text, extracted by brace depth with
-   * string and escape state tracked — never by regex.
-   *
-   * The `/\{[\s\S]*\}/` this replaces matched first `{` to LAST `}`, which breaks in both
-   * directions on a real cloud answer: prose after the object drags junk into the match, and
-   * an answer whose object never closes gets cut at some `}` inside its own prose — the
-   * "Unterminated string" the f2 chapter-detail call died of (2026-08-23). Control characters
-   * count as in-string content here (the repair above escapes them); this only finds where
-   * the object ENDS.
-   *
-   * Null when no object opens or none closes: a truncated answer is reported as what it is
-   * rather than parsed by luck.
-   */
-  private static extractFirstJsonObject(text: string): string | null {
-    const start = text.indexOf('{');
-    if (start === -1) return null;
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let i = start; i < text.length; i++) {
-      const ch = text[i];
-      if (inString) {
-        if (escaped) escaped = false;
-        else if (ch === '\\') escaped = true;
-        else if (ch === '"') inString = false;
-        continue;
-      }
-      if (ch === '"') inString = true;
-      else if (ch === '{') depth++;
-      else if (ch === '}') {
-        depth--;
-        if (depth === 0) return text.slice(start, i + 1);
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Close a truncated top-level object so its surviving content can be read.
-   *
-   * Reached ONLY after extractFirstJsonObject found no complete object, so a valid answer
-   * can never be rewritten by this. The shape it repairs is a max_tokens truncation whose
-   * prefix holds the whole answer: the tail is peeled of the junk a failing close emits
-   * (brace/bracket runs, typographic quotes, whitespace — all inside the never-closed
-   * string, which is why extraction refused it), the string is closed if one is open, a
-   * dangling comma or colon-value seam is dropped, and every open scope is closed in
-   * order. Null when there is no `{` at all or the result is structurally hopeless; the
-   * caller then fails exactly as before.
-   */
-  private static recoverTruncatedObject(text: string): string | null {
-    const start = text.indexOf('{');
-    if (start === -1) return null;
-
-    // Peel the degenerate tail: closing braces/brackets, typographic quote junk and
-    // whitespace. On a truncation these are string content or over-closes, never needed
-    // syntax — the scopes are re-closed properly below, from the parse state.
-    let body = text.slice(start);
-    body = body.replace(/[\s}\]“”‘’《》〈〉>）]+$/u, '');
-    if (body.length <= 1) return null;
-
-    // Walk what remains and record the open scopes and string state at the cut.
-    const stack: string[] = [];
-    let inString = false;
-    let escaped = false;
-    for (const ch of body) {
-      if (inString) {
-        if (escaped) escaped = false;
-        else if (ch === '\\') escaped = true;
-        else if (ch === '"') inString = false;
-        continue;
-      }
-      if (ch === '"') inString = true;
-      else if (ch === '{' || ch === '[') stack.push(ch === '{' ? '}' : ']');
-      else if (ch === '}' || ch === ']') {
-        if (stack.pop() !== ch) return null; // mismatched nesting: not a truncation, garbage
-      }
-    }
-    if (stack.length === 0) return null; // closed on its own: extraction would have taken it
-
-    if (escaped) body = body.slice(0, -1); // a lone trailing backslash cannot stay
-    if (inString) {
-      body += '"';
-      // The string the cut landed in may be a KEY, not a value: inside an object scope,
-      // a final string preceded by `{` or `,` has no colon coming, so it goes.
-      if (stack[stack.length - 1] === '}') {
-        const key = body.match(/[{,]\s*"(?:[^"\\]|\\.)*"$/);
-        if (key) body = body.slice(0, body.length - key[0].length + 1);
-      }
-    }
-    // Truncated between tokens: a dangling comma, or a key whose value never arrived.
-    const dangling = body.match(/,\s*$|,?\s*"(?:[^"\\]|\\.)*"\s*:\s*$/);
-    if (dangling) body = body.slice(0, body.length - dangling[0].length);
-    return body + stack.reverse().join('');
-  }
-
-  /**
-   * Remove a comma that directly precedes a closing brace or bracket, outside strings —
-   * string-aware for the same reason every scanner in this family is: a comma-brace
-   * sequence inside prose is content, not syntax.
-   */
-  private static stripTrailingCommas(text: string): string {
-    let out = '';
-    let inString = false;
-    let escaped = false;
-    for (const ch of text) {
-      if (inString) {
-        out += ch;
-        if (escaped) escaped = false;
-        else if (ch === '\\') escaped = true;
-        else if (ch === '"') inString = false;
-        continue;
-      }
-      if (ch === '"') {
-        inString = true;
-        out += ch;
-        continue;
-      }
-      if (ch === '}' || ch === ']') {
-        out = out.replace(/,(\s*)$/, '$1') + ch;
-        continue;
-      }
-      out += ch;
-    }
-    return out;
   }
 
   /**
@@ -1948,9 +1631,7 @@ export class AIManagerService {
     model: string,
     timeout: number = 600,
     what: string = 'AI request',
-    /** Structured-output schema, honored on the Claude route only — see runJsonRequest. */
-    schema?: Record<string, unknown>,
-    /** Plain-text call (runPlainRequest): the Claude route sends no JSON machinery at all. */
+    /** Plain-text call (runPlainRequest): the Claude route sends no JSON system nudge. */
     plain?: boolean
   ): Promise<string | null> {
     const requestId = Math.random().toString(36).substring(7);
@@ -1986,7 +1667,7 @@ export class AIManagerService {
             return await this.makeOpenAIRequest(prompt, model.replace('openai:', ''));
           } else if (model.startsWith('claude:')) {
             console.log(`[AIManager]   Provider: Claude`);
-            return await this.makeClaudeRequest(prompt, model.replace('claude:', ''), schema, plain);
+            return await this.makeClaudeRequest(prompt, model.replace('claude:', ''), plain);
           } else if (model.startsWith('ollama:')) {
             console.log(`[AIManager]   Provider: Ollama`);
             return await this.makeOllamaRequest(prompt, model.replace('ollama:', ''), timeout);
@@ -2148,7 +1829,7 @@ export class AIManagerService {
   /**
    * Make request to Claude
    */
-  private async makeClaudeRequest(prompt: string, model: string, schema?: Record<string, unknown>, plain?: boolean): Promise<string | null> {
+  private async makeClaudeRequest(prompt: string, model: string, plain?: boolean): Promise<string | null> {
     if (!this.anthropicClient) {
       throw new Error('Claude client not initialized');
     }
@@ -2160,47 +1841,17 @@ export class AIManagerService {
       const params: Record<string, unknown> = {
         model: actualModel,
         // A runaway brake, not a budget: the largest legitimate metadata answer (a 3-hour
-        // video's stage-1 chapter list, a compilation summary) stays under ~2500 tokens,
-        // and the one thing that ever reaches a ceiling is the close-quote glitch streaming
-        // `}` forever — at 16000 that cost 90-150s per glitched call (2026-08-23, six calls
-        // ≈ 10 of a 20-minute run). Truncation is recovered structurally in runJsonRequest,
-        // so dying fast loses nothing.
+        // video's stage-1 boundary list, a compilation package) stays under ~2500 tokens.
+        // The close-quote runaway this was sized against (2026-08-23: `}` streamed to a
+        // 16000 ceiling, 90-150s per glitched call) died with the JSON — a plain answer has
+        // no string literal to fail to close — and the brake stays because any runaway is
+        // 25s at 4000 instead of minutes.
         max_tokens: 4000,
         messages: [{ role: 'user', content: prompt }],
       };
-      if (plain) {
-        // A plain-text call. No system prompt, no output_config, no stop sequences: the
-        // prompt states its own format (lines, a comma line, hook/blank/body) and the whole
-        // JSON failure class this file's machinery below exists for has no place to happen.
-      } else if (schema) {
-        // Structured outputs: the API constrains the answer to this schema, so the JSON is
-        // valid by construction. The "end with }" system nudge is deliberately absent on
-        // this branch — it is the prompt-side workaround the schema supersedes, and it was
-        // itself implicated in Sonnet dropping the closing quote of the last string to make
-        // the answer literally end with "}" (the 2026-08-23 chapter-detail failures).
-        params.output_config = {
-          format: { type: 'json_schema', schema: AIManagerService.toStructuredOutputSchema(schema) },
-        };
-        // The root-cause lever for the close-quote runaway, prompt-side: at the end of a
-        // long prose value the tokens ." (JSON string close) and .” (English close-
-        // quotation) sit a hair apart, and when the prose one wins, the string never
-        // terminates and the schema grammar masks end-of-message — brace spam to the
-        // ceiling (2026-08-23/24). This line pushes the typographic-quote prior down
-        // before the choice is ever made; the stop-sequence and truncation recovery
-        // remain as the netting behind it.
-        params.system =
-          'Inside JSON string values, use plain ASCII punctuation only: straight quotes (\' and "), ' +
-          'never typographic quotation marks or apostrophes (\u201c \u201d \u2018 \u2019). ' +
-          'End every string value with the straight double-quote that closes it.';
-        // The runaway brake's fast trigger. The schema grammar masks end-of-message until
-        // the JSON completes, so a model that writes ” where a string's closing " belongs
-        // is trapped emitting } (legal string content) to the token ceiling — 90-150s per
-        // glitched call on 2026-08-23. No answer under these schemas legitimately contains
-        // five consecutive closing braces (the deepest real closing run is "}]}"), so this
-        // halts the runaway at its first breath; runJsonRequest's truncation recovery then
-        // rebuilds the object from the prefix, which holds the whole answer.
-        params.stop_sequences = ['}}}}}'];
-      } else {
+      if (!plain) {
+        // The JSON nudge, for the two JSON callers left: the compilation package and the
+        // episode splitter. Every routed field call goes through runPlainRequest instead.
         params.system =
           'You are a helpful assistant. When asked to return JSON, output ONLY valid JSON with no markdown, no commentary, and no extra text. Start your response with { and end with }.';
       }
