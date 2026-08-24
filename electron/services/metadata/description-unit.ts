@@ -415,10 +415,10 @@ export class DescriptionUnit implements MetadataUnit {
       `${OPTION_HOOK_TEMPERATURE} on the hook, each with a body written to continue it. The prompts\n` +
       `# are identical for all of them — only the sampling differs — so they are shown once.\n\n` +
       `# DESCRIPTION HOOK (${this.option.model}, ` +
-      `schema-constrained, temperature ${HOOK_TEMPERATURE})\n\n` +
+      `${this.option.kind === 'local' ? `schema-constrained, temperature ${HOOK_TEMPERATURE}` : 'JSON, provider defaults'})\n\n` +
       this.buildPrompt(DESCRIPTION_PROMPTS.HOOK, ctx, hookPending()) +
       `\n\n# DESCRIPTION BODY (${this.option.model}, ` +
-      `schema-constrained, temperature ${BODY_TEMPERATURE})\n\n` +
+      `${this.option.kind === 'local' ? `schema-constrained, temperature ${BODY_TEMPERATURE}` : 'JSON, provider defaults'})\n\n` +
       this.buildPrompt(DESCRIPTION_PROMPTS.BODY, ctx, hookPending())
     );
   }
@@ -699,12 +699,10 @@ export class DescriptionUnit implements MetadataUnit {
       ? await this.askLocal(prompt, what, schema, temperature, ctx)
       : await this.aiManager.runJsonRequest(
           prompt, this.option.model, `the description ${what} for ${ctx.sourceLabel}`,
-          // The same schema AND temperature the local call decodes under — the schema as
-          // structured outputs since 2026-08-23 (the API then guarantees the JSON parses,
-          // which free-form cloud answers measurably did not), the temperature since
-          // 2026-08-24 (spec §5's temps were silently local-only before, leaving cloud at
-          // the provider default of 1.0).
-          schema, temperature
+          // The same schema the local call decodes under, honored on the cloud path as
+          // structured outputs since 2026-08-23 — the API then guarantees the JSON parses,
+          // which free-form cloud answers measurably did not (the f2/f3 runs).
+          schema
         );
 
     const answer = value[key];

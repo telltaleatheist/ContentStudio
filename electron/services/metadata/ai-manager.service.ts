@@ -1345,13 +1345,8 @@ export class AIManagerService {
    * into a MetadataResult with an empty everything. The description calls (description-unit.ts)
    * ask for one key at a time under their own schema, so they need the object as it came back.
    *
-   * Temperature IS sent on the Claude route when the caller passes one. Spec §5's blanket
-   * "cloud models reject sampling parameters" was true of newer OpenAI models and of Claude
-   * only WITH extended thinking on — these calls run without thinking, where temperature is
-   * ordinary. Running the spec's temperature-0 chapter calls at the API default of 1.0 was
-   * the ROOT CAUSE of the close-quote runaways (2026-08-23/24): at full heat the prose
-   * token .” occasionally beats the JSON token ." at the end of a long string, and the
-   * schema grammar then masks end-of-message. The OpenAI route still sends none.
+   * NO SAMPLING PARAMETERS are sent, here or anywhere else on a cloud path: newer Claude and
+   * OpenAI models reject them (spec §5). The temperatures in the spec are for the local branch.
    *
    * ONE attempt. The caller's policy for an unusable answer is its own — the description unit
    * re-asks once and then keeps what it got — and a retry buried here would spend a second call
@@ -1373,12 +1368,10 @@ export class AIManagerService {
      * a measured harm on the local grammar-decoded chapter path: on the cloud models this
      * app routes to, thinking runs before the constrained answer and is untouched by it.
      */
-    schema?: Record<string, unknown>,
-    /** The call's spec temperature (0 = deterministic measurement). Undefined keeps the provider default. */
-    temperature?: number
+    schema?: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     await this.ensureProviderReady(model);
-    const response = await this.makeRequest(prompt, model, 300, what, schema, temperature);
+    const response = await this.makeRequest(prompt, model, 300, what, schema);
     if (!response) {
       throw new Error(`No response from "${model}" for ${what}`);
     }
@@ -1902,9 +1895,7 @@ export class AIManagerService {
     timeout: number = 600,
     what: string = 'AI request',
     /** Structured-output schema, honored on the Claude route only — see runJsonRequest. */
-    schema?: Record<string, unknown>,
-    /** Sampling temperature, honored on the Claude route only — see runJsonRequest. */
-    temperature?: number
+    schema?: Record<string, unknown>
   ): Promise<string | null> {
     const requestId = Math.random().toString(36).substring(7);
     const timestamp = new Date().toISOString();
@@ -1939,7 +1930,7 @@ export class AIManagerService {
             return await this.makeOpenAIRequest(prompt, model.replace('openai:', ''));
           } else if (model.startsWith('claude:')) {
             console.log(`[AIManager]   Provider: Claude`);
-            return await this.makeClaudeRequest(prompt, model.replace('claude:', ''), schema, temperature);
+            return await this.makeClaudeRequest(prompt, model.replace('claude:', ''), schema);
           } else if (model.startsWith('ollama:')) {
             console.log(`[AIManager]   Provider: Ollama`);
             return await this.makeOllamaRequest(prompt, model.replace('ollama:', ''), timeout);
@@ -2103,7 +2094,7 @@ export class AIManagerService {
   /**
    * Make request to Claude
    */
-  private async makeClaudeRequest(prompt: string, model: string, schema?: Record<string, unknown>, temperature?: number): Promise<string | null> {
+  private async makeClaudeRequest(prompt: string, model: string, schema?: Record<string, unknown>): Promise<string | null> {
     if (!this.anthropicClient) {
       throw new Error('Claude client not initialized');
     }
@@ -2123,13 +2114,6 @@ export class AIManagerService {
         max_tokens: 4000,
         messages: [{ role: 'user', content: prompt }],
       };
-      // The caller's spec temperature, at last honored on the cloud path — the chapter
-      // calls are DESIGNED to run at 0 (deterministic measurement; the re-ask at 0.3 is
-      // what makes a second sample a second sample), and running them at the API default
-      // of 1.0 was the root cause of the close-quote runaways. Valid here because these
-      // requests never enable extended thinking, the one condition under which the API
-      // rejects it.
-      if (typeof temperature === 'number') params.temperature = temperature;
       if (schema) {
         // Structured outputs: the API constrains the answer to this schema, so the JSON is
         // valid by construction. The "end with }" system nudge is deliberately absent on
