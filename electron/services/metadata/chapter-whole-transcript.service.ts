@@ -271,7 +271,8 @@ export interface WholeTranscriptChapterOptions {
     prompt: string,
     model: string,
     what: string,
-    schema?: Record<string, unknown>
+    schema?: Record<string, unknown>,
+    temperature?: number
   ) => Promise<Record<string, unknown>>;
   /**
    * The channel's promoted_items list (prompts/channels/*.yml), filled into the prompts'
@@ -904,7 +905,11 @@ export class WholeTranscriptChapterService {
       // (structured outputs guarantee valid JSON), so this catch is the backstop.
       try {
         return await this.options.cloudJson(
-          prompt, this.options.model, `${what} (chapters)`, CLOUD_STAGE_SCHEMAS[stage]
+          // The SAME sampling the local branch decodes under: 0 for the measurement, the
+          // re-ask's 0.3 for a genuine second sample. The API default of 1.0 these calls
+          // ran at before was the root cause of the close-quote runaways (2026-08-23/24).
+          prompt, this.options.model, `${what} (chapters)`, CLOUD_STAGE_SCHEMAS[stage],
+          sampling?.temperature ?? 0
         );
       } catch (error) {
         if (error instanceof CloudAnswerUnusableError) {
