@@ -4,7 +4,7 @@
  * Replaces the Python metadata_generator.py
  */
 
-import { AIManagerService, AIConfig, MetadataResult } from './ai-manager.service';
+import { AIManagerService, AIConfig, DIRECT_PASS_MAX_CHARS, MetadataResult } from './ai-manager.service';
 import { WhisperService } from './whisper.service';
 import { InputHandlerService, ContentItem } from './input-handler.service';
 import { Chapter } from './chapter-generator.service';
@@ -1324,12 +1324,16 @@ export class MetadataGeneratorService {
       host,
       model,
       // The cloud transport, exactly when the slot resolved to a cloud option. `model` is
-      // then the provider-prefixed string runJsonRequest routes on, and the service's
+      // then the provider-prefixed string runPlainRequest routes on, and the service's
       // local machinery (context sizing, residency) stands down — see the option's doc.
-      cloudJson:
+      cloudPlain:
         chapterOption.kind === 'cloud'
-          ? (prompt, cloudModel, what, schema) => aiManager.runJsonRequest(prompt, cloudModel, what, schema)
+          ? (prompt: string, cloudModel: string, what: string) =>
+              aiManager.runPlainRequest(prompt, cloudModel, what)
           : undefined,
+      // The rolling window's cloud input ceiling — the same direct-pass ceiling every cloud
+      // field call measures against.
+      cloudWindowChars: chapterOption.kind === 'cloud' ? DIRECT_PASS_MAX_CHARS.cloud : undefined,
       // The pipeline HOLDS its model here rather than unloading it when it finishes: the field
       // calls that run next are routed to the same 27B on most channels, and reloading it
       // between the two stages is the freeze this job stopped paying for.
