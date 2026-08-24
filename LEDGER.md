@@ -861,6 +861,8 @@ Diagnosis: the failure is the premise, not the tuning — a cosine valley measur
 
 **69. `shared-paths.ts` portable by design** — Node built-ins only; per-machine, not synced; Windows uses Local not Roaming. [shared-paths.ts:1-21]
 
+**160. The editor transcribes on whisper large-v3-turbo (operator, 2026-08-24).** The heavier-model swap the base catalog entry's comment always promised. `whisper-large-v3-turbo` is the required catalog entry (sha256/bytes computed from the actual 2026-08-24 download, 1,624,555,275 bytes); `whisper-base` demoted to optional and kept so older installs still resolve. `getWhisperModelPath` prefers BOTH turbo rungs (managed, then bundled) over every base rung — a machine with managed base installed and a bundled turbo must run turbo or the swap never lands — and the transitional chain below stays, logged with the sidecar's model provenance. Verified before the entry was written: the bundled Metal whisper-cli loads turbo and transcribed a 4-second test clip verbatim in ~1.2s; the model is installed in the managed dir AND the dev-checkout models dir on this machine, so neither dev runs nor the setup screen re-download. Cost accepted: turbo is ~5x slower than base and 11x its size; transcription quality is the priority now. [asset-catalog.ts; binary-resolver.ts]
+
 ### Extension
 
 **70. Recon was done on the wrong page — three live bugs, one root cause** — the standalone edit page differs from the upload wizard (different A/B dialog host, nav chips polluting `ytcp-chip`, paid promotion as a checkbox). "Any future recon must be done in the wizard." [AB-TEST-PLAN.md §3]

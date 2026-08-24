@@ -233,28 +233,34 @@ export class BinaryResolver {
   }
 
   /**
-   * Get the path to the whisper base model (ggml-base.bin). Order: the managed
-   * `whisper-base` catalog entry (a REAL entry — resolveEntry returns null only when not
-   * installed), then the bundled editor-backend/utilities/models/ggml-base.bin. Throws —
-   * no PATH/guess fallback — with an actionable install message when neither exists.
+   * Get the path to the whisper model. Order: the managed `whisper-large-v3-turbo`
+   * catalog entry (a REAL entry — resolveEntry returns null only when not installed),
+   * then the bundled editor-backend/utilities/models copy, then the older base-model
+   * chain. Throws — no PATH/guess fallback — with an actionable install message when
+   * nothing exists.
    */
   getWhisperModelPath(): string {
     if (this.cachedWhisperModelPath) return this.cachedWhisperModelPath;
 
-    // The shipped model is BASE. The preference chain below exists for real transitional
-    // states, never as a silent substitute: a dev checkout with a local model bundled, or a
-    // machine that installed a heavier model under an older catalog. base wins first; a
-    // larger locally-present model is only used when base itself is absent. Whichever is
-    // used is logged AND recorded in the transcript sidecar's 'model' field, so provenance
-    // is always visible.
-    const candidates: Array<{ kind: 'managed' | 'bundled'; name: string; p: string | null }> = [];
-    candidates.push({ kind: 'managed', name: 'base', p: assetManager.resolveEntry('whisper-base') });
-    for (const size of ['base', 'small', 'medium', 'large-v3']) {
-      candidates.push({
-        kind: 'bundled', name: size,
-        p: path.join(EditorPaths.utilitiesPath, 'models', `ggml-${size}.bin`),
-      });
-    }
+    // The shipped model is LARGE-V3-TURBO (operator, 2026-08-24 — it replaces base as the
+    // editor's transcription model; the catalog comment always said a heavier model could
+    // be swapped in here when quality became the priority). The rungs BELOW it exist for
+    // real transitional states, never as a silent substitute: a machine that installed
+    // base under the older catalog and has not run the setup screen since, or a dev
+    // checkout with a different local model bundled. Whichever runs is logged AND recorded
+    // in the transcript sidecar's 'model' field, so provenance is always visible.
+    // BOTH turbo rungs outrank every base rung — a machine with managed base installed
+    // and a bundled turbo present must run turbo, or the swap never lands there.
+    const bundled = (size: string) => ({
+      kind: 'bundled' as const, name: size,
+      p: path.join(EditorPaths.utilitiesPath, 'models', `ggml-${size}.bin`),
+    });
+    const candidates: Array<{ kind: 'managed' | 'bundled'; name: string; p: string | null }> = [
+      { kind: 'managed', name: 'large-v3-turbo', p: assetManager.resolveEntry('whisper-large-v3-turbo') },
+      bundled('large-v3-turbo'),
+      { kind: 'managed', name: 'base', p: assetManager.resolveEntry('whisper-base') },
+      ...['base', 'small', 'medium', 'large-v3'].map(bundled),
+    ];
     for (const c of candidates) {
       if (c.p && fs.existsSync(c.p)) {
         log.info(`Using ${c.kind} whisper ${c.name} model: ${c.p}`);
@@ -265,8 +271,8 @@ export class BinaryResolver {
 
     throw new Error(
       `Whisper model not installed — expected ` +
-      `${path.join(EditorPaths.utilitiesPath, 'models', 'ggml-base.bin')} or a managed ` +
-      `'whisper-base' install.`
+      `${path.join(EditorPaths.utilitiesPath, 'models', 'ggml-large-v3-turbo.bin')} or a managed ` +
+      `'whisper-large-v3-turbo' install.`
     );
   }
 

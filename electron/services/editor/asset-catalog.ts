@@ -152,19 +152,51 @@ const CATALOG: AssetComponent[] = [
     ],
   },
 
-  // ── Whisper base model (REQUIRED; the app's default transcription model) ────
-  // Installed by the first-launch setup screen — deliberately NOT a user choice of
-  // sizes. base is the default: small (~148 MB) and fast, so it downloads quickly
-  // and transcribes cheaply while iterating. (It does NOT reliably surface fillers
-  // like um/uh — that's a training property of Whisper at every size — so a heavier
-  // model can be swapped back in here later if verbatimness becomes the priority.)
-  // The transcript sidecar records which model actually ran.
+  // ── Whisper large-v3-turbo (REQUIRED; the app's transcription model) ────────
+  // The heavier-model swap the base entry's comment always promised (operator,
+  // 2026-08-24: the editor's transcribe step runs large-v3-turbo). ~1.6 GB, so the
+  // first-launch download is no longer small — accepted: transcription quality is
+  // the priority now, not iteration speed. Verified against the bundled Metal
+  // whisper-cli on this machine before the entry was written: loads, transcribes,
+  // ~1.2 s for a 4-second clip. The transcript sidecar records which model
+  // actually ran, and binary-resolver's transitional chain still runs an already-
+  // installed base where this is absent — loudly, never silently.
   {
-    id: 'whisper-base',
-    name: 'Whisper speech-recognition model',
+    id: 'whisper-large-v3-turbo',
+    name: 'Whisper speech-recognition model (large-v3-turbo)',
     description: 'Speech-to-text model used for transcription and story transcripts.',
     category: 'models',
     required: true,
+    installSubdir: 'whisper',
+    version: 'large-v3-turbo',
+    entry: 'ggml-large-v3-turbo.bin',
+    artifacts: [
+      // Cross-platform single file — same model on every OS. sha256/bytes computed
+      // from the file downloaded from this exact URL on 2026-08-24.
+      ...(['darwin', 'win32', 'linux'] as Platform[]).flatMap((platform) =>
+        (['arm64', 'x64'] as Arch[]).map((arch) => ({
+          platform,
+          arch,
+          kind: 'file' as const,
+          url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin',
+          sha256: '1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69',
+          bytes: 1624555275,
+          fileName: 'ggml-large-v3-turbo.bin',
+        }))
+      ),
+    ],
+  },
+
+  // ── Whisper base model (optional since 2026-08-24; superseded by large-v3-turbo
+  // above as the required default). Kept in the catalog so machines that installed
+  // it under the older required entry still resolve it — binary-resolver runs it
+  // only when turbo is absent, and logs which model ran.
+  {
+    id: 'whisper-base',
+    name: 'Whisper speech-recognition model (base)',
+    description: 'Smaller, faster speech-to-text model — superseded by large-v3-turbo.',
+    category: 'models',
+    required: false,
     installSubdir: 'whisper',
     version: 'base',
     entry: 'ggml-base.bin',
