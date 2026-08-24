@@ -140,6 +140,7 @@ Standing rules with their origin. These override convenience every time.
 | 9 | **Before/after with explanations for prompt and config changes.** Owen wants to understand changes to his creative tooling, not just receive them. | Owen, 2026-07-08 |
 | 10 | **Cross-layer contracts are types, not prose.** A message-substring contract between two files killed a whole chapter run when one message was reworded (2026-08-23). If two subsystems must agree, encode it (typed errors, shared constants, schemas). | 2026-08-23 |
 | 11 | **Prose contracts get read at wiring time.** Every bug on 2026-08-23 happened at a seam where a documented assumption (queue single-slot, grammar-JSON vs free-JSON, sentence-case grounding) wasn't read before connecting new code to it. | 2026-08-23 retrospective |
+| 12 | **Plain text unless JSON is absolutely necessary.** Generation calls answer in the shape the answer has — lines, a paragraph, hook/blank/body. JSON string literals were where a whole failure class lived (close-quote runaway, `"..."` bodies, the repair ladder); measured same night: 27B bodies 2/5 usable under JSON, 5/5 plain. JSON survives only for genuinely structured multi-field answers (compilation package, episode splitter), each justified in a code comment. | Owen, 2026-08-24 |
 
 ---
 
@@ -170,12 +171,25 @@ Status marks: ✅ in force · ❌ dead (with cause of death) · ⚠️ open/unce
   HOST talking). ❌ WhisperX rejected (blind clustering, replaces whisper.cpp). Whisper
   itself cannot diarize — verification-against-enrollment is the approach.
 
-### Chapters (four architectures; three dead)
+### Chapters (five architectures; four dead)
 - ❌ **Sealed 5-stage 14B pipeline** — ~390 one-question calls a video. Too slow,
   stall-prone.
 - ❌ **27B single call with code-computed count** — the cadence table handed the model a
   target count, which turned rhetorical pauses into boundaries. Also PR #32's experimental
   single-call variant: 2/2 smoke rejections on gap variance.
+- ❌ **Whole-transcript JSON call (fourth architecture)** — one call, (label, first_sentence)
+  pairs as JSON, quote→timestamp mapping, per-chapter JSON detail calls, THE TITLE RULE
+  arbitrating two title sources. The mapping and cadence design were RIGHT and survive; what
+  killed it was the container (close-quote runaways, `"..."` details, schema/repair machinery)
+  and the two-source title fight (the 0:00 quote-title bug, 2026-08-24). Superseded same day
+  by the plain-text architecture below.
+- ✅ **Plain-text rolling-window architecture (fifth, 2026-08-24, merge 9dcbf93)** — stage 1:
+  verbatim opening sentences one per line over a ROLLING WINDOW (window = what fits on cue
+  boundaries; next window starts at the last mapped boundary so no seam cuts a subject;
+  degenerate no-progress case advances to window end with a loud warning; one window ≡ the old
+  single call). Stage 2 names EVERY chapter (title line + detail lines) including 0:00 — THE
+  TITLE RULE is retired. Quote mapping, cadence bands, promo partition, judges, deliver-and-
+  curate all unchanged. Description became one call per candidate (hook / blank line / body).
 - ❌ **Embedding pipeline** (nomic-embed-text cosine valleys, 2026-08-22, deleted same
   week) — 43% boundary recall at 32% precision; best full-sweep config 61%. Cause of
   death: the premise — a reaction video playing four clips about one topic has one
