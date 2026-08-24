@@ -170,6 +170,7 @@ function parseArgs(argv) {
     else if (a === '--recompute-insights') args.recomputeInsights = true;
     else if (a === '--transcribe') args.transcribe = true;
     else if (a === '--chapters') args.freshChapters = true;
+    else if (a === '--show-prompts') args.showPrompts = true;
     else if (FIELD_FLAGS[a]) args.fields.push(FIELD_FLAGS[a]);
     else fail(`Unknown option: ${a}  (--help for usage)`);
   }
@@ -459,8 +460,9 @@ async function main() {
   }
   console.error(`  whisper:     ${settings.whisperModel}`);
   console.error(`  routing:     ${Object.entries(resolvedRouting).map(([k, v]) => `${k}=${v}`).join(', ')}`);
-  console.error(`  chapters:    ${routing.CHAPTER_PIPELINE_MODELS.generation} (not routed)`);
-  console.error(`  summarizer:  ${routing.SUMMARIZATION_MODEL}`);
+  // Chapters route per-field since 2026-08-24 (the `chapters` entry above); the summarizer
+  // follows the chapters selection, falling to SUMMARIZATION_MODEL only when chapters are local.
+  console.error(`  summarizer:  follows chapters=${resolvedRouting.chapters}`);
   console.error(`  packaging:   ${fullModel} (compilation only)`);
   console.error(`  insights:    ${insightsBlock ? `${insightsBlock.length} chars` : '(none)'}`);
   console.error(`               ${insightsSource}`);
@@ -661,6 +663,30 @@ async function main() {
       console.error(`    ${c.timestamp} - ${c.title}`);
     }
     console.error('');
+  }
+
+  if (args.showPrompts) {
+    // The dry run Owen's verification protocol starts with (2026-08-24): every field prompt
+    // this run WOULD send, assembled by the real planner and written to files, with no model
+    // called. Chapters must already be cached (or freshly computed above) — the field
+    // prompts condition on them.
+    const pass = await MetadataGeneratorService.generate({ ...baseParams, preComputedChapters, showPrompt: true });
+    if (!pass.success) fail(`The prompt-assembly pass failed: ${pass.error}`);
+    const dir = path.join(outputDir, 'prompt-dumps');
+    fs.mkdirSync(dir, { recursive: true });
+    const base = path.basename(args.input).replace(/\.[^/.]+$/, '');
+    const written = [];
+    for (const prompt of pass.prompts || []) {
+      const m = prompt.match(/^=== UNIT: ([^(]+)/);
+      const slug = (m ? m[1] : `unit-${written.length + 1}`).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      const file = path.join(dir, `${base}--${slug}.prompt.txt`);
+      fs.writeFileSync(file, prompt, 'utf8');
+      written.push(file);
+    }
+    console.error(`${bar}\nSHOW PROMPTS (--show-prompts): ${written.length} prompt(s) written, NO model was called.\n`);
+    for (const f of written) console.error(`  ${f}`);
+    console.error(`${bar}\n`);
+    process.exit(0);
   }
 
   if (chaptersOnly) {
