@@ -305,6 +305,8 @@ export interface MetadataRoutingTask {
   /** Already filtered by the main process to the models valid for this task. */
   options: MetadataRoutingOption[];
   selectedOptionId: string;
+  /** Rendered as a row in the routing dialog. False = stored-entry-only (tags). */
+  modal: boolean;
 }
 
 /** The Ollama host every plain-local option was checked against. */
@@ -336,16 +338,7 @@ export interface MetadataRoutingChapters {
  * Claude model). `selectedOptionId` is null when the store was hand-set per field and the
  * tasks disagree — shown as Custom, never reconciled.
  */
-export interface MetadataRoutingSlot {
-  id: string;
-  label: string;
-  taskIds: string[];
-  options: MetadataRoutingOption[];
-  selectedOptionId: string | null;
-}
-
 export interface MetadataRouting {
-  slots: MetadataRoutingSlot[];
   tasks: MetadataRoutingTask[];
   localModels: MetadataRoutingHost;
   chapters: MetadataRoutingChapters;
