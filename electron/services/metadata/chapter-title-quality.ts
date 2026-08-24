@@ -147,13 +147,46 @@ export interface NarratedActorVerdict {
  *  2. ACTOR + NARRATION VERB — any subject, real name included, followed within the first
  *     few words by a verb that describes covering something ("Pastor Brad Wells shares ...").
  *
- * Deliberately shallow: it reads the first clause, because that is where a title's
- * grammatical subject is, and a deeper parse would need a parser. False negatives are
- * expected and acceptable — this triggers one re-ask and feeds a metric, and both of those
- * are improved by a check that is easy to reason about.
+ * Deliberately shallow: it reads clause SUBJECTS, because that is where a narrator hides,
+ * and a deeper parse would need a parser. False negatives are expected and acceptable —
+ * this feeds a declared warning and a metric, and both of those are improved by a check
+ * that is easy to reason about.
+ *
+ * THE WHOLE TITLE IS READ, not just the first clause — measured on u2's outro (2026-08-24),
+ * where "The closing prayer and the creator's final reaction" and Sonnet's "..., and the
+ * host's closing reaction to the sermon" both passed a first-clause-only read and both are
+ * the exact possessive-narrator form the list's own header names as a failure. Two widenings,
+ * both restricted to the INVENTED-NARRATOR family because a later clause naming "the pastor's
+ * mongrel slur" is the target register — the pastor is on screen — while "the host's
+ * reaction" invents its actor in any position:
+ *
+ *  - a possessive invented narrator flags WHEREVER it stands ("followed by the host's
+ *    disturbed reaction" has no clause break before the narrator, so no subject read finds it);
+ *  - an invented narrator at a LATER clause's subject position flags ("while the host reacts
+ *    to the sermon").
+ *
+ * The wider actor-noun, pronoun and narration-verb patterns stay first-clause-only: run on
+ * every clause they misread trailing noun phrases — "the witchcraft claim" became a
+ * subject-plus-verb — and the failures they exist for are title-subject failures.
  */
 export function narratesAnActor(title: string): NarratedActorVerdict {
-  const clause = firstClause(title);
+  // A possessive invented narrator, anywhere: "the speaker's book on Christian nationalism"
+  // is grammatically topic form and still invents the speaker (the list's own header).
+  for (const word of title.split(/\s+/)) {
+    const cleaned = word.toLowerCase().replace(/[^a-z'’]/g, '');
+    if (POSSESSIVE.test(word) && INVENTED_NARRATORS.includes(singular(cleaned.replace(/['’]s$/, '')))) {
+      return { narrated: true, pattern: 'actor-subject' };
+    }
+  }
+  const clauses = titleClauses(title);
+  for (let i = 0; i < clauses.length; i++) {
+    const verdict = narratedClause(clauses[i], i === 0);
+    if (verdict.narrated) return verdict;
+  }
+  return { narrated: false, pattern: '' };
+}
+
+function narratedClause(clause: string, isFirst: boolean): NarratedActorVerdict {
   const words = clause.split(/\s+/).filter(Boolean);
   if (words.length === 0) return { narrated: false, pattern: '' };
 
@@ -181,17 +214,26 @@ export function narratesAnActor(title: string): NarratedActorVerdict {
   if (subject && !followedByAName && possessiveSubject && INVENTED_NARRATORS.includes(stem)) {
     return { narrated: true, pattern: 'actor-subject' };
   }
-  if (subject && !followedByAName && !possessiveSubject && ACTOR_NOUNS.includes(stem)) {
+  // The wider actor-noun and pronoun families only flag as the TITLE's subject (the first
+  // clause): "and the pastor's mongrel slur" in a later clause names someone on screen.
+  if (isFirst && subject && !followedByAName && !possessiveSubject && ACTOR_NOUNS.includes(stem)) {
     return { narrated: true, pattern: 'actor-subject' };
   }
-  if (subjectAt === 0 && ACTOR_PRONOUNS.includes(subject)) return { narrated: true, pattern: 'actor-subject' };
+  if (!isFirst && subject && !followedByAName && !possessiveSubject && INVENTED_NARRATORS.includes(stem)) {
+    return { narrated: true, pattern: 'actor-subject' };
+  }
+  if (isFirst && subjectAt === 0 && ACTOR_PRONOUNS.includes(subject)) {
+    return { narrated: true, pattern: 'actor-subject' };
+  }
 
   // Pattern 2: a narration verb early enough to be this clause's main verb. A possessive
   // subject ("Gene Bailey's use of Jabez") never reaches one, which is the target form.
+  // First clause only — see the header's widening note.
+  if (!isFirst) return { narrated: false, pattern: '' };
   const verbWindow = lower.slice(0, Math.min(6, lower.length));
   const verbAt = verbWindow.findIndex((w) => NARRATION_VERBS.includes(w));
   if (verbAt !== -1) {
-    // Three ways the apparent verb is really a NOUN, all of which are the target register:
+    // Four ways the apparent verb is really a NOUN, all of which are the target register:
     //
     //  - AT POSITION 0. English does not open a declarative clause with its finite verb, so
     //    "Debate about Trump's refusal ..." is a noun phrase — and it is precisely the form
@@ -199,10 +241,15 @@ export function narratesAnActor(title: string): NarratedActorVerdict {
     //  - FOLLOWED BY A PREPOSITION. "report on X", "discussion of Y", "debate over Z": the
     //    word takes a complement, which a finite verb in this position would not.
     //  - AFTER A POSSESSIVE. "Gene Bailey's call to occupy territory", "Paul Petit's report".
+    //  - CLAUSE-FINAL IN BARE FORM. A finite verb after a singular subject carries -s ("the
+    //    host reacts", "Gene Bailey claims X"), so "The bridge contract claim" ends in the
+    //    bare form because claim is its head noun — that title is the operator's own worked
+    //    example from the prompt bodies, and this check flagged it until 2026-08-24.
     const nounAtStart = verbAt === 0;
     const takesAComplement = NOUN_COMPLEMENTS.has(lower[verbAt + 1] || '');
     const possessiveBefore = words.slice(0, verbAt).some((w) => POSSESSIVE.test(w));
-    if (!nounAtStart && !takesAComplement && !possessiveBefore) {
+    const bareAndFinal = verbAt === words.length - 1 && !lower[verbAt].endsWith('s');
+    if (!nounAtStart && !takesAComplement && !possessiveBefore && !bareAndFinal) {
       return { narrated: true, pattern: 'actor-verb' };
     }
   }
@@ -214,9 +261,12 @@ function singular(word: string): string {
   return word.endsWith('s') && word.length > 3 ? word.slice(0, -1) : word;
 }
 
-/** The title up to its first clause break — where the grammatical subject lives. */
-function firstClause(title: string): string {
-  return title.split(/[,;:—–]|\s+(?:and|but|before|while|then)\s+/i)[0].trim();
+/** The title's clauses — each one's opening words are a subject position worth reading. */
+function titleClauses(title: string): string[] {
+  return title
+    .split(/[,;:—–]|\s+(?:and|but|before|while|then)\s+/i)
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0);
 }
 
 /**

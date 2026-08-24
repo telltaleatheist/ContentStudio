@@ -55,8 +55,8 @@
  * is DECLARED: logged, counted in the run's stats, and pushed into `warnings` so the job
  * report says it happened. There is no silent recovery anywhere in this file.
  *
- *  - the ONE chapter call answers unusably -> ONE re-ask at a different SAMPLE, and if that
- *                                  also fails the run THROWS. There are no chapters to
+ *  - the ONE chapter call answers unusably -> the run THROWS (no re-asks anywhere —
+ *                                  operator, 2026-08-24). There are no chapters to
  *                                  degrade to; resolveChapters records `chaptersSkipped` and
  *                                  the user sees that the item has none and why.
  *  - a quote will not map        -> that chapter is DROPPED and a warning names it and its
@@ -70,10 +70,9 @@
  *  - a detail answer fails       -> that chapter keeps its title and carries no detail, and
  *                                  a warning says the description was written without it.
  *  - a title names something     -> the title is KEPT exactly as written and a warning names
- *    its chapter never said,        it. Never a rewrite, never a block: the operator curates
- *    or narrates an actor           the output. Every title comes from its detail call, so
- *                                  every one gets ONE re-ask first — that is the one title a
- *                                  second sample can change.
+ *    its chapter never said,        it. Never a rewrite, never a block, never a re-ask: the
+ *    or narrates an actor           operator curates the output, and a fault that recurs is
+ *                                  a prompt problem to fix at the source.
  *  - the transcript is uncased   -> the entity scaffold and the grounding check cannot run,
  *                                  and a warning says the titles were written without them.
  *
@@ -159,10 +158,9 @@ const ENTITY_SCAFFOLD_LIMIT = 8;
 /*
  * No sampling parameters are set anywhere in this pipeline (operator's ruling 2026-08-24:
  * provider defaults everywhere; a model that cannot perform there is replaced, not tuned).
- * At default sampling every ask is already a fresh draw, so a re-ask IS a second sample with
- * no seed juggling — the earlier temperature-0/seed-0 measurement design is superseded. The
- * re-ask prompt still never quotes the rejected answer back and never describes what was
- * wrong with it, because a prompt that shows a model the wrong form teaches it that form.
+ * The earlier temperature-0/seed-0 measurement design is superseded, and the re-ask
+ * machinery that once rode on it is GONE with the no-re-asks ruling of the same day: every
+ * call is asked once, and what comes back is what the run has.
  */
 
 
@@ -281,7 +279,7 @@ function plainTranscript(cues: Cue[]): string {
  * One copied sentence per line, per the prompt; the label field is structurally empty because
  * stage 1 no longer names anything — every chapter is named by its own detail call. A line is
  * the measurement, and a lineless answer is no answer (parseLines throws; the caller's
- * re-ask policy owns that).
+ * failure policy owns that).
  */
 function readQuoteLines(text: string, what: string): ChapterClaim[] {
   return parseLines(text, what).map((quote) => ({ label: '', quote }));
@@ -629,9 +627,9 @@ export class WholeTranscriptChapterService {
    * video's title/filename, and the PREVIOUS chapter's detail threaded, so chapter N knows
    * what "back to what we discussed" refers to and the details do not repeat.
    *
-   * Its `title` answer IS every chapter's title — stage 1 names nothing — so the grounding
-   * and register checks get ONE re-ask on every chapter, because a second sample is the one
-   * thing that can change a detail-call title.
+   * Its `title` answer IS every chapter's title — stage 1 names nothing — and the grounding
+   * and register checks judge each one ONCE, warning on the answer kept exactly as written
+   * (no re-asks anywhere — operator, 2026-08-24).
    */
   private async detailChapters(
     spans: { startSec: number; endSec: number }[],

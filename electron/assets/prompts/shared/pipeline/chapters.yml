@@ -113,6 +113,7 @@ summarize_chapter: |-
     - "Roswell and the UAP disclosure order"
   - Every name in your answer comes from the transcript below. Where the transcript names a person, organisation, story or claim, put that name in the title; where it says only "the mayor", the title says "the mayor".
   - Where a stretch is somebody's response to something rather than a claim of its own, title the claim and the response as content: "The bridge contract claim, rebutted"; "Patreon plug and a promotion of the book Was Hitler an Atheist"; "Sign-off and a book promotion".
+  - The closing stretch of a video is a chapter of content like the rest: title the thing it closes on and the verdict passed on it, in the same topic form — "The closing prayer, and a final verdict on Gene Bailey's takeover call"; "Gene Bailey's takeover call condemned, and a sign-off". The verdict is itself content: name the claim it lands on and what that claim is called.
 
   How to write the summary:
   - The same topic form as the title, in 2-3 sentences: the claims, the people named in the transcript, and what is said about them.
@@ -170,6 +171,7 @@ summarize_chapter_tagged: |-
     - "The bridge contract claim, rebutted"
   - Every name in your answer comes from the transcript below. Where the transcript names a person, organisation, story or claim, put that name in the title; where it says only "the mayor", the title says "the mayor".
   - Where a stretch is somebody's response to something rather than a claim of its own, title the claim and the response as content: "The bridge contract claim, rebutted"; "Patreon plug and a promotion of the book Was Hitler an Atheist"; "Sign-off and a book promotion".
+  - The closing stretch of a video is a chapter of content like the rest: title the thing it closes on and the verdict passed on it, in the same topic form — "The closing prayer, and a final verdict on Gene Bailey's takeover call"; "Gene Bailey's takeover call condemned, and a sign-off". The verdict is itself content: name the claim it lands on and what that claim is called.
 
   How to use the tags:
   - A claim in a CLIP line belongs to the footage; the HOST lines are the response to it. Write the chapter around the claim that is actually being made and the response it gets, in that relation.
