@@ -28,6 +28,7 @@ import { ChannelData, PROMPTS_SUBDIR, initPromptAssets, promptAssets } from './p
 import { Chapter } from './chapter-generator.service';
 import { queueAITask } from '../queue-manager.service';
 import { JobCancelledError, isAbortError } from './cancellation';
+import { stripThinking } from './plain-call';
 
 /**
  * How much raw transcript each transport reads BEFORE anything is condensed.
@@ -1338,6 +1339,29 @@ export class AIManagerService {
   }
 
   /**
+   * One cloud request whose answer is PLAIN TEXT — the transport for every plain-format call
+   * (operator's ruling 2026-08-24: no JSON for these calls unless absolutely necessary).
+   *
+   * No output_config, no JSON system nudge, no stop sequences: the request is the prompt and
+   * the 4000-token runaway brake and nothing else. Inline <think> blocks are stripped once,
+   * here, so no caller re-learns that a reasoning model sometimes narrates before it answers.
+   *
+   * Returns null for an EMPTY answer — the caller's one-decision cost, exactly as the local
+   * transport's `ok: false` is — and throws on transport failure, which affects every
+   * remaining call. Same split as everywhere else, typed by shape rather than message text.
+   */
+  async runPlainRequest(prompt: string, model: string, what: string): Promise<string | null> {
+    await this.ensureProviderReady(model);
+    const response = await this.makeRequest(prompt, model, 300, what, undefined, true);
+    const text = stripThinking(response || '');
+    if (text.length === 0) {
+      log.warn(`[AIManager] the answer to ${what} from "${model}" came back empty`);
+      return null;
+    }
+    return text;
+  }
+
+  /**
    * One cloud request whose answer is a SMALL JSON OBJECT that is not a metadata package.
    *
    * `runMetadataRequest` above cannot serve this: it runs the answer through
@@ -1899,7 +1923,9 @@ export class AIManagerService {
     timeout: number = 600,
     what: string = 'AI request',
     /** Structured-output schema, honored on the Claude route only — see runJsonRequest. */
-    schema?: Record<string, unknown>
+    schema?: Record<string, unknown>,
+    /** Plain-text call (runPlainRequest): the Claude route sends no JSON machinery at all. */
+    plain?: boolean
   ): Promise<string | null> {
     const requestId = Math.random().toString(36).substring(7);
     const timestamp = new Date().toISOString();
@@ -1934,7 +1960,7 @@ export class AIManagerService {
             return await this.makeOpenAIRequest(prompt, model.replace('openai:', ''));
           } else if (model.startsWith('claude:')) {
             console.log(`[AIManager]   Provider: Claude`);
-            return await this.makeClaudeRequest(prompt, model.replace('claude:', ''), schema);
+            return await this.makeClaudeRequest(prompt, model.replace('claude:', ''), schema, plain);
           } else if (model.startsWith('ollama:')) {
             console.log(`[AIManager]   Provider: Ollama`);
             return await this.makeOllamaRequest(prompt, model.replace('ollama:', ''), timeout);
@@ -2096,7 +2122,7 @@ export class AIManagerService {
   /**
    * Make request to Claude
    */
-  private async makeClaudeRequest(prompt: string, model: string, schema?: Record<string, unknown>): Promise<string | null> {
+  private async makeClaudeRequest(prompt: string, model: string, schema?: Record<string, unknown>, plain?: boolean): Promise<string | null> {
     if (!this.anthropicClient) {
       throw new Error('Claude client not initialized');
     }
@@ -2116,7 +2142,11 @@ export class AIManagerService {
         max_tokens: 4000,
         messages: [{ role: 'user', content: prompt }],
       };
-      if (schema) {
+      if (plain) {
+        // A plain-text call. No system prompt, no output_config, no stop sequences: the
+        // prompt states its own format (lines, a comma line, hook/blank/body) and the whole
+        // JSON failure class this file's machinery below exists for has no place to happen.
+      } else if (schema) {
         // Structured outputs: the API constrains the answer to this schema, so the JSON is
         // valid by construction. The "end with }" system nudge is deliberately absent on
         // this branch — it is the prompt-side workaround the schema supersedes, and it was
