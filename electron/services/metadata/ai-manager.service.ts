@@ -2105,7 +2105,13 @@ export class AIManagerService {
 
       const params: Record<string, unknown> = {
         model: actualModel,
-        max_tokens: 16000,
+        // A runaway brake, not a budget: the largest legitimate metadata answer (a 3-hour
+        // video's stage-1 chapter list, a compilation summary) stays under ~2500 tokens,
+        // and the one thing that ever reaches a ceiling is the close-quote glitch streaming
+        // `}` forever — at 16000 that cost 90-150s per glitched call (2026-08-23, six calls
+        // ≈ 10 of a 20-minute run). Truncation is recovered structurally in runJsonRequest,
+        // so dying fast loses nothing.
+        max_tokens: 4000,
         messages: [{ role: 'user', content: prompt }],
       };
       if (schema) {
