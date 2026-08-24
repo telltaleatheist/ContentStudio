@@ -1345,8 +1345,12 @@ export class AIManagerService {
    * into a MetadataResult with an empty everything. The description calls (description-unit.ts)
    * ask for one key at a time under their own schema, so they need the object as it came back.
    *
-   * NO SAMPLING PARAMETERS are sent, here or anywhere else on a cloud path: newer Claude and
-   * OpenAI models reject them (spec §5). The temperatures in the spec are for the local branch.
+   * NO SAMPLING PARAMETERS are sent on any path — every provider runs at its own defaults
+   * (operator's ruling, 2026-08-24, superseding spec §5's per-call temperatures; the API
+   * docs checked that day do NOT deprecate temperature, so this is a uniformity decision,
+   * not an API constraint). The close-quote runaway that briefly motivated cloud
+   * temperature 0 is instead held by the prompt-side quote rule in makeClaudeRequest and
+   * the netting: stop_sequences, the 4000-token brake, and truncation recovery.
    *
    * ONE attempt. The caller's policy for an unusable answer is its own — the description unit
    * re-asks once and then keeps what it got — and a retry buried here would spend a second call
@@ -1993,7 +1997,6 @@ export class AIManagerService {
           prompt: effectivePrompt,
           stream: false,
           options: {
-            temperature: 0.7,
             num_predict: AIManagerService.OLLAMA_NUM_PREDICT,
             num_ctx: AIManagerService.OLLAMA_NUM_CTX,
           },
@@ -2048,7 +2051,6 @@ export class AIManagerService {
           model,
           messages: [{ role: 'user', content: prompt }],
           max_tokens: 2000,
-          temperature: 0.7,
         },
         { signal: this.config.abortSignal }
       );
@@ -2123,6 +2125,17 @@ export class AIManagerService {
         params.output_config = {
           format: { type: 'json_schema', schema: AIManagerService.toStructuredOutputSchema(schema) },
         };
+        // The root-cause lever for the close-quote runaway, prompt-side: at the end of a
+        // long prose value the tokens ." (JSON string close) and .” (English close-
+        // quotation) sit a hair apart, and when the prose one wins, the string never
+        // terminates and the schema grammar masks end-of-message — brace spam to the
+        // ceiling (2026-08-23/24). This line pushes the typographic-quote prior down
+        // before the choice is ever made; the stop-sequence and truncation recovery
+        // remain as the netting behind it.
+        params.system =
+          'Inside JSON string values, use plain ASCII punctuation only: straight quotes (\' and "), ' +
+          'never typographic quotation marks or apostrophes (\u201c \u201d \u2018 \u2019). ' +
+          'End every string value with the straight double-quote that closes it.';
         // The runaway brake's fast trigger. The schema grammar masks end-of-message until
         // the JSON completes, so a model that writes ” where a string's closing " belongs
         // is trapped emitting } (legal string content) to the token ceiling — 90-150s per
