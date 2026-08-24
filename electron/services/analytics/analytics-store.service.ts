@@ -31,8 +31,7 @@ import {
   SnapshotValidationError,
   VideoRecord,
   VideoRecordValidationError,
-  VideoVerdict,
-} from './analytics-types';
+  VideoVerdict, ChannelGuidelines } from './analytics-types';
 
 const VALID_FORMATS = ['long', 'short', 'live'];
 const VALID_TITLE_ORIGINS = ['upload', 'manual-edit', 'ab-rotation', 'test-compare'];
@@ -512,6 +511,17 @@ export class AnalyticsStoreService {
 
   loadChannelInsights(channelId: string): ChannelInsights | null {
     return this.readJson<ChannelInsights>(path.join(this.channelDir(channelId), 'insights.json'));
+  }
+
+  /** The distilled title guidelines beside the insights they were distilled from. */
+  loadChannelGuidelines(channelId: string): ChannelGuidelines | null {
+    return this.readJson<ChannelGuidelines>(path.join(this.channelDir(channelId), 'guidelines.json'));
+  }
+
+  saveChannelGuidelines(channelId: string, guidelines: ChannelGuidelines): Promise<void> {
+    return this.enqueue(() => {
+      this.writeJson(path.join(this.channelDir(channelId), 'guidelines.json'), guidelines);
+    });
   }
 
   saveChannelInsights(channelId: string, insights: ChannelInsights): Promise<void> {

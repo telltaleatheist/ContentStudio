@@ -14,7 +14,7 @@ import { AnalyticsStoreService } from '../services/analytics/analytics-store.ser
 import { IngestServerService } from '../services/analytics/ingest-server.service';
 import { DistillationService } from '../services/analytics/distillation.service';
 import { seedFakeData } from '../services/analytics/seed-fake-data';
-import { resolveInsightsBlockForPromptSet } from '../services/analytics/insights-prompt';
+import { prepareChannelInsights } from '../services/analytics/insights-guidelines';
 import type { ChannelRegistryEntry } from '../services/analytics/analytics-types';
 import { YouTubeAuthService } from '../services/youtube/youtube-auth.service';
 import { YouTubeApiService } from '../services/youtube/youtube-api.service';
@@ -1280,7 +1280,10 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
           `No channel selected for this run: neither the request nor Settings names one. Pick one of: ${known}`
         );
       }
-      const insightsBlock = resolveInsightsBlockForPromptSet(analytics.analyticsStore, activePromptSet);
+      // The prepared evidence, not a pre-rendered block: generation resolves the COMPACT
+      // guidelines block itself (cache hit, dry-run placeholder, or the one distillation
+      // call on the titles transport) — insights-guidelines.ts has the whole design.
+      const insights = prepareChannelInsights(analytics.analyticsStore, activePromptSet);
 
       // The summarizer follows the CHAPTERS field's routing (resolveChapterModelOption —
       // per-field as of 2026-08-24): condensation rewrites the words every content field
@@ -1359,7 +1362,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // `aiApiKey` belongs to.
         cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
         inputNotes: params.inputNotes || {},
-        insightsBlock: insightsBlock || undefined,
+        insights: insights || undefined,
         // "Show prompt": transcribe + assemble the prompt, then STOP (no AI call).
         // The transcript is held server-side so "Send to AI" can reuse it.
         showPrompt: params.showPrompt || false
@@ -1369,7 +1372,10 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         ...metadataParams,
         aiApiKey: metadataParams.aiApiKey ? '***' : undefined,
         // Summarized: the full block is several KB and would drown the log
-        insightsBlock: insightsBlock ? `<CHANNEL PERFORMANCE DATA, ${insightsBlock.length} chars>` : undefined
+        insights: insights
+          ? `<prepared evidence for "${insights.channelName}", ${insights.rawBlock.length} chars, ` +
+            `guidelines cache ${insights.cached ? (insights.cached.sourceHash === insights.sourceHash ? 'FRESH' : 'STALE') : 'EMPTY'}>`
+          : undefined
       };
       log.info('Prepared metadata params:', JSON.stringify(safeMetadataParams, null, 2));
       log.info(`[IPC] Metadata routing for this job: ${describeRouting(metadataParams.metadataRouting)}`);

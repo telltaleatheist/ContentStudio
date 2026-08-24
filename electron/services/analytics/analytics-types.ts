@@ -153,6 +153,20 @@ export interface ChannelInsights {
   aiBrief: string | null;                 // v1: always null (field reserved)
 }
 
+/**
+ * Model-written title guidelines distilled from a channel's rendered performance block
+ * (insights-guidelines.ts). `sourceHash` is the sha256 of the EXACT rendered block the
+ * distiller read; generation compares it against the current render and re-distills only
+ * when the evidence changed. `lines` are subject-free one-line lessons, each "- "-prefixed.
+ */
+export interface ChannelGuidelines {
+  generatedAt: string;
+  /** The provider-prefixed or bare model that wrote the lines, for the record. */
+  model: string;
+  sourceHash: string;
+  lines: string[];
+}
+
 export interface CrossChannelInsights {
   computedAt: string;
   channelIds: string[];
