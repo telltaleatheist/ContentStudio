@@ -1,5 +1,14 @@
 /**
- * The description, as two small schema-constrained calls
+ * The description, as ONE plain-text call per candidate
+ *
+ * SINCE 2026-08-24 (operator's ruling: no JSON for these calls unless absolutely necessary)
+ * each candidate is written by ONE call whose answer is the shape the composer publishes —
+ * the hook, a blank line, the body — parsed by plain-call.ts. The hook/body split below is
+ * unchanged as a CONTRACT (two fields, two judges, the same failure policies); what changed
+ * is that no JSON string literal ever carries the prose, which is where the "..."-as-body
+ * bail-out and the close-quote runaway both lived. The history in the rest of this header is
+ * the two-call design's and is kept because every judge and policy in this file came out of
+ * it.
  *
  * WHAT CHANGED AND WHY. The routed description used to be one field in a prompt-set group:
  * the channel's `## DESCRIPTION` section, the editorial preamble, the self-check and a JSON
@@ -112,7 +121,8 @@
 
 import axios, { AxiosInstance } from 'axios';
 import * as log from 'electron-log';
-import { askOllamaJson, estimateTokens } from './ollama-json';
+import { estimateTokens } from './ollama-json';
+import { askOllamaPlain, parseHookBody } from './plain-call';
 import { JobModelLifecycle } from './model-lifecycle';
 import { MetadataRoutingOption } from './metadata-routing';
 import { queueAITask } from '../queue-manager.service';
@@ -235,10 +245,9 @@ const SHORT_HOOK_FAULT = 'it came back as ';
 /**
  * Output budget per call.
  *
- * A hook is ~40 tokens and a body ~400, but these models reason first — the chapter work
- * measured 1,900-2,900 tokens of it — and `think: false` is not an option (ollama-json trap 2).
- * The schema is what is expected to keep this well under the ceiling; the ceiling is sized so
- * that a model which reasons anyway still finishes.
+ * A whole description is ~450 tokens, but these models reason first — the chapter work
+ * measured 1,900-2,900 tokens of it — and `think: false` is not an option (ollama-json trap
+ * 2). The ceiling is sized so that a model which reasons anyway still finishes.
  */
 const NUM_PREDICT = 4096;
 
@@ -246,52 +255,18 @@ const CALL_TIMEOUT_MS = 300_000;
 const KEEP_ALIVE = '10m';
 
 /**
- * Ollama's `format`: a full JSON Schema, not the bare "json" grammar (spec §5).
- *
- * NO `maxLength`, and this is a MEASUREMENT, not a preference. The spec proposes
- * `{"hook": string(maxLength 150)}`; Briefcase's live run reported the constraint as untested
- * because their hooks came in under it. This build's live run on qwen3.5:9b and qwen3.5:4b hit
- * it, and what it does is TRUNCATE THE DECODE: both models returned exactly 150 characters
- * ending mid-word ("... — Flashpoint's 202"). That is the server silently rewriting the one
- * line YouTube shows first, which is the thing this app's rules forbid above all others.
- *
- * So the schema constrains the SHAPE and the cap is enforced in code, where going over is a
- * declared warning on a whole sentence the operator can trim — not a fragment he cannot.
- */
-const HOOK_SCHEMA = {
-  type: 'object',
-  properties: { hook: { type: 'string' } },
-  required: ['hook'],
-} as const;
-
-const BODY_SCHEMA = {
-  type: 'object',
-  properties: { body: { type: 'string' } },
-  required: ['body'],
-} as const;
-
-/**
- * The two prompts, read from prompts/shared/pipeline/description.yml.
- *
- * THE BODIES MOVED but nothing about them changed except one slot: the block naming what the
- * video covers used to be hardcoded as "What the video covers, chapter by chapter:" followed by
- * the chapter list. It is now `{coverage}`, filled from the asset with whichever of two labelled
- * blocks fits the item — the chapter list where the pipeline produced one, the operator's text
- * subject where it did not. That is what lets a chapterless item write its description here
- * instead of taking a whole-metadata call on some other model.
+ * The candidate prompt and the body-revision prompt, from prompts/shared/pipeline/description.yml.
  *
  * Getters, so a missing file or key throws naming both at the moment the prompt is wanted, and
- * the character and word budgets are substituted from THIS FILE'S constants — the number the
- * prompt asks for and the number the code measures cannot drift apart.
+ * the character and word budgets are substituted from THIS FILE'S constants and the channel's
+ * own `body_words` — the number the prompt asks for and the number the code measures cannot
+ * drift apart.
  */
 export const DESCRIPTION_PROMPTS = {
-  get HOOK(): string {
+  get CANDIDATE(): string {
     return promptAssets()
-      .pipeline(DESCRIPTION_FILE, 'hook')
+      .pipeline(DESCRIPTION_FILE, 'candidate')
       .replace(/\{hookTargetChars\}/g, () => String(HOOK_TARGET_CHARS));
-  },
-  get BODY(): string {
-    return promptAssets().pipeline(DESCRIPTION_FILE, 'body');
   },
   get BODY_REVISION(): string {
     return promptAssets().pipeline(DESCRIPTION_FILE, 'body_revision');
@@ -310,7 +285,7 @@ const DESCRIPTION_FILE = 'description.yml';
 export const DESCRIPTION_FIELDS: MetadataFieldId[] = ['description_hook', 'description', 'description_options'];
 
 /**
- * The description unit: two calls, one field pair, either transport.
+ * The description unit: one plain-text call per candidate, either transport.
  *
  * ONE class for local and cloud rather than two, which is the opposite of how the prompt-set
  * groups are built (CloudGroupUnit / LocalGroupUnit) — and deliberately, because the
@@ -359,40 +334,28 @@ export class DescriptionUnit implements MetadataUnit {
       }
       this.host = option.host || defaultHost;
       this.client = axios.create({ baseURL: this.host });
-      this.label = `description hook + body (local ${option.model} @ ${this.host})`;
-      // The larger of the two prompts is what this unit needs of the window. They differ by a
-      // few hundred characters — both carry the same transcript — so this is nearly the same
-      // number twice, and taking the max means it cannot be the smaller one by accident.
+      this.label = `description (local ${option.model} @ ${this.host})`;
       budget.register('description', (ctx) =>
-        estimateTokens(
-          Math.max(
-            this.buildPrompt(DESCRIPTION_PROMPTS.HOOK, ctx, hookPending()).length,
-            this.buildPrompt(DESCRIPTION_PROMPTS.BODY, ctx, hookPending()).length
-          )
-        ) + NUM_PREDICT
+        estimateTokens(this.buildPrompt(DESCRIPTION_PROMPTS.CANDIDATE, ctx, '').length) + NUM_PREDICT
       );
     } else {
-      this.label = `description hook + body (cloud ${option.model})`;
+      this.label = `description (cloud ${option.model})`;
     }
   }
 
   describePrompt(ctx: MetadataRunContext): string {
     return (
-      `# ${DESCRIPTION_CANDIDATES} DESCRIPTIONS ARE WRITTEN FROM THESE TWO PROMPTS.\n` +
-      `# The primary and ${DESCRIPTION_CANDIDATES - 1} alternative(s), each with a body written to\n` +
-      `# continue its own hook. The prompts are identical for all of them — every draw runs at the\n` +
-      `# provider's default sampling — so they are shown once.\n\n` +
-      `# DESCRIPTION HOOK (${this.option.model}, ` +
-      `${this.option.kind === 'local' ? 'schema-constrained' : 'JSON'}, provider default sampling)\n\n` +
-      this.buildPrompt(DESCRIPTION_PROMPTS.HOOK, ctx, hookPending()) +
-      `\n\n# DESCRIPTION BODY (${this.option.model}, ` +
-      `${this.option.kind === 'local' ? 'schema-constrained' : 'JSON'}, provider default sampling)\n\n` +
-      this.buildPrompt(DESCRIPTION_PROMPTS.BODY, ctx, hookPending())
+      `# ${DESCRIPTION_CANDIDATES} DESCRIPTIONS ARE WRITTEN FROM THIS ONE PROMPT.\n` +
+      `# The primary and ${DESCRIPTION_CANDIDATES - 1} alternative(s), each one whole answer — the\n` +
+      `# opening line, a blank line, the body. The prompt is identical for all of them — every\n` +
+      `# draw runs at the provider's default sampling — so it is shown once.\n\n` +
+      `# DESCRIPTION (${this.option.model}, plain text, provider default sampling)\n\n` +
+      this.buildPrompt(DESCRIPTION_PROMPTS.CANDIDATE, ctx, '')
     );
   }
 
   async generate(ctx: MetadataRunContext): Promise<Record<string, unknown>> {
-    // THE PRIMARY IS UNCHANGED. Same two calls, same judging, same fields —
+    // THE PRIMARY IS UNCHANGED IN CONTRACT. Same judging, same fields —
     // `description` and `description_hook` mean exactly what they meant before this unit could
     // produce more than one, so the composer, the publish pipeline, the carry-forward and every
     // stored report are untouched by what follows.
@@ -501,40 +464,134 @@ export class DescriptionUnit implements MetadataUnit {
       : null;
   }
 
-  /** One complete description: a hook, then the body that was written to continue it. */
-  private async writePair(ctx: MetadataRunContext, tag: string): Promise<DescriptionCandidate> {
-    const hook = await this.writeHook(ctx, tag);
-    const body = await this.writeBody(ctx, hook.text, tag);
-    return { hook: hook.text, hookFaults: hook.faults, body: body.text, bodyFaults: body.faults };
-  }
-
-  // ------------------------------------------------------------------------ the two calls
-
   /**
-   * The hook, with the character cap enforced HERE as well as in the schema.
+   * One complete description: ONE call, judged on both of its parts.
    *
-   * §5 is explicit that a schema `maxLength` constrains decoding but must not be trusted as a
-   * display limit — so the cap is measured on the answer. Over it, the call is made ONCE more;
-   * still over, the long hook is KEPT and the run says so. Truncating it would produce a
-   * sentence the model did not write, ending mid-clause, in the one line YouTube shows first.
+   * THE ONE-RE-ASK POLICY, adapted to the single call. A first answer whose faults are ONLY
+   * the body slipping register gets the targeted REVISION (the model is handed its own body
+   * and the flagged clauses; the hook is kept — measured 2026-08-23, a blind re-ask returns
+   * the same register twice). Any other fault — a hook fault, a word count, or both at once —
+   * gets one fresh draw of the whole answer, where fresh dice are the right tool. Nothing is
+   * asked a third time; whichever answer offends less is kept, with its faults declared.
+   *
+   * A first answer that cannot be PARSED (no blank line — the model did not write a
+   * standalone opening line) is unusable rather than judged, and spends the same one re-ask;
+   * two in a row throw, and the caller's policy decides what that costs (the primary fails
+   * the item, an option is dropped with a warning).
    */
-  private async writeHook(ctx: MetadataRunContext, tag: string): Promise<JudgedText> {
-    const prompt = this.buildPrompt(DESCRIPTION_PROMPTS.HOOK, ctx, hookPending());
-    const first = await this.ask(prompt, `${tag} hook`, HOOK_SCHEMA, ctx);
-    const faults = this.judgeHook(first);
-    if (faults.length === 0) return { text: first, faults: [] };
+  private async writePair(ctx: MetadataRunContext, tag: string): Promise<DescriptionCandidate> {
+    const prompt = this.buildPrompt(DESCRIPTION_PROMPTS.CANDIDATE, ctx, '');
 
-    const second = await this.ask(prompt, `${tag} hook (second attempt)`, HOOK_SCHEMA, ctx);
-    if (this.judgeHook(second).length === 0) {
-      log.info(`[Description] ${ctx.sourceLabel}: re-asked for the ${tag} hook (${faults.join('; ')}); the second answer holds`);
-      return { text: second, faults: [] };
+    let first: { hook: string; body: string };
+    try {
+      first = await this.askCandidate(prompt, `${tag} description`, ctx);
+    } catch (error) {
+      if (error instanceof JobCancelledError) throw error;
+      log.warn(
+        `[Description] ${ctx.sourceLabel}: ${error instanceof Error ? error.message : String(error)}; re-asking once`
+      );
+      const second = await this.askCandidate(prompt, `${tag} description (second attempt)`, ctx);
+      return {
+        hook: second.hook,
+        hookFaults: this.judgeHook(second.hook),
+        body: second.body,
+        bodyFaults: this.judgeBody(second.body, ctx),
+      };
     }
 
-    ctx.warn(
-      `the description ${tag} hook was asked for twice and both times ${faults.join(' and ')}; it is kept exactly as ` +
-        `the model wrote it ("${first}") and nothing was shortened or reworded`
+    const firstHookFaults = this.judgeHook(first.hook);
+    const firstBodyFaults = this.judgeBody(first.body, ctx);
+    if (firstHookFaults.length === 0 && firstBodyFaults.length === 0) {
+      return { hook: first.hook, hookFaults: [], body: first.body, bodyFaults: [] };
+    }
+
+    const narratedFirst = this.narratedOutsideCloser(first.body);
+    if (firstHookFaults.length === 0 && narratedFirst.length > 0) {
+      // Register-only body fault: the targeted revision, keeping the hook (a blind re-ask
+      // returns the same register twice — measured, see the revision prompt's own note).
+      const revisionPrompt = this.buildPrompt(DESCRIPTION_PROMPTS.BODY_REVISION, ctx, first.hook, {
+        body: first.body,
+        clauses: narratedFirst.map((clause) => `- "${clause}"`).join('\n'),
+      });
+      const revised = await this.askPlain(revisionPrompt, `${tag} body (revision)`, ctx);
+      const revisedFaults = this.judgeBody(revised, ctx);
+      if (revisedFaults.length === 0) {
+        log.info(
+          `[Description] ${ctx.sourceLabel}: revised the ${tag} body (${firstBodyFaults.join('; ')}); the revision holds`
+        );
+        return { hook: first.hook, hookFaults: [], body: revised, bodyFaults: [] };
+      }
+      // Both faulty: the answer with fewer describer clauses is the closer one; a tie keeps
+      // the first, which is the answer the plain prompt produced.
+      const keepRevised = this.narratedOutsideCloser(revised).length < narratedFirst.length;
+      const body = keepRevised ? revised : first.body;
+      const bodyFaults = keepRevised ? revisedFaults : firstBodyFaults;
+      ctx.warn(
+        `the description ${tag} body was asked for twice and both times ${bodyFaults.join(' and ')}; the ` +
+          `${keepRevised ? 'revised second' : 'first'} answer is kept exactly as the model wrote it and nothing was reworded`
+      );
+      return { hook: first.hook, hookFaults: [], body, bodyFaults };
+    }
+
+    // A hook fault, a bare word-count fault, or both: one fresh draw of the whole answer.
+    let second: { hook: string; body: string };
+    try {
+      second = await this.askCandidate(prompt, `${tag} description (second attempt)`, ctx);
+    } catch (error) {
+      if (error instanceof JobCancelledError) throw error;
+      log.warn(
+        `[Description] ${ctx.sourceLabel}: the ${tag} re-draw was unusable ` +
+          `(${error instanceof Error ? error.message : String(error)}); keeping the first answer`
+      );
+      return this.keptWithWarning(ctx, tag, first, firstHookFaults, firstBodyFaults);
+    }
+    const secondHookFaults = this.judgeHook(second.hook);
+    const secondBodyFaults = this.judgeBody(second.body, ctx);
+    if (secondHookFaults.length === 0 && secondBodyFaults.length === 0) {
+      log.info(
+        `[Description] ${ctx.sourceLabel}: re-asked for the ${tag} description ` +
+          `(${[...firstHookFaults, ...firstBodyFaults].join('; ')}); the second answer holds`
+      );
+      return { hook: second.hook, hookFaults: [], body: second.body, bodyFaults: [] };
+    }
+
+    // Both draws faulty: fewer faults wins, a tie keeps the first.
+    const keepSecond =
+      secondHookFaults.length + secondBodyFaults.length < firstHookFaults.length + firstBodyFaults.length;
+    return this.keptWithWarning(
+      ctx,
+      tag,
+      keepSecond ? second : first,
+      keepSecond ? secondHookFaults : firstHookFaults,
+      keepSecond ? secondBodyFaults : firstBodyFaults
     );
-    return { text: first, faults };
+  }
+
+  /** Keep an answer its judges still object to, exactly as written, and say so on the run. */
+  private keptWithWarning(
+    ctx: MetadataRunContext,
+    tag: string,
+    pair: { hook: string; body: string },
+    hookFaults: string[],
+    bodyFaults: string[]
+  ): DescriptionCandidate {
+    ctx.warn(
+      `the description ${tag} was asked for twice and both times ${[...hookFaults, ...bodyFaults].join(' and ')}; ` +
+        `it is kept exactly as the model wrote it and nothing was shortened or reworded`
+    );
+    return { hook: pair.hook, hookFaults, body: pair.body, bodyFaults };
+  }
+
+  // ------------------------------------------------------------------------ the one call
+
+  /** One candidate draw: the plain answer, split at its blank line. Throws when it has none. */
+  private async askCandidate(
+    prompt: string,
+    what: string,
+    ctx: MetadataRunContext
+  ): Promise<{ hook: string; body: string }> {
+    const text = await this.askPlain(prompt, what, ctx);
+    return parseHookBody(text, `the description ${what} for ${ctx.sourceLabel}`);
   }
 
   private judgeHook(hook: string): string[] {
@@ -557,53 +614,6 @@ export class DescriptionUnit implements MetadataUnit {
       );
     }
     return faults;
-  }
-
-  /**
-   * The body. Same one-re-ask policy, measured on word count and register.
-   *
-   * The word count is a SPEC RANGE, not a hard limit — a 310-word body is a warning, not a
-   * failure, and it publishes.
-   */
-  private async writeBody(ctx: MetadataRunContext, hook: string, tag: string): Promise<JudgedText> {
-    const prompt = this.buildPrompt(DESCRIPTION_PROMPTS.BODY, ctx, hook);
-    const first = await this.ask(prompt, `${tag} body`, BODY_SCHEMA, ctx);
-    const firstFaults = this.judgeBody(first, ctx);
-    if (firstFaults.length === 0) return { text: first, faults: [] };
-
-    // A register fault gets a REVISION, not a re-roll: the same prompt asked twice returned
-    // the same register twice, on two measured runs. The revision call hands the model its own
-    // draft and the judged clauses, which is an edit it can actually perform. A fault that is
-    // only the word count keeps the plain re-ask, where fresh dice are the right tool.
-    const narratedFirst = this.narratedOutsideCloser(first);
-    const secondPrompt =
-      narratedFirst.length > 0
-        ? this.buildPrompt(DESCRIPTION_PROMPTS.BODY_REVISION, ctx, hook, {
-            body: first,
-            clauses: narratedFirst.map((clause) => `- "${clause}"`).join('\n'),
-          })
-        : prompt;
-    const what = narratedFirst.length > 0 ? `${tag} body (revision)` : `${tag} body (second attempt)`;
-    const second = await this.ask(secondPrompt, what, BODY_SCHEMA, ctx);
-    const secondFaults = this.judgeBody(second, ctx);
-    if (secondFaults.length === 0) {
-      log.info(`[Description] ${ctx.sourceLabel}: re-asked for the ${tag} body (${firstFaults.join('; ')}); the second answer holds`);
-      return { text: second, faults: [] };
-    }
-
-    // Both faulty: the answer with fewer describer clauses is the closer one, and a tie keeps
-    // the first, which is the answer the plain prompt produced.
-    const keepSecond = this.narratedOutsideCloser(second).length < narratedFirst.length;
-    const kept = keepSecond ? second : first;
-    const keptFaults = keepSecond ? secondFaults : firstFaults;
-    ctx.warn(
-      `the description ${tag} body was asked for twice and both times ${keptFaults.join(' and ')}; the ` +
-        `${keepSecond ? 'revised second' : 'first'} answer is kept exactly as the model wrote it and nothing was reworded`
-    );
-    // The faults come back WITH the text. The primary keeps it regardless — that is the stated
-    // policy and it has not changed — but an extra candidate needs to know, because an answer
-    // that is not the length of a description is not an alternative description.
-    return { text: kept, faults: keptFaults };
   }
 
   /**
@@ -643,39 +653,22 @@ export class DescriptionUnit implements MetadataUnit {
 
   // --------------------------------------------------------------------------- transports
 
-  private async ask(
-    prompt: string,
-    what: string,
-    schema: Record<string, unknown>,
-    ctx: MetadataRunContext
-  ): Promise<string> {
-    const key = Object.keys(schema.properties as Record<string, unknown>)[0];
-    const value = this.client
-      ? await this.askLocal(prompt, what, schema, ctx)
-      : await this.aiManager.runJsonRequest(
-          prompt, this.option.model, `the description ${what} for ${ctx.sourceLabel}`,
-          // The same schema the local call decodes under, honored on the cloud path as
-          // structured outputs since 2026-08-23 — the API then guarantees the JSON parses,
-          // which free-form cloud answers measurably did not (the f2/f3 runs).
-          schema
-        );
-
-    const answer = value[key];
-    if (typeof answer !== 'string' || answer.trim().length === 0) {
-      throw new Error(
-        `The description ${what} for ${ctx.sourceLabel} on "${this.option.model}" came back with no "${key}" ` +
-          `(got: ${JSON.stringify(value).slice(0, 200)})`
-      );
+  /**
+   * One plain-text call, either transport. Throws on a transport failure AND on an empty
+   * answer: unlike the chapter pipeline, this unit has no per-chapter degradation to decline
+   * into — a candidate with no text is not a candidate, and the caller's policies (the one
+   * re-ask, the option drop) are built on exactly this throw.
+   */
+  private async askPlain(prompt: string, what: string, ctx: MetadataRunContext): Promise<string> {
+    const fullWhat = `the description ${what} for ${ctx.sourceLabel}`;
+    if (!this.client) {
+      const text = await this.aiManager.runPlainRequest(prompt, this.option.model, fullWhat);
+      if (!text) {
+        throw new Error(`${fullWhat} on "${this.option.model}" came back empty`);
+      }
+      return text;
     }
-    return answer.trim();
-  }
 
-  private async askLocal(
-    prompt: string,
-    what: string,
-    schema: Record<string, unknown>,
-    ctx: MetadataRunContext
-  ): Promise<Record<string, unknown>> {
     // One num_ctx for the whole MODEL for the whole RUN (ollama-json trap 4) — not one per
     // unit. Resolved by the first call on this model to run, from the largest prompt it will
     // send, and shared from there.
@@ -686,16 +679,15 @@ export class DescriptionUnit implements MetadataUnit {
       `Metadata: ${this.label} — ${what}`,
       async () => {
         if (this.abortSignal?.aborted) throw new JobCancelledError('cancelled before the description call ran');
-        const answer = await askOllamaJson(this.client!, {
+        const answer = await askOllamaPlain(this.client!, {
           model: this.option.model,
           prompt,
           numCtx,
           numPredict: NUM_PREDICT,
-          schema,
           keepAlive: KEEP_ALIVE,
           timeoutMs: CALL_TIMEOUT_MS,
           signal: this.abortSignal,
-          what: `the description ${what} for ${ctx.sourceLabel}`,
+          what: fullWhat,
           logPrefix: `[Description] ${this.label}`,
         });
         this.lifecycle.holdOllamaModel(this.host!, this.option.model, 'the description calls');
@@ -707,11 +699,10 @@ export class DescriptionUnit implements MetadataUnit {
 
     if (!result.ok) {
       throw new Error(
-        `The description ${what} for ${ctx.sourceLabel} on "${this.option.model}" produced no usable answer ` +
-          `(${result.reason}): ${result.detail}`
+        `${fullWhat} on "${this.option.model}" produced no usable answer (${result.reason}): ${result.detail}`
       );
     }
-    return result.value;
+    return result.text;
   }
 
   // ----------------------------------------------------------------------------- prompting
@@ -893,21 +884,6 @@ export class DescriptionUnit implements MetadataUnit {
     return assets.pipeline(DESCRIPTION_FILE, 'coverage_subject').replace(/\{items\}/g, () => subject);
   }
 }
-
-/**
- * What the `{hook}` slot carries where the hook does not exist yet.
- *
- * TWO CALLERS, both of which assemble the body prompt before any call has run: the "Show
- * prompt" preview and the context-window estimate. Neither can be given the real hook, and
- * neither is a run — a real run writes the hook first and hands it to `writeBody`. The line
- * says so, in the assets, rather than leaving an empty pair of quotes that reads as a hook the
- * model was asked to continue from.
- */
-function hookPending(): string {
-  return promptAssets().pipeline(DESCRIPTION_FILE, 'hook_pending');
-}
-
-
 
 /** One whole description as this unit writes it: an opening line and the body that continues it. */
 interface DescriptionCandidate {

@@ -29,53 +29,36 @@
 #   naming these example names on unrelated videos, that is the leak, and the fix is to replace
 #   the examples — not to add a ban list.
 
-# Stage 1 — read the WHOLE transcript in one call and report the chapters in it.
+# Stage 1 — read the WHOLE transcript in one call and report where the chapters begin.
 #
-# PROVENANCE, line by line, because nothing in this body was invented for it. It is the body
-# measured as `restoration v2` on 2026-08-22 (kit preserved at /tmp/contentstudio-chapter-eval),
-# which is the deleted 27B single-call build's cadence language put back over a retrieval that
-# works. Its two halves:
+# PROVENANCE: the cadence rules are the deleted 27B build's, measured as `restoration v2` on
+# 2026-08-22 (kit at /tmp/contentstudio-chapter-eval); the quoting rules are the `llm-beats`
+# measurement, which mapped 137 of 138 quoted first sentences across eight videos with none out
+# of order — the FULL first sentence at six words or longer, long enough to be unique in a
+# whole-video search.
 #
-#   the cadence rules      <- CHAPTER_DETECTION_PROMPT in the build at wt-9edfdcf: "prefer fewer,
-#                             longer chapters", "30-60 minutes should have 4-8 chapters", "minimum
-#                             chapter length 3-4 minutes", "if unsure whether something is a new
-#                             chapter, keep it as part of the current one", "spread chapters
-#                             across the ENTIRE runtime".
-#   the quoting rules      <- the `llm-beats` measurement, which mapped 137 of 138 quoted first
-#                             sentences across eight videos with none out of order. The FULL
-#                             first sentence at six words or longer, not the old build's 3-8 word
-#                             phrase: a full sentence is long enough to be unique in a whole-video
-#                             search, which is the failure the short phrase needed a special rule
-#                             to guard against.
+# THE ANSWER IS LINES, NOT JSON (operator's ruling 2026-08-24: no JSON for these calls unless
+# absolutely necessary). This call asks for exactly one thing per chapter — the verbatim
+# sentence it opens on — so the answer is one sentence per line and nothing else. Labels are
+# GONE from this stage entirely: every chapter is named by stage 3, which reads that chapter's
+# own transcript, so nothing here can name a chapter from a distance. (The nameless-example
+# leak measured 2026-08-23 died with the labels: there are no example labels here to leak.)
 #
-# THE BAND IS GRADUATED, and that is the one thing here that is not the old build's. A flat "every
-# chapter covers at least 3 to 4 minutes" was measured first and cost four real boundaries, all of
-# them on short videos whose truths sit 30 seconds to 2.5 minutes apart. On a short video a turn to
-# a different source IS a chapter. So the floor follows the runtime and the count still follows the
-# content.
+# THE BAND IS GRADUATED — see the git history of this key for the measurement; a flat floor
+# cost four real boundaries on short videos whose truths sit 30 seconds to 2.5 minutes apart.
 #
-# WHY THE RUNTIME IS STATED IN WORDS. The transcript deliberately carries no timestamps — that is
-# chapter-transcript.ts's law, and it is the only reason a quote-mapped time is a measurement. A
-# model that cannot see time cannot apply a rate expressed in minutes, so it is TOLD the runtime,
-# once, as a fact. It is not a count and not a target.
+# WHY THE RUNTIME IS STATED IN WORDS. The transcript deliberately carries no timestamps —
+# chapter-transcript.ts's law, the reason a quote-mapped time is a measurement — so the model
+# is TOLD the runtime, once, as a fact. It is not a count and not a target.
 #
-# THE LABEL REGISTER (2026-08-22, operator-directed). Stage 1's labels are the titles that SHIP
-# (stage 3's are usually discarded — see THE TITLE RULE below), yet stage 1 carried no register
-# guidance at all, which is how a published chapter list read as narration of the person on
-# camera. The label bullet now states the same topic form stage 3 always asked for — noun phrase
-# or gerund phrase, the content itself as the title — with examples, per POSITIVE FORM ONLY
-# above.
+# ON A TRANSCRIPT TOO LONG FOR ONE CALL the code sends this same body over a ROLLING WINDOW:
+# as much transcript as fits, cut on cue boundaries, starting at 0:00; each next window starts
+# at the LAST boundary the previous one returned, so the tail past that boundary is re-read in
+# full context and no artificial seam ever splits a subject. Each window is told its own
+# runtime. Nothing in this body knows about that.
 #
-# THE EXAMPLES CARRY NO NAMES, and that is a measurement, not caution (2026-08-23). The first
-# cut reused stage 3's operator-supplied Gene Bailey titles, and on the first LONG transcript
-# through this body (a 20k-token video, KV cache spilled) the 27b returned two of those example
-# titles VERBATIM as chapters of an unrelated video. The quote-mapping law held — fabricated
-# first sentences map to no time, both fake chapters were DROPPED, nothing shipped wrong — but
-# the dropped chapters left the video below YouTube's three-chapter floor and the run failed.
-# Per the header's own law the examples were REPLACED, with nameless ones, and the bullet now
-# says out loud that they are from other videos and show the form only.
-#
-# Placeholders: {duration} (e.g. "42 minutes", "1 hour 12 minutes"), {transcript}
+# Placeholders: {duration} (e.g. "42 minutes", "1 hour 12 minutes"), {promoted_items},
+# {transcript}
 whole_transcript_chapters: |-
   Below is the complete transcript of one video, with no timestamps. The video runs {duration}.
 
@@ -90,33 +73,23 @@ whole_transcript_chapters: |-
   - 30 minutes and longer: prefer fewer, longer chapters, each covering at least 3 to 4 minutes. A 30 to 60 minute video usually has 4 to 8 chapters, and a multi-hour video has roughly one chapter every 10 to 20 minutes.
   Take the line that matches the runtime above, and inside it let the content decide the count. Where you are unsure whether a turn is a new chapter, keep it inside the chapter you are already in.
 
+  The creator advertises his own promotions inside videos — {promoted_items}. A stretch of the video that IS one of those promotions is its own chapter like any other: report the sentence where it starts, so it can be separated from the content afterwards.
+
   Those counts include the opening chapter, which starts at the beginning of the video and needs no entry. Work through the transcript from the beginning to the end and report each chapter AFTER that first one, in the order they occur, and carry on to the end of the transcript so that the chapters cover the whole runtime.
 
-  For each chapter, report:
-  - "label": a title for the chapter, 50 to 80 characters, in topic form: a bare noun phrase or a gerund phrase naming the specific people, claims and events in that stretch. These labels publish under the video as the creator's own chapter list, so each one titles the CONTENT itself, the way the creator would title a chapter of their own video — the subject of the label is the claim, the person or the event, never the person reacting to it. Labels in exactly the right form — these are from OTHER videos and show the form only; your labels name the people, claims and events THIS transcript contains:
-    - "Debunking an AI-generated 'universe from nothing' intelligent design pamphlet"
-    - "Flipping the burden of proof: demanding lab-made life like God claims"
-    - "Debunking the red blood cell and sickle cell 'coded design' argument"
-    - "The infinite regress question of what God depends on"
-    - "The sit-in arrest story and the fight over private prison abolition"
-
-  The creator advertises his own promotions inside videos — {promoted_items}. A stretch of the video that IS one of those promotions is its own chapter, labeled as the plug it is ("Patreon plug and a promotion of the book God's People") — report it like any other chapter, so it can be separated from the content afterwards. A promotion mentioned in passing inside a content chapter is an aside, and that chapter's label names the content around it.
-  - "first_sentence": the FIRST sentence of that chapter, copied from the transcript above EXACTLY as it appears there, word for word, at least six words long. That is the sentence where the speaker turns toward the new subject, which is usually a beat EARLIER than the sentence that first explains it: if the speaker says "anyway, let's talk about the eggs" and explains three sentences later, the first sentence of the chapter is "anyway, let's talk about the eggs".
+  For each chapter, report the FIRST sentence of that chapter, copied from the transcript above EXACTLY as it appears there, word for word, at least six words long. That is the sentence where the speaker turns toward the new subject, which is usually a beat EARLIER than the sentence that first explains it: if the speaker says "anyway, let's talk about the eggs" and explains three sentences later, the first sentence of the chapter is "anyway, let's talk about the eggs".
 
   Your copied sentence is what fixes the chapter's position in the video, so a sentence you reworded, tidied up or paraphrased points at the wrong moment.
 
-  Output exactly this shape and nothing else:
-  {"chapters": [{"label": "<50-80 characters>", "first_sentence": "<exact sentence from the transcript above>"}]}
+  Output ONE copied sentence per line, in the order the chapters occur — nothing else: no numbering, no labels, no commentary, no JSON.
 
 # Stage 3 — name and summarize ONE chapter, from its RAW transcript.
 #
-# ITS `title` IS USUALLY DISCARDED, and that is deliberate rather than an oversight. Stage 1 named
-# every chapter it reported, and that name is the one the measurement was about, so a chapter's
-# title has exactly ONE source. This call is still ASKED for a title — naming the chapter is part of
-# how it reads it, and this body is the one that was tuned — and its answer is used only for a
-# chapter stage 1 did not label, which is always the opening 0:00 chapter (the prompt above asks for
-# the turns, and the opening of a video is not a turn). See THE TITLE RULE in
-# chapter-whole-transcript.service.ts.
+# ITS `title` IS THE title (2026-08-24). Stage 1 stopped producing labels when its answer
+# became bare quote lines, so every chapter — the opening 0:00 one included — is named by this
+# call, which is the one that reads the chapter's own transcript. The answer is PLAIN TEXT:
+# the title on the first line, the summary on the lines after it, per the same no-JSON ruling
+# as stage 1.
 #
 # `{entity_scaffold}` is the proper nouns extracted from THIS chapter's own transcript slice,
 # per-chapter and never whole-video: a whole-video list invites the name from chapter 2 into
@@ -124,12 +97,12 @@ whole_transcript_chapters: |-
 #
 # Placeholders: {number}, {video}, {context_lines}, {entity_scaffold}, {transcript}
 summarize_chapter: |-
-  Label chapter {number} of a video transcript. Output JSON only.
+  Label chapter {number} of a video transcript.
   Video: {video}
   {context_lines}
   Produce:
-  - title: one sentence (max ~15 words) naming what this chapter is about.
-  - summary: 2-3 sentences on what this stretch of the video covers.
+  - a title: one line (max ~15 words) naming what this chapter is about.
+  - a summary: 2-3 sentences on what this stretch of the video covers.
 
   How to write the title:
   - Title the CONTENT itself, in topic form: a bare noun phrase, or a gerund phrase. Build it around the specific people, claims and events this chapter's transcript contains.
@@ -150,11 +123,7 @@ summarize_chapter: |-
   - Name the concrete subject matter of this stretch specifically enough that the answer could not be swapped with a chapter of any other video.
   - A sponsor read, a Patreon plug, a channel promo or a sign-off simply says that is what it is. The creator's own promotions — {promoted_items} — follow that rule: a stretch that IS one of them says so ("Patreon plug and a promotion of the book God's People"), and one mentioned in passing stays out of the title and the summary, which name the content around it.
   {entity_scaffold}
-  Output exactly this shape and nothing else:
-  {
-    "title": "...",
-    "summary": "..."
-  }
+  Output the title on the FIRST line, then the summary on the lines after it — plain text, nothing else: no labels, no numbering, no JSON.
 
   TRANSCRIPT:
   {transcript}
@@ -182,14 +151,14 @@ summarize_chapter: |-
 #
 # Placeholders: {number}, {video}, {context_lines}, {entity_scaffold}, {transcript}
 summarize_chapter_tagged: |-
-  Label chapter {number} of a video transcript. Output JSON only.
+  Label chapter {number} of a video transcript.
   Video: {video}
   {context_lines}
   The transcript below is tagged by speaker. HOST: is the creator of this video talking. CLIP: is footage he is playing and reacting to — those words are somebody else's, and the claims in them are not his. UNSURE: is a line that runs across a cut and contains both of them, so the words on it belong to nobody.
 
   Produce:
-  - title: one sentence (max ~15 words) naming what this chapter is about.
-  - summary: 2-3 sentences on what this stretch of the video covers.
+  - a title: one line (max ~15 words) naming what this chapter is about.
+  - a summary: 2-3 sentences on what this stretch of the video covers.
 
   How to write the title:
   - Title the CONTENT itself, in topic form: a bare noun phrase, or a gerund phrase. Build it around the specific people, claims and events this chapter's transcript contains.
@@ -215,11 +184,7 @@ summarize_chapter_tagged: |-
   - Name the concrete subject matter of this stretch specifically enough that the answer could not be swapped with a chapter of any other video.
   - A sponsor read, a Patreon plug, a channel promo or a sign-off simply says that is what it is. The creator's own promotions — {promoted_items} — follow that rule: a stretch that IS one of them says so ("Patreon plug and a promotion of the book God's People"), and one mentioned in passing stays out of the title and the summary, which name the content around it.
   {entity_scaffold}
-  Output exactly this shape and nothing else:
-  {
-    "title": "...",
-    "summary": "..."
-  }
+  Output the title on the FIRST line, then the summary on the lines after it — plain text, nothing else: no labels, no numbering, no JSON.
 
   TRANSCRIPT:
   {transcript}

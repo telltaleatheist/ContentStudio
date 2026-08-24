@@ -19,4 +19,4 @@ global:
   - "Every specific claim traceable to the input; no event stated as fact that the input doesn't confirm"
   # Was "ASCII characters only", which banned "Beyoncé" and "Muñoz" along with the emoji it
   # was aimed at. Diacritics in a real name are the correct spelling of that name.
-  - "Output is one valid JSON object with exactly the keys specified, in plain text: no emoji and no smart quotes or dashes, though accented letters in real names are correct and stay"
+  - "Output is exactly the shape the OUTPUT FORMAT asks for and nothing else, in plain text: no emoji and no smart quotes or dashes, though accented letters in real names are correct and stay"

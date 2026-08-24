@@ -14,9 +14,10 @@ focus.
     node tools/prompt-tune/build-prompts.js
 
 For each corpus video this emits, under `tools/prompt-tune/out/prompts/`:
-`<key>--chapters-stage1.txt`, `<key>--description-hook.txt`, `<key>--description-body.txt`,
-`<key>--titles-group-STALE.txt`, plus `<key>--REFERENCE.json` (the real production run's
-outputs, for comparison).
+`<key>--chapters-stage1.txt` (answer: one verbatim opening sentence per line),
+`<key>--description-candidate.txt` (answer: hook, blank line, body — one call per candidate
+since the 2026-08-24 plain-text refactor), `<key>--titles-group-STALE.txt`, plus
+`<key>--REFERENCE.json` (the real production run's outputs, for comparison).
 
 The trick that keeps it honest: the *inputs* (rendered transcript, chapter coverage,
 pools, the recorded hook) are extracted from a real run's `_prompt_trace`, and the
@@ -31,9 +32,10 @@ off the API bill): for each prompt file × each model (haiku, sonnet, opus), lau
 subagent with model override and this instruction shape:
 
 > You are simulating one raw Anthropic API call. Read <prompt file> — its entire contents
-> are the user prompt you received. Produce the completion exactly as it demands (JSON
-> only). No tools besides Read/Write, no commentary, no fences. Write the raw completion
-> to tools/prompt-tune/out/outputs/<key>--<stage>--<model>.json and reply: done
+> are the user prompt you received. Produce the completion exactly as it demands (plain
+> text in the prompt's stated shape). No tools besides Read/Write, no commentary, no
+> fences. Write the raw completion to
+> tools/prompt-tune/out/outputs/<key>--<stage>--<model>.json and reply: done
 
 Local models use the same prompt files directly:
 `ollama run qwen3.8:27b < out/prompts/<file>` (ask the operator first — GPU rule).
@@ -42,10 +44,11 @@ Local models use the same prompt files directly:
 
     python3 tools/prompt-tune/score.py
 
-Hard checks per stage: chapter quotes must map verbatim into the transcript, label
-lengths and register, plug-chapter labeling, example-name leaks; hook length/persona;
-body word range, narrator subjects, promo mentions, links; titles count, sentence case,
-and the A/B losing traits (colons, questions, digits). Then eyeball the outputs against
+Hard checks per stage: chapter boundary quotes must map verbatim into the transcript
+(plain lines now — no labels; stage 2 owns every title), quote length, example-name
+leaks; the description candidate's hook length and terminal punctuation, body word
+range, narrator subjects, promo mentions, links; titles count, sentence case, and the
+A/B losing traits (colons, questions, digits). Then eyeball the outputs against
 `--REFERENCE.json` — the hard checks catch what is *wrong*, not what is *flat*.
 
 **4. Tune → repeat.** A weak spot on Haiku is the canary: a prompt that holds on Haiku

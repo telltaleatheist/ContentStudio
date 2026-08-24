@@ -1060,8 +1060,17 @@ check('the chapter prompt this build ships states all three rungs and asks for a
   if (!body.includes('{duration}') || !body.includes('{transcript}')) {
     throw new Error('the shipped prompt lost one of its placeholders');
   }
-  if (!body.includes('"first_sentence"')) {
-    throw new Error('the shipped prompt no longer asks for the sentence the time is measured from');
+  // The answer is PLAIN LINES since 2026-08-24 (no-JSON ruling): one verbatim opening
+  // sentence per line is the whole contract, so the prompt must still demand the exact copy
+  // the quote mapper measures, and must no longer ask for any JSON shape.
+  if (!body.includes('FIRST sentence') || !body.includes('EXACTLY as it appears')) {
+    throw new Error('the shipped prompt no longer asks for the verbatim sentence the time is measured from');
+  }
+  if (!body.includes('ONE copied sentence per line')) {
+    throw new Error('the shipped prompt no longer states the one-sentence-per-line answer shape');
+  }
+  if (body.includes('"first_sentence"') || body.includes('"label"')) {
+    throw new Error('the shipped prompt still asks for the deleted JSON chapter shape');
   }
   let threw = false;
   try { assets.pipeline('chapters.yml', 'place_boundary'); } catch { threw = true; }

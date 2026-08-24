@@ -35,9 +35,9 @@
  *                the fields an adapter was ever trained for. The last one left is the 32B
  *                titles model on its own MLX shim.
  *   prompt-set — everything else, local and cloud alike. LocalFieldUnit posts to Ollama through
- *                ollama-json.ts under a single-key JSON Schema; CloudFieldUnit posts to a
- *                provider client. They build their prompt with the same builder and read their
- *                answer through the same normalizer. The only difference is transport.
+ *                plain-call.ts; CloudFieldUnit posts through the AI manager's plain transport.
+ *                They build their prompt with the same builder and read their answer through
+ *                the same parser. The only difference is transport.
  *
  * TWO LOCAL MODELS IS THE BUDGET. Per-field calls make it trivially easy to have a run load
  * five models, and every load is a multi-GB stall. planMetadataUnits computes the roster of
@@ -67,7 +67,8 @@ import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import { queueAITask } from '../queue-manager.service';
 import { JobCancelledError, isAbortError } from './cancellation';
-import { askOllamaJson, bucketNumCtx, estimateTokens } from './ollama-json';
+import { bucketNumCtx, estimateTokens } from './ollama-json';
+import { askOllamaPlain, parseLines } from './plain-call';
 import { JobModelLifecycle } from './model-lifecycle';
 import {
   CHAPTER_PIPELINE_MODELS,
@@ -303,82 +304,47 @@ function canonicalSectionKey(header: string): string {
 }
 
 /**
- * Each field's prompt-set section, the JSON shape hint its OUTPUT FORMAT names, and the
- * single-key JSON Schema its local call decodes under.
+ * Each field's prompt-set section and the PLAIN output shape its call answers in.
  *
- * The metadata keys are the ones parseMetadataResponse / normalizeMetadataKeys already
- * expect (see metadata-fields.ts) — a unit that named a key outside that registry would
- * produce a field nothing downstream reads.
+ * `output` is the whole wire contract now (operator's ruling 2026-08-24: no JSON for these
+ * calls unless absolutely necessary): `lines` is one option per line, `comma-line` is the tag
+ * list's one comma-separated line. The single-key JSON schemas this table used to carry are
+ * gone with the JSON — a plain answer has no key to drop, which was the one failure the
+ * grammar was keeping out.
+ *
+ * `description`, `description_hook` and `description_options` are never field calls — they are
+ * DescriptionUnit's own hook/blank-line/body answer — and `hashtags` is code-owned; their
+ * entries exist so the field ids have one registry and the section lookups one home.
  *
  * `needsTranscript` is GONE, and its absence is the change. It used to say that description,
  * tags and hashtags were written from the chapter list alone while titles, thumbnails, pinned
  * comments and clips were written from the video. Every call reads the video now: the
- * transcript is direct-passed rather than summarized (ai-manager.service.ts), so there is a
- * transcript to give them, and "written from a précis of the video" was never a property
- * anybody wanted — it was a context-window concession from the 14B era. Over the ceiling they
- * all read the same chapter digest rather than the same summary (chapter-digest.ts), so "every
- * call reads the same thing" survives that case too.
+ * transcript is direct-passed rather than summarized (ai-manager.service.ts), and over the
+ * ceiling they all read the same chapter digest (chapter-digest.ts).
  */
 interface MetadataFieldSpec {
   section: string;
-  shape: string;
-  /**
-   * Ollama's `format` for a call that returns ONLY this field.
-   *
-   * SHAPE ONLY — a key, and whether its value is a string or a list of strings. No
-   * `maxLength`, no `minItems`, no counts. That line is where structured output stops
-   * helping and starts lying: description-unit.ts measured `maxLength` TRUNCATING THE DECODE
-   * mid-word rather than steering the model, and a `minItems` grammar would pad a list to
-   * length rather than think of another angle. The counts and the lengths are asked for in
-   * the field's own instructions, measured in code where they matter, and declared when they
-   * are missed.
-   *
-   * What it does buy is the one failure the group call actually had: a 4-key object came back
-   * with 3 keys in 1 of 6 measured runs. A grammar that requires the key cannot do that.
-   */
-  schema: Record<string, unknown>;
-}
-
-/** `{"<key>": "one string"}`, required. */
-function stringSchema(key: string): Record<string, unknown> {
-  return { type: 'object', properties: { [key]: { type: 'string' } }, required: [key] };
-}
-
-/** `{"<key>": ["...", ...]}`, required. */
-function stringListSchema(key: string): Record<string, unknown> {
-  return {
-    type: 'object',
-    properties: { [key]: { type: 'array', items: { type: 'string' } } },
-    required: [key],
-  };
+  /** The call's plain answer shape. */
+  output: 'lines' | 'comma-line';
 }
 
 export const METADATA_FIELD_SECTIONS: Record<MetadataFieldId, MetadataFieldSpec> = {
-  titles: { section: 'TITLES', shape: '["string", ...]', schema: stringListSchema('titles') },
-  description: { section: 'DESCRIPTION', shape: '"one string"', schema: stringSchema('description') },
-  // Not a prompt-set section and never sent as a field call: the hook comes out of
-  // DescriptionUnit's own call under its own schema. The entry exists so the field id has one
-  // registry.
-  description_hook: { section: 'DESCRIPTION', shape: '"one string"', schema: stringSchema('description_hook') },
-  // Same story as the hook, and even more so: the alternatives are whole hook+body pairs
-  // DescriptionUnit writes through its OWN two schemas, one candidate at a time. Nothing ever
-  // asks a model for this array, so the schema here is a formality the registry's shape demands.
-  description_options: {
-    section: 'DESCRIPTION',
-    shape: '["string", ...]',
-    schema: stringListSchema('description_options'),
-  },
-  tags: { section: 'TAGS', shape: '"comma-separated string"', schema: stringSchema('tags') },
-  thumbnail_text: { section: 'THUMBNAIL_TEXT', shape: '["string", ...]', schema: stringListSchema('thumbnail_text') },
-  pinned_comment: { section: 'PINNED_COMMENT', shape: '["string", ...]', schema: stringListSchema('pinned_comment') },
-  clip_suggestions: { section: 'CLIP_SUGGESTIONS', shape: '["string", ...]', schema: stringListSchema('clip_suggestions') },
-  hashtags: { section: 'HASHTAGS', shape: '"#One #Two #Three"', schema: stringSchema('hashtags') },
-  spoken_keywords: { section: 'SPOKEN_KEYWORDS', shape: '["string", ...]', schema: stringListSchema('spoken_keywords') },
+  titles: { section: 'TITLES', output: 'lines' },
+  description: { section: 'DESCRIPTION', output: 'lines' },
+  description_hook: { section: 'DESCRIPTION', output: 'lines' },
+  description_options: { section: 'DESCRIPTION', output: 'lines' },
+  tags: { section: 'TAGS', output: 'comma-line' },
+  thumbnail_text: { section: 'THUMBNAIL_TEXT', output: 'lines' },
+  pinned_comment: { section: 'PINNED_COMMENT', output: 'lines' },
+  clip_suggestions: { section: 'CLIP_SUGGESTIONS', output: 'lines' },
+  hashtags: { section: 'HASHTAGS', output: 'lines' },
+  spoken_keywords: { section: 'SPOKEN_KEYWORDS', output: 'lines' },
 };
 
-export function buildOutputFormat(fields: MetadataFieldId[]): string {
-  const keyLines = fields.map((f) => `  "${f}": ${METADATA_FIELD_SECTIONS[f].shape}`).join(',\n');
-  return formatPrompt(SYSTEM_PROMPTS.TASK_OUTPUT_FORMAT, { keyLines });
+export function buildOutputFormat(field: MetadataFieldId): string {
+  return METADATA_FIELD_SECTIONS[field].output === 'comma-line'
+    ? SYSTEM_PROMPTS.TASK_OUTPUT_COMMA
+    : formatPrompt(SYSTEM_PROMPTS.TASK_OUTPUT_LINES, { field: field.replace(/_/g, ' ') });
 }
 
 export interface TaskInstructions {
@@ -449,7 +415,7 @@ export function buildFieldInstructions(
   }
 
   return {
-    text: [section.text, buildOutputFormat([spec.field]).trim(), selfCheckText.replace(/\s+$/, '')].join('\n\n'),
+    text: [section.text, buildOutputFormat(spec.field).trim(), selfCheckText.replace(/\s+$/, '')].join('\n\n'),
     metadataKeys: [spec.field],
   };
 }
@@ -691,9 +657,8 @@ export function buildModelRoster(entries: ModelRosterEntry[], excludeModels: str
  * ONE field, written by a cloud model, from the same prompt the local units get.
  *
  * A field routed to Sonnet or Opus takes exactly the per-field prompt its local sibling would
- * have taken; only the transport differs. There is no structured-output grammar on this path —
- * the providers do not take one — so the OUTPUT FORMAT naming a single key is what carries the
- * contract, and the answer is checked for that key rather than trusted.
+ * have taken; only the transport differs. The answer is PLAIN TEXT in the field's declared
+ * shape (lines, or the tags' comma line), read by the same parser the local unit uses.
  */
 export class CloudFieldUnit implements MetadataUnit {
   readonly label: string;
@@ -715,8 +680,12 @@ export class CloudFieldUnit implements MetadataUnit {
 
   async generate(ctx: MetadataRunContext): Promise<Record<string, unknown>> {
     const prompt = this.aiManager.buildMetadataFieldPrompt(this.spec, ctx);
-    const { metadata, presentKeys } = await this.aiManager.runMetadataRequest(prompt, this.spec.model);
-    return pickTheOneKey(metadata as unknown as Record<string, unknown>, presentKeys, this.spec, ctx, this.spec.model);
+    const what = `the ${this.spec.field} call for ${ctx.sourceLabel}`;
+    const text = await this.aiManager.runPlainRequest(prompt, this.spec.model, what);
+    if (!text) {
+      throw new Error(`The "${this.spec.field}" call on ${this.spec.model} for ${ctx.sourceLabel} came back empty`);
+    }
+    return readFieldAnswer(this.spec.field, text, this.spec.model, ctx);
   }
 }
 
@@ -725,7 +694,7 @@ export class CloudFieldUnit implements MetadataUnit {
 // ---------------------------------------------------------------------------
 
 /**
- * ONE field, written by a local base model, under a single-key JSON Schema.
+ * ONE field, written by a local base model, as plain text in the field's declared shape.
  *
  * A base model knows nothing about this channel, so it gets EVERYTHING about the one field it
  * is writing: the editorial preamble, that field's `##` section from the shared field files,
@@ -801,14 +770,11 @@ export class LocalFieldUnit implements MetadataUnit {
       `Metadata: ${this.label}`,
       async () => {
         if (this.abortSignal?.aborted) throw new JobCancelledError('cancelled before the local field call ran');
-        const answer = await askOllamaJson(this.client, {
+        const answer = await askOllamaPlain(this.client, {
           model: this.option.model,
           prompt,
           numCtx,
           numPredict: LOCAL_FIELD_NUM_PREDICT,
-          // One key, one shape. See METADATA_FIELD_SECTIONS.schema for what it deliberately
-          // does NOT constrain.
-          schema: METADATA_FIELD_SECTIONS[this.spec.field].schema,
           keepAlive: LOCAL_FIELD_KEEP_ALIVE,
           timeoutMs: LOCAL_FIELD_TIMEOUT_MS,
           signal: this.abortSignal,
@@ -839,39 +805,38 @@ export class LocalFieldUnit implements MetadataUnit {
       );
     }
 
-    const { metadata, presentKeys } = this.aiManager.parseMetadataResponse(result.text);
-    return pickTheOneKey(
-      metadata as unknown as Record<string, unknown>,
-      presentKeys,
-      this.spec,
-      ctx,
-      this.option.model
-    );
+    return readFieldAnswer(this.spec.field, result.text, this.option.model, ctx);
   }
 }
 
 /**
- * Take ONLY this call's key.
+ * Read one field call's plain answer into its field.
  *
- * A parsed response carries the whole registry — normalizeMetadataKeys fills it — and merging
- * its empty entries over another call's real answer would blank them. The absent key is a
- * failure rather than an empty field: the call was asked for one key under a grammar that
- * requires it, and an answer without it is an answer to some other question.
+ * A `lines` field comes back as one option per line (numbering tolerated and stripped —
+ * plain-call.ts); the tags come back as one comma-separated line and go through the same
+ * normalization the adapter's tag answer always has. A COUNT MISMATCH on a list field is a
+ * declared warning and the answer is KEPT — deliver-and-curate; the operator reads ten titles
+ * or eight — never a blocking check.
  */
-function pickTheOneKey(
-  metadata: Record<string, unknown>,
-  presentKeys: Set<string>,
-  spec: MetadataFieldUnitSpec,
-  ctx: MetadataRunContext,
-  model: string
+function readFieldAnswer(
+  field: MetadataFieldId,
+  text: string,
+  model: string,
+  ctx: MetadataRunContext
 ): Record<string, unknown> {
-  if (!presentKeys.has(spec.field)) {
-    throw new Error(
-      `The "${spec.field}" call on ${model} for ${ctx.sourceLabel} returned no "${spec.field}" — that key is the ` +
-        `only thing this call was asked for (got: ${Array.from(presentKeys).join(', ') || 'nothing'})`
+  const what = `the ${field} call for ${ctx.sourceLabel}`;
+  if (METADATA_FIELD_SECTIONS[field].output === 'comma-line') {
+    return { [field]: normalizeAdapterTags(text, field, model, ctx.sourceLabel) };
+  }
+  const lines = parseLines(text, what);
+  const expected = promptAssets().channel(ctx.promptSetName).counts[field];
+  if (typeof expected === 'number' && lines.length !== expected) {
+    ctx.warn(
+      `the ${field} call on ${model} returned ${lines.length} option(s) where the channel asks for ` +
+        `${expected}; all ${lines.length} are kept exactly as written`
     );
   }
-  return { [spec.field]: metadata[spec.field] };
+  return { [field]: lines };
 }
 
 // ---------------------------------------------------------------------------
@@ -1494,7 +1459,7 @@ export interface MetadataPlanRequest {
  *   adapter    — a fine-tuned model with the brief in its weights. A terse turn in, plain text
  *                out, and only the fields an adapter was ever trained for. LocalAdapterUnit.
  *   prompt-set — everything else, cloud and local alike: that field's yml section, its
- *                self-check, the transcript, and a one-key JSON output contract.
+ *                self-check, the transcript, and a plain-text output contract.
  *                CloudFieldUnit / LocalFieldUnit.
  *
  * WHAT REPLACED GROUPING. Fields pointed at the same model used to be written in ONE call so

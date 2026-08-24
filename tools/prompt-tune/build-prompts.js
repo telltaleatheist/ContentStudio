@@ -11,7 +11,7 @@ const path = require('path');
 const fs = require('fs');
 const REPO = path.join(__dirname, '..', '..');
 const OUT = path.join(__dirname, 'out', 'prompts');
-const yaml = require(path.join(REPO, 'node_modules', 'js-yaml'));
+const yaml = require('js-yaml'); // resolved by walking up — works from the repo and from a worktree
 
 // electron-log fails outside electron; alias it (and electron) to a no-op shim before dist loads.
 const Module = require('module');
@@ -116,16 +116,16 @@ for (const video of CORPUS) {
     if (unfilled) throw new Error(`unfilled slot ${unfilled[0]} for ${video.key}`);
     return text;
   };
-  const hookPrompt = fill(pipelineDesc.hook);
-  const bodyPrompt = fill(pipelineDesc.body, { hook: recordedHook });
+  // ONE candidate prompt since the plain-text refactor (2026-08-24): hook + blank line +
+  // body in a single call, so the harness emits one description prompt per video.
+  const candidatePrompt = fill(pipelineDesc.candidate);
 
   // ---- titles group call: traced as-is (assembled by metadata-tasks; refresh is follow-up work).
   const titlesTrace = trace.filter((t) => t.what.startsWith('metadata package'))[0];
 
   const outputs = {
     'chapters-stage1': chaptersPrompt,
-    'description-hook': hookPrompt,
-    'description-body': bodyPrompt,
+    'description-candidate': candidatePrompt,
     'titles-group-STALE': titlesTrace ? titlesTrace.prompt : null,
   };
   for (const [stage, prompt] of Object.entries(outputs)) {

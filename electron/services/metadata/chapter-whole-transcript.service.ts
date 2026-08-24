@@ -22,13 +22,19 @@
  *
  * THE ARCHITECTURE, in full:
  *
- *   1. CHAPTERS   LLM     ONE call. The whole transcript, no timestamps, the runtime stated
- *                         once as a fact, a cadence BAND graduated by that runtime, and a
- *                         first-sentence quote per chapter. The model derives the COUNT.
- *   2. MAP        code    each quote -> a second, forwards only, against the caption word
- *                         stream. Unmappable is DROPPED and named, never guessed at.
- *   3. DETAIL     LLM     one call per chapter, from its RAW transcript: the 20-45 word
- *                         prose the description and tag stages condition on.
+ *   1. CHAPTERS   LLM     a ROLLING WINDOW of one-or-more calls (usually exactly one): as
+ *                         much transcript as fits, no timestamps, the window's runtime
+ *                         stated once as a fact, a cadence BAND graduated by that runtime —
+ *                         and the answer is PLAIN TEXT, one verbatim first sentence per
+ *                         line, per the operator's 2026-08-24 no-JSON ruling. The model
+ *                         derives the COUNT. A longer transcript rolls: the next window
+ *                         starts at the last boundary the previous one mapped, so the tail
+ *                         is re-read in full context and no seam splits a subject.
+ *   2. MAP        code    each quoted sentence -> a second, forwards only, against that
+ *                         window's caption word stream. Unmappable is DROPPED and named,
+ *                         never guessed at.
+ *   3. DETAIL     LLM     one call per chapter, from its RAW transcript: a title line and
+ *                         the 20-45 word prose the description and tag stages condition on.
  *
  * 1 + N calls, N being 3 to 8. An hour of video costs 5 to 9 generation calls.
  *
@@ -65,9 +71,9 @@
  *                                  a warning says the description was written without it.
  *  - a title names something     -> the title is KEPT exactly as written and a warning names
  *    its chapter never said,        it. Never a rewrite, never a block: the operator curates
- *    or narrates an actor           the output. Where the title came from the detail call
- *                                  (see THE TITLE RULE below) there is ONE re-ask first,
- *                                  because that is the one title a second sample can change.
+ *    or narrates an actor           the output. Every title comes from its detail call, so
+ *                                  every one gets ONE re-ask first — that is the one title a
+ *                                  second sample can change.
  *  - the transcript is uncased   -> the entity scaffold and the grounding check cannot run,
  *                                  and a warning says the titles were written without them.
  *
@@ -75,21 +81,10 @@
  * model not installed, request timeout), and a chapter span with no words in it (the
  * boundaries came from cue times, so an empty span means the arithmetic is wrong).
  *
- * THE TITLE RULE, stated because two stages could otherwise fight over one string and the
- * loser would be invisible. Every chapter has exactly ONE source for its title:
- *
- *   - the chapter call's `label`, for every chapter it reported;
- *   - the detail call's `title`, for a chapter the chapter call did NOT label — normally the
- *     opening 0:00 chapter, because the prompt asks for the turns and the opening of a video
- *     is not a turn, and otherwise only an entry that came back with an empty label. (A model
- *     that reports the opening anyway is not overruled: its label names that chapter and its
- *     redundant boundary is dropped, which is the one case where 0:00 has a stage-1 name.)
- *
- * The detail call still asks for a title on every chapter (its prompt body is unchanged, and
- * naming the chapter is part of how it reads it), and that answer is DISCARDED wherever the
- * chapter call already supplied one. The discard is the explicit choice; the alternative —
- * letting stage 3 overwrite stage 1's title — would silently replace the string the
- * measurement was about.
+ * ONE TITLE SOURCE (which is what THE TITLE RULE used to arbitrate). Stage 1's answer is
+ * bare quote lines — it names nothing — so every chapter's title comes from its own detail
+ * call, the one that read that chapter's raw transcript. There is no second source left to
+ * fight it, and the 0:00 opening chapter is named exactly like every other.
  *
  * The result is the SAME ChapterPipelineResult every deleted path returned, so promo
  * exclusion, `chaptersSkipped`, the description's chapter lines and report rendering all
@@ -111,56 +106,15 @@ import {
   Cue,
 } from './chapter-transcript';
 import { CHAPTER_PROMPTS } from './chapter-prompts';
-import {
-  askOllamaJson,
-  bucketNumCtx,
-  estimateTokens,
-  TOKENS_PER_WORD,
-  OLLAMA_KEEP_ALIVE,
-} from './ollama-json';
+import { bucketNumCtx, estimateTokens, TOKENS_PER_WORD, OLLAMA_KEEP_ALIVE } from './ollama-json';
+import { askOllamaPlain, parseLines, parseTitleDetail } from './plain-call';
 import { JobModelLifecycle } from './model-lifecycle';
-import { CloudAnswerUnusableError } from './ai-manager.service';
 import { formatPrompt } from './system-prompts';
 import { topEntities, transcriptCasing } from './entity-extraction';
 import { groundTitle, narratesAnActor } from './chapter-title-quality';
 
 /** The two stages that make model calls, and therefore the two that report progress. */
 export type ChapterStage = 'chapters' | 'detail';
-
-/**
- * The answer shape of each stage's call, for the CLOUD transport only.
- *
- * The local path deliberately sends no schema — grammar-constraining the decode measurably
- * destroys the chapter judgment there, because the local model reasons in the same token
- * stream the grammar constrains. The cloud models think BEFORE the constrained answer, so
- * the schema only guarantees the answer's syntax (the API's structured outputs) and the
- * judgment is untouched. Added after the 2026-08-23 runs, where free-form cloud answers
- * arrived with unterminated strings and trailing commas and cost chapters their details.
- */
-const CLOUD_STAGE_SCHEMAS: Record<ChapterStage, Record<string, unknown>> = {
-  chapters: {
-    type: 'object',
-    properties: {
-      chapters: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: { label: { type: 'string' }, first_sentence: { type: 'string' } },
-          required: ['label', 'first_sentence'],
-          additionalProperties: false,
-        },
-      },
-    },
-    required: ['chapters'],
-    additionalProperties: false,
-  },
-  detail: {
-    type: 'object',
-    properties: { title: { type: 'string' }, summary: { type: 'string' } },
-    required: ['title', 'summary'],
-    additionalProperties: false,
-  },
-};
 
 // =============================================================================
 // CONSTANTS
@@ -257,20 +211,22 @@ export interface WholeTranscriptChapterOptions {
   /**
    * Cloud transport for both stages, present exactly when the writing model resolved to a
    * cloud option (resolveChapterModelOption). The caller passes AIManagerService's
-   * runJsonRequest bound to itself; `model` is then the provider-prefixed string that method
-   * routes on ("claude:claude-sonnet-5") rather than an Ollama tag.
+   * runPlainRequest bound to itself; `model` is then the provider-prefixed string that method
+   * routes on ("claude:claude-sonnet-5") rather than an Ollama tag. Null is an EMPTY answer —
+   * one decision for the caller — and a transport failure throws, same as the local branch.
    *
    * When present, nothing local happens: no context-window sizing (the provider owns its
    * window), no model residency (`lifecycle` holds nothing), no Ollama traffic. The
    * local path is otherwise UNTOUCHED — this is a second transport inside `ask()`, not a
    * second pipeline, and every stage, retry rule and warning reads identically on both.
    */
-  cloudJson?: (
-    prompt: string,
-    model: string,
-    what: string,
-    schema?: Record<string, unknown>
-  ) => Promise<Record<string, unknown>>;
+  cloudPlain?: (prompt: string, model: string, what: string) => Promise<string | null>;
+  /**
+   * The rolling window's input ceiling on the cloud transport, in characters — the caller's
+   * direct-pass ceiling. Required with cloudPlain: this service must not import the cloud
+   * ceiling from the module that imports it back.
+   */
+  cloudWindowChars?: number;
   /**
    * The channel's promoted_items list (prompts/channels/*.yml), filled into the prompts'
    * {promoted_items} slot: the chapter call uses it to bound plug chapters and keep passing
@@ -292,14 +248,12 @@ interface WorkingChapter {
   title: string;
   detail: string;
   /** Where `title` came from, so the run can say which call is worth a look. */
-  titleSource: 'chapter call' | 'detail call' | 'opening words';
+  titleSource: 'detail call' | 'opening words';
 }
 
-/** What the one chapter call came back with, or why there is nothing to work with. */
-interface ChapterAnswer {
+/** What one stage-1 window came back with. */
+interface WindowAnswer {
   claims: ChapterClaim[];
-  /** Entries with no `first_sentence`. Dropped, counted, never filled in from the label. */
-  malformed: number;
   retried: boolean;
 }
 
@@ -323,33 +277,15 @@ function plainTranscript(cues: Cue[]): string {
 }
 
 /**
- * Read the model's object into (label, quote) pairs.
+ * Read stage 1's plain answer into quote claims.
  *
- * An entry with no quote is DROPPED and counted, never filled in from the label and never
- * interpolated between its neighbours: the quote is the measurement, and a chapter with no
- * measurement is a chapter with no time.
+ * One copied sentence per line, per the prompt; the label field is structurally empty because
+ * stage 1 no longer names anything — every chapter is named by its own detail call. A line is
+ * the measurement, and a lineless answer is no answer (parseLines throws; the caller's
+ * re-ask policy owns that).
  */
-function readClaims(value: Record<string, unknown>): { claims: ChapterClaim[]; malformed: number } {
-  const raw = Array.isArray(value.chapters) ? value.chapters : null;
-  if (!raw) return { claims: [], malformed: 0 };
-
-  const claims: ChapterClaim[] = [];
-  let malformed = 0;
-  for (const entry of raw) {
-    if (!entry || typeof entry !== 'object') {
-      malformed++;
-      continue;
-    }
-    const record = entry as Record<string, unknown>;
-    const quote = typeof record.first_sentence === 'string' ? record.first_sentence.trim() : '';
-    const label = typeof record.label === 'string' ? record.label.trim() : '';
-    if (quote.length === 0) {
-      malformed++;
-      continue;
-    }
-    claims.push({ label, quote });
-  }
-  return { claims, malformed };
+function readQuoteLines(text: string, what: string): ChapterClaim[] {
+  return parseLines(text, what).map((quote) => ({ label: '', quote }));
 }
 
 // =============================================================================
@@ -433,78 +369,29 @@ export class WholeTranscriptChapterService {
         `${this.speakerTagged ? 'speaker-tagged' : 'untagged'}`
     );
 
-    // ---- stage 1: the one call ------------------------------------------------
+    // ---- stage 1: the rolling window -------------------------------------------
     // The context window is an Ollama concern: sized, ratcheted and GPU-checked only on the
     // local transport. A cloud provider owns its own window and the sizing would record a
     // residency for a model that never loads.
-    if (!this.options.cloudJson) this.numCtx = this.runNumCtx(transcript);
-    this.options.onProgress?.('chapters', 0, 1);
-    const answer = await this.askForChapters(transcript, runtime);
-    this.options.onProgress?.('chapters', 1, 1);
-
-    if (answer.malformed > 0) {
-      this.warn(
-        `${answer.malformed} of the ${answer.claims.length + answer.malformed} chapters the model listed ` +
-          `came back with no opening sentence to measure, so they were dropped rather than placed by ` +
-          `guesswork — this video has ${answer.malformed} chapter(s) fewer than the model found`
-      );
-    }
-
-    // ---- stage 2: measure every quote, forwards only --------------------------
-    const mappings = mapChapterQuotes(answer.claims, cues);
-    for (const mapping of mappings) {
-      if (mapping.status === 'mapped') {
-        log.info(
-          `[Chapters] chapter ${mapping.ordinal} at ${formatClock(mapping.time!)}: ` +
-            `"${mapping.quote.slice(0, 60)}" — ${mapping.label}`
-        );
-        continue;
-      }
-      this.warn(
-        mapping.status === 'out-of-order'
-          ? `the chapter the model called "${mapping.label || 'untitled'}" was DROPPED: its opening ` +
-              `sentence ("${mapping.quote.slice(0, 60)}") is in this transcript at ` +
-              `${formatClock(mapping.wholeVideoTime!)}, which is not after the chapter before it, so the ` +
-              `model listed it out of order or quoted a sentence the speaker says twice`
-          : `the chapter the model called "${mapping.label || 'untitled'}" was DROPPED: its opening ` +
-              `sentence ("${mapping.quote.slice(0, 60)}") is not in this transcript, so there is no ` +
-              `measured time for it and nothing is guessed at`
-      );
-    }
-
-    const starts = mappings.filter((m) => m.status === 'mapped');
+    if (!this.options.cloudPlain) this.numCtx = this.runNumCtx(transcript);
+    const windowed = await this.rollingWindows(cues);
+    const starts = windowed.starts;
+    const claimed = windowed.claimed;
     const mapped = starts.length;
-    const dropped = mappings.filter((m) => m.status !== 'mapped').length + answer.malformed;
-
-    // The prompt says the opening chapter needs no entry, and a model that reports it
-    // anyway has not made a mistake worth a warning — it has named the one chapter this
-    // architecture otherwise has no name for. Its boundary is redundant (code puts the
-    // first chapter at 0:00 regardless) and is taken off the front so the opening span
-    // cannot be 0:00-0:00, which would be an empty chapter and would throw.
-    let openingLabel = '';
-    if (starts.length > 0 && starts[0].time === 0) {
-      openingLabel = starts[0].label;
-      starts.shift();
-      log.info(
-        `[Chapters] the model reported the opening of the video as a chapter; 0:00 is already the ` +
-          `first chapter, so its entry is not a second boundary — it is the opening chapter's name ` +
-          `("${openingLabel || 'unnamed'}")`
-      );
-    }
+    const dropped = windowed.dropped;
 
     // The opening chapter is at 0:00 and the model usually does not report it: the prompt
-    // asks for the TURNS, and the opening of the video is not a turn. Where it has no label
-    // from the chapter call, THE TITLE RULE's second clause names it from its detail call.
-    const spans: { startSec: number; endSec: number; label: string }[] = [
+    // asks for the TURNS, and the opening of a video is not a turn. A model that reports it
+    // anyway produced a redundant boundary (code puts the first chapter at 0:00 regardless),
+    // which the window loop already deduped along with every other at-window-start line.
+    const spans: { startSec: number; endSec: number }[] = [
       {
         startSec: 0,
-        endSec: starts.length > 0 ? starts[0].time! : durationSeconds,
-        label: openingLabel,
+        endSec: starts.length > 0 ? starts[0] : durationSeconds,
       },
-      ...starts.map((m, i) => ({
-        startSec: m.time!,
-        endSec: i + 1 < starts.length ? starts[i + 1].time! : durationSeconds,
-        label: m.label,
+      ...starts.map((startSec, i) => ({
+        startSec,
+        endSec: i + 1 < starts.length ? starts[i + 1] : durationSeconds,
       })),
     ];
 
@@ -527,7 +414,7 @@ export class WholeTranscriptChapterService {
       stats: {
         durationSeconds,
         band,
-        chaptersClaimed: answer.claims.length + answer.malformed,
+        chaptersClaimed: claimed,
         chaptersMapped: mapped,
         chaptersDropped: dropped,
         // Structurally zero: see ChapterRunStats.approxStarts. A chapter here is measured
@@ -542,54 +429,184 @@ export class WholeTranscriptChapterService {
   // ---------------------------------------------------------------------- stage 1
 
   /**
-   * The ONE call: the whole transcript in, a list of (title, opening sentence) out.
+   * The input budget of ONE stage-1 window, in transcript WORDS.
    *
-   * ONE re-ask at a different SAMPLE when the answer is unusable, and then the run THROWS.
-   * That is not a fallback and there is nothing to degrade to — this call IS the chapter
-   * list. resolveChapters records `chaptersSkipped` with this message on it, so the item
-   * says out loud that it has no chapters and why, which is a state the user sees.
+   * Local: what fits beside the prompt overhead and the output budget inside CTX_MAX. Cloud:
+   * the caller's direct-pass ceiling, converted at this codebase's chars-per-word estimate.
+   * Both are ceilings on the same thing — how much transcript one call may carry — expressed
+   * in the unit each transport is bounded in.
    */
-  private async askForChapters(transcript: string, runtime: string): Promise<ChapterAnswer> {
+  private windowWordBudget(): number {
+    const overheadChars = CHAPTER_PROMPTS.WHOLE_TRANSCRIPT_CHAPTERS.length + this.promotedItemsLine().length + 64;
+    if (this.options.cloudPlain) {
+      const ceiling = this.options.cloudWindowChars;
+      if (!ceiling || ceiling <= overheadChars) {
+        throw new Error(
+          `The chapter pipeline is on the cloud transport with no usable cloudWindowChars ceiling ` +
+            `(got ${ceiling ?? 'none'}); the caller passes its direct-pass ceiling with the transport`
+        );
+      }
+      // ~6 chars per English word incl. the space; deliberately conservative so a window is
+      // never refused by the provider for length.
+      return Math.floor((ceiling - overheadChars) / 6);
+    }
+    const promptTokenBudget = CTX_MAX - NUM_PREDICT - 512 - estimateTokens(overheadChars);
+    return Math.floor(promptTokenBudget / TOKENS_PER_WORD);
+  }
+
+  /** The exclusive cue index where a window starting at `from` runs out of word budget. */
+  private static windowEnd(cues: Cue[], from: number, budgetWords: number): number {
+    let words = 0;
+    for (let i = from; i < cues.length; i++) {
+      words += cues[i].text.split(/\s+/).filter(Boolean).length;
+      if (words > budgetWords && i > from) return i;
+    }
+    return cues.length;
+  }
+
+  /**
+   * Stage 1 as a ROLLING WINDOW (operator's design, 2026-08-24).
+   *
+   * Send as much transcript as fits, starting at the current position; keep every boundary
+   * the window maps; advance the position to the LAST mapped boundary and send everything
+   * from there forward in the next window. The tail past the last boundary is deliberately
+   * RE-READ in full context, which is the whole point: no artificial seam ever splits a
+   * subject. A transcript that fits one window is exactly the single-call architecture — the
+   * loop runs once and reaches the end.
+   *
+   * A window's own start is already a chapter start (0:00 for window 1, a mapped boundary
+   * for every later one), so a returned line mapping at or before it is a redundant echo and
+   * is deduped — which is the same handling the 0:00 opening report has always had.
+   *
+   * PROGRESS IS GUARANTEED. Every round advances the position strictly: a window that maps a
+   * fresh boundary advances to it, and the one degenerate case — a window that does NOT reach
+   * the video's end and returns nothing past its own start — advances to the window's end,
+   * which introduces the one artificial seam this design otherwise eliminates, and WARNS
+   * naming the timestamps. A declared degradation, never a silent one.
+   */
+  private async rollingWindows(cues: Cue[]): Promise<{ starts: number[]; claimed: number; dropped: number }> {
+    const budgetWords = this.windowWordBudget();
+    const starts: number[] = [];
+    const ranges: string[] = [];
+    let claimed = 0;
+    let dropped = 0;
+    let from = 0;
+
+    while (from < cues.length) {
+      const to = WholeTranscriptChapterService.windowEnd(cues, from, budgetWords);
+      const windowCues = cues.slice(from, to);
+      const reachesEnd = to >= cues.length;
+      const windowStartSec = windowCues[0].startSec;
+      const windowEndSec = windowCues[windowCues.length - 1].endSec;
+      ranges.push(`${formatClock(windowStartSec)}-${formatClock(windowEndSec)}`);
+
+      const answer = await this.askWindow(windowCues, ranges.length);
+      claimed += answer.claims.length;
+
+      const mappings = mapChapterQuotes(answer.claims, windowCues);
+      for (const mapping of mappings) {
+        if (mapping.status === 'mapped') {
+          log.info(
+            `[Chapters] boundary at ${formatClock(mapping.time!)}: "${mapping.quote.slice(0, 60)}"`
+          );
+          continue;
+        }
+        dropped++;
+        this.warn(
+          mapping.status === 'out-of-order'
+            ? `a chapter boundary was DROPPED: its opening sentence ("${mapping.quote.slice(0, 60)}") is in ` +
+                `this transcript at ${formatClock(mapping.wholeVideoTime!)}, which is not after the boundary ` +
+                `before it, so the model listed it out of order or quoted a sentence the speaker says twice`
+            : `a chapter boundary was DROPPED: its opening sentence ("${mapping.quote.slice(0, 60)}") is not ` +
+                `in this transcript, so there is no measured time for it and nothing is guessed at`
+        );
+      }
+
+      // The window's own start is already a chapter start; a line mapping at (or before) it
+      // is the redundant echo described above, not a boundary.
+      const mapped = mappings.filter((m) => m.status === 'mapped').map((m) => m.time!);
+      const fresh = mapped.filter((timeSec) => timeSec > windowStartSec);
+      if (mapped.length > fresh.length) {
+        log.info(
+          `[Chapters] ${mapped.length - fresh.length} reported boundary(ies) sit at this window's own start ` +
+            `(${formatClock(windowStartSec)}), which is already a chapter start — deduped`
+        );
+      }
+      starts.push(...fresh);
+
+      if (reachesEnd) break;
+      if (fresh.length > 0) {
+        const lastSec = fresh[fresh.length - 1];
+        const nextFrom = cues.findIndex((c) => c.startSec >= lastSec);
+        // lastSec > windowStartSec, so nextFrom is strictly past `from`: progress holds.
+        from = nextFrom;
+      } else {
+        this.warn(
+          `stage 1's window ${formatClock(windowStartSec)}-${formatClock(windowEndSec)} did not reach the end ` +
+            `of the video and returned no boundary past its own start, so the next window starts at ` +
+            `${formatClock(windowEndSec)} — an artificial seam this run otherwise avoids, and a subject ` +
+            `spanning it may be split in two`
+        );
+        from = to;
+      }
+    }
+
+    log.info(`[Chapters] stage 1 ran as ${ranges.length} window(s): ${ranges.join(' | ')}`);
+    if (ranges.length > 1) {
+      this.warn(
+        `this transcript was too long for one chapter call, so stage 1 ran as ${ranges.length} rolling ` +
+          `windows (${ranges.join('; ')}); each next window started at the last boundary the previous one ` +
+          `found, so no seam was cut mid-subject`
+      );
+    }
+    return { starts, claimed, dropped };
+  }
+
+  /**
+   * ONE window's stage-1 call: its transcript slice in, opening-sentence lines out.
+   *
+   * ONE re-ask when the answer is unusable, and then the run THROWS. That is not a fallback
+   * and there is nothing to degrade to — these calls ARE the chapter list. resolveChapters
+   * records `chaptersSkipped` with this message on it, so the item says out loud that it has
+   * no chapters and why, which is a state the user sees.
+   */
+  private async askWindow(windowCues: Cue[], windowNumber: number): Promise<WindowAnswer> {
+    const spanSeconds = windowCues[windowCues.length - 1].endSec - windowCues[0].startSec;
     const prompt = formatPrompt(CHAPTER_PROMPTS.WHOLE_TRANSCRIPT_CHAPTERS, {
-      duration: runtime,
+      duration: runtimePhrase(spanSeconds),
       promoted_items: this.promotedItemsLine(),
       // Substituted last, as everywhere else in this codebase: transcript text that happens
       // to contain a brace token must not be rewritten by a later pass.
-      transcript,
+      transcript: plainTranscript(windowCues),
     });
+    const what = windowNumber > 1 ? `this video's chapters, window ${windowNumber}` : "this video's chapters";
 
-    const send = async (retried: boolean) => {
-      const result = await this.ask(
-        'chapters',
-        prompt,
-        retried ? "this video's chapters, second attempt" : "this video's chapters",
-        CHAPTERS_TIMEOUT_MS
-      );
-      if (!result) return null;
-      const { claims, malformed } = readClaims(result);
-      if (claims.length === 0) {
-        log.warn(`[Chapters] the answer parsed but carried no usable chapter (${malformed} had no quote)`);
+    const send = async (retried: boolean): Promise<WindowAnswer | null> => {
+      const text = await this.ask('chapters', prompt, retried ? `${what}, second attempt` : what, CHAPTERS_TIMEOUT_MS);
+      if (!text) return null;
+      try {
+        return { claims: readQuoteLines(text, `${what} (chapters)`), retried };
+      } catch (error) {
+        log.warn(`[Chapters] ${error instanceof Error ? error.message : String(error)}`);
         return null;
       }
-      return { claims, malformed, retried };
     };
 
     const first = await send(false);
     if (first) return first;
 
-    log.warn(`[Chapters] no usable chapter list on the first ask; re-asking once at a different sample`);
+    log.warn(`[Chapters] no usable boundary list on the first ask; re-asking once`);
     const second = await send(true);
     if (second) {
       this.warn(
-        `the chapter call had to be asked twice — the first answer carried no usable chapter — so this ` +
-          `video's chapters come from a second sample rather than the run's pinned one, and asking again ` +
-          `may not reproduce them`
+        `the chapter call had to be asked twice — the first answer carried no usable boundary — so this ` +
+          `video's chapters come from a second sample, and asking again may not reproduce them`
       );
       return second;
     }
 
     throw new Error(
-      `The chapter call on ${this.options.model} returned no usable chapter list, twice (see the log for ` +
+      `The chapter call on ${this.options.model} returned no usable boundary list, twice (see the log for ` +
         `what came back). Nothing is substituted for it: this call is the chapter list.`
     );
   }
@@ -604,19 +621,19 @@ export class WholeTranscriptChapterService {
    * video's title/filename, and the PREVIOUS chapter's detail threaded, so chapter N knows
    * what "back to what we discussed" refers to and the details do not repeat.
    *
-   * Its `title` answer is used only where the chapter call did not supply a label — see THE
-   * TITLE RULE in this file's header. Where it IS the title, the grounding and register
-   * checks get ONE re-ask, because that is the one title a second sample can change.
+   * Its `title` answer IS every chapter's title — stage 1 names nothing — so the grounding
+   * and register checks get ONE re-ask on every chapter, because a second sample is the one
+   * thing that can change a detail-call title.
    */
   private async detailChapters(
-    spans: { startSec: number; endSec: number; label: string }[],
+    spans: { startSec: number; endSec: number }[],
     cues: Cue[]
   ): Promise<WorkingChapter[]> {
     const chapters: WorkingChapter[] = [];
     let previousDetail = '';
 
     for (let i = 0; i < spans.length; i++) {
-      const { startSec, endSec, label } = spans[i];
+      const { startSec, endSec } = spans[i];
       const raw = this.transcriptBetween(cues, startSec, endSec, false);
 
       if (raw.trim().length === 0) {
@@ -647,8 +664,9 @@ export class WholeTranscriptChapterService {
         }
       );
 
-      const parsed = await this.ask('detail', prompt, what, DETAIL_TIMEOUT_MS);
-      let detail = WholeTranscriptChapterService.readString(parsed?.summary);
+      const answered = await this.askDetail(prompt, what);
+      let title = answered.title;
+      let detail = answered.detail;
 
       if (!detail) {
         this.warn(
@@ -657,59 +675,40 @@ export class WholeTranscriptChapterService {
         );
       }
 
-      // THE TITLE RULE. The chapter call's label wins wherever there is one; the detail
-      // call's title is read only for a chapter that has none — always the opening one.
-      let title = label;
-      let titleSource: WorkingChapter['titleSource'] = 'chapter call';
+      // EVERY chapter is named by its detail call now — stage 1 stopped producing labels
+      // when its answer became bare quote lines — so every title gets the two checks and the
+      // one re-ask a second sample can change.
+      let titleSource: WorkingChapter['titleSource'] = 'detail call';
+      const faults = title ? this.judgeTitle(title, raw) : [];
+      if (title && faults.length > 0) {
+        const second = await this.askDetail(prompt, `${what}, second attempt`);
+        const secondFaults = second.title ? this.judgeTitle(second.title, raw) : ['it came back with no title'];
+        if (second.title && secondFaults.length === 0) {
+          log.info(`[Chapters] ${what}: re-asked (${faults.join('; ')}) and the second answer holds`);
+          title = second.title;
+          detail = second.detail || detail;
+        } else {
+          // Both attempts failed the same class of check. The FIRST answer is kept — it is
+          // the one the run's own sampling produced — and the run says so.
+          this.warn(
+            `the chapter at ${formatClock(startSec)} is titled "${title}", which was asked for twice and ` +
+              `both times ${faults.join(' and ')}; the model's answer is kept as written and nothing was ` +
+              `rewritten, so this title is worth a look before publishing`
+          );
+        }
+      }
+
       if (!title) {
-        title = WholeTranscriptChapterService.readString(parsed?.title);
-        titleSource = 'detail call';
-
-        // The one title a second sample can change, so the one that gets a re-ask.
-        const faults = title ? this.judgeTitle(title, raw) : [];
-        if (title && faults.length > 0) {
-          const second = await this.ask('detail', prompt, `${what}, second attempt`, DETAIL_TIMEOUT_MS);
-          const retitled = WholeTranscriptChapterService.readString(second?.title);
-          const secondFaults = retitled ? this.judgeTitle(retitled, raw) : ['it came back with no title'];
-          if (retitled && secondFaults.length === 0) {
-            log.info(`[Chapters] ${what}: re-asked (${faults.join('; ')}) and the second answer holds`);
-            title = retitled;
-            detail = WholeTranscriptChapterService.readString(second?.summary) || detail;
-          } else {
-            // Both attempts failed the same class of check. The FIRST answer is kept — it is
-            // the one the run's own sampling settings produced — and the run says so.
-            this.warn(
-              `the chapter at ${formatClock(startSec)} is titled "${title}", which was asked for twice and ` +
-                `both times ${faults.join(' and ')}; the model's answer is kept as written and nothing was ` +
-                `rewritten, so this title is worth a look before publishing`
-            );
-          }
-        }
-
-        if (!title) {
-          // Named from its own opening words instead of by the model. The chapter still
-          // exists at the right second, but its NAME is now a transcript fragment — and that
-          // name is what the title, description and tag stages condition on, so the user is
-          // told rather than left to notice.
-          title = deriveTitle(raw);
-          titleSource = 'opening words';
-          this.warn(
-            `the chapter at ${formatClock(startSec)} was not named by either call, so it is titled from ` +
-              `its own opening words ("${title}")`
-          );
-        }
-      } else {
-        // A title from the chapter call gets the same two checks and no re-ask: re-sampling
-        // one whole-video call to change one of its titles would move every OTHER chapter in
-        // the list as a side effect. Declared and kept as written, per the failure policy.
-        const faults = this.judgeTitle(title, raw);
-        if (faults.length > 0) {
-          this.warn(
-            `the chapter at ${formatClock(startSec)} is titled "${title}", which ${faults.join(' and ')}; ` +
-              `the model's answer is kept as written and nothing was rewritten, so this title is worth a ` +
-              `look before publishing`
-          );
-        }
+        // Named from its own opening words instead of by the model. The chapter still
+        // exists at the right second, but its NAME is now a transcript fragment — and that
+        // name is what the title, description and tag stages condition on, so the user is
+        // told rather than left to notice.
+        title = deriveTitle(raw);
+        titleSource = 'opening words';
+        this.warn(
+          `the chapter at ${formatClock(startSec)} was not named by the detail call, so it is titled from ` +
+            `its own opening words ("${title}")`
+        );
       }
 
       chapters.push({ startSec, endSec, title, detail, titleSource });
@@ -797,7 +796,10 @@ export class WholeTranscriptChapterService {
    * chapters for the first half of a video and no indication that is what happened.
    */
   private runNumCtx(transcript: string): number {
-    const words = normalizeWords(transcript).length;
+    // Capped at one WINDOW's worth: a transcript past the budget runs as rolling windows
+    // (rollingWindows above), each of which fits by construction, so CTX_MAX is a sizing cap
+    // now and nothing here can ask for a window it would refuse.
+    const words = Math.min(normalizeWords(transcript).length, this.windowWordBudget());
     const promptTokens =
       Math.ceil(words * TOKENS_PER_WORD) +
       estimateTokens(CHAPTER_PROMPTS.WHOLE_TRANSCRIPT_CHAPTERS.length);
@@ -860,53 +862,53 @@ export class WholeTranscriptChapterService {
     return items.length > 0 ? items.join('; ') : 'none are declared for this channel';
   }
 
-  private static readString(value: unknown): string {
-    return typeof value === 'string' ? value.trim() : '';
+  /**
+   * One detail answer, read into its two parts, or empty parts when the ANSWER was unusable.
+   *
+   * The caller's declared policies are built on the empty string — no detail is a warning, no
+   * title falls to the opening words — so an answer that could not be read at all (empty, or
+   * carrying no title line) lands there rather than throwing: it costs this one chapter its
+   * name and prose, exactly as the failure policy states. A transport failure still throws
+   * out of `ask` beneath.
+   */
+  private async askDetail(prompt: string, what: string): Promise<{ title: string; detail: string }> {
+    const text = await this.ask('detail', prompt, what, DETAIL_TIMEOUT_MS);
+    if (!text) return { title: '', detail: '' };
+    try {
+      return parseTitleDetail(text, `${what} (chapters)`);
+    } catch (error) {
+      log.warn(`[Chapters] ${error instanceof Error ? error.message : String(error)}`);
+      return { title: '', detail: '' };
+    }
   }
 
   /**
-   * One generation call, or null when its ANSWER was unusable.
+   * One generation call, PLAIN TEXT, or null when its ANSWER was unusable.
    *
-   * The mechanism — /api/generate, no `think` key, `format: "json"`, the `thinking` fallback
-   * when the grammar swallowed `response`, one num_ctx for the run, and the transport error
-   * messages — lives in ollama-json.ts, which is where those traps are written down. This
-   * method is the POLICY: an unusable answer costs the caller ONE decision, so it returns
-   * null and the caller applies its own rule. A transport failure affects every remaining
-   * call, so it throws.
-   *
-   * No `schema` is sent, deliberately: schema-constraining a chapter judgment measurably
-   * destroys it — the reasoning a grammar suppresses is doing real work here.
+   * No JSON on either transport (operator's ruling 2026-08-24): stage 1's answer is quote
+   * lines and stage 3's is a title line and a summary, so there is no grammar, no schema and
+   * no repair anywhere in this pipeline. The local traps that survive the change —
+   * /api/generate, no `think` key, one num_ctx per run — live in plain-call.ts. This method
+   * is the POLICY: an unusable answer costs the caller ONE decision, so it returns null and
+   * the caller applies its own rule. A transport failure affects every remaining call, so it
+   * throws.
    */
   private async ask(
     stage: ChapterStage,
     prompt: string,
     what: string,
     timeoutMs: number
-  ): Promise<Record<string, unknown> | null> {
+  ): Promise<string | null> {
     this.checkCancelled();
     this.calls++;
 
-    if (this.options.cloudJson) {
-      // Same policy as the local branch: an unusable ANSWER costs the caller one decision
-      // (null), a TRANSPORT failure affects every remaining call and throws. The two are
-      // told apart by TYPE (CloudAnswerUnusableError), never by message text — a message
-      // substring match here misread one truncated answer as transport on 2026-08-23 and
-      // failed the whole run. The stage schema makes the unusable case near-impossible
-      // (structured outputs guarantee valid JSON), so this catch is the backstop.
-      try {
-        return await this.options.cloudJson(
-          prompt, this.options.model, `${what} (chapters)`, CLOUD_STAGE_SCHEMAS[stage]
-        );
-      } catch (error) {
-        if (error instanceof CloudAnswerUnusableError) {
-          log.warn(`[Chapters] stage "${stage}" got no usable answer: ${error.message}`);
-          return null;
-        }
-        throw error;
-      }
+    if (this.options.cloudPlain) {
+      // Same policy as the local branch: an empty ANSWER comes back as null and costs the
+      // caller one decision; a TRANSPORT failure affects every remaining call and throws.
+      return await this.options.cloudPlain(prompt, this.options.model, `${what} (chapters)`);
     }
 
-    const result = await askOllamaJson(this.client, {
+    const result = await askOllamaPlain(this.client, {
       model: this.options.model,
       prompt,
       numCtx: this.numCtx,
@@ -927,7 +929,7 @@ export class WholeTranscriptChapterService {
       log.warn(`[Chapters] stage "${stage}" got no usable answer: ${result.detail}`);
       return null;
     }
-    return result.value;
+    return result.text;
   }
 
   // ---------------------------------------------------------------------- assembling
