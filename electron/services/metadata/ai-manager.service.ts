@@ -1840,25 +1840,32 @@ export class AIManagerService {
       // Map friendly name to actual API model name
       const actualModel = this.mapClaudeModelName(model);
 
+      // Adaptive thinking is how a 5-family model is SUPPOSED to reason: structured
+      // thinking blocks the text-block extraction below never reads, sized by the model to
+      // the task. The instruction-only attempt at suppressing reasoning failed on the one
+      // call that genuinely needs it — stage-1 read a 42-minute transcript and thought
+      // straight past an 8000-token ceiling in inline <think> tags, twice (2026-08-24
+      // 03:48), stripping to an empty answer — because Sonnet 5 is trained to reason
+      // before hard analysis and a system nudge does not undo training. Adaptive lets the
+      // easy calls skip thinking (measured: 150-token answers) and the hard ones think in
+      // the channel built for it. Haiku 4.5 is pre-4.6 and rejects `adaptive`, so it goes
+      // without; its inline reasoning, if any, is handled by stripThinking as before.
+      const supportsAdaptive = !actualModel.startsWith('claude-haiku-4-5');
       const params: Record<string, unknown> = {
         model: actualModel,
-        // A runaway brake with THINKING headroom. The largest legitimate ANSWER stays under
-        // ~2500 tokens, but an unconstrained Claude reasons in <think> blocks before
-        // answering, and that thought counts against this ceiling: at 4000, u2's stage-1
-        // call thought past the brake twice (2026-08-24 03:15, output=4000, stop_reason
-        // max_tokens) and the stripped unterminated block left an empty answer — a failed
-        // run. The system prompt below asks for no written reasoning, and 8000 is the
-        // margin for a model that reasons some anyway.
-        max_tokens: 8000,
+        // A runaway brake sized to hold BOTH the thinking and the answer: the largest
+        // legitimate answer stays under ~2500 tokens, and a hard stage-1 thinks ~6000 on
+        // top of it (measured 2026-08-24 03:49: 5871 output tokens around a 325-char
+        // boundary list).
+        max_tokens: plain && supportsAdaptive ? 16000 : 8000,
         messages: [{ role: 'user', content: prompt }],
       };
       if (plain) {
-        // The plain contract, in the channel built for it. Without a system prompt Sonnet
-        // treats a bare transcript-analysis request as an invitation to write its reasoning
-        // out in <think> tags first — 3000+ tokens of preamble on every call (measured
-        // 2026-08-24: a ~200-word description answer arrived as 3623 output tokens), and on
-        // stage-1 the whole ceiling. This is the same asset the field prompts carry inline.
+        // The plain contract, in the channel built for it: answer in the requested shape,
+        // reasoning stays internal (with adaptive thinking there is a real internal for it
+        // to stay in). Same asset the field prompts carry inline.
         params.system = SYSTEM_PROMPTS.PLAIN_SYSTEM;
+        if (supportsAdaptive) params.thinking = { type: 'adaptive' };
       } else {
         // The JSON nudge, for the two JSON callers left: the compilation package and the
         // episode splitter. Every routed field call goes through runPlainRequest instead.
