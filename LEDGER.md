@@ -257,6 +257,15 @@ Status marks: ✅ in force · ❌ dead (with cause of death) · ⚠️ open/unce
   possible hardening (not built).
 
 ### Models & routing
+- ✅ **Per-field routing (2026-08-24, merge 9ab608f)** — the PR #55 writing-model slot is
+  dissolved: titles, description, chapters, thumbnail text, pinned comment and clip
+  suggestions each carry their own model choice in the modal ("small models are default...
+  but the big models that determine things like titles — i should be able to set those to
+  whatever"). Haiku 4.5 joined the cloud options. Chapters offers capable rungs only (no
+  9B — half the measured 2026-08-23 failure stack). The summarizer follows the chapters
+  field. The store was never slot-shaped, so migration is one write-down: an agreeing
+  ex-slot projection becomes a stored `chapters` entry. Tags/hashtags/speaker/key-phrase
+  assignments untouched.
 - ✅ **One call per field** (PR #55): the grouped JSON call dropped a key 1/6 runs and bled
   voice across fields. Titles run first; thumbnail call sees the ten titles.
 - ✅ **One "writing model" choice** (2026-08-22 modal; description joined the slot
