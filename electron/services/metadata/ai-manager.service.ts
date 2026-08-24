@@ -21,7 +21,6 @@ import {
   MetadataRunContext,
   buildFieldInstructions,
   buildInputDataBlock,
-  buildOutputFormat,
   parseInstructionSections,
 } from './metadata-tasks';
 import { ChannelData, PROMPTS_SUBDIR, initPromptAssets, promptAssets } from './prompt-assets';
@@ -645,6 +644,32 @@ export class AIManagerService {
    * metadata, and failing their startup over a channel they will not use would be inventing a
    * requirement.
    */
+  /**
+   * The compilation call's whole-object OUTPUT FORMAT — the ONE metadata answer still asked
+   * for as JSON. It is genuinely structured (every field the channel publishes, in one
+   * object), which is the "absolutely necessary" bar the 2026-08-24 no-JSON ruling sets;
+   * every routed field call answers in plain text through buildOutputFormat instead.
+   */
+  private static readonly COMPILATION_FIELD_SHAPES: Record<string, string> = {
+    titles: '["string", ...]',
+    description: '"one string"',
+    description_hook: '"one string"',
+    description_options: '["string", ...]',
+    tags: '"comma-separated string"',
+    thumbnail_text: '["string", ...]',
+    pinned_comment: '["string", ...]',
+    clip_suggestions: '["string", ...]',
+    hashtags: '"#One #Two #Three"',
+    spoken_keywords: '["string", ...]',
+  };
+
+  private static buildCompilationOutputFormat(fields: MetadataFieldId[]): string {
+    const keyLines = fields
+      .map((f) => `  "${f}": ${AIManagerService.COMPILATION_FIELD_SHAPES[f] || '"one string"'}`)
+      .join(',\n');
+    return formatPrompt(SYSTEM_PROMPTS.COMPILATION_OUTPUT_FORMAT, { keyLines });
+  }
+
   private loadPrompts(): void {
     const assets = promptAssets();
     const promptSetName = this.config.promptSet;
@@ -666,7 +691,7 @@ export class AIManagerService {
     const sections = fields.map((field) => assets.fieldSection(channel, field));
     const instructions = [
       ...sections,
-      buildOutputFormat(fields).trim(),
+      AIManagerService.buildCompilationOutputFormat(fields).trim(),
       assets.selfCheckBlock(channel, fields),
     ].join('\n\n');
 
@@ -1098,9 +1123,10 @@ export class AIManagerService {
   /**
    * Assemble ONE FIELD's prompt (metadata-tasks.ts).
    *
-   * Same three blocks the whole-metadata prompt has always had — JSON system, editorial prompt
-   * with the subject filled in, instructions — except the instructions are ONE field's section,
-   * an OUTPUT FORMAT naming ONE key, and the self-check lines that one field can perform.
+   * Same three blocks the whole-metadata prompt has always had — the plain-text system header,
+   * editorial prompt with the subject filled in, instructions — except the instructions are ONE
+   * field's section, an OUTPUT FORMAT naming that field's plain shape (lines, or the tags'
+   * comma line), and the self-check lines that one field can perform.
    *
    * WHAT CHANGED IN THE SUBJECT BLOCK: the transcript reaches EVERY call. It used to reach only
    * the calls whose fields were declared to need it, and the rest got a short "the chapter list
@@ -1155,7 +1181,7 @@ export class AIManagerService {
     const insightsSuffix = spec.insights && this.config.insightsBlock ? `\n\n${this.config.insightsBlock}` : '';
 
     return (
-      `${SYSTEM_PROMPTS.JSON_SYSTEM}\n\n${this.fillSubject(subject)}` +
+      `${SYSTEM_PROMPTS.PLAIN_SYSTEM}\n\n${this.fillSubject(subject)}` +
       `${inputData ? `\n${inputData}` : ''}\n\n${instructions.text}${insightsSuffix}`
     );
   }

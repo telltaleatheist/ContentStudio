@@ -18,7 +18,12 @@ import { promptAssets } from './prompt-assets';
 const SYSTEM_FILE = 'system.yml';
 
 export const SYSTEM_PROMPTS = {
-  /** Core JSON format enforcement — prepended to all metadata requests. */
+  /** The plain-text header every field call carries (no-JSON ruling, 2026-08-24). */
+  get PLAIN_SYSTEM(): string {
+    return promptAssets().pipeline(SYSTEM_FILE, 'plain_system');
+  },
+
+  /** JSON format enforcement for the COMPILATION call — the one whole-metadata JSON call left. */
   get JSON_SYSTEM(): string {
     return promptAssets().pipeline(SYSTEM_FILE, 'json_system');
   },
@@ -61,16 +66,19 @@ export const SYSTEM_PROMPTS = {
     return promptAssets().pipeline(SYSTEM_FILE, 'chapter_digest');
   },
 
-  /**
-   * OUTPUT FORMAT for a single group, naming only that group's keys.
-   *
-   * A model told to return seven keys returns seven, and the six belonging to other units
-   * would be thrown away or merged over another unit's real answer.
-   *
-   * Placeholder: {keyLines}
-   */
-  get TASK_OUTPUT_FORMAT(): string {
-    return promptAssets().pipeline(SYSTEM_FILE, 'task_output_format');
+  /** The compilation call's whole-object JSON OUTPUT FORMAT. Placeholder: {keyLines} */
+  get COMPILATION_OUTPUT_FORMAT(): string {
+    return promptAssets().pipeline(SYSTEM_FILE, 'compilation_output_format');
+  },
+
+  /** OUTPUT FORMAT for a list field: one option per line. Placeholder: {field} */
+  get TASK_OUTPUT_LINES(): string {
+    return promptAssets().pipeline(SYSTEM_FILE, 'task_output_lines');
+  },
+
+  /** OUTPUT FORMAT for the tags call: one comma-separated line. */
+  get TASK_OUTPUT_COMMA(): string {
+    return promptAssets().pipeline(SYSTEM_FILE, 'task_output_comma');
   },
 
   /**

@@ -9,7 +9,17 @@
 # transcript text routinely contains $-patterns ($&, $', $`) that a plain string replacement
 # would expand and corrupt.
 
-# Prepended to every metadata request.
+# Prepended to every PLAIN-TEXT field request (operator's ruling 2026-08-24: no JSON for
+# these calls unless absolutely necessary — the per-field OUTPUT FORMAT below names each
+# call's plain shape).
+plain_system: |-
+  Answer with ONLY what the OUTPUT FORMAT below asks for, as plain text.
+  No emoji, no smart quotes or dashes; accented letters in real names are the correct
+  spelling of those names and stay. No markdown, no JSON, no commentary — just the answer.
+
+# Prepended to the COMPILATION request, which is the one whole-metadata JSON call left in the
+# app (a mode the operator selects; its multi-field object is the one answer here that is
+# genuinely structured enough to need JSON).
 #
 # "Use ASCII characters only" was the old second line. It banned "Beyoncé" and "Muñoz" as
 # collateral damage on a rule aimed at emoji and smart punctuation, so it now says what it
@@ -138,10 +148,10 @@ chapter_digest: |2
   not spend real time on it. Take your specifics from the paragraphs.
   ===
 
-# OUTPUT FORMAT for ONE group, naming only that group's keys.
-#
-# Placeholder: {keyLines}
-task_output_format: |2
+# OUTPUT FORMAT for the COMPILATION call — the one whole-metadata JSON call left in the app.
+# Its answer is genuinely structured (every field of the channel in one object), which is the
+# "absolutely necessary" bar the 2026-08-24 no-JSON ruling sets. Placeholder: {keyLines}
+compilation_output_format: |2
 
   ## OUTPUT FORMAT
 
@@ -149,6 +159,24 @@ task_output_format: |2
   {
   {keyLines}
   }
+
+# OUTPUT FORMAT for a field whose answer is a LIST — titles, thumbnail options, pinned
+# comments, clip suggestions, spoken keywords. Placeholder: {field}
+task_output_lines: |2
+
+  ## OUTPUT FORMAT
+
+  Output the {field}, one per line, in plain text — every line is one complete option, and
+  there is nothing else in your answer: no numbering, no bullets, no labels, no JSON, no
+  commentary.
+
+# OUTPUT FORMAT for the tags call, whose answer is ONE comma-separated line.
+task_output_comma: |2
+
+  ## OUTPUT FORMAT
+
+  Output the tags as ONE line of plain text with a comma between every tag, exactly as the
+  rules above show — and nothing else: no numbering, no labels, no JSON, no commentary.
 
 # The titles this run already wrote, handed to a later call as INPUT DATA.
 #
