@@ -141,7 +141,9 @@ Everything else:
                        ab-tests (DistillationService.computeChannelInsights) instead of reading
                        the stored insights.json. Needed when insights.json was written by an
                        older build and buildInsightsBlock rejects it — same data, this build's
-                       derivation. Nothing is written back. Printed loudly when used.
+                       derivation. Insights are not written back; the model-written GUIDELINES
+                       are re-distilled from the recomputed evidence and their cache IS
+                       rewritten (guidelines.json). Printed loudly when used.
   --help, -h
 `);
 }
@@ -334,7 +336,6 @@ async function main() {
   const { setSelectedWhisperModel } = require(path.join(DIST, 'lib/bridges/runtime-paths.js'));
   const routing = require(path.join(DIST, 'services/metadata/metadata-routing.js'));
   const { AnalyticsStoreService } = require(path.join(DIST, 'services/analytics/analytics-store.service.js'));
-  const { resolveInsightsBlockForPromptSet } = require(path.join(DIST, 'services/analytics/insights-prompt.js'));
   const { MetadataGeneratorService } = require(path.join(DIST, 'services/metadata/metadata-generator.service.js'));
   const { WhisperService } = require(path.join(DIST, 'services/metadata/whisper.service.js'));
   const { InputHandlerService } = require(path.join(DIST, 'services/metadata/input-handler.service.js'));
@@ -364,25 +365,29 @@ async function main() {
   else if (aiProvider === 'claude') apiKey = apiKeys.claudeApiKey;
 
   const analyticsStore = new AnalyticsStoreService(path.join(USER_DATA, 'analytics'));
-  let insightsBlock = null;
+  const guidelinesMod = require(path.join(DIST, 'services/analytics/insights-guidelines.js'));
+  let insights = null;
   let insightsSource = '(disabled with --no-insights)';
   if (!args.noInsights && !args.recomputeInsights) {
-    // The app's own path: whatever the analytics store has on disk, rendered by
-    // buildInsightsBlock. It THROWS on insights written before a field it needs existed —
-    // that throw is the honest answer and is left to propagate.
-    insightsBlock = resolveInsightsBlockForPromptSet(analyticsStore, channel);
+    // The app's own path: the store's evidence, PREPARED — generation itself resolves the
+    // compact guidelines block (cached lessons, the dry-run placeholder on --show-prompts,
+    // or the one distillation call). buildInsightsBlock still THROWS on insights written
+    // before a field it needs existed — that throw is the honest answer and propagates.
+    insights = guidelinesMod.prepareChannelInsights(analyticsStore, channel);
     insightsSource = `${path.join(USER_DATA, 'analytics')} (stored insights.json)`;
   } else if (args.recomputeInsights) {
     const { DistillationService } = require(path.join(DIST, 'services/analytics/distillation.service.js'));
-    const { buildInsightsBlock } = require(path.join(DIST, 'services/analytics/insights-prompt.js'));
     const registered = analyticsStore.listChannels().find((c) => c.promptSets.includes(channel));
     if (!registered) fail(`--recompute-insights: no analytics channel maps to prompt set "${channel}"`);
     const distillation = new DistillationService(analyticsStore);
     const channelInsights = distillation.computeChannelInsights(registered.channelId);
-    insightsBlock = buildInsightsBlock(channelInsights, analyticsStore.loadCrossChannelInsights());
+    // forceRefresh: recomputed evidence also re-distills the guidelines, so this flag
+    // exercises the WHOLE loop — numeric distillation and the model-written lessons.
+    insights = guidelinesMod.prepareChannelInsightsFromData(
+      analyticsStore, registered, channelInsights, analyticsStore.loadCrossChannelInsights(), true);
     insightsSource =
       `RECOMPUTED IN MEMORY from ${registered.channelId} verdicts + ab-tests ` +
-      `(the stored insights.json was NOT read and was NOT modified)`;
+      `(stored insights.json NOT read or modified; guidelines WILL be re-distilled and cached)`;
   }
 
   const resolvedRouting = routing.resolveMetadataRouting(
@@ -466,7 +471,12 @@ async function main() {
   // follows the chapters selection, falling to SUMMARIZATION_MODEL only when chapters are local.
   console.error(`  summarizer:  follows chapters=${resolvedRouting.chapters}`);
   console.error(`  packaging:   ${fullModel} (compilation only)`);
-  console.error(`  insights:    ${insightsBlock ? `${insightsBlock.length} chars` : '(none)'}`);
+  console.error(
+    `  insights:    ${insights
+      ? `evidence ${insights.rawBlock.length} chars, guidelines cache ` +
+        (insights.cached ? (insights.cached.sourceHash === insights.sourceHash && !insights.forceRefresh ? 'FRESH (no call)' : 'STALE (a real run distills once)') : 'EMPTY (a real run distills once)')
+      : '(none)'}`
+  );
   console.error(`               ${insightsSource}`);
   if (args.recomputeInsights) {
     console.error('  ** INSIGHTS RECOMPUTED IN MEMORY — see --help; nothing was written back **');
@@ -579,7 +589,7 @@ async function main() {
     metadataRouting: resolvedRouting,
     cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
     inputNotes: {},
-    insightsBlock: insightsBlock || undefined,
+    insights: insights || undefined,
     preTranscribedContent: contentItems,
     progressCallback,
   };
@@ -740,7 +750,7 @@ async function main() {
     `channel:       ${channel}`,
     `transcript:    ${transcriptSource.replace(/\n\s+/g, ' ')}`,
     `chapters:      ${chapterSource}`,
-    `insights:      ${insightsBlock ? `${insightsBlock.length} chars — ${insightsSource}` : insightsSource}`,
+    `insights:      ${insights ? `evidence ${insights.rawBlock.length} chars — ${insightsSource}` : insightsSource}`,
     `elapsed:       ${(result.processing_time || 0).toFixed(1)}s`,
     '',
   ].join('\n');
