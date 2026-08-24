@@ -110,13 +110,47 @@ check('a real pre-upgrade store migrates instead of throwing', () => {
   eq(resolved.tags, 'qwen35-9b');
   eq(resolved.titles, 'qwen38-27b', 'the shipped default, which is local as of the consolidation build');
   eq(resolved.thumbnail_text, 'opus5', 'the one legal choice is KEPT');
-  eq('chapters' in resolved, false, 'chapters is no longer a task');
+  // chapters is a routed task AGAIN (per-field build, 2026-08-24); the stored cogito-14b
+  // was dropped as a removed option, so it resolves to the shipped default.
+  eq(resolved.chapters, 'qwen38-27b', 'chapters resolve to the shipped default after the drop');
 });
 
 check('an embedding-chapters store migrates too', () => {
   const m = routing.migrateStoredRouting({ chapters: 'chapters-embedding', tags: 'qwen38-27b' });
   eq(m.changed, true);
   eq(m.selections, { tags: 'qwen38-27b' });
+});
+
+/**
+ * THE SLOT'S LAST ACT. Chapters used to follow the writing-model slot's agreement without a
+ * stored entry. A store from that era whose five ex-slot fields agreed on a CLOUD option must
+ * keep chaptering on that model — written down by migration as the chapters entry it always
+ * effectively was — while local agreement (= the chapters default) and disagreement (= the old
+ * local-constant path, also the default) write nothing.
+ */
+check('a slot-era cloud store keeps its chapters on the cloud model it was projecting', () => {
+  const cloudSlot = {
+    titles: 'sonnet5', description: 'sonnet5', thumbnail_text: 'sonnet5',
+    pinned_comment: 'sonnet5', clip_suggestions: 'sonnet5',
+  };
+  const m = routing.migrateStoredRouting(cloudSlot);
+  eq(m.changed, true, 'the projection write-down is a recorded migration');
+  eq(m.selections.chapters, 'sonnet5', 'chapters follow the agreement they always followed');
+  eq(routing.resolveMetadataRouting(m.selections).chapters, 'sonnet5');
+
+  // A stored chapters entry is the user's own and is never overwritten by the projection.
+  const handSet = routing.migrateStoredRouting({ ...cloudSlot, chapters: 'opus5' });
+  eq(handSet.selections.chapters, 'opus5', 'a hand-set chapters entry wins over the projection');
+
+  // Disagreement projected to the local constant, which IS the chapters default: no entry.
+  const disagreeing = routing.migrateStoredRouting({ ...cloudSlot, titles: 'qwen38-27b' });
+  eq('chapters' in disagreeing.selections, false, 'no entry when the old projection fell to the constant');
+  eq(disagreeing.changed, false);
+
+  // All-local agreement equals the shipped default: writing an entry would add state for nothing.
+  const localSlot = routing.migrateStoredRouting({ titles: 'qwen38-27b' });
+  eq('chapters' in localSlot.selections, false);
+  eq(localSlot.changed, false);
 });
 
 check('an id this build never had still THROWS', () => {
@@ -135,58 +169,59 @@ check('an empty / absent store is not a migration', () => {
  * model, which is what makes titles + thumbnail + pinned + clips one call whose self-check can
  * actually be followed. A default that drifted back to the cloud would cost money silently.
  */
-check('the shipped defaults are all local, and the packaging four share one model', () => {
+check('the shipped defaults are all local, and the big fields share one model', () => {
   const resolved = routing.resolveMetadataRouting(undefined);
   eq(routing.describeRouting(resolved),
-    'titles=qwen3.8:27b, description=qwen3.8:27b, tags=qwen3.5:9b, ' +
+    'titles=qwen3.8:27b, description=qwen3.8:27b, chapters=qwen3.8:27b, tags=qwen3.5:9b, ' +
     'thumbnail_text=qwen3.8:27b, pinned_comment=qwen3.8:27b, clip_suggestions=qwen3.8:27b');
   for (const task of Object.keys(resolved)) {
     const option = routing.METADATA_ROUTING_OPTIONS[resolved[task]];
     if (option.kind !== 'local') throw new Error(task + ' defaults to a ' + option.kind + ' model');
   }
-  const packaging = routing.METADATA_ROUTING_SLOTS[0].taskIds.map((t) => resolved[t]);
-  if (new Set(packaging).size !== 1) {
-    throw new Error('the packaging fields are on ' + new Set(packaging).size + ' models, so they are not one call');
+  const big = routing.METADATA_ROUTING_TASKS.filter((t) => t.modal).map((t) => resolved[t.id]);
+  if (new Set(big).size !== 1) {
+    throw new Error('the big fields default to ' + new Set(big).size + ' models; one model is the shipped state');
   }
 });
 
 /**
- * THE ONE CHOICE THE MODAL OFFERS. The modal is a single picker — local 27B, Sonnet 5 or
- * Opus 5 — moving the four packaging fields together. Description and tags are not in it:
- * they stay on the small local model, rerouted (9b/4b A/B, experiments) only by a stored
- * per-task entry. The slot is a projection of the task table — the registry throws at load
- * if they disagree — and the view resolves it to null (Custom) rather than rewriting a
- * store whose fields were hand-set apart.
+ * PER-FIELD ROUTING (2026-08-24). The modal is a field→model table: six big fields, each
+ * settable to anything its task offers — every big field offers the 27B and all three cloud
+ * rungs (Sonnet, Opus, Haiku). Tags are NOT a row ("if we use 9b for something then leave
+ * it") and stay a stored-entry-only setting. Chapters are a routed task again, capable rungs
+ * only — the 9B on chapters was half the measured 2026-08-23 failure stack.
  */
-check('the slot is the operator decision: one choice, 27B or a Claude model, for the writing fields', () => {
-  const slots = routing.METADATA_ROUTING_SLOTS;
-  eq(slots.length, 1);
-  eq(slots[0].id, 'big');
-  eq(slots[0].taskIds.join(','), 'titles,description,thumbnail_text,pinned_comment,clip_suggestions');
-  eq(slots[0].optionIds.join(','), 'qwen38-27b,sonnet5,opus5');
+check('the modal is per-field: six big rows, tags row-less, cloud rungs everywhere', () => {
+  const modal = routing.METADATA_ROUTING_TASKS.filter((t) => t.modal).map((t) => t.id);
+  eq(modal.join(','), 'titles,description,chapters,thumbnail_text,pinned_comment,clip_suggestions');
+  const tags = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'tags');
+  eq(tags.modal, false, 'tags stay out of the modal');
+  for (const task of routing.METADATA_ROUTING_TASKS.filter((t) => t.modal)) {
+    for (const rung of ['qwen38-27b', 'sonnet5', 'opus5', 'haiku45']) {
+      if (!task.options.includes(rung)) {
+        throw new Error(task.id + ' does not offer ' + rung + '; every big field offers every big rung');
+      }
+    }
+  }
+  const chapters = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'chapters');
+  eq(chapters.options.join(','), 'qwen38-27b,sonnet5,opus5,haiku45', 'chapters offer the capable rungs only');
 });
 
-check('the routing view resolves the slot, and a hand-set store renders as Custom rather than being rewritten', () => {
+check('chapter resolution reads the chapters entry, and the view carries the modal flags', () => {
+  // The four call sites (both chapter runs, the two-model budget, the compilation
+  // summarizer) all go through resolveChapterModelOption; it is now a plain table read.
+  const cloud = routing.resolveMetadataRouting({ chapters: 'haiku45' });
+  eq(routing.resolveChapterModelOption(cloud).model, 'claude:claude-haiku-4-5');
+  const stock = routing.resolveMetadataRouting(undefined);
+  eq(routing.resolveChapterModelOption(stock).model, 'qwen3.8:27b');
+
   const inventory = { host: 'http://localhost:11434', reachable: false, models: [] };
-
-  const stock = routing.buildRoutingView(undefined, inventory);
-  eq(stock.slots.length, 1);
-  eq(stock.slots[0].selectedOptionId, 'qwen38-27b');
-
-  // A per-field entry — titles on the 32B adapter — makes the slot Custom, and the stored
-  // selection survives untouched in the tasks payload the modal saves back whole.
-  const overridden = routing.buildRoutingView({ titles: 'headline-titles-32b' }, inventory);
-  eq(overridden.slots[0].selectedOptionId, null);
-  eq(overridden.tasks.find((t) => t.id === 'titles').selectedOptionId, 'headline-titles-32b');
-
-  // Tags are not the slot's business: the 9b/4b A/B path leaves the slot resolved. The
-  // DESCRIPTION joined the slot on 2026-08-23, so hand-setting it apart is a Custom state
-  // now — the same protection titles-on-the-32B gets, not a silent rewrite.
-  const abFlip = routing.buildRoutingView({ tags: 'qwen35-4b' }, inventory);
-  eq(abFlip.slots[0].selectedOptionId, 'qwen38-27b');
-  eq(abFlip.tasks.find((t) => t.id === 'tags').selectedOptionId, 'qwen35-4b');
-  const descApart = routing.buildRoutingView({ description: 'qwen35-4b' }, inventory);
-  eq(descApart.slots[0].selectedOptionId, null, 'a hand-set description makes the slot Custom');
+  const view = routing.buildRoutingView({ titles: 'headline-titles-32b' }, inventory);
+  eq(view.slots, undefined, 'the slot payload is gone');
+  eq(view.tasks.find((t) => t.id === 'titles').selectedOptionId, 'headline-titles-32b',
+    'a hand-set entry survives in the payload the modal saves back whole');
+  eq(view.tasks.find((t) => t.id === 'chapters').modal, true);
+  eq(view.tasks.find((t) => t.id === 'tags').modal, false);
 });
 
 /**

@@ -10,7 +10,6 @@ import {
   MetadataRoutingChapters,
   MetadataRoutingHost,
   MetadataRoutingOption,
-  MetadataRoutingSlot,
   MetadataRoutingTask,
 } from '../../services/electron';
 
@@ -67,23 +66,20 @@ export type ModelRoutingDialogResult = boolean | undefined;
           }
         }
 
-        <!-- THE choice: which model does the run's writing — the description and the four
-             packaging fields, with chapters following it (the note below). One pick writes
-             the same per-task entries the store has always held; a store hand-set per field
-             (e.g. titles on the 32B adapter) shows as Custom and is never rewritten. -->
-        @if (slot(); as bigSlot) {
+        <!-- One row per big field, each set to whatever the operator wants (per-field
+             routing, 2026-08-24). Fields the small models own (tags) are not rows: their
+             stored entries pass through Save untouched. -->
+        @for (task of modalTasks(); track task.id) {
           <div class="routing-row">
-            <div class="slot-label">
-              <span class="task-label">{{ bigSlot.label }}</span>
-              <span class="slot-fields">{{ slotFieldsLabel(bigSlot) }}</span>
+            <div class="field-label">
+              <span class="task-label">{{ task.label }}</span>
             </div>
             <mat-form-field appearance="outline" subscriptSizing="dynamic" class="task-select">
               <mat-select
-                [value]="slotValue(bigSlot)"
-                placeholder="Custom (per-field entries in the store)"
-                (selectionChange)="selectSlot(bigSlot, $event.value)"
-                [attr.aria-label]="bigSlot.label">
-                @for (option of bigSlot.options; track option.id) {
+                [value]="selections()[task.id]"
+                (selectionChange)="selectTask(task.id, $event.value)"
+                [attr.aria-label]="task.label">
+                @for (option of task.options; track option.id) {
                   <mat-option [value]="option.id">
                     {{ option.label }}
                     @if (option.availability === 'not-installed') {
@@ -97,11 +93,11 @@ export type ModelRoutingDialogResult = boolean | undefined;
               </mat-select>
             </mat-form-field>
           </div>
-          @if (slotOption(bigSlot); as chosen) {
+          @if (chosenOption(task); as chosen) {
             @if (chosen.availability === 'not-installed') {
               <p class="row-note missing">
-                {{ chosen.model }} is not installed on {{ localModels().host }}. These fields will
-                fail when they run — pull it, or pick a model that is installed.
+                {{ chosen.model }} is not installed on {{ localModels().host }}. {{ task.label }} will
+                fail when it runs — pull it, or pick a model that is installed.
               </p>
             }
           }
@@ -120,29 +116,18 @@ export type ModelRoutingDialogResult = boolean | undefined;
         </div>
 
         @if (chapters(); as chapter) {
-          <div class="pipeline-note">
-            <mat-icon>auto_stories</mat-icon>
-            <div>
-              <p>
-                <strong>Chapters follow the model above.</strong> Every item with a timestamped
-                transcript is chaptered by {{ chapter.generationModel }}, which reads the whole
-                transcript in one call and then writes each chapter's detail.
-              </p>
-              @if (chapter.generationAvailability === 'not-installed') {
-                <p class="row-note missing">
-                  {{ chapter.generationModel }} is not installed on {{ localModels().host }} — no item will
-                  get chapters until it is pulled.
-                </p>
-              }
-              @if (chapter.keyPhraseAvailability === 'not-installed') {
+          @if (chapter.keyPhraseAvailability === 'not-installed') {
+            <div class="pipeline-note">
+              <mat-icon>auto_stories</mat-icon>
+              <div>
                 <p class="row-note missing">
                   {{ chapter.keyPhraseModel }} is not installed on {{ localModels().host }} — key phrases for
                   tags and hashtags will be ranked by frequency instead, and runs will say so in their
                   warnings.
                 </p>
-              }
+              </div>
             </div>
-          </div>
+          }
         }
 
         @if (saveError(); as message) {
@@ -198,7 +183,7 @@ export type ModelRoutingDialogResult = boolean | undefined;
       padding: 6px 0;
     }
 
-    .slot-label {
+    .field-label {
       display: flex;
       flex-direction: column;
       gap: 2px;
@@ -209,11 +194,6 @@ export type ModelRoutingDialogResult = boolean | undefined;
       color: var(--text-primary);
       font-size: 14px;
       font-weight: 500;
-    }
-
-    .slot-fields {
-      color: var(--text-secondary);
-      font-size: 12px;
     }
 
     .task-select { width: 300px; flex: 0 0 auto; }
@@ -269,13 +249,14 @@ export class ModelRoutingDialog implements OnInit {
   readonly saveError = signal<string>('');
   readonly saving = signal(false);
   /**
-   * Every routed task with its stored selection — not rendered as rows any more, but still
-   * loaded whole and saved whole: the modal edits only the slot's entries (description and
-   * the four packaging fields), and tags — including a hand-set 9b/4b A/B entry — pass
-   * through Save untouched rather than being reset to defaults.
+   * Every routed task with its stored selection, loaded whole and saved whole: the modal
+   * renders only the `modal: true` tasks as rows, and the rest — tags, including a
+   * hand-set 9b/4b A/B entry — pass through Save untouched rather than being reset.
    */
   readonly tasks = signal<MetadataRoutingTask[]>([]);
-  readonly slot = signal<MetadataRoutingSlot | null>(null);
+
+  /** The rows: the big determinative fields, in the registry's order. */
+  readonly modalTasks = computed(() => this.tasks().filter(task => task.modal));
   readonly selections = signal<Record<string, string>>({});
   /**
    * The Ollama host the payload was judged against. The placeholder is never rendered —
@@ -335,7 +316,6 @@ export class ModelRoutingDialog implements OnInit {
       this.localModels.set(routing.localModels);
       this.chapters.set(routing.chapters);
       this.tasks.set(routing.tasks);
-      this.slot.set(routing.slots[0] ?? null);
       this.selections.set(selections);
       this.phase.set('ready');
     } catch (err) {
@@ -344,38 +324,15 @@ export class ModelRoutingDialog implements OnInit {
     }
   }
 
-  /**
-   * The option the slot currently amounts to: the one every one of its tasks points at,
-   * PROVIDED the slot offers it. Anything else — a hand-set per-field entry like titles on
-   * the 32B adapter — is null, rendered as Custom and never rewritten.
-   */
-  slotValue(slot: MetadataRoutingSlot): string | null {
-    const current = this.selections();
-    const picks = slot.taskIds.map(taskId => current[taskId]);
-    const first = picks[0];
-    if (!first || picks.some(pick => pick !== first)) return null;
-    return slot.options.some(option => option.id === first) ? first : null;
-  }
-
   /** The chosen option's view, so the row can report ITS availability. */
-  slotOption(slot: MetadataRoutingSlot): MetadataRoutingOption | undefined {
-    const value = this.slotValue(slot);
-    return value ? slot.options.find(option => option.id === value) : undefined;
+  chosenOption(task: MetadataRoutingTask): MetadataRoutingOption | undefined {
+    const value = this.selections()[task.id];
+    return value ? task.options.find(option => option.id === value) : undefined;
   }
 
-  /** "titles, thumbnail text, pinned comment, clip suggestions" under the slot name. */
-  slotFieldsLabel(slot: MetadataRoutingSlot): string {
-    const byId = new Map(this.tasks().map(task => [task.id, task.label]));
-    return slot.taskIds.map(taskId => (byId.get(taskId) || taskId).toLowerCase()).join(', ');
-  }
-
-  /** One pick writes every one of the slot's tasks. */
-  selectSlot(slot: MetadataRoutingSlot, optionId: string): void {
-    this.selections.update(current => {
-      const next = { ...current };
-      for (const taskId of slot.taskIds) next[taskId] = optionId;
-      return next;
-    });
+  /** One pick writes one field. */
+  selectTask(taskId: string, optionId: string): void {
+    this.selections.update(current => ({ ...current, [taskId]: optionId }));
   }
 
   async onSave(): Promise<void> {

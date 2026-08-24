@@ -1282,14 +1282,14 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       }
       const insightsBlock = resolveInsightsBlockForPromptSet(analytics.analyticsStore, activePromptSet);
 
-      // The summarizer follows the writing-model slot exactly as chapters do
-      // (resolveChapterModelOption): condensation rewrites the words every content field
-      // reads, so the model trusted to write them is the model trusted to condense them —
-      // and a cloud-routed run must not fire up a 17GB local model to do it (measured
-      // 2026-08-23: a 60,695-char podcast spent ~7 minutes in local summarization before
-      // its first cloud call). A disagreeing store falls back to the declared local
-      // constant, never to the Settings provider (that path was the measured defect the
-      // constant replaced).
+      // The summarizer follows the CHAPTERS field's routing (resolveChapterModelOption —
+      // per-field as of 2026-08-24): condensation rewrites the words every content field
+      // reads, so the model trusted to write the chapter labels is the model trusted to
+      // condense — and a cloud-routed run must not fire up a 17GB local model to do it
+      // (measured 2026-08-23: a 60,695-char podcast spent ~7 minutes in local
+      // summarization before its first cloud call). A local chapters routing summarizes on
+      // the declared local constant, never on the Settings provider (that path was the
+      // measured defect the constant replaced).
       //
       // IT IS RESOLVED FOR COMPILATION MODE ONLY, as of the same day. The per-item path stopped
       // summarizing entirely: over the direct-pass ceiling its field calls read the chapter
