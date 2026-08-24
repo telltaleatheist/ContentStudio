@@ -1839,16 +1839,24 @@ export class AIManagerService {
 
       const params: Record<string, unknown> = {
         model: actualModel,
-        // A runaway brake, not a budget: the largest legitimate metadata answer (a 3-hour
-        // video's stage-1 boundary list, a compilation package) stays under ~2500 tokens.
-        // The close-quote runaway this was sized against (2026-08-23: `}` streamed to a
-        // 16000 ceiling, 90-150s per glitched call) died with the JSON — a plain answer has
-        // no string literal to fail to close — and the brake stays because any runaway is
-        // 25s at 4000 instead of minutes.
-        max_tokens: 4000,
+        // A runaway brake with THINKING headroom. The largest legitimate ANSWER stays under
+        // ~2500 tokens, but an unconstrained Claude reasons in <think> blocks before
+        // answering, and that thought counts against this ceiling: at 4000, u2's stage-1
+        // call thought past the brake twice (2026-08-24 03:15, output=4000, stop_reason
+        // max_tokens) and the stripped unterminated block left an empty answer — a failed
+        // run. The system prompt below asks for no written reasoning, and 8000 is the
+        // margin for a model that reasons some anyway.
+        max_tokens: 8000,
         messages: [{ role: 'user', content: prompt }],
       };
-      if (!plain) {
+      if (plain) {
+        // The plain contract, in the channel built for it. Without a system prompt Sonnet
+        // treats a bare transcript-analysis request as an invitation to write its reasoning
+        // out in <think> tags first — 3000+ tokens of preamble on every call (measured
+        // 2026-08-24: a ~200-word description answer arrived as 3623 output tokens), and on
+        // stage-1 the whole ceiling. This is the same asset the field prompts carry inline.
+        params.system = SYSTEM_PROMPTS.PLAIN_SYSTEM;
+      } else {
         // The JSON nudge, for the two JSON callers left: the compilation package and the
         // episode splitter. Every routed field call goes through runPlainRequest instead.
         params.system =

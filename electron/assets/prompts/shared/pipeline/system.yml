@@ -13,7 +13,9 @@
 # these calls unless absolutely necessary — the per-field OUTPUT FORMAT below names each
 # call's plain shape).
 plain_system: |-
-  Answer with ONLY what the OUTPUT FORMAT below asks for, as plain text.
+  Answer with ONLY what the request asks for, as plain text in exactly the output shape it
+  specifies. Begin your response directly with the answer's first line: reasoning stays
+  internal, so your response carries no preamble and no <think> or reasoning tags.
   No emoji, no smart quotes or dashes; accented letters in real names are the correct
   spelling of those names and stay. No markdown, no JSON, no commentary — just the answer.
 
