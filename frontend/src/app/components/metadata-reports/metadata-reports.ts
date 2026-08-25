@@ -89,6 +89,25 @@ interface MetadataReport {
    */
   sourceKey?: string | null;
   sourceFilename?: string | null;
+  /**
+   * Is this the DEFINITIVE set for its source — the one the calendar draws, the push sends
+   * and the extension fills?
+   *
+   * The list shows one row per source, and that row is this one. Every OTHER set over the
+   * same source is still in `reports()`, because the version picker on the item's page is
+   * built from them; it is only the list that collapses to primaries.
+   *
+   * Absent for the pre-`.contentstudio/metadata` legacy layout below, whose rows are
+   * folders with no items and therefore no siblings. See `isPrimaryRow`.
+   */
+  isPrimary?: boolean;
+  /**
+   * The item this set was SOFTENED FROM, or null when it is a generation run.
+   *
+   * What lets the version picker tell two sets of one video apart: they share a source,
+   * chapters and timestamps, and differ only in their words.
+   */
+  softenedFromItemId?: string | null;
   /** How many titles the run produced. 0 is the failed-run state the list can filter for. */
   titleCount?: number;
   /** This item's publish record as the index joined it, or null when it has none yet. */
@@ -225,10 +244,42 @@ interface SlateSlot {
 }
 
 /** A source's newest run, with its older runs collapsed underneath. */
+/**
+ * One SOURCE in the list: its primary set, and how many sets exist for it.
+ *
+ * This used to be `{ key, head, runs }` — the newest run at the head with the older ones
+ * collapsed beneath it, expandable in place. The sets no longer belong in the list at all:
+ * exactly one of them is the one the app publishes, and the choice between them is made on
+ * the item's own page, where the words are on screen to choose by. `versionCount` is what
+ * is left of the old disclosure control — a number saying "there are others", pointing at
+ * where they now live.
+ */
 interface ReportGroup {
   key: string;
   head: MetadataReport;
-  runs: MetadataReport[];
+  /** How many sets exist for this source, the head included. 1 for most rows. */
+  versionCount: number;
+}
+
+/**
+ * The list key for a row the index recorded no `source_key` for.
+ *
+ * UPPERCASE on purpose, and that is the whole guarantee: a real source_key is produced by
+ * `normalizeForMatch`, which lowercases, so no source file can ever normalize to something
+ * starting with this. It used to be a literal NUL byte typed into the template string here
+ * — which made `grep` treat the whole file as binary and report zero matches for every
+ * symbol in it — and, worse, it was written with a NUL in one place and a leading SPACE in
+ * three others, so the key that opened a group and the key that counted one were not the
+ * same string for these rows.
+ */
+const NO_SOURCE_KEY = 'SOURCELESS:';
+
+/** One selectable metadata set for the open item's source, as the version picker shows it. */
+interface ItemVersion {
+  itemId: string;
+  /** Generation time, what produced it, and whether it is the primary. */
+  label: string;
+  isPrimary: boolean;
 }
 
 /**
@@ -439,6 +490,80 @@ export class MetadataReports implements OnInit {
   /** One request at a time, and the button says so while it is out. */
   readonly moreTitlesBusy = signal(false);
 
+  // ------------------------------------------------------- soften for monetization
+  //
+  // The models the pass can run on, read from the same `metadata-routing:get` payload the
+  // routing dialog and the titles picker are built from.
+  //
+  // THE DESCRIPTION TASK sources this list, and the authority for that is
+  // services/metadata/soften.ts (SOFTEN_ROUTING_TASK), not this line: description is the one
+  // task offering every rung the build ships, so it is the superset, and softening is a prose
+  // rewrite any of them can perform. Drift is not silent — the main process validates the
+  // chosen id against its OWN task and refuses by name, listing what that task offers.
+  readonly softenOptions = signal<MetadataRoutingOption[]>([]);
+  /** What the operator has the picker set to. */
+  readonly softenOptionId = signal<string>('');
+  /** The field currently in flight, or '' when nothing is out. Named on the button. */
+  readonly softenBusyField = signal<string>('');
+  /** One pass at a time. */
+  readonly softenBusy = signal(false);
+
+  // ----------------------------------------------------------- versions of one source
+  //
+  // A video can have more than one metadata set: re-running metadata mints a new item over
+  // the same `source_key`, and so does a softening pass. Exactly ONE of them is the set this
+  // app publishes — the calendar draws it, the push sends it, the extension fills it — and
+  // this is where the operator switches between them and says which.
+  //
+  // The list no longer shows the others at all. It shows one row per source: the primary.
+
+  /** True while a promotion is out. One at a time, and the button says so. */
+  readonly settingPrimary = signal(false);
+
+  /**
+   * Every set over the open item's source, newest first, labelled so they can be told apart.
+   *
+   * Built from `reports()` — the WHOLE index, not the collapsed list — because that is the
+   * only place the siblings still are. An item whose source_key is null has no siblings by
+   * definition (null never joins to null; item-identity.ts), and this answers with the one
+   * set that exists rather than with an empty picker.
+   */
+  readonly itemVersions = computed<ItemVersion[]>(() => {
+    const open = this.selectedReport();
+    if (!open?.itemId) return [];
+
+    const siblings = open.sourceKey
+      ? this.reports().filter((r) => r.sourceKey === open.sourceKey && r.itemId)
+      : this.reports().filter((r) => r.itemId === open.itemId);
+
+    return [...siblings]
+      .sort(
+        (a, b) =>
+          b.date.getTime() - a.date.getTime() || (b.itemId ?? '').localeCompare(a.itemId ?? ''),
+      )
+      .map((report) => {
+        // WHAT PRODUCED IT, which is the only thing that distinguishes two sets of one
+        // video: they share a source, chapters and timestamps and differ only in wording.
+        const origin = report.softenedFromItemId ? 'softened' : 'original run';
+        const primary = this.isPrimaryRow(report) ? ' · primary' : '';
+        return {
+          itemId: report.itemId!,
+          label: `${this.formatDate(report.date)} · ${origin}${primary}`,
+          isPrimary: this.isPrimaryRow(report),
+        };
+      });
+  });
+
+  /** Is the set on screen the one this app publishes? */
+  readonly selectedIsPrimary = computed<boolean>(() => {
+    const open = this.selectedReport();
+    if (!open?.itemId) return false;
+    // Read off the INDEX rather than off the open row's own copy: a promotion re-reads the
+    // list, and the object held in `selectedReport` is the one from before that read.
+    const row = this.reports().find((r) => r.itemId === open.itemId);
+    return this.isPrimaryRow(row ?? open);
+  });
+
   constructor(
     private electron: ElectronService,
     private notificationService: NotificationService,
@@ -526,8 +651,6 @@ export class MetadataReports implements OnInit {
   readonly storedChannelTab = signal(readStoredChannelTab());
   readonly stateFilter = signal<StateFilter>('all');
 
-  /** Which re-run groups the operator has opened. Keyed by sourceKey. */
-  readonly expandedGroups = signal<ReadonlySet<string>>(new Set<string>());
 
   /**
    * The channel registry: the list's tab strip, in the order the registry keeps them.
@@ -573,7 +696,7 @@ export class MetadataReports implements OnInit {
       // the tab, which is the only count a tab can honestly print on itself.
       if (!this.matchesFilters(report, state, '')) continue;
       const id = this.channelOf(report);
-      const key = report.sourceKey ?? ` row:${report.itemId ?? report.path}`;
+      const key = report.sourceKey ?? `${NO_SOURCE_KEY}${report.itemId ?? report.path}`;
       const bucket = sources.get(id);
       if (bucket) bucket.add(key);
       else sources.set(id, new Set<string>([key]));
@@ -907,7 +1030,7 @@ export class MetadataReports implements OnInit {
       SEGMENT_FILTERS.map((f) => [f.value, new Set<string>()]),
     );
     for (const report of this.reports()) {
-      const key = report.sourceKey ?? ` row:${report.itemId ?? report.path}`;
+      const key = report.sourceKey ?? `${NO_SOURCE_KEY}${report.itemId ?? report.path}`;
       for (const f of SEGMENT_FILTERS) {
         if (this.matchesFilters(report, f.value)) counts.get(f.value)!.add(key);
       }
@@ -944,28 +1067,51 @@ export class MetadataReports implements OnInit {
   }
 
   /**
-   * The list as it renders: newest run per source, older runs collapsed under it.
+   * Is this row the definitive set for its source?
    *
-   * Filtered BEFORE grouping, so a filter promotes the newest MATCHING run to the head
-   * rather than hiding a whole source behind a head that does not match.
+   * The index answers it for every row it produced, including `true` for an item whose
+   * `source_key` is null — no source file, no siblings, its own primary by definition.
+   * `undefined` is reachable only from the pre-`.contentstudio/metadata` legacy layout
+   * below, whose rows are FOLDERS with no items: the same situation, arrived at from a
+   * different place, and the same answer.
+   */
+  isPrimaryRow(report: MetadataReport): boolean {
+    return report.isPrimary ?? true;
+  }
+
+  /**
+   * The list as it renders: ONE ROW PER SOURCE — its primary set.
+   *
+   * It used to be the newest run per source with the older ones collapsed under it. Now
+   * exactly one set of each video is the one this app publishes, so exactly one of them is
+   * the row: a list that offered six near-identical rows and left the operator to work out
+   * which one the calendar would honour is the problem this feature exists to end.
+   *
+   * FILTERED ON THE PRIMARY, not on whichever sibling happens to match. A source whose
+   * primary does not match the search or the segment drops out — which is the honest
+   * answer now that the primary IS the source as far as this list is concerned.
    */
   readonly visibleGroups = computed<ReportGroup[]>(() => {
-    const groups: ReportGroup[] = [];
-    const byKey = new Map<string, ReportGroup>();
-
+    // Counted over EVERY row, before the filter: how many sets a source has is a fact
+    // about the source, not about what the search box is showing.
+    const versionCounts = new Map<string, number>();
     for (const report of this.reports()) {
+      if (!report.sourceKey) continue;
+      versionCounts.set(report.sourceKey, (versionCounts.get(report.sourceKey) ?? 0) + 1);
+    }
+
+    const groups: ReportGroup[] = [];
+    for (const report of this.reports()) {
+      if (!this.isPrimaryRow(report)) continue;
       if (!this.matchesFilters(report)) continue;
       // A row with no source key is its own group: the index did not record what it was
       // generated from, and grouping it with anything would be a guess.
-      const key = report.sourceKey ?? ` row:${report.itemId ?? report.path}`;
-      const existing = byKey.get(key);
-      if (existing) {
-        existing.runs.push(report);
-      } else {
-        const group: ReportGroup = { key, head: report, runs: [] };
-        byKey.set(key, group);
-        groups.push(group);
-      }
+      const key = report.sourceKey ?? `${NO_SOURCE_KEY}${report.itemId ?? report.path}`;
+      groups.push({
+        key,
+        head: report,
+        versionCount: report.sourceKey ? (versionCounts.get(report.sourceKey) ?? 1) : 1,
+      });
     }
 
     // Done sources sink. A group whose newest run is finished with this page — its video
@@ -990,27 +1136,10 @@ export class MetadataReports implements OnInit {
     return !!report.facts?.videoId || report.facts?.status === 'published';
   }
 
-  /** Every row on screen — heads, plus the runs of whichever groups are open. */
-  readonly visibleReports = computed<MetadataReport[]>(() => {
-    const open = this.expandedGroups();
-    const rows: MetadataReport[] = [];
-    for (const group of this.visibleGroups()) {
-      rows.push(group.head);
-      if (open.has(group.key)) rows.push(...group.runs);
-    }
-    return rows;
-  });
-
-  isGroupExpanded(key: string): boolean {
-    return this.expandedGroups().has(key);
-  }
-
-  toggleGroup(key: string, event: Event): void {
-    event.stopPropagation();
-    const next = new Set(this.expandedGroups());
-    if (!next.delete(key)) next.add(key);
-    this.expandedGroups.set(next);
-  }
+  /** Every row on screen — one per source. */
+  readonly visibleReports = computed<MetadataReport[]>(() =>
+    this.visibleGroups().map((group) => group.head),
+  );
 
   focusSearch(): void {
     const input = this.searchBox?.nativeElement;
@@ -2711,6 +2840,9 @@ export class MetadataReports implements OnInit {
     // are: it labels a control on an already-rendered page and the list does not wait on it.
     await this.loadTitlesModelOptions();
 
+    // The models the softening pass can run on. Same payload, same reason it comes last.
+    await this.loadSoftenModelOptions();
+
     // Deep link: /metadata-reports?item=<itemId>, which is what every chip on the publish
     // calendar navigates to. Read once, AFTER the list exists — the parameter names a row,
     // and there is no row to select before the index has been read.
@@ -2864,6 +2996,191 @@ export class MetadataReports implements OnInit {
   }
 
   /**
+   * The models the softening pass can run on.
+   *
+   * Straight off `metadata-routing:get`, the routing dialog's own payload, so the picker
+   * offers exactly what the build offers. A failure is said and the picker stays empty, which
+   * disables the button — sending a rewrite of every field on an item to a model this page
+   * guessed at is worse than not sending one.
+   */
+  private async loadSoftenModelOptions(): Promise<void> {
+    try {
+      const routing = await this.electron.getMetadataRouting();
+      // See the note on `softenOptions` for why this is the description task.
+      const task = routing.tasks.find((t) => t.id === 'description');
+      if (!task) {
+        throw new Error('the routing table this build ships has no "description" task');
+      }
+      this.softenOptions.set(task.options);
+      if (!this.softenOptionId()) this.softenOptionId.set(task.selectedOptionId);
+    } catch (error) {
+      this.notificationService.warning(
+        'Softening models unavailable',
+        `The model list could not be read (${(error as Error).message}), so "Soften for ` +
+          'monetization" has nothing to send a call on.',
+      );
+    }
+  }
+
+  /**
+   * SOFTEN FOR MONETIZATION — every text field on this item, rewritten milder, as a NEW SET.
+   *
+   * One call per field on the model in the picker beside the button. What comes back is
+   * written by the main process as a NEW ITEM in a NEW JOB over the SAME `source_key`, which
+   * is the same sibling relation a regeneration produces — so this list already groups the two
+   * (newest run at the head, older runs collapsed beneath it) and there is no set-switcher to
+   * build. THE ORIGINAL IS NOT TOUCHED: not its report, not its .txt, not its publish record.
+   *
+   * On success the list is re-read, the source's group is opened so BOTH sets are on screen,
+   * and the softened one is selected — which is the state the operator asked for: two sets,
+   * side by side, his pick.
+   *
+   * Every refusal is the main process's own sentence, shown as it was written.
+   */
+  async softenItem(): Promise<void> {
+    const report = this.selectedReport();
+    if (!report) return;
+    if (!report.jobId || !report.itemId) {
+      this.notificationService.error(
+        'This report has no identity',
+        'It carries no job id or item id, so there is no item to soften.',
+      );
+      return;
+    }
+    const optionId = this.softenOptionId();
+    if (!optionId) {
+      this.notificationService.error(
+        'No model chosen',
+        'Pick a model beside the button — the calls have to go somewhere.',
+      );
+      return;
+    }
+
+    // A half-finished title edit is about a row on the set being READ, and the pass is about
+    // to put a different set on screen.
+    this.cancelEditTitle();
+    this.softenBusy.set(true);
+    // The main process runs the fields in order and does not report per-field progress, so
+    // this names the pass rather than claiming to know which call is out right now.
+    this.softenBusyField.set('every text field');
+    try {
+      const result = await this.electron.softenItem(report.jobId, report.itemId, optionId);
+      if (!result.success || !result.itemId) {
+        this.notificationService.error('Nothing softened', result.error ?? 'The request gave no reason.');
+        return;
+      }
+
+      // The new set is a new row, so the list has to be re-read before anything can select it.
+      await this.loadReports();
+
+      // Open the softened set. It is now one of the versions in the picker at the top of
+      // this pane, alongside the set it came from — which is where the operator chooses
+      // between them.
+      await this.selectByItemId(result.itemId);
+
+      const applied = result.applied ?? [];
+      const skipped = result.skipped ?? [];
+      const notes = applied.map((f) => f.warning).filter((w): w is string => !!w);
+      const lines = [
+        `${applied.length} field(s) rewritten by ${result.model}: ${applied.map((f) => f.field).join(', ')}.`,
+      ];
+      if (skipped.length > 0) {
+        lines.push(`Skipped: ${skipped.map((s) => `${s.field} — ${s.reason}`).join(' ')}`);
+      }
+      lines.push(
+        'The original set is untouched and is still the primary — this new set is NOT ' +
+          'published anywhere until you press "Set as primary" on the version picker above.',
+      );
+      if (result.warning) notes.push(result.warning);
+      for (const note of notes) lines.push(note);
+
+      if (notes.length > 0) {
+        this.notificationService.warning('Softened, with notes', lines.join(' '));
+      } else {
+        this.notificationService.success('Softened set written', lines.join(' '));
+      }
+    } catch (error) {
+      this.notificationService.error('Nothing softened', (error as Error).message);
+    } finally {
+      this.softenBusy.set(false);
+      this.softenBusyField.set('');
+    }
+  }
+
+  /**
+   * Switch which metadata set of this source is on screen.
+   *
+   * Viewing only. Promotion is the separate button beside this picker, because looking at a
+   * version and declaring it definitive are two different decisions and the operator's own
+   * account of the feature puts them in that order: pull one up, configure it, then say it
+   * is the one.
+   */
+  async onVersionChange(event: Event): Promise<void> {
+    const itemId = (event.target as HTMLSelectElement).value;
+    if (!itemId || itemId === this.selectedReport()?.itemId) return;
+    // A half-finished title edit belongs to the set being left, not the one arriving.
+    this.cancelEditTitle();
+    await this.selectByItemId(itemId);
+  }
+
+  /**
+   * Make the set on screen the definitive one for its source.
+   *
+   * From here on the calendar draws THIS set, a push sends THIS set's words, and the
+   * extension's shelf offers THIS set — and whichever sibling held that role stops being
+   * used, however completely it is filled in.
+   *
+   * NOTHING IS COPIED. Titles, descriptions, thumbnails, schedules and video links all stay
+   * on the items they were made against; this changes which item the app reads, not what
+   * any of them holds. Moving state between two sets is carry-forward, which is still its
+   * own explicit click on the publish record.
+   *
+   * Every refusal is the main process's own sentence — an item with no source_key has no
+   * siblings and is already the only set for what it came from, and that is an answer
+   * rather than a failure.
+   */
+  async setAsPrimary(): Promise<void> {
+    const report = this.selectedReport();
+    if (!report?.itemId) {
+      this.notificationService.error(
+        'This report has no identity',
+        'It carries no item id, so there is nothing to promote.',
+      );
+      return;
+    }
+
+    this.settingPrimary.set(true);
+    try {
+      const result = await this.electron.publishSetPrimary(report.itemId);
+      if (!result.success || !result.data) {
+        this.notificationService.error(
+          'Not promoted',
+          result.error ?? 'The request gave no reason.',
+        );
+        return;
+      }
+
+      // Re-read: `isPrimary` rides on every row of the index, so the list, the picker's
+      // labels and this pane's own answer all come from the same next read.
+      await this.loadReports();
+      await this.selectByItemId(report.itemId);
+
+      const previous = result.data.previousItemId;
+      this.notificationService.success(
+        'This is now the primary set',
+        `"${result.data.sourceKey}" publishes from this set from now on` +
+          (previous && previous !== result.data.itemId
+            ? `, in place of ${previous}, which stays on disk and stops being used.`
+            : '.'),
+      );
+    } catch (error) {
+      this.notificationService.error('Not promoted', (error as Error).message);
+    } finally {
+      this.settingPrimary.set(false);
+    }
+  }
+
+  /**
    * Open the report for one item id, or say why it could not be opened.
    *
    * The id comes from a link, so it can name an item that has since been deleted. That is
@@ -3000,6 +3317,8 @@ export class MetadataReports implements OnInit {
           // a second pass over the index. Every one of them is the index's own value.
           sourceKey: entry.sourceKey,
           sourceFilename: entry.sourceFilename,
+          isPrimary: entry.isPrimary,
+          softenedFromItemId: entry.softenedFromItemId,
           titleCount: entry.titleCount,
           facts: entry.publish,
           promptSetChannelId: entry.promptSetChannelId,

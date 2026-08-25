@@ -1220,5 +1220,107 @@ check('all three chapter grains ship, each with the band and quote contract (LED
   }
 });
 
+// ------------------------------------------------------- which set of a video publishes
+//
+// A video can have several generated metadata sets — a re-run, a softening pass — joined by
+// source_key, and exactly ONE of them is the one the calendar draws, the push sends and the
+// extension fills. Which one that is, for every source that predates the feature, is decided
+// by a rule reading records the app did not write: precisely the class of decision this file
+// exists to assert. The wrong answer here does not look wrong — a chip simply stops being
+// drawn, and the operator finds out by missing an upload.
+const primary = require(path.join(ROOT, 'services/publish/primary-migration.js'));
+
+/** A selection record with only the fields the rule reads. Everything else is its default. */
+function rec(fields) {
+  return {
+    chosenTitles: [], titleEdits: {}, chapterEdits: {}, chapterDrops: [],
+    descriptionOverride: null, linksOverride: null, tagsOverride: null,
+    publishAt: null, videoId: null, filledAt: null, pushedAt: null, uploadReceipt: null,
+    spreakerEpisodeId: null, spreakerPushedAt: null, isPodcast: false,
+    ...fields,
+  };
+}
+/** Newest first, exactly as the index hands them over. */
+const cands = (...pairs) => pairs.map(([itemId, createdAt]) => ({ itemId, createdAt }));
+function decide(candidates, byItem) {
+  return primary.decidePrimary('a source', candidates, (id) =>
+    primary.publishProgressOf(byItem[id] === undefined ? null : byItem[id])
+  );
+}
+
+check('the LINKED set wins over a newer one that was only ever generated', () => {
+  // The live shape of six of the seventeen multi-set sources on the operator's machine:
+  // the YouTube link sits on an OLDER sibling than the newest run. "Newest wins" would have
+  // taken every one of them off the calendar and out of the extension's reach.
+  const d = decide(cands(['itm-new-aaaaaaaa', '2026-08-24T00:00:00Z'], ['itm-old-bbbbbbbb', '2026-08-11T00:00:00Z']), {
+    'itm-old-bbbbbbbb': rec({ videoId: 'Z2ItN8vWbGo', filledAt: '2026-08-13T01:30:22.860Z' }),
+  });
+  eq(d.itemId, 'itm-old-bbbbbbbb', 'the linked set must stay the one that publishes:');
+  eq(d.tiedWith, [], 'a clear winner ties with nobody:');
+});
+
+check('a SCHEDULED set outranks a newer softened one that nobody has acted on', () => {
+  // The live softening case exactly: the softened set is the newest row, the original holds
+  // the calendar date. Promoting the newcomer would have silently dropped the schedule.
+  const d = decide(cands(['itm-soft-aaaaaaa', '2026-08-25T22:39:04.865Z'], ['itm-orig-bbbbbbb', '2026-08-25T19:53:28.209Z']), {
+    'itm-soft-aaaaaaa': rec({}),
+    'itm-orig-bbbbbbb': rec({ chosenTitles: ['a', 'b', 'c'], publishAt: '2026-08-30T13:00:00-04:00' }),
+  });
+  eq(d.itemId, 'itm-orig-bbbbbbb', 'the scheduled set must keep its date:');
+});
+
+check('the pipeline order is strict: pushed > linked > scheduled > titles > edits > nothing', () => {
+  const ranks = [
+    [rec({ pushedAt: '2026-08-01T00:00:00Z' }), 5],
+    [rec({ uploadReceipt: { videoId: 'x' } }), 5],
+    [rec({ videoId: 'abc' }), 4],
+    [rec({ filledAt: '2026-08-01T00:00:00Z' }), 4],
+    [rec({ publishAt: '2026-08-30T13:00:00-04:00' }), 3],
+    [rec({ chosenTitles: ['one'] }), 2],
+    [rec({ descriptionOverride: 'edited' }), 1],
+    [rec({ isPodcast: true }), 1],
+    [rec({}), 0],
+    [null, 0],
+  ];
+  for (const [record, rank] of ranks) {
+    eq(primary.publishProgressOf(record).rank, rank, `progress of ${JSON.stringify(record && Object.keys(record).filter((k) => record[k] && k !== 'chosenTitles' && k !== 'titleEdits'))}:`);
+  }
+  // Both of these are written by the AUTOMATIC pass on the first save of every record, so
+  // every sibling of every source carries them. Reading either as evidence would rank the
+  // whole group level and hand the decision to the date.
+  eq(primary.publishProgressOf(rec({ channelId: 'UCgIi12E', thumbnailPath: '/x.png' })).rank, 0,
+    'a channel and a thumbnail are auto-filled and distinguish nothing:');
+});
+
+check('sets level at the front are broken by DATE, and the losers are named', () => {
+  const d = decide(cands(['itm-newer-aaaaaa', '2026-08-23T01:11:15.101Z'], ['itm-older-bbbbbb', '2026-08-19T19:49:48.357Z']), {
+    'itm-newer-aaaaaa': rec({ chosenTitles: ['a', 'b', 'c'] }),
+    'itm-older-bbbbbb': rec({ chosenTitles: ['a', 'b', 'c'] }),
+  });
+  eq(d.itemId, 'itm-newer-aaaaaa', 'the newer of two equals:');
+  eq(d.tiedWith, ['itm-older-bbbbbb'], 'a tie is REPORTED, never quietly resolved:');
+});
+
+check('when nothing has been acted on, the newest wins — which is the row the list headed', () => {
+  const d = decide(cands(['itm-c-cccccccc', '2026-08-24T20:11:46.627Z'], ['itm-b-bbbbbbbb', '2026-08-23T19:55:28.909Z'], ['itm-a-aaaaaaaa', '2026-08-23T02:54:47.545Z']), {});
+  eq(d.itemId, 'itm-c-cccccccc', 'the newest of three untouched sets:');
+});
+
+check('the order the index happens to be in cannot change the answer', () => {
+  const byItem = {
+    'itm-old-bbbbbbbb': rec({ videoId: 'Z2ItN8vWbGo' }),
+    'itm-new-aaaaaaaa': rec({ chosenTitles: ['a'] }),
+  };
+  const forwards = decide(cands(['itm-new-aaaaaaaa', '2026-08-24T00:00:00Z'], ['itm-old-bbbbbbbb', '2026-08-11T00:00:00Z']), byItem);
+  const backwards = decide(cands(['itm-old-bbbbbbbb', '2026-08-11T00:00:00Z'], ['itm-new-aaaaaaaa', '2026-08-24T00:00:00Z']), byItem);
+  eq(forwards.itemId, backwards.itemId, 'a readdir order must not decide what publishes:');
+});
+
+check('a source with no sets THROWS rather than answering', () => {
+  let threw = false;
+  try { decide([], {}); } catch { threw = true; }
+  if (!threw) throw new Error('decidePrimary answered for a source with no items');
+});
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

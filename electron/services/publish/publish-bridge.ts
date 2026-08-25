@@ -248,12 +248,36 @@ export class PublishBridge {
     };
   }
 
-  /** Everything with titles picked that hasn't been published yet. */
+  /**
+   * Everything with titles picked that hasn't been published yet — PRIMARY SETS ONLY.
+   *
+   * A video can have several generated metadata sets, and exactly one of them is the one
+   * this app publishes (primary-set.service.ts). A configured record on a set nobody
+   * promoted is not work the shelf should offer: "even if other metadata sets are filled
+   * out, if they aren't primary, they aren't used".
+   *
+   * What is withheld is COUNTED into the log rather than simply absent. A shelf that is
+   * quietly one item short looks exactly like a shelf with nothing left to do.
+   */
   async listPending(): Promise<PendingFillItem[]> {
+    const primary = new Set(
+      this.listGenerated().items.filter((i) => i.isPrimary).map((i) => i.itemId)
+    );
     const out: PendingFillItem[] = [];
+    let withheld = 0;
     for (const sel of this.store.listActionable()) {
+      if (!primary.has(sel.itemId)) {
+        withheld++;
+        continue;
+      }
       const item = this.toPending(sel.itemId);
       if (item) out.push(item);
+    }
+    if (withheld > 0) {
+      console.log(
+        `[PublishBridge] ${withheld} actionable selection(s) are on sets that are not their ` +
+          `source's primary and were not offered to the shelf.`
+      );
     }
     return out;
   }
@@ -266,10 +290,17 @@ export class PublishBridge {
   async listReports(offset: number, limit: number, query: string): Promise<BrowsePage> {
     const index = this.listGenerated();
 
+    // PRIMARY SETS ONLY. A re-run and a softening pass produce sibling sets over one
+    // source, and the shelf browsing them all would offer the operator a choice this app
+    // already has an answer for — his own, made on the metadata page. Switching between
+    // versions belongs there, where the words are on screen; here it would be a list of
+    // near-identical rows distinguishable only by date.
+    const primaries = index.items.filter((i) => i.isPrimary);
+
     const needle = query.trim().toLowerCase();
     const matching = needle
-      ? index.items.filter((i) => i.label.toLowerCase().includes(needle))
-      : index.items;
+      ? primaries.filter((i) => i.label.toLowerCase().includes(needle))
+      : primaries;
 
     const safeOffset = Math.max(0, Math.floor(offset));
     const safeLimit = Math.min(Math.max(1, Math.floor(limit)), MAX_BROWSE_LIMIT);
@@ -446,6 +477,18 @@ export class PublishBridge {
       const best = [...links].sort(byNewestSelection)[0]!;
       const item = this.toPending(best.itemId);
       if (item) {
+        // NOT filtered to primaries, deliberately. A record naming this video IS the record
+        // for this video — it is how the app knows what is already on screen — and refusing
+        // it because a sibling set was promoted since would strand a linked video with no
+        // way back to its own metadata. It is SAID instead, so a description that is not the
+        // one the operator expects has a reason attached.
+        const summary = this.listGenerated().items.find((i) => i.itemId === best.itemId);
+        if (summary && !summary.isPrimary) {
+          notes.push(
+            `the set linked to this video (${best.itemId}) is not the primary set for ` +
+              `"${summary.sourceKey}"`
+          );
+        }
         return {
           item,
           reason:
@@ -491,9 +534,27 @@ export class PublishBridge {
 
     const wanted = normalizeForMatch(filename);
     const byItemId = new Map(records.map((r) => [r.itemId, r]));
-    const hits: FilenameCandidate[] = this.listGenerated()
-      .items.filter((i) => i.sourceFilename && normalizeForMatch(i.sourceFilename) === wanted)
+    const matched = this.listGenerated().items.filter(
+      (i) => i.sourceFilename && normalizeForMatch(i.sourceFilename) === wanted
+    );
+
+    // PRIMARY SETS ONLY, and the ones dropped are NAMED in the reason rather than being
+    // quietly absent. `source_key` IS `normalizeForMatch(basename)` (item-identity.ts), so
+    // everything matching this filename shares one source_key and exactly one of them is
+    // primary — which is why this collapses a pile of near-identical candidates to the one
+    // set the operator called definitive, and why `disambiguate` below now fires only when
+    // two genuinely different sources normalize to the same name.
+    const hits: FilenameCandidate[] = matched
+      .filter((i) => i.isPrimary)
       .map((summary) => ({ summary, chosen: byItemId.get(summary.itemId) ?? null }));
+    const notPrimary = matched.length - hits.length;
+    if (notPrimary > 0) {
+      notes.push(
+        `${notPrimary} other metadata set${notPrimary === 1 ? '' : 's'} for this file ` +
+          `${notPrimary === 1 ? 'is' : 'are'} not primary and ${notPrimary === 1 ? 'was' : 'were'} ` +
+          `not offered — promote one on its metadata page to use it instead`
+      );
+    }
 
     if (!hits.length) {
       return {

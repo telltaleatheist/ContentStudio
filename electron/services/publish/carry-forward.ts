@@ -36,6 +36,17 @@
  * can have changed, and the thumbnail lives on Callisto, an external volume. A carried
  * value that no longer validates is REFUSED and named, never carried as a dead link.
  *
+ * PRIMARY SETS AND THIS MODULE. Carry-forward is the ONE consumer of the report index
+ * that must keep seeing every sibling, primary or not — joining an item to sets it is not
+ * is its entire job, and an index filtered to primaries would leave a freshly regenerated
+ * item with nothing to carry from. What the primary DOES change here is which sibling is
+ * OFFERED: the candidates are ordered primary-first, then newest-first, and the first one
+ * holding something is the offer. The primary is the operator's own statement about which
+ * set of this video is the real one, and the four fields that carry (channel, thumbnail,
+ * transcript link, podcast flag) are facts about the VIDEO — so the set he called
+ * definitive is the right place to read them from. The candidate says which it was
+ * (`fromIsPrimary`) rather than leaving the panel to guess.
+ *
  * PARTIAL IS A STATED OUTCOME, NOT A FALLBACK. Four fields go in and each one comes back
  * in exactly one of three buckets — applied, skipped (with the reason it had nothing to
  * do), refused (with the validator's own message). A field in none of them would be a
@@ -44,7 +55,7 @@
  */
 
 import { ChosenMetadata, ThumbnailMeta, TranscriptRef, isItemId } from './publish-types';
-import { GeneratedFallback, GeneratedItemSummary, PublishStoreService } from './publish-store.service';
+import { GeneratedFallback, PrimaryAwareSummary, PublishStoreService } from './publish-store.service';
 import { FieldContext, FieldPatch, applyFieldValidator } from './field-validators';
 import { validateThumbnailFile } from './thumbnail-validate';
 import { RoutableChannel } from './channel-routing';
@@ -112,6 +123,16 @@ export interface CarryForwardCandidate {
    * different situations and the second one is worth a second look before clicking.
    */
   siblingCount: number;
+  /**
+   * Is the sibling being offered the PRIMARY set for this source?
+   *
+   * True is the ordinary answer, because the primary is looked at first. False means the
+   * primary held nothing worth carrying and this is the newest sibling that did — a real
+   * situation (a video whose definitive set was only just generated), and one the panel
+   * should say out loud rather than let the operator assume the offer came from the set
+   * he called definitive.
+   */
+  fromIsPrimary: boolean;
 }
 
 /** One field's outcome. Exactly one of these per field, every time. */
@@ -151,8 +172,13 @@ export interface CarryReceipt {
 
 export interface CarryForwardDeps {
   store: PublishStoreService;
-  /** The host's index of every generated item, newest-first. Format knowledge stays there. */
-  listGenerated: () => { items: GeneratedItemSummary[] };
+  /**
+   * The host's index of EVERY generated item, newest-first, each saying whether it is its
+   * source's primary set. Format knowledge stays there.
+   *
+   * Never filtered to primaries on the way in — see the note at the top of this file.
+   */
+  listGenerated: () => { items: PrimaryAwareSummary[] };
   /** The generated values for an item — the store's seed when a record is created. */
   readGenerated: (itemId: string) => GeneratedFallback | null;
   /** The channel registry, read fresh, exactly as publish-set-fields reads it. */
@@ -205,8 +231,8 @@ function hasCarryableState(state: CarryableState): boolean {
  */
 export function selectRegenSiblings(
   itemId: string,
-  items: GeneratedItemSummary[]
-): { sourceKey: string | null; siblings: GeneratedItemSummary[] } {
+  items: PrimaryAwareSummary[]
+): { sourceKey: string | null; siblings: PrimaryAwareSummary[] } {
   const target = items.find((i) => i.itemId === itemId);
   if (!target) {
     throw new Error(
@@ -257,10 +283,18 @@ export function listCarrySiblings(itemId: string, deps: CarryForwardDeps): Carry
 /**
  * The offer, or null when there is nothing to offer.
  *
- * The NEWEST sibling that actually carries something. Newest because it is the operator's
- * most recent statement about this video; "actually carries something" because a sibling
- * whose record is empty is a run that happened, not a decision that was made — offering
- * it would put a button on screen that applies nothing.
+ * THE PRIMARY SET FIRST, then the rest newest-first, and the first one that actually
+ * carries something wins.
+ *
+ * Primary first because it is the operator's own answer to "which set of this video is the
+ * real one", and every field that carries is a fact about the VIDEO — its channel, its
+ * thumbnail, its transcript link, whether it is a podcast — so the set he called definitive
+ * is where those facts belong. Newest after it, for the reason it used to be first: among
+ * sets nobody has called definitive, the most recent is his most recent statement.
+ *
+ * "Actually carries something" throughout, because a sibling whose record is empty is a run
+ * that happened, not a decision that was made — offering it would put a button on screen
+ * that applies nothing.
  */
 export function findCarryForward(
   itemId: string,
@@ -270,7 +304,13 @@ export function findCarryForward(
   const { sourceKey, siblings } = selectRegenSiblings(itemId, deps.listGenerated().items);
   if (sourceKey === null || siblings.length === 0) return null;
 
-  for (const sibling of siblings) {
+  // ONE list, reordered — not two passes. A sibling appears exactly once, so a primary
+  // that carries nothing cannot be considered twice and cannot be skipped either. The sort
+  // is STABLE (ES2019 onwards), which is what keeps the newest-first order selectRegenSiblings
+  // established intact inside each half.
+  const ordered = [...siblings].sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary));
+
+  for (const sibling of ordered) {
     const record = deps.store.get(sibling.itemId);
     if (!record) continue;
     const state = carryableOf(record);
@@ -283,6 +323,7 @@ export function findCarryForward(
       state,
       sourceKey,
       siblingCount: siblings.length,
+      fromIsPrimary: sibling.isPrimary,
     };
   }
   return null;

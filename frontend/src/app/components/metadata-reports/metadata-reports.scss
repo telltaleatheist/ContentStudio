@@ -559,7 +559,6 @@ input[type='time'].control { width: 92px; flex: none; }
     background: var(--rp-raised);
     border-left-color: var(--primary-orange);
   }
-  &.is-rerun { padding-left: 22px; }
   &.checked { background: var(--rp-hover); }
   /* Already on YouTube. Muted, never hidden — it is still selectable, still exportable,
      and still the row the operator opens to read what was sent. */
@@ -631,8 +630,9 @@ input[type='time'].control { width: 92px; flex: none; }
   border: 1px solid var(--rp-line-soft);
   border-radius: 4px;
   padding: 1px 4px;
-  cursor: pointer;
-  &:hover { color: var(--rp-ink); border-color: var(--rp-line); }
+  /* A COUNT, not a control, since versions moved to the work pane's picker. The cursor and
+     the hover lift are gone with the click that used to be here. */
+  cursor: default;
 }
 
 /* The overflow: the only way to overrule the prompt set's routing without regenerating.
@@ -1051,6 +1051,60 @@ input[type='time'].control { width: 92px; flex: none; }
   max-width: 210px;
 }
 .more-titles-spin { flex: none; }
+
+/* The version picker in the work pane's head: which metadata set of this source is on
+   screen, and whether it is the one this app publishes. Sits under the title because that
+   is what it qualifies — the words below all belong to the set named here. Theme variables
+   only; nothing names a colour literal. */
+.versions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 2px 0 6px;
+}
+.versions-label {
+  color: var(--rp-ink-3);
+  font-size: var(--rp-fs-cap);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.versions-pick {
+  flex: none;
+  max-width: 280px;
+}
+.versions-state {
+  font-size: var(--rp-fs-cap);
+  &.is-primary {
+    color: var(--rp-ok);
+    border: 1px solid var(--rp-line-soft);
+    border-radius: 4px;
+    padding: 1px 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  &.not-primary { color: var(--rp-warn); }
+}
+
+/* Soften for monetization — the same row shape as .more-titles, its own block so it reads
+   as an item-wide action rather than another titles control. Colours are theme variables
+   only; nothing here names a literal. */
+.soften {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 12px 4px;
+  flex-wrap: wrap;
+}
+.soften-model {
+  flex: none;
+  max-width: 210px;
+}
+.soften-spin { flex: none; }
+.soften-note {
+  color: var(--rp-ink-3);
+  font-size: var(--rp-fs-cap);
+}
 
 .s {
   display: flex;

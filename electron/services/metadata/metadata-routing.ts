@@ -628,6 +628,57 @@ export function routingOption(taskId: MetadataRoutingTaskId, optionId: string): 
   return METADATA_ROUTING_OPTIONS[optionId];
 }
 
+/**
+ * The option ids one task offers, in the order the routing modal lists them.
+ *
+ * Its own function because the OPERATOR-FACING pickers (the reports page's "10 more titles"
+ * and "soften for monetization") build their dropdowns from a task's list and then have to
+ * check what came back against exactly that list. A task id this table does not carry is a
+ * caller bug, not a bad setting, so it throws here rather than anywhere downstream.
+ */
+export function taskOptionIds(taskId: MetadataRoutingTaskId): string[] {
+  const task = METADATA_ROUTING_TASKS.find((t) => t.id === taskId);
+  if (!task) {
+    throw new Error(
+      `The metadata routing table has no "${taskId}" task, so there is no option list to check a ` +
+        `model choice against.`
+    );
+  }
+  return task.options;
+}
+
+/**
+ * One option id an OPERATOR picked from a dropdown, checked against what that task offers.
+ *
+ * Separate from `routingOption()` only in the message: this refuses on behalf of somebody who
+ * chose from a visible list, so it names the list's contents. It is called BEFORE anything is
+ * read — an option a task does not offer is the caller being wrong about the dropdown, and it
+ * must not reach a transport.
+ *
+ * GENERALISED 2026-08-25 out of more-titles.ts's `resolveTitlesOption`, which is now a thin
+ * wrapper: the soften pass needed the same three checks against a different task, and two
+ * copies of a validator is two places for the option list to drift from the table.
+ */
+export function resolveOperatorOption(
+  taskId: MetadataRoutingTaskId,
+  optionId: unknown
+): MetadataRoutingOption {
+  const offered = taskOptionIds(taskId);
+  if (typeof optionId !== 'string' || !offered.includes(optionId)) {
+    throw new Error(
+      `"${String(optionId)}" is not a model the ${taskId} task offers. The ${taskId} options are: ` +
+        `${offered.join(', ')}.`
+    );
+  }
+  const option = METADATA_ROUTING_OPTIONS[optionId];
+  if (!option) {
+    throw new Error(
+      `The ${taskId} task offers "${optionId}", but no such option is declared in the routing table.`
+    );
+  }
+  return option;
+}
+
 /** One line naming what this run will use, for the job log. */
 export function describeRouting(routing: ResolvedMetadataRouting): string {
   return METADATA_ROUTING_TASKS.map((t) => `${t.id}=${METADATA_ROUTING_OPTIONS[routing[t.id]].model}`).join(', ');

@@ -17,7 +17,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import type { GeneratedIndex, GeneratedItemSummary } from '../publish/publish-store.service';
+import type { GeneratedItemSummary } from '../publish/publish-store.service';
 import { isItemId } from './item-identity';
 
 /** Reasons a report file did not make it into the index. Counted, never silently dropped. */
@@ -26,8 +26,20 @@ export interface IndexProblem {
   message: string;
 }
 
-export interface GeneratedIndexResult extends GeneratedIndex {
-  /** Detail behind GeneratedIndex.unreadable, for logging. */
+/**
+ * What this reader produces: summaries with NO answer about primacy.
+ *
+ * Deliberately not `GeneratedIndex`, which the publish surface consumes and which requires
+ * `isPrimary` on every item. Whether a set is the definitive one for its source is an
+ * answer only the publish store holds (primary-set.service.ts), and this module — which
+ * exists to know the report FILE FORMAT and nothing else — must not be in a position to
+ * invent one. The host joins the two where both are in scope.
+ */
+export interface GeneratedIndexResult {
+  items: GeneratedItemSummary[];
+  /** How many report files could not be parsed. Counted, never a silent omission. */
+  unreadable: number;
+  /** Detail behind `unreadable`, for logging. */
   problems: IndexProblem[];
 }
 
@@ -74,6 +86,21 @@ export function summarizeJob(job: any, fallbackJobId: string): GeneratedItemSumm
     }
     const titles: string[] = Array.isArray(item?.titles) ? item.titles : [];
     const sourceFilename = sourceFilenameOf(item);
+    // A softened set declares its lineage (item-identity.ts §SoftenedFrom). REQUIRED to be
+    // an item id when the key is present at all, for the same reason `item_id` itself is:
+    // it is the only thing that tells a softened derivative apart from a second generation
+    // run, the version picker labels sets with it, and a malformed one is a hand-edited
+    // record rather than an older one — every set the softening pass writes carries a real
+    // id. An item with no `softened_from` at all is a generation run, which is not a fault.
+    const softenedFrom = (item as any)?.softened_from;
+    if (softenedFrom !== undefined && softenedFrom !== null) {
+      if (typeof softenedFrom !== 'object' || !isItemId(softenedFrom.item_id)) {
+        throw new Error(
+          `items[${itemIndex}] declares softened_from.item_id ${JSON.stringify(softenedFrom?.item_id)}, ` +
+            `which is not an item id — the record has been edited by hand.`
+        );
+      }
+    }
     return {
       itemId: item.item_id,
       jobId,
@@ -92,6 +119,7 @@ export function summarizeJob(job: any, fallbackJobId: string): GeneratedItemSumm
       // away from it the day normalizeForMatch changes.
       sourceKey: typeof item?.source_key === 'string' && item.source_key ? item.source_key : null,
       titleCount: titles.length,
+      softenedFromItemId: softenedFrom ? softenedFrom.item_id : null,
     };
   });
 }

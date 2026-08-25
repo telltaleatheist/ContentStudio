@@ -23,7 +23,10 @@ import {
   PublishStoreService,
   GeneratedFallback,
   GeneratedIndex,
+  GeneratedItemSummary,
+  HostReportIndex,
 } from '../services/publish/publish-store.service';
+import { ensurePrimarySets } from '../services/publish/primary-migration';
 import {
   createGeneratedIndexReader,
   sourceFilenameOf,
@@ -42,13 +45,18 @@ import {
   migrateSelections,
   selectionMigrationIsNoteworthy,
 } from '../services/publish/selection-migration';
-import { isItemId } from '../services/metadata/item-identity';
+import { SoftenedFrom, isItemId } from '../services/metadata/item-identity';
 import {
   askForMoreTitles,
   findStoredTitlesCall,
   moreTitlesTraceEntry,
   resolveTitlesOption,
 } from '../services/metadata/more-titles';
+import {
+  resolveSoftenOption,
+  runSoftenPass,
+  softenSourceLabel,
+} from '../services/metadata/soften';
 import {
   inspectSavedTranscript,
   resolveOutputDirectory,
@@ -2478,6 +2486,196 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     }
   );
 
+  /**
+   * SOFTEN FOR MONETIZATION — every text field on one item, rewritten milder, as a NEW SET.
+   *
+   * The operator reads a report, sees wording YouTube's advertiser-friendly review will read
+   * as graphic, picks a model and clicks. What comes back is a NEW JOB holding ONE NEW ITEM
+   * over the same `source_key` — the same join a regeneration produces — so the reports page
+   * groups the two with the softened one at the head, carry-forward offers the original's
+   * publish state to it, and neither the original item nor its .txt nor its publish record is
+   * touched. See soften.ts for why that is the design.
+   *
+   * A NEW JOB RATHER THAN A SECOND ITEM IN THE ORIGINAL ONE, decided by reading the page: the
+   * reports list orders by the JOB's `created_at` and heads each source_key group with the
+   * newest row, so a new job dated now puts the softened set at the head with the original
+   * collapsed beneath it — which is the "both sets exist, pick one" state, reached with no new
+   * grouping code. Appending to the original job would give both rows the SAME created_at and
+   * leave which one heads the group undecided; it would also drop the softened .txt into the
+   * original run's folder and put `original_inputs` / `input_types` further out of step with
+   * `items[]`.
+   *
+   * The job id is minted HERE, which is the one deliberate exception to initializeJob's "the
+   * renderer owns the job id" rule: that rule exists because a generation job has a queue row,
+   * a cancellation registration and progress events all keyed by the id. This job has none of
+   * those — it is created, filled and completed inside this one call, and no renderer state
+   * refers to it before it appears in the report index.
+   */
+  ipcMain.handle(
+    'metadata:soften-item',
+    async (_event, jobId: string, itemId: string, optionId: string) => {
+      try {
+        if (typeof jobId !== 'string' || !jobId.trim()) {
+          return { success: false, error: 'A job id is required to soften an item.' };
+        }
+        if (!isItemId(itemId)) {
+          return { success: false, error: `"${String(itemId)}" is not an item id.` };
+        }
+        // Checked BEFORE anything is read, exactly as the titles picker is: an option the task
+        // does not offer is the caller being wrong about the dropdown, and it must not reach a
+        // transport.
+        const option = resolveSoftenOption(optionId);
+
+        const outputDirectory = (store as any).store?.outputDirectory;
+        if (!outputDirectory) {
+          throw new Error('No output directory configured — cannot locate the report to soften.');
+        }
+        const handler = OutputHandlerService.forOutputDir(outputDirectory);
+        const job = handler.getJobMetadata(jobId);
+        if (!job) {
+          return { success: false, error: `Job ${jobId} was not found in ${outputDirectory}.` };
+        }
+        const item = (job.items || []).find((entry: any) => entry && entry.item_id === itemId);
+        if (!item) {
+          return { success: false, error: `Item ${itemId} is not in job ${jobId}.` };
+        }
+
+        // The softened item declares the SAME source and the SAME transcript provenance as the
+        // item it came from — the words still descend from that transcript, and a softening
+        // pass is not a second answer to that question. A report written before provenance was
+        // recorded cannot supply one, and nothing invents it.
+        const provenance = (item as any).content_provenance;
+        if (!provenance || typeof provenance !== 'object' || !provenance.content_fields) {
+          return {
+            success: false,
+            error:
+              `Item ${itemId} records no content_provenance, so a softened copy of it could not ` +
+              `say which transcript wrote its words. Regenerate the item to give it one.`,
+          };
+        }
+        const source = {
+          source_key: (item as any).source_key ?? null,
+          source_path: (item as any).source_path ?? null,
+        };
+        if (source.source_key === null) {
+          return {
+            success: false,
+            error:
+              `Item ${itemId} records no source_key (a text subject or a compilation), so a ` +
+              `softened set written beside it would not be joined to it — the reports page ` +
+              `groups re-runs by source_key, and this item has nothing to group by.`,
+          };
+        }
+
+        const sourceLabel = softenSourceLabel(item);
+
+        // Built for THIS pass only, and `initialize()` is deliberately not run — same reason
+        // the titles handler above gives: every client is created on demand by
+        // ensureProviderReady, which names a missing key rather than substituting a provider
+        // that has one. `promptSetsDir` is still required, because the constructor initialises
+        // the prompt assets whatever the caller intends to ask for — and this pass DOES ask
+        // for one (shared/pipeline/soften.yml).
+        const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
+        const apiKeys: any = fs.existsSync(apiKeysPath)
+          ? JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'))
+          : {};
+        const ollamaHost = (store as any).store?.ollamaHost || 'http://localhost:11434';
+        const aiConfig: AIConfig = {
+          provider: 'claude',
+          host: ollamaHost,
+          cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
+          promptSetsDir: getPromptSetsDirectory(),
+        };
+        const aiManager = new AIManagerService(aiConfig);
+
+        let pass;
+        try {
+          pass = await runSoftenPass(item, option, { aiManager, ollamaHost });
+        } finally {
+          aiManager.cleanup();
+        }
+
+        // Everything below is disk work, and it happens only because every call above came
+        // back in the shape its prompt asked for. A pass that threw wrote nothing.
+        const softJobId = `job-${Date.now()}-${crypto.randomBytes(8).toString('hex').slice(0, 9)}`;
+        const softenedFrom: SoftenedFrom = {
+          item_id: itemId,
+          job_id: jobId,
+          model: pass.model,
+          fields: pass.applied.map((f) => f.field),
+          skipped: pass.skipped,
+          softened_at: new Date().toISOString(),
+        };
+        // The trace on the new item is the SOFTENING calls — the calls that produced this set.
+        // The original run's trace stays on the original item, where the calls it records
+        // actually happened.
+        pass.metadata._prompt_trace = pass.trace;
+        pass.metadata.softened_from = softenedFrom;
+
+        handler.initializeJob(`${job.job_name} (softened)`, job.prompt_set, softJobId);
+        // The same two arrays a generation run records. One item, one input: the source this
+        // set was softened from, which is the same file the original run read.
+        //
+        // Both of these swallow their own errors and answer with a boolean, so the answer is
+        // READ. This one throws on false: nothing has been written to the new job yet, so a
+        // job whose inputs could not be recorded is abandoned before it holds anything.
+        if (
+          !handler.updateJobData(softJobId, {
+            original_inputs: source.source_path ? [source.source_path] : [],
+            input_types: ['video'],
+          })
+        ) {
+          throw new Error(
+            `Job ${softJobId} was created for the softened set and could not then be written to ` +
+              `— its inputs were not recorded, so nothing further was written to it.`
+          );
+        }
+        const written = await handler.addItemToJob(softJobId, pass.metadata, source, provenance);
+        // AFTER the item, so the job is never 'completed' while empty — and reported rather
+        // than thrown, because by this point the softened set exists and is openable. A job
+        // left at 'processing' is a blemish on the record, not a lost set, and telling the
+        // operator the pass failed would be the false statement.
+        const statusWritten = handler.updateJobStatus(softJobId, 'completed');
+        const statusWarning = statusWritten
+          ? null
+          : `The softened set was written, but job ${softJobId} could not be marked completed ` +
+            `and still reads as 'processing'.`;
+        if (statusWarning) log.warn(`[Soften] ${statusWarning}`);
+
+        log.info(
+          `[Soften] ${pass.applied.length} field(s) rewritten on "${pass.model}" for ${sourceLabel}; ` +
+            `written as item ${written.itemId} in job ${softJobId} (${written.txtPath})`
+        );
+        // NOT PRIMARY, and said out loud. The source already has a primary set recorded
+        // (primary-set.service.ts), so the sweep that runs on the next read of the index
+        // will leave this one alone: a softened set is on disk and unused until the
+        // operator promotes it on the item's page. That is the whole point of the pass —
+        // he compares the two and picks — but it is also a change in what a new set does,
+        // and a set that quietly published nothing would look like a set that failed.
+        log.info(
+          `[Soften] item ${written.itemId} is NOT the primary set for "${source.source_key}" — ` +
+            `it is not on the calendar, is not pushed and is not offered to the extension ` +
+            `until "Set as primary" is pressed on it.`
+        );
+
+        return {
+          success: true,
+          model: pass.model,
+          jobId: softJobId,
+          itemId: written.itemId,
+          txtPath: written.txtPath,
+          applied: pass.applied,
+          skipped: pass.skipped,
+          warning: statusWarning,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log.error('[Soften] request failed:', error);
+        return { success: false, error: message };
+      }
+    }
+  );
+
   // Delete job history entry
   ipcMain.handle('delete-job-history', async (_event, jobId: string) => {
     // A job id is required, and an absent one is a caller bug rather than an empty delete.
@@ -3186,7 +3384,40 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   // renderer any more.
   const readReportIndex = createReportIndexReader(metadataReportsDir);
 
-  const listReportRowsForPublish = () => {
+  /**
+   * Give every source in an already-read index its primary set, and answer per item.
+   *
+   * ONE seam for both index projections, so the browse list and the publish index can
+   * never disagree about which set of a video is the real one.
+   *
+   * The sweep only ever writes an answer where there is none (primary-migration.ts): the
+   * one-time pass over reports that predate the feature, and thereafter the claim a
+   * brand-new source makes the first time it is indexed. It is deliberately NOT behind a
+   * once-per-session gate like `ensureReportsMigrated` — a set generated after such a gate
+   * had run would have no answer until the next launch, and every consumer of it would
+   * refuse. It is a map lookup per item when there is nothing to do.
+   *
+   * A FAILURE HERE IS NOT SURVIVABLE and is not caught: the registry file is unreadable,
+   * or a selection record the decision depends on is. Serving an index whose `isPrimary`
+   * was guessed at is how the wrong set of a video reaches YouTube.
+   */
+  const decidePrimaryFor = <T extends GeneratedItemSummary>(items: T[]): Array<T & { isPrimary: boolean }> => {
+    ensurePrimarySets({
+      registry: analytics.publishStore.primary,
+      items,
+      readRecord: (itemId) => analytics.publishStore.get(itemId),
+      log: (message) => log.info(message),
+    });
+    const registry = analytics.publishStore.primary.all();
+    return items.map((item) => ({
+      ...item,
+      // A null source_key is its own primary by definition — see PrimaryAwareSummary.
+      isPrimary:
+        item.sourceKey === null ? true : registry.get(item.sourceKey)?.itemId === item.itemId,
+    }));
+  };
+
+  const listReportRowsForPublish = (): HostReportIndex => {
     // Same lazy migration gate as listGeneratedForPublish below, and for the same reason:
     // every row is keyed by an item id that the migration is what mints, and the calendar
     // can be the first page opened in a session. A directory that does not exist is not
@@ -3199,7 +3430,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     for (const problem of result.problems) {
       log.error(`[Publish] cannot index report ${problem.file}: ${problem.message}`);
     }
-    return result;
+    return { ...result, rows: decidePrimaryFor(result.rows) };
   };
 
   const listGeneratedForPublish = (): GeneratedIndex => {
@@ -3222,7 +3453,11 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     for (const problem of result.problems) {
       log.error(`[Publish] cannot read report ${problem.file}: ${problem.message}`);
     }
-    return { items: result.items, unreadable: result.unreadable };
+    // EVERY item, primary or not, each SAYING which it is. Deliberately not filtered here:
+    // the reports page needs every sibling to fill its version picker, and carry-forward's
+    // whole job is joining an item to siblings it is not. Primary-only is enforced in the
+    // consumers that publish, schedule or serve — see publish-bridge.ts and publish-ipc.ts.
+    return { items: decidePrimaryFor(result.items), unreadable: result.unreadable };
   };
 
   // Registered as a single seam. `readGenerated` is injected so the publish module

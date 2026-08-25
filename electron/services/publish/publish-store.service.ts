@@ -9,6 +9,14 @@
  *   publish/
  *     selections/items/<itemId>.json   one record, one file
  *     selections/orphaned/             legacy files the migration could not resolve
+ *     primary-sets.json                which SET of a source is the definitive one
+ *
+ * The last of those is a different shape of fact and has its own file for that reason:
+ * a video can have several generated metadata sets (a re-run, a softening pass), joined
+ * by `source_key`, and exactly ONE of them is the one the calendar, the push and the
+ * extension use. That is one answer per SOURCE, not per item, and a flag on a per-item
+ * record could be true on two siblings at once with nothing on disk to say which was
+ * wrong. See primary-set.service.ts.
  *
  * ONE FILE PER ITEM, keyed by the item's permanent id. It used to be one file per JOB,
  * a map keyed by the item's POSITION in items[] -- which meant deleting a mid-job item
@@ -33,6 +41,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { AutoConfigResult } from './auto-config';
+import { PrimarySetService } from './primary-set.service';
 import { DescriptionSections, composePublishedText } from './publish-types';
 import {
   ChosenMetadata,
@@ -195,6 +204,36 @@ export interface GeneratedItemSummary {
   sourceKey: string | null;
   /** How many titles the generator produced. */
   titleCount: number;
+  /**
+   * The item this set was SOFTENED FROM, or null when it is a generation run.
+   *
+   * Carried on the summary because it is the only thing that tells two sibling sets apart
+   * for a reader: a re-run and a softened derivative have the same source, the same
+   * chapters and the same timestamps, and differ only in their words. The version picker
+   * on the item's page labels each set with it. Read off the item's own `softened_from`
+   * (item-identity.ts), never inferred.
+   */
+  softenedFromItemId: string | null;
+}
+
+/**
+ * A summary the HOST has decided primacy for.
+ *
+ * Separate from `GeneratedItemSummary` because the two are produced in different places
+ * and by different authorities: services/metadata reads the report files and knows nothing
+ * about publish state, while `isPrimary` is an answer only the publish store holds. The
+ * host joins them where both are in scope (ipc-handlers.ts), which is what keeps the
+ * report readers ignorant of the registry and the registry ignorant of the report format.
+ */
+export interface PrimaryAwareSummary extends GeneratedItemSummary {
+  /**
+   * Is this the definitive set for its source?
+   *
+   * TRUE for every item with a null `source_key` — a text subject and a compilation have
+   * no single source file and therefore no siblings, so the only set that exists for what
+   * they came from is themselves. That is the definition, not a default.
+   */
+  isPrimary: boolean;
 }
 
 /**
@@ -205,7 +244,7 @@ export interface GeneratedItemSummary {
  * travels with the data and gets shown.
  */
 export interface GeneratedIndex {
-  items: GeneratedItemSummary[];
+  items: PrimaryAwareSummary[];
   unreadable: number;
 }
 
@@ -218,7 +257,7 @@ export interface GeneratedIndex {
  * receives the result through an injected function rather than importing the reader. The
  * host's row satisfies this structurally.
  */
-export interface HostReportRow extends GeneratedItemSummary {
+export interface HostReportRow extends PrimaryAwareSummary {
   /** Absolute path of the job JSON this item lives in. */
   jobPath: string;
   jobSizeBytes: number;
@@ -257,6 +296,15 @@ export class PublishStoreService {
   private readonly itemsDir: string;
   private readonly autoConfigure: AutoConfigure;
   private writeQueue: Promise<unknown> = Promise.resolve();
+  /**
+   * Which SET of each source is the definitive one.
+   *
+   * Composed rather than injected: it is the same userData/publish subtree, it is written
+   * by the same operator actions, and every caller that needs it already holds this store.
+   * A second constructor argument threaded through main.ts would only create a way for the
+   * two to end up pointed at different directories.
+   */
+  private readonly primarySets: PrimarySetService;
 
   constructor(baseDir: string, autoConfigure: AutoConfigure) {
     if (typeof autoConfigure !== 'function') {
@@ -275,7 +323,13 @@ export class PublishStoreService {
     if (!fs.existsSync(this.itemsDir)) {
       fs.mkdirSync(this.itemsDir, { recursive: true });
     }
+    this.primarySets = new PrimarySetService(baseDir);
     console.log('[PublishStore] Initialized:', this.baseDir);
+  }
+
+  /** The primary-set registry: one item per source_key. See primary-set.service.ts. */
+  get primary(): PrimarySetService {
+    return this.primarySets;
   }
 
   /** Where the per-item records live. The migration writes into this same directory. */

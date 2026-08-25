@@ -232,6 +232,40 @@ export interface ItemProvenance {
 }
 
 /**
+ * Set on an item that is a SOFTENED DERIVATIVE of another item rather than a generated run.
+ *
+ * A softening pass (services/metadata/soften.ts) rewrites every text field of an existing item
+ * into a milder register and writes the result as a new item under the same `source_key` — the
+ * same join regeneration uses, so the reports page groups the two and carry-forward offers the
+ * original's publish state to the new one with no new machinery.
+ *
+ * DECLARED, exactly like `content_provenance`, and for the same reason: nothing else on the
+ * item distinguishes a softened set from a second generation run. The two read identically —
+ * same source, same chapters, same timestamps, different words — and a reader who cannot tell
+ * them apart cannot tell why the wording changed. `content_provenance` is deliberately COPIED
+ * from the source item rather than restated: the words still descend from that transcript, and
+ * claiming otherwise would be a second answer to a question already answered correctly.
+ *
+ * `_prompt_trace` on a softened item holds the SOFTENING calls, not a copy of the original
+ * run's trace. The trace is a record of calls that produced this item, and none of the run's
+ * calls did.
+ */
+export interface SoftenedFrom {
+  /** The item this set was softened from. Its `source_key` is the join to everything else. */
+  item_id: string;
+  /** The job that item lives in. A display back-reference, never a lookup key. */
+  job_id: string;
+  /** The provider-prefixed model every call in the pass went out on. */
+  model: string;
+  /** Which fields were actually rewritten, named as the pass named them. */
+  fields: string[];
+  /** Fields the source item did not carry, each with the reason. Reported, never silent. */
+  skipped: Array<{ field: string; reason: string }>;
+  /** ISO. When the pass ran. */
+  softened_at: string;
+}
+
+/**
  * The one-line account of an item's two sources, for the reports pane and the TXT.
  *
  * Stated wherever the output is READ, because that is where the consequence lands: words

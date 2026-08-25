@@ -104,6 +104,11 @@ const api = {
   // and appends what comes back to the item's titles array — the .txt is left alone.
   generateMoreTitles: (jobId: string, itemId: string, optionId: string) =>
     ipcRenderer.invoke('titles:generate-more', jobId, itemId, optionId),
+  // Soften one already-generated item for monetization, on a model the operator picks. Every
+  // text field is rewritten milder and the result is written as a NEW item under the same
+  // source_key — a sibling set, exactly like a regeneration. The original is not touched.
+  softenItem: (jobId: string, itemId: string, optionId: string) =>
+    ipcRenderer.invoke('metadata:soften-item', jobId, itemId, optionId),
   deleteReportItem: (jobId: string, itemId: string) =>
     ipcRenderer.invoke('reports-delete-item', jobId, itemId),
 
@@ -177,6 +182,11 @@ const api = {
   ) => ipcRenderer.invoke('publish-set-fields', itemId, fields),
   publishGetResolved: (itemId: string) => ipcRenderer.invoke('publish-get-resolved', itemId),
   publishListActionable: () => ipcRenderer.invoke('publish-list-actionable'),
+  // Promote ONE metadata set to be the definitive one for its source. A video can have
+  // several sets (a re-run, a softening pass) joined by source_key; this says which of them
+  // the calendar draws, the push sends and the extension fills. Nothing is copied between
+  // sets — it changes which one the app reads, not what any of them holds.
+  publishSetPrimary: (itemId: string) => ipcRenderer.invoke('publish-set-primary', itemId),
   publishClear: (itemId: string) => ipcRenderer.invoke('publish-clear', itemId),
   // Thumbnails. Their own channels because a thumbnail is a FILE: it is validated against
   // the bytes on disk (magic + extension agreement, ≤2 MiB, ≥1280x720), the measurements

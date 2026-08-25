@@ -37,7 +37,7 @@ import {
   LOCAL_FIELD_TIMEOUT_MS,
   runNumCtx,
 } from './metadata-tasks';
-import { METADATA_ROUTING_TASKS, METADATA_ROUTING_OPTIONS, MetadataRoutingOption } from './metadata-routing';
+import { MetadataRoutingOption, resolveOperatorOption, taskOptionIds } from './metadata-routing';
 import { queueAITask } from '../queue-manager.service';
 
 /** How many titles one operator request asks for. Stated once; it is in the prompt too. */
@@ -117,37 +117,18 @@ export function buildMoreTitlesPrompt(storedPrompt: string, existingTitles: stri
 
 /** The option ids the TITLES task offers, in the order the routing modal lists them. */
 export function titlesOptionIds(): string[] {
-  const task = METADATA_ROUTING_TASKS.find((t) => t.id === 'titles');
-  if (!task) {
-    throw new Error(
-      'The metadata routing table has no "titles" task, so there is no option list to check a ' +
-        'model choice against.'
-    );
-  }
-  return task.options;
+  return taskOptionIds('titles');
 }
 
 /**
  * One option id, checked against what the TITLES task actually offers.
  *
- * Separate from `routingOption()` only in the message: this refuses on behalf of an operator
- * who picked from a dropdown, so it names the dropdown's contents.
+ * A thin wrapper over the shared operator-picker validator since 2026-08-25, when the soften
+ * pass needed the same three checks against a different task. The name stays because the IPC
+ * handler reads by it and it says which dropdown is being refused on behalf of.
  */
 export function resolveTitlesOption(optionId: unknown): MetadataRoutingOption {
-  const offered = titlesOptionIds();
-  if (typeof optionId !== 'string' || !offered.includes(optionId)) {
-    throw new Error(
-      `"${String(optionId)}" is not a model the titles task offers. The titles options are: ` +
-        `${offered.join(', ')}.`
-    );
-  }
-  const option = METADATA_ROUTING_OPTIONS[optionId];
-  if (!option) {
-    throw new Error(
-      `The titles task offers "${optionId}", but no such option is declared in the routing table.`
-    );
-  }
-  return option;
+  return resolveOperatorOption('titles', optionId);
 }
 
 export interface MoreTitlesResult {

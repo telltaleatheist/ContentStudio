@@ -619,3 +619,45 @@ on every tags answer, local and cloud alike.
   memory from its cwd and this repo's memory names the operator throughout — which surfaced as
   invented narrators in 3 of 24 chapter titles (LEDGER #171). The same applies to any ad-hoc arm
   you run by hand: run it from a throwaway empty cwd, never the repo.
+
+---
+
+## Part 8 — `shared/pipeline/soften.yml` (added 2026-08-25)
+
+**What it is for.** An operator-triggered pass that rewrites a whole generated metadata set into
+a milder register so YouTube's advertiser-friendly review does not demonetize the video. The
+result is written as a **new sibling set** under the same `source_key`, never as edits on the
+original (LEDGER #180).
+
+**Why the sensitive vocabulary lives in this file at all, and why it is DATA.** Every prompt in
+this tree states what to do rather than what to avoid, because naming a wrong form inside
+instruction text drags the output toward it — that is the finding behind the positive-form law
+(Part 1). But `raped -> taken advantage of` **is** the job here, and it cannot be shown without
+naming both forms. So the file is split down the middle and the split is load-bearing:
+
+- `register` — INSTRUCTION. Positive form only: keep the facts, keep the names, keep the shape,
+  change the words that read as graphic, return the text.
+- `vocabulary_intro` + `vocabulary` — **DATA**, presented beneath the instructions as examples of
+  the register wanted rather than a list to match against. Naming a wrong form in a data block is
+  safe; the model reads it as material, not as a brief.
+
+**This is the whole reason softening is a separate pass rather than a line in `titles.yml`.** A
+"avoid graphic wording" line inside a generation prompt would have to name the graphic words in
+instruction text, in every field prompt, on every run — and would be paying the positive-form
+cost on every generation to serve the small fraction of videos that need it. Keeping it out here
+means the generation prompts never see the vocabulary and never change.
+
+**`shapes:` are keyed by SHAPE, not by field.** Nine fields share four output shapes
+(`lines` / `prose` / `comma_line` / `space_line`), and nine near-identical blocks would be nine
+places for the same sentence to drift. The per-field text is `labels:`, which is the one thing
+that genuinely differs — what the model is being told the text below IS.
+
+**`{count}` is substituted in code** (soften.ts), the same convention `summarization.yml` uses for
+`{transcript}`: `pipeline()` returns the raw string and the caller fills its own slots. A shape
+that carries the slot and a call with no count to fill it throws naming the file and the key.
+
+**Untested against a model as shipped.** The prompt was exercised end-to-end with a stub
+transport (every key resolves, every `{count}` fills, every shape contract holds), not with a real
+model. The wording is a first draft the operator is expected to tune on the Instructions page —
+which is exactly why it is an asset and not a string constant.
+

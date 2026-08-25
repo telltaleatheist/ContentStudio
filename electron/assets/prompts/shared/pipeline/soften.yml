@@ -1,0 +1,64 @@
+register: |-
+  Rewrite the text below into the mildest wording that still says exactly the same thing.
+
+  Keep every fact, every name, every number, every claim and every judgement precisely as they
+  are written. Keep the length, the order and the shape of the text as it is written.
+
+  Change only the individual words that YouTube's advertiser-friendly review reads as graphic,
+  sexual or violent, replacing each with a plainer everyday word that leaves a reader with the
+  same understanding. Where a word already reads as plain and everyday, carry it through
+  unchanged.
+
+  Return the rewritten text and nothing else.
+
+vocabulary_intro: |-
+  Substitutions that have carried the same meaning in milder words before. They show the
+  register wanted; the text below may need others of its own, or none of these.
+
+vocabulary: |-
+  raped -> taken advantage of
+  child abuse -> wrongdoing
+  molested -> mistreated
+
+shapes:
+  lines: |-
+    The text below is a list, one entry per line, {count} of them.
+
+    Write {count} lines, one softened entry per line, in the order the entries stand below.
+    Each line carries one entry alone: its words and nothing else.
+
+  prose: |-
+    Write the softened text as one block of prose, keeping its sentences, its paragraphs and
+    its line breaks where they stand. The whole answer is that text.
+
+  comma_line: |-
+    The text below is one comma-separated line.
+
+    Write the softened version as one comma-separated line, in the same order and with the
+    same number of entries. That line is the whole answer.
+
+  space_line: |-
+    The text below is one line of hashtags separated by spaces.
+
+    Write the softened version as one line of hashtags separated by spaces, in the same order
+    and with the same number of hashtags. That line is the whole answer.
+
+labels:
+  titles: |-
+    The video titles:
+  thumbnail_text: |-
+    The thumbnail text options:
+  pinned_comment: |-
+    The pinned comment options:
+  description_hook: |-
+    The opening line of the video description:
+  description: |-
+    The video description:
+  description_options: |-
+    An alternate video description:
+  tags: |-
+    The YouTube tags:
+  hashtags: |-
+    The hashtags:
+  chapters: |-
+    The chapter titles:

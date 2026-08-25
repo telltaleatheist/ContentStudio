@@ -148,8 +148,11 @@
         @if (visibleGroups().length > 0) {
           <div class="reports-list">
             @for (group of visibleGroups(); track group.key) {
-              <!-- The newest run for this source. Older runs collapse under it: six
-                   stale runs of one source must not compete with the good one. -->
+              <!-- ONE ROW PER SOURCE: its PRIMARY metadata set, the one this app publishes.
+                   Re-runs and softened derivatives are not rows — six near-identical rows
+                   left the operator working out which one the calendar would honour, which
+                   is the whole reason "primary" exists. They live in the version picker on
+                   this item's own page. -->
               <ng-container>
                 <div
                   (click)="selectReport(group.head)"
@@ -181,14 +184,19 @@
                   <span class="row-name" [title]="group.head.displayTitle || group.head.name">
                     {{ group.head.displayTitle || group.head.name }}
                   </span>
-                  @if (group.runs.length > 0) {
-                    <button class="row-runs num"
-                            (click)="toggleGroup(group.key, $event)"
-                            [title]="isGroupExpanded(group.key)
-                                       ? 'Hide the earlier runs of this source'
-                                       : (group.runs.length + 1) + ' runs of this source — show the earlier ones'">
-                      {{ group.runs.length + 1 }}{{ isGroupExpanded(group.key) ? '▴' : '▾' }}
-                    </button>
+                  <!-- How many metadata sets exist for this source. NOT a disclosure any
+                       more: the other sets are reached from the version picker at the top
+                       of the work pane, where their words are on screen to choose by. This
+                       row IS the primary set — the one the calendar draws and the push
+                       sends — so a second row for the same video would be a row nothing
+                       would honour. -->
+                  @if (group.versionCount > 1) {
+                    <span class="row-runs num"
+                          [title]="group.versionCount + ' metadata sets for this source. This ' +
+                                   'row is the primary one — open it and use the version ' +
+                                   'picker at the top of the pane to see the others.'">
+                      {{ group.versionCount }}
+                    </span>
                   }
                   <!-- Re-routing. The prompt set decided where this went at generation
                        time; this is where that decision gets overruled without the item
@@ -237,79 +245,6 @@
                   </span>
                 </div>
 
-                @if (isGroupExpanded(group.key)) {
-                  @for (run of group.runs; track run.path) {
-                    <div
-                      (click)="selectReport(run)"
-                      [class.on]="selectedReport()?.path === run.path"
-                      [class.checked]="run.selected"
-                      [class.uploaded]="isUploaded(run)"
-                      class="row is-rerun">
-                      <input type="checkbox"
-                             class="row-check"
-                             [checked]="run.selected || false"
-                             (click)="toggleSelection(run, $event)"
-                             title="Select for export" />
-                      @if (thumbFor(run); as strip) {
-                        @if (strip.dataUrl) {
-                          <img class="row-thumb" [src]="strip.dataUrl" alt="" />
-                        } @else {
-                          <span class="row-thumb none"
-                                [title]="strip.fault ?? 'No thumbnail is attached to this item.'">
-                            <mat-icon>broken_image</mat-icon>
-                          </span>
-                        }
-                      } @else {
-                        <span class="row-thumb none pending" title="Reading this item's thumbnail…"></span>
-                      }
-                      <span class="row-name" [title]="run.displayTitle || run.name">
-                        {{ run.displayTitle || run.name }}
-                      </span>
-                      @if (run.itemId) {
-                        <button class="row-more"
-                                [matMenuTriggerFor]="runMenu"
-                                (click)="$event.stopPropagation()"
-                                title="Row actions — move to another channel, mark as published">
-                          <mat-icon>more_horiz</mat-icon>
-                        </button>
-                        <mat-menu #runMenu="matMenu">
-                          @for (channel of otherChannels(run); track channel.channelId) {
-                            <button mat-menu-item (click)="moveToChannel(run, channel.channelId, $event)">
-                              Move to {{ channel.name }}
-                            </button>
-                          }
-                          @if (canMarkPublished(run)) {
-                            <button mat-menu-item (click)="setPublishedMark(run, true, $event)">
-                              Mark as published
-                            </button>
-                          }
-                          @if (canUnmarkPublished(run)) {
-                            <button mat-menu-item (click)="setPublishedMark(run, false, $event)">
-                              Unmark published
-                            </button>
-                          }
-                        </mat-menu>
-                      }
-                      <button class="row-del" (click)="deleteReport(run, $event)" title="Delete this report">
-                        <mat-icon>close</mat-icon>
-                      </button>
-                      <span class="row-meta">
-                        <span class="num">{{ formatDate(run.date) }}</span>
-                        @if (run.promptSet) {
-                          <span class="row-src" [title]="'Prompt set ' + run.promptSet">{{ run.promptSet }}</span>
-                        }
-                        @if (run.publishFault; as fault) {
-                          <span class="row-flag" [title]="fault">record unreadable</span>
-                        }
-                        <span class="dots">
-                          @for (dot of rowDots(run); track dot.key) {
-                            <span class="dot" [class]="'dot ' + dot.state" [title]="dot.label"></span>
-                          }
-                        </span>
-                      </span>
-                    </div>
-                  }
-                }
               </ng-container>
             }
           </div>
@@ -352,6 +287,56 @@
           <h2 class="work-title" [title]="metadata()?._title || selectedReport()!.name">
             {{ metadata()?._title || selectedReport()!.name }}
           </h2>
+
+          <!-- ═════ VERSIONS OF THIS SOURCE ═════
+               A video can have more than one metadata set: re-running metadata mints a new
+               item over the same source_key, and so does a softening pass. Exactly ONE of
+               them is the set this app publishes — the calendar draws it, a push sends it,
+               the extension fills it — and everything else is on disk and unused, however
+               completely it is filled in.
+
+               Only shown when there IS more than one. A single-set source has nothing to
+               pick between and is already its own primary; a picker with one option in it
+               is a control that cannot do anything. -->
+          @if (itemVersions().length > 1) {
+            <div class="versions">
+              <span class="versions-label">Version</span>
+              <select class="quiet-select versions-pick"
+                      [disabled]="settingPrimary()"
+                      [value]="selectedReport()!.itemId"
+                      (change)="onVersionChange($event)"
+                      title="Which metadata set of this source you are looking at and editing.">
+                @for (version of itemVersions(); track version.itemId) {
+                  <!-- [selected] as well as the select's [value]: the options are created by
+                       this @for AFTER the select's own bindings run, so a value written to
+                       an option-less select is dropped, and the binding never rewrites it
+                       because the signal has not CHANGED. The browser then shows option 0
+                       while the page holds something else — and here that would mean the
+                       picker naming one set while the pane below it shows another. This
+                       binding is applied as each option is made. -->
+                  <option [value]="version.itemId"
+                          [selected]="version.itemId === selectedReport()!.itemId">{{ version.label }}</option>
+                }
+              </select>
+              @if (selectedIsPrimary()) {
+                <span class="versions-state is-primary"
+                      title="This is the set the calendar, the publish push and the extension use.">
+                  primary
+                </span>
+              } @else {
+                <button class="ghost"
+                        [disabled]="settingPrimary()"
+                        (click)="setAsPrimary()"
+                        title="Make this the set this app publishes for this source. Nothing is copied between sets — it changes which one is used, not what any of them holds.">
+                  {{ settingPrimary() ? 'Setting…' : 'Set as primary' }}
+                </button>
+                <span class="versions-state not-primary"
+                      title="Another set of this source is the primary one. Until this is promoted it is not on the calendar, is not pushed and is not offered to the extension.">
+                  not used — another set is primary
+                </span>
+              }
+            </div>
+          }
 
           <!-- The readiness meter: six named ticks and one word. Every tick is a jump
                target — it opens the rail row that sets that fact. -->
@@ -573,12 +558,56 @@
                         (change)="moreTitlesOptionId.set($any($event.target).value)"
                         title="Which model writes them. Defaults to the one that wrote the titles above.">
                   @for (option of moreTitlesOptions(); track option.id) {
-                    <option [value]="option.id">{{ option.label }}</option>
+                    <!-- [selected] as well as the select's [value]: the options are created by this
+                         @for AFTER the select's own bindings run, so a value written to an
+                         option-less select is dropped, and the binding never rewrites it because
+                         the signal has not CHANGED. The browser then shows option 0 while the
+                         signal holds something else, and a click that never touched the dropdown
+                         sends the hidden value. This binding is applied as each option is made. -->
+                    <option [value]="option.id" [selected]="option.id === moreTitlesOptionId()">{{ option.label }}</option>
                   }
                 </select>
               </div>
             </section>
           }
+
+          <!-- ═════ SOFTEN FOR MONETIZATION ═════
+               Sits directly under the titles block, beside "10 more titles", because it is
+               the same kind of control: a model picker and one button that sends calls.
+               What it produces is a WHOLE NEW SET — every text field on this item rewritten
+               into a milder register and written as a sibling item under the same source_key.
+               This list already groups siblings (newest at the head, older runs collapsed
+               beneath it), so the two sets appear side by side with no switcher of its own.
+               The original set is never edited. -->
+          <section class="block">
+            <div class="soften">
+              <button class="ghost"
+                      [disabled]="softenBusy() || softenOptions().length === 0"
+                      (click)="softenItem()"
+                      title="Rewrite every text field on this item into a milder register — same facts, same names, same shape, plainer words — and write it as a NEW set beside this one. Nothing here is changed; you pick between the two afterwards.">
+                {{ softenBusy() ? 'Softening ' + softenBusyField() + '…' : 'Soften for monetization' }}
+              </button>
+              @if (softenBusy()) {
+                <mat-spinner class="soften-spin" diameter="14"></mat-spinner>
+              }
+              <select class="quiet-select soften-model"
+                      [disabled]="softenBusy()"
+                      [value]="softenOptionId()"
+                      (change)="softenOptionId.set($any($event.target).value)"
+                      title="Which model rewrites them.">
+                @for (option of softenOptions(); track option.id) {
+                  <!-- [selected] as well as the select's [value]: the options are created by this
+                       @for AFTER the select's own bindings run, so a value written to an
+                       option-less select is dropped, and the binding never rewrites it because
+                       the signal has not CHANGED. The browser then shows option 0 while the
+                       signal holds something else, and a click that never touched the dropdown
+                       sends the hidden value. This binding is applied as each option is made. -->
+                  <option [value]="option.id" [selected]="option.id === softenOptionId()">{{ option.label }}</option>
+                }
+              </select>
+              <span class="soften-note">writes a new set — this one is left as it is</span>
+            </div>
+          </section>
 
           <!-- ═════ DESCRIPTION ═════
                Whatever publish-get-resolved composed in the MAIN PROCESS — never
@@ -928,8 +957,17 @@
               <div class="carry">
                 <mat-icon>history</mat-icon>
                 <span>
-                  Generated before ({{ localTime(offer.jobCreatedAt) }}) — carry forward
-                  {{ carryFieldList() }}?
+                  <!-- WHICH set the offer came from. The candidates are looked at
+                       primary-first, so "the primary set" is the ordinary answer; the other
+                       sentence means the primary held nothing worth carrying and this is the
+                       newest sibling that did. Said either way, because the operator is
+                       about to accept a channel and a thumbnail he did not type. -->
+                  @if (offer.fromIsPrimary) {
+                    The primary set for this video ({{ localTime(offer.jobCreatedAt) }})
+                  } @else {
+                    An earlier set ({{ localTime(offer.jobCreatedAt) }}) — not the primary one —
+                  }
+                  carries {{ carryFieldList() }}. Carry it forward?
                 </span>
                 <button class="ghost"
                         [disabled]="publish.carrying() || publish.saving()"

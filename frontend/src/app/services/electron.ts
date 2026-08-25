@@ -335,6 +335,46 @@ export interface MoreTitlesResult {
   error?: string;
 }
 
+/**
+ * What one softening pass produced.
+ *
+ * A pass writes a NEW ITEM in a NEW JOB over the same `source_key` as the item it read — the
+ * same sibling relation a regeneration produces, which is what the reports list already groups
+ * by. `jobId`/`itemId` name that new set so the page can open it; the original is untouched.
+ *
+ * `applied` and `skipped` are the whole receipt: every field this pass looks at appears in one
+ * of them. A skipped field is a field the item does not carry — not an error, and never silent.
+ */
+export interface SoftenResult {
+  success: boolean;
+  /** The provider-prefixed model every call in the pass went out on. */
+  model?: string;
+  /** The new job holding the softened set. */
+  jobId?: string;
+  /** The new item. This is what the page opens when the pass finishes. */
+  itemId?: string;
+  txtPath?: string;
+  /** Fields rewritten, in call order. `warning` is a note carried with the value kept. */
+  applied?: Array<{ field: string; warning: string | null }>;
+  /** Fields the item carried nothing for, each with the reason. */
+  skipped?: Array<{ field: string; reason: string }>;
+  /** A note about the WRITE that came back with a successful pass, or null. */
+  warning?: string | null;
+  error?: string;
+}
+
+/**
+ * What promoting a set actually did.
+ *
+ * `previousItemId` is null when this source had no recorded primary at all, which after
+ * the one-time migration means a source generated since — not a missing answer.
+ */
+export interface SetPrimaryReceipt {
+  sourceKey: string;
+  itemId: string;
+  previousItemId: string | null;
+}
+
 export interface MetadataRoutingTask {
   id: string;
   label: string;
@@ -577,6 +617,7 @@ declare global {
       ensureReportsMigrated: () => Promise<ReportMigrationResponse>;
       deleteReportItem: (jobId: string, itemId: string) => Promise<DeleteItemReceipt>;
       generateMoreTitles: (jobId: string, itemId: string, optionId: string) => Promise<MoreTitlesResult>;
+      softenItem: (jobId: string, itemId: string, optionId: string) => Promise<SoftenResult>;
 
       // Job history
       getJobHistory: () => Promise<any[]>;
@@ -627,6 +668,7 @@ declare global {
       ) => Promise<PublishResult<ChosenMetadata>>;
       publishGetResolved: (itemId: string) => Promise<PublishResult<ResolvedMetadata>>;
       publishListActionable: () => Promise<PublishResult<ChosenMetadata[]>>;
+      publishSetPrimary: (itemId: string) => Promise<PublishResult<SetPrimaryReceipt>>;
       publishClear: (itemId: string) => Promise<PublishResult<boolean>>;
       publishSetThumbnail: (
         itemId: string,
@@ -1175,6 +1217,11 @@ export class ElectronService {
     return await this.ipcRenderer.generateMoreTitles(jobId, itemId, optionId);
   }
 
+  async softenItem(jobId: string, itemId: string, optionId: string): Promise<SoftenResult> {
+    if (!this.ipcRenderer) throw new Error('Electron bridge unavailable — cannot soften an item.');
+    return await this.ipcRenderer.softenItem(jobId, itemId, optionId);
+  }
+
   // Job history
   async getJobHistory(): Promise<any[]> {
     if (!this.ipcRenderer) return [];
@@ -1662,6 +1709,18 @@ export class ElectronService {
   async publishListActionable(): Promise<PublishResult<ChosenMetadata[]>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.publishListActionable();
+  }
+
+  /**
+   * Promote one metadata set to be the definitive one for its source.
+   *
+   * A refusal here is a real answer — an item with no `source_key` has no siblings and is
+   * already the only set for what it came from — so the main process's own sentence is
+   * what the caller shows.
+   */
+  async publishSetPrimary(itemId: string): Promise<PublishResult<SetPrimaryReceipt>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishSetPrimary(itemId);
   }
 
   async publishClear(itemId: string): Promise<PublishResult<boolean>> {
