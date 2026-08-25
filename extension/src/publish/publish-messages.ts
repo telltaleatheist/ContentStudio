@@ -11,6 +11,13 @@
 // server whitelists, and its fetches are not subject to page CORS. So ALL localhost
 // traffic goes through here. Same reason the analytics collector does its fetching in
 // the worker.
+//
+// ONE message that travels this bridge is not localhost traffic at all: the nav strip's
+// video list, which is read from Studio's own content-list endpoint. It goes through the
+// worker for a different reason — that endpoint needs the page's MAIN world, and only the
+// worker can inject there — and it borrows nothing from this file but the transport below.
+// Its type and its guard live in nav-messages.ts, so a mistyped publish message still
+// cannot reach the worker's publish switch, and a nav message is never mistaken for one.
 
 import type {
   BrowsePage,
@@ -94,7 +101,15 @@ export function extensionContextAlive(): boolean {
   return typeof chrome !== 'undefined' && !!chrome.runtime && chrome.runtime.id !== undefined;
 }
 
-async function send<T>(message: PublishMessage): Promise<T> {
+/**
+ * Send one message to the service worker and unwrap its {ok, data|error} envelope.
+ *
+ * Typed on `{ type: string }` rather than PublishMessage because the worker also answers
+ * a message that is NOT a publish call — the nav strip's video list, which the worker
+ * reads out of Studio itself (see nav-messages.ts). The bridge, its two failure modes and
+ * the response envelope are identical for both, and one copy of that is the point.
+ */
+export async function sendToWorker<T>(message: { type: string } & Record<string, unknown>): Promise<T> {
   let response: PublishResponse<T> | undefined;
 
   // Distinguish the two ways sendMessage fails. A dead context is permanent and needs a
@@ -125,27 +140,27 @@ async function send<T>(message: PublishMessage): Promise<T> {
 }
 
 export function requestPending(): Promise<PendingFillItem[]> {
-  return send<PendingFillItem[]>({ type: 'publish-pending' });
+  return sendToWorker<PendingFillItem[]>({ type: 'publish-pending' });
 }
 
 export function requestResolve(videoId: string, filename: string | null): Promise<ResolveOutcome> {
-  return send<ResolveOutcome>({ type: 'publish-resolve', videoId, filename });
+  return sendToWorker<ResolveOutcome>({ type: 'publish-resolve', videoId, filename });
 }
 
 export function requestFilled(itemId: string, videoId: string): Promise<void> {
-  return send<void>({ type: 'publish-filled', itemId, videoId });
+  return sendToWorker<void>({ type: 'publish-filled', itemId, videoId });
 }
 
 export function requestReports(offset: number, limit: number, query: string): Promise<BrowsePage> {
-  return send<BrowsePage>({ type: 'publish-reports', offset, limit, query });
+  return sendToWorker<BrowsePage>({ type: 'publish-reports', offset, limit, query });
 }
 
 export function requestItem(itemId: string): Promise<ItemDetail> {
-  return send<ItemDetail>({ type: 'publish-item', itemId });
+  return sendToWorker<ItemDetail>({ type: 'publish-item', itemId });
 }
 
 export function requestSaveTitles(itemId: string, titles: string[]): Promise<SetTitlesResult> {
-  return send<SetTitlesResult>({ type: 'publish-titles', itemId, titles });
+  return sendToWorker<SetTitlesResult>({ type: 'publish-titles', itemId, titles });
 }
 
 /**
@@ -158,5 +173,5 @@ export function requestSaveTitles(itemId: string, titles: string[]): Promise<Set
  * used. One image, once, when the operator asks for it.
  */
 export function requestThumbnail(itemId: string): Promise<PublishThumbnail | null> {
-  return send<PublishThumbnail | null>({ type: 'publish-thumbnail', itemId });
+  return sendToWorker<PublishThumbnail | null>({ type: 'publish-thumbnail', itemId });
 }

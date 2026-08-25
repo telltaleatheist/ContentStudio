@@ -1,9 +1,14 @@
 {
   "manifest_version": 3,
   "name": "ContentStudio Companion",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Collects YouTube Studio analytics the public API does not expose (impressions, CTR) and pushes them to the ContentStudio desktop app over localhost.",
-  "permissions": ["alarms", "storage", "scripting", "tabs"],
+  "permissions": [
+    "alarms",
+    "storage",
+    "scripting",
+    "tabs"
+  ],
   "host_permissions": [
     "https://studio.youtube.com/*",
     "http://127.0.0.1/*"
@@ -14,8 +19,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://studio.youtube.com/*"],
-      "js": ["publish-content.js"],
+      "matches": [
+        "https://studio.youtube.com/*"
+      ],
+      "js": [
+        "publish-content.js"
+      ],
       "run_at": "document_idle"
     }
   ],

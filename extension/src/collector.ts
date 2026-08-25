@@ -614,8 +614,15 @@ function msg(err: unknown): string {
 // need is inlined so they can be pasted straight into a Studio console.
 // ============================================================================
 
-/** Probe: what channel context is currently loaded in this tab? */
-function readStudioContext(): {
+/**
+ * Probe: what channel context is currently loaded in this tab?
+ *
+ * Exported because the nav strip's data source injects the same probe into the operator's
+ * OWN Studio tab to learn which channel it is on (see nav-source.ts). One probe, so the
+ * two callers cannot drift into disagreeing about what "this tab has a Studio session"
+ * means.
+ */
+export function readStudioContext(): {
   ready: boolean;
   channelId: string | null;
   hasDelegation: boolean;

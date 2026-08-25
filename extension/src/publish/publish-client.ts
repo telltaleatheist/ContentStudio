@@ -77,12 +77,32 @@ export interface PublishThumbnail {
   base64: string;
 }
 
+/**
+ * One report the match could have been. Mirrors publish-bridge.ResolveAlternate.
+ *
+ * Several reports sharing a filename is the norm — every regeneration writes another one
+ * — so the match is a default and these are the rest, shown as chips the operator can
+ * load with one click.
+ */
+export interface ResolveAlternate {
+  /** The item's permanent id — what loading this alternate sends back. */
+  itemId: string;
+  label: string;
+  createdAt: string;
+  /** How many titles the generator produced. 0 means there is nothing to fill. */
+  titleCount: number;
+  /** How many the operator has picked. */
+  chosenCount: number;
+}
+
 export interface ResolveOutcome {
   item: PendingFillItem | null;
   reason: string;
   linked: boolean;
   /** A report matched but has no titles picked yet — open the picker, don't offer a fill. */
   needsTitles: boolean;
+  /** Reports sharing this filename that were passed over. Empty when there was no choice. */
+  alternates: ResolveAlternate[];
 }
 
 /** One row in the shelf's report browser. Mirrors publish-bridge.BrowseRow. */
@@ -252,6 +272,15 @@ export async function resolveForPage(videoId: string, filename: string | null): 
   });
   if (!body || typeof body.reason !== 'string') {
     throw new PublishClientError('unexpected-response', '/publish/resolve returned an unexpected body');
+  }
+  // Same contract check as monetize below, for the same reason: a missing array would
+  // silently become "no other reports share this filename", which is a different and
+  // wrong answer rather than a degraded one.
+  if (!Array.isArray(body.alternates)) {
+    throw new PublishClientError(
+      'unexpected-response',
+      '/publish/resolve did not include an "alternates" array — update ContentStudio.',
+    );
   }
   // A null item is a normal answer (nothing matched) and carries nothing to check.
   if (body.item) requireMonetize(body.item.monetize, '/publish/resolve');

@@ -30,7 +30,7 @@ import {
   type Filler,
 } from './fillers';
 import { linkageOf } from './linkage';
-import type { BrowsePage, BrowseRow, ItemDetail, PublishThumbnail } from './publish-client';
+import type { BrowsePage, BrowseRow, ItemDetail, PublishThumbnail, ResolveAlternate } from './publish-client';
 import { DEFAULT_SHELF_PREFS, loadShelfPrefs, saveShelfPrefs, type ShelfPrefs } from './shelf-prefs';
 import { STALE_CONTEXT_MESSAGE, extensionContextAlive } from './publish-messages';
 
@@ -51,7 +51,10 @@ const CSS = `
   font: 12px/1.4 Roboto, system-ui, -apple-system, sans-serif;
   color: #f1f1f1;
 }
-.shell.right { right: 16px; }
+/* --cs-right-lane is set by setRightLaneWidth() when another overlay owns the right
+   edge (the video nav strip). Defaults to 0, so the shelf sits where it always did on
+   every page that has no strip. */
+.shell.right { right: calc(16px + var(--cs-right-lane, 0px)); }
 .shell.left { left: 16px; }
 .card {
   width: 320px; max-height: 72vh; display: flex; flex-direction: column;
@@ -117,6 +120,9 @@ const CSS = `
 .pick li.on { background: #2e2419; border-color: #ff6b35; }
 .pick li.full { opacity: .45; cursor: default; }
 .pick li.full:hover { background: transparent; }
+/* Not picked, but what Fill would type anyway — dashed, so it never reads as chosen. */
+.pick li.dflt { border-style: dashed; border-color: #5a4a20; }
+.dflt .n { background: #3a2f22; color: #ffcf6b; }
 .n {
   flex: 0 0 17px; height: 17px; margin-top: 1px; border-radius: 50%;
   background: #3a3a3a; color: #888; font-size: 10px; font-weight: 700;
@@ -182,6 +188,18 @@ button.primary {
 .row.skeleton:hover { background: transparent; }
 .count { font-size: 10px; padding: 1px 5px; border-radius: 8px; background: #303030; color: #999; }
 .count.set { background: #ff6b35; color: #fff; }
+.alts { margin: 7px 0 2px; }
+.alts .note { color: #8f8f8f; font-size: 11px; margin-bottom: 4px; }
+.alts .altrow { display: flex; flex-wrap: wrap; gap: 4px; }
+button.alt {
+  cursor: pointer; font: inherit; font-size: 10px; padding: 2px 7px; border-radius: 10px;
+  background: #303030; color: #bbb; border: 1px solid #454545;
+}
+button.alt:hover { border-color: #ff6b35; color: #f1f1f1; }
+button.alt.on { background: #2e2419; border-color: #ff6b35; color: #f1f1f1; cursor: default; }
+button.alt .when { font-weight: 600; }
+button.alt .what { color: #8f8f8f; }
+button.alt.on .what { color: #bbb; }
 `;
 
 export interface ShelfCallbacks {
@@ -242,6 +260,15 @@ export class PublishShelf {
   // ---- current-item state
   private item: ItemDetail | null = null;
   private reason = '';
+  /**
+   * Every report that shares this page's filename, INCLUDING the loaded one, newest
+   * first. Empty whenever there was nothing to choose between.
+   *
+   * Per page and never persisted: it describes what the operator is standing in front of,
+   * not a preference. Which one is active is read off `this.item`, so loading another
+   * chip re-marks the list without rebuilding it.
+   */
+  private siblings: ResolveAlternate[] = [];
   private page: PageContext = {
     videoId: null,
     filename: null,
@@ -301,10 +328,15 @@ export class PublishShelf {
    * `demand` means the operator has something to do here (a match with no titles picked).
    * A collapsed shelf expands for that, and only that — expanding on every navigation
    * would make the collapse button useless.
+   *
+   * `siblings` is every report sharing this page's filename, the loaded one included, and
+   * is what the chooser under the status line renders. Empty means the match was
+   * unambiguous and no chooser is drawn.
    */
-  setItem(item: ItemDetail, reason: string, demand = false): void {
+  setItem(item: ItemDetail, reason: string, demand = false, siblings: ResolveAlternate[] = []): void {
     this.item = item;
     this.reason = reason;
+    this.siblings = siblings;
     this.errorText = null;
     this.showAllTitles = false;
     this.logLines = [];
@@ -338,6 +370,7 @@ export class PublishShelf {
   setStatus(text: string): void {
     this.item = null;
     this.reason = '';
+    this.siblings = [];
     this.statusText = text;
     this.errorText = null;
     this.render();
@@ -514,6 +547,9 @@ export class PublishShelf {
     }
 
     this.body.appendChild(this.buildLinkageNote(item));
+    // Only when there is a genuine choice. One sibling is the loaded report itself.
+    if (this.siblings.length > 1) this.body.appendChild(this.buildChooser(item));
+
     this.body.appendChild(this.buildChips(item));
     this.body.appendChild(this.buildPicker(item));
     this.body.appendChild(this.buildActions(item));
@@ -558,6 +594,62 @@ export class PublishShelf {
     return note;
   }
 
+  /**
+   * The reports sharing this filename, as chips, the loaded one marked active.
+   *
+   * The match is a DEFAULT (newest wins — see publish-bridge.disambiguate), and this is
+   * where it stops being a verdict. A chip carries the only two facts that tell two runs
+   * of the same video apart: when it was generated and what state its titles are in.
+   *
+   * Clicking one goes through onOpenReport, the same path the Reports tab uses, so a
+   * choice made here is a manual pick in every sense — navigation inside the video will
+   * not silently replace it.
+   */
+  private buildChooser(item: ItemDetail): HTMLElement {
+    const wrap = document.createElement('div');
+    wrap.className = 'alts';
+
+    const note = document.createElement('div');
+    note.className = 'note';
+    note.textContent = `${this.siblings.length} reports share this filename:`;
+    wrap.appendChild(note);
+
+    const row = document.createElement('div');
+    row.className = 'altrow';
+
+    const stamps = siblingStamps(this.siblings);
+
+    for (const [i, sibling] of this.siblings.entries()) {
+      const active = sibling.itemId === item.itemId;
+      const btn = document.createElement('button');
+      btn.className = active ? 'alt on' : 'alt';
+
+      const when = document.createElement('span');
+      when.className = 'when';
+      when.textContent = stamps[i]!;
+
+      const what = document.createElement('span');
+      what.className = 'what';
+      // Three distinct states, none of them collapsed into another: a report that
+      // generated nothing, one nobody has picked from yet, and one with picks.
+      what.textContent =
+        sibling.titleCount === 0
+          ? ' — no titles'
+          : sibling.chosenCount
+            ? ` — ${sibling.chosenCount} picked`
+            : ` — ${sibling.titleCount} titles`;
+
+      btn.append(when, what);
+      btn.title = active ? `Loaded (${sibling.itemId})` : `Load this report instead (${sibling.itemId})`;
+      if (active) btn.disabled = true;
+      else btn.addEventListener('click', () => void this.callbacks.onOpenReport(sibling.itemId));
+      row.appendChild(btn);
+    }
+
+    wrap.appendChild(row);
+    return wrap;
+  }
+
   private buildChips(item: ItemDetail): HTMLElement {
     const chips = document.createElement('div');
     chips.className = 'chips';
@@ -571,6 +663,20 @@ export class PublishShelf {
 
     const picked = item.chosenTitles.length;
     add(`${picked}/${item.maxVariants} picked`, picked === item.maxVariants ? 'good' : 'warn');
+
+    // With nothing picked, every fill path here types the GENERATOR's top titles instead
+    // — see fillContextOf in publish-content.ts. That substitution is the shelf's, not the
+    // operator's, so it is stated rather than left to look like a reviewed choice. It does
+    // not BLOCK the fill: the operator curates, and an unreviewed title is a normal thing
+    // to push while deciding.
+    if (picked === 0) {
+      add(
+        item.generatedTitles.length
+          ? `no titles picked — using top ${Math.min(item.maxVariants, item.generatedTitles.length)} generated`
+          : 'no titles in this report',
+        'warn',
+      );
+    }
 
     // Drafts cannot be A/B tested at all, so this is load-bearing rather than decoration.
     if (this.page.isDraft) add('draft — no A/B', 'warn');
@@ -587,6 +693,11 @@ export class PublishShelf {
     const chosen = item.chosenTitles;
     const atCap = chosen.length >= item.maxVariants;
 
+    // Exactly the titles a fill would use when nothing is picked. Marked in the list so
+    // "which three" is visible, and marked DIFFERENTLY from picked ones so the two states
+    // can never be read as the same thing.
+    const defaults = chosen.length ? [] : item.generatedTitles.slice(0, item.maxVariants);
+
     // Chosen titles first in variant order, then the rest — the operator is deciding an
     // order, so the order has to be what they see.
     const rest = item.generatedTitles.filter((t) => !chosen.includes(t));
@@ -600,18 +711,21 @@ export class PublishShelf {
       const variant = chosen.indexOf(title);
       const isOn = variant !== -1;
       const blocked = !isOn && atCap;
+      const asDefault = defaults.indexOf(title);
 
       const li = document.createElement('li');
-      li.className = isOn ? 'on' : blocked ? 'full' : '';
+      li.className = isOn ? 'on' : blocked ? 'full' : asDefault !== -1 ? 'dflt' : '';
       li.title = isOn
         ? 'Click to remove from the test'
         : blocked
           ? `Deselect one first — YouTube allows ${item.maxVariants} variants`
-          : 'Click to add to the test';
+          : asDefault !== -1
+            ? `Not picked — a fill would use this as variant ${asDefault + 1}. Click to pick it.`
+            : 'Click to add to the test';
 
       const n = document.createElement('span');
       n.className = 'n';
-      n.textContent = isOn ? String(variant + 1) : '+';
+      n.textContent = isOn ? String(variant + 1) : asDefault !== -1 ? String(asDefault + 1) : '+';
 
       const t = document.createElement('span');
       t.className = 't';
@@ -933,6 +1047,21 @@ export class PublishShelf {
 
   // ------------------------------------------------------------------- prefs
 
+  /**
+   * Reserve `px` of the right edge for another overlay, so the two never sit on top of
+   * each other.
+   *
+   * The nav strip is a fixed rail on the right and the shelf can be on the right too, so
+   * ONE of them has to move. The shelf moves, because the strip's whole point is to be on
+   * the screen edge and the shelf is already free-floating. It is a CSS custom property
+   * rather than a stored preference: it is a fact about what else is on the page right
+   * now, not a choice the operator made, and it must not survive into a page with no
+   * strip. Ignored while the shelf is on the left, where there is nothing to avoid.
+   */
+  setRightLaneWidth(px: number): void {
+    this.host.style.setProperty('--cs-right-lane', `${px}px`);
+  }
+
   private async setSide(side: ShelfPrefs['side']): Promise<void> {
     this.prefs = { ...this.prefs, side };
     this.render();
@@ -975,10 +1104,34 @@ export class PublishShelf {
   }
 }
 
+/**
+ * Chip labels for one sibling list, disambiguated only as far as they have to be.
+ *
+ * Regenerating four times in a morning gives four reports with the same short date, and
+ * four chips reading "Aug 23" are not a choice anyone can make — so the moment a date
+ * repeats, every chip in the list gains its time. A report with no usable date says so
+ * rather than showing a blank where the others show a date.
+ */
+function siblingStamps(siblings: ResolveAlternate[]): string[] {
+  const dates = siblings.map((s) => shortDate(s.createdAt));
+  const collides = new Set(dates).size !== dates.length;
+  return dates.map((date, i) => {
+    if (!date) return 'undated';
+    return collides ? `${date} ${shortTime(siblings[i]!.createdAt)}`.trim() : date;
+  });
+}
+
 /** `2026-07-26T…` -> `Jul 26`. Empty when the report has no usable date. */
 function shortDate(iso: string): string {
   if (!iso) return '';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '';
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+/** `…T09:30:07Z` -> `9:30 AM`, in the operator's locale. Empty on an unusable date. */
+function shortTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
