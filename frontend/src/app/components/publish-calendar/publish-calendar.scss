@@ -792,3 +792,299 @@
 .beyond-note.quiet {
   color: var(--text-muted);
 }
+
+/* ===================================================== readiness and the bulk upload
+ *
+ * ONE vocabulary for "how far along is this", used on chips, on tray rows and in the
+ * header count: green = ready to send, amber = something still missing, grey = already
+ * on YouTube. The colours carry a shape difference too (filled / hollow / flat) so the
+ * encoding survives a red-green deficiency and a greyscale screenshot.
+ */
+
+.pip {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+
+  &.ready {
+    background: var(--success-text, #16a34a);
+  }
+
+  /* Hollow: something is still expected of it. */
+  &.incomplete {
+    background: transparent;
+    border: 2px solid var(--warning-text, #d97706);
+  }
+
+  &.done {
+    background: var(--text-muted);
+    opacity: 0.6;
+  }
+}
+
+.readiness-line {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0.15rem 0 0;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+
+  .pip {
+    margin-left: 0.5rem;
+
+    &:first-child {
+      margin-left: 0;
+    }
+  }
+}
+
+.upload-all mat-icon {
+  margin-right: 0.3rem;
+  font-size: 17px;
+  width: 17px;
+  height: 17px;
+}
+
+.missing-note {
+  margin: 0.1rem 0 0.2rem;
+  font-size: 0.62rem;
+  color: var(--warning-text, var(--text-secondary));
+}
+
+/* The confirm panel. Deliberately heavy: it is the last thing between a click and real
+   videos on real channels. */
+.upload-confirm {
+  margin: 0 0 0.6rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--primary-orange);
+  border-radius: 8px;
+  background: var(--bg-elevated, var(--bg-card));
+
+  .uc-head {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+  }
+
+  .uc-group {
+    margin-bottom: 0.45rem;
+  }
+
+  .uc-channel {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.15rem;
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+  }
+
+  .uc-row {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.1rem 0 0.1rem 1rem;
+    font-size: 0.7rem;
+  }
+
+  .uc-when {
+    color: var(--text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .uc-title {
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .uc-note {
+    margin: 0.5rem 0;
+    padding: 0.4rem 0.5rem;
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--warning-text, #d97706) 12%, transparent);
+    color: var(--warning-text, var(--text-secondary));
+    font-size: 0.7rem;
+    line-height: 1.35;
+  }
+
+  .uc-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+  }
+}
+
+.upload-run {
+  margin: 0 0 0.6rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-elevated, var(--bg-card));
+
+  .ur-head {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.78rem;
+    color: var(--text-primary);
+  }
+
+  .ur-stopping {
+    color: var(--warning-text, var(--text-secondary));
+  }
+
+  .spin {
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
+    animation: cal-spin 1.4s linear infinite;
+  }
+
+  .ur-title {
+    margin: 0.2rem 0 0.35rem;
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ur-bar {
+    height: 5px;
+    border-radius: 3px;
+    background: var(--bg-secondary);
+    overflow: hidden;
+  }
+
+  .ur-fill {
+    height: 100%;
+    background: var(--primary-orange);
+    transition: width 0.25s ease;
+  }
+
+  .ur-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 0.35rem;
+    font-size: 0.68rem;
+    color: var(--text-muted);
+  }
+}
+
+@keyframes cal-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.upload-results {
+  margin: 0 0 0.6rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+
+  &.has-failures {
+    border-color: color-mix(in srgb, var(--danger-text) 50%, transparent);
+  }
+
+  .ures-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    color: var(--text-primary);
+  }
+
+  .ures-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.12rem 0;
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+
+    mat-icon {
+      font-size: 14px;
+      width: 14px;
+      height: 14px;
+      color: var(--success-text, #16a34a);
+      flex-shrink: 0;
+    }
+
+    &.failed mat-icon {
+      color: var(--danger-text);
+    }
+  }
+
+  .ures-title {
+    flex-shrink: 0;
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ures-id {
+    color: var(--text-muted);
+    font-family: monospace;
+    font-size: 0.65rem;
+  }
+
+  /* Verbatim, and allowed to wrap: a refusal that is cut off is a refusal nobody can act
+     on, and these are the whole reason the results panel exists. */
+  .ures-error {
+    color: var(--danger-text);
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+/* A local schedule landing on a moment YouTube already has spoken for, on the same
+   channel. Never blocked — a deliberate double release is the operator's call — but it is
+   said plainly at the two places the decision gets made: the chip, and the confirm list. */
+.clash-note {
+  margin: 0.1rem 0 0.2rem;
+  font-size: 0.62rem;
+  color: var(--danger-text);
+}
+
+.upload-confirm {
+  .uc-row.clash .uc-title {
+    color: var(--danger-text);
+  }
+
+  .uc-clash {
+    font-size: 0.65rem;
+    color: var(--danger-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .uc-clash-note {
+    margin: 0.4rem 0 0;
+    padding: 0.4rem 0.5rem;
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--danger-text) 12%, transparent);
+    color: var(--danger-text);
+    font-size: 0.7rem;
+    line-height: 1.35;
+  }
+}

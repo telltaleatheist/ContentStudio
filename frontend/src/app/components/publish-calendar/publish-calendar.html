@@ -7,6 +7,13 @@
         {{ scheduledCount() }} scheduled · {{ tray().length }} unscheduled
         @if (loading()) { <span class="loading-note">· reading…</span> }
       </p>
+      <!-- The three states of a scheduled item, counted. Uploading in bulk is only
+           sensible if it is obvious what is being left behind. -->
+      <p class="readiness-line">
+        <span class="pip ready"></span> {{ uploadable().length }} ready
+        <span class="pip incomplete"></span> {{ incompleteCount() }} need filling out
+        <span class="pip done"></span> {{ uploadedCount() }} uploaded
+      </p>
     </div>
 
     <div class="header-actions">
@@ -24,6 +31,13 @@
       <button mat-icon-button (click)="refreshSweep()" [disabled]="sweeping()"
               matTooltip="Re-read what YouTube has scheduled">
         <mat-icon>cloud_sync</mat-icon>
+      </button>
+      <button mat-flat-button color="primary" class="upload-all"
+              (click)="askUploadAll()"
+              [disabled]="uploadable().length === 0 || uploadRun() !== null"
+              matTooltip="Upload every ready scheduled video to its channel">
+        <mat-icon>cloud_upload</mat-icon>
+        Upload all ready ({{ uploadable().length }})
       </button>
       <button mat-stroked-button (click)="scrollToToday()">Today</button>
       <button mat-icon-button routerLink="/metadata-reports" matTooltip="Metadata reports">
@@ -84,6 +98,102 @@
     </div>
   }
 
+  <!-- Nothing is created until this list has been read. Grouped by the channel each
+       upload authorizes against, because that is the mistake that cannot be taken back. -->
+  @if (uploadConfirm(); as pending) {
+    <div class="upload-confirm">
+      <div class="uc-head">
+        <mat-icon>cloud_upload</mat-icon>
+        Upload {{ pending.length }} video{{ pending.length === 1 ? '' : 's' }} to YouTube
+      </div>
+
+      @for (group of confirmByChannel(); track group.channelName) {
+        <div class="uc-group">
+          <div class="uc-channel">
+            <span class="dot" [style.background]="group.hue"></span>
+            {{ group.channelName }} · {{ group.chips.length }}
+          </div>
+          @for (chip of group.chips; track chip.itemId) {
+            <div class="uc-row" [class.clash]="chip.collision !== null">
+              <span class="uc-when">{{ chipDate(chip) }} {{ chip.time }}</span>
+              <span class="uc-title">{{ chip.title }}</span>
+              @if (chip.collision) {
+                <span class="uc-clash" [title]="chip.collision">
+                  ⚠ slot already holds “{{ chip.collision }}”
+                </span>
+              }
+            </div>
+          }
+        </div>
+      }
+
+      @if (confirmCollisions() > 0) {
+        <div class="uc-clash-note">
+          {{ confirmCollisions() }} of these land at the same moment on the same channel as
+          a video YouTube already has scheduled. Uploading anyway is allowed — this is only
+          telling you before it happens.
+        </div>
+      }
+
+      <!-- The audit gate, stated where the decision is made rather than in a doc. -->
+      <div class="uc-note">
+        Each video is created PRIVATE and stays private until Google approves the API
+        audit — its scheduled time will not publish it yet. A/B titles are set afterwards
+        with the browser extension.
+      </div>
+
+      <div class="uc-actions">
+        <button mat-stroked-button (click)="closeUploadConfirm()">Cancel</button>
+        <button mat-flat-button color="primary" (click)="confirmUploadAll()">
+          Upload {{ pending.length }} now
+        </button>
+      </div>
+    </div>
+  }
+
+  @if (uploadRun(); as run) {
+    <div class="upload-run">
+      <div class="ur-head">
+        <mat-icon class="spin">autorenew</mat-icon>
+        Uploading {{ run.index }} of {{ run.total }}
+        @if (run.cancelling) { <span class="ur-stopping">· stopping after this one</span> }
+      </div>
+      <div class="ur-title">{{ run.currentTitle }}</div>
+      <div class="ur-bar">
+        <div class="ur-fill" [style.width.%]="runProgressPercent(run)"></div>
+      </div>
+      <div class="ur-foot">
+        <span>{{ runProgressLabel(run) }}</span>
+        <button mat-stroked-button (click)="cancelUploadRun()" [disabled]="run.cancelling">
+          Stop
+        </button>
+      </div>
+    </div>
+  }
+
+  @if (uploadResults().length > 0 && uploadRun() === null) {
+    <div class="upload-results" [class.has-failures]="uploadFailures().length > 0">
+      <div class="ures-head">
+        {{ uploadResults().length - uploadFailures().length }} uploaded,
+        {{ uploadFailures().length }} failed
+        <button mat-icon-button (click)="dismissUploadResults()" matTooltip="Dismiss">
+          <mat-icon>close</mat-icon>
+        </button>
+      </div>
+      @for (r of uploadResults(); track r.itemId) {
+        <div class="ures-row" [class.failed]="!r.ok">
+          <mat-icon>{{ r.ok ? 'check_circle' : 'error_outline' }}</mat-icon>
+          <span class="ures-title">{{ r.title }}</span>
+          @if (r.ok) {
+            <span class="ures-id">{{ r.videoId }}</span>
+          } @else {
+            <span class="ures-error">{{ r.error }}</span>
+          }
+        </div>
+      }
+    </div>
+  }
+
   <div class="calendar-body">
 
     <!-- The tray is the work surface, and it is also the way back: a chip dragged here
@@ -117,6 +227,10 @@
           <div class="tray-body" (click)="openReport(item.itemId)">
             <div class="tray-title" [title]="item.title">{{ item.title }}</div>
             <div class="tray-meta">
+              <span class="pip" [class]="'pip ' + item.readiness"
+                    [title]="item.readiness === 'incomplete'
+                      ? 'Still needs: ' + item.missing.join(', ')
+                      : item.readiness === 'done' ? 'Already uploaded' : 'Ready to upload'"></span>
               <span class="tag" [title]="item.channelName">{{ item.channelTag }}</span>
               @if (item.isPodcast) { <mat-icon class="podcast-glyph">mic</mat-icon> }
               <span class="ab">A/B {{ item.abCount }}/3</span>
@@ -303,6 +417,12 @@
        [matTooltip]="chip.channelName + ' · ' + chip.status + (chip.staleNote ? ' · ' + chip.staleNote : '')">
     <span class="chip-bar" [style.background]="chip.hue"></span>
     <span class="chip-body" (click)="openReport(chip.itemId)">
+      <!-- One vocabulary everywhere: ready / needs filling out / uploaded. What is
+           missing rides in the title so it is one hover away, never a guess. -->
+      <span class="pip" [class]="'pip ' + chip.readiness"
+            [title]="chip.readiness === 'incomplete'
+              ? 'Still needs: ' + chip.missing.join(', ')
+              : chip.readiness === 'done' ? 'Already uploaded' : 'Ready to upload'"></span>
       <span class="chip-tag">{{ chip.channelTag }}</span>
       @if (chip.isPodcast) { <mat-icon class="podcast-glyph">mic</mat-icon> }
       <span class="chip-title">{{ chip.title }}</span>
@@ -320,6 +440,12 @@
   }
   @if (chip.mirrorDivergence) {
     <div class="divergence-note">⇄ {{ chip.mirrorDivergence }}</div>
+  }
+  @if (chip.readiness === 'incomplete') {
+    <div class="missing-note">needs {{ chip.missing.join(', ') }}</div>
+  }
+  @if (chip.collision) {
+    <div class="clash-note">⚠ YouTube already has “{{ chip.collision }}” here</div>
   }
   @if (chip.unrouted) {
     <div class="unrouted-note">no channel</div>

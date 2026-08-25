@@ -56,11 +56,14 @@ import { CADENCE_NOTES, cadenceKeyFor, isCadenceSlot } from '../../features/publ
 // The §2.5 state table, kept pure so it can be exercised without an Angular test bed.
 import {
   ChipState,
+  Readiness,
   channelTag,
   chipStateOf,
   dateKeyOf,
   distance,
   isSchedulable,
+  missingFor,
+  readinessOf,
 } from './calendar-states';
 
 /**
@@ -141,6 +144,20 @@ export interface CalendarChip {
   hue: string;
   /** False for published rows: they offer no scheduling control at all. */
   schedulable: boolean;
+  /**
+   * The title of a video YOUTUBE already has at this exact moment on this same channel,
+   * or null.
+   *
+   * Same channel and same instant only: two channels releasing at 1 PM is the normal
+   * shape of the week, not a clash. Reported, never enforced — a deliberate double
+   * release is the operator's call, and the confirm panel says it out loud instead of
+   * refusing.
+   */
+  collision: string | null;
+  /** done / ready / incomplete — what the readiness pip and the bulk upload both read. */
+  readiness: Readiness;
+  /** What is still missing, when readiness is `incomplete`. Named, never just counted. */
+  missing: string[];
   /** For a stale row: when it was due and when the intent was recorded. */
   staleNote: string | null;
   /**
@@ -171,6 +188,8 @@ export interface TrayItem {
   abCount: number;
   hasThumbnail: boolean;
   status: string;
+  readiness: Readiness;
+  missing: string[];
 }
 
 /**
@@ -239,6 +258,32 @@ export interface DayRow {
   otherMirrors: MirrorChip[];
 }
 
+/** One item's outcome in a bulk upload run. Every attempt gets one, pass or fail. */
+export interface UploadResult {
+  itemId: string;
+  title: string;
+  channelName: string;
+  ok: boolean;
+  /** The main process's refusal, verbatim. Null on success. */
+  error: string | null;
+  videoId: string | null;
+}
+
+/** The live state of a bulk run. Null when nothing is uploading. */
+export interface UploadRun {
+  /** Items still to attempt, including the one in flight. */
+  queue: string[];
+  total: number;
+  /** 1-based position of the item in flight. */
+  index: number;
+  currentItemId: string | null;
+  currentTitle: string;
+  sentBytes: number;
+  totalBytes: number;
+  /** Set when the operator asks to stop; the in-flight item is aborted and the rest skipped. */
+  cancelling: boolean;
+}
+
 @Component({
   selector: 'app-publish-calendar',
   standalone: true,
@@ -297,6 +342,8 @@ export class PublishCalendar implements OnInit, OnDestroy {
    */
   private readonly now = signal(new Date());
   private clock: ReturnType<typeof setInterval> | null = null;
+  /** Unsubscribe for the main process's byte-progress ticks. */
+  private stopProgress: (() => void) | null = null;
 
   // ---------------------------------------------------------------- view state
 
@@ -327,6 +374,20 @@ export class PublishCalendar implements OnInit, OnDestroy {
   readonly sweeping = signal(false);
   /** A failed sweep is its own line: the local board is still true, the mirror is not. */
   readonly sweepError = signal<string | null>(null);
+
+  // ------------------------------------------------------------ the bulk upload
+
+  /**
+   * The confirm panel's contents, or null when it is closed.
+   *
+   * A bulk upload CREATES videos on live channels and cannot be undone from here, so it
+   * is never one click away: the panel names every item, grouped by the channel it will
+   * be authorized against, and the operator reads that list before anything is sent.
+   */
+  readonly uploadConfirm = signal<CalendarChip[] | null>(null);
+  readonly uploadRun = signal<UploadRun | null>(null);
+  /** Results of the last run, kept until dismissed. Failures are the point of it. */
+  readonly uploadResults = signal<UploadResult[]>([]);
 
   // ---------------------------------------------------------------- derivations
 
@@ -379,9 +440,10 @@ export class PublishCalendar implements OnInit, OnDestroy {
     const now = this.now();
     const active = this.activeChannelId();
     const mirror = this.mirrorByVideoId();
+    const bySlot = this.mirrorBySlot();
     return this.entries()
       .filter((entry) => entry.publish !== null && entry.publish.publishAt !== null)
-      .map((entry) => this.toChip(entry, entry.publish as PublishFacts, now, active, mirror))
+      .map((entry) => this.toChip(entry, entry.publish as PublishFacts, now, active, mirror, bySlot))
       .sort((a, b) => a.publishAt.localeCompare(b.publishAt));
   });
 
@@ -443,6 +505,21 @@ export class PublishCalendar implements OnInit, OnDestroy {
       .sort((a, b) => a.publishAt.localeCompare(b.publishAt));
   });
 
+  /**
+   * Mirrored videos keyed by channel and exact local slot, for the collision check.
+   *
+   * Built from the SAME chips the board draws rather than from the raw sweep, so anything
+   * suppressed as a duplicate of a local chip cannot also be reported as colliding with
+   * it — an item is never its own collision.
+   */
+  private readonly mirrorBySlot = computed(() => {
+    const map = new Map<string, MirrorChip>();
+    for (const chip of this.mirrorChips()) {
+      map.set(`${chip.channelId}|${chip.dateKey}|${chip.time}`, chip);
+    }
+    return map;
+  });
+
   private readonly mirrorsByDay = computed(() => {
     const map = new Map<string, MirrorChip[]>();
     for (const chip of this.mirrorChips()) {
@@ -466,6 +543,47 @@ export class PublishCalendar implements OnInit, OnDestroy {
   });
 
   readonly scheduledCount = computed(() => this.scheduledChips().length);
+
+  /**
+   * Scheduled items that could be uploaded right now, in the order they will be sent.
+   *
+   * Scheduled, because that is what the operator asked for: a date on the board is the
+   * decision that this video is going out. Order is chronological — the soonest release
+   * is the one it hurts most to still be waiting on.
+   */
+  readonly uploadable = computed(() =>
+    this.scheduledChips().filter((chip) => chip.readiness === 'ready')
+  );
+
+  /** Scheduled but not sendable, so the header can say what is being left behind. */
+  readonly incompleteCount = computed(
+    () => this.scheduledChips().filter((chip) => chip.readiness === 'incomplete').length
+  );
+
+  readonly uploadedCount = computed(
+    () => this.scheduledChips().filter((chip) => chip.readiness === 'done').length
+  );
+
+  /** The confirm panel's list, grouped by the channel each upload authorizes against. */
+  readonly confirmByChannel = computed(() => {
+    const chips = this.uploadConfirm();
+    if (!chips) return [];
+    const groups = new Map<string, { channelName: string; hue: string; chips: CalendarChip[] }>();
+    for (const chip of chips) {
+      const key = chip.channelId ?? '';
+      const group = groups.get(key);
+      if (group) group.chips.push(chip);
+      else groups.set(key, { channelName: chip.channelName, hue: chip.hue, chips: [chip] });
+    }
+    return [...groups.values()];
+  });
+
+  readonly uploadFailures = computed(() => this.uploadResults().filter((r) => !r.ok));
+
+  /** Of the run about to be confirmed, how many land on a slot YouTube already holds. */
+  readonly confirmCollisions = computed(
+    () => (this.uploadConfirm() ?? []).filter((chip) => chip.collision !== null).length
+  );
 
   /** Chips by local day, which is how the day rows ask for them. */
   private readonly chipsByDay = computed(() => {
@@ -601,6 +719,8 @@ export class PublishCalendar implements OnInit, OnDestroy {
           abCount: facts.abCount,
           hasThumbnail: facts.hasThumbnail,
           status: facts.status,
+          readiness: readinessOf(facts),
+          missing: missingFor(facts),
         };
       })
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -630,6 +750,14 @@ export class PublishCalendar implements OnInit, OnDestroy {
 
   async ngOnInit(): Promise<void> {
     this.clock = setInterval(() => this.now.set(new Date()), 60_000);
+    // The same ~4 Hz tick the report panel's single upload draws, read here for whichever
+    // item the run currently has in flight. Ticks for any other item are ignored rather
+    // than assumed to be ours: a single upload can be running on the reports page.
+    this.stopProgress = this.electron.onPublishUploadProgress((p) => {
+      const run = this.uploadRun();
+      if (!run || run.currentItemId !== p.itemId) return;
+      this.uploadRun.set({ ...run, sentBytes: p.sentBytes, totalBytes: p.totalBytes });
+    });
     await this.reload();
     // Not awaited: the board is already correct about this app's own records, and the
     // mirror is a live API sweep of three channels. Making the page wait for the network
@@ -639,6 +767,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     if (this.clock) clearInterval(this.clock);
+    if (this.stopProgress) this.stopProgress();
   }
 
   /**
@@ -892,6 +1021,143 @@ export class PublishCalendar implements OnInit, OnDestroy {
     }
   }
 
+  // ---------------------------------------------------------------- bulk upload
+
+  /**
+   * Open the confirm panel. Nothing is sent until the operator reads the list and agrees.
+   */
+  askUploadAll(): void {
+    const chips = this.uploadable();
+    if (chips.length === 0) return;
+    this.uploadResults.set([]);
+    this.uploadConfirm.set(chips);
+  }
+
+  closeUploadConfirm(): void {
+    this.uploadConfirm.set(null);
+  }
+
+  dismissUploadResults(): void {
+    this.uploadResults.set([]);
+  }
+
+  /**
+   * Upload every ready item, ONE AT A TIME.
+   *
+   * Sequential is not caution for its own sake: these are multi-gigabyte files over one
+   * connection, and running them together would make every upload slower while making the
+   * failure of any one of them harder to attribute. The main process refuses a second
+   * upload of the same item anyway.
+   *
+   * A FAILURE DOES NOT STOP THE RUN. Each item's refusal is captured verbatim against
+   * that item and the next one starts — stopping would leave the remaining items in an
+   * unexplained limbo, whereas a run that finishes with three failures listed is a run
+   * the operator can act on. Nothing is retried automatically.
+   */
+  async confirmUploadAll(): Promise<void> {
+    const chips = this.uploadConfirm();
+    if (!chips || chips.length === 0) return;
+    this.uploadConfirm.set(null);
+
+    const results: UploadResult[] = [];
+    this.uploadRun.set({
+      queue: chips.map((c) => c.itemId),
+      total: chips.length,
+      index: 0,
+      currentItemId: null,
+      currentTitle: '',
+      sentBytes: 0,
+      totalBytes: 0,
+      cancelling: false,
+    });
+
+    for (let i = 0; i < chips.length; i++) {
+      const chip = chips[i];
+      const run = this.uploadRun();
+      if (!run || run.cancelling) break;
+
+      this.uploadRun.set({
+        ...run,
+        index: i + 1,
+        currentItemId: chip.itemId,
+        currentTitle: chip.title,
+        sentBytes: 0,
+        totalBytes: 0,
+      });
+
+      try {
+        const res = await this.electron.publishUploadYouTube(chip.itemId);
+        if (!res.success || !res.data) {
+          results.push({
+            itemId: chip.itemId,
+            title: chip.title,
+            channelName: chip.channelName,
+            ok: false,
+            error: res.error ?? 'The upload failed and gave no reason.',
+            videoId: null,
+          });
+        } else {
+          results.push({
+            itemId: chip.itemId,
+            title: chip.title,
+            channelName: chip.channelName,
+            ok: true,
+            error: null,
+            videoId: res.data.receipt.videoId,
+          });
+        }
+      } catch (err: any) {
+        results.push({
+          itemId: chip.itemId,
+          title: chip.title,
+          channelName: chip.channelName,
+          ok: false,
+          error: err?.message || String(err),
+          videoId: null,
+        });
+      }
+      // Published as the run goes rather than at the end: a long run should show its
+      // failures while it is still running, not only once everything has been attempted.
+      this.uploadResults.set([...results]);
+    }
+
+    this.uploadRun.set(null);
+    // The records now carry video ids, so the board must re-read them — and YouTube now
+    // holds videos it did not a minute ago, so the mirror must too.
+    await this.reload();
+    void this.refreshSweep();
+  }
+
+  /**
+   * Stop the run: abort what is in flight and skip the rest.
+   *
+   * The in-flight upload is aborted through the main process's own cancel, which is the
+   * only thing that can stop a resumable transfer mid-file. Items already uploaded stay
+   * uploaded — this stops the run, it does not undo it, and the results list says exactly
+   * which ones got through.
+   */
+  async cancelUploadRun(): Promise<void> {
+    const run = this.uploadRun();
+    if (!run) return;
+    this.uploadRun.set({ ...run, cancelling: true });
+    if (run.currentItemId) {
+      const res = await this.electron.publishUploadCancel(run.currentItemId);
+      if (!res.success) this.report(res.error ?? 'The upload could not be cancelled.');
+    }
+  }
+
+  /** `1.4 GB of 3.1 GB` for the item in flight. */
+  runProgressLabel(run: UploadRun): string {
+    if (run.totalBytes <= 0) return 'starting…';
+    const gb = (n: number) => (n / 1_073_741_824).toFixed(2);
+    return `${gb(run.sentBytes)} GB of ${gb(run.totalBytes)} GB`;
+  }
+
+  runProgressPercent(run: UploadRun): number {
+    if (run.totalBytes <= 0) return 0;
+    return Math.round((run.sentBytes / run.totalBytes) * 100);
+  }
+
   // ---------------------------------------------------------------- helpers
 
   private factsOf(itemId: string): PublishFacts | null {
@@ -967,7 +1233,8 @@ export class PublishCalendar implements OnInit, OnDestroy {
     facts: PublishFacts,
     now: Date,
     activeChannelId: string | null,
-    mirror: ReadonlyMap<string, ScheduledVideo>
+    mirror: ReadonlyMap<string, ScheduledVideo>,
+    mirrorBySlot: ReadonlyMap<string, MirrorChip>
   ): CalendarChip {
     const publishAt = facts.publishAt as string;
     const at = new Date(publishAt);
@@ -1002,6 +1269,12 @@ export class PublishCalendar implements OnInit, OnDestroy {
             (facts.publishAtSetAt ? ` · set ${distance(new Date(facts.publishAtSetAt), now)}` : '')
           : null,
       mirrorDivergence: this.divergenceOf(facts, at, mirror),
+      readiness: readinessOf(facts),
+      missing: missingFor(facts),
+      collision:
+        mirrorBySlot.get(
+          `${facts.channelId}|${dateKeyOf(at)}|${splitPublishAt(publishAt).time}`
+        )?.title ?? null,
       status: facts.status,
       videoId: facts.videoId,
     };
