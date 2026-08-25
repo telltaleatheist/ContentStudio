@@ -450,52 +450,42 @@ input[type='time'].control { width: 92px; flex: none; }
    a trailing Unrouted when something is. It wraps rather than scrolls: three channels and
    an Unrouted fit two lines at the narrowest the split allows, and a horizontally
    scrolling filter is a filter with tabs nobody finds. */
+/* Channel picker as a row of BUTTONS that wraps — each keeps its natural width and
+   spells its whole name; the ones that don't fit drop to the next line (operator,
+   2026-08-25: underline-style tabs read as labels, not as something to click). */
 .chan-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 2px;
+  gap: 4px;
   border-bottom: 1px solid var(--rp-line-soft);
-  padding-bottom: 4px;
+  padding-bottom: 6px;
 }
 .chan-tab {
   display: flex;
   align-items: center;
-  justify-content: center;
-  /* Same full-width sharing as the work-pane tabs: the strip fills the list pane. */
-  flex: 1 1 0;
   gap: 5px;
-  max-width: 100%;
   font: 600 var(--rp-fs-cap) / 1 var(--font-family);
-  color: var(--rp-ink-3);
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  border-radius: 4px 4px 0 0;
-  padding: 6px 7px;
-  margin-bottom: -5px;
+  color: var(--rp-ink-2);
+  background: var(--rp-raised);
+  border: 1px solid var(--rp-line-soft);
+  border-radius: 999px;
+  padding: 5px 11px;
   cursor: pointer;
-  min-width: 0;
-  transition: color 0.13s ease, border-color 0.13s ease;
+  white-space: nowrap;
+  transition: color 0.13s ease, border-color 0.13s ease, background 0.13s ease;
 
-  &:hover { color: var(--rp-ink-2); }
+  &:hover { color: var(--rp-ink); border-color: var(--rp-ink-3); }
   .n { font-size: 10.5px; color: var(--rp-ink-3); font-weight: 400; }
-  /* ORANGE — the tab in force. The list under it is the only list on screen, so which
-     one is on has to be answerable without reading the counts. */
+  /* ORANGE — the button in force. The list under it is the only list on screen, so
+     which one is on has to be answerable without reading the counts. */
   &.on {
     color: var(--rp-ink);
-    border-bottom-color: var(--primary-orange);
+    border-color: var(--primary-orange);
+    background: color-mix(in srgb, var(--primary-orange) 14%, var(--rp-raised));
     .n { color: var(--rp-ink-2); }
   }
 }
-/* The full channel name, wrapped onto as many lines as it needs — a tab that says
-   "Owen…" next to a tab that says "Owen…" identifies nothing (operator, 2026-08-25). */
-.chan-tab-l {
-  white-space: normal;
-  overflow-wrap: break-word;
-  text-align: center;
-  line-height: 1.25;
-  min-width: 0;
-}
+.chan-tab-l { white-space: nowrap; }
 
 /* One 2×2 segmented control where two rows of chips used to be. */
 .seg {
