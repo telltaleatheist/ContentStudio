@@ -69,16 +69,18 @@ export function isLivestreamPage(): boolean {
 /**
  * The original uploaded filename, e.g. `f2 - amanda grace.mov`.
  *
- * Structure (verified live): inside `ytcp-video-info`, a `div.label` whose text is
- * "Filename" followed by a sibling `div.value` holding the name. The LABEL TEXT IS
- * LOCALIZED, so fall back to a shape-based scan (any .value that looks like a media
- * filename) when the English label isn't found.
+ * Structure: inside `ytcp-video-info`, a label div whose text is "Filename" followed by
+ * a sibling div holding the name. Studio has renamed the classes once already —
+ * `div.label`/`div.value` became `ytcpVideoInfoLabel`/container camelCase (seen live
+ * 2026-08-25) — so both generations are matched, and the last resort is a class-free
+ * scan of every leaf for the one text that looks like a media filename. That scan also
+ * covers localized label text.
  */
 export function readFilename(): string | null {
   const info = document.querySelector('ytcp-video-info');
   if (!info) return null;
 
-  const labels = [...info.querySelectorAll<HTMLElement>('div.label')];
+  const labels = [...info.querySelectorAll<HTMLElement>('div.label, div.ytcpVideoInfoLabel')];
 
   const labelled = labels.find((l) => /^filename$/i.test((l.textContent || '').trim()));
   if (labelled) {
@@ -86,8 +88,9 @@ export function readFilename(): string | null {
     if (value) return value;
   }
 
-  // Locale fallback: the only sidebar value that looks like a media file.
-  for (const el of info.querySelectorAll<HTMLElement>('div.value')) {
+  // Class-free fallback: the only leaf text in the sidebar that looks like a media file.
+  for (const el of info.querySelectorAll<HTMLElement>('div, span')) {
+    if (el.children.length > 0) continue;
     const text = (el.textContent || '').trim();
     if (/\.(mov|mp4|mkv|avi|m4v|webm|mpg|mpeg|wmv|flv)$/i.test(text)) return text;
   }
