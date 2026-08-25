@@ -660,7 +660,7 @@
                       @if (!row.dropped) {
                         <button class="ghost icon" title="Rename this chapter"
                                 (click)="startEditChapter(row.key, row.title, $event)">✎</button>
-                        <button class="ghost icon" title="Delete this chapter from the published list"
+                        <button class="ghost icon ch-del" title="Delete this chapter from the published list"
                                 (click)="toggleChapterDropped(row.key, true, $event)">✕</button>
                       } @else {
                         <button class="ghost icon" title="Restore this chapter"
@@ -801,37 +801,10 @@
                 </div>
               }
 
-              @if (metadata()!.chapters && metadata()!.chapters.length > 0) {
-                <div class="asset">
-                  <button class="asset-head" (click)="toggleAsset('chapters')">
-                    <mat-icon>list</mat-icon>
-                    <span class="asset-name">Chapters</span>
-                    <span class="cnt num">{{ metadata()!.chapters.length }}</span>
-                    <span class="chev">{{ isAssetOpen('chapters') ? '▴' : '▾' }}</span>
-                  </button>
-                  @if (isAssetOpen('chapters')) {
-                    <div class="asset-body">
-                      <div class="asset-actions">
-                        <button class="ghost"
-                                [class.copied]="isCopied('chapters-all')"
-                                (click)="copyChaptersToClipboard()">
-                          {{ isCopied('chapters-all') ? '✓ Copied' : 'Copy all' }}
-                        </button>
-                      </div>
-                      @for (chapter of metadata()!.chapters; track $index; let i = $index) {
-                        <div class="asset-line"
-                             [class.copied]="isCopied('chapter-' + i)"
-                             (click)="copyToClipboard(getChapterTimestamp(chapter) + ' ' + getChapterTitle(chapter), 'chapter-' + i)"
-                             title="Click to copy">
-                          <span class="asset-n num">{{ getChapterTimestamp(chapter) }}</span>
-                          <span>{{ getChapterTitle(chapter) }}</span>
-                          <span class="asset-copy">{{ isCopied('chapter-' + i) ? '✓' : '⧉' }}</span>
-                        </div>
-                      }
-                    </div>
-                  }
-                </div>
-              }
+              <!-- No chapters entry here. The list under the description is the one that
+                   is edited, composed and pushed; a second, click-to-copy rendering of the
+                   raw generated list was the manual paste-into-Studio workflow, which the
+                   extension and the API upload retired (operator, 2026-08-25). -->
 
               <!-- Chapters that were asked for and did not happen. Takes the chapter slot,
                    expanded and NOT collapsible: the reason is the whole content, and it is

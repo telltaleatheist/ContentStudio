@@ -1182,9 +1182,11 @@ check('all three chapter grains ship, each with the band and quote contract (LED
     detailed: 'usually has 5 to 10',
     // Broad moved to a graduated count table 2026-08-24 night: the rate phrasing measured
     // as ignored (25 chapters at 1:40 spacing on a 41-minute video); counts anchor.
-    // Rebanded 2026-08-25 after a live 41-minute run returned 17 against a 10-to-14 band:
-    // the ceiling dropped and the band is now stated as a budget with a merge bias.
-    broad: 'usually 8 to 12, each covering 3 to 6 minutes',
+    // Rebanded 2026-08-25 after a live 41-minute run returned 17 against a 10-to-14 band,
+    // then again the same night on the operator's ask for more aggressive merging: the
+    // band is stated as a budget with a lower-half bias, and the model's habit of landing
+    // at ceiling-plus-ads is priced into where the ceiling sits.
+    broad: 'usually 7 to 10, each covering 4 to 6 minutes',
   };
   for (const [grain, band] of Object.entries(bands)) {
     const body = assets.pipeline('chapters.yml', `whole_transcript_${grain}`);

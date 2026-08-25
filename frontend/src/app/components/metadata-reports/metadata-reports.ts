@@ -673,6 +673,29 @@ export class MetadataReports implements OnInit {
   });
 
   /**
+   * The open item's row image follows its record, live.
+   *
+   * Every door a thumbnail can arrive or leave through — drop, change, clear, proposal
+   * confirm, carry-forward, rescan — lands on the selection's thumbnailPath/Source
+   * signals, so watching those is one invalidation instead of one per call site (call
+   * sites were tried first and clearThumbnail/confirmProposal were missed; operator,
+   * 2026-08-25: "when I link a thumbnail it should automatically load on the side").
+   * The tuple is re-baselined when the selection ITSELF changes, so switching rows does
+   * not read as that row's thumbnail changing.
+   */
+  private lastThumbTuple: { id: string | null; path: string | null; source: string | null } | null = null;
+  private readonly selectionThumbWatcher = effect(() => {
+    const id = this.selectedReport()?.itemId ?? null;
+    const path = this.publish.thumbnailPath();
+    const source = this.publish.thumbnailSource();
+    const prev = this.lastThumbTuple;
+    this.lastThumbTuple = { id, path, source };
+    if (!id || !prev || prev.id !== id) return;
+    if (prev.path === path && prev.source === source) return;
+    this.invalidateThumbStrip([id]);
+  });
+
+  /**
    * One strip call per batch of ids, merged into the cache as each answers.
    *
    * A failed call is SAID and every id in it is cached carrying the failure as its fault,
@@ -3300,22 +3323,6 @@ export class MetadataReports implements OnInit {
     return this.copiedItem() === key;
   }
 
-  copyChaptersToClipboard() {
-    const meta = this.metadata();
-    if (!meta || !meta.chapters) return;
-
-    const chaptersText = meta.chapters
-      .map((chapter: any) => `${this.getChapterTimestamp(chapter)} - ${this.getChapterTitle(chapter)}`)
-      .join('\n');
-
-    navigator.clipboard.writeText(chaptersText).then(() => {
-      this.setCopiedItem('chapters-all');
-      this.notificationService.success('Copied', 'All chapters copied to clipboard', false);
-    }).catch(err => {
-      this.notificationService.error('Copy Failed', 'Failed to copy chapters: ' + err.message);
-    });
-  }
-
   getTagsArray(): string[] {
     const meta = this.metadata();
     if (!meta || !meta.tags) return [];
@@ -3389,37 +3396,6 @@ export class MetadataReports implements OnInit {
       return thumbnail.text;
     }
     return String(thumbnail);
-  }
-
-  getChapterTimestamp(chapter: any): string {
-    // Handle various formats AI models might return
-    if (typeof chapter === 'string') {
-      // String format like "0:00 - Introduction"
-      const match = chapter.match(/^(\d+:\d+)/);
-      return match ? match[1] : '0:00';
-    }
-    if (chapter && typeof chapter === 'object') {
-      // Try common property names
-      if (chapter.timestamp) return String(chapter.timestamp);
-      if (chapter.time) return String(chapter.time);
-    }
-    return '0:00';
-  }
-
-  getChapterTitle(chapter: any): string {
-    // Handle various formats AI models might return
-    if (typeof chapter === 'string') {
-      // String format like "0:00 - Introduction"
-      const match = chapter.match(/^\d+:\d+\s*-\s*(.+)$/);
-      return match ? match[1] : chapter;
-    }
-    if (chapter && typeof chapter === 'object') {
-      // Try common property names
-      if (chapter.title) return String(chapter.title);
-      if (chapter.text) return String(chapter.text);
-      if (chapter.name) return String(chapter.name);
-    }
-    return String(chapter || 'Untitled');
   }
 
   /**

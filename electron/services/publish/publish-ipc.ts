@@ -914,17 +914,9 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
         return ok({ applied, skipped, refused });
       }
 
-      if (found.match === 'slot') {
-        skipped.push({
-          field: 'thumbnail',
-          detail:
-            `${found.path} exists, but it is named after the slot number rather than after ` +
-            `this export, and slots get renumbered between export and upload. Confirm it by ` +
-            `eye from the proposal panel; a rescan will not attach it.`,
-        });
-        return ok({ applied, skipped, refused });
-      }
-
+      // A slot-only match attaches like any other since 2026-08-25 (the operator's call,
+      // made the day row thumbnails became visible): the attach sentence below flags it,
+      // and a wrong image is caught by eye and corrected rather than gated up front.
       let validation: ThumbnailValidation;
       try {
         validation = validateThumbnailFile(found.path);
@@ -960,6 +952,10 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
           `attached ${found.path} — the sibling export of ${generated.sourcePath}, ` +
           `${validation.meta.width}x${validation.meta.height}, ${validation.meta.bytes} bytes` +
           (previous ? `, replacing the automatically attached ${previous}` : '') +
+          (found.match === 'slot'
+            ? `. The match was on the SLOT NUMBER only (legacy naming) — check the image, ` +
+              `a renumbered slot can point at another video's thumbnail`
+            : '') +
           `.${notes}`,
       });
 

@@ -460,6 +460,9 @@ input[type='time'].control { width: 92px; flex: none; }
 .chan-tab {
   display: flex;
   align-items: center;
+  justify-content: center;
+  /* Same full-width sharing as the work-pane tabs: the strip fills the list pane. */
+  flex: 1 1 0;
   gap: 5px;
   max-width: 100%;
   font: 600 var(--rp-fs-cap) / 1 var(--font-family);
@@ -742,6 +745,11 @@ input[type='time'].control { width: 92px; flex: none; }
 .wtab {
   display: flex;
   align-items: center;
+  justify-content: center;
+  /* Each tab takes an equal share of the pane — the strip spans the full width
+     rather than huddling at the left (operator, 2026-08-25). */
+  flex: 1 1 0;
+  min-width: 0;
   gap: 6px;
   font: 600 var(--rp-fs-small) / 1 var(--font-family);
   color: var(--rp-ink-3);
@@ -1268,12 +1276,10 @@ input[type='time'].control { width: 92px; flex: none; }
 
 .saving { font-size: var(--rp-fs-cap); color: var(--rp-ink-3); }
 
-/* The record's own column, inside a pane that is now much wider than the 404px rail it
-   came from. Capped rather than stretched: an accordion row whose label is nine hundred
-   pixels from its value is a worse row, and the record is read down, not across. */
+/* The record's own column fills the pane it moved into (operator, 2026-08-25 — the
+   560px cap it arrived with read as wasted space next to the tab that owns the width). */
 .record-body {
   padding: 0.4rem 0 1rem;
-  max-width: 560px;
 }
 
 .carry {
@@ -1615,7 +1621,6 @@ input[type='time'].control { width: 92px; flex: none; }
   /* `margin-top: auto` is a leftover of the rail column this used to sit at the bottom
      of; in the record tab it is in normal flow, under the last fact row. */
   margin-top: auto;
-  max-width: 560px;
   padding: 0.85rem 1rem 1rem;
   border-top: 1px solid var(--rp-line-soft);
   background: var(--rp-raised);
@@ -1792,6 +1797,14 @@ input[type='time'].control { width: 92px; flex: none; }
 
   .ghost.icon { padding: 0 6px; }
   &.dropped { opacity: 0.75; }
+
+  /* Aiming the ✕ lights the whole row it would delete — with rows this similar, the
+     hover has to answer "which one" before the click does something. */
+  &:has(.ch-del:hover) {
+    background: color-mix(in srgb, var(--danger-text) 12%, transparent);
+    border-radius: 4px;
+    .ch-title { color: var(--danger-text); }
+  }
 }
 
 .links-text { min-height: 90px; }

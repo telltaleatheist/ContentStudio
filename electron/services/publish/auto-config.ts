@@ -200,10 +200,13 @@ function autoChannel(input: AutoConfigInput): FieldOutcome {
  * makes the field worth having: without it, removing a wrong thumbnail and then saving
  * anything else would bring the wrong thumbnail straight back.
  *
- * Only 'basename' candidates are attached (see ThumbnailCandidate): a filename that
- * carries the export's own label cannot be aimed at the wrong video by a slot renumber,
- * and one that carries only the slot can. A 'slot'-only file that exists is reported as
- * skipped, naming it, so the operator can accept it from the proposal panel by eye.
+ * BOTH candidate forms attach (see ThumbnailCandidate). 'basename' matches are the safe
+ * case — the filename carries the export's own label, so a slot renumber makes it miss
+ * rather than mis-hit. 'slot' matches used to stop at the proposal panel because a
+ * renumber can aim them at another video's image; the operator retired that gate
+ * 2026-08-25, the day the reports list started SHOWING every row's thumbnail: "if it's
+ * wrong, I'll see it and correct it." The attach sentence still says when the match was
+ * slot-only, so the log answers how a wrong image got there.
  *
  * A file that exists and does not validate is REFUSED with the validator's message, not
  * thrown: the write that triggered this pass is almost always about something else
@@ -254,20 +257,6 @@ function autoThumbnail(input: AutoConfigInput): FieldOutcome {
     };
   }
 
-  if (found.match === 'slot') {
-    return {
-      patch: null,
-      bucket: 'skipped',
-      decision: {
-        field: 'thumbnail',
-        detail:
-          `${found.path} exists, but it is named after the slot number rather than after ` +
-          `this export, and slots get renumbered between export and upload. Offered for ` +
-          `confirmation in the panel rather than attached automatically.`,
-      },
-    };
-  }
-
   let validation;
   try {
     validation = validateThumbnailFile(found.path);
@@ -295,7 +284,12 @@ function autoThumbnail(input: AutoConfigInput): FieldOutcome {
       detail:
         `attached ${found.path} automatically — it is the sibling export of ` +
         `${sourcePath}, ${validation.meta.width}x${validation.meta.height}, ` +
-        `${validation.meta.bytes} bytes.${notes}`,
+        `${validation.meta.bytes} bytes.` +
+        (found.match === 'slot'
+          ? ` The match was on the SLOT NUMBER only (legacy naming), so check the row's ` +
+            `thumbnail — a renumbered slot can point at another video's image.`
+          : '') +
+        `${notes}`,
     },
   };
 }
