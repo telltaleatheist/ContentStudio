@@ -25,8 +25,8 @@ import type { UploadStatusEntry } from '../youtube/youtube-api.service';
 import {
   PublishStoreService,
   GeneratedFallback,
-  GeneratedItemSummary,
   HostReportIndex,
+  PrimaryAwareSummary,
   resolveChosenMetadata,
 } from './publish-store.service';
 import { matchDraft, toFillCandidates } from './video-matcher';
@@ -156,6 +156,23 @@ export interface ReportIndexEntry {
   promptSet: string | null;
   sourceFilename: string | null;
   sourceKey: string | null;
+  /**
+   * Is this the DEFINITIVE set for its source?
+   *
+   * A video can have several generated metadata sets — a re-run, a softening pass — joined
+   * by `source_key`, and exactly one of them is the one the calendar draws, the push sends
+   * and the extension fills. EVERY set is still returned here, each saying which it is:
+   * the reports page needs all of them to fill the version picker on the item's page, and
+   * filtering the index would leave the operator no way to reach the set he wants to
+   * promote. The CALENDAR filters this to primaries; the reports list heads each source
+   * with its primary.
+   *
+   * True for every item with a null `source_key` — no source file, no siblings, its own
+   * primary by definition.
+   */
+  isPrimary: boolean;
+  /** The item this set was softened from, or null when it is a generation run. */
+  softenedFromItemId: string | null;
   titleCount: number;
   jobPath: string;
   jobSizeBytes: number;
@@ -203,8 +220,33 @@ export interface ScheduledVideo {
   durationSec: number;
 }
 
+/**
+ * A video this app has LINKED that YouTube says is already out.
+ *
+ * The counterpart to a scheduled one, and the reason it is needed: `publishAt` is CLEARED
+ * by YouTube the moment a video actually publishes, so a released video is invisible to
+ * any sweep that only collects scheduled ones. Without this, a record still carrying the
+ * date it was meant to go out reads as a pending release forever, and the calendar draws
+ * a future slot for something that has already happened.
+ *
+ * Restricted to videos a publish record claims. Every public video on three channels is
+ * hundreds of rows and answers a question nobody asked; the linked ones are exactly the
+ * set the board draws chips for.
+ */
+export interface LiveVideo {
+  videoId: string;
+  channelId: string;
+  channelName: string;
+  title: string;
+  /** When YouTube says it actually went out. */
+  publishedAt: string;
+  privacyStatus: string;
+}
+
 export interface ScheduledSweep {
   scheduled: ScheduledVideo[];
+  /** Linked videos that are already public or unlisted, i.e. no longer pending. */
+  liveLinked: LiveVideo[];
   /** Channels that would not answer, named. Never a quietly shorter mirror. */
   problems: Array<{ channelId: string; channelName: string; message: string }>;
   sweptAt: string;
@@ -261,7 +303,7 @@ export interface PublishIpcDeps {
    * belongs to services/metadata. Carry-forward is the caller — it is the one thing here
    * that has to look at OTHER items than the one it was asked about.
    */
-  listGenerated: () => { items: GeneratedItemSummary[] };
+  listGenerated: () => { items: PrimaryAwareSummary[] };
   /**
    * The host's BROWSE index of every generated item — the same files `listGenerated`
    * reads, projected for a list rather than for a join (services/metadata/report-index.ts).
@@ -502,6 +544,42 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
   }
 
   /**
+   * Refuse to act on a set that is not the definitive one for its source.
+   *
+   * THE LINE THIS DRAWS, deliberately: CONFIGURING a set is allowed on any of them —
+   * titles, description, tags, channel, thumbnail, schedule, the podcast flag — because
+   * the operator's own account of the feature is that he configures the version he wants
+   * and THEN promotes it. What is refused here is the small set of actions that reach
+   * YouTube or Spreaker: those send one set's words to a live video, and "even if other
+   * metadata sets are filled out, if they aren't primary, they aren't used".
+   *
+   * Named, never silent: the refusal says which item is primary for this source so the
+   * next click is obvious.
+   */
+  function requirePrimarySet(itemId: string, action: string): void {
+    const summary = listGenerated().items.find((i) => i.itemId === itemId);
+    if (!summary) {
+      throw new Error(
+        `Item ${itemId} is not in the report index, so it cannot be ${action} — its report ` +
+          `has been deleted or could not be read.`
+      );
+    }
+    if (summary.isPrimary) return;
+    const primary = listGenerated().items.find(
+      (i) => i.sourceKey !== null && i.sourceKey === summary.sourceKey && i.isPrimary
+    );
+    throw new Error(
+      `Item ${itemId} is not the primary metadata set for "${summary.sourceKey}", so it ` +
+        `cannot be ${action}. ` +
+        (primary
+          ? `${primary.itemId} (generated ${primary.createdAt}) is. `
+          : '') +
+        `Open this set on the metadata page and press "Set as primary" if it is the one ` +
+        `you mean to publish.`
+    );
+  }
+
+  /**
    * What carry-forward reads and writes through. Bound once from this handler's own deps
    * so the finder and the applier can never be looking at a different store, registry or
    * index than the rest of this file.
@@ -573,6 +651,8 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
           promptSet: row.promptSet,
           sourceFilename: row.sourceFilename,
           sourceKey: row.sourceKey,
+          isPrimary: row.isPrimary,
+          softenedFromItemId: row.softenedFromItemId,
           titleCount: row.titleCount,
           jobPath: row.jobPath,
           jobSizeBytes: row.jobSizeBytes,
@@ -643,7 +723,16 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
     try {
       const channels = listChannels();
       const scheduled: ScheduledVideo[] = [];
+      const liveLinked: LiveVideo[] = [];
       const problems: Array<{ channelId: string; channelName: string; message: string }> = [];
+
+      // Which videos this app has linked. Read once, before any network call: a record
+      // that will not parse is already reported by publish-list-index, and this call has
+      // no business failing over one.
+      const linked = new Set<string>();
+      for (const record of store.listAllRecords().records) {
+        if (record.videoId) linked.add(record.videoId);
+      }
 
       // Sequential rather than Promise.all: three channels against one quota and one
       // token refresher, where a burst buys nothing and a 403 on one call is easier to
@@ -652,6 +741,20 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
         try {
           const uploads = await listRecentUploads(channel.channelId, SCHEDULED_SWEEP_WINDOW);
           for (const video of uploads) {
+            // A linked video that is no longer private has been released — whether it was
+            // scheduled or published by hand, and whether or not a publishAt survives on
+            // it. That fact outranks any date a local record still carries.
+            if (video.privacyStatus !== 'private' && linked.has(video.videoId)) {
+              liveLinked.push({
+                videoId: video.videoId,
+                channelId: channel.channelId,
+                channelName: channel.name,
+                title: video.title,
+                publishedAt: video.publishedAt,
+                privacyStatus: video.privacyStatus,
+              });
+            }
+
             // A null publishAt is a video with no scheduled moment: a draft, or something
             // already public that was never scheduled. Neither belongs on a calendar day.
             if (video.publishAt === null) continue;
@@ -678,6 +781,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
 
       return ok<ScheduledSweep>({
         scheduled,
+        liveLinked,
         problems,
         sweptAt: new Date().toISOString(),
         channelsSwept: channels.length - problems.length,
@@ -1321,6 +1425,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
   ipcMain.handle('publish-push-youtube', async (_e, itemId: string) => {
     try {
       const id = requireItemId(itemId, 'itemId');
+      requirePrimarySet(id, 'pushed to YouTube');
       const outcome = await pushItemToYouTube(id, { store, readGenerated, api: pushApi });
       return ok(outcome);
     } catch (err: any) {
@@ -1346,6 +1451,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
   ipcMain.handle('publish-upload-youtube', async (e, itemId: string) => {
     try {
       const id = requireItemId(itemId, 'itemId');
+      requirePrimarySet(id, 'uploaded to YouTube');
       if (activeUploads.has(id)) {
         throw new Error(`Item ${id} is already uploading. Cancel it first or wait for it to finish.`);
       }
@@ -1497,6 +1603,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
   ipcMain.handle('publish-push-spreaker', async (_e, itemId: string) => {
     try {
       const id = requireItemId(itemId, 'itemId');
+      requirePrimarySet(id, 'uploaded to Spreaker');
       log.info(`[Publish] Spreaker upload requested for ${id}`);
       const outcome = await pushEpisodeToSpreaker(id, {
         store,
@@ -1556,11 +1663,83 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
     }
   });
 
-  /** Everything the extension could act on right now. */
+  /**
+   * Everything the extension could act on right now — PRIMARY SETS ONLY.
+   *
+   * A record on a set that is not its source's primary is a configured draft of a version
+   * nobody chose, and serving it here is exactly the "even if other metadata sets are
+   * filled out, if they aren't primary, they aren't used" case. The count of what was
+   * withheld travels back rather than the list simply being shorter.
+   */
   ipcMain.handle('publish-list-actionable', async () => {
     try {
-      return ok(store.listActionable());
+      const primary = new Set(
+        listGenerated().items.filter((i) => i.isPrimary).map((i) => i.itemId)
+      );
+      const all = store.listActionable();
+      const records = all.filter((r) => primary.has(r.itemId));
+      const withheld = all.length - records.length;
+      if (withheld > 0) {
+        log.info(
+          `[Publish] ${withheld} actionable selection(s) belong to sets that are not their ` +
+            `source's primary and were not listed.`
+        );
+      }
+      return ok(records);
     } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * Promote the set the operator is looking at: it becomes the one this app publishes.
+   *
+   * ONE ANSWER PER SOURCE. Writing it replaces whatever was there, and both ids are
+   * logged — this is the decision every publishing surface then reads, so "why did the
+   * calendar move?" has to have an answer in the log.
+   *
+   * NOTHING ELSE MOVES. Selections, thumbnails, schedules and links all stay on the items
+   * they were made against; promotion changes which of them the app reads, not what any
+   * of them holds. Carry-forward is the tool for moving state between sets, and it is
+   * still an explicit, separate click.
+   *
+   * An item with a null `source_key` is refused rather than silently accepted: it has no
+   * siblings, it is already the only set for what it came from, and writing an entry for
+   * it would put a key in the registry that nothing joins on.
+   */
+  ipcMain.handle('publish-set-primary', async (_e, itemId: string) => {
+    try {
+      const id = requireItemId(itemId, 'itemId');
+      const summary = listGenerated().items.find((i) => i.itemId === id);
+      if (!summary) {
+        throw new Error(
+          `Item ${id} is not in the report index, so it cannot be made primary — its report ` +
+            `has been deleted or could not be read.`
+        );
+      }
+      if (summary.sourceKey === null) {
+        throw new Error(
+          `Item ${id} records no source_key (a text subject or a compilation). It has no ` +
+            `sibling sets and is already the only set for what it was generated from.`
+        );
+      }
+      const change = store.primary.set(
+        summary.sourceKey,
+        id,
+        'operator',
+        'the operator promoted this set on the metadata page'
+      );
+      log.info(
+        `[Publish] primary set for "${summary.sourceKey}" is now ${id}` +
+          (change.previousItemId ? ` (was ${change.previousItemId})` : ' (was unrecorded)')
+      );
+      return ok({
+        sourceKey: summary.sourceKey,
+        itemId: id,
+        previousItemId: change.previousItemId,
+      });
+    } catch (err: any) {
+      log.error(`[Publish] set-primary for ${itemId} failed:`, err);
       return fail(err?.message || String(err));
     }
   });

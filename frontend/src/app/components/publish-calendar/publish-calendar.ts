@@ -46,6 +46,7 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { AnalyticsChannel, ElectronService } from '../../services/electron';
 import { PublishState } from '../../features/publish/publish-state';
 import type {
+  LiveVideo,
   PublishFacts,
   ReportIndexEntry,
   ScheduledSweep,
@@ -158,6 +159,14 @@ export interface CalendarChip {
   readiness: Readiness;
   /** What is still missing, when readiness is `incomplete`. Named, never just counted. */
   missing: string[];
+  /**
+   * Set when YouTube says this video is already out, whatever the record's date says.
+   *
+   * The record holds an INTENT; this is the event. When they disagree the event wins, and
+   * the chip says when it actually went out rather than continuing to promise a release
+   * that has already happened.
+   */
+  liveNote: string | null;
   /** For a stale row: when it was due and when the intent was recorded. */
   staleNote: string | null;
   /**
@@ -427,6 +436,15 @@ export class PublishCalendar implements OnInit, OnDestroy {
    * Used for two different things and built once: the divergence warning on a local chip,
    * and knowing which mirrored videos are duplicates of a chip already on the board.
    */
+  /** Linked videos YouTube says are already out, by video id. */
+  private readonly liveByVideoId = computed(() => {
+    const map = new Map<string, LiveVideo>();
+    const swept = this.sweep();
+    if (!swept) return map;
+    for (const video of swept.liveLinked) map.set(video.videoId, video);
+    return map;
+  });
+
   private readonly mirrorByVideoId = computed(() => {
     const map = new Map<string, ScheduledVideo>();
     const swept = this.sweep();
@@ -441,9 +459,12 @@ export class PublishCalendar implements OnInit, OnDestroy {
     const active = this.activeChannelId();
     const mirror = this.mirrorByVideoId();
     const bySlot = this.mirrorBySlot();
+    const live = this.liveByVideoId();
     return this.entries()
       .filter((entry) => entry.publish !== null && entry.publish.publishAt !== null)
-      .map((entry) => this.toChip(entry, entry.publish as PublishFacts, now, active, mirror, bySlot))
+      .map((entry) =>
+        this.toChip(entry, entry.publish as PublishFacts, now, active, mirror, bySlot, live)
+      )
       .sort((a, b) => a.publishAt.localeCompare(b.publishAt));
   });
 
@@ -792,8 +813,35 @@ export class PublishCalendar implements OnInit, OnDestroy {
         this.orphanedSelections.set([]);
         this.error.set(indexed.error ?? 'The report index could not be read.');
       } else {
-        this.entries.set(indexed.data.entries);
-        this.problems.set(indexed.data.problems);
+        // PRIMARY SETS ONLY, filtered at the ONE point the signal is written so every
+        // computed below it — the scheduled chips, the unscheduled tray, the deep-link
+        // lookup — is talking about the same rows.
+        //
+        // A video can have several generated metadata sets (a re-run, a softening pass)
+        // joined by source_key, and exactly one of them is the one this app publishes.
+        // Drawing a chip for a set nobody promoted would put a date on the calendar that
+        // no push would honour. The index deliberately carries all of them — the reports
+        // page needs every sibling for its version picker — so the filter belongs here.
+        const primaries = indexed.data.entries.filter((entry) => entry.isPrimary);
+        this.entries.set(primaries);
+
+        // A schedule set on a set that is NOT its source's primary now draws no chip. That
+        // is right — no push would honour it — but it must not be silent: a date the
+        // operator entered and cannot see is exactly the kind of thing found by missing an
+        // upload. Named here, in the same fault strip the unreadable reports use.
+        const withheld = indexed.data.entries.filter(
+          (entry) => !entry.isPrimary && entry.publish?.publishAt,
+        );
+        this.problems.set([
+          ...indexed.data.problems,
+          ...withheld.map((entry) => ({
+            file: entry.displayTitle || entry.itemId,
+            message:
+              `is scheduled for ${entry.publish!.publishAt} but is not the primary metadata ` +
+              `set for "${entry.sourceKey}", so it is not on the calendar. Promote it on the ` +
+              `metadata page to schedule it.`,
+          })),
+        ]);
         this.orphanedSelections.set(indexed.data.orphanedSelections);
         if (indexed.data.directoryMissing) {
           this.error.set(
@@ -1234,12 +1282,18 @@ export class PublishCalendar implements OnInit, OnDestroy {
     now: Date,
     activeChannelId: string | null,
     mirror: ReadonlyMap<string, ScheduledVideo>,
-    mirrorBySlot: ReadonlyMap<string, MirrorChip>
+    mirrorBySlot: ReadonlyMap<string, MirrorChip>,
+    liveByVideoId: ReadonlyMap<string, LiveVideo>
   ): CalendarChip {
     const publishAt = facts.publishAt as string;
     const at = new Date(publishAt);
     const channel = this.channelOf(facts.channelId);
-    const state = chipStateOf(facts, now);
+
+    // YouTube saying the video is out OVERRIDES every local reading of the same record.
+    // The local rules can only infer from a date and a status, and both of those describe
+    // what was meant to happen; this describes what did.
+    const live = facts.videoId !== null ? liveByVideoId.get(facts.videoId) ?? null : null;
+    const state = live !== null ? 'published' : chipStateOf(facts, now);
     const published = state === 'published';
 
     return {
@@ -1271,6 +1325,13 @@ export class PublishCalendar implements OnInit, OnDestroy {
       mirrorDivergence: this.divergenceOf(facts, at, mirror),
       readiness: readinessOf(facts),
       missing: missingFor(facts),
+      liveNote:
+        live !== null
+          ? `live on YouTube since ${new Date(live.publishedAt).toLocaleDateString([], {
+              month: 'short',
+              day: 'numeric',
+            })}` + (live.privacyStatus === 'public' ? '' : ` (${live.privacyStatus})`)
+          : null,
       collision:
         mirrorBySlot.get(
           `${facts.channelId}|${dateKeyOf(at)}|${splitPublishAt(publishAt).time}`

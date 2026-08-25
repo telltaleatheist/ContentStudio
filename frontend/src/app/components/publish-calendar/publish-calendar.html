@@ -135,11 +135,15 @@
         </div>
       }
 
-      <!-- The audit gate, stated where the decision is made rather than in a doc. -->
+      <!-- What this action does, stated where the decision is made. It deliberately does
+           NOT claim the audit will hold the release: the one video uploaded this way did
+           go public on schedule, so asserting otherwise would be telling the operator
+           something their own channel contradicts. -->
       <div class="uc-note">
-        Each video is created PRIVATE and stays private until Google approves the API
-        audit — its scheduled time will not publish it yet. A/B titles are set afterwards
-        with the browser extension.
+        Each video is created PRIVATE, carrying its scheduled time when the record has one.
+        Whether that time releases it depends on the state of your API audit — check the
+        first one before trusting the rest. A/B titles are set afterwards with the browser
+        extension.
       </div>
 
       <div class="uc-actions">
@@ -440,6 +444,9 @@
   }
   @if (chip.mirrorDivergence) {
     <div class="divergence-note">⇄ {{ chip.mirrorDivergence }}</div>
+  }
+  @if (chip.liveNote) {
+    <div class="live-note">● {{ chip.liveNote }}</div>
   }
   @if (chip.readiness === 'incomplete') {
     <div class="missing-note">needs {{ chip.missing.join(', ') }}</div>

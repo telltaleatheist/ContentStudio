@@ -1088,3 +1088,11 @@
     line-height: 1.35;
   }
 }
+
+/* YouTube says this one is already out. Stated on the chip because the record's own date
+   cannot know it — publishAt is cleared the moment a video publishes. */
+.live-note {
+  margin: 0.1rem 0 0.2rem;
+  font-size: 0.62rem;
+  color: var(--success-text, #16a34a);
+}

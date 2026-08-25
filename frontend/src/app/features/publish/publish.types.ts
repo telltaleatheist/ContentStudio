@@ -312,6 +312,13 @@ export interface CarryForwardCandidate {
   sourceKey: string;
   /** How many earlier items share it, whether or not they carry state. */
   siblingCount: number;
+  /**
+   * Is the set being offered from the PRIMARY set for this source?
+   *
+   * The candidates are looked at primary-first, so true is the ordinary answer. False means
+   * the primary held nothing worth carrying and this is the newest sibling that did.
+   */
+  fromIsPrimary: boolean;
 }
 
 /** One field's outcome in a carry-forward receipt. */
@@ -571,6 +578,26 @@ export interface ReportIndexEntry {
   promptSet: string | null;
   sourceFilename: string | null;
   sourceKey: string | null;
+  /**
+   * Is this the DEFINITIVE set for its source?
+   *
+   * A video can have several generated metadata sets — a re-run, a softening pass — joined
+   * by `source_key`, and exactly one of them is the one this app publishes. EVERY set is
+   * still in `entries`, each saying which it is: the reports page fills its version picker
+   * from all of them, and the CALENDAR keeps only the primaries.
+   *
+   * True for every item with a null `source_key`: no source file, no siblings, its own
+   * primary by definition.
+   */
+  isPrimary: boolean;
+  /**
+   * The item this set was softened from, or null when it is a generation run.
+   *
+   * The only thing that tells two sibling sets apart for a reader — same source, same
+   * chapters, same timestamps, different words — so it is what the version picker labels
+   * them with.
+   */
+  softenedFromItemId: string | null;
   titleCount: number;
   jobPath: string;
   jobSizeBytes: number;
@@ -617,9 +644,26 @@ export interface ScheduledVideo {
   durationSec: number;
 }
 
+/**
+ * Mirror of LiveVideo — a linked video YouTube says is already out.
+ *
+ * Needed because YouTube CLEARS publishAt the moment a video publishes: without this a
+ * released video is invisible to a sweep of scheduled ones, and a record still carrying
+ * its intended date reads as pending forever.
+ */
+export interface LiveVideo {
+  videoId: string;
+  channelId: string;
+  channelName: string;
+  title: string;
+  publishedAt: string;
+  privacyStatus: string;
+}
+
 /** Mirror of ScheduledSweep. The window is carried because it bounds what was seen. */
 export interface ScheduledSweep {
   scheduled: ScheduledVideo[];
+  liveLinked: LiveVideo[];
   problems: Array<{ channelId: string; channelName: string; message: string }>;
   sweptAt: string;
   channelsSwept: number;
