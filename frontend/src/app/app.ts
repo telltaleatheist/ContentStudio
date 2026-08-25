@@ -8,6 +8,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { NotificationBellComponent } from './components/notification-bell/notification-bell';
+import { YouTubeProfileComponent } from './components/youtube-profile/youtube-profile';
 import { NotificationModalComponent } from './components/notification-modal/notification-modal';
 import { ElectronService } from './services/electron';
 import { EnvironmentSetupService } from './services/environment-setup';
@@ -74,6 +75,7 @@ function detectEditorWindow(): boolean {
     MatTooltipModule,
     MatDialogModule,
     NotificationBellComponent,
+    YouTubeProfileComponent,
     NotificationModalComponent,
     EnvironmentSetupDialog,
     EnvironmentDownloadDock

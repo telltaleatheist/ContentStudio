@@ -272,6 +272,8 @@ export interface YouTubeConnection {
   scopes: string[];
   connectedAt: string;
   accessTokenExpiry: string;
+  /** Channel avatar URL; absent until backfill succeeds for pre-avatar bundles. */
+  channelThumbnailUrl?: string;
 }
 
 export interface YouTubeChannelCollectResult {

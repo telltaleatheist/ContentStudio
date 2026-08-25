@@ -99,6 +99,9 @@ export interface YouTubeTokenBundle {
   accessTokenExpiry: string; // ISO
   scopes: string[];
   connectedAt: string;       // ISO
+  /** Channel avatar (channels.list snippet.thumbnails.default). Absent on bundles
+   *  persisted before this field existed — backfilled by backfillChannelThumbnails(). */
+  channelThumbnailUrl?: string;
 }
 
 /** A connection with every secret stripped — safe to hand to the renderer. */
@@ -108,6 +111,7 @@ export interface YouTubeConnectionInfo {
   scopes: string[];
   connectedAt: string;
   accessTokenExpiry: string;
+  channelThumbnailUrl?: string;
 }
 
 /** Result of a successful connect: which brand channel the user authorized. */
@@ -246,6 +250,7 @@ export class YouTubeAuthService {
       scopes: b.scopes,
       connectedAt: b.connectedAt,
       accessTokenExpiry: b.accessTokenExpiry,
+      channelThumbnailUrl: b.channelThumbnailUrl,
     }));
   }
 
@@ -276,6 +281,7 @@ export class YouTubeAuthService {
       accessTokenExpiry: tokens.accessTokenExpiry,
       scopes: tokens.scopes,
       connectedAt: new Date().toISOString(),
+      channelThumbnailUrl: channel.channelThumbnailUrl,
     };
 
     await this.enqueue(() => {
@@ -420,7 +426,9 @@ export class YouTubeAuthService {
   }
 
   /** channels.list(part=snippet, mine=true) to discover the authorized brand channel. */
-  private async discoverChannel(accessToken: string): Promise<{ channelId: string; channelTitle: string }> {
+  private async discoverChannel(
+    accessToken: string
+  ): Promise<{ channelId: string; channelTitle: string; channelThumbnailUrl?: string }> {
     let data: any;
     try {
       const resp = await axios.get(CHANNELS_LIST_ENDPOINT, {
@@ -437,7 +445,11 @@ export class YouTubeAuthService {
         'No YouTube channel is associated with the Google account you chose. Pick a brand account with a channel.'
       );
     }
-    return { channelId: item.id, channelTitle: item.snippet?.title || item.id };
+    return {
+      channelId: item.id,
+      channelTitle: item.snippet?.title || item.id,
+      channelThumbnailUrl: item.snippet?.thumbnails?.default?.url,
+    };
   }
 
   /** Upsert the channel into the analytics registry, preserving existing promptSets. */
@@ -543,6 +555,42 @@ export class YouTubeAuthService {
       delete bundles[channelId];
       this.writeBundles(bundles);
     });
+  }
+
+  /**
+   * One-time upgrade for bundles persisted before channelThumbnailUrl existed:
+   * fetch each missing avatar via channels.list and store it. Per-channel failures
+   * are logged loudly and retried on the next call (the field simply stays absent
+   * until a fetch succeeds) — a cosmetic field must never break listing connections.
+   */
+  async backfillChannelThumbnails(): Promise<void> {
+    const missing = Object.values(this.readBundles()).filter((b) => !b.channelThumbnailUrl);
+    for (const b of missing) {
+      try {
+        const accessToken = await this.getAccessToken(b.channelId);
+        const resp = await axios.get(CHANNELS_LIST_ENDPOINT, {
+          params: { part: 'snippet', mine: 'true' },
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const url = resp.data?.items?.[0]?.snippet?.thumbnails?.default?.url;
+        if (!url) {
+          console.error(`[YouTubeAuth] channels.list returned no avatar for "${b.channelTitle}" (${b.channelId})`);
+          continue;
+        }
+        await this.enqueue(() => {
+          const bundles = this.readBundles();
+          const current = bundles[b.channelId];
+          if (!current) return; // disconnected while we were fetching
+          current.channelThumbnailUrl = url;
+          this.writeBundles(bundles);
+        });
+        console.log(`[YouTubeAuth] Backfilled avatar for "${b.channelTitle}" (${b.channelId})`);
+      } catch (e) {
+        console.error(
+          `[YouTubeAuth] Avatar backfill failed for "${b.channelTitle}" (${b.channelId}): ${this.describeAxiosError(e)}`
+        );
+      }
+    }
   }
 
   /** Compact axios error description WITHOUT ever including credential values. */

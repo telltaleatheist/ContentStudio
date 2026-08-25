@@ -1,0 +1,69 @@
+@if (connections().length === 0) {
+  <!-- Signed out: plain sign-in button running the Google consent flow. -->
+  <button
+    mat-stroked-button
+    class="signin-button"
+    (click)="connect()"
+    [disabled]="connecting()"
+    matTooltip="Sign in with your Google account to connect a YouTube channel"
+  >
+    <mat-icon>account_circle</mat-icon>
+    {{ connecting() ? 'Waiting for Google…' : 'Sign in' }}
+  </button>
+} @else {
+  <!-- Signed in: avatar button opens the channels menu. -->
+  <button
+    mat-icon-button
+    class="profile-button"
+    [matMenuTriggerFor]="profileMenu"
+    [matTooltip]="'YouTube: ' + primary()!.channelTitle"
+  >
+    @if (hasAvatar(primary()!)) {
+      <img
+        class="avatar avatar-toolbar"
+        [src]="primary()!.channelThumbnailUrl"
+        alt="{{ primary()!.channelTitle }}"
+        referrerpolicy="no-referrer"
+        (error)="avatarFailed(primary()!.channelId)"
+      />
+    } @else {
+      <mat-icon>account_circle</mat-icon>
+    }
+  </button>
+
+  <mat-menu #profileMenu="matMenu" class="youtube-profile-menu" xPosition="before">
+    @for (conn of connections(); track conn.channelId) {
+      <div class="channel-row" mat-menu-item [disableRipple]="true">
+        @if (hasAvatar(conn)) {
+          <img
+            class="avatar avatar-row"
+            [src]="conn.channelThumbnailUrl"
+            alt=""
+            referrerpolicy="no-referrer"
+            (error)="avatarFailed(conn.channelId)"
+          />
+        } @else {
+          <mat-icon class="avatar-row-icon">account_circle</mat-icon>
+        }
+        <div class="channel-text">
+          <span class="channel-title">{{ conn.channelTitle }}</span>
+          <span class="channel-sub">Connected {{ conn.connectedAt | date: 'mediumDate' }}</span>
+        </div>
+        <button
+          mat-icon-button
+          class="disconnect-button"
+          (click)="disconnect(conn, $event)"
+          [disabled]="disconnecting() === conn.channelId"
+          matTooltip="Sign out of this channel"
+        >
+          <mat-icon>logout</mat-icon>
+        </button>
+      </div>
+    }
+    <mat-divider></mat-divider>
+    <button mat-menu-item (click)="connect()" [disabled]="connecting()">
+      <mat-icon>person_add</mat-icon>
+      <span>{{ connecting() ? 'Waiting for Google…' : 'Sign in to another channel' }}</span>
+    </button>
+  </mat-menu>
+}

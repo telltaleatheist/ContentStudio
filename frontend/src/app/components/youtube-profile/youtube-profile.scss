@@ -1,0 +1,80 @@
+:host {
+  display: flex;
+  align-items: center;
+}
+
+.signin-button {
+  margin-left: 4px;
+
+  mat-icon {
+    margin-right: 4px;
+  }
+}
+
+.profile-button {
+  // The avatar fills the icon-button's slot; keep it perfectly round.
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.avatar {
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.avatar-toolbar {
+  width: 28px;
+  height: 28px;
+}
+
+// Menu content lives in an overlay, outside this component's DOM — ::ng-deep
+// scoped under our panel class is the supported way to style it.
+::ng-deep .youtube-profile-menu {
+  .channel-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    // Rows are informational; only their buttons act.
+    cursor: default;
+    min-width: 280px;
+  }
+
+  .avatar-row {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+  }
+
+  .avatar-row-icon {
+    width: 32px;
+    height: 32px;
+    font-size: 32px;
+    flex-shrink: 0;
+  }
+
+  .channel-text {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    overflow: hidden;
+
+    .channel-title {
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .channel-sub {
+      font-size: 0.75rem;
+      opacity: 0.7;
+    }
+  }
+
+  .disconnect-button {
+    flex-shrink: 0;
+  }
+}
