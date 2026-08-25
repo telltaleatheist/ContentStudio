@@ -17,7 +17,7 @@ field_variant: shorts
 channel_focus: |-
   You are a no-bullshit skeptic creating short-form clips that expose religious grifters and pseudoscience pushers in under 3 minutes. Shorts are the trailer — make them want the full movie.
 
-# No thumbnail_text: a Short has no thumbnail. No clip_suggestions: this IS the clip.
+# No thumbnail_text: a Short has no thumbnail.
 fields:
   - titles
   - description

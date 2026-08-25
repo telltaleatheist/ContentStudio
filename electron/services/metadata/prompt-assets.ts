@@ -104,7 +104,6 @@ const FIELD_FILES: Record<string, string> = {
   thumbnail_text: 'thumbnail-text.yml',
   hashtags: 'hashtags.yml',
   pinned_comment: 'pinned-comment.yml',
-  clip_suggestions: 'clip-suggestions.yml',
   spoken_keywords: 'spoken-keywords.yml',
 };
 
@@ -233,26 +232,6 @@ export class PromptAssets {
       this.pipelineFiles.set(file, loaded);
     }
     return this.requireString(loaded, filePath, key);
-  }
-
-  /** A pipeline mapping (e.g. the adapter wire-task table), required to be a string map. */
-  pipelineMap(file: string, key: string): Record<string, string> {
-    const filePath = path.join(this.root, 'shared', 'pipeline', file);
-    let loaded = this.pipelineFiles.get(file);
-    if (!loaded) {
-      loaded = this.readYaml(filePath);
-      this.pipelineFiles.set(file, loaded);
-    }
-    const value = key.split('.').reduce((acc: any, part) => (acc == null ? acc : acc[part]), loaded);
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      throw new Error(`Prompt asset "${filePath}" is missing the "${key}" mapping`);
-    }
-    for (const [k, v] of Object.entries(value)) {
-      if (typeof v !== 'string' || v.trim().length === 0) {
-        throw new Error(`Prompt asset "${filePath}" key "${key}.${k}" is not a non-empty string`);
-      }
-    }
-    return value as Record<string, string>;
   }
 
   // ------------------------------------------------------------------ channels

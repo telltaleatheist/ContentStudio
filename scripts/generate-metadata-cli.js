@@ -97,7 +97,6 @@ const FIELD_FLAGS = {
   '--thumbnail-text': 'thumbnail_text',
   '--hashtags': 'hashtags',
   '--pinned-comment': 'pinned_comment',
-  '--clip-suggestions': 'clip_suggestions',
 };
 
 function printHelp() {
@@ -116,7 +115,7 @@ Input / caching:
 
 Field selection (no flag = every field the channel publishes):
   --titles  --description  --tags  --thumbnail-text  --hashtags
-  --pinned-comment  --clip-suggestions
+  --pinned-comment
                        Each names a field in the channel's own \`fields:\` list. Selecting any
                        builds a verified copy of the prompt tree whose channel file declares
                        only those, so the REAL planner plans only those calls.

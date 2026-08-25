@@ -1088,11 +1088,13 @@ export class MetadataGeneratorService {
   /**
    * The distillation call's transport: the TITLES field's routed option, because the
    * guidelines exist to serve the titles call. Cloud goes through the plain cloud request
-   * (which carries the plain system contract); a local base model goes through the same
-   * plain Ollama shape the field calls use. A titles routing whose promptStyle is
-   * 'adapter' cannot take an instruction prompt at all — that is a routing conflict this
-   * run cannot resolve for the operator, and it throws naming both facts (no fallbacks:
-   * distilling on some OTHER field's model would be a decision nobody made).
+   * (which carries the plain system contract); a local model goes through the same plain
+   * Ollama shape the field calls use.
+   *
+   * There used to be a third case and a throw with it: a titles routing whose `promptStyle`
+   * was 'adapter' could not take an instruction prompt at all. The adapters were retired
+   * 2026-08-25, so every option this can resolve to takes one, and a stored adapter id now
+   * fails earlier and louder in metadata-routing.ts.
    */
   private static guidelinesTransport(
     aiManager: AIManagerService,
@@ -1109,14 +1111,7 @@ export class MetadataGeneratorService {
         distill: (prompt, what) => aiManager.runPlainRequest(prompt, option.model, what),
       };
     }
-    if (option.promptStyle === 'adapter') {
-      throw new Error(
-        `Titles are routed to the trained adapter "${option.model}", which takes its own conversation ` +
-          `shape, not an instruction prompt — so the guidelines distiller has no transport. Route titles ` +
-          `to a base or cloud model for this run, or run without insights (--no-insights).`
-      );
-    }
-    const host = option.host || params.aiHost || 'http://localhost:11434';
+    const host = params.aiHost || 'http://localhost:11434';
     return {
       model: option.model,
       distill: async (prompt, what) => {

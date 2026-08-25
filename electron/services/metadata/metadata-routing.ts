@@ -1,9 +1,10 @@
 /**
  * Per-task routing: which model writes which field
  *
- * Metadata used to be one call to one model. It is now one call per TASK, and the tasks
- * are migrating to local fine-tuned adapters one at a time, so "which model" stopped
- * being a single setting and became a table. This module is that table, and it is the
+ * Metadata used to be one call to one model. It is now one call per TASK, each settable to
+ * its own model, so "which model" stopped being a single setting and became a table. (The
+ * tasks were once migrating to local fine-tuned adapters one at a time; the adapters were
+ * retired 2026-08-25 and every option here is a plain prompted model.) This module is the
  * only place it exists: the settings modal renders it, the store persists selections
  * against it, and generation resolves selections through it. Nothing downstream may
  * invent a model name or a default.
@@ -33,11 +34,10 @@ export type MetadataRoutingTaskId =
   | 'chapters'
   | 'tags'
   | 'thumbnail_text'
-  | 'pinned_comment'
-  | 'clip_suggestions';
+  | 'pinned_comment';
 
 export interface MetadataRoutingOption {
-  /** 'cloud' goes through AIManagerService's provider clients; 'local' through the adapters. */
+  /** 'cloud' goes through AIManagerService's provider clients; 'local' through Ollama. */
   kind: 'cloud' | 'local';
   /** What the modal shows. */
   label: string;
@@ -47,52 +47,17 @@ export interface MetadataRoutingOption {
    */
   model: string;
   /**
-   * Non-default local host. Only the 32B titles model has one: it is served by an
-   * Ollama-SHAPED MLX shim on 11435, not by Ollama itself.
-   */
-  host?: string;
-  /**
-   * How to start `host` when nothing answers on it. Carried on the option because the
-   * backend that hits the connection refusal has no idea what is supposed to be
-   * listening there, and "connection refused" on a port the user has never heard of is
-   * not an actionable error.
-   */
-  startHint?: string;
-  /**
-   * The argv that starts `host`, for servers the app manages itself. When present, the
-   * unit probes the host before its first request and SPAWNS this when nothing answers
-   * — a planned part of running the task, not a recovery path — then stops the process
-   * it started when the run finishes. A server found already listening is used as-is
-   * and never stopped: whoever started it owns it.
-   */
-  startCommand?: string[];
-  /**
-   * REQUIRED on every local option: which of the two local prompt shapes this model wants.
+   * THERE IS NO PER-OPTION HOST, AND NO PROMPT SHAPE TO CHOOSE, as of 2026-08-25.
    *
-   * They are not interchangeable and picking the wrong one produces confident garbage
-   * rather than an error:
-   *
-   *  - `adapter` — a FINE-TUNED model. It was trained on a terse turn (`task: description`,
-   *    `format: normal`, then the chapter subjects as bullets) and the brief is baked into
-   *    its weights. Handing it the prompt set's instructions is handing it text its training
-   *    never contained. Runs through metadata-tasks.ts's LocalAdapterUnit, and only the
-   *    three fields an adapter was ever trained for (description, tags, titles).
-   *  - `prompt-set` — a BASE model. It knows nothing about this channel, so it gets exactly
-   *    the prompt the cloud groups get: the editorial brief, the per-field `##` sections
-   *    from the channel's yml, the abLearnings block and the JSON output contract. Runs
-   *    through LocalGroupUnit, which is CloudGroupUnit's prompt and parser pointed at
-   *    Ollama, so any routable field can go to it.
-   *
-   * Cloud options have no `promptStyle` — a cloud model is always the prompt-set shape.
+   * This interface used to carry `host`, `startHint`, `startCommand` and `promptStyle`, and
+   * all four existed for one thing: the trained adapters, and in particular the 32B titles
+   * model on its own Ollama-SHAPED MLX shim, which the app started on demand. The operator
+   * retired the adapters — the prompted models replaced them — so every local option is now a
+   * plain Ollama model on the one configured host, in the one prompt-set shape, and there is
+   * nothing left for those fields to vary. Keeping them would have described a choice the
+   * build can no longer make.
    */
-  promptStyle?: 'adapter' | 'prompt-set';
 }
-
-/** The shim behind headline-32b-titles. It is not Ollama and it is not always running. */
-export const HEADLINE_32B_HOST = 'http://localhost:11435';
-const HEADLINE_32B_START_HINT =
-  'that host is the Ollama-shaped MLX shim for the 32B titles model, not Ollama itself — start it with ' +
-  '`python AutoCutStudioApp/tools/headline32b-server/serve.py`';
 
 /**
  * The model the ALWAYS-ON chapter pipeline runs, which is deliberately not a routing option
@@ -194,9 +159,9 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    * model (cogito:14b) was deleted from this machine, so every `headline-14b-*` tag left in
    * Ollama is a shell that cannot load. Removing the options rather than leaving them
    * selectable is the point — an option naming a model that cannot run is a job that fails
-   * an hour in.
+   * an hour in. Every remaining adapter followed them out on 2026-08-25.
    */
-  'qwen35-9b': { kind: 'local', label: 'Qwen3.5 9B', model: 'qwen3.5:9b', promptStyle: 'prompt-set' },
+  'qwen35-9b': { kind: 'local', label: 'Qwen3.5 9B', model: 'qwen3.5:9b' },
   /**
    * The metadata spec's A/B candidate for the two MECHANICAL calls, offered on description
    * and tags and nowhere else.
@@ -213,7 +178,7 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    * reliably tell which is which. A default that changed on the strength of an untested
    * proposal would make that comparison retrospective.
    */
-  'qwen35-4b': { kind: 'local', label: 'Qwen3.5 4B', model: 'qwen3.5:4b', promptStyle: 'prompt-set' },
+  'qwen35-4b': { kind: 'local', label: 'Qwen3.5 4B', model: 'qwen3.5:4b' },
   /**
    * A BASE model on fields that used to be cloud-only, which is a deliberate exception to
    * this file's own rule and the reason the note below METADATA_ROUTING_TASKS was rewritten.
@@ -245,21 +210,7 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    * whole stream and can leave the object in `thinking`; ollama-json.ts handles exactly that
    * case and nothing wider.
    */
-  'qwen38-27b': { kind: 'local', label: 'Qwen 27B', model: 'qwen3.8:27b', promptStyle: 'prompt-set' },
-  'headline-titles-32b': {
-    kind: 'local',
-    label: 'Headline 32B (titles)',
-    model: 'headline-32b-titles',
-    // The last surviving trained adapter: a separate MLX shim, its own server, and the
-    // terse task turn it was trained on. Nothing about it changed on 2026-08-22.
-    promptStyle: 'adapter',
-    host: HEADLINE_32B_HOST,
-    startHint: HEADLINE_32B_START_HINT,
-    startCommand: [
-      '/bin/sh',
-      '/Volumes/Callisto/Projects/AutoCutStudioApp/tools/headline32b-server/serve-headline-32b.sh',
-    ],
-  },
+  'qwen38-27b': { kind: 'local', label: 'Qwen 27B', model: 'qwen3.8:27b' },
 };
 
 export interface MetadataRoutingTask {
@@ -284,9 +235,9 @@ export interface MetadataRoutingTask {
  *
  * ALL SIX TASKS ARE NOW LOCAL-BY-DEFAULT AND CLOUD-CAPABLE, which is the opposite of what
  * this note used to say. It read: "`chapters` is local-only because the sealed pipeline
- * makes hundreds of one-question calls per video ... thumbnail_text, pinned_comment and
- * clip_suggestions are cloud-only for the opposite reason: no adapter has been trained for
- * them yet, and pointing them at a base model would answer the brief fluently and wrongly."
+ * makes hundreds of one-question calls per video ... thumbnail_text and pinned_comment are
+ * cloud-only for the opposite reason: no adapter has been trained for them yet, and pointing
+ * them at a base model would answer the brief fluently and wrongly."
  * Both halves of that stopped being true on 2026-08-22:
  *
  *  - `chapters` is not in this table at all. It is not routed, because there is nothing
@@ -302,10 +253,10 @@ export interface MetadataRoutingTask {
  * EVERY DEFAULT IS LOCAL AS OF THIS BUILD. Titles were the last cloud default and moved to
  * the 27B; pinned comments moved off the 9B onto it too. The shipped table is now:
  *
- *   titles, thumbnail_text, pinned_comment, clip_suggestions  ->  qwen3.8:27b
- *   description                                               ->  qwen3.5:9b (DescriptionUnit)
- *   tags                                                      ->  code-assembled where the item
- *                                                                 has chapters, else qwen3.5:9b
+ *   titles, thumbnail_text, pinned_comment  ->  qwen3.8:27b
+ *   description                             ->  qwen3.5:9b (DescriptionUnit)
+ *   tags                                    ->  code-assembled where the item has chapters,
+ *                                               else qwen3.5:9b
  *
  * THE GROUPING IS THE POINT, not just the model choice. Four fields on ONE model is ONE call,
  * and the fields in it are the ones the prompt sets were written to be written together: the
@@ -336,7 +287,7 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      */
     id: 'titles',
     label: 'Titles',
-    options: ['qwen38-27b', 'headline-titles-32b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
+    options: ['qwen38-27b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
     defaultOptionId: 'qwen38-27b',
     modal: true,
   },
@@ -412,21 +363,12 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
      * 27B by default, moved off the 9B in this build at the operator's direction.
      *
      * The reason is grouping as much as quality: pinned comments now share a model with
-     * titles, thumbnails and clips, so all four are written in ONE call by ONE model that can
-     * see its own titles — which is what makes "reference something specific from this video"
-     * and the cross-field self-check followable instead of aspirational.
+     * titles and thumbnails, so all three are written by ONE model that can see its own
+     * titles — which is what makes "reference something specific from this video" and the
+     * cross-field self-check followable instead of aspirational.
      */
     id: 'pinned_comment',
     label: 'Pinned comment',
-    options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
-    defaultOptionId: 'qwen38-27b',
-    modal: true,
-  },
-  {
-    id: 'clip_suggestions',
-    label: 'Clip suggestions',
-    // 27B by default: picking the clippable moments means holding the whole transcript in
-    // one head, which is the shape the smaller model is worst at.
     options: ['qwen38-27b', 'qwen35-9b', 'sonnet5', 'opus5', 'haiku45', 'claude-cli', 'claude-cli-sonnet'],
     defaultOptionId: 'qwen38-27b',
     modal: true,
@@ -467,6 +409,9 @@ export const REMOVED_ROUTING_TASKS: Record<string, string> = {
   // routed task again, so a stored chapters entry is validated like any other. Its DEAD
   // OPTION ids from the removed architectures stay in REMOVED_ROUTING_OPTIONS below and are
   // still dropped with a notice.
+  clip_suggestions:
+    'clip suggestions were retired 2026-08-25 by operator decision — the field is not generated, ' +
+    'not published and not offered any more, so there is nothing left for a routing entry to name',
 };
 
 export const REMOVED_ROUTING_OPTIONS: Record<string, string> = {
@@ -480,6 +425,12 @@ export const REMOVED_ROUTING_OPTIONS: Record<string, string> = {
   'headline-desc-14b': 'its base model (cogito:14b) was deleted, so the adapter cannot load',
   'headline-tags-14b': 'its base model (cogito:14b) was deleted, so the adapter cannot load',
   'headline-titles-14b': 'its base model (cogito:14b) was deleted, so the adapter cannot load',
+  // The last one standing. Its base model was fine and its MLX shim still runs — this is a
+  // DECISION, not an outage, which is why the reason says so: an operator who reads the
+  // notice should not go looking for a broken server.
+  'headline-titles-32b':
+    'the trained adapters were retired 2026-08-25 by operator decision — prompted models replaced ' +
+    'them, so the 32B titles adapter, its MLX shim and adapters.yml are all gone from this build',
 };
 
 /** Stored shape: taskId -> optionId. Partial by design; absent entries take the default. */
@@ -497,8 +448,7 @@ function taskDef(taskId: string): MetadataRoutingTask | undefined {
  *
  * Two distinct failures, named distinctly, because they have different fixes: an option
  * this build has never heard of (stale setting, typo, an option removed by an upgrade)
- * and an option that exists but is not offered for this task (cloud model on the chapter
- * pipeline, adapter on a field it was not trained for).
+ * and an option that exists but is not offered for this task.
  */
 export function validateRoutingSelection(taskId: string, optionId: string): void {
   const task = taskDef(taskId);
@@ -643,8 +593,11 @@ export function migrateStoredRouting(stored: unknown): MetadataRoutingMigration 
   // computed ONE more time, here, and written down as the chapters entry it always
   // effectively was. Local agreement needs no entry: it equals the shipped default.
   if (!('chapters' in selections)) {
+    // `clip_suggestions` was the fifth voter here until the field was retired (2026-08-25).
+    // Its vote is gone with it rather than defaulted in: a store from the slot era set all
+    // five together, so the four that remain agree exactly when the five did.
     const exSlotTasks: MetadataRoutingTaskId[] = [
-      'titles', 'description', 'thumbnail_text', 'pinned_comment', 'clip_suggestions',
+      'titles', 'description', 'thumbnail_text', 'pinned_comment',
     ];
     const exSlotOptions = ['qwen38-27b', 'sonnet5', 'opus5'];
     const picks = exSlotTasks.map(
@@ -689,10 +642,9 @@ export function describeRouting(routing: ResolvedMetadataRouting): string {
  *
  * - `cloud` — the question does not apply; a Claude/OpenAI model is present by definition.
  * - `installed` / `not-installed` — Ollama answered and either does or does not list it.
- * - `unknown` — nobody can say. Either Ollama did not answer (so NOTHING it serves can be
- *   judged), or the option is served by something that is not Ollama and has no listing to
- *   read. Deliberately distinct from `not-installed`: "we could not check" and "it is not
- *   there" have different fixes, and collapsing them would be a guess.
+ * - `unknown` — nobody can say: Ollama did not answer, so NOTHING it serves can be judged.
+ *   Deliberately distinct from `not-installed`: "we could not check" and "it is not there"
+ *   have different fixes, and collapsing them would be a guess.
  */
 export type MetadataRoutingAvailability = 'cloud' | 'installed' | 'not-installed' | 'unknown';
 
@@ -707,19 +659,8 @@ export interface OllamaInventory {
 }
 
 /**
- * An option is served by plain Ollama when it is local and names no host of its own.
- * The one option that DOES name a host (the 32B titles model) is served by an
- * Ollama-shaped MLX shim this app starts on demand — its /api/tags is a different
- * server's, and a shim that is merely not running is not a missing model.
- */
-function servedByOllama(option: MetadataRoutingOption): boolean {
-  return option.kind === 'local' && !option.host;
-}
-
-/**
- * Ollama prints an untagged model as `name:latest`, and the registry writes the bare name
- * for the adapters (`headline-14b-descriptions`). Comparing the two raw would report every
- * installed adapter as missing.
+ * Ollama prints an untagged model as `name:latest`, and the registry has written bare names
+ * before now. Comparing the two raw would report an installed model as missing.
  */
 function normalizeOllamaName(name: string): string {
   return name.includes(':') ? name : `${name}:latest`;
@@ -762,11 +703,6 @@ export interface MetadataRoutingOptionView {
   /** The model this option names, so the modal can say which one is missing. */
   model: string;
   availability: MetadataRoutingAvailability;
-  /**
-   * The detail the availability alone does not carry: `unknown` for a reason the host
-   * banner does not already give (the MLX shim, which Ollama cannot be asked about).
-   */
-  availabilityNote?: string;
 }
 
 export interface MetadataRoutingTaskView {
@@ -823,15 +759,6 @@ function optionView(id: string, inventory: OllamaInventory): MetadataRoutingOpti
 
   if (option.kind === 'cloud') {
     return { ...base, availability: 'cloud' };
-  }
-  if (!servedByOllama(option)) {
-    return {
-      ...base,
-      availability: 'unknown',
-      availabilityNote:
-        `served by the Ollama-shaped shim on ${option.host}, which this app starts on demand — ` +
-        `Ollama does not list it, so whether it is present cannot be checked from here`,
-    };
   }
   if (!inventory.reachable) {
     return { ...base, availability: 'unknown' };

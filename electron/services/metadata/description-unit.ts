@@ -330,7 +330,7 @@ export class DescriptionUnit implements MetadataUnit {
             `reloads the model; there is no per-unit sizing to fall back on.`
         );
       }
-      this.host = option.host || defaultHost;
+      this.host = defaultHost;
       this.client = axios.create({ baseURL: this.host });
       this.label = `description (local ${option.model} @ ${this.host})`;
       budget.register('description', (ctx) =>

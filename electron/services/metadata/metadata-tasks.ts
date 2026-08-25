@@ -28,16 +28,19 @@
  * subject block drops the duplicate table of contents), the insights block where it belongs, any earlier
  * field's answer it needs as input data, and an OUTPUT FORMAT naming exactly one key.
  *
- * TWO SHAPES REMAIN, and the split is not local-vs-cloud:
+ * ONE SHAPE, and it is not local-vs-cloud. Every field call — local or cloud — is the
+ * prompt-set shape: that field's yml section, its self-check, the transcript, and a plain-text
+ * output contract. LocalFieldUnit posts to Ollama through plain-call.ts; CloudFieldUnit posts
+ * through the AI manager's plain transport. They build their prompt with the same builder and
+ * read their answer through the same parser. The only difference is transport.
  *
- *   adapter    — a FINE-TUNED model with the brief in its weights (`promptStyle: 'adapter'`).
- *                A terse `task:`/`format:` turn in, plain text out, no JSON anywhere, and only
- *                the fields an adapter was ever trained for. The last one left is the 32B
- *                titles model on its own MLX shim.
- *   prompt-set — everything else, local and cloud alike. LocalFieldUnit posts to Ollama through
- *                plain-call.ts; CloudFieldUnit posts through the AI manager's plain transport.
- *                They build their prompt with the same builder and read their answer through
- *                the same parser. The only difference is transport.
+ * THERE USED TO BE A SECOND SHAPE: the trained adapters (`promptStyle: 'adapter'`), fine-tuned
+ * models fed a terse `task:`/`format:` turn with the brief baked into their weights. They were
+ * RETIRED 2026-08-25 by operator decision — the prompted models replaced them — and the whole
+ * mechanism went with them: the turn builders, LocalAdapterUnit, its MLX-shim spawn client, and
+ * adapters.yml. A stored routing that still names one fails loudly (metadata-routing.ts's
+ * REMOVED_ROUTING_OPTIONS), which is the point: silently running a different model than the
+ * setting names is the failure this build refuses to have.
  *
  * TWO LOCAL MODELS IS THE BUDGET. Per-field calls make it trivially easy to have a run load
  * five models, and every load is a multi-GB stall. planMetadataUnits computes the roster of
@@ -62,7 +65,6 @@
  */
 
 import axios, { AxiosInstance } from 'axios';
-import { spawn } from 'child_process';
 import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import { queueAITask } from '../queue-manager.service';
@@ -118,7 +120,6 @@ export type MetadataFieldId =
   | 'tags'
   | 'thumbnail_text'
   | 'pinned_comment'
-  | 'clip_suggestions'
   | 'hashtags'
   | 'spoken_keywords';
 
@@ -141,7 +142,6 @@ const FIELD_TASKS: Array<{ task: MetadataRoutingTaskId; field: MetadataFieldId }
   { task: 'titles', field: 'titles' },
   { task: 'thumbnail_text', field: 'thumbnail_text' },
   { task: 'pinned_comment', field: 'pinned_comment' },
-  { task: 'clip_suggestions', field: 'clip_suggestions' },
 ];
 
 /**
@@ -345,7 +345,6 @@ export const METADATA_FIELD_SECTIONS: Record<MetadataFieldId, MetadataFieldSpec>
   tags: { section: 'TAGS', output: 'comma-line' },
   thumbnail_text: { section: 'THUMBNAIL_TEXT', output: 'lines' },
   pinned_comment: { section: 'PINNED_COMMENT', output: 'lines' },
-  clip_suggestions: { section: 'CLIP_SUGGESTIONS', output: 'lines' },
   hashtags: { section: 'HASHTAGS', output: 'lines' },
   spoken_keywords: { section: 'SPOKEN_KEYWORDS', output: 'lines' },
 };
@@ -733,7 +732,7 @@ export class LocalFieldUnit implements MetadataUnit {
   ) {
     this.fields = [spec.field];
     this.inputFields = spec.inputFields;
-    this.host = option.host || defaultHost;
+    this.host = defaultHost;
     this.label = `${spec.field} (local ${option.model} @ ${this.host})`;
     this.client = axios.create({ baseURL: this.host });
     this.budget.register(spec.field, (ctx) => this.promptTokenNeed(ctx));
@@ -822,8 +821,8 @@ export class LocalFieldUnit implements MetadataUnit {
  * Read one field call's plain answer into its field.
  *
  * A `lines` field comes back as one option per line (numbering tolerated and stripped —
- * plain-call.ts); the tags come back as one comma-separated line and go through the same
- * normalization the adapter's tag answer always has. A COUNT MISMATCH on a list field is a
+ * plain-call.ts); the tags come back as one comma-separated line and go through the shared
+ * tag-line normalizer below. A COUNT MISMATCH on a list field is a
  * declared warning and the answer is KEPT — deliver-and-curate; the operator reads ten titles
  * or eight — never a blocking check.
  */
@@ -835,7 +834,7 @@ function readFieldAnswer(
 ): Record<string, unknown> {
   const what = `the ${field} call for ${ctx.sourceLabel}`;
   if (METADATA_FIELD_SECTIONS[field].output === 'comma-line') {
-    return { [field]: normalizeAdapterTags(text, field, model, ctx.sourceLabel) };
+    return { [field]: normalizeTagLine(text, field, model, ctx.sourceLabel) };
   }
   const lines = parseLines(text, what);
   const expected = promptAssets().channel(ctx.promptSetName).counts[field];
@@ -849,503 +848,22 @@ function readFieldAnswer(
 }
 
 // ---------------------------------------------------------------------------
-// The local adapters
-// ---------------------------------------------------------------------------
-
-/**
- * The trained adapters' contracts. The STRINGS live in
- * electron/assets/prompts/shared/pipeline/adapters.yml; this is the access.
- *
- * They are not instructions in the editable sense — they are half of a fine-tuned model's input
- * distribution. Every example in the training set paired one of those strings with a user turn
- * in the exact shape `buildAdapterUserTurn` writes, and a LoRA conditioned that tightly degrades
- * on a reworded system prompt in ways that do not look like failure: it keeps answering, just
- * off-brief. That is why the asset file says, in its own header, that editing them is a
- * RETRAINING decision. They moved anyway, because "every model-facing string has one home" is
- * worth more than the accidental protection of burying them in a .ts file.
- *
- * Note what they hand back to code: the description adapter writes its own hashtag line (parsed
- * out here into the `hashtags` field), and the tags adapter deliberately omits channel and
- * creator names because those are appended downstream.
- */
-export type AdapterTask = 'description' | 'tags' | 'titles';
-
-const ADAPTERS_FILE = 'adapters.yml';
-
-/**
- * The wire name for `task:` in the user turn.
- *
- * `titles` is the ContentStudio field; `title` is what the training set wrote, because
- * the adapter writes ONE title per call. The field name and the trained token are not the
- * same string and must not be conflated — the mapping is in the asset, once.
- */
-function adapterWireTask(task: AdapterTask): string {
-  const map = promptAssets().pipelineMap(ADAPTERS_FILE, 'wire_task');
-  const wire = map[task];
-  if (!wire) {
-    throw new Error(`Prompt asset "pipeline/${ADAPTERS_FILE}" has no wire_task entry for the "${task}" adapter`);
-  }
-  return wire;
-}
-
-function adapterSystemPrompt(task: AdapterTask): string {
-  return promptAssets().pipeline(ADAPTERS_FILE, `system.${task}`);
-}
-
-/**
- * The user turn, in the training set's exact shape.
- *
- * It conditions on the SHORT subject lines only — stage 4's 4-8 word `about` strings —
- * and never on the `detail` prose the cloud calls get. That is not a simplification: the
- * adapters only ever saw this list, and feeding them a paragraph per subject is out of
- * distribution.
- *
- * `format` is always `normal`. The training data also carries a livestream format, but
- * ContentStudio has no flag that distinguishes the two, and guessing which one a video
- * is would be inventing an input.
- */
-function buildAdapterUserTurn(task: AdapterTask, subjects: string[]): string {
-  const lines = subjects.map((s) => s.trim()).filter((s) => s.length > 0);
-  if (lines.length === 0) {
-    throw new Error(
-      `Metadata task "${task}" is routed to a local adapter but the chapter subject list is empty — ` +
-        `the adapter conditions on that list and has nothing else to work from`
-    );
-  }
-  // Titles rows in the training set carry a third header line, `target:` — the CTR tier
-  // the title should aim for (top-decile | strong | typical | weak; all 7,497 title rows
-  // have one). AutoCutStudio's reference client (title-generator.ts buildUserPrompt)
-  // sends it; this port originally dropped it, which put every titles call OFF the
-  // trained input distribution. Production asks top-decile per HEADLINE.md. Description
-  // and tags rows have no target line — adding one there would be equally off-brief.
-  const target = task === 'titles' ? promptAssets().pipeline(ADAPTERS_FILE, 'title_target_line') : '';
-  // Function replacers throughout: subject lines are free text out of a transcript.
-  return promptAssets()
-    .pipeline(ADAPTERS_FILE, 'user_turn')
-    .replace(/\{task\}/g, () => adapterWireTask(task))
-    .replace(/\{target\}/g, () => target)
-    .replace(/\{subjects\}/g, () => lines.map((s) => `- ${s}`).join('\n'));
-}
-
-interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-}
-
-/** Long enough to hold the model across the description -> tags gap in one run. */
-const ADAPTER_KEEP_ALIVE = '10m';
-/** A 14B writing three sentences is seconds of work; five minutes is a wedged server. */
-const ADAPTER_TIMEOUT_MS = 300_000;
-
-/** How many titles the titles adapter is sampled for. One call per candidate. */
-const TITLE_CANDIDATES = 6;
-/** A title is one line; 64 tokens is generous for 70 characters and cheap to sample. */
-const TITLE_NUM_PREDICT = 64;
-/** The titles call's output budget. Sampling itself is the provider's default — see the class comment. */
-const TITLE_OPTIONS = { num_predict: TITLE_NUM_PREDICT };
-
-/**
- * The seam's second implementation: one fine-tuned adapter, on a local Ollama-shaped host.
- *
- * Three tasks have a LoRA over qwen3:14b, one contract each (adapters.yml), and
- * ONE instance of this class serves ONE task — the models differ, the hosts can differ
- * (the 32B titles model is an MLX shim on its own port), and each one it makes resident is
- * declared to the JOB, which releases them together when the job ends.
- *
- * Decoding is the provider's default for every task (operator's ruling 2026-08-24: no
- * sampling parameters anywhere — a model that cannot perform at its defaults is replaced,
- * not tuned). This superseded the adapters' evaluated settings (greedy for description and
- * tags, 0.7/top_p 0.9 for titles); default sampling still gives the titles call the six
- * different bets its six candidates exist for.
- *
- * They answer in PLAIN TEXT, not JSON. That is the whole shape difference from the cloud
- * unit: no JSON parse, no key registry, no repair loop — a description is a description,
- * and the mapping from text to fields happens here.
- *
- * There is no local->cloud rescue anywhere in this class: a task the user routed to an
- * adapter either runs on that adapter or fails saying why.
- */
-/** Model load + warmup measured at ~16s; the margin covers a cold external volume. */
-const SHIM_READY_TIMEOUT_MS = 120_000;
-
-export class LocalAdapterUnit implements MetadataUnit {
-  readonly label: string;
-  readonly fields: MetadataFieldId[];
-  /** An adapter reads its trained turn and nothing else — never another field's answer. */
-  readonly inputFields: MetadataFieldId[] = [];
-
-  private readonly client: AxiosInstance;
-  private readonly host: string;
-  private readonly model: string;
-  private readonly startHint?: string;
-  private readonly startCommand?: string[];
-  /** The spawned host's most recent output lines, for the error when it fails to come up. */
-  private shimOutput: string[] = [];
-
-  constructor(
-    private readonly task: AdapterTask,
-    option: MetadataRoutingOption,
-    defaultHost: string,
-    /**
-     * Where this unit DECLARES what it is holding: the model it made resident, and separately
-     * the host process it started, whose memory only comes back when that process exits (its
-     * own keep-alive eviction is a deliberate no-op). The JOB releases both, once.
-     */
-    private readonly lifecycle: JobModelLifecycle,
-    /** Fired on cancel, so an adapter call in flight is aborted rather than waited out. */
-    private readonly abortSignal?: AbortSignal
-  ) {
-    if (option.kind !== 'local') {
-      throw new Error(
-        `Metadata task "${task}" was planned as a local adapter but option "${option.label}" is a ${option.kind} model`
-      );
-    }
-    this.host = option.host || defaultHost;
-    this.model = option.model;
-    this.startHint = option.startHint;
-    this.startCommand = option.startCommand;
-    // ONE field per adapter. This used to be two for the description adapter, whose trained
-    // output ends with a hashtag line that was parsed out into the `hashtags` field. Hashtags
-    // are code-owned as of this build (spec §2's ownership ruling), and the description is not
-    // an adapter shape any more either, so there is no second field left for any adapter to
-    // claim. `splitDescriptionAndHashtags` below is kept for the adapter-shaped answer it
-    // still knows how to read; planMetadataUnits now refuses to route the description to an
-    // adapter, so the branch that calls it is unreachable until an adapter is trained for the
-    // hook/body shape, and is left standing as that adapter's contract rather than deleted.
-    this.fields = [task];
-    this.label = `${task} (local ${this.model} @ ${this.host})`;
-    this.client = axios.create({
-      baseURL: this.host,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
-  describePrompt(ctx: MetadataRunContext): string {
-    const messages = this.buildConversation(ctx);
-    const decoding = this.task === 'titles'
-      ? `provider default sampling, ${TITLE_CANDIDATES} candidates`
-      : 'provider default sampling';
-    return (
-      `# LOCAL ADAPTER: ${this.model} @ ${this.host} (ollama /api/chat, think:false, ${decoding})\n\n` +
-      messages.map((m) => `--- ${m.role.toUpperCase()} ---\n${m.content}`).join('\n\n')
-    );
-  }
-
-  async generate(ctx: MetadataRunContext): Promise<Record<string, unknown>> {
-    await this.ensureHostUp();
-    const messages = this.buildConversation(ctx);
-
-    if (this.task === 'titles') {
-      return { titles: await this.generateTitles(messages, ctx) };
-    }
-
-    const answer = await this.chat(messages, ctx.sourceLabel, {});
-
-    return this.task === 'description'
-      ? splitDescriptionAndHashtags(answer, this.task, this.model, ctx.sourceLabel)
-      : { tags: normalizeAdapterTags(answer, this.task, this.model, ctx.sourceLabel) };
-  }
-
-  // --------------------------------------------------------------- managed host
-
-  /**
-   * App-managed adapter hosts (the 32B MLX shim) are started HERE, before the first
-   * request, as a planned part of running the task — not as recovery from a failed one.
-   * A server found already listening is used and left alone; one this unit spawns is held by
-   * the JOB (model-lifecycle.ts) and stopped in the orchestrator's finally, so a spawned host
-   * cannot outlive its job even when it fails — and does not die between two items of one job
-   * only to be started again, at 16s and a full model load, for the next.
-   *
-   * Readiness is GET /api/tags answering: the shim only opens its port after the model
-   * is loaded and warmed (~16s measured), so a 200 means ready, not merely started.
-   */
-  private async ensureHostUp(): Promise<void> {
-    if (!this.startCommand) return;
-    // The one question that matters, and it covers the host a PREVIOUS item of this job
-    // started: it is still listening, because nothing stops it until the job ends.
-    if (await this.hostAnswers()) return;
-
-    const [command, ...args] = this.startCommand;
-    log.info(
-      `[MetadataTasks] "${this.model}": nothing is listening on ${this.host} — starting it: ${this.startCommand.join(' ')}`
-    );
-    // Owned by the JOB from the moment it answers, not by this unit: a server found already
-    // listening is somebody else's and is never stopped here.
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    this.shimOutput = [];
-    const capture = (chunk: Buffer) => {
-      for (const line of chunk.toString().split('\n')) {
-        const trimmed = line.trim();
-        if (trimmed.length === 0) continue;
-        log.info(`[${this.model}] ${trimmed}`);
-        this.shimOutput.push(trimmed);
-        if (this.shimOutput.length > 20) this.shimOutput.shift();
-      }
-    };
-    child.stdout?.on('data', capture);
-    child.stderr?.on('data', capture);
-    let exited = false;
-    child.on('exit', (code) => {
-      exited = true;
-      log.info(`[MetadataTasks] "${this.model}" server exited with code ${code}`);
-    });
-
-    const deadline = Date.now() + SHIM_READY_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      // Two minutes is a long time to keep waiting for a run the user has already
-      // stopped. Nothing has held this host yet — it never answered — so it is killed on
-      // the deadline path below and by its own exit handler here.
-      if (this.abortSignal?.aborted) {
-        throw new JobCancelledError(`while waiting for the "${this.model}" server to come up on ${this.host}`);
-      }
-      if (exited) {
-        throw new Error(
-          `Metadata task "${this.task}" started the server for "${this.model}" ` +
-            `(${this.startCommand.join(' ')}) and it exited before answering on ${this.host}. ` +
-            `Its last output:\n${this.shimOutput.join('\n') || '(none)'}`
-        );
-      }
-      if (await this.hostAnswers()) {
-        log.info(
-          `[MetadataTasks] "${this.model}" is up on ${this.host} (started by this job; stopped when the job ends)`
-        );
-        // The JOB stops it, not this unit and not this item: the next item's adapter call
-        // finds it listening and is served by the model already in memory.
-        this.lifecycle.holdProcess(
-          `host ${this.host}`,
-          `the "${this.model}" server this job started`,
-          () => child.kill('SIGTERM')
-        );
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-    }
-    child.kill('SIGTERM');
-    throw new Error(
-      `Metadata task "${this.task}" started the server for "${this.model}" and it did not become ready on ` +
-        `${this.host} within ${SHIM_READY_TIMEOUT_MS / 1000}s. Its last output:\n${this.shimOutput.join('\n') || '(none)'}`
-    );
-  }
-
-  private async hostAnswers(): Promise<boolean> {
-    try {
-      await this.client.get('/api/tags', { timeout: 2000 });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  // ------------------------------------------------------------------ conversation
-
-  private buildConversation(ctx: MetadataRunContext): ChatMessage[] {
-    return [
-      { role: 'system', content: adapterSystemPrompt(this.task) },
-      { role: 'user', content: buildAdapterUserTurn(this.task, ctx.chapterSubjects) },
-    ];
-  }
-
-  // ------------------------------------------------------------------------- titles
-
-  /**
-   * Six samples of one title, deduped into the `titles` list.
-   *
-   * Six SEQUENTIAL calls, not six parallel ones: the adapter is resident on one GPU
-   * behind a one-slot queue, so parallel requests would only queue anyway.
-   *
-   * Every distinct candidate is returned — the user picks. (An invented-name guard used
-   * to drop candidates here and hard-fail descriptions; removed 2026-08-19 at the user's
-   * direction after it false-positived on real references the subject lines didn't carry.)
-   */
-  private async generateTitles(messages: ChatMessage[], ctx: MetadataRunContext): Promise<string[]> {
-    const raw: string[] = [];
-    for (let i = 0; i < TITLE_CANDIDATES; i++) {
-      raw.push(await this.chat(messages, ctx.sourceLabel, TITLE_OPTIONS));
-    }
-
-    const seen = new Set<string>();
-    const distinct: string[] = [];
-    for (const candidate of raw) {
-      const title = candidate.trim();
-      if (title.includes('\n')) {
-        // The adapter writes ONE title per call. More than one line is a departure from
-        // the trained output shape, and what else departed is unknown.
-        log.warn(
-          `[MetadataTasks] ${ctx.sourceLabel}: dropped a titles candidate that came back as more than one line ` +
-            `("${title.replace(/\n/g, ' / ').slice(0, 120)}")`
-        );
-        continue;
-      }
-      const key = title.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      distinct.push(title);
-    }
-
-    if (distinct.length < 3) {
-      throw new Error(
-        `Metadata task "titles" for ${ctx.sourceLabel} on model "${this.model}" produced only ${distinct.length} ` +
-          `distinct title(s) from ${TITLE_CANDIDATES} samples — a title list the user cannot choose from is not a ` +
-          `title list (got: ${distinct.map((t) => `"${t}"`).join(', ') || 'nothing'})`
-      );
-    }
-
-    log.info(
-      `[MetadataTasks] ${ctx.sourceLabel}: titles adapter kept ${distinct.length} distinct candidate(s) ` +
-        `from ${TITLE_CANDIDATES} samples on "${this.model}"`
-    );
-    return distinct;
-  }
-
-  // -------------------------------------------------------------------- the request
-
-  /**
-   * One /api/chat call, through the single-slot AI queue.
-   *
-   * The queue slot is not optional bookkeeping: this is a 14B on the same GPU the
-   * chapter pipeline just finished using, and the 1-concurrent AI pool is what stops two
-   * of them being resident at once. It is the same slot the cloud call this replaces
-   * took (AIManagerService.makeRequest queues every provider request), so routing a task
-   * local adds no concurrency — it swaps what happens inside one slot.
-   */
-  private async chat(
-    messages: ChatMessage[],
-    sourceLabel: string,
-    options: Record<string, number>
-  ): Promise<string> {
-    const requestId = Math.random().toString(36).substring(7);
-    const model = this.model;
-    const task = this.task;
-
-    const text = await queueAITask<string>(
-      `local-${task}-${requestId}`,
-      `Local adapter: ${task} (${model})`,
-      async () => {
-        // Cancelling while this unit sat in the AI queue must not let it start.
-        if (this.abortSignal?.aborted) {
-          throw new JobCancelledError(`before the "${task}" adapter request left the AI queue`);
-        }
-
-        let data: any;
-        try {
-          const response = await this.client.post(
-            '/api/chat',
-            {
-              model,
-              messages,
-              stream: false,
-              think: false,
-              keep_alive: ADAPTER_KEEP_ALIVE,
-              options,
-            },
-            { timeout: ADAPTER_TIMEOUT_MS, signal: this.abortSignal }
-          );
-          data = response.data;
-        } catch (error: any) {
-          if (isAbortError(error)) {
-            throw new JobCancelledError(`the "${task}" adapter request to "${model}" was aborted mid-flight`);
-          }
-          const status = error?.response?.status;
-          const detail = error?.response?.data?.error || error?.message || 'unknown error';
-          if (status === 404) {
-            throw new Error(
-              `Metadata task "${task}" needs model "${model}", which is not installed on ${this.host}. ` +
-                `Install it with: ollama pull ${model}  (or, for a local adapter build, ollama create ${model} -f Modelfile)`
-            );
-          }
-          // Nothing is listening on that port. For the shim-hosted models this is the
-          // expected first failure — the shim is a separate process the user starts —
-          // so the error says what the port is and how to bring it up, instead of
-          // leaving them to work out what ECONNREFUSED on 11435 means.
-          if (error?.code === 'ECONNREFUSED' || error?.code === 'ENOTFOUND') {
-            throw new Error(
-              `Metadata task "${task}" is routed to "${model}" at ${this.host}, and nothing is listening there` +
-                (this.startHint ? ` — ${this.startHint}` : '') +
-                `. No cloud model was substituted: the task runs where it was routed or not at all.`
-            );
-          }
-          if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT') {
-            throw new Error(
-              `Metadata task "${task}" for ${sourceLabel} timed out after ${ADAPTER_TIMEOUT_MS / 1000}s on model "${model}"`
-            );
-          }
-          throw new Error(
-            `Metadata task "${task}" for ${sourceLabel} failed on model "${model}" @ ${this.host}: ${detail}`
-          );
-        }
-
-        this.lifecycle.holdOllamaModel(this.host, model, `the ${task} adapter`);
-        return typeof data?.message?.content === 'string' ? data.message.content : '';
-      }
-    );
-
-    if (text.trim().length === 0) {
-      throw new Error(
-        `Metadata task "${task}" for ${sourceLabel} came back empty from model "${model}" — ` +
-          `the adapter returned no text at all`
-      );
-    }
-    return text.trim();
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Plain-text output mapping
 // ---------------------------------------------------------------------------
 
-/** A hashtag line and nothing else: "#megachurch #biblecurriculum #streetpreacher". */
-const HASHTAG_LINE = /^#\S+( #\S+)*$/;
-
 /**
- * Split the description adapter's answer into the `description` and `hashtags` fields.
- *
- * The trailing hashtag line is part of the trained output shape, not a decoration, so an
- * answer without one is a MALFORMED generation rather than a description that happens to
- * have no hashtags: the model departed from its format, and whatever else it departed
- * from is unknown. Throw and say so.
- */
-export function splitDescriptionAndHashtags(
-  text: string,
-  task: string,
-  model: string,
-  sourceLabel: string
-): Record<string, unknown> {
-  const lines = text.split('\n');
-  let last = lines.length - 1;
-  while (last >= 0 && lines[last].trim().length === 0) last--;
-
-  // Interior whitespace is normalized before the test and in the stored value — the
-  // separator between hashtags is not information, and finalizeMetadata normalizes it
-  // again anyway. What is NOT normalized is the shape: a line with prose on it, or with
-  // commas between the tags, is not this line and does not become it.
-  const candidate = last >= 0 ? lines[last].trim().replace(/\s+/g, ' ') : '';
-  if (!HASHTAG_LINE.test(candidate)) {
-    throw new Error(
-      `Metadata task "${task}" for ${sourceLabel} on model "${model}" returned no trailing hashtag line — ` +
-        `the description adapter always ends with one, so this generation is malformed ` +
-        `(last line was: ${candidate ? `"${candidate.slice(0, 120)}"` : 'empty'})`
-    );
-  }
-
-  const description = lines.slice(0, last).join('\n').trim();
-  if (description.length === 0) {
-    throw new Error(
-      `Metadata task "${task}" for ${sourceLabel} on model "${model}" returned a hashtag line and no description above it`
-    );
-  }
-
-  return { description, hashtags: candidate };
-}
-
-/**
- * The tags adapter's one comma-separated line, in the shape the rest of the app reads.
+ * A tags call's one comma-separated line, in the shape the rest of the app reads.
  *
  * Deliberately identical to what normalizeMetadataKeys does to a cloud `tags` string —
  * split on commas, trim, drop any leading '#', re-join with commas — because the local
  * path bypasses that normalizer entirely and a differently-shaped tags field would
  * surface as a formatting bug in the .txt writer, far from here.
+ *
+ * It was written for the trained tags adapter and named for it; the adapters are gone
+ * (2026-08-25) and this is now what EVERY tags answer goes through, local and cloud alike,
+ * which is what the name says instead.
  */
-export function normalizeAdapterTags(text: string, task: string, model: string, sourceLabel: string): string {
+export function normalizeTagLine(text: string, task: string, model: string, sourceLabel: string): string {
   const tags = text
     .split('\n')
     .map((line) => line.trim())
@@ -1366,19 +884,6 @@ export function normalizeAdapterTags(text: string, task: string, model: string, 
 // ---------------------------------------------------------------------------
 // Planning a run
 // ---------------------------------------------------------------------------
-
-/**
- * Fields a trained adapter was ever trained for.
- *
- * Not a restriction on LOCAL models any more — a local base model runs the prompt-set shape
- * and can write any field. This is a restriction on ADAPTERS: pointing the titles adapter at
- * the description field would send it a turn its training never contained.
- */
-const ADAPTER_FIELDS: Record<string, AdapterTask> = {
-  description: 'description',
-  tags: 'tags',
-  titles: 'titles',
-};
 
 export interface MetadataRunPlan {
   /**
@@ -1462,14 +967,10 @@ export interface MetadataPlanRequest {
 /**
  * Turn a resolved routing into the units that will run — ONE PER FIELD.
  *
- * TWO SHAPES, not two transports. A field's unit is decided by the option's `promptStyle`
- * (metadata-routing.ts), not by whether the model is local:
- *
- *   adapter    — a fine-tuned model with the brief in its weights. A terse turn in, plain text
- *                out, and only the fields an adapter was ever trained for. LocalAdapterUnit.
- *   prompt-set — everything else, cloud and local alike: that field's yml section, its
- *                self-check, the transcript, and a plain-text output contract.
- *                CloudFieldUnit / LocalFieldUnit.
+ * ONE SHAPE, two transports. Every field gets that field's yml section, its self-check, the
+ * transcript and a plain-text output contract; whether the model is local (LocalFieldUnit) or
+ * cloud (CloudFieldUnit) decides only how the bytes travel. The second shape — the trained
+ * adapters, chosen by an option's `promptStyle` — was retired 2026-08-25 with the adapters.
  *
  * WHAT REPLACED GROUPING. Fields pointed at the same model used to be written in ONE call so
  * that a cross-field rule was followable. Two things are true instead now:
@@ -1523,7 +1024,7 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
     : [...FIELD_TASKS, { task: 'tags' as MetadataRoutingTaskId, field: 'tags' as MetadataFieldId }];
 
   /** One entry per planned call, in FIELD order. Re-ordered by model just before it is returned. */
-  const planned: Array<{ field: MetadataFieldId; option: MetadataRoutingOption; adapter?: AdapterTask }> = [];
+  const planned: Array<{ field: MetadataFieldId; option: MetadataRoutingOption }> = [];
 
   for (const { task, field } of routedTasks) {
     if (!available.has(METADATA_FIELD_SECTIONS[field].section)) {
@@ -1534,25 +1035,6 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
     const option = METADATA_ROUTING_OPTIONS[optionId];
     if (!option) {
       throw new Error(`Metadata task "${task}" is routed to unknown option "${optionId}"`);
-    }
-    if (option.kind === 'local' && !option.promptStyle) {
-      // The registry requires it on every local option. A local option without one names a
-      // model but not how to talk to it, and the two shapes are not interchangeable.
-      throw new Error(
-        `Routing option "${optionId}" is local but declares no promptStyle, so there is no way to know ` +
-          `whether "${option.model}" wants the adapter turn or the prompt set's instructions`
-      );
-    }
-    if (option.promptStyle === 'adapter') {
-      const adapterTask = ADAPTER_FIELDS[field];
-      if (!adapterTask) {
-        throw new Error(
-          `Metadata task "${task}" is routed to the trained adapter "${option.model}", but no adapter writes ` +
-            `"${field}" — only description, tags and titles have one. Route it to a base model or to the cloud.`
-        );
-      }
-      planned.push({ field, option, adapter: adapterTask });
-      continue;
     }
     planned.push({ field, option });
   }
@@ -1592,15 +1074,6 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
       skipped.push(field);
       continue;
     }
-    if (titlesPlan.option.promptStyle === 'adapter') {
-      warnings.push(
-        `the channel publishes "${field}", which no routing selection owns. It normally runs on the model the ` +
-          `titles are routed to, and that is the trained adapter "${titlesPlan.option.model}", which was never ` +
-          `trained to write it — so "${field}" is not generated this run`
-      );
-      skipped.push(field);
-      continue;
-    }
     log.info(
       `[MetadataTasks] "${field}" is published by this channel and owned by no routing selection, so it runs as ` +
         `its own call on the model the titles use ("${titlesPlan.option.model}")`
@@ -1617,14 +1090,6 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
     descriptionOption = METADATA_ROUTING_OPTIONS[optionId];
     if (!descriptionOption) {
       throw new Error(`Metadata task "description" is routed to unknown option "${optionId}"`);
-    }
-    if (descriptionOption.promptStyle === 'adapter') {
-      throw new Error(
-        `Metadata task "description" is routed to the trained adapter "${descriptionOption.model}", which was ` +
-          `trained to write a whole description from a subject list in one turn. The description is now two ` +
-          `schema-constrained calls (a hook and a body), which is not a shape any adapter was trained on. ` +
-          `Route it to a base model or to the cloud.`
-      );
     }
   } else {
     skipped.push('description');
@@ -1691,22 +1156,13 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
   const built: Array<{ field: MetadataFieldId; model: string; local: boolean; unit: MetadataUnit }> = [];
 
   for (const plan of planned) {
-    if (plan.adapter) {
-      built.push({
-        field: plan.field,
-        model: plan.option.model,
-        local: true,
-        unit: new LocalAdapterUnit(plan.adapter, plan.option, defaultHost, lifecycle, abortSignal),
-      });
-      continue;
-    }
     const spec: MetadataFieldUnitSpec = {
       field: plan.field,
       model: plan.option.model,
       insights: plan.field === insightsField,
-      // The one cross-field dependency in the build. Everything else — pinned comments, clip
-      // suggestions, tags, spoken keywords — reads the transcript and nothing else, so it can
-      // run in any order after the titles.
+      // The one cross-field dependency in the build. Everything else — pinned comments, tags,
+      // spoken keywords — reads the transcript and nothing else, so it can run in any order
+      // after the titles.
       inputFields: plan.field === 'thumbnail_text' && titlesPlan ? ['titles'] : [],
     };
     built.push({

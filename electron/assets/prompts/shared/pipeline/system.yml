@@ -187,7 +187,7 @@ compilation_output_format: |2
   }
 
 # OUTPUT FORMAT for a field whose answer is a LIST — titles, thumbnail options, pinned
-# comments, clip suggestions, spoken keywords. Placeholder: {field}
+# comments, spoken keywords. Placeholder: {field}
 task_output_lines: |2
 
   ## OUTPUT FORMAT

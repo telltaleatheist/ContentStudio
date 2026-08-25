@@ -135,12 +135,4 @@ export const METADATA_FIELDS: MetadataFieldDef[] = [
     txtStyle: 'inline',
     emptyToUndefined: true,
   },
-  {
-    key: 'clip_suggestions',
-    aliases: ['clipSuggestions', 'clips'],
-    kind: 'stringArray',
-    txtLabel: 'CLIP SUGGESTIONS (Shorts-able moments)',
-    txtStyle: 'numbered',
-    emptyToUndefined: true,
-  },
 ];

@@ -152,7 +152,6 @@ export interface MetadataResult {
   hashtags?: string;
   pinned_comment?: string[];
   spoken_keywords?: string[];
-  clip_suggestions?: string[];
   // The chapter pipeline's own shape, not a local copy of it: chapters now carry a
   // `detail` sentence, an approximate-start flag and their pre-consolidation
   // sub-chapters, and every one of those has to survive the trip to the output files.
@@ -649,7 +648,6 @@ export class AIManagerService {
     tags: '"comma-separated string"',
     thumbnail_text: '["string", ...]',
     pinned_comment: '["string", ...]',
-    clip_suggestions: '["string", ...]',
     hashtags: '"#One #Two #Three"',
     spoken_keywords: '["string", ...]',
   };
@@ -1059,10 +1057,9 @@ export class AIManagerService {
    * The canonical section keys the loaded prompt set actually defines.
    *
    * A prompt set is the statement of WHICH FIELDS this channel publishes: the Spreaker
-   * podcast set has no thumbnail text and no clip suggestions, and never did. Planning a
-   * run reads this so it can leave those fields out and say so, rather than routing a
-   * field the prompt set never asked for and failing on a section that was never missing
-   * by accident.
+   * podcast set has no thumbnail text and never did. Planning a run reads this so it can
+   * leave those fields out and say so, rather than routing a field the prompt set never
+   * asked for and failing on a section that was never missing by accident.
    */
   promptSetSectionKeys(): Set<string> {
     return new Set(this.instructionSections().map((s) => s.key));
@@ -1388,17 +1385,22 @@ export class AIManagerService {
   /**
    * Append the prompt set's channel_tags to the generated tag list.
    *
-   * This is not decoration — it closes a hole the tags adapter opens deliberately. Its
-   * trained system prompt says "No channel names and no creator names - those are appended
-   * separately", so without this step a locally generated tag list never names the
-   * channel at all.
+   * This is not decoration. Nothing in a tags call names the channel as a TAG — the shared
+   * TAGS instruction asks for terms about the video's subject, and the channel's own brand
+   * terms reach the model as `{brand_terms}` guidance rather than as a guaranteed output —
+   * so without this step a generated tag list can come back naming the channel nowhere.
+   * (It closed the same hole for the retired tags adapter, whose trained system prompt said
+   * "No channel names and no creator names - those are appended separately". The adapter is
+   * gone as of 2026-08-25; the hole it named is a property of the tags call, not of it.)
    *
-   * The channel tags are the ones that survive: if the merged list breaks the 500-character
-   * budget, generated tags are dropped from the END (the tail is where the adapter puts
-   * its broad category terms, the least specific and most replaceable) until it fits, and
-   * the log names every one dropped. A prompt set whose channel_tags alone exceed the
-   * budget is a configuration error and throws — there is nothing left to drop that would
-   * not be the thing the user asked to protect.
+   * THE TAIL-DROP IS YOUTUBE'S BUDGET, NOT ANY ONE MODEL'S HABIT, which is why it outlived
+   * the adapter: 500 characters is the hard limit on the whole list whoever wrote it. The
+   * channel tags are the ones that survive — if the merged list breaks the budget, generated
+   * tags are dropped from the END (a tag list runs most-specific-first, so the tail is the
+   * most replaceable end of any of them) until it fits, and the log names every one dropped.
+   * A prompt set whose channel_tags alone exceed the budget is a configuration error and
+   * throws — there is nothing left to drop that would not be the thing the user asked to
+   * protect.
    */
   private appendChannelTags(metadata: MetadataResult): void {
     const channelTags = (this.currentPromptSet?.channel_tags || [])

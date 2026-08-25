@@ -750,31 +750,6 @@
                 </div>
               }
 
-              @if (metadata()!.clip_suggestions && metadata()!.clip_suggestions!.length > 0) {
-                <div class="asset">
-                  <button class="asset-head" (click)="toggleAsset('clip-suggestions')">
-                    <mat-icon>content_cut</mat-icon>
-                    <span class="asset-name">Clip suggestions</span>
-                    <span class="cnt num">{{ metadata()!.clip_suggestions!.length }}</span>
-                    <span class="chev">{{ isAssetOpen('clip-suggestions') ? '▴' : '▾' }}</span>
-                  </button>
-                  @if (isAssetOpen('clip-suggestions')) {
-                    <div class="asset-body">
-                      @for (clip of metadata()!.clip_suggestions!; track $index; let i = $index) {
-                        <div class="asset-line"
-                             [class.copied]="isCopied('clip-' + i)"
-                             (click)="copyToClipboard(clip, 'clip-' + i)"
-                             title="Click to copy">
-                          <span class="asset-n num">{{ i + 1 }}</span>
-                          <span>{{ clip }}</span>
-                          <span class="asset-copy">{{ isCopied('clip-' + i) ? '✓' : '⧉' }}</span>
-                        </div>
-                      }
-                    </div>
-                  }
-                </div>
-              }
-
               <!-- Every prompt the run sent for this item, exactly as the model read it —
                    recorded by the generator (_prompt_trace) so a bad field can be judged
                    against its real input instead of guessed at. Absent on items generated

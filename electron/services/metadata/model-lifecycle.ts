@@ -22,10 +22,11 @@
  * still reloads and that is legitimate — a prompt that does not fit needs a bigger window, and
  * refusing to grow would send a prompt that lies about what it covers. SHRINKAGE never is.
  *
- * A HOST THIS JOB STARTED is held separately from a model it made resident, because they are
- * released by different things: a resident model goes with `keep_alive: 0`, and the 32B MLX
- * shim's memory comes back only when its process exits (its keep-alive eviction is a deliberate
- * no-op). Holding both under one key would release one of them and report success.
+ * THIS JOB NO LONGER STARTS ANY SERVER. It used to hold a spawned host apart from a resident
+ * model, because the two were released by different things: a model goes with `keep_alive: 0`,
+ * and the 32B MLX shim's memory came back only when its process exited. That shim was the one
+ * server the app ever started, and it went with the trained adapters on 2026-08-25 — so what
+ * is left here holds Ollama models and nothing else.
  */
 
 import axios from 'axios';
@@ -58,12 +59,6 @@ interface HeldModel {
   what: string;
 }
 
-/** A server process THIS JOB started. Held apart from a model — see this file's header. */
-interface HeldProcess {
-  what: string;
-  stop: () => void;
-}
-
 /**
  * One job's model residence. Created by the orchestrator, threaded to the stages, released once.
  *
@@ -73,7 +68,6 @@ interface HeldProcess {
 export class JobModelLifecycle {
   /** `host::model` -> the first thing that pulled it in. Several stages on one model, one entry. */
   private readonly models = new Map<string, HeldModel>();
-  private readonly processes = new Map<string, HeldProcess>();
   /** model -> the largest num_ctx this job has asked for on it. */
   private readonly contexts = new Map<string, number>();
 
@@ -86,12 +80,6 @@ export class JobModelLifecycle {
     if (this.models.has(key)) return;
     this.models.set(key, { host, model, what });
     log.info(`[ModelLifecycle] "${model}" @ ${host} is resident for the rest of this job (${what})`);
-  }
-
-  /** Declare a server process this job started, and how to stop it. */
-  holdProcess(key: string, what: string, stop: () => void): void {
-    this.processes.set(key, { what, stop });
-    log.info(`[ModelLifecycle] ${what} runs until the end of this job`);
   }
 
   /** The floor a call on `model` must not size below, under that call's own hard ceiling. */
@@ -114,13 +102,12 @@ export class JobModelLifecycle {
   /**
    * Give the machine its memory back, once, at the end of the job.
    *
-   * Models before processes: a `keep_alive: 0` posted to a host that has already exited is a
-   * warning about nothing. Every holder is released even when one of them fails, because a
-   * failure to release is housekeeping (ollama-json's `unloadOllamaModels` warns rather than
-   * throwing) and the ones after it are still holding real memory.
+   * Every holder is released even when one of them fails, because a failure to release is
+   * housekeeping (ollama-json's `unloadOllamaModels` warns rather than throwing) and the ones
+   * after it are still holding real memory.
    */
   async releaseAll(): Promise<void> {
-    if (this.models.size === 0 && this.processes.size === 0) {
+    if (this.models.size === 0) {
       log.info('[ModelLifecycle] this job made no local model resident, so there is nothing to release');
       return;
     }
@@ -129,11 +116,6 @@ export class JobModelLifecycle {
     for (const model of this.models.values()) {
       await unloadOllamaModels(axios.create({ baseURL: model.host }), [model.model], '[ModelLifecycle]');
     }
-    for (const process of this.processes.values()) {
-      log.info(`[ModelLifecycle] stopping ${process.what} — its memory comes back when the process exits`);
-      process.stop();
-    }
     this.models.clear();
-    this.processes.clear();
   }
 }

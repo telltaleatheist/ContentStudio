@@ -123,15 +123,19 @@ check('an embedding-chapters store migrates too', () => {
 
 /**
  * THE SLOT'S LAST ACT. Chapters used to follow the writing-model slot's agreement without a
- * stored entry. A store from that era whose five ex-slot fields agreed on a CLOUD option must
+ * stored entry. A store from that era whose ex-slot fields agreed on a CLOUD option must
  * keep chaptering on that model — written down by migration as the chapters entry it always
  * effectively was — while local agreement (= the chapters default) and disagreement (= the old
  * local-constant path, also the default) write nothing.
+ *
+ * FOUR VOTERS, NOT FIVE, since clip_suggestions was retired (2026-08-25). A slot-era store set
+ * all five to one value, so the four that remain agree exactly when the five did — which is why
+ * dropping the fifth changes no answer this test asserts.
  */
 check('a slot-era cloud store keeps its chapters on the cloud model it was projecting', () => {
   const cloudSlot = {
     titles: 'sonnet5', description: 'sonnet5', thumbnail_text: 'sonnet5',
-    pinned_comment: 'sonnet5', clip_suggestions: 'sonnet5',
+    pinned_comment: 'sonnet5',
   };
   const m = routing.migrateStoredRouting(cloudSlot);
   eq(m.changed, true, 'the projection write-down is a recorded migration');
@@ -165,15 +169,16 @@ check('an empty / absent store is not a migration', () => {
 });
 
 /**
- * THE WHOLE POINT OF THIS ONE: every default is local, and four of them are the SAME local
- * model, which is what makes titles + thumbnail + pinned + clips one call whose self-check can
- * actually be followed. A default that drifted back to the cloud would cost money silently.
+ * THE WHOLE POINT OF THIS ONE: every default is local, and the big fields are all the SAME
+ * local model, which is what keeps titles + thumbnail + pinned on one resident model whose
+ * cross-field self-check can actually be followed. A default that drifted back to the cloud
+ * would cost money silently.
  */
 check('the shipped defaults are all local, and the big fields share one model', () => {
   const resolved = routing.resolveMetadataRouting(undefined);
   eq(routing.describeRouting(resolved),
     'titles=qwen3.8:27b, description=qwen3.8:27b, chapters=qwen3.8:27b, tags=qwen3.5:9b, ' +
-    'thumbnail_text=qwen3.8:27b, pinned_comment=qwen3.8:27b, clip_suggestions=qwen3.8:27b');
+    'thumbnail_text=qwen3.8:27b, pinned_comment=qwen3.8:27b');
   for (const task of Object.keys(resolved)) {
     const option = routing.METADATA_ROUTING_OPTIONS[resolved[task]];
     if (option.kind !== 'local') throw new Error(task + ' defaults to a ' + option.kind + ' model');
@@ -185,15 +190,15 @@ check('the shipped defaults are all local, and the big fields share one model', 
 });
 
 /**
- * PER-FIELD ROUTING (2026-08-24). The modal is a field→model table: six big fields, each
+ * PER-FIELD ROUTING (2026-08-24). The modal is a field→model table: five big fields, each
  * settable to anything its task offers — every big field offers the 27B and all three cloud
  * rungs (Sonnet, Opus, Haiku). Tags are NOT a row ("if we use 9b for something then leave
  * it") and stay a stored-entry-only setting. Chapters are a routed task again, capable rungs
  * only — the 9B on chapters was half the measured 2026-08-23 failure stack.
  */
-check('the modal is per-field: six big rows, tags row-less, cloud rungs everywhere', () => {
+check('the modal is per-field: five big rows, tags row-less, cloud rungs everywhere', () => {
   const modal = routing.METADATA_ROUTING_TASKS.filter((t) => t.modal).map((t) => t.id);
-  eq(modal.join(','), 'titles,description,chapters,thumbnail_text,pinned_comment,clip_suggestions');
+  eq(modal.join(','), 'titles,description,chapters,thumbnail_text,pinned_comment');
   const tags = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'tags');
   eq(tags.modal, false, 'tags stay out of the modal');
   for (const task of routing.METADATA_ROUTING_TASKS.filter((t) => t.modal)) {
@@ -216,12 +221,63 @@ check('chapter resolution reads the chapters entry, and the view carries the mod
   eq(routing.resolveChapterModelOption(stock).model, 'qwen3.8:27b');
 
   const inventory = { host: 'http://localhost:11434', reachable: false, models: [] };
-  const view = routing.buildRoutingView({ titles: 'headline-titles-32b' }, inventory);
+  const view = routing.buildRoutingView({ titles: 'opus5' }, inventory);
   eq(view.slots, undefined, 'the slot payload is gone');
-  eq(view.tasks.find((t) => t.id === 'titles').selectedOptionId, 'headline-titles-32b',
+  eq(view.tasks.find((t) => t.id === 'titles').selectedOptionId, 'opus5',
     'a hand-set entry survives in the payload the modal saves back whole');
   eq(view.tasks.find((t) => t.id === 'chapters').modal, true);
   eq(view.tasks.find((t) => t.id === 'tags').modal, false);
+});
+
+/**
+ * THE ADAPTERS ARE GONE (2026-08-25), AND A STORE THAT STILL NAMES ONE MUST SAY SO.
+ *
+ * `headline-titles-32b` was a real, working, selectable option the day before this build: its
+ * base model was fine and its MLX shim still runs. That is exactly why it may not vanish
+ * quietly — an operator whose titles were on the adapter has to be TOLD the field moved, not
+ * discover it by reading a description that came out in a different voice. So it migrates with
+ * a recorded notice naming the decision, and the raw store still refuses to resolve.
+ *
+ * `clip_suggestions` is the same event one level up: a whole TASK removed, dropped by the same
+ * machinery, from REMOVED_ROUTING_TASKS instead of REMOVED_ROUTING_OPTIONS.
+ */
+check('a retired adapter and the retired clips task both migrate loudly, never silently', () => {
+  let threw = false;
+  try { routing.resolveMetadataRouting({ titles: 'headline-titles-32b' }); } catch { threw = true; }
+  if (!threw) throw new Error('the raw store should still refuse an option this build removed');
+
+  const m = routing.migrateStoredRouting({ titles: 'headline-titles-32b', clip_suggestions: 'opus5' });
+  eq(m.changed, true, 'both drops are recorded migrations');
+  eq(m.selections, {}, 'neither entry survives');
+  eq(m.notices.length, 2, 'one notice per dropped entry');
+  if (!m.notices.some((n) => /retired 2026-08-25/.test(n) && /titles/.test(n))) {
+    throw new Error('the adapter drop must name the decision and the date:\n' + m.notices.join('\n'));
+  }
+  if (!m.notices.some((n) => /clip_suggestions/.test(n))) {
+    throw new Error('the retired clips task must be named in its own notice:\n' + m.notices.join('\n'));
+  }
+  // Retired for a DECISION, not an outage — the reason must not send anyone server-hunting.
+  const adapterNotice = m.notices.find((n) => /titles/.test(n));
+  if (!/operator decision/.test(adapterNotice)) {
+    throw new Error('the adapter notice must say it was a decision, not a failure: ' + adapterNotice);
+  }
+
+  // And nothing anywhere still offers it.
+  if (routing.METADATA_ROUTING_OPTIONS['headline-titles-32b']) {
+    throw new Error('the retired adapter is still a known option');
+  }
+  for (const task of routing.METADATA_ROUTING_TASKS) {
+    if (task.id === 'clip_suggestions') throw new Error('the clips task is still in the table');
+    for (const id of task.options) {
+      if (/^headline-/.test(id)) throw new Error(task.id + ' still offers the adapter ' + id);
+    }
+  }
+  // Every local option is a plain Ollama model now: no per-option host, no shape to pick.
+  for (const [id, option] of Object.entries(routing.METADATA_ROUTING_OPTIONS)) {
+    if (option.promptStyle !== undefined) throw new Error(id + ' still declares a promptStyle');
+    if (option.host !== undefined) throw new Error(id + ' still declares its own host');
+    if (option.startCommand !== undefined) throw new Error(id + ' still declares a server to spawn');
+  }
 });
 
 /**
@@ -327,7 +383,6 @@ check("unfiltered's pipe-tail title format replaces the shared length line, and 
 check('a channel that publishes no thumbnails says so by its field list', () => {
   const spreaker = assets.channel('podcast-spreaker');
   if (spreaker.fields.includes('thumbnail_text')) throw new Error('the podcast grew a thumbnail');
-  if (spreaker.fields.includes('clip_suggestions')) throw new Error('the podcast grew clip suggestions');
   eq(spreaker.fields, ['titles', 'description', 'tags'], 'the three fields a podcast publishes');
 });
 
@@ -479,11 +534,11 @@ check('an item WITHOUT chapters plans the same routed units, not a legacy single
                        'description', 'description_hook', 'tags']) {
     if (!written.has(field)) throw new Error(field + ' is not written by any unit on a chapterless item');
   }
-  // The channel's fields list is a STATEMENT (LEDGER II-A #133): telltale declares no
-  // clip_suggestions, so no unit may write one — planned anyway would be the legacy
-  // absorb-everything behavior coming back.
+  // clip_suggestions was retired 2026-08-25: no channel declares it, no field file defines
+  // it, and no unit may plan one. Planned anyway would be the legacy absorb-everything
+  // behaviour coming back on a field that no longer exists at all.
   if (written.has('clip_suggestions')) {
-    throw new Error('clip_suggestions planned for a channel that does not declare the field');
+    throw new Error('clip_suggestions planned for a field this build removed');
   }
   eq(p.assembleTags, false, 'tags come from a model when there is no chapter list to measure pools against');
   eq(p.assembleHashtags, true, 'hashtags are still derived in code');
@@ -599,10 +654,10 @@ check('every field gets its OWN call, and each call names exactly one key', () =
     }
     eq(unit.fields.length, 1, 'unit "' + unit.label + '" carries more than one field');
   }
-  // One separate call per DECLARED packaging field — telltale declares three of the four
-  // (no clip_suggestions), and a channel's fields list is a statement (LEDGER II-A #133).
+  // One separate call per DECLARED packaging field — telltale declares all three that remain
+  // since clips were retired, and a channel's fields list is a statement (LEDGER II-A #133).
   const packaging = p.units.filter((u) =>
-    ['titles', 'thumbnail_text', 'pinned_comment', 'clip_suggestions'].some((f) => u.fields.includes(f)));
+    ['titles', 'thumbnail_text', 'pinned_comment'].some((f) => u.fields.includes(f)));
   eq(packaging.length, 3, 'each declared packaging field is its own call');
 });
 
@@ -881,12 +936,11 @@ check('one cloud field lifts the whole run to the cloud ceiling', () => {
     'and it fits the local window too, which is why the podcast run reads it raw either way');
 });
 
-check('a podcast plans no thumbnail or clip unit at all', () => {
+check('a podcast plans no thumbnail unit at all', () => {
   const p = plan('podcast-spreaker', { hasChapters: true });
   const written = new Set();
   for (const unit of p.units) for (const f of unit.fields) written.add(f);
   if (written.has('thumbnail_text')) throw new Error('the podcast was routed a thumbnail');
-  if (written.has('clip_suggestions')) throw new Error('the podcast was routed clip suggestions');
   eq(p.assembleHashtags, false, 'and it renders no hashtags either');
 });
 
