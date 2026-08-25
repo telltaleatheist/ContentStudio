@@ -1,14 +1,13 @@
 /**
- * Chapter Generator Service — shared transcript/timestamp utilities
+ * Shared transcript/timestamp utilities and the `Chapter` shape.
  *
- * Chapters themselves are no longer built here. The single "read the whole video and
- * return its chapters" call this file used to serve was replaced by the staged local
- * pipeline in chapter-embedding.service.ts (see CHAPTERING.md), which does its own
- * word-stream quote mapping against the full caption stream.
- *
- * What remains is what the EPISODE SPLITTER still needs — SRT time conversion, budget
- * sampling, sparse-timestamp transcripts and the phrase matcher — plus the `Chapter`
- * shape both paths emit.
+ * Chapters themselves are no longer built here — and the embedding pipeline this header
+ * once pointed at is gone too (measured out 2026-08-22; CHAPTERING.md carries the numbers).
+ * Chaptering lives in chapter-whole-transcript.service.ts. What remains here is what the
+ * EPISODE SPLITTER still needs — SRT time conversion, budget sampling, sparse-timestamp
+ * transcripts and the phrase matcher — plus the `Chapter` shape every consumer emits and
+ * reads. The filename outlives its meaning; renaming it would touch nine importers for
+ * zero behavior, so it stays.
  */
 
 import { SRTSegment } from './whisper.service';
@@ -113,22 +112,6 @@ export class TimeUtils {
   }
 }
 
-/**
- * Build plain text transcript without timestamps
- * Saves tokens - timestamps are recovered via phrase matching
- */
-export function buildPlainTranscript(srtSegments: SRTSegment[]): string {
-  const lines: string[] = [];
-
-  for (const segment of srtSegments) {
-    const text = segment.text.trim();
-    if (text.length > 0) {
-      lines.push(text);
-    }
-  }
-
-  return lines.join(' ').trim();
-}
 
 /**
  * Build transcript with sparse timestamps (every N minutes)
@@ -161,25 +144,6 @@ export function buildSparseTimestampTranscript(
   return lines.join(' ').trim();
 }
 
-/**
- * Build full transcript with timestamp for every segment
- * Format: [0:00] text [0:05] text [0:10] text...
- */
-export function buildFullTimestampTranscript(srtSegments: SRTSegment[]): string {
-  const lines: string[] = [];
-
-  for (const segment of srtSegments) {
-    const seconds = TimeUtils.srtTimeToSeconds(segment.start);
-    const timeStr = TimeUtils.secondsToYoutubeTime(seconds);
-    const text = segment.text.trim();
-
-    if (text.length > 0) {
-      lines.push(`[${timeStr}] ${text}`);
-    }
-  }
-
-  return lines.join('\n');
-}
 
 /**
  * Evenly sample segments so the built transcript fits a character budget.

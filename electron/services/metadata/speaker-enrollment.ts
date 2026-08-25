@@ -31,8 +31,6 @@ import * as log from 'electron-log';
 import { FfmpegBridge, getRuntimePaths } from '../../lib/bridges';
 import { EMBEDDING_SAMPLE_RATE, SpeakerEmbeddingModel, readPcm16Mono } from './speaker-embedding';
 
-/** The electron-store key holding the path to the operator's enrollment recording. */
-export const SPEAKER_ENROLLMENT_SETTING = 'speakerEnrollmentAudio';
 
 /**
  * Bumped when the cache shape changes. A record written by another version is recomputed rather

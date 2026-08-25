@@ -897,7 +897,3 @@ export function buildRoutingView(stored: unknown, inventory: OllamaInventory): M
   };
 }
 
-/** Log the routing once per resolve, so a job's log says which models wrote its fields. */
-export function logRouting(context: string, routing: ResolvedMetadataRouting): void {
-  log.info(`[MetadataRouting] ${context}: ${describeRouting(routing)}`);
-}

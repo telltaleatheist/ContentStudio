@@ -56,9 +56,6 @@ function promoMatch(chapter: Chapter): string | undefined {
   return hit ? hit[0] : undefined;
 }
 
-export function isPromoChapter(chapter: Chapter): boolean {
-  return promoMatch(chapter) !== undefined;
-}
 
 export interface PromoPartition {
   /** The chapters that get published, in order. Empty when the whole video was promo. */

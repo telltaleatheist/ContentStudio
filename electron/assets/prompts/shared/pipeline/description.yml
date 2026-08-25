@@ -129,54 +129,6 @@ rules_block: |-
 
   {items}
 
-# The body's SECOND attempt, when the first slipped into describing the coverage.
-#
-# WHY A REVISION AND NOT A RE-ASK, measured twice on 2026-08-23: a blind re-ask of the body
-# prompt failed the register judge twice in a row on two consecutive runs — the model that
-# wrote "The speaker dismantles" once writes it again when handed the identical prompt. This
-# call hands it its own draft and the exact clauses the judge flagged, which turns a re-roll
-# of the same dice into a targeted edit.
-#
-# ON THE POSITIVE-FORM LAW. This prompt necessarily contains wrong-register text: the model's
-# own flagged clauses, quoted as the material to transform. That is not an example to imitate
-# — it is the input of an edit, explicitly marked as what to change, which is the one place a
-# wrong form can appear without teaching it. The instruction itself still states only the
-# wanted form, and the examples are the same shipped ones the body call carries.
-#
-# Placeholders: {channel}, {video}, {coverage}, {rules}, {hook}, {body}, {clauses},
-# {bodyMinWords}, {bodyMaxWords}
-body_revision: |-
-  Revise the body of a YouTube description.
-
-  {channel}
-
-  Video: {video}
-
-  {coverage}
-
-  {rules}
-
-  The opening line, which stands above the body and is not yours to change:
-  "{hook}"
-
-  The body as drafted:
-  "{body}"
-
-  The draft is right except for these clauses, which are the ones to rewrite:
-  {clauses}
-
-  Rewrite the body keeping everything that already works — the same claims, the same names, the
-  same order — and recast those clauses so that the subject of every clause of every sentence is
-  a person, claim or event from inside the video: the page making the claim, the argument under
-  examination, the evidence that undoes it. Keep the body at {bodyMinWords} to {bodyMaxWords}
-  words.
-
-  Sentences in exactly the right form:
-  "Every policy branded communist in the segment — universal healthcare, ending private prisons, a green new deal — turns out to be a mainstream position."
-  "The book never says the quiet part outright, but the call to get 'truly psychotic' for God's blessing leaves almost nothing to interpretation."
-
-  Output the revised body as plain text and nothing else — no labels, no commentary, no JSON, no quotation marks around it.
-
 candidate: |-
   Write a YouTube description.
 

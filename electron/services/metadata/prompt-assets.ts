@@ -612,7 +612,3 @@ export function promptAssets(): PromptAssets {
   return loaded;
 }
 
-/** Test/tooling seam: forget the loaded assets so the next init re-reads from disk. */
-export function resetPromptAssets(): void {
-  loaded = undefined;
-}
