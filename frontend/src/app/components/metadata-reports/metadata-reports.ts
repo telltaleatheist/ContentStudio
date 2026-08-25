@@ -836,11 +836,14 @@ export class MetadataReports implements OnInit {
         // Only rows whose run RECORDED a title count answer this. A legacy row has no
         // count, which is not the same claim as "it produced none".
         return report.titleCount === 0;
-      // The triage view: at least one of this row's six facts is amber. Read from the
+      // The triage view: at least one of this row's six facts is amber — on a row that
+      // is not already done. A published or uploaded item may well be missing facts,
+      // but nothing about it needs the operator any more, and a triage view that keeps
+      // re-surfacing the finished backlog is a triage view nobody trusts. Read from the
       // SAME rowDots() the row draws, so what the filter selects is exactly what the eye
       // would have picked out of the list by hand.
       case 'needs-you':
-        return this.rowDots(report).some((dot) => dot.state === 'warn');
+        return !this.isUploaded(report) && this.rowDots(report).some((dot) => dot.state === 'warn');
       // Nothing amber and every fact that can be recorded is. Deliberately stricter than
       // "not held": a row here needs no further decision at list resolution.
       case 'ready':
@@ -924,23 +927,26 @@ export class MetadataReports implements OnInit {
       }
     }
 
-    // Uploaded sources sink. A group whose newest run is already a video on YouTube is
-    // done with this page — it stays clickable and stays in its tab, but it stops
-    // competing for the top of the list with the ones that still need a decision. Both
-    // buckets keep the order they were built in, which is the index's own order.
+    // Done sources sink. A group whose newest run is finished with this page — its video
+    // is on YouTube, or its record was marked published — stays clickable and stays in
+    // its tab, but it stops competing for the top of the list with the ones that still
+    // need a decision. Both buckets keep the order they were built in, which is the
+    // index's own order.
     const pending = groups.filter((g) => !this.isUploaded(g.head));
     const uploaded = groups.filter((g) => this.isUploaded(g.head));
     return [...pending, ...uploaded];
   });
 
   /**
-   * Is this row's video already on YouTube?
+   * Is this row done with this page?
    *
-   * `videoId` is the only field that answers it: a linked draft is a video that exists,
-   * whatever its status. Rows that answer yes sink and go quiet.
+   * Two facts answer yes: `videoId` — a linked draft is a video that exists, whatever
+   * its status — and `status === 'published'`, which is how the pre-API backlog was
+   * marked complete in bulk (operator, 2026-08-25: everything generated before that day
+   * went out through the old workflow). Rows that answer yes sink and go quiet.
    */
   isUploaded(report: MetadataReport): boolean {
-    return !!report.facts?.videoId;
+    return !!report.facts?.videoId || report.facts?.status === 'published';
   }
 
   /** Every row on screen — heads, plus the runs of whichever groups are open. */
