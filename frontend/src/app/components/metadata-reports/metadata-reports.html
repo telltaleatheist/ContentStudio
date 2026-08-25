@@ -1561,7 +1561,7 @@
                   }
                   <div class="miss">
                     <span>Visibility</span>
-                    <span>Locked private until the Google API audit clears — it cannot go public even at its scheduled time.</span>
+                    <span>Created private. Whether its scheduled time releases it depends on this API project's audit standing — verify the first one rather than assuming either way.</span>
                   </div>
                 </dl>
               </div>
@@ -1675,7 +1675,7 @@
               <button class="dispatch-btn"
                       [class.go]="!dispatchBlockedReason() && !publish.uploadingYouTube()"
                       [disabled]="!!dispatchBlockedReason() || publish.uploadingYouTube() || publish.saving()"
-                      [title]="dispatchBlockedReason() ?? 'Creates a NEW private video from the source file. Uploads stay private until the Google API audit clears — release uploads still go through the browser.'"
+                      [title]="dispatchBlockedReason() ?? 'Creates a NEW private video from the source file, carrying its schedule when one is set. Whether that schedule releases it depends on the audit standing of this API project — verify the first one.'"
                       (click)="uploadToYouTube()">
                 @if (publish.uploadingYouTube()) { Uploading… } @else { Upload to YouTube }
               </button>
@@ -1689,8 +1689,8 @@
                   Spreaker has no draft state ⓘ
                 </span>
               } @else if (!publish.videoId()) {
-                <span title="API-uploaded videos are locked private until Google approves the app's YouTube API audit — they cannot go public even at a scheduled time. Release uploads still go through the browser.">
-                  Uploads stay private until the Google API audit clears ⓘ
+                <span title="API-uploaded videos are created private. Google's policy locks them private for unaudited projects created after 28 July 2020, but the one upload made from here published on schedule — so verify what your project actually does before trusting a batch.">
+                  Uploads are created private — check whether yours release on schedule ⓘ
                 </span>
               } @else if (publish.lastPushReceipt(); as last) {
                 <span [title]="'&quot;' + last.updated.title + '&quot;'">

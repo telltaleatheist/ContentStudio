@@ -2429,11 +2429,20 @@ export class MetadataReports implements OnInit {
   // ------------------------------------------------------------- upload to YouTube
   //
   // The dispatch an UNLINKED item gets: videos.insert creates the video from the source
-  // file with the manifest above already on it. No confirmation dialog, unlike push and
-  // Spreaker, because nothing an audience can see changes: the video is born PRIVATE,
-  // and until Google approves the app's YouTube API audit it is LOCKED private — it
-  // cannot go public even at its scheduled time. Release uploads still go through the
-  // browser, and the dispatch foot says so next to the button.
+  // file with the manifest above already on it, INCLUDING its publishAt when the record
+  // carries one.
+  //
+  // There is no confirmation dialog here, unlike push and Spreaker. That was justified by
+  // the audit gate — a video born private and locked private cannot change anything an
+  // audience sees — and THAT JUSTIFICATION IS NO LONGER SOUND. Google locks API uploads
+  // private only for unaudited projects created after 28 July 2020, and the one upload
+  // ever made from this app published on schedule (2026-08-25, VIviaw58P88, public at its
+  // scheduled minute). So an upload from here may well be a release.
+  //
+  // Left as-is rather than quietly given a dialog: whether this project is exempt, or
+  // audited, or simply not enforcing, is unresolved, and adding a gate is an interaction
+  // change the operator should choose. The strings around the button no longer claim the
+  // upload is safely inert.
 
   async uploadToYouTube() {
     const blocked = this.publish.uploadBlockedReason();
@@ -2446,7 +2455,7 @@ export class MetadataReports implements OnInit {
     this.notificationService.success(
       'Uploaded to YouTube',
       `"${receipt.title}" — video ${receipt.videoId} on ${this.pushChannelLabel()}. ` +
-        'Locked private until the Google API audit clears.'
+        'Created private — verify whether this project releases on schedule.'
     );
   }
 
