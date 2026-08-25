@@ -430,6 +430,31 @@
                   }
                 }
               </div>
+
+              <!-- ═════ TEN MORE, AT THE BOTTOM OF THE LIST ═════
+                   The run's own titles prompt, replayed to whichever model the picker names,
+                   and what comes back is appended here as ordinary generated titles. The
+                   picker opens on the model that wrote this item's titles. -->
+              <div class="more-titles">
+                <button class="ghost"
+                        [disabled]="moreTitlesBusy() || moreTitlesOptions().length === 0"
+                        (click)="generateMoreTitles()"
+                        title="Send this item's own titles prompt again, with the titles already written listed in it, and append ten more to the bottom of this list.">
+                  {{ moreTitlesBusy() ? 'Writing…' : '10 more titles' }}
+                </button>
+                @if (moreTitlesBusy()) {
+                  <mat-spinner class="more-titles-spin" diameter="14"></mat-spinner>
+                }
+                <select class="quiet-select more-titles-model"
+                        [disabled]="moreTitlesBusy()"
+                        [value]="moreTitlesOptionId()"
+                        (change)="moreTitlesOptionId.set($any($event.target).value)"
+                        title="Which model writes them. Defaults to the one that wrote the titles above.">
+                  @for (option of moreTitlesOptions(); track option.id) {
+                    <option [value]="option.id">{{ option.label }}</option>
+                  }
+                </select>
+              </div>
             </section>
           }
 

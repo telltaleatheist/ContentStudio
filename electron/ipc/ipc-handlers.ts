@@ -44,6 +44,12 @@ import {
 } from '../services/publish/selection-migration';
 import { isItemId } from '../services/metadata/item-identity';
 import {
+  askForMoreTitles,
+  findStoredTitlesCall,
+  moreTitlesTraceEntry,
+  resolveTitlesOption,
+} from '../services/metadata/more-titles';
+import {
   inspectSavedTranscript,
   resolveOutputDirectory,
 } from '../services/metadata/saved-transcript.service';
@@ -2233,6 +2239,136 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
 
     return receipt;
   });
+
+  /**
+   * TEN MORE TITLES for one already-generated item, on the model the operator picks.
+   *
+   * WHAT THIS SENDS is the run's OWN titles prompt, replayed verbatim from `_prompt_trace`,
+   * with one short block appended listing the titles already on the record and asking for ten
+   * more angles (more-titles.ts says why replay rather than re-assembly). An item whose report
+   * predates stored prompts is REFUSED with that reason, in the words the page shows: there is
+   * no half-prompt to send and no second assembly path to invent one.
+   *
+   * ONE CALL, and its answer is read by the titles unit's own parser. A count other than ten
+   * comes back as a warning beside the titles; an unusable answer fails naming what arrived.
+   * Nothing re-asks.
+   *
+   * The new titles are APPENDED to the item's titles array and the call gets its own trace
+   * entry, both through OutputHandlerService's write queue. They are ordinary generated
+   * titles from that moment on — the selection record keys on the exact title text, so
+   * starring and editing reach them with no special case. The run's .txt is left alone: it
+   * is that run's artifact, and the json record is what the app reads.
+   */
+  ipcMain.handle(
+    'titles:generate-more',
+    async (_event, jobId: string, itemId: string, optionId: string) => {
+      try {
+        if (typeof jobId !== 'string' || !jobId.trim()) {
+          return { success: false, error: 'A job id is required to write more titles.' };
+        }
+        if (!isItemId(itemId)) {
+          return { success: false, error: `"${String(itemId)}" is not an item id.` };
+        }
+        // Checked BEFORE anything is read: an option the titles task does not offer is the
+        // caller being wrong about the dropdown, and it must not reach a transport.
+        const option = resolveTitlesOption(optionId);
+
+        const outputDirectory = (store as any).store?.outputDirectory;
+        if (!outputDirectory) {
+          throw new Error('No output directory configured — cannot locate the report to add titles to.');
+        }
+        const handler = OutputHandlerService.forOutputDir(outputDirectory);
+        const job = handler.getJobMetadata(jobId);
+        if (!job) {
+          return { success: false, error: `Job ${jobId} was not found in ${outputDirectory}.` };
+        }
+        const item = (job.items || []).find((entry: any) => entry && entry.item_id === itemId);
+        if (!item) {
+          return { success: false, error: `Item ${itemId} is not in job ${jobId}.` };
+        }
+
+        const stored = findStoredTitlesCall(item);
+        if (!stored) {
+          return {
+            success: false,
+            error:
+              'This item was generated before ContentStudio recorded the prompts it sent, so the ' +
+              'titles brief it was written to no longer exists anywhere. Regenerate the item to ' +
+              'give it one — after that, "10 more titles" can replay it.',
+          };
+        }
+
+        const rawTitles = (item as any).titles;
+        if (!Array.isArray(rawTitles)) {
+          return {
+            success: false,
+            error: `Item ${itemId} has no titles array, so there is nothing to write more titles beside.`,
+          };
+        }
+        const existingTitles = rawTitles.map((title: unknown, index: number) => {
+          if (typeof title !== 'string') {
+            throw new Error(
+              `Title ${index + 1} on item ${itemId} is ${typeof title}, not text, so it cannot be ` +
+                `listed in the prompt as one of the titles already written.`
+            );
+          }
+          return title;
+        });
+
+        // Built for THIS call only, and `initialize()` is deliberately not run: the prompt is
+        // already assembled, so there is no prompt set to load and no connection to test, and
+        // every client this call needs is created on demand by ensureProviderReady — which
+        // names a missing key rather than substituting a provider that has one.
+        //
+        // `promptSetsDir` is still required. The constructor initialises the prompt assets
+        // whatever the caller intends to ask for, and without a directory it resolves a
+        // relative path and throws. Same value every other construction site passes.
+        const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
+        const apiKeys: any = fs.existsSync(apiKeysPath)
+          ? JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'))
+          : {};
+        const ollamaHost = (store as any).store?.ollamaHost || 'http://localhost:11434';
+        const aiConfig: AIConfig = {
+          provider: 'claude',
+          host: ollamaHost,
+          cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
+          promptSetsDir: getPromptSetsDirectory(),
+        };
+        const aiManager = new AIManagerService(aiConfig);
+
+        let result;
+        try {
+          result = await askForMoreTitles(stored, existingTitles, option, { aiManager, ollamaHost });
+        } finally {
+          aiManager.cleanup();
+        }
+
+        const written = await handler.appendGeneratedTitles(
+          jobId,
+          itemId,
+          result.titles,
+          moreTitlesTraceEntry(stored, result)
+        );
+
+        log.info(
+          `[MoreTitles] ${result.titles.length} title(s) written for item ${itemId} on ` +
+            `"${result.model}" (${written.totalTitles} on the record now)`
+        );
+
+        return {
+          success: true,
+          titles: result.titles,
+          totalTitles: written.totalTitles,
+          model: result.model,
+          warning: result.warning,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log.error('[MoreTitles] request failed:', error);
+        return { success: false, error: message };
+      }
+    }
+  );
 
   // Delete job history entry
   ipcMain.handle('delete-job-history', async (_event, jobId: string) => {

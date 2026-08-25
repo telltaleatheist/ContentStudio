@@ -14,7 +14,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
-import { AnalyticsChannel, ElectronService } from '../../services/electron';
+import { AnalyticsChannel, ElectronService, MetadataRoutingOption } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
 import { PublishState } from '../../features/publish/publish-state';
 import { YouTubePushDialog, YouTubePushDialogData } from '../../features/publish/youtube-push-dialog';
@@ -308,6 +308,15 @@ interface ParsedMetadata {
   content_provenance?: ItemProvenance;
   _title?: string; // The display title from the source
   _prompt_set?: string; // The prompt set used for generation
+  /**
+   * The prompts the run sent for this item, as the generator recorded them.
+   *
+   * Declared and carried because `promptTrace()` below reads it and the assets pane renders
+   * it — it was being dropped by `normalizeMetadataKeys`, so the panel never appeared. It is
+   * also what the titles model picker reads its default from: the model that wrote this
+   * item's titles is the one the operator is most likely to want more of them from.
+   */
+  _prompt_trace?: Array<{ what: string; model: string; chars: number; at: string; prompt: string }>;
 }
 
 @Component({
@@ -353,6 +362,19 @@ export class MetadataReports implements OnInit {
   // and the publish feature.
   readonly publish = inject(PublishState);
   readonly MAX_AB_VARIANTS = MAX_AB_VARIANTS;
+
+  // ---------------------------------------------------------------- ten more titles
+  //
+  // The models the TITLES task offers, read from the same `metadata-routing:get` payload the
+  // routing dialog is built from — so this picker and that dialog can never disagree about
+  // what titles can run on. Read once per mount; the table is a property of the build.
+  readonly moreTitlesOptions = signal<MetadataRoutingOption[]>([]);
+  /** The option id the routing store currently has on titles — the picker's fallback seat. */
+  private readonly routedTitlesOptionId = signal<string>('');
+  /** What the operator has the picker set to. */
+  readonly moreTitlesOptionId = signal<string>('');
+  /** One request at a time, and the button says so while it is out. */
+  readonly moreTitlesBusy = signal(false);
 
   constructor(
     private electron: ElectronService,
@@ -2175,6 +2197,10 @@ export class MetadataReports implements OnInit {
     // derived from the ids the index actually holds, and this call only labels them.
     await this.loadChannelRegistry();
 
+    // The models "10 more titles" can run on. After the list for the same reason the chips
+    // are: it labels a control on an already-rendered page and the list does not wait on it.
+    await this.loadTitlesModelOptions();
+
     // Deep link: /metadata-reports?item=<itemId>, which is what every chip on the publish
     // calendar navigates to. Read once, AFTER the list exists — the parameter names a row,
     // and there is no row to select before the index has been read.
@@ -2205,6 +2231,126 @@ export class MetadataReports implements OnInit {
       return;
     }
     this.registryChannels.set(res.channels);
+  }
+
+  /**
+   * The models the TITLES task offers, for the "10 more titles" picker.
+   *
+   * Straight off `metadata-routing:get` — the routing dialog's own payload — so the picker
+   * offers exactly what the build offers and nothing it has to keep in step by hand. A
+   * failure is said and the picker stays empty, which disables the button: sending a titles
+   * call to a model this page guessed at is the one thing worse than not sending one.
+   */
+  private async loadTitlesModelOptions(): Promise<void> {
+    try {
+      const routing = await this.electron.getMetadataRouting();
+      const titles = routing.tasks.find((task) => task.id === 'titles');
+      if (!titles) {
+        throw new Error('the routing table this build ships has no "titles" task');
+      }
+      this.moreTitlesOptions.set(titles.options);
+      this.routedTitlesOptionId.set(titles.selectedOptionId);
+      if (!this.moreTitlesOptionId()) this.moreTitlesOptionId.set(titles.selectedOptionId);
+    } catch (error) {
+      this.notificationService.warning(
+        'Title models unavailable',
+        `The model list could not be read (${(error as Error).message}), so "10 more titles" ` +
+          'has nothing to send a call on.',
+      );
+    }
+  }
+
+  /**
+   * Seat the picker on the model that wrote THIS item's titles.
+   *
+   * The trace says which model the run used, and more of the same is the likeliest thing the
+   * operator wants — so the picker opens there rather than on whatever the routing store
+   * happens to say today. An item whose recorded model is no longer an option (an upgrade
+   * removed it) opens on the routed one instead, visibly, in a control the operator sets.
+   */
+  private seatTitlesModelPicker(): void {
+    const options = this.moreTitlesOptions();
+    if (options.length === 0) return;
+    const recorded = this.titlesTraceModel();
+    const match = recorded ? options.find((option) => option.model === recorded) : undefined;
+    this.moreTitlesOptionId.set(match ? match.id : this.routedTitlesOptionId());
+  }
+
+  /** The model the open item's titles were written by, as its own trace recorded it. */
+  private titlesTraceModel(): string | null {
+    const entries = this.promptTrace().filter((entry) => entry.what.startsWith('the titles call for '));
+    const last = entries[entries.length - 1];
+    return last ? last.model : null;
+  }
+
+  /**
+   * TEN MORE TITLES, appended to the list.
+   *
+   * One call, on the model in the picker beside the button. The main process replays this
+   * item's OWN stored titles prompt — nothing is re-assembled here, and no prompt crosses
+   * into the renderer. What comes back is appended to the list as ordinary generated titles:
+   * the selection record keys on the exact title text, so starring and editing reach them
+   * with no special case, and a reload shows them because they are on the record now.
+   *
+   * Every refusal is the main process's sentence, shown as it was written — an item with no
+   * stored prompt, an unusable answer, a model that would not run.
+   */
+  async generateMoreTitles(): Promise<void> {
+    const report = this.selectedReport();
+    const current = this.metadata();
+    if (!report || !current) return;
+    if (!report.jobId || !report.itemId) {
+      this.notificationService.error(
+        'This report has no identity',
+        'It carries no job id or item id, so there is no record to write more titles onto.',
+      );
+      return;
+    }
+    const optionId = this.moreTitlesOptionId();
+    if (!optionId) {
+      this.notificationService.error(
+        'No model chosen',
+        'Pick a model beside the button — the call has to go somewhere.',
+      );
+      return;
+    }
+
+    // A half-finished edit is about a row that is about to be joined by ten more; save or
+    // cancel it first rather than leaving an index-keyed editor open over a changed list.
+    this.cancelEditTitle();
+    this.moreTitlesBusy.set(true);
+    try {
+      const result = await this.electron.generateMoreTitles(report.jobId, report.itemId, optionId);
+      if (!result.success || !result.titles) {
+        this.notificationService.error('No new titles', result.error ?? 'The request gave no reason.');
+        return;
+      }
+
+      // The item on screen may have changed while the call was out — appending to a list the
+      // operator is no longer looking at would put another item's titles on this one.
+      if (this.selectedReport()?.itemId !== report.itemId) return;
+
+      const open = this.metadata();
+      if (open) this.metadata.set({ ...open, titles: [...open.titles, ...result.titles] });
+      // The row's count comes from the cached index, and the record it counts just grew.
+      if (typeof result.totalTitles === 'number') {
+        report.titleCount = result.totalTitles;
+        this.reports.set([...this.reports()]);
+      }
+
+      if (result.warning) {
+        this.notificationService.warning('Written, with a note', result.warning);
+      } else {
+        this.notificationService.success(
+          `${result.titles.length} more titles`,
+          `Written by ${result.model} and appended to the list.`,
+        );
+      }
+    } catch (error) {
+      this.notificationService.error('No new titles', (error as Error).message);
+    } finally {
+      this.moreTitlesBusy.set(false);
+    }
   }
 
   /**
@@ -2555,6 +2701,10 @@ export class MetadataReports implements OnInit {
       this.calendarNow.set(new Date());
       this.calendarMonth.set(startOfMonth(new Date()));
 
+      // The titles picker belongs to the item now open, and its default is that item's own
+      // recorded model. AFTER metadata() is set — it is read off this item's trace.
+      this.seatTitlesModelPicker();
+
       // Load any previously chosen A/B titles for this item, BY ITS ID. The row's
       // itemIndex is only ever a position into the array read above; it has never been
       // an identity, and passing it here is what re-pointed selections at the wrong item
@@ -2901,6 +3051,9 @@ export class MetadataReports implements OnInit {
       content_provenance: raw.content_provenance,
       _title: raw._title,
       _prompt_set: raw._prompt_set,
+      // Passed through verbatim, for the same reason content_provenance is: a record of what
+      // the run sent, not a value with variants to normalize.
+      _prompt_trace: raw._prompt_trace,
     };
   }
 

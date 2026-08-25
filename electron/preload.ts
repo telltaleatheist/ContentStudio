@@ -99,6 +99,11 @@ const api = {
   // which files that means. `deleteDirectory` — an unbounded recursive delete the reports
   // page used to drive — was removed with the handler behind it.
   ensureReportsMigrated: () => ipcRenderer.invoke('reports-ensure-migrated'),
+  // Ten more titles for one already-generated item, on a model the operator picks from the
+  // titles task's own option list. The main process replays the run's stored titles prompt
+  // and appends what comes back to the item's titles array — the .txt is left alone.
+  generateMoreTitles: (jobId: string, itemId: string, optionId: string) =>
+    ipcRenderer.invoke('titles:generate-more', jobId, itemId, optionId),
   deleteReportItem: (jobId: string, itemId: string) =>
     ipcRenderer.invoke('reports-delete-item', jobId, itemId),
 

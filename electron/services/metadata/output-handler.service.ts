@@ -295,6 +295,83 @@ export class OutputHandlerService {
     return run;
   }
 
+  /**
+   * Append newly GENERATED titles to one item, and the call that wrote them to its trace.
+   *
+   * On the same queue as the item writes for the same reason they are: this is a
+   * read-modify-write of a job file a generation run may be appending items to, and the
+   * queue is the only thing that orders the two.
+   *
+   * This is GENERATION, not an edit. The operator's own edits live on the selection record
+   * keyed by the generated text (publish-store), and this file stays what the models wrote —
+   * so a title added here is an ordinary generated title, selectable and editable by exactly
+   * the machinery that reads the rest of the array.
+   *
+   * The item's .txt is deliberately untouched: it is the artifact of the run that produced
+   * it, and this is a later request. The json record is what the app reads.
+   */
+  appendGeneratedTitles(
+    jobId: string,
+    itemId: string,
+    titles: string[],
+    trace: { what: string; model: string; chars: number; at: string; prompt: string }
+  ): Promise<{ titles: string[]; totalTitles: number }> {
+    const run = this.writeQueue.then(() => this.runAppendGeneratedTitles(jobId, itemId, titles, trace));
+    this.writeQueue = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private runAppendGeneratedTitles(
+    jobId: string,
+    itemId: string,
+    titles: string[],
+    trace: { what: string; model: string; chars: number; at: string; prompt: string }
+  ): { titles: string[]; totalTitles: number } {
+    if (typeof jobId !== 'string' || !jobId.trim()) {
+      throw new Error('appendGeneratedTitles requires a non-empty jobId');
+    }
+    if (!isItemId(itemId)) {
+      throw new Error(`appendGeneratedTitles requires a valid item id; got ${JSON.stringify(itemId)}`);
+    }
+    if (!Array.isArray(titles) || titles.length === 0) {
+      throw new Error(`appendGeneratedTitles was given no titles to append to item ${itemId}`);
+    }
+
+    const job = this.getJobMetadata(jobId);
+    if (!job) {
+      throw new Error(`Job not found: ${jobId}`);
+    }
+    if (!Array.isArray(job.items)) {
+      throw new Error(`Job ${jobId} has no items array — the report file is corrupt.`);
+    }
+    const item = job.items.find((entry) => entry && (entry as StoredItem).item_id === itemId);
+    if (!item) {
+      throw new Error(`Item ${itemId} is not in job ${jobId}`);
+    }
+    if (!Array.isArray((item as any).titles)) {
+      throw new Error(
+        `Item ${itemId} in job ${jobId} has no titles array to append to — this report did not ` +
+          `record a titles field.`
+      );
+    }
+
+    // Appended as written. No dedupe and no reordering: a repeat is the model's answer and
+    // the operator is the one who curates the list.
+    (item as any).titles = [...(item as any).titles, ...titles];
+
+    // The trace is a record of calls, so a call that happened gets an entry — beside the
+    // run's own, in send order.
+    const existingTrace = (item as any)._prompt_trace;
+    (item as any)._prompt_trace = Array.isArray(existingTrace) ? [...existingTrace, trace] : [trace];
+
+    this.saveJson(job, path.join(this.metadataDir, `${jobId}.json`));
+    console.log(
+      `[OutputHandler] Appended ${titles.length} generated title(s) to item ${itemId} in job ${jobId}`
+    );
+
+    return { titles, totalTitles: (item as any).titles.length };
+  }
+
   private async runDeleteItem(
     jobId: string,
     itemId: string,

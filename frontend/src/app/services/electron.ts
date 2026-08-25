@@ -312,6 +312,24 @@ export interface MetadataRoutingOption {
   availabilityNote?: string;
 }
 
+/**
+ * What one "10 more titles" request comes back with.
+ *
+ * `warning` is set when the model returned a count other than ten — the titles are kept
+ * whole either way, and the operator curates.
+ */
+export interface MoreTitlesResult {
+  success: boolean;
+  /** Just the new ones, in the order the model wrote them, ready to append to the list. */
+  titles?: string[];
+  /** How many titles the item carries now, so the header count can be trusted. */
+  totalTitles?: number;
+  /** The model string the call actually went out on. */
+  model?: string;
+  warning?: string | null;
+  error?: string;
+}
+
 export interface MetadataRoutingTask {
   id: string;
   label: string;
@@ -553,6 +571,7 @@ declare global {
       // Reports (generated metadata items)
       ensureReportsMigrated: () => Promise<ReportMigrationResponse>;
       deleteReportItem: (jobId: string, itemId: string) => Promise<DeleteItemReceipt>;
+      generateMoreTitles: (jobId: string, itemId: string, optionId: string) => Promise<MoreTitlesResult>;
 
       // Job history
       getJobHistory: () => Promise<any[]>;
@@ -1123,6 +1142,19 @@ export class ElectronService {
   async deleteReportItem(jobId: string, itemId: string): Promise<DeleteItemReceipt> {
     if (!this.ipcRenderer) throw new Error('Electron bridge unavailable — cannot delete this report.');
     return await this.ipcRenderer.deleteReportItem(jobId, itemId);
+  }
+
+  /**
+   * Ten more titles for one already-generated item, written by the model named.
+   *
+   * The main process replays that item's own stored titles prompt; nothing is re-assembled
+   * here and no prompt crosses this boundary. A refusal — an item generated before prompts
+   * were stored, an option the titles task does not offer, an unusable answer — arrives as
+   * `{ success: false, error }` and the page shows the error verbatim.
+   */
+  async generateMoreTitles(jobId: string, itemId: string, optionId: string): Promise<MoreTitlesResult> {
+    if (!this.ipcRenderer) throw new Error('Electron bridge unavailable — cannot write more titles.');
+    return await this.ipcRenderer.generateMoreTitles(jobId, itemId, optionId);
   }
 
   // Job history

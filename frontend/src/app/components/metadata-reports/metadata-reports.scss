@@ -898,6 +898,20 @@ input[type='time'].control { width: 92px; flex: none; }
 
   &:focus-visible { box-shadow: inset 3px 0 0 var(--rp-ink-3); }
 }
+/* The one action at the FOOT of the generated list, where "and ten more" belongs. */
+.more-titles {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px 12px 4px;
+  border-top: 1px solid var(--rp-line-soft);
+}
+.more-titles-model {
+  flex: none;
+  max-width: 210px;
+}
+.more-titles-spin { flex: none; }
+
 .s {
   display: flex;
   align-items: center;

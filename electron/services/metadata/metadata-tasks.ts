@@ -496,11 +496,16 @@ export const LOCAL_FIELD_CTX_MAX = 40960;
  */
 export const LOCAL_FIELD_NUM_PREDICT = 8192;
 
-/** Long enough for one item's calls to run back to back without the model being evicted. */
-const LOCAL_FIELD_KEEP_ALIVE = '10m';
+/**
+ * Long enough for one item's calls to run back to back without the model being evicted.
+ *
+ * Exported because the operator's "ten more titles" replay is the same call on the same model
+ * (more-titles.ts) and a second copy of these two numbers would be a second policy.
+ */
+export const LOCAL_FIELD_KEEP_ALIVE = '10m';
 
 /** A field call on a 27B carrying a full transcript; 10 minutes is generous, not tight. */
-const LOCAL_FIELD_TIMEOUT_MS = 600_000;
+export const LOCAL_FIELD_TIMEOUT_MS = 600_000;
 
 /**
  * Headroom for input data a sizing pass cannot see yet.
