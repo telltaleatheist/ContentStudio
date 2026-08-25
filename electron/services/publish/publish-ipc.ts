@@ -30,7 +30,7 @@ import {
   resolveChosenMetadata,
 } from './publish-store.service';
 import { matchDraft, toFillCandidates } from './video-matcher';
-import { YouTubePushApi, pushItemToYouTube } from './youtube-push';
+import { YouTubePushApi, pushItemToYouTube, pushScheduleToYouTube } from './youtube-push';
 import { YouTubeUploadApi, uploadItemToYouTube } from './youtube-upload';
 import {
   SpreakerTarget,
@@ -221,32 +221,35 @@ export interface ScheduledVideo {
 }
 
 /**
- * A video this app has LINKED that YouTube says is already out.
+ * Every video a publish record claims, as YouTube currently has it.
  *
- * The counterpart to a scheduled one, and the reason it is needed: `publishAt` is CLEARED
- * by YouTube the moment a video actually publishes, so a released video is invisible to
- * any sweep that only collects scheduled ones. Without this, a record still carrying the
- * date it was meant to go out reads as a pending release forever, and the calendar draws
- * a future slot for something that has already happened.
+ * Not filtered to the released ones, and not to the scheduled ones, because the two
+ * questions the board asks about a linked video have opposite shapes: "has this already
+ * gone out" needs the public ones, and "does YouTube actually have the schedule this
+ * record thinks it does" needs the private ones — including the case where YouTube holds
+ * NO schedule at all, which is what a drag on the calendar produces until something
+ * pushes it.
  *
- * Restricted to videos a publish record claims. Every public video on three channels is
- * hundreds of rows and answers a question nobody asked; the linked ones are exactly the
- * set the board draws chips for.
+ * `publishAt` is null both for a video with no schedule and for one that has already
+ * published (YouTube clears the field on release); `privacyStatus` is what tells those
+ * two apart, so both travel.
  */
-export interface LiveVideo {
+export interface LinkedVideo {
   videoId: string;
   channelId: string;
   channelName: string;
   title: string;
-  /** When YouTube says it actually went out. */
+  /** YouTube's schedule for it, or null — see above, null means two different things. */
+  publishAt: string | null;
+  /** When it actually went out. Meaningless while still private. */
   publishedAt: string;
   privacyStatus: string;
 }
 
 export interface ScheduledSweep {
   scheduled: ScheduledVideo[];
-  /** Linked videos that are already public or unlisted, i.e. no longer pending. */
-  liveLinked: LiveVideo[];
+  /** Every video a publish record claims, with YouTube's own status for it. */
+  linked: LinkedVideo[];
   /** Channels that would not answer, named. Never a quietly shorter mirror. */
   problems: Array<{ channelId: string; channelName: string; message: string }>;
   sweptAt: string;
@@ -723,15 +726,15 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
     try {
       const channels = listChannels();
       const scheduled: ScheduledVideo[] = [];
-      const liveLinked: LiveVideo[] = [];
+      const linked: LinkedVideo[] = [];
       const problems: Array<{ channelId: string; channelName: string; message: string }> = [];
 
       // Which videos this app has linked. Read once, before any network call: a record
       // that will not parse is already reported by publish-list-index, and this call has
       // no business failing over one.
-      const linked = new Set<string>();
+      const claimed = new Set<string>();
       for (const record of store.listAllRecords().records) {
-        if (record.videoId) linked.add(record.videoId);
+        if (record.videoId) claimed.add(record.videoId);
       }
 
       // Sequential rather than Promise.all: three channels against one quota and one
@@ -741,15 +744,15 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
         try {
           const uploads = await listRecentUploads(channel.channelId, SCHEDULED_SWEEP_WINDOW);
           for (const video of uploads) {
-            // A linked video that is no longer private has been released — whether it was
-            // scheduled or published by hand, and whether or not a publishAt survives on
-            // it. That fact outranks any date a local record still carries.
-            if (video.privacyStatus !== 'private' && linked.has(video.videoId)) {
-              liveLinked.push({
+            // Every linked video, whatever state it is in. What YouTube says about a
+            // video this app has a record for outranks anything the record believes.
+            if (claimed.has(video.videoId)) {
+              linked.push({
                 videoId: video.videoId,
                 channelId: channel.channelId,
                 channelName: channel.name,
                 title: video.title,
+                publishAt: video.publishAt,
                 publishedAt: video.publishedAt,
                 privacyStatus: video.privacyStatus,
               });
@@ -781,7 +784,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
 
       return ok<ScheduledSweep>({
         scheduled,
-        liveLinked,
+        linked,
         problems,
         sweptAt: new Date().toISOString(),
         channelsSwept: channels.length - problems.length,
@@ -1427,6 +1430,27 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       const id = requireItemId(itemId, 'itemId');
       requirePrimarySet(id, 'pushed to YouTube');
       const outcome = await pushItemToYouTube(id, { store, readGenerated, api: pushApi });
+      return ok(outcome);
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * Send ONE item's schedule to its linked video, and nothing else.
+   *
+   * Separate from publish-push-youtube because that call sends the whole snippet, which
+   * rewrites the video's title. A title is what a Test & Compare experiment varies, the
+   * API cannot see those experiments at all, and moving a video to Thursday must not
+   * quietly reach into one. This sends part=status.
+   *
+   * No primary-set requirement, unlike the metadata push: nothing about which metadata
+   * set is primary bears on when the video goes out.
+   */
+  ipcMain.handle('publish-push-schedule', async (_e, itemId: string) => {
+    try {
+      const id = requireItemId(itemId, 'itemId');
+      const outcome = await pushScheduleToYouTube(id, { store, api: pushApi });
       return ok(outcome);
     } catch (err: any) {
       return fail(err?.message || String(err));

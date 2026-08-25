@@ -406,3 +406,139 @@ async function requireVideo(record: ChosenMetadata, api: YouTubePushApi): Promis
   }
   return video;
 }
+
+// ======================================================================= schedule only
+//
+// A SECOND, NARROWER WRITE, and the narrowness is the entire point.
+//
+// pushItemToYouTube above always sends the whole snippet — that is correct for "publish
+// my finished metadata onto this video", and wrong for "this video moved to Thursday".
+// Sending a snippet rewrites the video's title, and a title on a video that is running a
+// Test & Compare experiment is exactly the thing not to touch as a side effect of moving
+// a date. YouTube exposes no API for those experiments, so anything this app does to a
+// title it cannot see the consequences of.
+//
+// So: part=status, nothing else. Title, description, tags and thumbnail are not read, not
+// planned and not sent.
+
+/** The exact status-only request `pushScheduleToYouTube` will make. */
+export interface ScheduleUpdatePlan {
+  videoId: string;
+  channelId: string;
+  body: { id: string; status: Record<string, any> };
+  publishAt: string;
+}
+
+/**
+ * Build the status-only videos.update for one item's schedule, or throw naming the rule.
+ *
+ * PURE, and carrying the same three refusals the metadata push has, for the same reasons:
+ * the video must be the one asked for, it must belong to the record's channel, and it
+ * must still be private — YouTube accepts `status.publishAt` only while a video is
+ * private and has never published, so a released video cannot be moved.
+ */
+export function planScheduleUpdate(input: {
+  record: ChosenMetadata;
+  video: VideoParts;
+}): ScheduleUpdatePlan {
+  const { record, video } = input;
+  const item = record.itemId;
+
+  const { videoId, channelId } = requireLink(record);
+  if (video.id !== videoId) {
+    throw new Error(
+      `Asked YouTube for video ${videoId} and it answered about ${video.id}. Nothing was sent.`
+    );
+  }
+
+  const actualChannel = video.snippet?.channelId;
+  if (typeof actualChannel !== 'string' || !actualChannel) {
+    throw new Error(
+      `YouTube returned video ${videoId} with no snippet.channelId, so the channel guard ` +
+      `cannot be checked. Nothing was sent.`
+    );
+  }
+  if (actualChannel !== channelId) {
+    throw new Error(
+      `Video ${videoId} belongs to channel ${actualChannel}, but item ${item} is routed to ` +
+      `channel ${channelId}. Refusing to schedule one channel's video from another ` +
+      `channel's record — fix the link or the routing.`
+    );
+  }
+
+  if (!record.publishAt) {
+    throw new Error(
+      `Item ${item} has no schedule, so there is nothing to send. Clearing a video's ` +
+      `schedule is not this call — it would have to decide what privacy the video reverts ` +
+      `to, and nobody has said.`
+    );
+  }
+
+  const privacy = video.status?.privacyStatus;
+  if (typeof privacy !== 'string' || !privacy) {
+    throw new Error(
+      `Video ${videoId} came back with no status.privacyStatus, so whether it can still be ` +
+      `scheduled cannot be determined. Nothing was sent.`
+    );
+  }
+  if (privacy !== 'private') {
+    throw new Error(
+      `Item ${item} is scheduled for ${record.publishAt}, but video ${videoId} is ` +
+      `${privacy.toUpperCase()} — it has already been published, and YouTube only accepts a ` +
+      `publish time while a video is private and never-published. The calendar's date for ` +
+      `it is now a record of intent, not a schedule that can still be set.`
+    );
+  }
+
+  // Whole status back, two fields replaced — same rule as the snippet push, so
+  // selfDeclaredMadeForKids, license, embeddable and anything Google adds later ride
+  // through untouched because they ride through as the same object.
+  return {
+    videoId,
+    channelId,
+    body: {
+      id: videoId,
+      status: { ...video.status, privacyStatus: 'private', publishAt: record.publishAt },
+    },
+    publishAt: record.publishAt,
+  };
+}
+
+export interface SchedulePushOutcome {
+  videoId: string;
+  publishAt: string;
+  /** What YouTube held before this call, so the caller can say what actually changed. */
+  previousPublishAt: string | null;
+}
+
+/**
+ * Send one item's schedule to its linked video. Reads first, refuses on the read, writes
+ * once.
+ */
+export async function pushScheduleToYouTube(
+  itemId: string,
+  deps: { store: PublishStoreService; api: YouTubePushApi }
+): Promise<SchedulePushOutcome> {
+  const { store, api } = deps;
+
+  const record = store.get(itemId);
+  if (!record) {
+    throw new Error(`Nothing has been saved for item ${itemId}, so it has no schedule to send.`);
+  }
+  const { videoId, channelId } = requireLink(record);
+
+  const video = await api.getVideoParts(channelId, videoId);
+  if (!video) {
+    throw new Error(
+      `Channel ${channelId} has no video ${videoId} — it was deleted, or the link is wrong. ` +
+      `Nothing was sent.`
+    );
+  }
+
+  const previousPublishAt =
+    typeof video.status?.publishAt === 'string' ? video.status.publishAt : null;
+  const plan = planScheduleUpdate({ record, video });
+  await api.updateVideo(plan.channelId, ['status'], plan.body);
+
+  return { videoId: plan.videoId, publishAt: plan.publishAt, previousPublishAt };
+}

@@ -275,6 +275,7 @@ const api = {
   // already be linked. Failures (auth, quota, "this video is public and cannot be
   // scheduled") come back as text, verbatim.
   publishPushYouTube: (itemId: string) => ipcRenderer.invoke('publish-push-youtube', itemId),
+  publishPushSchedule: (itemId: string) => ipcRenderer.invoke('publish-push-schedule', itemId),
   publishUploadYouTube: (itemId: string) => ipcRenderer.invoke('publish-upload-youtube', itemId),
   publishUploadCancel: (itemId: string) => ipcRenderer.invoke('publish-upload-cancel', itemId),
   onPublishUploadProgress: (callback: (p: { itemId: string; sentBytes: number; totalBytes: number }) => void) => {

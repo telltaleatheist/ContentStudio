@@ -645,25 +645,33 @@ export interface ScheduledVideo {
 }
 
 /**
- * Mirror of LiveVideo — a linked video YouTube says is already out.
+ * Mirror of LinkedVideo — every video a publish record claims, as YouTube has it.
  *
- * Needed because YouTube CLEARS publishAt the moment a video publishes: without this a
- * released video is invisible to a sweep of scheduled ones, and a record still carrying
- * its intended date reads as pending forever.
+ * `publishAt` null means two different things and `privacyStatus` disambiguates: a
+ * private video with no schedule has never been given one, while a public video's
+ * schedule was cleared by YouTube when it released.
  */
-export interface LiveVideo {
+export interface LinkedVideo {
   videoId: string;
   channelId: string;
   channelName: string;
   title: string;
+  publishAt: string | null;
   publishedAt: string;
   privacyStatus: string;
+}
+
+/** What a schedule-only push returns. */
+export interface SchedulePushOutcome {
+  videoId: string;
+  publishAt: string;
+  previousPublishAt: string | null;
 }
 
 /** Mirror of ScheduledSweep. The window is carried because it bounds what was seen. */
 export interface ScheduledSweep {
   scheduled: ScheduledVideo[];
-  liveLinked: LiveVideo[];
+  linked: LinkedVideo[];
   problems: Array<{ channelId: string; channelName: string; message: string }>;
   sweptAt: string;
   channelsSwept: number;

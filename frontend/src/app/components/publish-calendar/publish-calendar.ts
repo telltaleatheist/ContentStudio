@@ -46,7 +46,7 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { AnalyticsChannel, ElectronService } from '../../services/electron';
 import { PublishState } from '../../features/publish/publish-state';
 import type {
-  LiveVideo,
+  LinkedVideo,
   PublishFacts,
   ReportIndexEntry,
   ScheduledSweep,
@@ -167,6 +167,14 @@ export interface CalendarChip {
    * that has already happened.
    */
   liveNote: string | null;
+  /**
+   * True when YouTube could still take this schedule and does not have it: the video is
+   * linked, still private, and either holds a different moment or holds none at all.
+   *
+   * The "holds none at all" case is the ordinary result of dragging a chip — the local
+   * record moves immediately, and nothing has told YouTube yet.
+   */
+  needsSchedulePush: boolean;
   /** For a stale row: when it was due and when the intent was recorded. */
   staleNote: string | null;
   /**
@@ -398,6 +406,10 @@ export class PublishCalendar implements OnInit, OnDestroy {
   /** Results of the last run, kept until dismissed. Failures are the point of it. */
   readonly uploadResults = signal<UploadResult[]>([]);
 
+  /** The schedule push in flight, or null. Simpler than an upload: no bytes to report. */
+  readonly pushRun = signal<{ index: number; total: number; title: string } | null>(null);
+  readonly pushResults = signal<UploadResult[]>([]);
+
   // ---------------------------------------------------------------- derivations
 
   /** Registry order decides the hue; the tabs print the key. */
@@ -436,12 +448,12 @@ export class PublishCalendar implements OnInit, OnDestroy {
    * Used for two different things and built once: the divergence warning on a local chip,
    * and knowing which mirrored videos are duplicates of a chip already on the board.
    */
-  /** Linked videos YouTube says are already out, by video id. */
-  private readonly liveByVideoId = computed(() => {
-    const map = new Map<string, LiveVideo>();
+  /** Every linked video's YouTube-side status, by video id. */
+  private readonly linkedByVideoId = computed(() => {
+    const map = new Map<string, LinkedVideo>();
     const swept = this.sweep();
     if (!swept) return map;
-    for (const video of swept.liveLinked) map.set(video.videoId, video);
+    for (const video of swept.linked) map.set(video.videoId, video);
     return map;
   });
 
@@ -459,11 +471,11 @@ export class PublishCalendar implements OnInit, OnDestroy {
     const active = this.activeChannelId();
     const mirror = this.mirrorByVideoId();
     const bySlot = this.mirrorBySlot();
-    const live = this.liveByVideoId();
+    const linked = this.linkedByVideoId();
     return this.entries()
       .filter((entry) => entry.publish !== null && entry.publish.publishAt !== null)
       .map((entry) =>
-        this.toChip(entry, entry.publish as PublishFacts, now, active, mirror, bySlot, live)
+        this.toChip(entry, entry.publish as PublishFacts, now, active, mirror, bySlot, linked)
       )
       .sort((a, b) => a.publishAt.localeCompare(b.publishAt));
   });
@@ -600,6 +612,17 @@ export class PublishCalendar implements OnInit, OnDestroy {
   });
 
   readonly uploadFailures = computed(() => this.uploadResults().filter((r) => !r.ok));
+
+  /**
+   * Linked, still-private videos whose YouTube schedule is not the one on the board.
+   *
+   * This is what makes the calendar a scheduler rather than a notepad: dragging an
+   * already-uploaded video writes the record instantly, and until this is pushed YouTube
+   * still holds the old date — or no date at all.
+   */
+  readonly needsSchedulePush = computed(() =>
+    this.scheduledChips().filter((chip) => chip.needsSchedulePush)
+  );
 
   /** Of the run about to be confirmed, how many land on a slot YouTube already holds. */
   readonly confirmCollisions = computed(
@@ -1206,6 +1229,63 @@ export class PublishCalendar implements OnInit, OnDestroy {
     return Math.round((run.sentBytes / run.totalBytes) * 100);
   }
 
+  // ---------------------------------------------------------------- schedule push
+
+  /**
+   * Send every out-of-date schedule to YouTube, one at a time.
+   *
+   * status-only writes, so a title running a Test & Compare experiment is never touched
+   * — the API cannot see those experiments, which is exactly why nothing here may write a
+   * field it was not asked to write.
+   *
+   * Same failure discipline as the upload run: one refusal is recorded against its item,
+   * verbatim, and the rest still go.
+   */
+  async pushSchedules(): Promise<void> {
+    const chips = this.needsSchedulePush();
+    if (chips.length === 0 || this.pushRun() !== null) return;
+
+    this.pushResults.set([]);
+    const results: UploadResult[] = [];
+
+    for (let i = 0; i < chips.length; i++) {
+      const chip = chips[i];
+      this.pushRun.set({ index: i + 1, total: chips.length, title: chip.title });
+      try {
+        const res = await this.electron.publishPushSchedule(chip.itemId);
+        results.push({
+          itemId: chip.itemId,
+          title: chip.title,
+          channelName: chip.channelName,
+          ok: res.success,
+          error: res.success ? null : res.error ?? 'The schedule was refused with no reason given.',
+          videoId: chip.videoId,
+        });
+      } catch (err: any) {
+        results.push({
+          itemId: chip.itemId,
+          title: chip.title,
+          channelName: chip.channelName,
+          ok: false,
+          error: err?.message || String(err),
+          videoId: chip.videoId,
+        });
+      }
+      this.pushResults.set([...results]);
+    }
+
+    this.pushRun.set(null);
+    // Re-read YouTube: the whole point is that the board now agrees with it, and the only
+    // way to show that honestly is to ask again rather than assume the writes landed.
+    await this.refreshSweep();
+  }
+
+  dismissPushResults(): void {
+    this.pushResults.set([]);
+  }
+
+  readonly pushFailures = computed(() => this.pushResults().filter((r) => !r.ok));
+
   // ---------------------------------------------------------------- helpers
 
   private factsOf(itemId: string): PublishFacts | null {
@@ -1240,42 +1320,6 @@ export class PublishCalendar implements OnInit, OnDestroy {
     };
   }
 
-  /**
-   * What YouTube holds for this video, when that is not what the record says.
-   *
-   * Only linked items can diverge — with no video id there is nothing to compare against,
-   * which is a different situation from agreeing. Compared as INSTANTS rather than as
-   * strings: the two sides write the same moment with different offsets, and a string
-   * comparison would report a disagreement every time one of them was written in the
-   * other half of the year.
-   */
-  private divergenceOf(
-    facts: PublishFacts,
-    at: Date,
-    mirror: ReadonlyMap<string, ScheduledVideo>
-  ): string | null {
-    if (facts.videoId === null) return null;
-    const remote = mirror.get(facts.videoId);
-    if (!remote) return null;
-
-    const remoteAt = new Date(remote.publishAt);
-    if (Number.isNaN(remoteAt.getTime())) {
-      throw new Error(
-        `YouTube returned ${JSON.stringify(remote.publishAt)} as the schedule for ` +
-        `${facts.videoId}, which is not a date this can read.`
-      );
-    }
-    if (remoteAt.getTime() === at.getTime()) return null;
-
-    return `YouTube has this at ${remoteAt.toLocaleString([], {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    })}`;
-  }
-
   private toChip(
     entry: ReportIndexEntry,
     facts: PublishFacts,
@@ -1283,18 +1327,27 @@ export class PublishCalendar implements OnInit, OnDestroy {
     activeChannelId: string | null,
     mirror: ReadonlyMap<string, ScheduledVideo>,
     mirrorBySlot: ReadonlyMap<string, MirrorChip>,
-    liveByVideoId: ReadonlyMap<string, LiveVideo>
+    linkedByVideoId: ReadonlyMap<string, LinkedVideo>
   ): CalendarChip {
     const publishAt = facts.publishAt as string;
     const at = new Date(publishAt);
     const channel = this.channelOf(facts.channelId);
 
-    // YouTube saying the video is out OVERRIDES every local reading of the same record.
-    // The local rules can only infer from a date and a status, and both of those describe
-    // what was meant to happen; this describes what did.
-    const live = facts.videoId !== null ? liveByVideoId.get(facts.videoId) ?? null : null;
+    // YouTube's own answer OVERRIDES every local reading of the same record. The local
+    // rules can only infer from a date and a status, and both of those describe what was
+    // meant to happen; this describes what did.
+    const remote = facts.videoId !== null ? linkedByVideoId.get(facts.videoId) ?? null : null;
+    const live = remote !== null && remote.privacyStatus !== 'private' ? remote : null;
     const state = live !== null ? 'published' : chipStateOf(facts, now);
     const published = state === 'published';
+
+    // Still private, so YouTube can still take a date — and it does not have this one.
+    // Null publishAt on a private video means it has never been given a schedule at all,
+    // which is exactly what a drag leaves behind until something pushes it.
+    const needsSchedulePush =
+      remote !== null &&
+      remote.privacyStatus === 'private' &&
+      (remote.publishAt === null || new Date(remote.publishAt).getTime() !== at.getTime());
 
     return {
       itemId: entry.itemId,
@@ -1322,9 +1375,21 @@ export class PublishCalendar implements OnInit, OnDestroy {
           ? `was due ${distance(at, now)}` +
             (facts.publishAtSetAt ? ` · set ${distance(new Date(facts.publishAtSetAt), now)}` : '')
           : null,
-      mirrorDivergence: this.divergenceOf(facts, at, mirror),
+      mirrorDivergence:
+        remote !== null && remote.privacyStatus === 'private' && remote.publishAt !== null
+          ? new Date(remote.publishAt).getTime() === at.getTime()
+            ? null
+            : `YouTube has this at ${new Date(remote.publishAt).toLocaleString([], {
+                weekday: 'short',
+                month: 'short',
+                day: 'numeric',
+                hour: 'numeric',
+                minute: '2-digit',
+              })}`
+          : null,
       readiness: readinessOf(facts),
       missing: missingFor(facts),
+      needsSchedulePush,
       liveNote:
         live !== null
           ? `live on YouTube since ${new Date(live.publishedAt).toLocaleDateString([], {

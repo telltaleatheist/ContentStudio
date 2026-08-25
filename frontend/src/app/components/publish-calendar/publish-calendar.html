@@ -87,6 +87,52 @@
     </div>
   }
 
+  <!-- The board and YouTube disagree, and YouTube can still be told. This is the whole
+       difference between a calendar that plans and one that schedules. -->
+  @if (needsSchedulePush().length > 0 && pushRun() === null) {
+    <div class="push-banner">
+      <mat-icon>schedule_send</mat-icon>
+      <span>
+        {{ needsSchedulePush().length }} uploaded
+        video{{ needsSchedulePush().length === 1 ? '' : 's' }}
+        {{ needsSchedulePush().length === 1 ? 'is' : 'are' }} not on YouTube at the time shown
+        here.
+      </span>
+      <button mat-flat-button color="primary" (click)="pushSchedules()">
+        Send {{ needsSchedulePush().length === 1 ? 'it' : 'them' }} to YouTube
+      </button>
+    </div>
+  }
+
+  @if (pushRun(); as run) {
+    <div class="upload-run">
+      <div class="ur-head">
+        <mat-icon class="spin">autorenew</mat-icon>
+        Scheduling {{ run.index }} of {{ run.total }} on YouTube
+      </div>
+      <div class="ur-title">{{ run.title }}</div>
+    </div>
+  }
+
+  @if (pushResults().length > 0 && pushRun() === null) {
+    <div class="upload-results" [class.has-failures]="pushFailures().length > 0">
+      <div class="ures-head">
+        {{ pushResults().length - pushFailures().length }} scheduled on YouTube,
+        {{ pushFailures().length }} refused
+        <button mat-icon-button (click)="dismissPushResults()" matTooltip="Dismiss">
+          <mat-icon>close</mat-icon>
+        </button>
+      </div>
+      @for (r of pushResults(); track r.itemId) {
+        <div class="ures-row" [class.failed]="!r.ok">
+          <mat-icon>{{ r.ok ? 'check_circle' : 'error_outline' }}</mat-icon>
+          <span class="ures-title">{{ r.title }}</span>
+          @if (!r.ok) { <span class="ures-error">{{ r.error }}</span> }
+        </div>
+      }
+    </div>
+  }
+
   @if (divergentCount() > 0) {
     <div class="divergence-banner">
       <mat-icon>sync_problem</mat-icon>
@@ -444,6 +490,9 @@
   }
   @if (chip.mirrorDivergence) {
     <div class="divergence-note">⇄ {{ chip.mirrorDivergence }}</div>
+  }
+  @if (chip.needsSchedulePush && !chip.mirrorDivergence) {
+    <div class="pending-push-note">⇡ not on YouTube yet</div>
   }
   @if (chip.liveNote) {
     <div class="live-note">● {{ chip.liveNote }}</div>

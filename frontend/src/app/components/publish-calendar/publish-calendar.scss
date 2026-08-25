@@ -1096,3 +1096,38 @@
   font-size: 0.62rem;
   color: var(--success-text, #16a34a);
 }
+
+/* The board holds a date YouTube does not. Offered as an action rather than a warning:
+   it is fixable in one click, which is the difference between a calendar that plans and
+   one that schedules. */
+.push-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.5rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--primary-orange);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--primary-orange) 10%, transparent);
+  font-size: 0.75rem;
+  color: var(--text-primary);
+
+  mat-icon {
+    font-size: 17px;
+    width: 17px;
+    height: 17px;
+    flex-shrink: 0;
+    color: var(--primary-orange);
+  }
+
+  span {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+.pending-push-note {
+  margin: 0.1rem 0 0.2rem;
+  font-size: 0.62rem;
+  color: var(--primary-orange);
+}

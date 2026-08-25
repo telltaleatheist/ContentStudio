@@ -11,6 +11,7 @@ import type {
   PushOutcome,
   ReportIndexResponse,
   ScheduledSweep,
+  SchedulePushOutcome,
   ResolvedMetadata,
   SpreakerPushOutcome,
   SpreakerStatus,
@@ -700,6 +701,7 @@ declare global {
         fromItemId: string
       ) => Promise<PublishResult<CarryReceipt>>;
       publishPushYouTube: (itemId: string) => Promise<PublishResult<PushOutcome>>;
+      publishPushSchedule: (itemId: string) => Promise<PublishResult<SchedulePushOutcome>>;
       publishUploadYouTube: (itemId: string) => Promise<PublishResult<UploadOutcome>>;
       publishUploadCancel: (itemId: string) => Promise<PublishResult<{ cancelled: boolean }>>;
       onPublishUploadProgress: (callback: (p: UploadProgress) => void) => () => void;
@@ -1589,6 +1591,18 @@ export class ElectronService {
    * PRIVATE — it cannot go public even at its scheduled publishAt. The receipt says so
    * (`lockedPrivatePendingAudit`), and so must any UI near the action.
    */
+  /**
+   * Send this item's schedule to its linked video — status only.
+   *
+   * Deliberately NOT publishPushYouTube, which rewrites the whole snippet and therefore
+   * the title. A title is what a Test & Compare experiment varies and the API cannot see
+   * those, so moving a release date must not touch one.
+   */
+  async publishPushSchedule(itemId: string): Promise<PublishResult<SchedulePushOutcome>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishPushSchedule(itemId);
+  }
+
   async publishUploadYouTube(itemId: string): Promise<PublishResult<UploadOutcome>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.publishUploadYouTube(itemId);
