@@ -1100,7 +1100,9 @@ check('all three chapter grains ship, each with the band and quote contract (LED
   }
   const bands = {
     detailed: 'usually has 5 to 10',
-    broad: 'usually has 4 to 7',
+    // Broad moved to a graduated count table 2026-08-24 night: the rate phrasing measured
+    // as ignored (25 chapters at 1:40 spacing on a 41-minute video); counts anchor.
+    broad: 'usually 10 to 14, each covering 3 to 5 minutes',
   };
   for (const [grain, band] of Object.entries(bands)) {
     const body = assets.pipeline('chapters.yml', `whole_transcript_${grain}`);

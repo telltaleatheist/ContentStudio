@@ -82,7 +82,10 @@ whole_transcript_broad: |-
 
   Split this video into youtube chapters. The video works through one subject; a new chapter starts where the video moves to a distinctly different piece of it — a new person taken up, a new document or clip set, a new line of argument — and the claims inside one piece stay together.
 
-  A chapter is a stretch of a minute or several: a 10-minute video usually has 4 to 7 chapters, and a longer one carries roughly one every 2 to 4 minutes.
+  A chapter is a stretch of several minutes. How many that makes is set by the runtime stated above:
+  - under 10 minutes: usually 4 to 7 chapters
+  - 10 to 30 minutes: usually 6 to 10, each covering 2 to 4 minutes
+  - 30 minutes and longer: usually 10 to 14, each covering 3 to 5 minutes
 
   An ad, promotion, or plug — {promoted_items} — is its own chapter however short it runs: report the sentence where it starts, and the first sentence of the content it returns to.
 
@@ -131,7 +134,7 @@ summarize_chapter: |-
   - a summary: 2-3 sentences on what this stretch of the video covers.
 
   Every name in your answer comes from the transcript below: where the transcript names a person, organisation, story or claim, use that name; where it says only "the mayor", say "the mayor". An audience or a group the transcript does not name stays unnamed.
-  Attribution follows the first person: a testimony, a conversion story, a claim told in "I" belongs to the person telling it — never to the person it is addressed to, prayed over, or told about. Where the video's own commentary names who is speaking ("he's talking to Jake right now", "this is the pastor"), that identification governs.
+  Attribution follows the first person: a testimony, a conversion story, a claim told in "I" belongs to the person telling it — never to the person it is addressed to, prayed over, or told about. Where the video's own commentary names who is speaking ("he's talking to Jake right now", "this is the pastor"), that identification governs. A stretch that is a response to a claim is titled by the claim and the verdict on it, as content: "The bridge contract claim, rebutted".
   A stretch that IS one of the creator's own promotions — {promoted_items} — simply says that is what it is ("Patreon plug and a promotion of the book God's People"); one mentioned in passing stays out of the title and the summary, which name the content around it. That list exists so you can recognize an ad: the names and sites in it belong to the ads, and every person your answer names comes from the transcript below.
   {entity_scaffold}
   Output the title on the FIRST line, then the summary on the lines after it — plain text, nothing else: no labels, no numbering, no JSON.
@@ -172,7 +175,7 @@ summarize_chapter_tagged: |-
   - a summary: 2-3 sentences on what this stretch of the video covers.
 
   Every name in your answer comes from the transcript below: where the transcript names a person, organisation, story or claim, use that name; where it says only "the mayor", say "the mayor". An audience or a group the transcript does not name stays unnamed.
-  Attribution follows the first person: a testimony, a conversion story, a claim told in "I" belongs to the person telling it — never to the person it is addressed to, prayed over, or told about. Where the video's own commentary names who is speaking ("he's talking to Jake right now", "this is the pastor"), that identification governs.
+  Attribution follows the first person: a testimony, a conversion story, a claim told in "I" belongs to the person telling it — never to the person it is addressed to, prayed over, or told about. Where the video's own commentary names who is speaking ("he's talking to Jake right now", "this is the pastor"), that identification governs. A stretch that is a response to a claim is titled by the claim and the verdict on it, as content: "The bridge contract claim, rebutted".
   A stretch that IS one of the creator's own promotions — {promoted_items} — simply says that is what it is ("Patreon plug and a promotion of the book God's People"); one mentioned in passing stays out of the title and the summary, which name the content around it. That list exists so you can recognize an ad: the names and sites in it belong to the ads, and every person your answer names comes from the transcript below.
   {entity_scaffold}
   Output the title on the FIRST line, then the summary on the lines after it — plain text, nothing else: no labels, no numbering, no JSON.
