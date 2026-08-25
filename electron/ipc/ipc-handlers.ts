@@ -58,7 +58,7 @@ import {
   resolveMetadataRouting,
   validateRoutingSelections,
 } from '../services/metadata/metadata-routing';
-import { PROMPTS_SUBDIR, initPromptAssets, promptAssets } from '../services/metadata/prompt-assets';
+import { PROMPTS_SUBDIR, initPromptAssets, promptAssets, reloadPromptAssets } from '../services/metadata/prompt-assets';
 import { setupPublishIpc } from '../services/publish/publish-ipc';
 import { SpreakerConfigService } from '../services/spreaker/spreaker-config.service';
 import { SpreakerApiService } from '../services/spreaker/spreaker-api.service';
@@ -227,6 +227,119 @@ function listBundledPromptAssets(root: string, prefix = ''): string[] {
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// The Instructions page: file-level editing of the installed prompt tree
+// ---------------------------------------------------------------------------
+
+/**
+ * The tree the Instructions page addresses: `<userData>/prompt_sets/prompts`.
+ *
+ * TWO ROOTS, TWO PATH SPACES, and they are one directory level apart — the single thing most
+ * likely to be got wrong here. Paths in the instructions IPC are relative to THIS root
+ * (`shared/fields/titles.yml`), because that is what the operator sees and what the loader
+ * calls things. The provenance manifest keys on paths relative to the ASSET root one level up
+ * (`prompts/shared/fields/titles.yml`), because that is what ensurePromptSetsDirectory
+ * installs from. `promptAssetKey` below is the ONLY place the two are converted, so a lookup
+ * that silently missed would have to get past exactly one line of code.
+ */
+function getInstalledPromptsRoot(): string {
+  return path.join(getPromptSetsDirectory(), PROMPTS_SUBDIR);
+}
+
+/** An instructions-relative path as the provenance manifest keys it. See above. */
+function promptAssetKey(relPath: string): string {
+  return `${PROMPTS_SUBDIR}/${relPath}`;
+}
+
+/** The shipped counterpart of an installed instruction file, which may not exist. */
+function getBundledInstructionPath(relPath: string): string {
+  return path.join(getSamplePromptsDirectory(), PROMPTS_SUBDIR, relPath);
+}
+
+/**
+ * The group headings the page files everything under, in the order it shows them.
+ *
+ * They describe the ARCHITECTURE rather than the directory: instructions are shared across
+ * channels with per-format variants inside each file, and a channel file is data that picks a
+ * variant. A heading that said "channels" without saying "data" would put the operator back in
+ * the world where a channel had its own prompt text, which is the world this tree replaced.
+ */
+export const INSTRUCTION_GROUP_ORDER = [
+  'Voice & doctrine',
+  'Field instructions',
+  'Pipeline',
+  'Channels (data)',
+];
+
+/**
+ * Which heading a file belongs under, from its path.
+ *
+ * A path that matches none of them THROWS rather than landing in an "other" bucket. Everything
+ * under the installed prompts root got there from the bundle; a file the app cannot place is
+ * one somebody put there by hand, and the operator needs to be told it is sitting in the
+ * prompt tree unread rather than shown it in a list that implies the app uses it.
+ */
+export function instructionGroupOf(relPath: string): string {
+  if (relPath === 'shared/editorial-core.yml') return 'Voice & doctrine';
+  if (relPath.startsWith('shared/fields/')) return 'Field instructions';
+  if (relPath.startsWith('shared/pipeline/')) return 'Pipeline';
+  if (relPath.startsWith('channels/')) return 'Channels (data)';
+  throw new Error(
+    `"${relPath}" is in the prompt tree but is not one of the file kinds this app reads ` +
+      `(shared/editorial-core.yml, shared/fields/*, shared/pipeline/*, channels/*). Nothing ` +
+      `loads it. Move it out of ${getInstalledPromptsRoot()} to clear this.`
+  );
+}
+
+/** `thumbnail-text.yml` → `Thumbnail text`. The filename is the name; this only makes it read. */
+export function instructionDisplayName(relPath: string): string {
+  const base = path.posix.basename(relPath).replace(/\.(yml|yaml)$/, '');
+  const words = base.split('-').join(' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * An instructions-relative path resolved into the installed tree, or a throw.
+ *
+ * The renderer supplies this string, so `..` segments and absolute paths are assumed until
+ * proven otherwise: resolve first, then require the RESULT to sit under the root. Comparing
+ * the unresolved string would pass `shared/../../../.ssh/id_rsa` straight through. The
+ * extension check is here for the same reason — this handler set exists to edit the prompt
+ * YAMLs and nothing else in userData.
+ */
+export function resolveInstructionPath(relPath: string): string {
+  if (typeof relPath !== 'string' || relPath.trim() === '') {
+    throw new Error(`An instruction file path is required; got ${JSON.stringify(relPath)}.`);
+  }
+  const root = getInstalledPromptsRoot();
+  const resolved = path.resolve(root, relPath);
+  const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
+  if (!resolved.startsWith(rootWithSep)) {
+    throw new Error(
+      `Refusing "${relPath}": it resolves to ${resolved}, which is outside the prompt tree ${root}.`
+    );
+  }
+  if (!resolved.endsWith('.yml') && !resolved.endsWith('.yaml')) {
+    throw new Error(`Refusing "${relPath}": the Instructions page edits .yml/.yaml files only.`);
+  }
+  return resolved;
+}
+
+/**
+ * Has this file been changed since the app installed it?
+ *
+ * Same rule the startup installer uses, deliberately: no provenance record, or an installed
+ * hash that differs from the shipped one it recorded. An edit made on the Instructions page IS
+ * a local edit and is not exempted — the whole withheld-update mechanism depends on that being
+ * true, and an app edit that quietly re-stamped provenance would let the next build overwrite
+ * the operator's work without a word.
+ */
+function instructionIsLocallyEdited(relPath: string, provenance: PromptSetProvenance): boolean {
+  const record = provenance.files[promptAssetKey(relPath)];
+  if (!record) return true;
+  return record.shippedHash !== sha256OfFile(resolveInstructionPath(relPath));
 }
 
 /**
@@ -1687,27 +1800,200 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   });
 
   /**
-   * Creating, editing and deleting a channel from inside the app is NOT SUPPORTED, and says so.
+   * THE INSTRUCTIONS PAGE. Four handlers, over the real files.
    *
-   * These three used to write a flat YAML into the prompt-sets directory. Nothing reads those
-   * files any more, so leaving the handlers in place would let the operator write a prompt set,
-   * see it saved, and have it never once reach a model — which is the exact failure mode this
-   * whole change exists to remove. They refuse, and the refusal names where the prompts
-   * actually are.
+   * Creating/editing/deleting a "prompt set" from the app used to live here and refused, because
+   * a channel stopped being one editable YAML. What replaces it is not a nicer refusal: the page
+   * edits the FILES the loader reads — the shared editorial core, the shared per-field blocks,
+   * the pipeline stages, the channel data files — one at a time, as raw YAML. There is nothing
+   * to reverse-engineer, because nothing is assembled on the way in or out.
+   *
+   * The assembled per-channel view (`get-prompt-set`, above) stays read-only for the reason it
+   * always was: it is a join of several files and there is no way back from an edited join.
    */
-  const promptEditingUnsupported = (verb: string) => ({
-    success: false,
-    error:
-      `${verb} a channel from inside the app is not supported in this build. Prompts live in ` +
-      `${path.join(getPromptSetsDirectory(), PROMPTS_SUBDIR)} as a set of files — shared/editorial-core.yml for ` +
-      `the voice and doctrine, shared/fields/*.yml for one field's instructions, channels/*.yml for what a ` +
-      `channel is and which fields it publishes. Edit those. (Anything saved here would be written and never ` +
-      `read, which is worse than this message.)`,
+  ipcMain.handle('instructions:list', async () => {
+    try {
+      const root = getInstalledPromptsRoot();
+      if (!fs.existsSync(root)) {
+        throw new Error(
+          `The prompt tree is not installed at ${root}. ensurePromptSetsDirectory() writes it at ` +
+            `startup, so reaching this handler without it means startup did not complete or the ` +
+            `directory was removed underneath the running app.`
+        );
+      }
+      // The same recursive lister the installer uses, pointed at the INSTALLED tree rather than
+      // the bundle — the two are the same shape by construction, and a second walker would be a
+      // second answer to "which files are there".
+      const provenance = readPromptSetProvenance();
+      const files = listBundledPromptAssets(root).map((relPath) => ({
+        relPath,
+        group: instructionGroupOf(relPath),
+        name: instructionDisplayName(relPath),
+        locallyEdited: instructionIsLocallyEdited(relPath, provenance),
+        hasBundledVersion: fs.existsSync(getBundledInstructionPath(relPath)),
+      }));
+      return { success: true, root, groupOrder: INSTRUCTION_GROUP_ORDER, files };
+    } catch (error) {
+      log.error('Error listing instruction files:', error);
+      return { success: false, error: String(error) };
+    }
   });
 
-  ipcMain.handle('create-prompt-set', async () => promptEditingUnsupported('Creating'));
-  ipcMain.handle('update-prompt-set', async () => promptEditingUnsupported('Editing'));
-  ipcMain.handle('delete-prompt-set', async () => promptEditingUnsupported('Deleting'));
+  /** One file, raw. No parsing, no rendering — what the page shows is what is on disk. */
+  ipcMain.handle('instructions:read', async (_event, relPath: string) => {
+    try {
+      const filePath = resolveInstructionPath(relPath);
+      if (!fs.existsSync(filePath)) {
+        return { success: false, error: `There is no instruction file at ${filePath} ("${relPath}").` };
+      }
+      return { success: true, relPath, content: fs.readFileSync(filePath, 'utf8') };
+    } catch (error) {
+      log.error(`Error reading instruction file ${relPath}:`, error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  /**
+   * Save one file. Two gates, then the write, then a reload that can undo it.
+   *
+   * GATE 1, YAML: text that does not parse is refused with the parser's own line and column and
+   * NOTHING IS WRITTEN. Writing it would take down every generation call in the app until the
+   * operator noticed, and the file that broke it would be the one he thought he had just saved.
+   *
+   * GATE 2, THE LOADER: valid YAML is not necessarily a valid prompt asset. The reload can only
+   * judge that once the file is on disk, so the save is made and then UNDONE — with the bytes
+   * kept in memory — if the loader rejects it. A save that would break the whole tree must not
+   * stick, and the operator must be told why in the loader's own words rather than by the next
+   * run failing.
+   *
+   * WHAT GATE 2 DOES AND DOES NOT COVER, stated because the difference is invisible from here:
+   * `PromptAssets`'s constructor reads editorial-core.yml, self-check.yml and EVERY channel file
+   * eagerly, so a broken block list, a channel with no `fields`, a field name no instruction file
+   * defines or two channels claiming one id are all caught at save. The field and pipeline files
+   * are read on first use, so gutting one of those saves cleanly and throws — naming the file and
+   * the key, per that module's contract — at the generation call that needs it. That is the
+   * loader's design, not a hole opened here: the reload replaces the instance, which drops its
+   * lazy caches, so the next call reads what was just saved either way.
+   *
+   * PROVENANCE IS NOT TOUCHED. An edit made here is a local edit, exactly like one made in a
+   * text editor: the next build that ships a newer version of this file will withhold it and say
+   * so. That is the mechanism working, not a gap in it.
+   */
+  ipcMain.handle('instructions:write', async (_event, relPath: string, content: string) => {
+    try {
+      const filePath = resolveInstructionPath(relPath);
+      if (!fs.existsSync(filePath)) {
+        return {
+          success: false,
+          error:
+            `There is no instruction file at ${filePath} ("${relPath}"). This page edits the files ` +
+            `the app installed; it does not create new ones, because nothing would load a file the ` +
+            `loader has no place for.`,
+        };
+      }
+      if (typeof content !== 'string') {
+        throw new Error(`Instruction content must be a string; got ${typeof content} for "${relPath}".`);
+      }
+
+      try {
+        yaml.load(content, { filename: relPath });
+      } catch (parseError) {
+        const mark = (parseError as any)?.mark;
+        const where =
+          mark && typeof mark.line === 'number'
+            ? ` at line ${mark.line + 1}, column ${mark.column + 1}`
+            : '';
+        return {
+          success: false,
+          error: `${relPath} is not valid YAML${where}: ${(parseError as Error).message} — nothing was saved.`,
+        };
+      }
+
+      const previousBytes = fs.readFileSync(filePath);
+      fs.writeFileSync(filePath, content, 'utf8');
+
+      try {
+        reloadPromptAssets(getInstalledPromptsRoot());
+      } catch (loadError) {
+        fs.writeFileSync(filePath, previousBytes);
+        try {
+          reloadPromptAssets(getInstalledPromptsRoot());
+        } catch (restoreError) {
+          // Both loads failed, so what the tree cannot read is not (only) this save. The file on
+          // disk is back to its previous bytes either way, and the running app keeps the assets it
+          // loaded before the save — reloadPromptAssets assigns only on success.
+          throw new Error(
+            `${relPath} was rejected by the prompt loader (${String(loadError)}), and the restored ` +
+              `previous version was rejected too (${String(restoreError)}). ${relPath} is back to the ` +
+              `bytes it had before this save; the app is still using the prompts it loaded before it. ` +
+              `Something else in ${getInstalledPromptsRoot()} is broken.`
+          );
+        }
+        return {
+          success: false,
+          error:
+            `${relPath} parses as YAML but the prompt loader rejected it: ${String(loadError)}. Your ` +
+            `edit was NOT kept — the file is back to the version it had before this save.`,
+        };
+      }
+
+      log.info(`Instruction file saved and prompt assets reloaded: ${relPath}`);
+      return {
+        success: true,
+        relPath,
+        locallyEdited: instructionIsLocallyEdited(relPath, readPromptSetProvenance()),
+      };
+    } catch (error) {
+      log.error(`Error saving instruction file ${relPath}:`, error);
+      return { success: false, error: String(error) };
+    }
+  });
+
+  /**
+   * Put the version this build ships back, and record that THAT is now what is installed.
+   *
+   * The provenance stamp is the point of the second half: without it the restored file would
+   * still be counted as locally edited (its hash matches the bundle, which the startup installer
+   * would eventually notice and adopt) and the page would go on offering to revert a file that
+   * already is the shipped one. This is the same stamp the installer writes, made at the same
+   * moment the same bytes land.
+   */
+  ipcMain.handle('instructions:revert', async (_event, relPath: string) => {
+    try {
+      const filePath = resolveInstructionPath(relPath);
+      const bundledPath = getBundledInstructionPath(relPath);
+      if (!fs.existsSync(bundledPath)) {
+        return {
+          success: false,
+          error:
+            `This build ships no version of "${relPath}" (looked in ${bundledPath}), so there is ` +
+            `nothing to revert to — the copy in your prompt tree is the only one that exists.`,
+        };
+      }
+
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.copyFileSync(bundledPath, filePath);
+
+      const provenance = readPromptSetProvenance();
+      provenance.files[promptAssetKey(relPath)] = {
+        shippedHash: sha256OfFile(bundledPath),
+        updatedAt: new Date().toISOString(),
+      };
+      writePromptSetProvenance(provenance);
+
+      reloadPromptAssets(getInstalledPromptsRoot());
+      log.info(`Instruction file reverted to the shipped version: ${relPath}`);
+      return {
+        success: true,
+        relPath,
+        content: fs.readFileSync(filePath, 'utf8'),
+        locallyEdited: false,
+      };
+    } catch (error) {
+      log.error(`Error reverting instruction file ${relPath}:`, error);
+      return { success: false, error: String(error) };
+    }
+  });
   // Get job history
   // Returns only text/subject-input jobs from the last 4 weeks.
   // Auto-prunes older job metadata files.
@@ -2603,6 +2889,8 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   // Connections with EVERY secret stripped (never send tokens to the renderer).
   ipcMain.handle('youtube-list-connections', async () => {
     try {
+      // Cheap when nothing is missing; upgrades pre-avatar bundles in place.
+      await youtubeAuth.backfillChannelThumbnails();
       return { success: true, connections: youtubeAuth.listConnections() };
     } catch (error) {
       log.error('YouTube list connections failed:', error);

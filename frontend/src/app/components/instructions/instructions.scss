@@ -1,0 +1,477 @@
+// Creamsicle Theme - Instructions Page (matching Metadata Reports style)
+:host {
+  display: flex;
+  flex: 1;
+  margin: 0;
+  overflow: hidden;
+  min-height: 0;
+  height: 100%;
+}
+
+:host *, :host *::before, :host *::after {
+  box-sizing: border-box;
+}
+
+.instructions-page {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  overflow: hidden;
+  min-height: 0;
+  height: 100%;
+  padding: 1.5rem 2rem;
+
+  // Tab group styling
+  .instructions-tabs {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+
+    ::ng-deep {
+      // Tab header styling for dark mode
+      .mat-mdc-tab-header {
+        border-bottom: 1px solid var(--border-color);
+        flex-shrink: 0;
+      }
+
+      .mat-mdc-tab {
+        color: var(--text-secondary) !important;
+        opacity: 1 !important;
+
+        &.mdc-tab--active {
+          color: var(--primary-orange) !important;
+        }
+
+        .mdc-tab__text-label {
+          color: inherit !important;
+          font-weight: 500;
+          font-size: 0.95rem;
+        }
+      }
+
+      // Tab indicator
+      .mdc-tab-indicator__content--underline {
+        border-color: var(--primary-orange) !important;
+      }
+
+      // Tab body wrapper - critical for proper height
+      .mat-mdc-tab-body-wrapper {
+        flex: 1;
+        min-height: 0;
+        height: calc(100% - 49px); // Subtract tab header height
+      }
+
+      .mat-mdc-tab-body {
+        height: 100%;
+      }
+
+      .mat-mdc-tab-body-content {
+        height: 100%;
+        overflow: auto;
+      }
+    }
+  }
+
+  // Tab content container
+  .tab-content {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+    padding: 1.5rem 0;
+  }
+}
+
+.header {
+  padding-bottom: 1rem;
+  border-bottom: 2px solid var(--border-color);
+  margin-bottom: 1rem;
+  flex-shrink: 0;
+
+  .header-content {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 2rem;
+  }
+
+  .header-text {
+    flex: 1;
+    min-width: 0;
+
+    h2 {
+      margin: 0 0 0.5rem 0;
+      color: var(--text-primary);
+      font-size: 1.5rem;
+      font-weight: 600;
+    }
+
+    .subtitle {
+      margin: 0;
+      color: var(--text-secondary);
+      font-size: 0.95rem;
+      line-height: 1.5;
+      max-width: 68ch;
+    }
+
+    // Where the files actually are, so the operator can open them outside the app.
+    .root-path {
+      margin: 0.5rem 0 0 0;
+      color: var(--text-muted, var(--text-secondary));
+      font-family: 'Roboto Mono', monospace;
+      font-size: 0.78rem;
+      opacity: 0.75;
+      word-break: break-all;
+    }
+  }
+
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-shrink: 0;
+
+    .prompt-selector {
+      min-width: 250px;
+      margin: 0;
+    }
+  }
+}
+
+// The whole page failed to list, and says so where the list would have been.
+.list-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.875rem 1rem;
+  margin-bottom: 1rem;
+  border-radius: var(--border-radius);
+  border: 1px solid var(--error-color, #e5484d);
+  background: rgba(229, 72, 77, 0.08);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  flex-shrink: 0;
+
+  mat-icon {
+    flex: none;
+    color: var(--error-color, #e5484d);
+  }
+}
+
+.content-wrapper {
+  flex: 1;
+  display: flex;
+  gap: 1rem;
+  overflow: hidden;
+  min-height: 0;
+}
+
+// Panels
+.panel {
+  background: var(--bg-card);
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+  flex: 1;
+}
+
+.panel-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  -webkit-overflow-scrolling: touch;
+}
+
+// Sidebar Panel
+.sidebar {
+  flex: 0 0 264px;
+  max-width: 264px;
+
+  .panel-content {
+    padding: 0 0 1rem 0;
+  }
+}
+
+.group-heading {
+  padding: 0.875rem 1rem 0.375rem;
+  color: var(--primary-orange);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.file-list {
+  display: flex;
+  flex-direction: column;
+
+  .file-item {
+    display: flex;
+    align-items: center;
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    border-left: 3px solid transparent;
+
+    &:hover {
+      background: var(--bg-secondary);
+    }
+
+    &.active {
+      background: rgba(255, 107, 53, 0.1);
+      border-left-color: var(--primary-orange);
+    }
+
+    .item-content {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .file-name {
+      color: var(--text-primary);
+      font-size: 0.875rem;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    // Not a warning: an edited file is the normal state for an operator who tunes prompts.
+    // It marks the files whose shipped updates are being withheld.
+    .edited-badge {
+      flex: none;
+      padding: 0.05rem 0.4rem;
+      border-radius: 999px;
+      border: 1px solid var(--border-color);
+      background: var(--bg-secondary);
+      color: var(--text-secondary);
+      font-size: 0.65rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+  }
+}
+
+// Edit Panel
+.edit-panel {
+  .panel-content {
+    padding: 1.25rem 1.5rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+  }
+}
+
+.file-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  padding-bottom: 0.875rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+
+  .file-header-text {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .rel-path {
+    font-family: 'Roboto Mono', monospace;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    word-break: break-all;
+  }
+
+  .edited-note {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+  }
+
+  .file-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-shrink: 0;
+
+    button mat-icon {
+      margin-right: 0.375rem;
+      font-size: 1.125rem;
+      width: 1.125rem;
+      height: 1.125rem;
+    }
+  }
+}
+
+// The raw file. A plain textarea rather than a mat-form-field: this is a whole YAML document,
+// and the floating label, hint row and outline of a form field all cost vertical space that
+// the file needs more than the page needs the decoration.
+.yaml-editor {
+  flex: 1;
+  min-height: 420px;
+  width: 100%;
+  resize: vertical;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+
+  &:focus {
+    outline: none;
+    border-color: var(--primary-orange);
+  }
+}
+
+// Assembled preview
+.assembled {
+  .assembled-heading {
+    margin: 0 0 0.5rem 0;
+    color: var(--primary-orange);
+    font-size: 1rem;
+    font-weight: 600;
+  }
+
+  .assembled-caption {
+    margin: -0.25rem 0 0.5rem 0;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+  }
+
+  .assembled-block {
+    margin: 0 0 2rem 0;
+    padding: 1rem;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    color: var(--text-primary);
+    font-family: 'Roboto Mono', monospace;
+    font-size: 0.82rem;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+}
+
+.empty-edit-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-secondary);
+  text-align: center;
+  padding: 2rem;
+
+  mat-icon {
+    font-size: 96px;
+    width: 96px;
+    height: 96px;
+    color: var(--text-muted);
+    margin-bottom: 1.5rem;
+    opacity: 0.3;
+  }
+
+  h3 {
+    color: var(--text-primary);
+    margin: 0 0 0.75rem 0;
+    font-size: 1.25rem;
+  }
+
+  p {
+    margin: 0;
+    max-width: 400px;
+  }
+}
+
+// Dialogs
+.dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  animation: fadeIn 0.2s ease-out;
+
+  .dialog-card {
+    width: 520px;
+    max-width: 90vw;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    animation: slideUp 0.3s ease-out;
+    padding: 1.5rem;
+
+    mat-card-title {
+      color: var(--text-primary);
+      font-size: 1.15rem;
+      font-weight: 600;
+      word-break: break-all;
+    }
+
+    mat-card-content {
+      padding: 1rem 0 0 0;
+
+      p {
+        color: var(--text-secondary);
+        margin: 0;
+        line-height: 1.6;
+      }
+    }
+
+    mat-card-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.75rem;
+      padding-top: 1rem;
+    }
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(50px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}

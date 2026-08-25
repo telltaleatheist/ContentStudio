@@ -3,7 +3,7 @@ import { Inputs } from './components/inputs/inputs';
 import { Settings } from './components/settings/settings';
 import { MetadataReports } from './components/metadata-reports/metadata-reports';
 import { PublishCalendar } from './components/publish-calendar/publish-calendar';
-import { Prompts } from './components/prompts/prompts';
+import { Instructions } from './components/instructions/instructions';
 import { History } from './components/history/history';
 import { Analytics } from './components/analytics/analytics';
 
@@ -16,7 +16,10 @@ export const routes: Routes = [
   // /metadata-reports?item=<itemId>.
   { path: 'publish-calendar', component: PublishCalendar },
   { path: 'analytics', component: Analytics },
-  { path: 'prompts', component: Prompts },
+  { path: 'instructions', component: Instructions },
+  // The page was called Prompts until it started editing the instruction files themselves.
+  // The redirect is for bookmarks and any deep link written before the rename.
+  { path: 'prompts', redirectTo: 'instructions' },
   { path: 'history', component: History },
   { path: 'settings', component: Settings },
   // The timeline editor, in its own BrowserWindow. Lazy on purpose: the main window never

@@ -364,6 +364,45 @@ export interface PromptAssetNotice {
 }
 
 /**
+ * One file in the installed prompt tree, as the Instructions page lists it.
+ *
+ * `relPath` is relative to `<userData>/prompt_sets/prompts` and is the id for every other
+ * instructions call. `locallyEdited` means the installed bytes differ from the version this
+ * app installed — including a file with no provenance record at all — which is the same test
+ * that makes startup withhold a newer shipped version of it.
+ */
+export interface InstructionFile {
+  relPath: string;
+  group: string;
+  name: string;
+  locallyEdited: boolean;
+  /** False when this build ships no counterpart, which is what makes reverting impossible. */
+  hasBundledVersion: boolean;
+}
+
+export interface InstructionFileList {
+  success: boolean;
+  error?: string;
+  /** The directory the files sit in, shown on the page so the operator can open it. */
+  root?: string;
+  groupOrder?: string[];
+  files?: InstructionFile[];
+}
+
+/** Said once, so the instructions wrappers below all give the same answer off-Electron. */
+const NOT_IN_ELECTRON =
+  'The prompt files live in the desktop app\'s user data directory and can only be read there. ' +
+  'This page is running outside Electron.';
+
+export interface InstructionFileContent {
+  success: boolean;
+  error?: string;
+  relPath?: string;
+  content?: string;
+  locallyEdited?: boolean;
+}
+
+/**
  * What the one-off report migration did, as the main process reports it.
  *
  * `ran` is false both when there was nothing to do and when the reports directory could
@@ -462,10 +501,13 @@ declare global {
       // Prompt Sets (Metadata)
       listPromptSets: () => Promise<any>;
       getPromptSet: (id: string) => Promise<any>;
-      createPromptSet: (promptSet: any) => Promise<any>;
-      updatePromptSet: (id: string, promptSet: any) => Promise<any>;
-      deletePromptSet: (id: string) => Promise<any>;
       takePendingPromptAssetNotice: () => Promise<PromptAssetNotice | null>;
+
+      // Instructions (the prompt tree's files)
+      listInstructionFiles: () => Promise<InstructionFileList>;
+      readInstructionFile: (relPath: string) => Promise<InstructionFileContent>;
+      writeInstructionFile: (relPath: string, content: string) => Promise<InstructionFileContent>;
+      revertInstructionFile: (relPath: string) => Promise<InstructionFileContent>;
 
       // File operations
       selectFiles: () => Promise<{ success: boolean; files: string[] }>;
@@ -850,19 +892,31 @@ export class ElectronService {
     return await this.ipcRenderer.getPromptSet(id);
   }
 
-  async createPromptSet(promptSet: any): Promise<any> {
-    if (!this.ipcRenderer) return { success: false };
-    return await this.ipcRenderer.createPromptSet(promptSet);
+  /**
+   * The prompt tree's files, for the Instructions page.
+   *
+   * Outside Electron there is no prompt tree at all, so these answer with the reason rather
+   * than an empty list — a page showing "no instruction files" in a browser would look like a
+   * broken install instead of a context that has no files to show.
+   */
+  async listInstructionFiles(): Promise<InstructionFileList> {
+    if (!this.ipcRenderer) return { success: false, error: NOT_IN_ELECTRON };
+    return await this.ipcRenderer.listInstructionFiles();
   }
 
-  async updatePromptSet(id: string, promptSet: any): Promise<any> {
-    if (!this.ipcRenderer) return { success: false };
-    return await this.ipcRenderer.updatePromptSet(id, promptSet);
+  async readInstructionFile(relPath: string): Promise<InstructionFileContent> {
+    if (!this.ipcRenderer) return { success: false, error: NOT_IN_ELECTRON };
+    return await this.ipcRenderer.readInstructionFile(relPath);
   }
 
-  async deletePromptSet(id: string): Promise<any> {
-    if (!this.ipcRenderer) return { success: false };
-    return await this.ipcRenderer.deletePromptSet(id);
+  async writeInstructionFile(relPath: string, content: string): Promise<InstructionFileContent> {
+    if (!this.ipcRenderer) return { success: false, error: NOT_IN_ELECTRON };
+    return await this.ipcRenderer.writeInstructionFile(relPath, content);
+  }
+
+  async revertInstructionFile(relPath: string): Promise<InstructionFileContent> {
+    if (!this.ipcRenderer) return { success: false, error: NOT_IN_ELECTRON };
+    return await this.ipcRenderer.revertInstructionFile(relPath);
   }
 
   /**

@@ -1,0 +1,170 @@
+<div class="instructions-page">
+  <mat-tab-group class="instructions-tabs">
+    <!-- The files themselves -->
+    <mat-tab label="Instruction files">
+      <div class="tab-content">
+        <div class="header">
+          <div class="header-content">
+            <div class="header-text">
+              <h2>Instructions</h2>
+              <p class="subtitle">
+                Instructions are shared across every channel, with per-format variants inside each file;
+                the channel files are data that pick a variant. A file you edit here stays yours — when a
+                newer version ships with an app update it is withheld, and the app says which files it held back.
+              </p>
+              @if (promptsRoot()) {
+                <p class="root-path">{{ promptsRoot() }}</p>
+              }
+            </div>
+          </div>
+        </div>
+
+        @if (listError()) {
+          <div class="list-error">
+            <mat-icon>error_outline</mat-icon>
+            <span>{{ listError() }}</span>
+          </div>
+        }
+
+        <div class="content-wrapper">
+          <!-- Sidebar: every file, under the four architecture headings -->
+          <div class="panel sidebar">
+            <div class="panel-content">
+              @for (group of groups(); track group.name) {
+                <div class="group-heading">{{ group.name }}</div>
+                <div class="file-list">
+                  @for (file of group.files; track file.relPath) {
+                    <div class="file-item"
+                         [class.active]="file.relPath === selectedRelPath()"
+                         (click)="selectFile(file.relPath)">
+                      <div class="item-content">
+                        <span class="file-name">{{ file.name }}</span>
+                        @if (file.locallyEdited) {
+                          <span class="edited-badge" matTooltip="This file differs from the version the app installed. Updates to it are withheld.">edited</span>
+                        }
+                      </div>
+                    </div>
+                  }
+                </div>
+              }
+            </div>
+          </div>
+
+          <!-- The file being edited -->
+          <div class="panel edit-panel">
+            <div class="panel-content">
+              @if (selectedFile(); as file) {
+                <div class="file-header">
+                  <div class="file-header-text">
+                    <span class="rel-path">{{ file.relPath }}</span>
+                    @if (file.locallyEdited) {
+                      <span class="edited-note">Edited here — app updates to this file are withheld.</span>
+                    }
+                  </div>
+                  <div class="file-actions">
+                    <button mat-button (click)="discardChanges()" [disabled]="!dirty()">
+                      <mat-icon>undo</mat-icon>
+                      Discard changes
+                    </button>
+                    @if (file.locallyEdited && file.hasBundledVersion) {
+                      <button mat-button color="warn" (click)="askRevert(file.relPath)">
+                        <mat-icon>settings_backup_restore</mat-icon>
+                        Revert to shipped
+                      </button>
+                    }
+                    <button mat-raised-button color="primary" (click)="save()" [disabled]="!dirty() || saving()">
+                      <mat-icon>save</mat-icon>
+                      Save
+                    </button>
+                  </div>
+                </div>
+
+                <textarea class="yaml-editor"
+                          spellcheck="false"
+                          [ngModel]="draft()"
+                          (ngModelChange)="draft.set($event)"></textarea>
+              } @else {
+                <div class="empty-edit-panel">
+                  <mat-icon>description</mat-icon>
+                  <h3>No file selected</h3>
+                  <p>Pick a file on the left to read and edit it.</p>
+                </div>
+              }
+            </div>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+
+    <!-- What those files assemble to, per channel -->
+    <mat-tab label="Assembled preview">
+      <div class="tab-content">
+        <div class="header">
+          <div class="header-content">
+            <div class="header-text">
+              <h2>Assembled preview</h2>
+              <p class="subtitle">Read-only — this is what the files on the left assemble to for this channel.</p>
+            </div>
+            <div class="header-actions">
+              <mat-form-field appearance="outline" class="prompt-selector">
+                <mat-label>Channel</mat-label>
+                <mat-select [value]="selectedPromptSetId()" (selectionChange)="selectPromptSet($event.value)">
+                  @for (promptSet of promptSets(); track promptSet.id) {
+                    <mat-option [value]="promptSet.id">{{ promptSet.name }}</mat-option>
+                  }
+                </mat-select>
+              </mat-form-field>
+            </div>
+          </div>
+        </div>
+
+        <div class="content-wrapper">
+          <div class="panel edit-panel">
+            <div class="panel-content">
+              @if (currentPromptSet(); as promptSet) {
+                <div class="assembled">
+                  <h3 class="assembled-heading">Editorial prompt</h3>
+                  <pre class="assembled-block">{{ promptSet.editorial_prompt }}</pre>
+
+                  <h3 class="assembled-heading">Instructions prompt</h3>
+                  <pre class="assembled-block">{{ promptSet.instructions_prompt }}</pre>
+
+                  <h3 class="assembled-heading">Description links</h3>
+                  <p class="assembled-caption">Appended after generation — never sent to the model.</p>
+                  <pre class="assembled-block">{{ promptSet.description_links }}</pre>
+                </div>
+              } @else {
+                <div class="empty-edit-panel">
+                  <mat-icon>menu_book</mat-icon>
+                  <h3>No channel selected</h3>
+                  <p>Pick a channel to see what the instruction files assemble to for it.</p>
+                </div>
+              }
+            </div>
+          </div>
+        </div>
+      </div>
+    </mat-tab>
+  </mat-tab-group>
+
+  <!-- Revert confirmation -->
+  @if (revertPending(); as relPath) {
+    <div class="dialog-overlay" (click)="cancelRevert()">
+      <mat-card class="dialog-card" (click)="$event.stopPropagation()">
+        <mat-card-header>
+          <mat-card-title>Revert {{ relPath }}?</mat-card-title>
+        </mat-card-header>
+        <mat-card-content>
+          <p>
+            Your version of this file is replaced by the one this build ships, and the app starts
+            generating from it immediately. There is no undo.
+          </p>
+        </mat-card-content>
+        <mat-card-actions>
+          <button mat-button (click)="cancelRevert()">Cancel</button>
+          <button mat-raised-button color="warn" (click)="revert()">Revert to shipped</button>
+        </mat-card-actions>
+      </mat-card>
+    </div>
+  }
+</div>

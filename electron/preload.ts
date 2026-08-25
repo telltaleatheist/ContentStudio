@@ -32,9 +32,14 @@ const api = {
   getPromptSetsPath: () => ipcRenderer.invoke('get-prompt-sets-path'),
   listPromptSets: () => ipcRenderer.invoke('list-prompt-sets'),
   getPromptSet: (id: string) => ipcRenderer.invoke('get-prompt-set', id),
-  createPromptSet: (promptSet: any) => ipcRenderer.invoke('create-prompt-set', promptSet),
-  updatePromptSet: (id: string, promptSet: any) => ipcRenderer.invoke('update-prompt-set', id, promptSet),
-  deletePromptSet: (id: string) => ipcRenderer.invoke('delete-prompt-set', id),
+
+  // Instructions — the prompt tree's files, one at a time, as raw YAML. The assembled
+  // per-channel view above is a join of several of them and stays read-only.
+  listInstructionFiles: () => ipcRenderer.invoke('instructions:list'),
+  readInstructionFile: (relPath: string) => ipcRenderer.invoke('instructions:read', relPath),
+  writeInstructionFile: (relPath: string, content: string) =>
+    ipcRenderer.invoke('instructions:write', relPath, content),
+  revertInstructionFile: (relPath: string) => ipcRenderer.invoke('instructions:revert', relPath),
   // Bundled prompt updates the main process refused to apply over local edits, computed
   // at startup. Pull-only (nothing is listening when it is computed) and delivered once;
   // null means nothing was withheld.

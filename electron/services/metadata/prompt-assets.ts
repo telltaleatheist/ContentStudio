@@ -600,6 +600,26 @@ export function initPromptAssets(promptsRoot: string): PromptAssets {
   return loaded;
 }
 
+/**
+ * Re-read the tree from disk unconditionally, replacing the loaded instance.
+ *
+ * EXISTS FOR THE INSTRUCTIONS EDITOR. `initPromptAssets` returns the cached instance for a
+ * root it has already read, which is right for the several startup callers and wrong for the
+ * one caller that just CHANGED a file under that root: the app would go on assembling prompts
+ * from the version it read at launch, and the operator's save would appear to have worked
+ * while nothing generated from it until the next restart.
+ *
+ * It throws whatever `PromptAssets.load` throws — a file that parses as YAML but is missing a
+ * key this loader requires stops here, in the save that caused it, rather than in the first
+ * generation call an hour later. The Instructions write handler catches that, puts the
+ * previous bytes back and reloads again, so the app is never left running on a tree it could
+ * not read.
+ */
+export function reloadPromptAssets(promptsRoot: string): PromptAssets {
+  loaded = PromptAssets.load(promptsRoot);
+  return loaded;
+}
+
 /** The loaded assets, or a throw naming who was supposed to have loaded them. */
 export function promptAssets(): PromptAssets {
   if (!loaded) {
