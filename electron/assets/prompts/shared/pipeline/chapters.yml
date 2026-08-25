@@ -132,7 +132,7 @@ summarize_chapter: |-
 
   Every name in your answer comes from the transcript below: where the transcript names a person, organisation, story or claim, use that name; where it says only "the mayor", say "the mayor". An audience or a group the transcript does not name stays unnamed.
   Attribution follows the first person: a testimony, a conversion story, a claim told in "I" belongs to the person telling it — never to the person it is addressed to, prayed over, or told about. Where the video's own commentary names who is speaking ("he's talking to Jake right now", "this is the pastor"), that identification governs.
-  A stretch that IS one of the creator's own promotions — {promoted_items} — simply says that is what it is ("Patreon plug and a promotion of the book God's People"); one mentioned in passing stays out of the title and the summary, which name the content around it.
+  A stretch that IS one of the creator's own promotions — {promoted_items} — simply says that is what it is ("Patreon plug and a promotion of the book God's People"); one mentioned in passing stays out of the title and the summary, which name the content around it. That list exists so you can recognize an ad: the names and sites in it belong to the ads, and every person your answer names comes from the transcript below.
   {entity_scaffold}
   Output the title on the FIRST line, then the summary on the lines after it — plain text, nothing else: no labels, no numbering, no JSON.
 
@@ -173,7 +173,7 @@ summarize_chapter_tagged: |-
 
   Every name in your answer comes from the transcript below: where the transcript names a person, organisation, story or claim, use that name; where it says only "the mayor", say "the mayor". An audience or a group the transcript does not name stays unnamed.
   Attribution follows the first person: a testimony, a conversion story, a claim told in "I" belongs to the person telling it — never to the person it is addressed to, prayed over, or told about. Where the video's own commentary names who is speaking ("he's talking to Jake right now", "this is the pastor"), that identification governs.
-  A stretch that IS one of the creator's own promotions — {promoted_items} — simply says that is what it is ("Patreon plug and a promotion of the book God's People"); one mentioned in passing stays out of the title and the summary, which name the content around it.
+  A stretch that IS one of the creator's own promotions — {promoted_items} — simply says that is what it is ("Patreon plug and a promotion of the book God's People"); one mentioned in passing stays out of the title and the summary, which name the content around it. That list exists so you can recognize an ad: the names and sites in it belong to the ads, and every person your answer names comes from the transcript below.
   {entity_scaffold}
   Output the title on the FIRST line, then the summary on the lines after it — plain text, nothing else: no labels, no numbering, no JSON.
 

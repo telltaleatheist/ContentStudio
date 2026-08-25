@@ -8,6 +8,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn } from 'child_process';
+import * as os from 'os';
 import * as yaml from 'js-yaml';
 import axios, { AxiosInstance } from 'axios';
 import OpenAI from 'openai';
@@ -1899,9 +1900,18 @@ export class AIManagerService {
       : 'You are a helpful assistant. When asked to return JSON, output ONLY valid JSON with no markdown, no commentary, and no extra text. Start your response with { and end with }.';
     log.info(`[AIManager] claude -p --model ${cliModel} (${prompt.length} chars, ${plain ? 'plain' : 'json'})`);
 
+    // HERMETIC CWD (2026-08-24 night). `claude -p` loads project memory and CLAUDE.md for
+    // whatever directory it runs in; spawned with the app's cwd — the repo, in dev — it
+    // inherited a project memory full of the operator's name, which then surfaced in chapter
+    // titles as an invented narrator ("Owen shows..."). The prompt must be this call's WHOLE
+    // input, so every spawn runs in a dedicated empty directory instead.
+    const hermeticCwd = path.join(os.tmpdir(), 'contentstudio-claude-cli');
+    fs.mkdirSync(hermeticCwd, { recursive: true });
+
     return new Promise<string | null>((resolve, reject) => {
       const child = spawn('claude', ['-p', '--model', cliModel, '--system-prompt', system], {
         stdio: ['pipe', 'pipe', 'pipe'],
+        cwd: hermeticCwd,
         // A run inside a Claude Code session must not inherit its entrypoint state.
         env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: undefined } as NodeJS.ProcessEnv,
       });

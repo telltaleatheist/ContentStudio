@@ -391,8 +391,13 @@ async function main() {
       const system = plain ? SYSTEM_PROMPTS.PLAIN_SYSTEM : JSON_NUDGE;
       console.error(`  [claude-cli] ${model} -> claude -p --model sonnet (${prompt.length} chars)`);
       return new Promise((resolve, reject) => {
+        // Hermetic cwd, same reason as the production transport: `claude -p` loads project
+        // memory for its working directory, and this script runs from the repo.
+        const hermeticCwd = require('path').join(require('os').tmpdir(), 'contentstudio-claude-cli');
+        require('fs').mkdirSync(hermeticCwd, { recursive: true });
         const child = spawn('claude', ['-p', '--model', 'sonnet', '--system-prompt', system], {
           stdio: ['pipe', 'pipe', 'pipe'],
+          cwd: hermeticCwd,
           // A nested `claude` must not inherit this session's entrypoint state.
           env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: undefined },
         });
