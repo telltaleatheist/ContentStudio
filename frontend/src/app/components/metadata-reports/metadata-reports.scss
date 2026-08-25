@@ -487,10 +487,13 @@ input[type='time'].control { width: 92px; flex: none; }
     .n { color: var(--rp-ink-2); }
   }
 }
+/* The full channel name, wrapped onto as many lines as it needs — a tab that says
+   "Owen…" next to a tab that says "Owen…" identifies nothing (operator, 2026-08-25). */
 .chan-tab-l {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: break-word;
+  text-align: center;
+  line-height: 1.25;
   min-width: 0;
 }
 
