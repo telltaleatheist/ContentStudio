@@ -173,7 +173,7 @@
     color: var(--primary-orange);
 
     &:hover {
-      background: rgba(255, 107, 53, 0.1);
+      background: color-mix(in srgb, var(--primary-orange) 10%, transparent);
     }
   }
 }
@@ -232,7 +232,7 @@
     }
 
     &.active {
-      background: rgba(255, 107, 53, 0.1);
+      background: color-mix(in srgb, var(--primary-orange) 10%, transparent);
       border-left: 3px solid var(--primary-orange);
     }
 
@@ -443,7 +443,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--backdrop);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -518,8 +518,8 @@
   position: fixed;
   top: 5rem;
   right: 1rem;
-  background-color: #4caf50;
-  color: white;
+  background-color: var(--success-solid);
+  color: var(--on-accent);
   padding: 1rem 1.5rem;
   border-radius: var(--border-radius);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
@@ -541,7 +541,7 @@
   }
 
   button {
-    color: white;
+    color: var(--on-accent);
     margin-left: 0.5rem;
     width: 32px;
     height: 32px;
@@ -621,7 +621,7 @@
 
   &:hover {
     border-color: var(--primary-orange);
-    box-shadow: 0 2px 8px rgba(255, 107, 53, 0.1);
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--primary-orange) 10%, transparent);
   }
 
   mat-checkbox {
@@ -690,8 +690,8 @@
   padding: 12px 16px;
   margin-bottom: 16px;
   border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  background: var(--overlay-hover);
 
   mat-icon {
     flex: none;

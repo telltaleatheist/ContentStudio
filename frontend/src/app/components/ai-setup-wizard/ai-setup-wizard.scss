@@ -5,7 +5,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.8);
+  background: var(--backdrop-strong);
   backdrop-filter: blur(12px);
   display: flex;
   align-items: center; // Center vertically
@@ -25,7 +25,7 @@
 .wizard-container {
   background: var(--bg-card);
   border-radius: 16px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 60px rgba(255, 107, 53, 0.1);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 60px color-mix(in srgb, var(--primary-orange) 10%, transparent);
   width: 90%;
   max-width: 800px;
   max-height: calc(100vh - 8rem); // Account for header and spacing
@@ -80,9 +80,9 @@
   z-index: 10;
 
   &:hover {
-    background: #f44336;
-    border-color: #f44336;
-    color: white;
+    background: var(--danger-solid);
+    border-color: var(--danger-solid);
+    color: var(--on-accent);
     transform: rotate(90deg);
   }
 }
@@ -109,7 +109,7 @@
     }
 
     &.completed {
-      background: #4caf50;
+      background: var(--success-solid);
     }
   }
 }
@@ -181,8 +181,8 @@
   align-items: flex-start;
   gap: 1rem;
   padding: 1rem 1.5rem;
-  background: rgba(255, 107, 53, 0.08);
-  border: 1px solid rgba(255, 107, 53, 0.2);
+  background: color-mix(in srgb, var(--primary-orange) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--primary-orange) 20%, transparent);
   border-radius: 8px;
   margin-bottom: 2rem;
 
@@ -280,11 +280,11 @@
 
   &.recommended {
     border-color: var(--primary-orange);
-    background: rgba(255, 107, 53, 0.05);
+    background: color-mix(in srgb, var(--primary-orange) 5%, transparent);
 
     &:hover {
       border-color: var(--primary-orange);
-      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2), 0 0 20px rgba(255, 107, 53, 0.15);
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2), 0 0 20px color-mix(in srgb, var(--primary-orange) 15%, transparent);
     }
   }
 }
@@ -296,7 +296,7 @@
   transform: translateX(-50%);
   padding: 0.25rem 1rem;
   background: var(--primary-orange);
-  color: white;
+  color: var(--on-accent);
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
@@ -349,7 +349,7 @@
     }
 
     &.pro span {
-      color: #4caf50;
+      color: var(--success-text);
     }
 
     &.con span {
@@ -377,7 +377,7 @@
   &.primary {
     background: var(--gradient-primary);
     border-color: var(--primary-orange);
-    color: white;
+    color: var(--on-accent);
 
     &:hover {
       background: var(--gradient-primary);
@@ -438,7 +438,7 @@
   &.primary {
     background: var(--gradient-primary);
     border-color: var(--primary-orange);
-    color: white;
+    color: var(--on-accent);
 
     &:hover:not(:disabled) {
       background: var(--gradient-primary);
@@ -512,7 +512,7 @@
 
   &.recommended {
     border-color: var(--primary-orange);
-    background: rgba(255, 107, 53, 0.05);
+    background: color-mix(in srgb, var(--primary-orange) 5%, transparent);
   }
 
   .model-badge {
@@ -521,7 +521,7 @@
     right: 1rem;
     padding: 0.25rem 0.5rem;
     background: var(--primary-orange);
-    color: white;
+    color: var(--on-accent);
     font-size: 10px;
     font-weight: 700;
     text-transform: uppercase;
@@ -632,10 +632,10 @@
   color: var(--text-secondary);
 
   &.success {
-    color: #4caf50;
+    color: var(--success-text);
 
     span {
-      color: #4caf50;
+      color: var(--success-text);
     }
   }
 }
@@ -676,7 +676,7 @@
     &:focus {
       outline: none;
       border-color: var(--primary-orange);
-      box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.1);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-orange) 10%, transparent);
     }
   }
 
@@ -746,8 +746,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: #4caf50;
-    color: white;
+    background: var(--success-solid);
+    color: var(--on-accent);
     border-radius: 50%;
     font-size: 0.875rem;
   }
@@ -793,8 +793,10 @@
   display: inline-block;
   width: 16px;
   height: 16px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-top-color: white;
+  // Rides inside both the orange primary button and the neutral .check-btn, so the
+  // ring tracks the button's own text colour instead of a baked white.
+  border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }

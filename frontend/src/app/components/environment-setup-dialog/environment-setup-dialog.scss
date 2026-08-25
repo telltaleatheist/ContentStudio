@@ -7,7 +7,7 @@
   display: grid;
   place-items: center;
   padding: 28px;
-  background: rgba(5, 7, 10, 0.76);
+  background: var(--backdrop-strong);
   backdrop-filter: blur(10px);
 }
 
@@ -21,7 +21,7 @@
   border-radius: 18px;
   background: var(--bg-card);
   color: var(--text-primary);
-  box-shadow: var(--shadow-xl), 0 0 50px rgba(255, 107, 53, 0.12);
+  box-shadow: var(--shadow-xl), 0 0 50px color-mix(in srgb, var(--primary-orange) 12%, transparent);
 }
 
 header { padding-right: 36px; }
@@ -60,7 +60,7 @@ p { margin: 0; color: var(--text-secondary); line-height: 1.5; }
   height: 30px;
   padding: 0 4px;
   border-radius: 8px;
-  background: rgba(255, 107, 53, 0.14);
+  background: color-mix(in srgb, var(--primary-orange) 14%, transparent);
   color: var(--primary-orange);
   font-size: 0.68rem;
   font-weight: 800;
@@ -95,8 +95,8 @@ p { margin: 0; color: var(--text-secondary); line-height: 1.5; }
   font-weight: 700;
   cursor: pointer;
 }
-.primary-action { width: 100%; margin-top: 16px; padding: 12px 16px; background: var(--gradient-primary); color: #fff; }
-.secondary-action { margin-top: 14px; padding: 10px 14px; background: var(--primary-orange); color: #fff; }
+.primary-action { width: 100%; margin-top: 16px; padding: 12px 16px; background: var(--gradient-primary); color: var(--on-accent); }
+.secondary-action { margin-top: 14px; padding: 10px 14px; background: var(--primary-orange); color: var(--on-accent); }
 footer { display: flex; justify-content: flex-end; margin-top: 18px; }
 .skip-action { padding: 8px 4px; background: transparent; color: var(--text-secondary); }
 .queued-note { margin-top: 18px; padding: 12px 14px; border-radius: 9px; background: var(--info-bg); color: var(--info-text); font-weight: 650; }

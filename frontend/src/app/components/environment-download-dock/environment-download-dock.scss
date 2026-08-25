@@ -41,7 +41,7 @@
   color: var(--primary-orange);
   font-size: 0.7rem;
 }
-.status-orbit.spinning { border-color: rgba(255, 107, 53, 0.25); border-top-color: var(--primary-orange); animation: orbit 800ms linear infinite; }
+.status-orbit.spinning { border-color: color-mix(in srgb, var(--primary-orange) 25%, transparent); border-top-color: var(--primary-orange); animation: orbit 800ms linear infinite; }
 @keyframes orbit { to { transform: rotate(360deg); } }
 
 .aggregate-track, .item-track { height: 3px; background: var(--bg-tertiary); }

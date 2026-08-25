@@ -23,7 +23,7 @@
 
   // Drag and drop visual feedback - Creamsicle style
   &.dragging-over {
-    background: linear-gradient(135deg, rgba(255, 107, 53, 0.05) 0%, rgba(255, 163, 102, 0.05) 100%);
+    background: linear-gradient(135deg, color-mix(in srgb, var(--primary-orange) 5%, transparent) 0%, color-mix(in srgb, var(--accent-orange) 5%, transparent) 100%);
 
     &::before {
       content: '';
@@ -36,7 +36,7 @@
       border-radius: 16px;
       pointer-events: none;
       z-index: 1000;
-      background: linear-gradient(135deg, rgba(255, 107, 53, 0.08) 0%, rgba(255, 163, 102, 0.08) 100%);
+      background: linear-gradient(135deg, color-mix(in srgb, var(--primary-orange) 8%, transparent) 0%, color-mix(in srgb, var(--accent-orange) 8%, transparent) 100%);
       animation: pulse-border 1.5s ease-in-out infinite;
     }
 
@@ -52,7 +52,7 @@
       padding: 2.5rem 4rem;
       background: var(--bg-card);
       border-radius: 20px;
-      box-shadow: 0 12px 48px rgba(255, 107, 53, 0.35), var(--shadow-glow);
+      box-shadow: 0 12px 48px color-mix(in srgb, var(--primary-orange) 35%, transparent), var(--shadow-glow);
       z-index: 1001;
       pointer-events: none;
       border: 3px solid var(--primary-orange);
@@ -157,7 +157,7 @@
 
     .master-analysis-progress {
       margin-top: 1rem;
-      background: linear-gradient(135deg, rgba(255, 107, 53, 0.1) 0%, rgba(255, 163, 102, 0.1) 100%);
+      background: linear-gradient(135deg, color-mix(in srgb, var(--primary-orange) 10%, transparent) 0%, color-mix(in srgb, var(--accent-orange) 10%, transparent) 100%);
       border: 1px solid var(--primary-orange);
 
       mat-card-content {
@@ -188,7 +188,7 @@
           }
 
           .mdc-linear-progress__buffer-bar {
-            background-color: rgba(255, 107, 53, 0.2) !important;
+            background-color: color-mix(in srgb, var(--primary-orange) 20%, transparent) !important;
           }
         }
       }
@@ -201,14 +201,14 @@
       margin-top: 1rem;
 
       .master-report-card {
-        background: linear-gradient(135deg, rgba(156, 39, 176, 0.08) 0%, rgba(103, 58, 183, 0.08) 100%);
-        border: 1px solid rgba(156, 39, 176, 0.3);
+        background: linear-gradient(135deg, color-mix(in srgb, var(--accent-purple) 8%, transparent) 0%, color-mix(in srgb, var(--accent-purple-deep) 8%, transparent) 100%);
+        border: 1px solid color-mix(in srgb, var(--accent-purple) 30%, transparent);
         cursor: pointer;
         transition: all 0.2s ease;
 
         &:hover {
-          border-color: rgba(156, 39, 176, 0.5);
-          box-shadow: 0 4px 12px rgba(156, 39, 176, 0.2);
+          border-color: color-mix(in srgb, var(--accent-purple) 50%, transparent);
+          box-shadow: 0 4px 12px color-mix(in srgb, var(--accent-purple) 20%, transparent);
         }
 
         mat-card-content {
@@ -221,7 +221,7 @@
           gap: 0.75rem;
 
           .report-icon {
-            color: #9c27b0;
+            color: var(--accent-purple);
             flex-shrink: 0;
           }
 
@@ -242,7 +242,7 @@
               font-size: 0.85rem;
 
               .click-hint {
-                color: #9c27b0;
+                color: var(--accent-purple);
                 font-style: italic;
                 margin-left: 0.5rem;
               }
@@ -254,7 +254,7 @@
             flex-shrink: 0;
 
             &:hover {
-              color: #9c27b0;
+              color: var(--accent-purple);
             }
           }
         }
@@ -272,10 +272,10 @@
   }
 
   .completion-message {
-    background: linear-gradient(135deg, #4caf50 0%, #66bb6a 100%);
-    color: white;
+    background: linear-gradient(135deg, var(--success-solid) 0%, var(--success-solid-light) 100%);
+    color: var(--on-accent);
     margin-bottom: 1rem;
-    box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--success-solid) 30%, transparent);
 
     .message-content {
       display: flex;
@@ -296,7 +296,7 @@
       }
 
       button {
-        color: white;
+        color: var(--on-accent);
       }
     }
 
@@ -326,10 +326,10 @@
 
     .master-controls {
       padding: 1rem 1.25rem;
-      background-color: rgba(255, 107, 53, 0.08);
+      background-color: color-mix(in srgb, var(--primary-orange) 8%, transparent);
       border-radius: 8px;
       margin-bottom: 1rem;
-      border: 1px solid rgba(255, 107, 53, 0.2);
+      border: 1px solid color-mix(in srgb, var(--primary-orange) 20%, transparent);
 
       .master-controls-row {
         display: flex;
@@ -384,7 +384,7 @@
 
           &:hover {
             color: var(--error-color);
-            background: rgba(244, 67, 54, 0.1);
+            background: color-mix(in srgb, var(--danger-solid) 10%, transparent);
           }
 
           mat-icon {
@@ -440,21 +440,21 @@
       }
 
       &:hover {
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        box-shadow: 0 4px 12px var(--shadow-color);
       }
 
       // Master report special styling
       &.master-report {
-        border-color: rgba(156, 39, 176, 0.4);
-        background: linear-gradient(135deg, rgba(156, 39, 176, 0.08) 0%, rgba(103, 58, 183, 0.08) 100%);
+        border-color: color-mix(in srgb, var(--accent-purple) 40%, transparent);
+        background: linear-gradient(135deg, color-mix(in srgb, var(--accent-purple) 8%, transparent) 0%, color-mix(in srgb, var(--accent-purple-deep) 8%, transparent) 100%);
 
         &:hover {
-          border-color: rgba(156, 39, 176, 0.6);
-          box-shadow: 0 4px 12px rgba(156, 39, 176, 0.2);
+          border-color: color-mix(in srgb, var(--accent-purple) 60%, transparent);
+          box-shadow: 0 4px 12px color-mix(in srgb, var(--accent-purple) 20%, transparent);
         }
 
         .input-info mat-icon {
-          color: #9c27b0;
+          color: var(--accent-purple);
         }
       }
 
@@ -486,25 +486,26 @@
         flex-wrap: wrap;
 
         // Boxed toggle buttons (Notes, Chapters), modeled after the metadata-report
-        // titles: gray box + white text when off, solid theme-orange + white text
-        // when selected.
+        // titles: neutral box + body-text ink when off, solid theme-orange with
+        // on-accent ink when selected. The box and its outline are theme washes, so
+        // the control reads on the light page as well as the dark one.
         .box-toggle {
           flex-shrink: 0;
-          color: #fff;
-          background: rgba(255, 255, 255, 0.10);
-          border-color: rgba(255, 255, 255, 0.20);
-          --mdc-outlined-button-label-text-color: #fff;
-          --mdc-outlined-button-outline-color: rgba(255, 255, 255, 0.20);
+          color: var(--text-primary);
+          background: var(--overlay-hover);
+          border-color: var(--border-color);
+          --mdc-outlined-button-label-text-color: var(--text-primary);
+          --mdc-outlined-button-outline-color: var(--border-color);
           transition: background 0.15s ease;
 
-          &:hover { background: rgba(255, 255, 255, 0.16); }
+          &:hover { background: var(--overlay-strong); }
 
           &.active,
           &.active:hover {
-            color: #fff;
+            color: var(--on-accent);
             background: var(--primary-orange);
             border-color: var(--primary-orange);
-            --mdc-outlined-button-label-text-color: #fff;
+            --mdc-outlined-button-label-text-color: var(--on-accent);
             --mdc-outlined-button-outline-color: var(--primary-orange);
           }
         }
@@ -584,7 +585,7 @@
             transition: background-color 0.2s ease;
 
             &:hover {
-              background-color: rgba(156, 39, 176, 0.1);
+              background-color: color-mix(in srgb, var(--accent-purple) 10%, transparent);
             }
           }
         }
@@ -640,13 +641,13 @@
 
           // No notes - creamsicle orange outline
           &:not([color="accent"]) {
-            background-color: rgba(255, 107, 53, 0.08);
+            background-color: color-mix(in srgb, var(--primary-orange) 8%, transparent);
             border: 2px solid var(--primary-orange);
             color: var(--primary-orange);
             font-weight: 500;
 
             &:hover {
-              background-color: rgba(255, 107, 53, 0.15);
+              background-color: color-mix(in srgb, var(--primary-orange) 15%, transparent);
               border-color: var(--dark-orange);
             }
           }
@@ -654,7 +655,7 @@
           // Has notes - filled creamsicle orange
           &[color="accent"] {
             background-color: var(--primary-orange) !important;
-            color: white !important;
+            color: var(--on-accent) !important;
             font-weight: 500;
 
             &:hover {
@@ -662,7 +663,7 @@
             }
 
             mat-icon {
-              color: white !important;
+              color: var(--on-accent) !important;
             }
           }
         }
@@ -672,7 +673,7 @@
           flex-shrink: 0;
 
           &:hover {
-            background: rgba(255, 107, 53, 0.1);
+            background: color-mix(in srgb, var(--primary-orange) 10%, transparent);
           }
         }
 
@@ -699,7 +700,7 @@
         min-height: 28px;
         font-size: 0.76rem;
         line-height: 1.35;
-        color: rgba(255, 255, 255, 0.45);
+        color: var(--text-muted);
 
         .tl-glyph {
           flex-shrink: 0;
@@ -714,7 +715,7 @@
           text-transform: uppercase;
           letter-spacing: 0.06em;
           font-size: 0.66rem;
-          color: rgba(255, 255, 255, 0.35);
+          color: var(--text-disabled);
 
           // The colon belongs to the label, not to the sentence the state reads as.
           &::after { content: ':'; }
@@ -731,20 +732,20 @@
         // A link the operator made is the exception worth seeing, so it — and only it —
         // gets full-strength text.
         &.is-linked {
-          color: rgba(255, 255, 255, 0.78);
+          color: var(--text-secondary);
 
-          .tl-glyph { color: #66bb6a; opacity: 1; }
+          .tl-glyph { color: var(--success-text); opacity: 1; }
         }
 
         // Drift past +/-10%: the story may describe material the cut no longer contains.
         &.is-warning {
-          color: #ffca28;
+          color: var(--warning-solid);
 
-          .tl-glyph { color: #ffca28; }
+          .tl-glyph { color: var(--warning-solid); }
         }
 
         // The lookup could not run, so the row cannot say what was searched.
-        &.is-unavailable .tl-glyph { color: rgba(255, 202, 40, 0.7); opacity: 1; }
+        &.is-unavailable .tl-glyph { color: color-mix(in srgb, var(--warning-solid) 70%, transparent); opacity: 1; }
 
         .tl-trigger {
           flex-shrink: 0;
@@ -755,12 +756,12 @@
           line-height: 26px;
           font-size: 0.74rem;
           letter-spacing: 0.01em;
-          color: rgba(255, 255, 255, 0.55);
+          color: var(--text-muted);
           transition: color 0.15s ease, background 0.15s ease;
 
           &:hover:not(:disabled) {
-            color: #fff;
-            background: rgba(255, 255, 255, 0.08);
+            color: var(--text-primary);
+            background: var(--overlay-strong);
           }
 
           .tl-caret {
@@ -780,8 +781,8 @@
       font-size: 1.05rem !important;
       font-weight: 700 !important;
       background: var(--gradient-primary) !important;
-      color: white !important;
-      box-shadow: 0 4px 12px rgba(255, 107, 53, 0.3) !important;
+      color: var(--on-accent) !important;
+      box-shadow: 0 4px 12px color-mix(in srgb, var(--primary-orange) 30%, transparent) !important;
       display: flex !important;
       align-items: center;
       justify-content: center;
@@ -792,7 +793,7 @@
 
       &:hover:not(:disabled) {
         background: var(--gradient-primary) !important;
-        box-shadow: 0 6px 16px rgba(255, 107, 53, 0.4), var(--shadow-glow) !important;
+        box-shadow: 0 6px 16px color-mix(in srgb, var(--primary-orange) 40%, transparent), var(--shadow-glow) !important;
         transform: translateY(-2px);
       }
 
@@ -816,9 +817,9 @@
     .global-queue-progress {
       margin-bottom: 1rem;
       padding: 1rem 1.25rem;
-      background-color: rgba(255, 107, 53, 0.08);
+      background-color: color-mix(in srgb, var(--primary-orange) 8%, transparent);
       border-radius: 8px;
-      border: 1px solid rgba(255, 107, 53, 0.2);
+      border: 1px solid color-mix(in srgb, var(--primary-orange) 20%, transparent);
 
       .progress-header {
         display: flex;
@@ -849,7 +850,7 @@
           }
 
           .mdc-linear-progress__buffer-bar {
-            background-color: rgba(255, 107, 53, 0.2) !important;
+            background-color: color-mix(in srgb, var(--primary-orange) 20%, transparent) !important;
           }
         }
       }
@@ -888,7 +889,7 @@
       }
 
       &:hover {
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        box-shadow: 0 4px 12px var(--shadow-color);
       }
 
       mat-card-content {
@@ -932,7 +933,7 @@
         .job-progress-badge {
           flex-shrink: 0;
           padding: 0.25rem 0.75rem;
-          background-color: rgba(255, 107, 53, 0.15);
+          background-color: color-mix(in srgb, var(--primary-orange) 15%, transparent);
           border-radius: 12px;
           font-size: 0.85rem;
           font-weight: 600;
@@ -953,7 +954,7 @@
               }
 
               .mdc-linear-progress__buffer-bar {
-                background-color: rgba(255, 107, 53, 0.2) !important;
+                background-color: color-mix(in srgb, var(--primary-orange) 20%, transparent) !important;
               }
             }
           }
@@ -977,7 +978,7 @@
       .job-details-expanded {
         margin-top: 1rem;
         padding-top: 1rem;
-        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        border-top: 1px solid var(--border-color);
 
         .job-error-message {
           display: flex;
@@ -986,11 +987,11 @@
           margin-bottom: 1rem;
           padding: 0.75rem;
           border-radius: 6px;
-          background: rgba(244, 67, 54, 0.1);
-          border: 1px solid rgba(244, 67, 54, 0.35);
+          background: color-mix(in srgb, var(--danger-solid) 10%, transparent);
+          border: 1px solid color-mix(in srgb, var(--danger-solid) 35%, transparent);
 
           mat-icon {
-            color: #f44336;
+            color: var(--danger-solid);
             flex-shrink: 0;
             font-size: 20px;
             width: 20px;
@@ -998,7 +999,7 @@
           }
 
           .job-error-text {
-            color: var(--text-primary, #eee);
+            color: var(--text-primary);
             font-size: 0.85rem;
             line-height: 1.4;
             white-space: pre-wrap;
@@ -1020,7 +1021,7 @@
               }
 
               .mdc-linear-progress__buffer-bar {
-                background-color: rgba(255, 107, 53, 0.2) !important;
+                background-color: color-mix(in srgb, var(--primary-orange) 20%, transparent) !important;
               }
             }
           }
@@ -1052,30 +1053,30 @@
 
             .item-row-wrapper {
               position: relative;
-              background-color: rgba(255, 255, 255, 0.03);
+              background-color: var(--overlay-hover);
               border-radius: 6px;
-              border: 1px solid rgba(255, 255, 255, 0.08);
+              border: 1px solid var(--border-color);
               transition: all 0.2s ease;
               overflow: hidden;
 
               &.transcribing {
-                background-color: rgba(33, 150, 243, 0.1);
-                border-color: rgba(33, 150, 243, 0.3);
+                background-color: color-mix(in srgb, var(--info-solid) 10%, transparent);
+                border-color: color-mix(in srgb, var(--info-solid) 30%, transparent);
               }
 
               &.transcribed {
-                background-color: rgba(33, 150, 243, 0.08);
-                border-color: rgba(33, 150, 243, 0.3);
+                background-color: color-mix(in srgb, var(--info-solid) 8%, transparent);
+                border-color: color-mix(in srgb, var(--info-solid) 30%, transparent);
               }
 
               &.generating {
-                background-color: rgba(156, 39, 176, 0.1);
-                border-color: rgba(156, 39, 176, 0.3);
+                background-color: color-mix(in srgb, var(--accent-purple) 10%, transparent);
+                border-color: color-mix(in srgb, var(--accent-purple) 30%, transparent);
               }
 
               &.completed {
-                background-color: rgba(76, 175, 80, 0.08);
-                border-color: rgba(76, 175, 80, 0.3);
+                background-color: color-mix(in srgb, var(--success-solid) 8%, transparent);
+                border-color: color-mix(in srgb, var(--success-solid) 30%, transparent);
               }
 
               .item-row {
@@ -1112,19 +1113,19 @@
 
                     .status-text {
                       &.completed {
-                        color: #4caf50;
+                        color: var(--success-solid);
                       }
 
                       &.transcribing {
-                        color: #2196f3;
+                        color: var(--info-solid);
                       }
 
                       &.transcribed {
-                        color: #2196f3;
+                        color: var(--info-solid);
                       }
 
                       &.generating {
-                        color: #9c27b0;
+                        color: var(--accent-purple);
                       }
 
                       &.pending {
@@ -1141,7 +1142,7 @@
                     align-items: flex-start;
                     gap: 0.3rem;
                     margin-top: 0.15rem;
-                    color: rgba(255, 255, 255, 0.5);
+                    color: var(--text-muted);
                     font-size: 0.72rem;
                     line-height: 1.35;
                     word-break: break-word;
@@ -1161,7 +1162,7 @@
                   font-size: 20px;
                   width: 20px;
                   height: 20px;
-                  color: #4caf50;
+                  color: var(--success-solid);
                 }
 
                 .transcribed-check {
@@ -1169,7 +1170,7 @@
                   font-size: 20px;
                   width: 20px;
                   height: 20px;
-                  color: #2196f3;
+                  color: var(--info-solid);
                 }
               }
 
@@ -1188,7 +1189,7 @@
                     }
 
                     .mdc-linear-progress__buffer-bar {
-                      background-color: rgba(255, 107, 53, 0.15) !important;
+                      background-color: color-mix(in srgb, var(--primary-orange) 15%, transparent) !important;
                     }
                   }
                 }
@@ -1197,11 +1198,11 @@
               &.transcribed .item-progress-container .item-progress {
                 ::ng-deep {
                   .mdc-linear-progress__bar-inner {
-                    border-color: #2196f3 !important;
+                    border-color: var(--info-solid) !important;
                   }
 
                   .mdc-linear-progress__buffer-bar {
-                    background-color: rgba(33, 150, 243, 0.15) !important;
+                    background-color: color-mix(in srgb, var(--info-solid) 15%, transparent) !important;
                   }
                 }
               }
@@ -1209,11 +1210,11 @@
               &.generating .item-progress-container .item-progress {
                 ::ng-deep {
                   .mdc-linear-progress__bar-inner {
-                    border-color: #9c27b0 !important;
+                    border-color: var(--accent-purple) !important;
                   }
 
                   .mdc-linear-progress__buffer-bar {
-                    background-color: rgba(156, 39, 176, 0.15) !important;
+                    background-color: color-mix(in srgb, var(--accent-purple) 15%, transparent) !important;
                   }
                 }
               }
@@ -1221,11 +1222,11 @@
               &.completed .item-progress-container .item-progress {
                 ::ng-deep {
                   .mdc-linear-progress__bar-inner {
-                    border-color: #4caf50 !important;
+                    border-color: var(--success-solid) !important;
                   }
 
                   .mdc-linear-progress__buffer-bar {
-                    background-color: rgba(76, 175, 80, 0.15) !important;
+                    background-color: color-mix(in srgb, var(--success-solid) 15%, transparent) !important;
                   }
                 }
               }
@@ -1241,8 +1242,8 @@
       font-size: 1.05rem !important;
       font-weight: 700 !important;
       background: var(--gradient-primary) !important;
-      color: white !important;
-      box-shadow: 0 4px 12px rgba(255, 107, 53, 0.3) !important;
+      color: var(--on-accent) !important;
+      box-shadow: 0 4px 12px color-mix(in srgb, var(--primary-orange) 30%, transparent) !important;
       display: flex !important;
       align-items: center;
       justify-content: center;
@@ -1252,14 +1253,14 @@
       }
 
       &:hover:not(:disabled) {
-        box-shadow: 0 6px 16px rgba(255, 107, 53, 0.4), var(--shadow-glow) !important;
+        box-shadow: 0 6px 16px color-mix(in srgb, var(--primary-orange) 40%, transparent), var(--shadow-glow) !important;
         transform: translateY(-2px);
         transition: all 0.2s ease;
       }
 
       &:disabled, &[disabled] {
         background: var(--dark-orange) !important;
-        color: white !important;
+        color: var(--on-accent) !important;
         opacity: 0.7 !important;
         cursor: not-allowed !important;
       }
@@ -1274,7 +1275,7 @@
     .queue-section {
       .section-header {
         h3 {
-          color: #333;
+          color: var(--text-primary);
         }
 
         button {
@@ -1283,23 +1284,23 @@
       }
 
       .job-list .job-card {
-        background-color: rgba(255, 107, 53, 0.05);
-        border: 1px solid rgba(255, 107, 53, 0.3);
+        background-color: color-mix(in srgb, var(--primary-orange) 5%, transparent);
+        border: 1px solid color-mix(in srgb, var(--primary-orange) 30%, transparent);
 
         &.status-pending {
-          background-color: rgba(255, 107, 53, 0.08);
+          background-color: color-mix(in srgb, var(--primary-orange) 8%, transparent);
         }
 
         &.status-processing {
-          background-color: rgba(255, 107, 53, 0.12);
+          background-color: color-mix(in srgb, var(--primary-orange) 12%, transparent);
         }
 
         &.status-completed {
-          background-color: rgba(76, 175, 80, 0.08);
+          background-color: color-mix(in srgb, var(--success-solid) 8%, transparent);
         }
 
         &.status-failed {
-          background-color: rgba(244, 67, 54, 0.08);
+          background-color: color-mix(in srgb, var(--danger-solid) 8%, transparent);
         }
 
         .job-header .job-info {
@@ -1309,33 +1310,33 @@
 
           .job-details {
             .job-name {
-              color: #333;
+              color: var(--text-primary);
             }
 
             .job-meta {
               .job-status {
-                color: #666;
+                color: var(--text-secondary);
               }
 
               .job-time {
-                color: #999;
+                color: var(--text-muted);
               }
             }
           }
         }
 
         .job-progress .progress-info .progress-text {
-          color: #666;
+          color: var(--text-secondary);
         }
 
         .job-inputs {
           .inputs-label {
-            color: #666;
+            color: var(--text-secondary);
           }
 
           .inputs-list mat-chip {
-            background-color: rgba(255, 107, 53, 0.15);
-            color: #333;
+            background-color: color-mix(in srgb, var(--primary-orange) 15%, transparent);
+            color: var(--text-primary);
 
             mat-icon {
               color: var(--primary-orange);
@@ -1344,7 +1345,7 @@
         }
 
         button[mat-icon-button] {
-          color: #999;
+          color: var(--text-muted);
 
           &:hover {
             color: var(--primary-orange);
@@ -1377,67 +1378,16 @@
         background-color: var(--bg-tertiary);
 
         .job-inputs .inputs-list mat-chip {
-          background-color: rgba(255, 107, 53, 0.2) !important;
+          background-color: color-mix(in srgb, var(--primary-orange) 20%, transparent) !important;
 
           // Override Material's default chip text color
           .mdc-evolution-chip__text-label {
-            color: white !important;
+            color: var(--text-primary) !important;
           }
 
           // Target any text inside the chip
           span, div {
-            color: white !important;
-          }
-        }
-      }
-    }
-
-    // Dark mode overrides for queue-container-unified
-    .queue-container-unified {
-      .section-header {
-        h3 {
-          color: white;
-        }
-      }
-
-      .job-card {
-        .input-row {
-          .input-info .input-details {
-            .item-title {
-              color: white !important;
-            }
-
-            .item-subtitle {
-              color: rgba(255, 255, 255, 0.7) !important;
-            }
-          }
-
-          .expand-icon {
-            color: rgba(255, 255, 255, 0.5);
-          }
-        }
-
-        .job-details-expanded {
-          .job-progress .progress-info .progress-text {
-            color: rgba(255, 255, 255, 0.7);
-          }
-
-          .job-inputs-list {
-            .inputs-label {
-              color: rgba(255, 255, 255, 0.7);
-            }
-
-            .items-list {
-              .item-row-wrapper {
-                .item-row {
-                  .item-details {
-                    .item-name {
-                      color: white;
-                    }
-                  }
-                }
-              }
-            }
+            color: var(--text-primary) !important;
           }
         }
       }
@@ -1446,11 +1396,13 @@
 }
 @keyframes pulse-border {
   0%, 100% {
-    border-color: #4CAF50;
+    border-color: var(--success-solid);
     opacity: 1;
   }
   50% {
-    border-color: #8BC34A;
+    // The half-step was a lime (#8bc34a); the palette's lighter green stands in
+    // for it so the pulse still shifts hue as well as opacity.
+    border-color: var(--success-solid-light);
     opacity: 0.7;
   }
 }
@@ -1509,6 +1461,6 @@
   .tl-sep {
     height: 1px;
     margin: 0.3rem 0;
-    background: rgba(255, 255, 255, 0.12);
+    background: var(--border-color);
   }
 }

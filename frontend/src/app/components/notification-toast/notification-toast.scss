@@ -31,34 +31,34 @@
   }
 
   &.toast-success {
-    border-left: 4px solid #4CAF50;
+    border-left: 4px solid var(--success-solid);
 
     .toast-icon {
-      background: linear-gradient(135deg, #4CAF50, #45a049);
+      background: var(--gradient-success);
     }
   }
 
   &.toast-error {
-    border-left: 4px solid #f44336;
+    border-left: 4px solid var(--danger-solid);
 
     .toast-icon {
-      background: linear-gradient(135deg, #f44336, #d32f2f);
+      background: var(--gradient-danger);
     }
   }
 
   &.toast-warning {
-    border-left: 4px solid #ff9800;
+    border-left: 4px solid var(--warning-solid);
 
     .toast-icon {
-      background: linear-gradient(135deg, #ff9800, #f57c00);
+      background: var(--gradient-warning);
     }
   }
 
   &.toast-info {
-    border-left: 4px solid #2196F3;
+    border-left: 4px solid var(--info-solid);
 
     .toast-icon {
-      background: linear-gradient(135deg, #2196F3, #1976D2);
+      background: var(--gradient-info);
     }
   }
 }
@@ -83,7 +83,7 @@
   align-items: center;
   justify-content: center;
   font-size: 16px;
-  color: white;
+  color: var(--on-accent);
   font-weight: bold;
 }
 
