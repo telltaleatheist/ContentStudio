@@ -10,6 +10,7 @@ import type {
   PublishResult,
   PushOutcome,
   ReportIndexResponse,
+  ScheduledSweep,
   ResolvedMetadata,
   SpreakerPushOutcome,
   SpreakerStatus,
@@ -617,6 +618,7 @@ declare global {
 
       // Publish (chosen titles / A-B test setup) — every call names one item by its id
       publishListIndex: () => Promise<PublishResult<ReportIndexResponse>>;
+      publishListScheduled: () => Promise<PublishResult<ScheduledSweep>>;
       publishGetSelection: (itemId: string) => Promise<PublishResult<ChosenMetadata | null>>;
       publishSetTitles: (itemId: string, titles: string[]) => Promise<PublishResult<ChosenMetadata>>;
       publishSetFields: (
@@ -1318,6 +1320,18 @@ export class ElectronService {
   async publishListIndex(): Promise<PublishResult<ReportIndexResponse>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.publishListIndex();
+  }
+
+  /**
+   * What YouTube itself has a date on, across every registered channel.
+   *
+   * A live API sweep, not a read of anything this app stored — slower than
+   * publishListIndex by whole seconds, and deliberately a SEPARATE call so the calendar
+   * can render its own records immediately and mirror YouTube's when it arrives.
+   */
+  async publishListScheduled(): Promise<PublishResult<ScheduledSweep>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishListScheduled();
   }
 
   /** One item's stored selection, or null when nothing has been picked for it. */

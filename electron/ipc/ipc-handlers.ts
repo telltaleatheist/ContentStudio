@@ -3322,7 +3322,8 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   setupPublishIpc({
     store: analytics.publishStore,
     readGenerated: readGeneratedForPublish,
-    listRecentUploads: (channelId: string) => analytics.youtubeApi.listRecentUploads(channelId),
+    listRecentUploads: (channelId: string, maxVideos?: number) =>
+      analytics.youtubeApi.listRecentUploads(channelId, maxVideos),
     // Read fresh on every call, not captured: connecting a channel or editing its prompt
     // sets has to take effect without a restart. ChannelRegistryEntry satisfies
     // RoutableChannel structurally, which is what keeps publish/ free of an analytics

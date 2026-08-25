@@ -45,7 +45,12 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { AnalyticsChannel, ElectronService } from '../../services/electron';
 import { PublishState } from '../../features/publish/publish-state';
-import type { PublishFacts, ReportIndexEntry } from '../../features/publish/publish.types';
+import type {
+  PublishFacts,
+  ReportIndexEntry,
+  ScheduledSweep,
+  ScheduledVideo,
+} from '../../features/publish/publish.types';
 import { splitPublishAt } from '../../features/publish/publish-schedule';
 import { CADENCE_NOTES, cadenceKeyFor, isCadenceSlot } from '../../features/publish/publish-slots';
 // The §2.5 state table, kept pure so it can be exercised without an Angular test bed.
@@ -138,6 +143,14 @@ export interface CalendarChip {
   schedulable: boolean;
   /** For a stale row: when it was due and when the intent was recorded. */
   staleNote: string | null;
+  /**
+   * Set when YouTube holds a DIFFERENT moment for this same video.
+   *
+   * YouTube's is what will actually happen; this record is only what was intended. The
+   * two are shown together rather than reconciled — silently preferring either one would
+   * hide the fact that they disagree, and that fact is the whole warning.
+   */
+  mirrorDivergence: string | null;
   status: string;
   videoId: string | null;
 }
@@ -160,6 +173,40 @@ export interface TrayItem {
   status: string;
 }
 
+/**
+ * A video YOUTUBE says is scheduled, mirrored onto the board.
+ *
+ * Not a chip this app owns: it has no publish record behind it, no drag, and no write.
+ * It is here so a slot that is already taken looks taken — including by videos scheduled
+ * by hand in Studio, which is the case the operator cannot otherwise see at all.
+ *
+ * A mirror whose videoId belongs to a local record is NOT built: that item is already on
+ * the board as its own chip, and drawing both would read as two releases.
+ */
+export interface MirrorChip {
+  videoId: string;
+  title: string;
+  /** Local wall time, `HH:MM`. */
+  time: string;
+  dateKey: string;
+  publishAt: string;
+  channelId: string;
+  channelName: string;
+  channelTag: string;
+  hue: string;
+  dimmed: boolean;
+  /**
+   * The local item that claims this same video, when one does but draws no chip of its
+   * own. Present exactly when the record has a video id and NO local date — the report is
+   * still worth reaching, so the mirror carries the way in.
+   */
+  itemId: string | null;
+  /** Still private with a date on it, i.e. genuinely pending rather than already out. */
+  pending: boolean;
+  /** As YouTube reports it, so the tooltip can name it rather than imply it. */
+  privacyStatus: string;
+}
+
 /** One of the three release times, on one day. */
 export interface SlotCell {
   /** `HH:MM`, exactly what the writer is handed. */
@@ -172,6 +219,8 @@ export interface SlotCell {
   /** The active channel normally releases here. A hint, never a restriction. */
   isCadence: boolean;
   chips: CalendarChip[];
+  /** What YouTube already has here. Read-only, and the reason a slot can look full. */
+  mirrors: MirrorChip[];
 }
 
 /** One day of the rolling list. */
@@ -186,6 +235,8 @@ export interface DayRow {
    * time rather than rounded into a slot they are not in, and never dropped.
    */
   otherChips: CalendarChip[];
+  /** The same, for YouTube-side videos scheduled at some other hour. */
+  otherMirrors: MirrorChip[];
 }
 
 @Component({
@@ -263,6 +314,20 @@ export class PublishCalendar implements OnInit, OnDestroy {
   /** Which drop target the drag is over: a slot's key, or `tray`. */
   readonly dragOverKey = signal<string | null>(null);
 
+  // ------------------------------------------------------------ the YouTube mirror
+
+  /**
+   * What YouTube says is scheduled, or null before the first sweep has answered.
+   *
+   * Null and empty are different answers and the board says which it has: null means
+   * nobody has asked YouTube yet, so an empty-looking slot is only empty as far as THIS
+   * APP knows. An empty list means YouTube was asked and holds nothing.
+   */
+  readonly sweep = signal<ScheduledSweep | null>(null);
+  readonly sweeping = signal(false);
+  /** A failed sweep is its own line: the local board is still true, the mirror is not. */
+  readonly sweepError = signal<string | null>(null);
+
   // ---------------------------------------------------------------- derivations
 
   /** Registry order decides the hue; the tabs print the key. */
@@ -295,14 +360,109 @@ export class PublishCalendar implements OnInit, OnDestroy {
     return { key, note: CADENCE_NOTES[key] };
   });
 
+  /**
+   * YouTube's schedule for the videos this app already knows by id, keyed by video id.
+   *
+   * Used for two different things and built once: the divergence warning on a local chip,
+   * and knowing which mirrored videos are duplicates of a chip already on the board.
+   */
+  private readonly mirrorByVideoId = computed(() => {
+    const map = new Map<string, ScheduledVideo>();
+    const swept = this.sweep();
+    if (!swept) return map;
+    for (const video of swept.scheduled) map.set(video.videoId, video);
+    return map;
+  });
+
   /** Every item that has a publish record and a date on it, as chips. */
   private readonly scheduledChips = computed<CalendarChip[]>(() => {
     const now = this.now();
     const active = this.activeChannelId();
+    const mirror = this.mirrorByVideoId();
     return this.entries()
       .filter((entry) => entry.publish !== null && entry.publish.publishAt !== null)
-      .map((entry) => this.toChip(entry, entry.publish as PublishFacts, now, active))
+      .map((entry) => this.toChip(entry, entry.publish as PublishFacts, now, active, mirror))
       .sort((a, b) => a.publishAt.localeCompare(b.publishAt));
+  });
+
+  /**
+   * The mirror, minus everything already drawn as a local chip.
+   *
+   * A video id claimed by any publish record is dropped here whether or not that record
+   * has a date: the item is the app's own, and its own chip (or its tray row) is where it
+   * belongs. What survives is the genuinely external schedule — videos put on the
+   * calendar in Studio that this app would otherwise draw an empty slot over.
+   */
+  private readonly mirrorChips = computed<MirrorChip[]>(() => {
+    const swept = this.sweep();
+    if (!swept) return [];
+
+    // Suppressed only when the local record actually DRAWS a chip for this video, which
+    // means it has a date of its own. A record that names a video but carries no date
+    // renders nothing anywhere — it is not on a day and it is out of the tray — so
+    // dropping its mirror too would leave a genuinely occupied slot looking empty. That
+    // is not hypothetical: the backlog mark-as-published pass sets a status and a video
+    // id without ever setting a publishAt.
+    const drawn = new Set<string>();
+    const itemByVideo = new Map<string, string>();
+    for (const entry of this.entries()) {
+      const facts = entry.publish;
+      if (!facts?.videoId) continue;
+      itemByVideo.set(facts.videoId, entry.itemId);
+      if (facts.publishAt !== null) drawn.add(facts.videoId);
+    }
+
+    const active = this.activeChannelId();
+    return swept.scheduled
+      .filter((video) => !drawn.has(video.videoId))
+      .map((video) => {
+        const at = new Date(video.publishAt);
+        if (Number.isNaN(at.getTime())) {
+          throw new Error(
+            `YouTube returned ${JSON.stringify(video.publishAt)} as the schedule for ` +
+            `${video.videoId}, which is not a date this can read.`
+          );
+        }
+        const channel = this.channelOf(video.channelId);
+        return {
+          videoId: video.videoId,
+          title: video.title,
+          time: splitPublishAt(video.publishAt).time,
+          dateKey: dateKeyOf(at),
+          publishAt: video.publishAt,
+          channelId: video.channelId,
+          channelName: channel.name,
+          channelTag: channel.tag,
+          hue: channel.hue,
+          dimmed: channel.known && video.channelId !== active,
+          itemId: itemByVideo.get(video.videoId) ?? null,
+          pending: video.privacyStatus === 'private',
+          privacyStatus: video.privacyStatus,
+        };
+      })
+      .sort((a, b) => a.publishAt.localeCompare(b.publishAt));
+  });
+
+  private readonly mirrorsByDay = computed(() => {
+    const map = new Map<string, MirrorChip[]>();
+    for (const chip of this.mirrorChips()) {
+      const list = map.get(chip.dateKey);
+      if (list) list.push(chip);
+      else map.set(chip.dateKey, [chip]);
+    }
+    return map;
+  });
+
+  /** How many local chips YouTube holds a different moment for. Drives the warning line. */
+  readonly divergentCount = computed(
+    () => this.scheduledChips().filter((chip) => chip.mirrorDivergence !== null).length
+  );
+
+  /** When the mirror was last read, for the line that says how fresh it is. */
+  readonly sweptLabel = computed(() => {
+    const swept = this.sweep();
+    if (!swept) return null;
+    return new Date(swept.sweptAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   });
 
   readonly scheduledCount = computed(() => this.scheduledChips().length);
@@ -332,11 +492,14 @@ export class PublishCalendar implements OnInit, OnDestroy {
     const earliest = now.getTime() + WRITER_LEAD_MS;
     const todayKey = dateKeyOf(now);
 
+    const byDayMirror = this.mirrorsByDay();
+
     const rows: DayRow[] = [];
     for (let offset = 0; offset < this.horizonDays(); offset++) {
       const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
       const dateKey = dateKeyOf(day);
       const chips = byDay.get(dateKey) ?? [];
+      const mirrors = byDayMirror.get(dateKey) ?? [];
 
       const slots: SlotCell[] = SLOTS.map((slot) => {
         const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), slot.hour, 0, 0, 0);
@@ -347,6 +510,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
           isPast: at.getTime() < earliest,
           isCadence: cadence !== null && isCadenceSlot(cadence.key, at),
           chips: chips.filter((chip) => chip.time === slot.time),
+          mirrors: mirrors.filter((chip) => chip.time === slot.time),
         };
       });
 
@@ -356,6 +520,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
         isToday: dateKey === todayKey,
         slots,
         otherChips: chips.filter((chip) => !SLOTS.some((slot) => slot.time === chip.time)),
+        otherMirrors: mirrors.filter((chip) => !SLOTS.some((slot) => slot.time === chip.time)),
       });
     }
     return rows;
@@ -379,6 +544,24 @@ export class PublishCalendar implements OnInit, OnDestroy {
     if (rows.length === 0) return 0;
     const lastKey = rows[rows.length - 1].dateKey;
     return this.scheduledChips().filter((chip) => chip.dateKey > lastKey).length;
+  });
+
+  /**
+   * Mirrored videos that land outside the rolling list entirely — before today, or past
+   * its far end.
+   *
+   * Counted rather than rendered. They cannot collide with anything the operator can drop
+   * (there is no cell for them to sit in), but a mirror that quietly held fewer videos
+   * than YouTube does would undermine the one thing this mirror is for.
+   */
+  readonly mirrorsOutsideWindow = computed(() => {
+    const rows = this.dayRows();
+    if (rows.length === 0) return 0;
+    const firstKey = rows[0].dateKey;
+    const lastKey = rows[rows.length - 1].dateKey;
+    return this.mirrorChips().filter(
+      (chip) => chip.dateKey < firstKey || chip.dateKey > lastKey
+    ).length;
   });
 
   /**
@@ -448,6 +631,10 @@ export class PublishCalendar implements OnInit, OnDestroy {
   async ngOnInit(): Promise<void> {
     this.clock = setInterval(() => this.now.set(new Date()), 60_000);
     await this.reload();
+    // Not awaited: the board is already correct about this app's own records, and the
+    // mirror is a live API sweep of three channels. Making the page wait for the network
+    // would delay everything for the sake of an overlay.
+    void this.refreshSweep();
   }
 
   ngOnDestroy(): void {
@@ -506,6 +693,42 @@ export class PublishCalendar implements OnInit, OnDestroy {
 
   dismissError(): void {
     this.error.set(null);
+  }
+
+  /**
+   * Ask YouTube what it actually has scheduled.
+   *
+   * Its own call and its own error line, deliberately kept off `reload()`: the local
+   * board must not go blank because a channel's token expired, and the mirror must not
+   * look empty because it was never read. A failed sweep leaves the previous answer in
+   * place — it is still the last thing YouTube said — and says that it failed.
+   */
+  async refreshSweep(): Promise<void> {
+    this.sweeping.set(true);
+    this.sweepError.set(null);
+    try {
+      const res = await this.electron.publishListScheduled();
+      if (!res.success || !res.data) {
+        this.sweepError.set(res.error ?? 'YouTube would not say what is scheduled.');
+        return;
+      }
+      this.sweep.set(res.data);
+      if (res.data.problems.length > 0) {
+        this.sweepError.set(
+          res.data.problems
+            .map((p) => `${p.channelName}: ${p.message}`)
+            .join('\n')
+        );
+      }
+    } catch (err: any) {
+      this.sweepError.set(err?.message || String(err));
+    } finally {
+      this.sweeping.set(false);
+    }
+  }
+
+  dismissSweepError(): void {
+    this.sweepError.set(null);
   }
 
   // ---------------------------------------------------------------- channel tabs
@@ -703,11 +926,48 @@ export class PublishCalendar implements OnInit, OnDestroy {
     };
   }
 
+  /**
+   * What YouTube holds for this video, when that is not what the record says.
+   *
+   * Only linked items can diverge — with no video id there is nothing to compare against,
+   * which is a different situation from agreeing. Compared as INSTANTS rather than as
+   * strings: the two sides write the same moment with different offsets, and a string
+   * comparison would report a disagreement every time one of them was written in the
+   * other half of the year.
+   */
+  private divergenceOf(
+    facts: PublishFacts,
+    at: Date,
+    mirror: ReadonlyMap<string, ScheduledVideo>
+  ): string | null {
+    if (facts.videoId === null) return null;
+    const remote = mirror.get(facts.videoId);
+    if (!remote) return null;
+
+    const remoteAt = new Date(remote.publishAt);
+    if (Number.isNaN(remoteAt.getTime())) {
+      throw new Error(
+        `YouTube returned ${JSON.stringify(remote.publishAt)} as the schedule for ` +
+        `${facts.videoId}, which is not a date this can read.`
+      );
+    }
+    if (remoteAt.getTime() === at.getTime()) return null;
+
+    return `YouTube has this at ${remoteAt.toLocaleString([], {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    })}`;
+  }
+
   private toChip(
     entry: ReportIndexEntry,
     facts: PublishFacts,
     now: Date,
-    activeChannelId: string | null
+    activeChannelId: string | null,
+    mirror: ReadonlyMap<string, ScheduledVideo>
   ): CalendarChip {
     const publishAt = facts.publishAt as string;
     const at = new Date(publishAt);
@@ -741,6 +1001,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
           ? `was due ${distance(at, now)}` +
             (facts.publishAtSetAt ? ` · set ${distance(new Date(facts.publishAtSetAt), now)}` : '')
           : null,
+      mirrorDivergence: this.divergenceOf(facts, at, mirror),
       status: facts.status,
       videoId: facts.videoId,
     };

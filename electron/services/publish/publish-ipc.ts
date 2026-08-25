@@ -184,6 +184,35 @@ export interface ReportIndexEntry {
   publishFault: string | null;
 }
 
+/**
+ * One video YouTube says has a scheduled moment, as the calendar mirror needs it.
+ *
+ * Read straight off `videos.list part=status`, with the channel it came from attached.
+ * `privacyStatus` rides along rather than being collapsed into a boolean: 'private' with
+ * a publishAt is a release still pending, anything else with one has already happened,
+ * and the calendar labels those differently instead of guessing.
+ */
+export interface ScheduledVideo {
+  videoId: string;
+  channelId: string;
+  channelName: string;
+  title: string;
+  /** RFC-3339 instant, exactly as YouTube stores it. */
+  publishAt: string;
+  privacyStatus: string;
+  durationSec: number;
+}
+
+export interface ScheduledSweep {
+  scheduled: ScheduledVideo[];
+  /** Channels that would not answer, named. Never a quietly shorter mirror. */
+  problems: Array<{ channelId: string; channelName: string; message: string }>;
+  sweptAt: string;
+  channelsSwept: number;
+  /** How many recent uploads per channel were examined — printed, not assumed. */
+  windowSize: number;
+}
+
 export interface ReportIndexResponse {
   entries: ReportIndexEntry[];
   /** Report files that could not be indexed, each named with its reason. */
@@ -214,7 +243,7 @@ export interface PublishIpcDeps {
    * Recent uploads (with status) for a channel. Injected as a narrow function rather
    * than the whole YouTubeApiService so this module stays independently testable.
    */
-  listRecentUploads: (channelId: string) => Promise<UploadStatusEntry[]>;
+  listRecentUploads: (channelId: string, maxVideos?: number) => Promise<UploadStatusEntry[]>;
   /**
    * The channel registry, read fresh on every call.
    *
@@ -336,6 +365,20 @@ function requireItemId(value: unknown, name: string): string {
  * window — for as long as it took.
  */
 const MAX_THUMB_STRIP_ITEMS = 300;
+
+/**
+ * How many recent uploads per channel the scheduled sweep examines.
+ *
+ * Three times the draft matcher's window, because the two are looking for different
+ * things: a draft is always the last thing uploaded, whereas a scheduled video can have
+ * been uploaded weeks before its release and had a dozen other uploads land on top of it.
+ *
+ * The cost of widening is one quota unit per fifty videos on a ten-thousand-a-day pool,
+ * so the number is set by what the operator's backlog plausibly holds rather than by
+ * thrift. It is reported to the caller because no window can be wide enough to prove a
+ * negative — see the handler.
+ */
+const SCHEDULED_SWEEP_WINDOW = 300;
 
 /** One row of `publish-thumb-strip`. Three states, never fewer — see the handler. */
 export interface ThumbStripEntry {
@@ -570,6 +613,75 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
         directoryMissing: index.directoryMissing,
         directory: index.directory,
         orphanedSelections,
+      });
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * Every video YouTube itself says is scheduled, across all registered channels.
+   *
+   * The calendar's other half. `publish-list-index` answers "what does this app intend to
+   * publish"; this answers "what has YouTube already got a date on" — including videos
+   * that were scheduled by hand in Studio and that this app has therefore never heard of.
+   * Without it the board draws an empty slot over a day that is in fact taken, which is
+   * the one wrong answer a collision-avoidance tool must not give.
+   *
+   * The sweep window is UPLOAD recency, not schedule date: `listRecentUploads` pages the
+   * uploads playlist newest-first, so a video uploaded long ago and scheduled far out
+   * falls outside it however far the window is widened. The window size is therefore
+   * RETURNED, not just used — the calendar prints it, so "nothing else is scheduled" is
+   * never claimed on the strength of a window nobody was told about.
+   *
+   * A channel that will not answer is NAMED and the other channels still return. That is
+   * not a fallback: the failure is reported as a fact, per channel, and the calendar shows
+   * it. Dropping one channel silently would draw exactly the empty-but-actually-taken slot
+   * this call exists to prevent.
+   */
+  ipcMain.handle('publish-list-scheduled', async () => {
+    try {
+      const channels = listChannels();
+      const scheduled: ScheduledVideo[] = [];
+      const problems: Array<{ channelId: string; channelName: string; message: string }> = [];
+
+      // Sequential rather than Promise.all: three channels against one quota and one
+      // token refresher, where a burst buys nothing and a 403 on one call is easier to
+      // attribute when it is the only call in flight.
+      for (const channel of channels) {
+        try {
+          const uploads = await listRecentUploads(channel.channelId, SCHEDULED_SWEEP_WINDOW);
+          for (const video of uploads) {
+            // A null publishAt is a video with no scheduled moment: a draft, or something
+            // already public that was never scheduled. Neither belongs on a calendar day.
+            if (video.publishAt === null) continue;
+            scheduled.push({
+              videoId: video.videoId,
+              channelId: channel.channelId,
+              channelName: channel.name,
+              title: video.title,
+              publishAt: video.publishAt,
+              privacyStatus: video.privacyStatus,
+              durationSec: video.durationSec,
+            });
+          }
+        } catch (err: any) {
+          problems.push({
+            channelId: channel.channelId,
+            channelName: channel.name,
+            message: err?.message || String(err),
+          });
+        }
+      }
+
+      scheduled.sort((a, b) => a.publishAt.localeCompare(b.publishAt));
+
+      return ok<ScheduledSweep>({
+        scheduled,
+        problems,
+        sweptAt: new Date().toISOString(),
+        channelsSwept: channels.length - problems.length,
+        windowSize: SCHEDULED_SWEEP_WINDOW,
       });
     } catch (err: any) {
       return fail(err?.message || String(err));

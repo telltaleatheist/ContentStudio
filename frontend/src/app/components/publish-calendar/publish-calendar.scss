@@ -662,3 +662,133 @@
   font-style: italic;
   padding: 0.75rem 0.25rem;
 }
+
+/* ==================================================================== the YouTube mirror
+ *
+ * Everything below draws things this app does NOT own: videos YouTube already has a date
+ * on. They are deliberately quieter and flatter than a chip — no fill, a dashed leading
+ * bar, no grab cursor — because the difference that matters at a glance is "mine, and I
+ * can move it" versus "already on YouTube, and this slot is spoken for".
+ */
+
+.sweep-state {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+
+  /* Never swept. Reads as an unanswered question rather than as an empty answer. */
+  &.stale-sweep {
+    color: var(--text-muted);
+    font-style: italic;
+  }
+}
+
+.sweep-banner {
+  /* A failed sweep is not a failed page: the local board is still true. Toned down from
+     the error banner so it cannot be mistaken for one. */
+  border-color: var(--warning-border, var(--border-strong));
+  color: var(--warning-text, var(--text-secondary));
+}
+
+.divergence-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--warning-text, #d97706) 45%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warning-text, #d97706) 10%, transparent);
+  color: var(--warning-text, var(--text-secondary));
+  font-size: 0.75rem;
+
+  mat-icon {
+    font-size: 16px;
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+  }
+}
+
+.mirror {
+  display: flex;
+  align-items: stretch;
+  gap: 0.25rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: 4px;
+  background: transparent;
+  overflow: hidden;
+  font-size: 0.72rem;
+  cursor: default;
+
+  .mirror-bar {
+    width: 3px;
+    flex-shrink: 0;
+    opacity: 0.55;
+  }
+
+  .mirror-body {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex: 1;
+    min-width: 0;
+    padding: 0.2rem 0;
+  }
+
+  .yt-glyph {
+    font-size: 13px;
+    width: 13px;
+    height: 13px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+
+  .mirror-tag {
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+
+  .mirror-title {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-muted);
+  }
+
+  /* Already public: it happened, and it is here only so the day reads correctly. */
+  &.out {
+    opacity: 0.6;
+    border-style: dotted;
+  }
+
+  &.dimmed {
+    opacity: 0.35;
+    filter: grayscale(0.85);
+
+    &:hover {
+      opacity: 0.7;
+      filter: grayscale(0.3);
+    }
+  }
+}
+
+/* A slot YouTube already has something in. Not blocked — a deliberate double release is
+   the operator's call — but it stops looking empty, which is the entire point. */
+.slot.taken {
+  background: color-mix(in srgb, var(--text-muted) 8%, transparent);
+}
+
+/* YouTube disagrees with the record about when this goes out. */
+.divergence-note {
+  margin: 0.1rem 0 0.2rem;
+  font-size: 0.62rem;
+  color: var(--warning-text, var(--text-secondary));
+}
+
+.beyond-note.quiet {
+  color: var(--text-muted);
+}

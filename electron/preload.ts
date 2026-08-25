@@ -153,6 +153,7 @@ const api = {
   // and the publish calendar both read; it replaced the renderer's per-mount scan of the
   // whole metadata directory.
   publishListIndex: () => ipcRenderer.invoke('publish-list-index'),
+  publishListScheduled: () => ipcRenderer.invoke('publish-list-scheduled'),
   publishGetSelection: (itemId: string) => ipcRenderer.invoke('publish-get-selection', itemId),
   // titles order is meaningful: index 0 becomes the main title AND A/B variant 1
   publishSetTitles: (itemId: string, titles: string[]) =>

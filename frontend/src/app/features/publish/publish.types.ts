@@ -599,3 +599,29 @@ export interface ReportIndexResponse {
   /** Selection records whose report is gone. Named, never rendered or dropped. */
   orphanedSelections: string[];
 }
+
+/**
+ * Mirror of ScheduledVideo — one video YOUTUBE says has a date, not one this app set.
+ *
+ * The distinction is the whole point of the type: these arrive from `videos.list`, they
+ * may belong to videos this app has never generated metadata for, and nothing here can be
+ * dragged. They exist so an occupied slot looks occupied.
+ */
+export interface ScheduledVideo {
+  videoId: string;
+  channelId: string;
+  channelName: string;
+  title: string;
+  publishAt: string;
+  privacyStatus: string;
+  durationSec: number;
+}
+
+/** Mirror of ScheduledSweep. The window is carried because it bounds what was seen. */
+export interface ScheduledSweep {
+  scheduled: ScheduledVideo[];
+  problems: Array<{ channelId: string; channelName: string; message: string }>;
+  sweptAt: string;
+  channelsSwept: number;
+  windowSize: number;
+}

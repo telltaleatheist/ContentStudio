@@ -10,6 +10,21 @@
     </div>
 
     <div class="header-actions">
+      <!-- The mirror's own freshness, next to its own refresh. Never read is not the
+           same as read and empty, and this line says which. -->
+      <span class="sweep-state" [class.stale-sweep]="sweep() === null">
+        @if (sweeping()) {
+          YouTube · reading…
+        } @else if (sweep(); as swept) {
+          YouTube · {{ swept.scheduled.length }} scheduled · as of {{ sweptLabel() }}
+        } @else {
+          YouTube · not read yet
+        }
+      </span>
+      <button mat-icon-button (click)="refreshSweep()" [disabled]="sweeping()"
+              matTooltip="Re-read what YouTube has scheduled">
+        <mat-icon>cloud_sync</mat-icon>
+      </button>
       <button mat-stroked-button (click)="scrollToToday()">Today</button>
       <button mat-icon-button routerLink="/metadata-reports" matTooltip="Metadata reports">
         <mat-icon>description</mat-icon>
@@ -48,6 +63,24 @@
     <div class="error-banner" (click)="dismissError()" title="Click to dismiss">
       <mat-icon>error_outline</mat-icon>
       <span class="error-text">{{ error() }}</span>
+    </div>
+  }
+
+  @if (sweepError()) {
+    <div class="error-banner sweep-banner" (click)="dismissSweepError()" title="Click to dismiss">
+      <mat-icon>cloud_off</mat-icon>
+      <span class="error-text">{{ sweepError() }}</span>
+    </div>
+  }
+
+  @if (divergentCount() > 0) {
+    <div class="divergence-banner">
+      <mat-icon>sync_problem</mat-icon>
+      <span>
+        {{ divergentCount() }} scheduled item{{ divergentCount() === 1 ? '' : 's' }}
+        {{ divergentCount() === 1 ? 'is' : 'are' }} set to a different time on YouTube than
+        the record here says. YouTube's time is what will happen.
+      </span>
     </div>
   }
 
@@ -146,6 +179,7 @@
             @for (slot of row.slots; track slot.time) {
               <div class="slot"
                    [class.past]="slot.isPast"
+                   [class.taken]="slot.mirrors.length > 0"
                    [class.cadence]="slot.isCadence"
                    [class.drop-ready]="draggingItemId() !== null && !slot.isPast"
                    [class.drop-over]="dragOverKey() === slot.key"
@@ -157,12 +191,15 @@
                 @for (chip of slot.chips; track chip.itemId) {
                   <ng-container [ngTemplateOutlet]="chipRow" [ngTemplateOutletContext]="{ chip: chip }"></ng-container>
                 }
+                @for (mirror of slot.mirrors; track mirror.videoId) {
+                  <ng-container [ngTemplateOutlet]="mirrorRow" [ngTemplateOutletContext]="{ m: mirror }"></ng-container>
+                }
               </div>
             }
 
             <!-- A schedule that is not on one of the three slots is shown at its real
                  time rather than rounded into a slot it is not in. -->
-            @if (row.otherChips.length > 0) {
+            @if (row.otherChips.length > 0 || row.otherMirrors.length > 0) {
               <div class="other-times">
                 <span class="other-label">other times</span>
                 <div class="other-chips">
@@ -171,6 +208,14 @@
                       <span class="other-time">{{ chip.time }}</span>
                       <div class="chip-wrap">
                         <ng-container [ngTemplateOutlet]="chipRow" [ngTemplateOutletContext]="{ chip: chip }"></ng-container>
+                      </div>
+                    </div>
+                  }
+                  @for (mirror of row.otherMirrors; track mirror.videoId) {
+                    <div class="other-row">
+                      <span class="other-time">{{ mirror.time }}</span>
+                      <div class="chip-wrap">
+                        <ng-container [ngTemplateOutlet]="mirrorRow" [ngTemplateOutletContext]="{ m: mirror }"></ng-container>
                       </div>
                     </div>
                   }
@@ -186,6 +231,21 @@
             <span class="beyond-note">
               {{ beyondHorizon() }} scheduled item{{ beyondHorizon() === 1 ? ' is' : 's are' }}
               further out than the {{ horizonDays() }} days loaded.
+            </span>
+          }
+          @if (mirrorsOutsideWindow() > 0) {
+            <span class="beyond-note">
+              {{ mirrorsOutsideWindow() }} YouTube schedule{{ mirrorsOutsideWindow() === 1 ? '' : 's' }}
+              fall outside these days.
+            </span>
+          }
+          <!-- The sweep looks at recent UPLOADS, so a video uploaded long ago and
+               scheduled far out can sit outside it however wide it is. Saying the number
+               is the only honest way to offer this mirror. -->
+          @if (sweep(); as swept) {
+            <span class="beyond-note quiet">
+              YouTube read from the {{ swept.windowSize }} most recent uploads on
+              {{ swept.channelsSwept }} channel{{ swept.channelsSwept === 1 ? '' : 's' }}.
             </span>
           }
         </div>
@@ -258,10 +318,36 @@
   @if (chip.state === 'stale') {
     <div class="stale-note">⚠ {{ chip.staleNote }}</div>
   }
+  @if (chip.mirrorDivergence) {
+    <div class="divergence-note">⇄ {{ chip.mirrorDivergence }}</div>
+  }
   @if (chip.unrouted) {
     <div class="unrouted-note">no channel</div>
   }
   @if (chip.unknownChannel) {
     <div class="unrouted-note">{{ chip.channelName }}</div>
   }
+</ng-template>
+
+<!-- A video YouTube has a date on that this app does not own. No drag, no controls, and
+     a visibly different treatment: it is here to show a slot is taken, not to be worked
+     on. Its title is whatever is on YouTube right now. -->
+<ng-template #mirrorRow let-m="m">
+  <div class="mirror"
+       [class.dimmed]="m.dimmed"
+       [class.out]="!m.pending"
+       [matTooltip]="m.channelName + ' · scheduled on YouTube · ' + (m.pending ? 'private until release' : m.privacyStatus)">
+    <span class="mirror-bar" [style.background]="m.hue"></span>
+    <span class="mirror-body">
+      <mat-icon class="yt-glyph">smart_display</mat-icon>
+      <span class="mirror-tag">{{ m.channelTag }}</span>
+      <span class="mirror-title">{{ m.title }}</span>
+    </span>
+    @if (m.itemId) {
+      <button mat-icon-button class="open-report" (click)="openReport(m.itemId)"
+              matTooltip="This video has a report here — open it">
+        <mat-icon>open_in_new</mat-icon>
+      </button>
+    }
+  </div>
 </ng-template>
