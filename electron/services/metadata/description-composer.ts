@@ -18,6 +18,13 @@
  * names. That is reading a real historical format, not guessing at missing data.
  */
 
+import {
+  DescriptionSections,
+  DescriptionSectionEdits,
+  PublishedChapter,
+  composePublishedText,
+} from '../publish/publish-types';
+
 /** Chapter timestamps must start at 00:00 for YouTube to accept the list at all. */
 export interface ComposableItem {
   description?: unknown;
@@ -124,42 +131,69 @@ export function composeChapterBlock(item: ComposableItem): string {
  * descriptions it wants, because the two are pushed to different videos and a default here
  * would decide that silently for whichever caller forgot.
  */
-export function composeDescription(item: ComposableItem, options: { includeChapters: boolean }): string {
-  let result = '';
-
-  // THE HOOK GOES FIRST, and its presence is what selects the order (metadata spec §3, an
-  // operator ruling): hook / chapters / body / hashtags / links. The reason is what YouTube
-  // shows — the first ~150 characters are the search-results snippet and everything above the
-  // fold on mobile, so a chapter list standing there spends the snippet on "0:00 - Opening".
-  //
-  // An item with NO hook composes exactly as it always did, chapters first. That is not a
-  // fallback: it is the only correct reading of a report written before the hook existed,
-  // whose `description` already opens with its own lead sentence.
+/**
+ * Decompose an item into the three sections the reports page edits and the push composes
+ * (shapes and the one join live in publish-types — the import direction metadata→publish
+ * is the allowed one; publish/ stays liftable).
+ *
+ * The hashtags land at the END of the body (they used to sit "before the links" — with the
+ * links now their own section, the end of the body is the same place).
+ */
+export function composeDescriptionSections(item: ComposableItem): DescriptionSections {
   const hook = descriptionText(item.description_hook).trim();
-  if (hook) result = `${hook}\n\n`;
+  const { body: rawBody, links } = splitLinkBlock(descriptionText(item.description));
 
-  if (options.includeChapters) {
-    const block = composeChapterBlock(item);
-    if (block) result += `${block}\n\n`;
-  }
-
-  result += descriptionText(item.description);
-
+  let body = hook ? `${hook}\n\n${rawBody}` : rawBody;
   const hashtags = typeof item.hashtags === 'string' ? item.hashtags.trim() : '';
-  if (!hashtags) return result;
+  if (hashtags && !body.includes(hashtags)) body = `${body.trimEnd()}\n\n${hashtags}`;
 
-  // Some prompt sets already embed the hashtags in the description body. Adding them a
-  // second time is the visible failure this check prevents.
-  if (result.includes(hashtags)) return result;
+  const chapters: PublishedChapter[] = (Array.isArray(item.chapters) ? item.chapters : [])
+    .map((chapter) => {
+      const timestamp = chapterTimestamp(chapter);
+      const title = chapterTitle(chapter);
+      return { key: `${timestamp} - ${title}`, timestamp, title };
+    })
+    .filter((c) => c.timestamp && c.title);
 
-  const insertAt = firstMarkerIndex(result);
-  if (insertAt !== -1) {
-    const beforeLinks = result.substring(0, insertAt).trimEnd();
-    const linksSection = result.substring(insertAt);
-    return `${beforeLinks}\n\n${hashtags}\n\n${linksSection}`;
-  }
+  return { body: body.trim(), chapters, links };
+}
 
-  return `${result.trimEnd()}\n\n${hashtags}`;
+/** Split generated description text at the link block. Pure; both halves trimmed. */
+export function splitLinkBlock(text: string): { body: string; links: string } {
+  const at = firstMarkerIndex(text);
+  if (at === -1) return { body: text.trim(), links: '' };
+  return { body: text.substring(0, at).trimEnd(), links: text.substring(at).trim() };
+}
+
+/** Compose an item's published description with a record's section edits applied. */
+export function composePublishedDescription(
+  item: ComposableItem,
+  edits: DescriptionSectionEdits | null
+): string {
+  return composePublishedText(composeDescriptionSections(item), edits);
+}
+
+/**
+ * The full description as it should be typed into YouTube, generated composition only.
+ *
+ * REORDERED 2026-08-25 (operator): description first, then chapters, then links — the
+ * chapter list used to sit between the hook and the body. Thin wrapper over
+ * composePublishedDescription with no edits; `includeChapters: false` is the
+ * chaptersInDescription switch for callers that read both compositions.
+ */
+export function composeDescription(item: ComposableItem, options: { includeChapters: boolean }): string {
+  return composePublishedDescription(
+    item,
+    options.includeChapters
+      ? null
+      : {
+          descriptionOverride: null,
+          linksOverride: null,
+          chapterEdits: {},
+          chapterDrops: [],
+          chaptersInDescription: false,
+        }
+  );
 }
 
 /**

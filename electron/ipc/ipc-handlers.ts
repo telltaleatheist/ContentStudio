@@ -47,7 +47,7 @@ import {
   inspectSavedTranscript,
   resolveOutputDirectory,
 } from '../services/metadata/saved-transcript.service';
-import { composeChapterBlock, composeDescription, composeTags } from '../services/metadata/description-composer';
+import { composeChapterBlock, composeDescription, composeDescriptionSections, composeTags } from '../services/metadata/description-composer';
 import {
   SUMMARIZATION_MODEL,
   buildRoutingView,
@@ -2734,6 +2734,9 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         description: composeDescription(item, { includeChapters: true }),
         descriptionWithoutChapters: composeDescription(item, { includeChapters: false }),
         chapterBlock: composeChapterBlock(item),
+        // The three-section decomposition the operator edits (2026-08-25) — same composer,
+        // carried as data so publish/ never imports services/metadata.
+        sections: composeDescriptionSections(item),
         tags: composeTags(item),
         // Source filename drives draft matching. Read off the item's own recorded
         // source_path, not inferred from array alignment.

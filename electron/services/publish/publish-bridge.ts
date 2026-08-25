@@ -35,6 +35,7 @@ import {
   emptyChosenMetadata,
   normalizeForMatch,
   validateChosenTitles,
+  composePublishedText,
 } from './publish-types';
 import { validateThumbnailFile } from './thumbnail-validate';
 
@@ -284,12 +285,7 @@ export class PublishBridge {
       // extension fills that differs from the one the API would push is the exact bug the
       // single-composition-site rule exists to prevent. A record that does not exist yet
       // has made no decision, and the app's decision has always been to include chapters.
-      description:
-        chosen?.descriptionOverride ??
-        (chosen === undefined || chosen === null || chosen.chaptersInDescription
-          ? generated.description
-          : generated.descriptionWithoutChapters) ??
-        '',
+      description: composePublishedText(generated.sections, chosen ?? null),
       tags: chosen?.tagsOverride ?? generated.tags ?? '',
       sourceFilename,
       status: chosen ? chosen.status : 'none',

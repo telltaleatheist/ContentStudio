@@ -319,7 +319,14 @@ export interface ChosenMetadata {
    * `{}` when nothing is edited; the key goes stale on regeneration, which is the revert.
    */
   titleEdits: Record<string, string>;
+  /** Overrides the description SECTION only (2026-08-25): hook, body, hashtags. */
   descriptionOverride: string | null;
+  /** null = generated link block; '' = deliberately no links. */
+  linksOverride: string | null;
+  /** Chapter renames, keyed by the full generated line ("4:58 - …"). Stale key = revert. */
+  chapterEdits: Record<string, string>;
+  /** Chapters deleted from the published list, same keys. */
+  chapterDrops: string[];
   /**
    * Whether the chapter block is part of the composed description that gets pushed.
    *
@@ -389,6 +396,20 @@ export interface ChosenMetadata {
   filledAt: string | null;
 }
 
+/** One publishable chapter, addressable by its full generated line. */
+export interface PublishedChapter {
+  key: string;
+  timestamp: string;
+  title: string;
+}
+
+/** The three separately-editable description sections (2026-08-25). */
+export interface DescriptionSections {
+  body: string;
+  chapters: PublishedChapter[];
+  links: string;
+}
+
 export interface ResolvedMetadata {
   /** The item's permanent id — the only thing that identifies it. */
   itemId: string;
@@ -398,6 +419,8 @@ export interface ResolvedMetadata {
   videoId: string | null;
   titles: string[];
   description: string;
+  /** Raw generated sections behind `description` — edits NOT applied; the editors' inputs. */
+  sections: DescriptionSections;
   tags: string;
   sourceFilename: string | null;
   sourceDurationSec: number | null;

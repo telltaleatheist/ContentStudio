@@ -453,12 +453,10 @@
                    than no control. Inert (with the reason on the control itself, not in a
                    standing paragraph) once the description has been edited by hand. -->
               @if (hasChapters() && publish.hasResolved()) {
-                <label class="chk"
-                       [class.inert]="publish.descriptionOverride() !== null"
-                       [title]="chaptersToggleHint()">
+                <label class="chk" [title]="chaptersToggleHint()">
                   <input type="checkbox"
                          [checked]="publish.chaptersInDescription()"
-                         [disabled]="publish.descriptionOverride() !== null || publish.saving()"
+                         [disabled]="publish.saving()"
                          (change)="setChaptersInDescription($any($event.target).checked)">
                   <span>Chapters</span>
                   <span class="chk-sub num">{{ metadata()!.chapters!.length }}</span>
@@ -483,18 +481,105 @@
                 }
               </div>
             </div>
+            <!-- THREE SECTIONS (operator, 2026-08-25): the prose, the chapter list, the
+                 links — separately edited, separately reverted, and joined by the main
+                 process in exactly this order for the copy and the push. -->
             <div class="desc">
               @if (editingDescription()) {
                 <textarea class="desc-text"
                           [value]="descriptionDraft()"
                           (input)="descriptionDraft.set($any($event.target).value)"></textarea>
               } @else if (publish.hasResolved()) {
-                <textarea class="desc-text" readonly [value]="descriptionValue()"></textarea>
+                <textarea class="desc-text" readonly [value]="bodyValue()"></textarea>
               } @else {
                 <!-- Never render an empty box here: blank reads as "no description". -->
                 <div class="resolving">Reading the composed description…</div>
               }
             </div>
+
+            @if (publish.hasResolved() && chapterRows().length > 0) {
+              <div class="desc-sub">
+                <div class="desc-sub-head">
+                  <h4>Chapters</h4>
+                  <span class="cnt num">{{ chapterRows().length }}</span>
+                  @if (publish.chapterDrops().length > 0) {
+                    <span class="tag" [title]="publish.chapterDrops().length + ' deleted from the published list'">
+                      −{{ publish.chapterDrops().length }}
+                    </span>
+                  }
+                </div>
+                <!-- Rename with the pencil, delete with ✕ (restore with ↩). A deleted 0:00
+                     makes YouTube ignore the whole list; the row says so, nothing re-adds it. -->
+                @for (row of chapterRows(); track row.key) {
+                  <div class="chapter-edit-row" [class.dropped]="row.dropped">
+                    <span class="ch-time num">{{ row.timestamp }}</span>
+                    @if (editingChapterKey() === row.key) {
+                      <input class="ch-input"
+                             [value]="chapterDraft()"
+                             (input)="chapterDraft.set($any($event.target).value)"
+                             (keydown.enter)="saveEditChapter(row.key, row.generatedTitle, $event)"
+                             (keydown.escape)="cancelEditChapter()">
+                      <button class="ghost" (click)="saveEditChapter(row.key, row.generatedTitle, $event)">Save</button>
+                      <button class="ghost" (click)="cancelEditChapter($event)">Cancel</button>
+                    } @else {
+                      <span class="ch-title" [class.struck]="row.dropped">{{ row.title }}</span>
+                      @if (row.edited) {
+                        <span class="tag" title="Renamed. The generated title is kept and comes back if you edit back to it.">edited</span>
+                      }
+                      @if (row.dropped && row.timestamp === '0:00') {
+                        <span class="tag warn" title="YouTube ignores a chapter list that does not start at 0:00 — with this deleted, no chapters will show on the video.">list disabled</span>
+                      }
+                      <span class="pane-head-spacer"></span>
+                      @if (!row.dropped) {
+                        <button class="ghost icon" title="Rename this chapter"
+                                (click)="startEditChapter(row.key, row.title, $event)">✎</button>
+                        <button class="ghost icon" title="Delete this chapter from the published list"
+                                (click)="toggleChapterDropped(row.key, true, $event)">✕</button>
+                      } @else {
+                        <button class="ghost icon" title="Restore this chapter"
+                                (click)="toggleChapterDropped(row.key, false, $event)">↩</button>
+                      }
+                    }
+                  </div>
+                }
+              </div>
+            }
+
+            @if (publish.hasResolved()) {
+              <div class="desc-sub">
+                <div class="desc-sub-head">
+                  <h4>Links</h4>
+                  @if (publish.linksOverride() !== null) {
+                    <span class="tag" title="You edited this. The generated links are kept and can be restored.">edited</span>
+                  }
+                  <span class="pane-head-spacer"></span>
+                  <div class="acts">
+                    @if (editingLinks()) {
+                      <button class="ghost" (click)="saveLinks()">Save</button>
+                      <button class="ghost" (click)="cancelEditLinks()">Cancel</button>
+                    } @else {
+                      <button class="ghost" (click)="startEditLinks()">Edit</button>
+                      @if (publish.linksOverride() !== null) {
+                        <button class="ghost" (click)="revertLinks()"
+                                title="Discard your edit and use the generated links">Revert</button>
+                      }
+                    }
+                  </div>
+                </div>
+                @if (editingLinks()) {
+                  <textarea class="desc-text links-text"
+                            [value]="linksDraft()"
+                            (input)="linksDraft.set($any($event.target).value)"
+                            placeholder="Emptying this box publishes with no links."></textarea>
+                } @else {
+                  @if (linksValue()) {
+                    <textarea class="desc-text links-text" readonly [value]="linksValue()"></textarea>
+                  } @else {
+                    <div class="resolving">No links on this item{{ publish.linksOverride() !== null ? ' — you removed them' : '' }}.</div>
+                  }
+                }
+              </div>
+            }
           </section>
 
           <!-- ═════ TAGS ═════ Stored comma-separated, exactly as the extension types them. -->

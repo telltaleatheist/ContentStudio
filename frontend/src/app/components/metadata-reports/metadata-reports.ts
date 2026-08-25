@@ -1599,11 +1599,7 @@ export class MetadataReports implements OnInit {
 
     const description = this.publish.resolvedDescription();
     const chapters =
-      this.publish.descriptionOverride() !== null
-        ? 'edited by hand'
-        : this.publish.chaptersInDescription() && this.hasChapters()
-          ? 'with chapters'
-          : 'no chapters';
+      this.publish.chaptersInDescription() && this.hasChapters() ? 'with chapters' : 'no chapters';
     rows.push({
       label: 'Description',
       value: `${description.length.toLocaleString()} chars · ${chapters}`,
@@ -1955,6 +1951,14 @@ export class MetadataReports implements OnInit {
   readonly editingDescription = signal(false);
   readonly descriptionDraft = signal('');
 
+  // — the three-section description (2026-08-25): body and links get their own editors;
+  //   chapters get per-row rename/delete. All persist on the selection record, report
+  //   files stay pristine, regeneration reverts (stale keys). —
+  readonly editingLinks = signal(false);
+  readonly linksDraft = signal('');
+  readonly editingChapterKey = signal<string | null>(null);
+  readonly chapterDraft = signal('');
+
   readonly editingTags = signal(false);
   readonly tagsDraft = signal('');
 
@@ -2021,8 +2025,41 @@ export class MetadataReports implements OnInit {
     return this.publish.resolvedTags();
   }
 
+  /** The description SECTION (prose only) with the operator's override applied. */
+  bodyValue(): string {
+    return this.publish.descriptionOverride() ?? this.publish.sections()?.body ?? '';
+  }
+
+  /** The link block with the operator's override applied. '' is a real value: no links. */
+  linksValue(): string {
+    return this.publish.linksOverride() ?? this.publish.sections()?.links ?? '';
+  }
+
+  /** The chapter list as the editors see it: renames applied, deletions marked. */
+  chapterRows(): Array<{
+    key: string;
+    timestamp: string;
+    generatedTitle: string;
+    title: string;
+    edited: boolean;
+    dropped: boolean;
+  }> {
+    const sections = this.publish.sections();
+    if (!sections) return [];
+    const edits = this.publish.chapterEdits();
+    const drops = new Set(this.publish.chapterDrops());
+    return sections.chapters.map((c) => ({
+      key: c.key,
+      timestamp: c.timestamp,
+      generatedTitle: c.title,
+      title: edits[c.key] ?? c.title,
+      edited: c.key in edits,
+      dropped: drops.has(c.key),
+    }));
+  }
+
   startEditDescription() {
-    this.descriptionDraft.set(this.descriptionValue());
+    this.descriptionDraft.set(this.bodyValue());
     this.editingDescription.set(true);
   }
 
@@ -2031,17 +2068,74 @@ export class MetadataReports implements OnInit {
     this.descriptionDraft.set('');
   }
 
+  /** Editing back to the generated text clears the override — that is the revert. */
   async saveDescription() {
-    await this.publish.setFields({ descriptionOverride: this.descriptionDraft() });
+    const draft = this.descriptionDraft();
+    const generated = this.publish.sections()?.body ?? '';
+    await this.publish.setFields({
+      descriptionOverride: draft.trim() === generated.trim() ? null : draft,
+    });
     if (this.publish.error()) return;
     this.editingDescription.set(false);
   }
 
-  /** Drop the override so the generated description flows through again. */
+  /** Drop the override so the generated description section flows through again. */
   async revertDescription() {
     await this.publish.setFields({ descriptionOverride: null });
     if (this.publish.error()) return;
     this.cancelEditDescription();
+  }
+
+  startEditLinks() {
+    this.linksDraft.set(this.linksValue());
+    this.editingLinks.set(true);
+  }
+
+  cancelEditLinks() {
+    this.editingLinks.set(false);
+    this.linksDraft.set('');
+  }
+
+  /** An emptied box saves as '' — publish with no links — not as a cleared override. */
+  async saveLinks() {
+    const draft = this.linksDraft();
+    const generated = this.publish.sections()?.links ?? '';
+    await this.publish.setFields({
+      linksOverride: draft.trim() === generated.trim() ? null : draft,
+    });
+    if (this.publish.error()) return;
+    this.editingLinks.set(false);
+  }
+
+  async revertLinks() {
+    await this.publish.setFields({ linksOverride: null });
+    if (this.publish.error()) return;
+    this.cancelEditLinks();
+  }
+
+  startEditChapter(key: string, title: string, event?: MouseEvent) {
+    event?.stopPropagation();
+    this.editingChapterKey.set(key);
+    this.chapterDraft.set(title);
+  }
+
+  cancelEditChapter(event?: MouseEvent) {
+    event?.stopPropagation();
+    this.editingChapterKey.set(null);
+    this.chapterDraft.set('');
+  }
+
+  async saveEditChapter(key: string, generatedTitle: string, event?: Event) {
+    event?.stopPropagation();
+    await this.publish.saveChapterEdit(key, generatedTitle, this.chapterDraft());
+    if (this.publish.error()) return;
+    this.cancelEditChapter();
+  }
+
+  /** Delete or restore one chapter from the published list. */
+  async toggleChapterDropped(key: string, dropped: boolean, event?: MouseEvent) {
+    event?.stopPropagation();
+    await this.publish.setChapterDropped(key, dropped);
   }
 
   startEditTags() {
@@ -2741,12 +2835,8 @@ export class MetadataReports implements OnInit {
     return Array.isArray(chapters) && chapters.length > 0;
   }
 
-  /** Why the switch is inert, when it is. Empty otherwise — a tooltip that always fires is noise. */
   chaptersToggleHint(): string {
-    if (this.publish.descriptionOverride() !== null) {
-      return 'This description was edited by hand and is pushed exactly as saved. Revert it to compose the chapter block again.';
-    }
-    return 'Include the chapter list at the top of the description that gets copied and pushed.';
+    return 'Include the chapter list between the description and the links in what gets copied and pushed.';
   }
 
   /**

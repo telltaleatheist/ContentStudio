@@ -223,6 +223,15 @@ export class PublishState {
   /** The operator's description edit, or null when they haven't made one. */
   readonly descriptionOverride = computed(() => this._selection()?.descriptionOverride ?? null);
 
+  /** null = generated link block; '' = deliberately no links (2026-08-25 sections). */
+  readonly linksOverride = computed(() => this._selection()?.linksOverride ?? null);
+
+  /** Chapter renames keyed by the full generated line; {} when nothing is edited. */
+  readonly chapterEdits = computed<Record<string, string>>(() => this._selection()?.chapterEdits ?? {});
+
+  /** Deleted chapters by their full generated line; [] when nothing is deleted. */
+  readonly chapterDrops = computed<string[]>(() => this._selection()?.chapterDrops ?? []);
+
   /** The operator's tags edit, or null when they haven't made one. */
   readonly tagsOverride = computed(() => this._selection()?.tagsOverride ?? null);
 
@@ -518,6 +527,9 @@ export class PublishState {
 
   /** Exactly what the extension will type into Studio's description box. */
   readonly resolvedDescription = computed(() => this._resolved()?.description ?? '');
+
+  /** The raw generated sections — the three editors' inputs; edits NOT applied. */
+  readonly sections = computed(() => this._resolved()?.sections ?? null);
 
   /** Exactly what the extension will type into Studio's tags box. */
   readonly resolvedTags = computed(() => this._resolved()?.tags ?? '');
@@ -931,6 +943,36 @@ export class PublishState {
    * pencil is an edit, not a pick (this replaces the old auto-pick behaviour, which made
    * a tidy-up silently occupy an A/B slot).
    */
+  /**
+   * Rename one chapter in the published list (2026-08-25 sections). The map is replaced
+   * atomically; editing back to the generated title removes the entry — that is the revert.
+   */
+  async saveChapterEdit(key: string, generatedTitle: string, editedTitle: string): Promise<void> {
+    const trimmed = editedTitle.trim();
+    if (!trimmed) {
+      this._error.set('A chapter title cannot be empty — delete the chapter instead.');
+      return;
+    }
+    const edits: Record<string, string> = { ...this.chapterEdits() };
+    if (trimmed === generatedTitle.trim()) {
+      if (!(key in edits)) return;
+      delete edits[key];
+    } else {
+      if (edits[key] === trimmed) return;
+      edits[key] = trimmed;
+    }
+    await this.setFields({ chapterEdits: edits });
+  }
+
+  /** Delete one chapter from the published list, or restore it. Replaced atomically. */
+  async setChapterDropped(key: string, dropped: boolean): Promise<void> {
+    const current = this.chapterDrops();
+    const has = current.includes(key);
+    if (dropped === has) return;
+    const next = dropped ? [...current, key] : current.filter((k) => k !== key);
+    await this.setFields({ chapterDrops: next });
+  }
+
   async saveTitleEdit(generatedTitle: string, displayedTitle: string, editedTitle: string): Promise<void> {
     const t = this.target('edit a title');
     if (!t) return;

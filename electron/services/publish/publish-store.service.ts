@@ -33,6 +33,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { AutoConfigResult } from './auto-config';
+import { DescriptionSections, composePublishedText } from './publish-types';
 import {
   ChosenMetadata,
   ResolvedMetadata,
@@ -76,6 +77,13 @@ export interface GeneratedFallback {
    * A switch on an item with no chapters is a control that cannot do anything.
    */
   chapterBlock: string;
+  /**
+   * The three-section decomposition (2026-08-25): body / chapters / links, the shapes the
+   * operator edits and composePublishedText joins. Filled by the reader from the same
+   * composer that produces the strings above; carried as data so this module stays free
+   * of services/metadata.
+   */
+  sections: DescriptionSections;
   tags: string;
   /** Basename of the analyzed source file, when the host can determine it. */
   sourceFilename?: string | null;
@@ -580,10 +588,13 @@ export function resolveChosenMetadata(
     // An override is deliberately NOT re-composed: it is the literal string the operator
     // saved, and quietly re-prefixing it would either duplicate a chapter block it already
     // contains or reinstate one they deleted by hand.
-    description:
-      chosen.descriptionOverride ??
-      (chosen.chaptersInDescription ? generated.description : generated.descriptionWithoutChapters) ??
-      '',
+    // The three-section composition (2026-08-25): the record's section edits — body
+    // override, chapter renames/deletes, links override, the chapters switch — applied to
+    // the generated sections by the ONE join in publish-types.
+    description: composePublishedText(generated.sections, chosen),
+    // Raw generated sections, edits not applied — the reports page renders its three
+    // editors from these plus the record it already holds.
+    sections: generated.sections,
     tags: chosen.tagsOverride ?? generated.tags ?? '',
     // Stored value wins (it was captured at selection time); otherwise fall back to
     // whatever the host can still determine from the job.

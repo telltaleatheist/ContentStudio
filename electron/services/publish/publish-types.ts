@@ -320,8 +320,38 @@ export interface ChosenMetadata {
    */
   titleEdits: Record<string, string>;
 
-  /** null = not edited, fall back to the generated description. */
+  /**
+   * null = not edited, fall back to the generated description SECTION.
+   *
+   * REDEFINED 2026-08-25 (operator: description / chapters / links as three separately
+   * editable boxes): this now overrides the PROSE section only — hook, body, hashtags.
+   * The chapter list and the link block are their own sections with their own edits
+   * below, and the push composes description + chapters + links in that order
+   * (composePublishedDescription). Redefinition was free: measured at the change, all 71
+   * live records carried null, so no existing item's published text moved.
+   */
   descriptionOverride: string | null;
+
+  /**
+   * null = not edited, fall back to the generated link block ("🔥 Support the Show:" …).
+   * An empty string is a real value: this item publishes with no links, deliberately.
+   */
+  linksOverride: string | null;
+
+  /**
+   * Chapter renames, keyed by the full generated line ("4:58 - Patreon plug…") — the same
+   * law as titleEdits: keyed by exactly what was generated, so regeneration changes the
+   * keys and the edits fall away, which IS the revert. Strictly an object, never absent.
+   */
+  chapterEdits: Record<string, string>;
+
+  /**
+   * Chapters deleted from the published list, same keys as chapterEdits. Deleting the 0:00
+   * chapter is honoured literally — YouTube will then ignore the whole list, and the
+   * readiness checks say so rather than anything re-adding it. Strictly an array, never
+   * absent.
+   */
+  chapterDrops: string[];
 
   /**
    * Does the chapter list go into the description that is pushed?
@@ -525,6 +555,13 @@ export interface ResolvedMetadata {
   /** Ordered. titles[0] is the main title AND A/B variant 1. */
   titles: string[];
   description: string;
+  /**
+   * The GENERATED sections behind `description` (2026-08-25), so the reports page can
+   * offer the three editors — body, chapter rows, links — with the record's edits shown
+   * against the generated values. `description` above is already the edits-applied join;
+   * these are the raw inputs, edits NOT applied.
+   */
+  sections: DescriptionSections;
   /** Comma-separated, as YouTube expects when typed into the tags field. */
   tags: string;
   sourceFilename: string | null;
@@ -708,6 +745,64 @@ export function validatePublishAt(value: string, now: Date = new Date()): string
   return null;
 }
 
+/** One publishable chapter, addressable for editing by its full generated line. */
+export interface PublishedChapter {
+  /** "4:58 - Patreon plug…" — the identity chapterEdits/chapterDrops key on. */
+  key: string;
+  timestamp: string;
+  title: string;
+}
+
+/** The three separately-editable sections of a published description (operator, 2026-08-25). */
+export interface DescriptionSections {
+  /** Hook, body and hashtags — the prose. No chapter lines, no link block. */
+  body: string;
+  chapters: PublishedChapter[];
+  /** The boilerplate link block, '' when the item has none. */
+  links: string;
+}
+
+/** The section edits a record carries, structurally a subset of ChosenMetadata. */
+export type DescriptionSectionEdits = Pick<
+  ChosenMetadata,
+  'descriptionOverride' | 'linksOverride' | 'chapterEdits' | 'chapterDrops' | 'chaptersInDescription'
+>;
+
+/**
+ * THE one composition of what reaches YouTube (operator's order, 2026-08-25): description,
+ * then chapters, then links, blank-line separated. Every consumer — the reports page, the
+ * extension fill, the API push, the no-record fallback — reads this; a description on
+ * screen that differs from the pushed one is the exact bug the single-composition-site
+ * rule exists to prevent. `edits` is null for an item with no selection record.
+ *
+ * Deleting the 0:00 chapter is honoured literally — YouTube will then ignore the whole
+ * list, and the readiness checks say what YouTube will make of it. Nothing here re-adds a
+ * chapter the operator deleted.
+ */
+export function composePublishedText(
+  sections: DescriptionSections,
+  edits: DescriptionSectionEdits | null
+): string {
+  const body = edits?.descriptionOverride ?? sections.body;
+
+  let chapterBlock = '';
+  if (edits === null || edits.chaptersInDescription) {
+    const drops = new Set(edits?.chapterDrops ?? []);
+    const renames = edits?.chapterEdits ?? {};
+    chapterBlock = sections.chapters
+      .filter((c) => !drops.has(c.key))
+      .map((c) => `${c.timestamp} - ${renames[c.key] ?? c.title}`)
+      .join('\n');
+  }
+
+  const links = edits?.linksOverride ?? sections.links;
+
+  return [body, chapterBlock, links]
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .join('\n\n');
+}
+
 /**
  * A blank record for an item that has none yet.
  *
@@ -728,6 +823,9 @@ export function emptyChosenMetadata(itemId: string, jobId: string): ChosenMetada
     chosenTitles: [],
     titleEdits: {},
     descriptionOverride: null,
+    linksOverride: null,
+    chapterEdits: {},
+    chapterDrops: [],
     chaptersInDescription: true,
     tagsOverride: null,
     channelId: null,
@@ -795,6 +893,11 @@ export function upgradeStoredMetadata(record: ChosenMetadata): ChosenMetadata {
   const upgraded: ChosenMetadata = { ...record };
 
   if (!('titleEdits' in stored)) upgraded.titleEdits = {};
+  // The three-section description edits (2026-08-25). Same shape law as titleEdits:
+  // strictly present, empty means unedited.
+  if (!('linksOverride' in stored)) upgraded.linksOverride = null;
+  if (!('chapterEdits' in stored)) upgraded.chapterEdits = {};
+  if (!('chapterDrops' in stored)) upgraded.chapterDrops = [];
   if (!('publishAt' in stored)) upgraded.publishAt = null;
   if (!('publishAtSetAt' in stored)) upgraded.publishAtSetAt = null;
   if (!('thumbnailPath' in stored)) upgraded.thumbnailPath = null;

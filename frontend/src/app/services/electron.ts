@@ -59,8 +59,14 @@ export interface PublishFields {
    * operator's replacement. {} clears every edit.
    */
   titleEdits?: Record<string, string>;
-  /** null clears the override, restoring the generated description. */
+  /** null clears the override, restoring the generated description SECTION (prose only). */
   descriptionOverride?: string | null;
+  /** null restores the generated link block; '' publishes with no links. */
+  linksOverride?: string | null;
+  /** Chapter renames keyed by the full generated line, replaced atomically. {} clears. */
+  chapterEdits?: Record<string, string>;
+  /** Deleted chapters by their full generated line, replaced atomically. [] restores all. */
+  chapterDrops?: string[];
   /** null clears the override, restoring the generated tags. */
   tagsOverride?: string | null;
   /**

@@ -106,6 +106,63 @@ const FIELD_VALIDATORS: Record<string, (value: unknown, ctx: FieldContext) => Fi
   },
 
   /**
+   * null clears the override, restoring the generated link block. An EMPTY STRING is a
+   * real value — this item publishes with no links, deliberately — which is why the null
+   * and '' cases are distinct here where descriptionOverride treats neither specially.
+   */
+  linksOverride(value) {
+    if (value !== null && typeof value !== 'string') {
+      throw new Error(
+        `linksOverride must be a string or null (null restores the generated link block; ` +
+        `an empty string publishes without links); got ${describeValue(value)}.`
+      );
+    }
+    return { linksOverride: value };
+  },
+
+  /** Chapter renames, keyed by the full generated line — same contract as titleEdits. */
+  chapterEdits(value) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(
+        `chapterEdits must be an object mapping the generated chapter line to its edited ` +
+        `title ({} clears every edit); got ${describeValue(value)}.`
+      );
+    }
+    const cleaned: Record<string, string> = {};
+    for (const [original, edited] of Object.entries(value as Record<string, unknown>)) {
+      if (!original.trim()) {
+        throw new Error('chapterEdits keys must be the generated chapter line; got an empty key.');
+      }
+      if (typeof edited !== 'string' || !edited.trim()) {
+        throw new Error(
+          `chapterEdits[${JSON.stringify(original)}] must be non-empty title text; ` +
+          `got ${describeValue(edited)}.`
+        );
+      }
+      cleaned[original] = edited.trim();
+    }
+    return { chapterEdits: cleaned };
+  },
+
+  /** Chapters deleted from the published list, by their full generated line. */
+  chapterDrops(value) {
+    if (!Array.isArray(value)) {
+      throw new Error(
+        `chapterDrops must be an array of generated chapter lines ([] restores every ` +
+        `chapter); got ${describeValue(value)}.`
+      );
+    }
+    const cleaned: string[] = [];
+    for (const entry of value) {
+      if (typeof entry !== 'string' || !entry.trim()) {
+        throw new Error(`chapterDrops entries must be generated chapter lines; got ${describeValue(entry)}.`);
+      }
+      if (!cleaned.includes(entry)) cleaned.push(entry);
+    }
+    return { chapterDrops: cleaned };
+  },
+
+  /**
    * Whether the chapter block goes into the composed description. Strict boolean, no null:
    * this field has no "undecided" state — the description either carries the chapters or
    * it does not, and every record has an answer (see ChosenMetadata.chaptersInDescription).
