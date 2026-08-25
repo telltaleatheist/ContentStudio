@@ -639,6 +639,44 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
   );
 
   /**
+   * Mark an item published by hand, or take that mark back.
+   *
+   * The operator sometimes uploads a video himself, outside both the API and the
+   * extension; this is how the record catches up with reality. Its own channel rather
+   * than a status field in publish-set-fields because the UNMARK direction is not a
+   * value the caller can supply: what a record goes back to depends on what it holds
+   * (a linked video, chosen titles, nothing), and that derivation belongs here where
+   * the record can be read, not in a renderer guessing at store rules.
+   */
+  ipcMain.handle('publish-mark-published', async (_e, itemId: string, published: boolean) => {
+    try {
+      const id = requireItemId(itemId, 'itemId');
+      if (typeof published !== 'boolean') {
+        return fail(`publish-mark-published requires a boolean; got ${describeValue(published)}.`);
+      }
+      const generated = requireGenerated(id);
+      if (published) {
+        return ok(await store.update(id, generated, { status: 'published' }));
+      }
+      const record = store.get(id);
+      if (!record || record.status !== 'published') {
+        return fail(
+          `Item ${id} is not marked published (status "${record?.status ?? 'no record'}"), ` +
+          `so there is no mark to take back.`
+        );
+      }
+      const fallback = record.videoId
+        ? 'linked'
+        : record.chosenTitles.length > 0
+          ? 'ready'
+          : 'selecting';
+      return ok(await store.update(id, generated, { status: fallback }));
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
    * Attach (or clear) a thumbnail file.
    *
    * Its own channel rather than a field in publish-set-fields because it is validated

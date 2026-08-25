@@ -790,6 +790,47 @@ export class MetadataReports implements OnInit {
     );
   }
 
+  /**
+   * A hand-applied "this one is done": the operator uploaded the video himself, outside
+   * both the API and the extension, and the record catches up here. Only offered on rows
+   * without a videoId — a linked row is already done as a matter of fact, and a mark on
+   * top of a fact would be a second answer to a question with one.
+   */
+  canMarkPublished(report: MetadataReport): boolean {
+    return !!report.itemId && !report.facts?.videoId && report.facts?.status !== 'published';
+  }
+
+  /** The mark is showing and can be taken back — again only where it IS a mark. */
+  canUnmarkPublished(report: MetadataReport): boolean {
+    return !!report.itemId && !report.facts?.videoId && report.facts?.status === 'published';
+  }
+
+  async setPublishedMark(report: MetadataReport, published: boolean, event: Event): Promise<void> {
+    event.stopPropagation();
+    const itemId = report.itemId;
+    if (!itemId) return;
+
+    const res = await this.electron.publishMarkPublished(itemId, published);
+    if (!res.success) {
+      this.notificationService.error(
+        published ? 'Could not mark that item published' : 'Could not take the mark back',
+        res.error ?? 'The main process refused the write and gave no reason.',
+      );
+      return;
+    }
+
+    if (this.selectedReport()?.itemId === itemId) {
+      await this.publish.load(itemId, report.promptSet);
+    }
+    await this.loadReports();
+    this.notificationService.success(
+      published ? 'Marked published' : 'Mark taken back',
+      published
+        ? `"${report.displayTitle || report.name}" now counts as done and sinks in the list.`
+        : `"${report.displayTitle || report.name}" is back among the pending items.`,
+    );
+  }
+
   /** The channels this row is NOT on — everything the overflow menu can offer it. */
   otherChannels(report: MetadataReport): AnalyticsChannel[] {
     const registry = this.registryChannels().length

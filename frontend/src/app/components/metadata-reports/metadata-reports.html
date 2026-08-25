@@ -193,17 +193,27 @@
                   <!-- Re-routing. The prompt set decided where this went at generation
                        time; this is where that decision gets overruled without the item
                        being generated again. -->
-                  @if (otherChannels(group.head).length > 0) {
+                  @if (group.head.itemId) {
                     <button class="row-more"
                             [matMenuTriggerFor]="headMenu"
                             (click)="$event.stopPropagation()"
-                            title="Move this item to another channel">
+                            title="Row actions — move to another channel, mark as published">
                       <mat-icon>more_horiz</mat-icon>
                     </button>
                     <mat-menu #headMenu="matMenu">
                       @for (channel of otherChannels(group.head); track channel.channelId) {
                         <button mat-menu-item (click)="moveToChannel(group.head, channel.channelId, $event)">
                           Move to {{ channel.name }}
+                        </button>
+                      }
+                      @if (canMarkPublished(group.head)) {
+                        <button mat-menu-item (click)="setPublishedMark(group.head, true, $event)">
+                          Mark as published
+                        </button>
+                      }
+                      @if (canUnmarkPublished(group.head)) {
+                        <button mat-menu-item (click)="setPublishedMark(group.head, false, $event)">
+                          Unmark published
                         </button>
                       }
                     </mat-menu>
@@ -255,17 +265,27 @@
                       <span class="row-name" [title]="run.displayTitle || run.name">
                         {{ run.displayTitle || run.name }}
                       </span>
-                      @if (otherChannels(run).length > 0) {
+                      @if (run.itemId) {
                         <button class="row-more"
                                 [matMenuTriggerFor]="runMenu"
                                 (click)="$event.stopPropagation()"
-                                title="Move this item to another channel">
+                                title="Row actions — move to another channel, mark as published">
                           <mat-icon>more_horiz</mat-icon>
                         </button>
                         <mat-menu #runMenu="matMenu">
                           @for (channel of otherChannels(run); track channel.channelId) {
                             <button mat-menu-item (click)="moveToChannel(run, channel.channelId, $event)">
                               Move to {{ channel.name }}
+                            </button>
+                          }
+                          @if (canMarkPublished(run)) {
+                            <button mat-menu-item (click)="setPublishedMark(run, true, $event)">
+                              Mark as published
+                            </button>
+                          }
+                          @if (canUnmarkPublished(run)) {
+                            <button mat-menu-item (click)="setPublishedMark(run, false, $event)">
+                              Unmark published
                             </button>
                           }
                         </mat-menu>

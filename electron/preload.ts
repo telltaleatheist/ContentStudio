@@ -211,6 +211,11 @@ const api = {
   // carries its own `fault` sentence rather than emptying the strip.
   publishThumbStrip: (itemIds: string[], maxPx: number) =>
     ipcRenderer.invoke('publish-thumb-strip', itemIds, maxPx),
+  // The record catching up with reality: the operator uploaded this one himself. `true`
+  // marks the record published; `false` takes a hand-applied mark back, and what the
+  // record returns to is decided in the main process from what the record holds.
+  publishMarkPublished: (itemId: string, published: boolean) =>
+    ipcRenderer.invoke('publish-mark-published', itemId, published),
   // Answers only. Seeding channelId from the answer is the panel's decision, not this
   // call's side effect.
   publishResolveChannel: (promptSet: string) =>

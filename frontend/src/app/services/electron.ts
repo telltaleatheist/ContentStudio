@@ -643,6 +643,10 @@ declare global {
         itemIds: string[],
         maxPx: number
       ) => Promise<PublishResult<ThumbStripEntry[]>>;
+      publishMarkPublished: (
+        itemId: string,
+        published: boolean
+      ) => Promise<PublishResult<ChosenMetadata>>;
       publishResolveChannel: (promptSet: string) => Promise<PublishResult<ChannelResolution>>;
       publishFindCarryForward: (
         itemId: string
@@ -1438,6 +1442,17 @@ export class ElectronService {
   ): Promise<PublishResult<ThumbStripEntry[]>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.publishThumbStrip(itemIds, maxPx);
+  }
+
+  /**
+   * Mark an item published by hand (`true`) — the operator uploaded it himself, outside
+   * both the API and the extension — or take that mark back (`false`). The unmark
+   * target is derived in the main process from what the record holds; the renderer
+   * never guesses store rules.
+   */
+  async publishMarkPublished(itemId: string, published: boolean): Promise<PublishResult<ChosenMetadata>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishMarkPublished(itemId, published);
   }
 
   /**
