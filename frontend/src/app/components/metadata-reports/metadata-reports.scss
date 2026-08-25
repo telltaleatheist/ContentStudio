@@ -54,10 +54,16 @@
   --rp-wait: #b3b9bf;
   --rp-warn: #b4741a;
   --rp-stop: var(--danger-text);
-  --rp-warn-bg: rgba(180, 116, 26, 0.09);
-  --rp-warn-line: rgba(180, 116, 26, 0.3);
+  // The tints are mixed from their own ink rather than restated as an rgba, so a
+  // change to the ink carries into the fill and the rule.
+  --rp-warn-bg: color-mix(in srgb, var(--rp-warn) 9%, transparent);
+  --rp-warn-line: color-mix(in srgb, var(--rp-warn) 30%, transparent);
   --rp-stop-bg: var(--danger-bg);
-  --rp-stop-line: rgba(220, 38, 38, 0.35);
+  --rp-stop-line: color-mix(in srgb, var(--rp-stop) 35%, transparent);
+
+  // The one ink that never flips: it sits ON the orange, and the orange is the
+  // same on both pages. White is not legible on it; this near-black brown is.
+  --rp-on-orange: #2a1004;
 
   // ── type ──────────────────────────────────────────────────────────────────
   // No display face: the owner asked for a clean familiar sans, so hierarchy is carried
@@ -96,10 +102,10 @@
   --rp-wait: #5c626b;
   --rp-warn: #e5aa4c;
   --rp-stop: #e8756a;
-  --rp-warn-bg: rgba(229, 170, 76, 0.1);
-  --rp-warn-line: rgba(229, 170, 76, 0.28);
-  --rp-stop-bg: rgba(232, 117, 106, 0.1);
-  --rp-stop-line: rgba(232, 117, 106, 0.3);
+  --rp-warn-bg: color-mix(in srgb, var(--rp-warn) 10%, transparent);
+  --rp-warn-line: color-mix(in srgb, var(--rp-warn) 28%, transparent);
+  --rp-stop-bg: color-mix(in srgb, var(--rp-stop) 10%, transparent);
+  --rp-stop-line: color-mix(in srgb, var(--rp-stop) 30%, transparent);
 }
 
 :host *,
@@ -924,7 +930,7 @@ input[type='time'].control { width: 92px; flex: none; }
     font-size: 11px;
     /* ORANGE 2 of 3, continued. */
     background: var(--primary-orange);
-    color: #2a1004;
+    color: var(--rp-on-orange);
   }
 }
 .s-t {
@@ -1240,7 +1246,7 @@ input[type='time'].control { width: 92px; flex: none; }
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #2a1004;
+  color: var(--rp-on-orange);
   background: var(--primary-orange);
   border-radius: 5px;
   padding: 4px 7px;
@@ -1498,9 +1504,9 @@ input[type='time'].control { width: 92px; flex: none; }
   &.go {
     cursor: pointer;
     border: none;
-    color: #2a1004;
+    color: var(--rp-on-orange);
     background: linear-gradient(180deg, var(--light-orange), var(--dark-orange));
-    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.18) inset;
+    box-shadow: 0 1px 0 color-mix(in srgb, var(--on-accent) 18%, transparent) inset;
 
     &:hover:not(:disabled) { filter: brightness(1.06); }
   }
@@ -1532,7 +1538,7 @@ input[type='time'].control { width: 92px; flex: none; }
 
 // The prompt-trace asset: each entry is a sub-toggled full prompt, rendered verbatim.
 .prompt-entry {
-  border-top: 1px solid var(--border-color, rgba(128, 128, 128, 0.2));
+  border-top: 1px solid var(--border-color);
 
   .prompt-head { padding-left: 8px; }
 }
@@ -1548,17 +1554,17 @@ input[type='time'].control { width: 92px; flex: none; }
   max-height: 480px;
   overflow-y: auto;
   cursor: pointer;
-  background: var(--surface-sunken, rgba(128, 128, 128, 0.06));
+  background: var(--rp-raised);
   border-radius: 6px;
 
-  &.copied { outline: 1px solid var(--accent, #4a90d9); }
+  &.copied { outline: 1px solid var(--info-text); }
 }
 
 // — the three-section description (2026-08-25): chapter rows + links sub-blocks —
 .desc-sub {
   margin-top: 10px;
   padding-top: 8px;
-  border-top: 1px solid var(--border-color, rgba(128, 128, 128, 0.25));
+  border-top: 1px solid var(--border-color);
 
   .desc-sub-head {
     display: flex;
@@ -1600,7 +1606,7 @@ input[type='time'].control { width: 92px; flex: none; }
     font: inherit;
     background: var(--input-bg, transparent);
     color: var(--text-primary);
-    border: 1px solid var(--border-color, rgba(128, 128, 128, 0.4));
+    border: 1px solid var(--border-color);
     border-radius: 4px;
     padding: 2px 6px;
   }
@@ -1610,4 +1616,4 @@ input[type='time'].control { width: 92px; flex: none; }
 }
 
 .links-text { min-height: 90px; }
-.tag.warn { color: var(--danger-text, #c0392b); border-color: currentColor; }
+.tag.warn { color: var(--danger-text); border-color: currentColor; }

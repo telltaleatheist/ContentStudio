@@ -17,7 +17,20 @@
   --text-primary: #212529;
   --text-secondary: #6c757d;
   --text-muted: #adb5bd;
+  // The one Material never gives us on a themed surface: its light default
+  // (rgba(0,0,0,.38)) is baked black, so a disabled control on the dark theme
+  // renders near-invisible. Every disabled state below reads this instead.
+  --text-disabled: rgba(33, 37, 41, 0.38);
+
   --border-color: #d1d5db;
+  --border-strong: #adb5bd;   // emphasised outlines (outlined buttons)
+  --border-subtle: #e9ecef;   // hairlines inside a surface (table rules)
+  --bg-elevated: #ffffff;     // menus, popovers, table headers
+  --bg-hover: #f1f3f5;        // row / menu-item hover
+  --overlay-hover: rgba(0, 0, 0, 0.04);   // wash over a themed surface
+  --overlay-strong: rgba(0, 0, 0, 0.08);
+  --on-accent: #ffffff;       // text/icons riding on the orange
+
   --shadow-color: rgba(0, 0, 0, 0.1);
 
   --border-radius: 8px;
@@ -29,14 +42,15 @@
   --shadow-md: 0 4px 6px -1px var(--shadow-color);
   --shadow-lg: 0 10px 15px -3px var(--shadow-color);
   --shadow-xl: 0 20px 25px -5px var(--shadow-color);
-  --shadow-glow: 0 0 20px rgba(255, 107, 53, 0.3);
+  --shadow-glow: 0 0 20px color-mix(in srgb, var(--primary-orange) 30%, transparent);
 
   // Gradients
-  --gradient-primary: linear-gradient(135deg, #ff6b35 0%, #ffa366 100%);
-  --gradient-secondary: linear-gradient(135deg, #ffa366 0%, #ffb380 100%);
-  --gradient-flame: linear-gradient(135deg, #e55529 0%, #ff6b35 50%, #ffa366 100%);
+  --gradient-primary: linear-gradient(135deg, var(--primary-orange) 0%, var(--accent-orange) 100%);
+  --gradient-secondary: linear-gradient(135deg, var(--accent-orange) 0%, var(--peachy-orange) 100%);
+  --gradient-flame: linear-gradient(135deg, var(--dark-orange) 0%, var(--primary-orange) 50%, var(--accent-orange) 100%);
 
-  // Status colors
+  // Status colors — the tinted pair (pale fill + readable ink) used by chips,
+  // callouts and badges. Both halves are re-stated in the dark block.
   --success-bg: #dcfce7;
   --success-text: #16a34a;
   --warning-bg: #fef3c7;
@@ -45,6 +59,36 @@
   --danger-text: #dc2626;
   --info-bg: #dbeafe;
   --info-text: #2563eb;
+
+  // Saturated status fills. These are NOT re-stated for dark: a filled green
+  // badge carrying white text is the same green on either page, the way the
+  // orange is. Anything that tints a themed surface uses the pair above.
+  --success-solid: #4caf50;
+  --success-solid-deep: #45a049;
+  --success-solid-light: #66bb6a;
+  --danger-solid: #f44336;
+  --danger-solid-deep: #d32f2f;
+  --warning-solid: #ff9800;
+  --warning-solid-deep: #f57c00;
+  --info-solid: #2196f3;
+  --info-solid-deep: #1976d2;
+  --accent-purple: #9c27b0;         // the text-subject / story lane
+  --accent-purple-deep: #673ab7;
+
+  --gradient-success: linear-gradient(135deg, var(--success-solid), var(--success-solid-deep));
+  --gradient-danger: linear-gradient(135deg, var(--danger-solid), var(--danger-solid-deep));
+  --gradient-warning: linear-gradient(135deg, var(--warning-solid), var(--warning-solid-deep));
+  --gradient-info: linear-gradient(135deg, var(--info-solid), var(--info-solid-deep));
+
+  // Modal scrims. Constant across themes — a scrim dims the page it covers.
+  --backdrop: rgba(0, 0, 0, 0.6);
+  --backdrop-strong: rgba(0, 0, 0, 0.8);
+
+  // Names the app already spells but nothing ever declared, so every rule using
+  // them resolved to an invalid value and was thrown away — a colour that never
+  // painted. They are aliases, not a second palette.
+  --error-color: var(--danger-text);
+  --text-tertiary: var(--text-muted);
 }
 
 /* Dark Theme */
@@ -57,13 +101,40 @@
   --text-primary: #ffffff;
   --text-secondary: #d1d5db;
   --text-muted: #9ca3af;
+  --text-disabled: rgba(255, 255, 255, 0.38);
+
   --border-color: #374151;
+  --border-strong: #666666;
+  --border-subtle: #333333;
+  --bg-elevated: #252525;
+  --bg-hover: #2a2a2a;
+  --overlay-hover: rgba(255, 255, 255, 0.05);
+  --overlay-strong: rgba(255, 255, 255, 0.1);
+
   --shadow-color: rgba(0, 0, 0, 0.5);
-  --shadow-glow: 0 0 25px rgba(255, 107, 53, 0.4);
+  --shadow-glow: 0 0 25px color-mix(in srgb, var(--primary-orange) 40%, transparent);
+
+  // Status colours, dark. The light block's pastel fills (#dcfce7 & co.) are
+  // built for a white page; on this one they glare. These are the values the
+  // dark status chips were already hand-written with, promoted to the palette
+  // so every status surface in the app picks them up.
+  --success-bg: rgba(76, 175, 80, 0.2);
+  --success-text: #66bb6a;
+  --warning-bg: rgba(255, 152, 0, 0.2);
+  --warning-text: #ffa726;
+  --danger-bg: rgba(244, 67, 54, 0.2);
+  --danger-text: #ef5350;
+  --info-bg: rgba(33, 150, 243, 0.2);
+  --info-text: #42a5f5;
+
+  // Re-stated, not inherited: `--a: var(--b)` resolves where it is written, so
+  // the light block's aliases would carry the light values down here.
+  --error-color: var(--danger-text);
+  --text-tertiary: var(--text-muted);
 
   // Brighter icons in sidebar
   .app-sidenav .mat-icon {
-    color: #e5e7eb !important;
+    color: var(--text-secondary) !important;
   }
 
   // Dark mode Material component overrides
@@ -283,26 +354,26 @@
   // Material Table dark mode
   .mat-mdc-table,
   .history-table {
-    background: #1e1e1e !important;
-    color: #e0e0e0 !important;
+    background: var(--bg-card) !important;
+    color: var(--text-secondary) !important;
   }
 
   .mat-mdc-header-cell,
   th[mat-header-cell] {
-    background: #252525 !important;
-    color: #e0e0e0 !important;
-    border-bottom-color: #333333 !important;
+    background: var(--bg-elevated) !important;
+    color: var(--text-secondary) !important;
+    border-bottom-color: var(--border-subtle) !important;
   }
 
   .mat-mdc-cell,
   td[mat-cell] {
-    color: #e0e0e0 !important;
-    border-bottom-color: #333333 !important;
+    color: var(--text-secondary) !important;
+    border-bottom-color: var(--border-subtle) !important;
   }
 
   .mat-mdc-row:hover,
   tr[mat-row]:hover {
-    background: #2a2a2a !important;
+    background: var(--bg-hover) !important;
   }
 
   // Material Chips dark mode
@@ -325,38 +396,38 @@
     align-items: center !important;
 
     &.status-completed {
-      background: rgba(76, 175, 80, 0.2) !important;
-      color: #66bb6a !important;
+      background: var(--success-bg) !important;
+      color: var(--success-text) !important;
 
       .mat-icon {
-        color: #66bb6a !important;
+        color: var(--success-text) !important;
       }
     }
 
     &.status-failed {
-      background: rgba(244, 67, 54, 0.2) !important;
-      color: #ef5350 !important;
+      background: var(--danger-bg) !important;
+      color: var(--danger-text) !important;
 
       .mat-icon {
-        color: #ef5350 !important;
+        color: var(--danger-text) !important;
       }
     }
 
     &.status-processing {
-      background: rgba(33, 150, 243, 0.2) !important;
-      color: #42a5f5 !important;
+      background: var(--info-bg) !important;
+      color: var(--info-text) !important;
 
       .mat-icon {
-        color: #42a5f5 !important;
+        color: var(--info-text) !important;
       }
     }
 
     &.status-pending {
-      background: rgba(255, 152, 0, 0.2) !important;
-      color: #ffa726 !important;
+      background: var(--warning-bg) !important;
+      color: var(--warning-text) !important;
 
       .mat-icon {
-        color: #ffa726 !important;
+        color: var(--warning-text) !important;
       }
     }
   }
@@ -365,43 +436,43 @@
   .mat-mdc-raised-button:not(.mat-mdc-button-disabled) {
     &.mat-primary {
       background-color: var(--primary-orange) !important;
-      color: white !important;
+      color: var(--on-accent) !important;
 
       .mat-icon {
-        color: white !important;
+        color: var(--on-accent) !important;
       }
     }
   }
 
   .mat-mdc-button:not(.mat-mdc-button-disabled) {
-    color: #e0e0e0 !important;
+    color: var(--text-secondary) !important;
 
     .mat-icon {
-      color: #e0e0e0 !important;
+      color: var(--text-secondary) !important;
     }
   }
 
   .mat-mdc-outlined-button:not(.mat-mdc-button-disabled),
   .mat-mdc-stroked-button:not(.mat-mdc-button-disabled) {
-    color: #e0e0e0 !important;
-    border-color: #666666 !important;
+    color: var(--text-secondary) !important;
+    border-color: var(--border-strong) !important;
 
     .mat-icon {
-      color: #e0e0e0 !important;
+      color: var(--text-secondary) !important;
     }
 
     &:hover {
-      background-color: rgba(255, 255, 255, 0.05) !important;
+      background-color: var(--overlay-hover) !important;
       border-color: var(--primary-orange) !important;
     }
   }
 
   .mat-mdc-icon-button:not(.mat-mdc-button-disabled) {
-    color: #999999 !important;
+    color: var(--text-muted) !important;
 
     &:hover {
-      background-color: rgba(255, 255, 255, 0.1) !important;
-      color: #e0e0e0 !important;
+      background-color: var(--overlay-strong) !important;
+      color: var(--text-secondary) !important;
     }
 
     .mat-icon {
@@ -409,43 +480,43 @@
     }
 
     &.mat-warn {
-      color: #ef5350 !important;
+      color: var(--danger-text) !important;
 
       .mat-icon {
-        color: #ef5350 !important;
+        color: var(--danger-text) !important;
       }
 
       &:hover {
-        background-color: rgba(244, 67, 54, 0.15) !important;
+        background-color: color-mix(in srgb, var(--danger-text) 15%, transparent) !important;
       }
     }
   }
 
   // Material Menu dark mode
   .mat-mdc-menu-panel {
-    background: #252525 !important;
+    background: var(--bg-elevated) !important;
 
     .mat-mdc-menu-content {
-      background: #252525 !important;
+      background: var(--bg-elevated) !important;
     }
 
     .mat-mdc-menu-item {
-      color: #e0e0e0 !important;
+      color: var(--text-secondary) !important;
 
       &:hover {
-        background: #2a2a2a !important;
+        background: var(--bg-hover) !important;
       }
 
       .mat-icon {
-        color: #999999 !important;
+        color: var(--text-muted) !important;
       }
     }
   }
 
   // Table container
   .table-container {
-    background: #1e1e1e !important;
-    border-color: #333333 !important;
+    background: var(--bg-card) !important;
+    border-color: var(--border-subtle) !important;
   }
 }
 
@@ -455,24 +526,186 @@
   opacity: 0;
 }
 
+/* ============================================================================
+   DISABLED CONTROLS
+   ----------------------------------------------------------------------------
+   styles.scss pulls in Material's prebuilt indigo-pink, which is a LIGHT theme,
+   and its disabled label colour is a baked rgba(0, 0, 0, .38). Every dark-mode
+   button override in the block above is written `:not(.mat-mdc-button-disabled)`,
+   so a DISABLED button fell straight through to that black and rendered
+   near-invisible on the dark page — which is what a greyed-out "Discard changes"
+   was doing while its editor sat clean.
+
+   Disabled state now reads --text-disabled like every other colour in the app,
+   in both themes, and a disabled filled button drops its gradient so it stops
+   advertising itself as live. MDC's own custom properties are set alongside the
+   declarations because some of these colours are applied by MDC on inner nodes.
+   ============================================================================ */
+
+.mat-mdc-button:disabled,
+.mat-mdc-button.mat-mdc-button-disabled,
+.mat-mdc-outlined-button:disabled,
+.mat-mdc-outlined-button.mat-mdc-button-disabled,
+.mat-mdc-stroked-button:disabled,
+.mat-mdc-stroked-button.mat-mdc-button-disabled,
+.mat-mdc-raised-button:disabled,
+.mat-mdc-raised-button.mat-mdc-button-disabled,
+.mat-mdc-unelevated-button:disabled,
+.mat-mdc-unelevated-button.mat-mdc-button-disabled,
+.mat-mdc-icon-button:disabled,
+.mat-mdc-icon-button.mat-mdc-button-disabled,
+.mat-mdc-fab:disabled,
+.mat-mdc-fab.mat-mdc-button-disabled,
+.mat-mdc-mini-fab:disabled,
+.mat-mdc-mini-fab.mat-mdc-button-disabled {
+  // Declared ON the button, not on :root — a custom property whose value is
+  // another var() resolves where it is declared, and only here does
+  // --text-disabled already carry the active theme's value.
+  --mat-button-text-disabled-label-text-color: var(--text-disabled);
+  --mat-button-outlined-disabled-label-text-color: var(--text-disabled);
+  --mat-button-protected-disabled-label-text-color: var(--text-disabled);
+  --mat-button-filled-disabled-label-text-color: var(--text-disabled);
+  --mat-button-tonal-disabled-label-text-color: var(--text-disabled);
+  --mat-icon-button-disabled-icon-color: var(--text-disabled);
+  --mat-fab-disabled-state-foreground-color: var(--text-disabled);
+  --mat-fab-small-disabled-state-foreground-color: var(--text-disabled);
+  color: var(--text-disabled) !important;
+
+  .mat-icon,
+  .mdc-button__label {
+    color: var(--text-disabled) !important;
+  }
+}
+
+/* Outlined/stroked keep their outline; it drops to the plain border colour. */
+.mat-mdc-outlined-button:disabled,
+.mat-mdc-outlined-button.mat-mdc-button-disabled,
+.mat-mdc-stroked-button:disabled,
+.mat-mdc-stroked-button.mat-mdc-button-disabled {
+  --mat-button-outlined-disabled-outline-color: var(--border-color);
+  border-color: var(--border-color) !important;
+}
+
+/* Filled buttons: flat themed surface instead of the creamsicle gradient. */
+.mat-mdc-raised-button:disabled,
+.mat-mdc-raised-button.mat-mdc-button-disabled,
+.mat-mdc-unelevated-button:disabled,
+.mat-mdc-unelevated-button.mat-mdc-button-disabled,
+.mat-mdc-fab:disabled,
+.mat-mdc-fab.mat-mdc-button-disabled,
+.mat-mdc-mini-fab:disabled,
+.mat-mdc-mini-fab.mat-mdc-button-disabled {
+  --mat-button-protected-disabled-container-color: var(--bg-tertiary);
+  --mat-button-filled-disabled-container-color: var(--bg-tertiary);
+  --mat-button-tonal-disabled-container-color: var(--bg-tertiary);
+  --mat-fab-disabled-state-container-color: var(--bg-tertiary);
+  --mat-fab-small-disabled-state-container-color: var(--bg-tertiary);
+  background: var(--bg-tertiary) !important;
+  box-shadow: none !important;
+}
+
+/* The same fall-through hit every other disabled control that sits on a themed
+   surface: inputs, selects, checkboxes, radios, toggles, list items, options,
+   chips, expansion headers, tabs. Each token is set on the control itself, for
+   the same reason as above. */
+.mat-mdc-form-field {
+  --mat-form-field-outlined-disabled-label-text-color: var(--text-disabled);
+  --mat-form-field-outlined-disabled-input-text-color: var(--text-disabled);
+  --mat-form-field-outlined-disabled-outline-color: var(--border-color);
+  --mat-form-field-filled-disabled-label-text-color: var(--text-disabled);
+  --mat-form-field-filled-disabled-input-text-color: var(--text-disabled);
+  --mat-form-field-filled-disabled-container-color: var(--bg-secondary);
+  --mat-form-field-disabled-input-text-placeholder-color: var(--text-disabled);
+  --mat-form-field-disabled-leading-icon-color: var(--text-disabled);
+  --mat-form-field-disabled-trailing-icon-color: var(--text-disabled);
+  --mat-form-field-disabled-select-arrow-color: var(--text-disabled);
+  --mat-form-field-select-disabled-option-text-color: var(--text-disabled);
+
+  .mdc-text-field--disabled {
+    input,
+    textarea,
+    .mdc-floating-label,
+    .mat-mdc-floating-label,
+    .mat-mdc-select-value,
+    .mat-mdc-select-arrow {
+      color: var(--text-disabled) !important;
+    }
+
+    .mdc-notched-outline__leading,
+    .mdc-notched-outline__notch,
+    .mdc-notched-outline__trailing {
+      border-color: var(--border-color) !important;
+    }
+  }
+}
+
+.mat-mdc-select {
+  --mat-select-disabled-trigger-text-color: var(--text-disabled);
+  --mat-select-disabled-arrow-color: var(--text-disabled);
+}
+
+.mat-mdc-checkbox {
+  --mat-checkbox-disabled-label-color: var(--text-disabled);
+  --mat-checkbox-disabled-unselected-icon-color: var(--text-disabled);
+  --mat-checkbox-disabled-selected-icon-color: var(--text-disabled);
+}
+
+.mat-mdc-radio-button {
+  --mat-radio-disabled-label-color: var(--text-disabled);
+  --mat-radio-disabled-unselected-icon-color: var(--text-disabled);
+  --mat-radio-disabled-selected-icon-color: var(--text-disabled);
+}
+
+.mat-mdc-slide-toggle {
+  --mat-slide-toggle-disabled-label-text-color: var(--text-disabled);
+}
+
+.mat-mdc-list-item {
+  --mat-list-list-item-disabled-label-text-color: var(--text-disabled);
+  --mat-list-list-item-disabled-leading-icon-color: var(--text-disabled);
+  --mat-list-list-item-disabled-trailing-icon-color: var(--text-disabled);
+}
+
+.mat-mdc-chip {
+  --mat-chip-disabled-label-text-color: var(--text-disabled);
+}
+
+.mat-expansion-panel-header {
+  --mat-expansion-header-disabled-state-text-color: var(--text-disabled);
+}
+
+.mat-mdc-paginator {
+  --mat-paginator-disabled-icon-color: var(--text-disabled);
+}
+
+.mat-mdc-menu-item[disabled],
+.mat-mdc-option.mdc-list-item--disabled,
+.mat-mdc-tab-disabled .mdc-tab__text-label {
+  color: var(--text-disabled) !important;
+
+  .mat-icon {
+    color: var(--text-disabled) !important;
+  }
+}
+
 /* Override Material Theme Colors - GRADIENT BUTTONS */
-.mat-mdc-raised-button.mat-primary,
-.mat-mdc-fab.mat-primary,
-.mat-mdc-mini-fab.mat-primary,
-.mat-mdc-unelevated-button.mat-primary {
+.mat-mdc-raised-button.mat-primary:not(:disabled):not(.mat-mdc-button-disabled),
+.mat-mdc-fab.mat-primary:not(:disabled):not(.mat-mdc-button-disabled),
+.mat-mdc-mini-fab.mat-primary:not(:disabled):not(.mat-mdc-button-disabled),
+.mat-mdc-unelevated-button.mat-primary:not(:disabled):not(.mat-mdc-button-disabled) {
   --mdc-protected-button-container-color: transparent !important;
-  --mdc-protected-button-label-text-color: white !important;
+  --mdc-protected-button-label-text-color: var(--on-accent) !important;
   --mdc-filled-button-container-color: transparent !important;
-  --mdc-filled-button-label-text-color: white !important;
+  --mdc-filled-button-label-text-color: var(--on-accent) !important;
   background: var(--gradient-primary) !important;
-  color: white !important;
+  color: var(--on-accent) !important;
   box-shadow: var(--shadow-md) !important;
   transition: all 0.15s ease !important;
   position: relative;
   overflow: hidden;
 
   .mat-icon {
-    color: white !important;
+    color: var(--on-accent) !important;
   }
 
   // Ripple effect on click
@@ -484,7 +717,7 @@
     width: 0;
     height: 0;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.3);
+    background: color-mix(in srgb, var(--on-accent) 30%, transparent);
     transform: translate(-50%, -50%);
     transition: width 0.4s, height 0.4s;
   }
@@ -495,10 +728,10 @@
   }
 }
 
-.mat-mdc-raised-button.mat-primary:hover,
-.mat-mdc-fab.mat-primary:hover,
-.mat-mdc-mini-fab.mat-primary:hover,
-.mat-mdc-unelevated-button.mat-primary:hover {
+.mat-mdc-raised-button.mat-primary:hover:not(:disabled):not(.mat-mdc-button-disabled),
+.mat-mdc-fab.mat-primary:hover:not(:disabled):not(.mat-mdc-button-disabled),
+.mat-mdc-mini-fab.mat-primary:hover:not(:disabled):not(.mat-mdc-button-disabled),
+.mat-mdc-unelevated-button.mat-primary:hover:not(:disabled):not(.mat-mdc-button-disabled) {
   --mdc-protected-button-container-color: transparent !important;
   --mdc-filled-button-container-color: transparent !important;
   background: var(--gradient-primary) !important;
@@ -513,25 +746,25 @@
   transform: translateY(0) !important;
 }
 
-.mat-mdc-raised-button.mat-accent {
+.mat-mdc-raised-button.mat-accent:not(:disabled):not(.mat-mdc-button-disabled) {
   --mdc-protected-button-container-color: transparent !important;
-  --mdc-protected-button-label-text-color: white !important;
+  --mdc-protected-button-label-text-color: var(--on-accent) !important;
   background: var(--gradient-secondary) !important;
 }
 
 .mat-toolbar.mat-primary {
   --mdc-elevated-card-container-color: transparent !important;
   background: var(--gradient-primary) !important;
-  color: white !important;
-  box-shadow: var(--shadow-md), 0 4px 12px rgba(255, 107, 53, 0.15) !important;
+  color: var(--on-accent) !important;
+  box-shadow: var(--shadow-md), 0 4px 12px color-mix(in srgb, var(--primary-orange) 15%, transparent) !important;
   border-bottom: none !important;
 
   .mat-icon {
-    color: white !important;
+    color: var(--on-accent) !important;
   }
 
   button {
-    color: white !important;
+    color: var(--on-accent) !important;
   }
 }
 
@@ -637,7 +870,7 @@ router-outlet + * {
 
 // Primary color override for checkboxes
 .mat-mdc-checkbox.mat-primary {
-  --mdc-checkbox-selected-checkmark-color: white !important;
+  --mdc-checkbox-selected-checkmark-color: var(--on-accent) !important;
   --mdc-checkbox-selected-focus-icon-color: var(--primary-orange) !important;
   --mdc-checkbox-selected-hover-icon-color: var(--primary-orange) !important;
   --mdc-checkbox-selected-icon-color: var(--primary-orange) !important;
@@ -679,7 +912,7 @@ router-outlet + * {
   transition: all 0.3s ease !important;
 
   &:hover {
-    box-shadow: var(--shadow-lg), 0 0 0 1px rgba(255, 107, 53, 0.1) !important;
+    box-shadow: var(--shadow-lg), 0 0 0 1px color-mix(in srgb, var(--primary-orange) 10%, transparent) !important;
   }
 }
 

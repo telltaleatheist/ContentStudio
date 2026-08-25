@@ -22,7 +22,7 @@
     justify-content: space-between;
     align-items: center;
     padding-bottom: 1rem;
-    border-bottom: 2px solid var(--border-color, #e0e0e0);
+    border-bottom: 2px solid var(--border-color);
 
     .header-left {
       display: flex;
@@ -31,13 +31,13 @@
 
       h2 {
         margin: 0;
-        color: var(--text-primary, #1a1a1a);
+        color: var(--text-primary);
         font-size: 1.5rem;
         font-weight: 600;
       }
 
       .count {
-        color: var(--text-secondary, #666);
+        color: var(--text-secondary);
         font-size: 0.875rem;
       }
     }
@@ -61,7 +61,7 @@
       font-size: 64px;
       width: 64px;
       height: 64px;
-      color: var(--text-secondary, #999);
+      color: var(--text-secondary);
       margin-bottom: 1rem;
 
       &.loading-icon {
@@ -71,14 +71,14 @@
 
     .empty-text {
       font-size: 1.25rem;
-      color: var(--text-primary, #1a1a1a);
+      color: var(--text-primary);
       margin: 0.5rem 0;
       font-weight: 500;
     }
 
     .empty-hint {
       font-size: 0.875rem;
-      color: var(--text-secondary, #666);
+      color: var(--text-secondary);
       margin: 0.25rem 0;
       opacity: 0.7;
     }
@@ -100,7 +100,7 @@
       user-select: text;
 
       &:hover {
-        background: rgba(0, 0, 0, 0.04);
+        background: var(--overlay-hover);
 
         .copy-icon {
           opacity: 1;
@@ -108,13 +108,13 @@
       }
 
       &.copied {
-        background: rgba(76, 175, 80, 0.1);
+        background: color-mix(in srgb, var(--success-solid) 10%, transparent);
       }
 
       .input-date {
         flex-shrink: 0;
         font-size: 0.8125rem;
-        color: var(--text-secondary, #888);
+        color: var(--text-secondary);
         min-width: 100px;
         font-variant-numeric: tabular-nums;
       }
@@ -122,7 +122,7 @@
       .input-text {
         flex: 1;
         font-size: 0.9375rem;
-        color: var(--text-primary, #1a1a1a);
+        color: var(--text-primary);
         line-height: 1.4;
         word-break: break-word;
       }
@@ -132,7 +132,7 @@
         font-size: 18px;
         width: 18px;
         height: 18px;
-        color: var(--text-secondary, #999);
+        color: var(--text-secondary);
         opacity: 0;
         transition: opacity 0.15s ease;
       }
@@ -149,109 +149,5 @@
   }
 }
 
-// Dark mode support
-:host-context([data-theme='dark']),
-:host-context(.dark-theme) {
-  .history-container {
-    .header {
-      border-bottom-color: #333333;
-
-      h2 {
-        color: #e0e0e0;
-      }
-
-      .count {
-        color: #999999;
-      }
-    }
-
-    .empty-state {
-      mat-icon {
-        color: #666666;
-      }
-
-      .empty-text {
-        color: #e0e0e0;
-      }
-
-      .empty-hint {
-        color: #999999;
-      }
-    }
-
-    .input-list .input-entry {
-      &:hover {
-        background: rgba(255, 255, 255, 0.06);
-      }
-
-      &.copied {
-        background: rgba(76, 175, 80, 0.15);
-      }
-
-      .input-date {
-        color: #888888;
-      }
-
-      .input-text {
-        color: #e0e0e0;
-      }
-
-      .copy-icon {
-        color: #777777;
-      }
-    }
-  }
-}
-
-.dark-mode,
-.dark-theme {
-  .history-container {
-    .header {
-      border-bottom-color: #333333;
-
-      h2 {
-        color: #e0e0e0;
-      }
-
-      .count {
-        color: #999999;
-      }
-    }
-
-    .empty-state {
-      mat-icon {
-        color: #666666;
-      }
-
-      .empty-text {
-        color: #e0e0e0;
-      }
-
-      .empty-hint {
-        color: #999999;
-      }
-    }
-
-    .input-list .input-entry {
-      &:hover {
-        background: rgba(255, 255, 255, 0.06);
-      }
-
-      &.copied {
-        background: rgba(76, 175, 80, 0.15);
-      }
-
-      .input-date {
-        color: #888888;
-      }
-
-      .input-text {
-        color: #e0e0e0;
-      }
-
-      .copy-icon {
-        color: #777777;
-      }
-    }
-  }
-}
+// Dark mode needs no rules here: every colour above is a theme custom property,
+// and styles-creamsicle.scss restates those under [data-theme="dark"].

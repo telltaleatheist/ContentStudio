@@ -4,7 +4,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--backdrop);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -13,7 +13,7 @@
 }
 
 [data-theme="dark"] .modal-overlay {
-  background: rgba(0, 0, 0, 0.8);
+  background: var(--backdrop-strong);
 }
 
 @keyframes fadeIn {
@@ -56,25 +56,25 @@
 
   &.type-success {
     .modal-icon {
-      background: linear-gradient(135deg, #4CAF50, #45a049);
+      background: var(--gradient-success);
     }
   }
 
   &.type-error {
     .modal-icon {
-      background: linear-gradient(135deg, #f44336, #d32f2f);
+      background: var(--gradient-danger);
     }
   }
 
   &.type-warning {
     .modal-icon {
-      background: linear-gradient(135deg, #ff9800, #f57c00);
+      background: var(--gradient-warning);
     }
   }
 
   &.type-info {
     .modal-icon {
-      background: linear-gradient(135deg, #2196F3, #1976D2);
+      background: var(--gradient-info);
     }
   }
 }
@@ -89,10 +89,10 @@
     justify-content: center;
     width: 60px;
     height: 60px;
-    background: rgba(255, 255, 255, 0.3);
+    background: color-mix(in srgb, var(--on-accent) 30%, transparent);
     border-radius: 50%;
     font-size: 32px;
-    color: white;
+    color: var(--on-accent);
     font-weight: bold;
   }
 }
@@ -152,22 +152,22 @@
   padding: 12px 40px;
   font-size: 15px;
   font-weight: 600;
-  color: white;
+  color: var(--on-accent);
   background: var(--primary-orange);
   border: none;
   border-radius: var(--border-radius);
   cursor: pointer;
   transition: all 0.2s ease;
-  box-shadow: 0 4px 12px rgba(255, 107, 53, 0.4);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--primary-orange) 40%, transparent);
 
   &:hover {
     background: var(--dark-orange);
     transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(255, 107, 53, 0.5);
+    box-shadow: 0 6px 16px color-mix(in srgb, var(--primary-orange) 50%, transparent);
   }
 
   &:active {
     transform: translateY(0);
-    box-shadow: 0 2px 8px rgba(255, 107, 53, 0.4);
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--primary-orange) 40%, transparent);
   }
 }
