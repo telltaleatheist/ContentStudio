@@ -452,8 +452,20 @@ export class WholeTranscriptChapterService {
    * adaptive budget spent without reaching an answer). ~2,800 words is ~15-17 minutes of
    * speech: comfortably inside the measured-good regime, so a long video runs as a few
    * tractable windows chained by last-boundary instead of one call that drowns.
+   *
+   * RE-MEASURED THE SAME NIGHT for the cloud transport, after the minimal grain bodies
+   * (LEDGER #170) collapsed the reasoning load that set the cap above: u2's full 42 minutes
+   * (6,522 words) succeeded single-call on the cloud model three times running, and the
+   * 41-minute dont-be-a-sucker twice — short answers, band honoured, ads to the second.
+   * Windowing was ALSO the mechanism inflating chapter counts: each window is told its own
+   * runtime, so each applies the grain's band to itself and the counts stack (three windows
+   * of one 41-minute video produced 25 "broad" chapters where one call produces 14). So the
+   * cloud cap now covers the operator's real videos in one call; the local cap keeps the
+   * measured 27B limit, and a video past the cloud cap still windows — the count inflation
+   * returns there, known and accepted until multi-hour content is re-measured.
    */
   private static readonly STAGE1_WINDOW_WORDS = 2800;
+  private static readonly STAGE1_WINDOW_WORDS_CLOUD = 7000;
 
   private windowWordBudget(): number {
     const overheadChars = CHAPTER_PROMPTS.wholeTranscript(this.options.grain).length + this.promotedItemsLine().length + 64;
@@ -469,7 +481,7 @@ export class WholeTranscriptChapterService {
       // never refused by the provider for length.
       return Math.min(
         Math.floor((ceiling - overheadChars) / 6),
-        WholeTranscriptChapterService.STAGE1_WINDOW_WORDS
+        WholeTranscriptChapterService.STAGE1_WINDOW_WORDS_CLOUD
       );
     }
     const promptTokenBudget = CTX_MAX - NUM_PREDICT - 512 - estimateTokens(overheadChars);
