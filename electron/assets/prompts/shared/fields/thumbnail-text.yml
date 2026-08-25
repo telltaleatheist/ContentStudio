@@ -1,6 +1,3 @@
-# Thumbnail text. Byte-identical across every channel that publishes a thumbnail, so it lives
-# here once. Shorts and Spreaker publish no thumbnail at all and simply do not list this field
-# (prompts/channels/*.yml `fields`), which is how a channel says what it publishes.
 section: THUMBNAIL_TEXT
 
 instructions: |-
@@ -20,12 +17,6 @@ self_check:
   - "No banned thumbnail word used as an empty trigger"
   - "No two thumbnail options share a core noun phrase or hook"
 
-# The cross-field half of the check. It rides with a call that can SEE the titles — which,
-# under one call per field, means the call that is handed them as input data. Where nothing
-# writes titles this run, neither model can see the other's answer and the line is left out
-# rather than sent unfollowable. The check is about ANGLE COVERAGE, not word overlap: the
-# human picks the final title+thumbnail pairing, so the model's job is a diverse option set,
-# not dedup against titles that may never ship (2026-08-22, supersedes the no-repeat rule).
 self_check_with:
   titles:
     - "The option set covers angles the titles above don't lead with — not a stack of echoes of the strongest title"

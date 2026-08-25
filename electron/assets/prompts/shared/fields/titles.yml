@@ -1,18 +1,3 @@
-# The titles instruction block, shared by every channel.
-#
-# REWRITTEN TO THE MINIMAL FORM 2026-08-24 night (operator-directed; LEDGER #168). The
-# 20-bullet version — framing taxonomy, swap test, front-load rules, anchor quotas — measured
-# WORSE than this on the same model and transcript: the operator's diagnosis was that the
-# important instruction was drowned out, and five harness arms (opus x3 register variants,
-# opus subject-input, qwen 27B) confirmed it. The core is "find the underlying argument and
-# sell that"; everything else here is either a channel law or a parse contract. The full
-# history of the old block, including the nine defects fixed on the 2026-08-22 consolidation,
-# is in git history and LEDGER.
-#
-# The shorts and spreaker overrides below are DIFFERENT JOBS and still carry their older
-# long-form blocks — not yet re-measured against a minimal form.
-#
-# `{titles_count}` and `{title_format}` are channel data slots (prompts/channels/*.yml).
 section: TITLES
 
 instructions: |-
@@ -29,18 +14,9 @@ instructions: |-
   - The top 3 titles are for YouTube's Test & Compare, which measures watch time per impression: make them genuinely different angles on the argument.
   - Work out the argument before you write, but answer with the titles alone: one per line, nothing else.
 
-# The default title FORMAT line, used where a channel declares no `title_format` of its own.
-# It is a slot rather than a fixed line because Unfiltered's multi-part convention deliberately
-# runs longer than any cap (see prompts/channels/unfiltered.yml).
 default_title_format: |-
   - Length: 50 to 70 characters, with the hook inside the FIRST 45 — that is all mobile search results and notifications show.
 
-# Lines this field contributes to the FINAL SELF-CHECK, assembled per GROUP.
-#
-# Keyed by field so a group that writes titles and nothing else is not handed a check about
-# thumbnail text it has no way to perform. Where the operator routes titles and thumbnails to
-# the same model — the shipped default — both sets of lines ride together and the
-# cross-field check becomes followable again.
 self_check:
   - "Each title: 50-70 characters, hook inside the first 45"
   - "Each title all lowercase"

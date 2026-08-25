@@ -1,92 +1,3 @@
-# The description's ONE plain-text call per candidate (description-unit.ts).
-#
-# ONE CALL WRITES THE WHOLE DESCRIPTION (2026-08-24, operator's ruling: no JSON for these
-# calls unless absolutely necessary). The hook and the body used to be two schema-constrained
-# calls; they are now one plain-text answer in the shape the composer publishes — the opening
-# line, a blank line, the body — which removes both the JSON failure surface (the "..." whole-
-# body bail-out, the close-quote runaway) and a call per candidate. The revision call below
-# answers in plain text too: the body alone, nothing around it.
-#
-# POSITIVE FORM ONLY, and correct examples only — for the same measured reason it applies to
-# the chapter prompts: a model shown a wrong form reproduces it, and attaching the word "never"
-# to it does not change that. The register these want is stated as what to WRITE, and the
-# examples are real hooks and openings taken from descriptions the operator shipped.
-#
-# 2026-08-22: both calls' register lines carried one leftover negated clause naming the wrong
-# subjects, against the law above. It is now stated positively — the doer in every sentence is
-# a person, claim or event on screen. Operator-directed, same session as the stage 1 label
-# register fix in chapters.yml and the creator-voice rule in pinned-comment.yml.
-#
-# 2026-08-23: the first cut of that fix also framed the description as the creator's own words,
-# first person where the creator's actions came up. A measured run produced "I debunk its
-# bullshit", "I also dismantle" — and the operator rejected the "I" as firmly as "the speaker".
-# The description is a SUMMARY OF THE CONTENT, and the subject of every sentence comes from
-# INSIDE the video: the page making the claim, the argument under examination, the evidence
-# that undoes it. First person remains the register of the PINNED COMMENT only.
-#
-# WHAT THEY CARRY, AND WHY THAT CHANGED (2026-08-22). These two calls used to carry NO channel
-# identity and NO editorial rules: `{channel}` was filled with the stored prompt-set SLUG
-# ("youtube-telltale"), and the channel's `## DESCRIPTION` section — two paragraphs, the
-# above-the-fold snippet rule, the search-context paragraph, the soft CTA, the voice note and
-# the banned-phrase list — was deliberately withheld on the argument that fifteen editorial
-# bullets over-specify a schema-constrained small model.
-#
-# The measurement says otherwise, and it is not a small-model measurement. The only run that
-# ever went through these two calls in production (job-1787440820706-wk0cej99g, podcast 1,
-# 2026-08-22 19:30) produced a 324-word single-paragraph synopsis of the NARRATOR — "The episode
-# opens with O. Morgan dissecting ... The host then addresses ... Morgan questions" — with no
-# second paragraph, no search context and no CTA. The same prompts reach Claude Sonnet and Opus
-# unchanged when the operator routes the description to the cloud, so this is a property of what
-# the calls are TOLD, not of the model that answers them. A call given no brief writes to no
-# brief.
-#
-# So both calls now carry `{channel}` (the channel's real name and its own focus paragraph) and
-# `{rules}` (the channel's `## DESCRIPTION` section, from prompts/shared/fields/description.yml
-# — the same block the compilation call reads). The division of labour between them is stated
-# in each prompt: the hook writes the opening line the rules describe, the body writes the rest
-# of the description the rules describe, and the body is shown the hook so it can carry on from
-# it instead of restating it.
-#
-# `{coverage}` is filled by code with one of the two labelled blocks below: the chapter list
-# where the pipeline produced one, the text subject where the item has no chapters. Both say
-# the same thing about what the model is working from and differ only in what that is.
-#
-# `{transcript}` is the video's own words, and it SUPERSEDES the summaries-only input these two
-# calls used to run on. It is rendered beside the chapter list, never instead of it — the
-# chapter list is a measurement of what the video spends its time on, which a transcript does
-# not tell you — and it is empty on a chapterless item, where the coverage block already IS the
-# only description of the video that exists.
-#
-# IT IS EMPTY IN ONE MORE CASE, for that same reason: an item whose transcript is over the
-# direct-pass ceiling (2026-08-23). There the content the field calls read is the CHAPTER DIGEST
-# — the chapter list with each chapter's own detail — and `{coverage}` above is already that
-# list, so there is no transcript in this prompt and this slot says so by being empty. Nothing
-# summarized is ever rendered here. A condensation printed under the heading "The transcript of
-# the video, in full" would tell the model it has quotes it does not have, which is precisely the
-# failure the blind summarizer this replaced used to cause.
-#
-# `{speaker_tags}` (2026-08-23) EXPLAINS THAT TRANSCRIPT WHEN IT IS TAGGED, and is empty when it
-# is not. The chapter prompts have had a tagged variant for as long as AutoCutStudio imports have
-# carried track attribution; these two calls never did, and the omission produced the failure
-# that motivated the whole speaker-tagging feature. The operator's own example, from a shipped
-# description: "Fox News frames the 13th Amendment's prisoner exception as..." — when the person
-# who brought the 13th Amendment up, and who explained the prisoner exception, was the HOST. The
-# transcript is two people's words in one stream and the call had no way to tell them apart, so
-# it attributed at random and roughly half the time handed the host's argument to the people he
-# was arguing with.
-#
-# It is a BLOCK rather than a second copy of each prompt, which is where this file differs from
-# chapters.yml. That file duplicates `summarize_chapter` into `summarize_chapter_tagged` because
-# the tags change how the whole answer is composed. Here they change one thing — who a sentence
-# may be attributed to — and these two prompts are 40 lines each; two copies of each would be
-# four bodies to keep in step, and the slot mechanism this file already uses for `{coverage}` and
-# `{transcript}` says exactly this kind of thing conditionally.
-#
-# Placeholders: {channel}, {video}, {coverage}, {transcript}, {speaker_tags}, {pools}, {rules},
-# {hook}, and the two character/word budgets, which are substituted from description-unit.ts's
-# own constant and from the channel's own `body_words` so the number in the prompt and the number
-# the code measures can never drift apart.
-
 coverage_chapters: |-
   What the video covers, chapter by chapter:
   {items}
@@ -99,14 +10,6 @@ transcript_block: |-
   The transcript of the video, in full:
   {items}
 
-# Rendered into `{speaker_tags}` when the transcript above carries speaker attribution, and
-# omitted entirely when it does not — a call told to read tags on an untagged transcript would be
-# looking for something that is not there.
-#
-# POSITIVE FORM, like the rest of the tree: every line says what to attribute where. The last one
-# is the whole point of the block and it is stated as an instruction to follow rather than a
-# mistake to avoid — attribution comes from the tag, so a sentence about who said something is
-# reading the tag, and the tag on an UNSURE line says nobody.
 speaker_tags_block: |-
   The transcript is tagged by speaker, line by line:
   - HOST: is the creator of this video talking. His words are the channel's own argument.
@@ -115,15 +18,10 @@ speaker_tags_block: |-
 
   Take every attribution you write from these tags: a claim on a CLIP line belongs to the footage and to whoever is named making it there, an argument on a HOST line is the channel's own verdict, and the subject matter of an UNSURE line is written about on its own with no speaker attached. The register above still governs every sentence: a HOST verdict is carried as the content it is — the claim collapses, the evidence undoes it, the policy turns out to be mainstream — with the claims, the evidence and the people named on the CLIP lines as the subjects doing the doing.
 
-# The channel, as the channel's own data says it — its name and the focus paragraph that is the
-# {channel_focus} slot everywhere else in the tree. It replaces the stored slug, which named the
-# channel to a model in the one form that carries nothing.
 channel_block: |-
   Channel: {name}
   {focus}
 
-# The channel's `## DESCRIPTION` section, verbatim. Both calls are bound by it and each says
-# which part of it it is writing.
 rules_block: |-
   The channel's rules for this description. Everything below governs what you write here:
 

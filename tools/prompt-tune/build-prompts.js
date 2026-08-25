@@ -34,6 +34,20 @@ const pipelineDesc = yaml.load(fs.readFileSync(path.join(REPO, 'electron/assets/
 // (any cloud routing) and pointing an entry at the produced job file.
 const CORPUS = JSON.parse(fs.readFileSync(path.join(__dirname, 'corpus.json'), 'utf8'));
 
+// WHICH STAGE-1 BODY THIS CYCLE BUILDS. Stage 1 has had three grain bodies since 2026-08-24
+// (LEDGER #170) and the operator picks one per run, so the harness has to pick one too. It is
+// named on the command line (`--grain broad`) and recorded in the manifest, because a cycle
+// that mixed two grains would be comparing bodies rather than models. `detailed` is the app's
+// own default and is the default here for the same reason; an unknown grain throws naming the
+// three, exactly as CHAPTER_PROMPTS.wholeTranscript does. The emitted FILENAME keeps the plain
+// `chapters-stage1` stage name that score.py reads.
+const GRAINS = ['detailed', 'broad', 'stories'];
+const grainArg = process.argv.indexOf('--grain');
+const GRAIN = grainArg === -1 ? 'detailed' : process.argv[grainArg + 1];
+if (!GRAINS.includes(GRAIN)) {
+  throw new Error(`unknown chapter grain "${GRAIN}" — expected one of ${GRAINS.join(', ')}`);
+}
+
 /** Slice `text` between `after` and `before` markers; both must exist or we throw naming them. */
 function requireIndex(text, marker, label) {
   const i = text.indexOf(marker);
@@ -66,7 +80,7 @@ for (const video of CORPUS) {
   const duration = between(st1, 'The video runs ', '.\n', 'duration');
   const transcript = between(st1, 'TRANSCRIPT:\n', '\n\nThe video moves through a series of distinct chapters', 'chapter transcript');
   const promoted = (channel.promotedItems || []).join('; ');
-  const chaptersPrompt = formatPrompt(CHAPTER_PROMPTS.WHOLE_TRANSCRIPT_CHAPTERS, {
+  const chaptersPrompt = formatPrompt(CHAPTER_PROMPTS.wholeTranscript(GRAIN), {
     duration, promoted_items: promoted, transcript,
   });
 
@@ -147,7 +161,7 @@ for (const video of CORPUS) {
     if (!prompt) continue;
     const file = path.join(OUT, `${video.key}--${stage}.txt`);
     fs.writeFileSync(file, prompt);
-    manifest.push({ video: video.key, stage, file, chars: prompt.length });
+    manifest.push({ video: video.key, stage, file, chars: prompt.length, ...(stage === 'chapters-stage1' ? { grain: GRAIN } : {}) });
   }
   // Reference outputs from the real Sonnet run, for the grid.
   fs.writeFileSync(path.join(OUT, `${video.key}--REFERENCE.json`), JSON.stringify({

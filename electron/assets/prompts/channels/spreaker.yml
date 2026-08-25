@@ -1,11 +1,3 @@
-# The podcast, published through Spreaker.
-#
-# PURE DATA. See prompts/channels/telltale.yml's header.
-#
-# THE FIELD LIST IS THE INTERESTING PART. A podcast has no thumbnail, no hashtags rendering
-# above a title, no pinned comment and no Shorts feed to clip into. It publishes three fields
-# and always has — which is exactly what the old set said by containing only three `##`
-# sections, and what this list now says outright.
 id: podcast-spreaker
 name: Podcast - Spreaker
 
@@ -39,13 +31,6 @@ description_links: |-
   Pixel Dreams: https://www.youtube.com/@owenpixeldreams
   Twitch: https://owenmorgan.com/twitch
 
-# The creator's own promotions: things advertised INSIDE the videos that are not part of any
-# video's subject. Filled into the {promoted_items} slots in the description, titles and tags
-# instructions and into the chapter prompts, where the rules say what appears where: a stretch
-# of video that IS one of these is a plug chapter (labeled as such, and code excludes it from
-# the published list); none of them appears in a title, a description sentence, a tag, or a
-# content chapter's label. ADD FUTURE SPONSORSHIPS AND PROMOTIONS TO THIS LIST — the prompts
-# read it, so an entry here is all it takes.
 promoted_items:
   - 'the book "God''s People: Christian Nationalism in the Third Reich"'
   - 'the book "Understanding Jehovah''s Witnesses"'

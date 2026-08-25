@@ -1,9 +1,3 @@
-# The HASHTAGS section.
-#
-# Hashtags are DERIVED IN CODE on every routed path (tags-hashtags.ts: the entity and key-phrase
-# pools, camel-cased, deduped against the published title), so this section is stripped out of
-# every group's instructions. It survives because it is what declares that the channel renders
-# hashtags at all, and because the compilation call still reads it.
 section: HASHTAGS
 
 instructions: |-

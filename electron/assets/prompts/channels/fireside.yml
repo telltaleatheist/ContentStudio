@@ -1,6 +1,3 @@
-# Fireside Chat — where religion and political power collide.
-#
-# PURE DATA. See prompts/channels/telltale.yml's header for what that means and why.
 id: youtube-fireside
 name: "Fireside Chat YouTube (Politics + Religion)"
 
@@ -23,14 +20,6 @@ counts:
   thumbnail_text: 10
   pinned_comment: 3
 
-# The creator's search surfaces, named INSIDE the TAGS instruction ({brand_terms}).
-#
-# NOT channel_tags. `channel_tags` below are appended verbatim by code after the model has
-# answered; these are the terms the model is told to work into the list it writes, and they are
-# the ones a viewer actually types. The old flat prompt sets carried this list inline in every
-# channel's `## TAGS` section — "channel brand terms (owen morgan, telltale, telltale atheist)" —
-# and every tag list the operator has shipped contains them. Genericised to a bare "channel brand
-# terms" the line was unfollowable and the model started inventing creator names ("O. Morgan").
 brand_terms: ["owen morgan", "telltale", "telltale atheist"]
 
 channel_tags: ["Telltale Fireside Chat", "Owen Morgan"]
@@ -51,13 +40,6 @@ description_links: |-
   Pixel Dreams: https://www.youtube.com/@owenpixeldreams
   Twitch: https://owenmorgan.com/twitch
 
-# The creator's own promotions: things advertised INSIDE the videos that are not part of any
-# video's subject. Filled into the {promoted_items} slots in the description, titles and tags
-# instructions and into the chapter prompts, where the rules say what appears where: a stretch
-# of video that IS one of these is a plug chapter (labeled as such, and code excludes it from
-# the published list); none of them appears in a title, a description sentence, a tag, or a
-# content chapter's label. ADD FUTURE SPONSORSHIPS AND PROMOTIONS TO THIS LIST — the prompts
-# read it, so an entry here is all it takes.
 promoted_items:
   - 'the book "God''s People: Christian Nationalism in the Third Reich"'
   - 'the book "Understanding Jehovah''s Witnesses"'

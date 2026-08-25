@@ -1,6 +1,3 @@
-# Spoken keywords — the words that must be SAID ALOUD in a Short for YouTube's own transcript
-# index to find it. Only the shorts channel publishes this field; no routing task owns it, so
-# it rides with whichever group absorbs the sections no unit claimed (metadata-tasks.ts).
 section: SPOKEN_KEYWORDS
 
 instructions: |-

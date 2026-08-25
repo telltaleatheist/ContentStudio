@@ -11,10 +11,12 @@ focus.
 **1. Build the current prompts** (no model calls, no API):
 
     npm run build:electron        # the builder loads the compiled prompt assets
-    node tools/prompt-tune/build-prompts.js
+    node tools/prompt-tune/build-prompts.js [--grain detailed|broad|stories]
 
 For each corpus video this emits, under `tools/prompt-tune/out/prompts/`:
-`<key>--chapters-stage1.txt` (answer: one verbatim opening sentence per line),
+`<key>--chapters-stage1.txt` (answer: one verbatim opening sentence per line; stage 1 has
+three grain bodies since 2026-08-24, so `--grain` names the one this cycle tests — `detailed`
+by default, as in the app — and the manifest records which),
 `<key>--description-candidate.txt` (answer: hook, blank line, body — one call per candidate
 since the 2026-08-24 plain-text refactor), `<key>--titles-group-STALE.txt`, plus
 `<key>--REFERENCE.json` (the real production run's outputs, for comparison).

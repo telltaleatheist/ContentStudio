@@ -1,28 +1,3 @@
-# The channel-agnostic editorial brief.
-#
-# ONE copy of the material that used to be duplicated, near-identically, across five
-# per-channel prompt sets. Everything model-facing lives under `blocks`, in the order it is
-# emitted; the per-channel differences that are REAL live under `variants`, keyed by the
-# `editorial_variant` a channel declares in prompts/channels/*.yml.
-#
-# Two consolidations were made on the way in, and they are why this file is shorter than any
-# one of the sets it replaces:
-#
-#   - The two emotion taxonomies ("EMOTIONAL TRIGGERS THAT WORK" and "TARGET EMOTIONS BY
-#     CONTENT TYPE") were near-duplicates: the same five reactions, once as a list and once as
-#     a content-type mapping. They are ONE block now, each trigger carrying the content types
-#     it leads on.
-#   - "Do not write ten rephrasings of one title" was stated four times across the sets. It is
-#     stated ONCE, in prompts/shared/fields/titles.yml where the titles are actually asked
-#     for, plus one terse line in that field's self-check.
-#
-# POSITIVE FORM. No block here shows an incorrect example or names a wrong form for the model
-# to copy. The two grandfathered exceptions are the AI-tells list and the clickbait-filler
-# list, which are banned PHRASES rather than banned register — a model shown "delve" does not
-# learn to write like a video essay, it learns which word to leave out.
-#
-# `{channel_focus}` is the one slot a channel fills in this file. It is data (see
-# prompts/channels/*.yml), not instructions.
 blocks:
   - id: mission
     text: |-
@@ -165,23 +140,13 @@ blocks:
 
       {subject}
 
-# Where a channel genuinely differs. A key present here REPLACES that block; the literal
-# string "omit" drops the block entirely for that variant. Anything not named takes the
-# shared text above, which is the point of the file.
 variants:
-  # The DEFAULT editorial after the operator's read-through of the assembled titles prompt
-  # (2026-08-24): four blocks cut — the illustration notice (its referent, the in-core title
-  # examples, left with title_philosophy), input awareness, the internal-analysis step
-  # (adaptive thinking does this natively now), and the title philosophy (its load-bearing
-  # prosecutor line moved up into reframing). Unfiltered/shorts/spreaker keep their variants.
   default:
     illustration_notice: omit
     input_awareness: omit
     internal_analysis: omit
     title_philosophy: omit
 
-  # Unfiltered posts long multi-part livestreams. The only thing that changes is what a title
-  # is promising — a conversation to settle into rather than a six-minute payoff.
   unfiltered:
     title_philosophy: |-
       ## TITLE PHILOSOPHY (LONG-FORM STREAMS)
@@ -195,8 +160,6 @@ variants:
       - Superlatives are fine when earned: "worst," "dumbest," "most unhinged." But a specific fact beats a superlative every time.
       - The people you debunk don't hedge. Neither do you.
 
-  # Shorts is a different product on the same platform: a one-second thumb-stop, a 40-character
-  # title, no thumbnail, and a funnel back to the long-form video.
   shorts:
     platform_mechanics: |-
       ## SHORTS REALITY CHECK
@@ -278,8 +241,6 @@ variants:
 
       {subject}
 
-  # A podcast has no thumbnail and no feed: the title and the first 120 characters of the
-  # description ARE the entire pitch, and episodes stay searchable for years.
   spreaker:
     platform_mechanics: |-
       ## HOW PODCAST DISCOVERY ACTUALLY WORKS NOW (your operating constraints)

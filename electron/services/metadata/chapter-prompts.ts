@@ -2,9 +2,10 @@
  * Chapter Prompts — access to the chapter pipeline's three prompts
  *
  * THE BODIES ARE NOT HERE. They are in electron/assets/prompts/shared/pipeline/chapters.yml,
- * along with the header that records what they encode and why — the quoting law, the
+ * which carries the bodies and nothing else. What they encode and why — the quoting law, the
  * count-is-the-model's law, the positive-form rule, and the stated leak risk that comes with
- * real names in the examples. Read them there before editing any of them.
+ * real names in the examples — is in PROMPT-LEARNINGS.md at the repo root. Read both before
+ * editing any of them.
  *
  * What is left here is the ACCESS, as getters, so `CHAPTER_PROMPTS.SUMMARIZE_CHAPTER` reads as
  * a constant does. A missing file or key throws naming both (prompt-assets.ts). There is no

@@ -1,63 +1,3 @@
-# The chapter pipeline's prompts.
-#
-# THE LAWS THESE BODIES ENCODE, which anyone editing them has to keep:
-#
-# - The model NEVER emits a timestamp. It quotes a verbatim sentence and code maps that quote
-#   to a time against the caption word stream (chapter-transcript.ts). An invented timestamp is
-#   a guess; a mapped quote is a measurement.
-# - THE COUNT IS THE MODEL'S. `whole_transcript_chapters` states the runtime as a plain fact and
-#   states a RATE for that runtime; the model reads the transcript and works out how many
-#   chapters are in it. Code counts nothing. Every deleted architecture computed a target count
-#   from a cadence table in code and handed it over, and that is what put a boundary in the
-#   middle of a subject on a video that had four real ones. Do not put a number in here that the
-#   content did not produce.
-# - The chapter call sees the WHOLE transcript, and that is the whole point of it — see
-#   CHAPTERING.md's 2026-08-22 reversal section. `summarize_chapter` still sees ONE chapter,
-#   because describing a chapter is a different question from finding one.
-# - The summarize call reads the chapter's RAW transcript, never an intermediate label, plus
-#   two pieces of real context: the video title and the previous chapter's summary.
-# - POSITIVE FORM ONLY. These bodies state the style that is wanted and show CORRECT examples.
-#   They name no wrong form anywhere. The register failure this replaced ("The speaker debunks
-#   ...", "A YouTuber critiques ...") is caught in CODE afterwards by chapter-title-quality.ts
-#   — a declared warning, never a rewrite.
-# - REAL NAMES IN THE EXAMPLES, WITH THE RISK STATED. A prompt example naming a real person can
-#   leak into outputs about a DIFFERENT unnamed person of the same archetype, deterministically,
-#   at temperature 0. The 2026-08-24 night minimal rewrite (LEDGER #169) removed the Gene Bailey
-#   register examples along with the topic-form spec they anchored — five harness arms showed
-#   the stage-3 bodies concrete WITHOUT them and the operator's bloat diagnosis held. The few
-#   examples left ("God's People", "this is the pastor") are the operator's own promo and
-#   attribution anchors. The managed risk stands: the grounding check tests every proper noun
-#   in a returned title against that chapter's own transcript, so any leaked example name is
-#   DETECTED and reported rather than shipping unnoticed.
-
-# Stage 1 — read the WHOLE transcript in one call and report where the chapters begin.
-#
-# THREE GRAINS SINCE 2026-08-24 NIGHT (operator's design; LEDGER #170): the operator picks
-# what is being detected, the model decides the count inside that grain's band.
-#   - whole_transcript_detailed — the DEFAULT: a standalone video's internal turns (the next
-#     clip on the same story, the article's next claim). Validated on the duffy transcript:
-#     10 chapters, ads isolated, no slivers.
-#   - whole_transcript_broad — the same subject in larger pieces. Validated on duffy: 7.
-#   - whole_transcript_stories — compilations (weekly podcast merges, streams): a run of
-#     separate stories. Validated on f1/f3/u1/u2 against the production baseline: counts in
-#     band, every ad isolated two-sided, boundaries on the same turns.
-#
-# ALL THREE ARE MINIMAL BODIES, cut from the 600-word 2026-08-22 body the same night the
-# titles prompt went minimal, and re-measured piece by piece: the bare six-line form
-# overcounted 2-4x on every fixture until the size band returned, and the size band alone
-# swallowed ad chapters until the promo exception returned — each surviving line is there
-# because an arm without it failed. The graduated stories band is the restoration-v2
-# measurement; the verbatim-quote contract is the llm-beats measurement (137/138 mapped).
-#
-# PROVENANCE of the laws that survive in every grain: the model NEVER emits a timestamp
-# (quotes are mapped by code); the count is the MODEL'S inside the operator's grain; the
-# opening chapter needs no entry (the mapper synthesizes 0:00, and an emitted first line
-# would double it); the answer is LINES, not JSON.
-#
-# ON A TRANSCRIPT TOO LONG FOR ONE CALL the code sends the selected body over a ROLLING
-# WINDOW; each window is told its own runtime. Nothing in these bodies knows about that.
-#
-# Placeholders (all three): {duration}, {promoted_items}, {transcript}
 whole_transcript_detailed: |-
   Below is the complete transcript of one video, with no timestamps. The video runs {duration}.
 
@@ -112,19 +52,6 @@ whole_transcript_stories: |-
 
   Output ONE copied sentence per line, in the order the chapters occur — nothing else: no numbering, no labels, no commentary, no JSON.
 
-# Stage 3 — name and summarize ONE chapter, from its RAW transcript.
-#
-# ITS `title` IS THE title (2026-08-24). Stage 1 stopped producing labels when its answer
-# became bare quote lines, so every chapter — the opening 0:00 one included — is named by this
-# call, which is the one that reads the chapter's own transcript. The answer is PLAIN TEXT:
-# the title on the first line, the summary on the lines after it, per the same no-JSON ruling
-# as stage 1.
-#
-# `{entity_scaffold}` is the proper nouns extracted from THIS chapter's own transcript slice,
-# per-chapter and never whole-video: a whole-video list invites the name from chapter 2 into
-# the title of chapter 5. Already rendered by the caller; empty when the slice yielded nothing.
-#
-# Placeholders: {number}, {video}, {context_lines}, {entity_scaffold}, {transcript}
 summarize_chapter: |-
   Title chapter {number} of a video transcript.
   Video: {video}
@@ -142,28 +69,6 @@ summarize_chapter: |-
   TRANSCRIPT:
   {transcript}
 
-# The same call for a transcript that knows who is speaking.
-#
-# ContentStudio's imported AutoCutStudio transcripts carry a HOST/CLIP side per caption, and
-# since 2026-08-23 so does a Whisper run with a voice enrollment configured: every caption's
-# audio is scored against the operator's own voice and tagged from that. Untagged, a summarizer
-# cannot tell the host's verdict from the claim being played and inverts attribution. This body
-# is the untagged one plus the blocks that fix it, and it runs ONLY when every caption resolves
-# to a side.
-#
-# THE THIRD TAG. "Resolves to a side" includes UNSURE, which the voice tagger produces for a
-# caption that straddles a cut — whisper.cpp does not break its captions on speaker changes, so
-# a caption containing both voices scores between the two thresholds and belongs to neither.
-# Measured on the calibration transcript, 18 captions in 297 (6%) come out that way and every
-# one of them, read back, has an audible speaker change inside it. So the prompt states what an
-# UNSURE line is rather than leaving the model to infer it from an unexplained third label, and
-# what it states is the one thing that is true of those lines: the words were said, and nobody
-# in particular said them. The alternative — attributing them to whichever side is adjacent —
-# is a guess printed as a fact, which is the failure this whole prompt exists to stop.
-#
-# POSITIVE FORM, like everything else in this file: each rule says what to DO with a tag.
-#
-# Placeholders: {number}, {video}, {context_lines}, {entity_scaffold}, {transcript}
 summarize_chapter_tagged: |-
   Title chapter {number} of a video transcript.
   Video: {video}

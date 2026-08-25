@@ -615,6 +615,32 @@ check('the TAGS section names the channel\'s real brand terms, per channel', () 
 });
 
 /**
+ * THE ORDERING CORE, in every variant.
+ *
+ * The 2026-08-25 minimal rewrite (LEDGER #178) rests on one instruction: most specific phrase
+ * first, then the named people/organizations/events, then the broad category terms — in the
+ * register the retired tags adapter was trained on ("a labelling job, not a hook"). It is the
+ * line the taxonomy around it was cut in favour of, so it is asserted rather than trusted to a
+ * later edit, the same way the exemplar below is.
+ */
+check('every tags variant states the specificity ordering, in the labelling register', () => {
+  for (const id of assets.channelIds()) {
+    const channel = assets.channel(id);
+    if (!channel.fields.includes('tags')) continue;
+    const text = assets.fieldSection(channel, 'tags');
+    if (!/most specific two-to-four-word phrase/.test(text)) {
+      throw new Error('channel "' + id + '" TAGS section does not open the list on the most specific phrase');
+    }
+    if (!/broad category terms/.test(text)) {
+      throw new Error('channel "' + id + '" TAGS section never says the broad terms come last');
+    }
+    if (!/labelling job, not a hook/.test(text)) {
+      throw new Error('channel "' + id + '" TAGS section lost the labelling register');
+    }
+  }
+});
+
+/**
  * THE SEPARATOR IS SHOWN, not only named, in every variant of the section.
  *
  * The OUTPUT FORMAT's `"tags": "comma-separated string"` is a type annotation and was the only

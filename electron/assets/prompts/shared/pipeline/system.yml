@@ -1,17 +1,3 @@
-# The blocks that used to live as string constants in system-prompts.ts.
-#
-# They are here for the same reason everything else is: there is now exactly ONE directory a
-# person has to open to read every word this app sends a model. The code that used to hold
-# these strings keeps only the assembly logic, and throws naming this file and the missing key
-# rather than substituting anything.
-#
-# PLACEHOLDERS use the {name} convention and are filled with FUNCTION replacers, because
-# transcript text routinely contains $-patterns ($&, $', $`) that a plain string replacement
-# would expand and corrupt.
-
-# Prepended to every PLAIN-TEXT field request (operator's ruling 2026-08-24: no JSON for
-# these calls unless absolutely necessary — the per-field OUTPUT FORMAT below names each
-# call's plain shape).
 plain_system: |-
   Answer with ONLY what the request asks for, as plain text in exactly the output shape it
   specifies. Begin your response directly with the answer's first line: reasoning stays
@@ -19,25 +5,11 @@ plain_system: |-
   No emoji, no smart quotes or dashes; accented letters in real names are the correct
   spelling of those names and stay. No markdown, no JSON, no commentary — just the answer.
 
-# Prepended to the COMPILATION request, which is the one whole-metadata JSON call left in the
-# app (a mode the operator selects; its multi-field object is the one answer here that is
-# genuinely structured enough to need JSON).
-#
-# "Use ASCII characters only" was the old second line. It banned "Beyoncé" and "Muñoz" as
-# collateral damage on a rule aimed at emoji and smart punctuation, so it now says what it
-# means.
 json_system: |-
   Return a valid JSON object containing ONLY the fields requested below.
   Write it in plain text: no emoji, no smart quotes or dashes. Accented letters in real names
   are the correct spelling of those names and stay. No markdown, no explanation — just the JSON object.
 
-# Compilation framing, prepended to the {subject} block.
-#
-# POSITIVE FORM. This block used to carry a WRONG/CORRECT example pair for the title and a
-# five-line "WRONG (do not do this)" description sample. Both are gone: a model shown a wrong
-# form reproduces it, and the same rules state cleanly as what to do.
-#
-# Placeholders: {sourceCount}, {contentTypes}
 compilation_context: |2
 
   === COMPILATION MODE ===
@@ -67,10 +39,6 @@ compilation_context: |2
   - Summary for ITEM 3 here
   ===
 
-# Appended AFTER the assembled instructions to replace the TITLES / DESCRIPTION / TAGS rules
-# in compilation mode.
-#
-# Placeholder: {sourceCount}
 compilation_instructions_override: |2
 
   ## COMPILATION MODE OVERRIDES
@@ -95,10 +63,6 @@ compilation_instructions_override: |2
   - Mix of broad topics and specific phrases
   - Format as comma-separated list
 
-# The measured table of contents, prepended to the {subject} block whenever the chapter
-# pipeline produced one.
-#
-# Placeholder: {chapterList}
 chapter_subjects_context: |2
 
   === WHAT THIS VIDEO ACTUALLY COVERS ===
@@ -114,25 +78,6 @@ chapter_subjects_context: |2
   not spend real time on it.
   ===
 
-# The CHAPTER DIGEST — what the content slot carries on an item whose transcript is over the
-# direct-pass ceiling.
-#
-# WHY IT EXISTS. Over the ceiling the pipeline used to run a blind chunk summarizer and hand the
-# field calls its output; the summarizer's own log line admitted what that cost ("verbatim quotes
-# and phrasing do not survive that step"), and the operator's ruling on 2026-08-23 was: "I don't
-# want summaries. We should try to pass the whole thing in. If we're using summaries instead then
-# it should be in the form of chapters being passed in." The chapter list is a condensation the
-# pipeline has ALREADY paid for and that was written the right way round - each chapter's
-# paragraph comes from that chapter's OWN raw transcript, one call per chapter, so the specifics
-# inside it are the video's words rather than a paraphrase of a paraphrase.
-#
-# It REPLACES `chapter_subjects_context` on that path rather than sitting beside it: both render
-# the same table of contents, and printing it twice would tell the model the video has twice as
-# much in it as it does. So this block carries the same "let the list decide what the video is
-# about" instruction, plus the timestamps and the statement that there is no fuller transcript in
-# this prompt.
-#
-# Placeholder: {chapterList}
 chapter_digest: |2
 
   === WHAT THIS VIDEO ACTUALLY COVERS ===
@@ -150,14 +95,6 @@ chapter_digest: |2
   not spend real time on it. Take your specifics from the paragraphs.
   ===
 
-# The chapter digest under a header for a call that reads chapters BY CHOICE, not because
-# the transcript was too long. Same body as chapter_digest; only the first sentence differs,
-# because "this video's transcript is longer than one call can read" would be false here —
-# titles condition on the digest whenever chapters exist (measured 2026-08-24: titles from
-# chapters matched titles from the transcript on every hard check and pulled sharper
-# specifics from the details, at a third less prompt).
-#
-# Placeholder: {chapterList}
 chapter_digest_chosen: |2
 
   === WHAT THIS VIDEO ACTUALLY COVERS ===
@@ -174,9 +111,6 @@ chapter_digest_chosen: |2
   not spend real time on it. Take your specifics from the paragraphs.
   ===
 
-# OUTPUT FORMAT for the COMPILATION call — the one whole-metadata JSON call left in the app.
-# Its answer is genuinely structured (every field of the channel in one object), which is the
-# "absolutely necessary" bar the 2026-08-24 no-JSON ruling sets. Placeholder: {keyLines}
 compilation_output_format: |2
 
   ## OUTPUT FORMAT
@@ -186,8 +120,6 @@ compilation_output_format: |2
   {keyLines}
   }
 
-# OUTPUT FORMAT for a field whose answer is a LIST — titles, thumbnail options, pinned
-# comments, spoken keywords. Placeholder: {field}
 task_output_lines: |2
 
   ## OUTPUT FORMAT
@@ -196,7 +128,6 @@ task_output_lines: |2
   there is nothing else in your answer: no numbering, no bullets, no labels, no JSON, no
   commentary.
 
-# OUTPUT FORMAT for the tags call, whose answer is ONE comma-separated line.
 task_output_comma: |2
 
   ## OUTPUT FORMAT
@@ -204,15 +135,6 @@ task_output_comma: |2
   Output the tags as ONE line of plain text with a comma between every tag, exactly as the
   rules above show — and nothing else: no numbering, no labels, no JSON, no commentary.
 
-# The titles this run already wrote, handed to a later call as INPUT DATA.
-#
-# WHY IT EXISTS. One call used to write the titles and the thumbnail text together, which is
-# what made "the thumbnail must not repeat a core word from the top 3 titles" followable. Now
-# every field is its own call, titles run first, and their answer is put in front of the
-# thumbnail call as data. The rule is unchanged; what changed is that the model READS the
-# titles rather than having happened to write them.
-#
-# Placeholder: {titles}
 task_titles_input: |2
 
   === THE VIDEO'S TITLES ===
@@ -226,16 +148,12 @@ task_titles_input: |2
   anything asked to sit beside them.
   ===
 
-# The same block in the "Show prompt" preview, before the titles call has run. Never sent.
 task_titles_input_pending: |2
 
   === THE VIDEO'S TITLES ===
   (the titles call runs first; the titles it writes are inserted here when this call is sent)
   ===
 
-# Episode boundaries in a multi-hour livestream.
-#
-# Placeholders: {transcript}, {duration}, {episodeCount}
 episode_split: |-
   You are analyzing a transcript from a continuous multi-hour livestream (total duration: {duration}).
   The stream was recorded in multiple sequential files that have been combined into one continuous transcript. Time markers in the form [H:MM:SS] (for example [1:35:00]) are inserted throughout the text every few minutes — each marks how far into the stream that point occurs. Use these markers to measure elapsed time and pace the episode boundaries.

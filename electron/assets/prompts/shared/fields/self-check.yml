@@ -1,22 +1,7 @@
-# The FINAL SELF-CHECK, split into lines so it can be assembled PER GROUP.
-#
-# WHY IT IS SPLIT. The self-check used to be one verbatim block that rode with whichever group
-# held the titles. That was right when everything was one call and wrong the moment fields were
-# routed apart: a titles-only group was being told "thumbnail options don't repeat core words
-# from the top 3 titles" about thumbnail text it would never see, which is an instruction it
-# cannot follow and therefore an instruction that teaches it nothing except that some of this
-# prompt is noise.
-#
-# Now: the `global` lines below ride with every group that carries the self-check, and each
-# field contributes its own lines from prompts/shared/fields/<field>.yml (`self_check`, plus
-# `self_check_with` for lines that need a SECOND field in the same group). Nothing is trimmed
-# by pattern-matching — a line is only ever emitted where the group can actually perform it.
 header: "## FINAL SELF-CHECK (fix violations silently before answering; never mention this check)"
 
 global:
   - "No banned phrase used as an empty trigger anywhere"
   - "No construction from the NO AI-ISMS list in any field"
   - "Every specific claim traceable to the input; no event stated as fact that the input doesn't confirm"
-  # Was "ASCII characters only", which banned "Beyoncé" and "Muñoz" along with the emoji it
-  # was aimed at. Diacritics in a real name are the correct spelling of that name.
   - "Output is exactly the shape the OUTPUT FORMAT asks for and nothing else, in plain text: no emoji and no smart quotes or dashes, though accented letters in real names are correct and stay"

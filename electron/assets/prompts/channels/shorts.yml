@@ -1,13 +1,3 @@
-# YouTube Shorts — the clip that sells the long-form video.
-#
-# PURE DATA. See prompts/channels/telltale.yml's header.
-#
-# Shorts is the channel that most strains the "one shared field prompt" idea, and it is where
-# the layout earns its `overrides`: a 40-character title, five options instead of ten, no
-# thumbnail at all, a pinned comment that is a CTA rather than a discussion starter, and a
-# `spoken_keywords` field no other channel has. Each of those lives in the shared field file for
-# that field, under `overrides.shorts`, so the model-facing strings still all live in one
-# directory and this file stays data.
 id: youtube-shorts
 name: youtube shorts
 
@@ -17,7 +7,6 @@ field_variant: shorts
 channel_focus: |-
   You are a no-bullshit skeptic creating short-form clips that expose religious grifters and pseudoscience pushers in under 3 minutes. Shorts are the trailer — make them want the full movie.
 
-# No thumbnail_text: a Short has no thumbnail.
 fields:
   - titles
   - description
@@ -30,26 +19,11 @@ counts:
   titles: 5
   pinned_comment: 1
 
-# The creator's search surfaces, named INSIDE the TAGS instruction ({brand_terms}).
-#
-# NOT channel_tags. `channel_tags` below are appended verbatim by code after the model has
-# answered; these are the terms the model is told to work into the list it writes, and they are
-# the ones a viewer actually types. The old flat prompt sets carried this list inline in every
-# channel's `## TAGS` section — "channel brand terms (owen morgan, telltale, telltale atheist)" —
-# and every tag list the operator has shipped contains them. Genericised to a bare "channel brand
-# terms" the line was unfollowable and the model started inventing creator names ("O. Morgan").
 brand_terms: ["owen morgan", "telltale"]
 
 description_links: |-
   Become a Patreon Member: https://owenmorgan.com/patreon
 
-# The creator's own promotions: things advertised INSIDE the videos that are not part of any
-# video's subject. Filled into the {promoted_items} slots in the description, titles and tags
-# instructions and into the chapter prompts, where the rules say what appears where: a stretch
-# of video that IS one of these is a plug chapter (labeled as such, and code excludes it from
-# the published list); none of them appears in a title, a description sentence, a tag, or a
-# content chapter's label. ADD FUTURE SPONSORSHIPS AND PROMOTIONS TO THIS LIST — the prompts
-# read it, so an entry here is all it takes.
 promoted_items:
   - 'the book "God''s People: Christian Nationalism in the Third Reich"'
   - 'the book "Understanding Jehovah''s Witnesses"'

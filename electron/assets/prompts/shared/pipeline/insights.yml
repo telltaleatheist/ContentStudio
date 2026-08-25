@@ -1,22 +1,3 @@
-# The guidelines distiller — the analytics loop's second stage.
-#
-# WHY THIS CALL EXISTS (operator, 2026-08-24): the CHANNEL PERFORMANCE DATA block used to
-# ride into every insight-carrying generation call whole — ~6k characters of OTHER videos'
-# literal titles and stats. That stretches the generation call's context and, worse, seeds
-# it with unrelated subjects: a prompt example naming a real person or topic leaks into
-# outputs about a DIFFERENT unnamed subject of the same archetype (the measured risk the
-# chapter examples are nameless for). So the raw evidence goes to THIS one call instead,
-# which writes the transferable lessons, and only the lessons ride along in generation.
-#
-# The distilled lines are CACHED per channel (guidelines.json beside insights.json) and
-# keyed to a hash of this call's exact input, so this call runs only when the evidence
-# actually changed — a cache hit is the overwhelmingly common path.
-#
-# SUBJECT-FREE IS THE CONTRACT. The block below demands pattern-level lessons with no
-# topic, name, or recognizable phrasing from any example title, in positive form (law 4):
-# each line says what to do, grounded in what won or lost.
-#
-# Placeholder: {performance_data}
 guidelines_distiller: |-
   Below is one YouTube channel's real performance evidence: its baselines, its
   best- and worst-performing titles with their measurements, its decided A/B title
