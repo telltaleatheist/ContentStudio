@@ -36,6 +36,7 @@
 
 import axios, { AxiosRequestConfig } from 'axios';
 import * as fs from 'fs';
+import * as https from 'https';
 import { Transform } from 'stream';
 import { Snapshot } from '../analytics/analytics-types';
 import { YouTubeAuthService } from './youtube-auth.service';
@@ -594,40 +595,13 @@ export class YouTubeApiService {
       throw this.asInsertError(e, 'videos.insert (session init)');
     }
 
-    // (2) Stream the bytes. NO timeout — a 1 GB .mov takes as long as it takes; the
-    // abort signal is the operator's way out, not a timer's.
-    let sent = 0;
-    const counter = new Transform({
-      transform(chunk, _enc, cb) {
-        sent += chunk.length;
-        onProgress?.(sent, totalBytes);
-        cb(null, chunk);
-      },
-    });
-    const file = fs.createReadStream(filePath);
-    const onAbort = () => file.destroy(new Error('Upload cancelled.'));
-    signal?.addEventListener('abort', onAbort, { once: true });
-    try {
-      const resp = await axios.request<any>({
-        method: 'PUT',
-        url: location,
-        data: file.pipe(counter),
-        headers: { 'Content-Type': mime, 'Content-Length': String(totalBytes) },
-        maxBodyLength: Infinity,
-        maxContentLength: Infinity,
-        timeout: 0,
-        signal,
-      });
-      const videoId = resp.data?.id;
-      if (typeof videoId !== 'string' || !videoId) {
-        throw new YouTubeApiError('videos.insert finished but returned no video id.');
-      }
-      return { videoId };
-    } catch (e) {
-      throw this.asInsertError(e, 'videos.insert (byte upload)');
-    } finally {
-      signal?.removeEventListener('abort', onAbort);
-    }
+    // (2) Stream the bytes — raw node https, NOT axios. axios routes Node request
+    // bodies through follow-redirects, which RETAINS every written chunk in memory so
+    // it can replay the body after a redirect; on a 1 GB export that retention became a
+    // fatal ArrayBuffer allocation in the main process (SIGABRT, crash report read live
+    // 2026-08-25). The resumable session URL never redirects, so that machinery buys
+    // nothing. streamFileToSession pipes disk -> socket and holds one chunk at a time.
+    return streamFileToSession(location, filePath, mime, totalBytes, onProgress, signal);
   }
 
   /** YouTube's words, verbatim, on a named step — insert bypasses request() for streaming. */
@@ -853,4 +827,78 @@ export class YouTubeApiService {
     // extension's retention units (keeps within-channel cohorts consistent).
     return Math.round(best.watch * 100 * 10) / 10;
   }
+}
+
+/**
+ * PUT one file's bytes to a resumable upload session and return the created video id.
+ *
+ * Standalone and exported so the streaming mechanics can be exercised against a local
+ * TLS server in a harness — the app calls it only from insertVideo. NO timeout: a 1 GB
+ * .mov takes as long as it takes, and the abort signal is the operator's way out, not a
+ * timer's. Memory: fs stream -> counting Transform -> socket, one chunk in flight;
+ * nothing retains the body (the reason this is not axios — see insertVideo).
+ */
+export function streamFileToSession(
+  sessionUrl: string,
+  filePath: string,
+  mime: string,
+  totalBytes: number,
+  onProgress?: (sentBytes: number, totalBytes: number) => void,
+  signal?: AbortSignal
+): Promise<{ videoId: string }> {
+  let sent = 0;
+  const counter = new Transform({
+    transform(chunk, _enc, cb) {
+      sent += chunk.length;
+      onProgress?.(sent, totalBytes);
+      cb(null, chunk);
+    },
+  });
+  const file = fs.createReadStream(filePath);
+  const onAbort = () => file.destroy(new Error('Upload cancelled.'));
+  signal?.addEventListener('abort', onAbort, { once: true });
+
+  return new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const target = new URL(sessionUrl);
+    if (target.protocol !== 'https:') {
+      reject(new YouTubeApiError(`Resumable session URL is not https (${target.protocol}) — refusing to send bytes.`));
+      return;
+    }
+    const req = https.request(
+      {
+        method: 'PUT',
+        hostname: target.hostname,
+        port: target.port ? Number(target.port) : 443,
+        path: `${target.pathname}${target.search}`,
+        headers: { 'Content-Type': mime, 'Content-Length': totalBytes },
+        signal,
+      },
+      (res) => {
+        res.setEncoding('utf8');
+        let body = '';
+        res.on('data', (c: string) => { body += c; });
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+        res.on('error', reject);
+      }
+    );
+    req.on('error', reject);
+    // A disk error must kill the request, not leave it waiting for bytes forever.
+    file.on('error', (err) => { req.destroy(err); reject(err); });
+    counter.on('error', reject);
+    file.pipe(counter).pipe(req);
+  }).then(({ status, body }) => {
+    if (status < 200 || status >= 300) {
+      let detail = body.slice(0, 400);
+      try { detail = JSON.parse(body)?.error?.message ?? detail; } catch { /* not JSON — keep the raw excerpt */ }
+      throw new YouTubeApiError(`videos.insert (byte upload) failed (HTTP ${status}): ${detail}`, status);
+    }
+    let videoId: unknown;
+    try { videoId = JSON.parse(body)?.id; } catch { /* falls through to the named throw */ }
+    if (typeof videoId !== 'string' || !videoId) {
+      throw new YouTubeApiError('videos.insert finished but returned no video id.');
+    }
+    return { videoId };
+  }).finally(() => {
+    signal?.removeEventListener('abort', onAbort);
+  });
 }
