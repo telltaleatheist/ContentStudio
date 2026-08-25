@@ -8,8 +8,12 @@
  *
  * The only NEW tokens are the channel hues, and they are new because they encode data
  * rather than chrome. They are declared here, on :host, with values that hold up in both
- * themes: --ch-none is the unrouted grey, and the three channel hues arrive per-chip as
- * inline styles from the registry order (see CHANNEL_HUES).
+ * themes: --ch-none is the unrouted grey, and the channel hues arrive per-chip as inline
+ * styles from the registry order (see CHANNEL_HUES).
+ *
+ * The board's four columns are declared ONCE, as --day-cols, because the sticky heading
+ * row and every day row have to agree on them; two copies would drift the first time a
+ * width changed.
  */
 
 :host {
@@ -21,12 +25,15 @@
 
   /* The unrouted state's colour. A real state, not an absence — it gets a token. */
   --ch-none: #6b7280;
+
+  /* date column, then the three release slots. */
+  --day-cols: 132px repeat(3, minmax(0, 1fr));
 }
 
 .calendar-container {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.85rem;
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -68,40 +75,65 @@
   }
 }
 
-.view-toggle {
-  display: inline-flex;
-  border: 1px solid var(--border-color);
-  border-radius: var(--border-radius);
-  overflow: hidden;
+/* ------------------------------------------------------------- channel tabs */
 
-  button {
-    border: 0;
-    background: var(--bg-card);
-    color: var(--text-secondary);
-    font: inherit;
-    font-size: 0.85rem;
-    padding: 0.35rem 0.85rem;
-    cursor: pointer;
-
-    &.active {
-      background: var(--primary-orange);
-      color: var(--on-accent);
-    }
-  }
+.chan-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-color);
 }
 
-.month-nav {
+.chan-tab {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
+  gap: 6px;
+  font: 600 0.78rem / 1 var(--font-family);
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  padding: 6px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.13s ease, border-color 0.13s ease, background 0.13s ease;
 
-  .month-label {
-    min-width: 10ch;
-    text-align: center;
-    font-weight: 600;
+  &:hover {
     color: var(--text-primary);
+    border-color: var(--border-strong);
+  }
+
+  .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  /* ORANGE — the tab in force. Everything not on it is dimmed on the board, so which
+     one is on has to be answerable without reading a single chip. */
+  &.on {
+    color: var(--text-primary);
+    border-color: var(--primary-orange);
+    background: color-mix(in srgb, var(--primary-orange) 14%, var(--bg-secondary));
   }
 }
+
+.chan-tab-l {
+  white-space: nowrap;
+}
+
+.cadence-note {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-left: 0.35rem;
+}
+
+/* ------------------------------------------------------------------ banners */
 
 .error-banner {
   display: flex;
@@ -121,15 +153,33 @@
 }
 
 .faults {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
   border-radius: var(--border-radius);
   background: var(--warning-bg);
   color: var(--warning-text);
   font-size: 0.8rem;
   flex-shrink: 0;
+  padding: 0.4rem 0.75rem;
+
+  summary {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    cursor: pointer;
+    list-style: none;
+
+    mat-icon {
+      font-size: 16px;
+      width: 16px;
+      height: 16px;
+    }
+  }
+
+  .fault-lines {
+    padding: 0.4rem 0 0.2rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
 
   .fault-name {
     display: inline-block;
@@ -138,39 +188,6 @@
   }
 }
 
-.legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1rem;
-  font-size: 0.78rem;
-  color: var(--text-secondary);
-  flex-shrink: 0;
-
-  .legend-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-  }
-
-  .muted {
-    color: var(--text-muted);
-    font-style: italic;
-  }
-}
-
-.swatch {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-  display: inline-block;
-
-  &.unrouted {
-    background: transparent;
-    border: 1px dashed var(--ch-none);
-  }
-}
-
-.legend-tag,
 .tag,
 .chip-tag {
   font-size: 0.68rem;
@@ -186,21 +203,9 @@
   color: var(--text-secondary);
 }
 
-.armed-bar {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
-  border-radius: var(--border-radius);
-  background: var(--info-bg);
-  color: var(--info-text);
-  font-size: 0.85rem;
-  flex-shrink: 0;
-}
-
 .calendar-body {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-columns: 300px minmax(0, 1fr);
   gap: 1rem;
   flex: 1;
   min-height: 0;
@@ -217,8 +222,24 @@
   border: 1px solid var(--border-color);
   border-radius: var(--border-radius-large);
   padding: 0.75rem;
+  transition: border-color 0.13s ease, background 0.13s ease;
+
+  /* A drag is in flight AND this tray would take it: say so before the drop. */
+  &.drop-ready {
+    border-style: dashed;
+    border-color: var(--primary-orange);
+  }
+
+  &.drop-over {
+    border-style: solid;
+    border-color: var(--primary-orange);
+    background: color-mix(in srgb, var(--primary-orange) 10%, var(--bg-card));
+  }
 
   .tray-header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
     font-weight: 600;
     color: var(--text-primary);
     font-size: 0.9rem;
@@ -227,6 +248,14 @@
     position: sticky;
     top: -0.75rem;
     background: var(--bg-card);
+    z-index: 1;
+  }
+
+  .tray-hint {
+    font-size: 0.7rem;
+    font-weight: 400;
+    font-style: italic;
+    color: var(--primary-orange);
   }
 }
 
@@ -239,14 +268,28 @@
   background: var(--bg-secondary);
   overflow: hidden;
 
-  &.armed {
-    outline: 2px solid var(--primary-orange);
-    outline-offset: -2px;
+  &[draggable='true'] {
+    cursor: grab;
+  }
+
+  &.dragging {
+    opacity: 0.4;
   }
 
   &.unrouted .bar {
     background: transparent !important;   /* the inline hue is the unrouted grey; show it dashed instead */
     border-left: 3px dashed var(--ch-none);
+  }
+
+  /* Another channel's item. Still readable, still draggable — just not the subject. */
+  &.dimmed {
+    opacity: 0.4;
+    filter: grayscale(0.85);
+
+    &:hover {
+      opacity: 0.75;
+      filter: grayscale(0.35);
+    }
   }
 
   .bar {
@@ -259,11 +302,6 @@
     min-width: 0;
     padding: 0.4rem 0.15rem;
     cursor: pointer;
-
-    &.locked {
-      cursor: default;
-      opacity: 0.6;
-    }
   }
 
   .tray-title {
@@ -283,91 +321,84 @@
     color: var(--text-muted);
   }
 
-  .locked-note {
-    color: var(--text-muted);
-    font-style: italic;
-  }
-
   .thumb-ok {
     font-size: 13px;
     width: 13px;
     height: 13px;
     color: var(--success-text);
   }
+
+  .open-report {
+    align-self: center;
+  }
 }
 
-/* ------------------------------------------------------------------ the grid */
+/* ----------------------------------------------------------------- the board */
 
-.grid {
+.board {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow-y: auto;
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: var(--border-radius-large);
-  padding: 0.5rem;
+  overflow: hidden;
 }
 
-.weekday-row,
-.week {
+.board-head {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 2px;
+  grid-template-columns: var(--day-cols);
+  gap: 4px;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-elevated);
+  flex-shrink: 0;
 }
 
-.weekday {
-  padding: 0.25rem;
-  font-size: 0.72rem;
-  font-weight: 600;
+.board-head-slot {
+  font-size: 0.7rem;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   color: var(--text-muted);
-  text-align: center;
 }
 
-.week {
-  margin-bottom: 2px;
-}
-
-.day {
-  position: relative;
-  min-height: 96px;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  background: var(--bg-secondary);
-  padding: 0.25rem;
+.board-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.5rem 0.6rem 1rem;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  overflow: visible;
+  gap: 4px;
+}
 
-  &.out-of-month {
-    opacity: 0.45;
-  }
+.day-row {
+  display: grid;
+  grid-template-columns: var(--day-cols);
+  gap: 4px;
+  padding: 3px 0;
+  border-top: 1px solid var(--border-subtle);
 
   &.today {
-    border-color: var(--primary-orange);
-    box-shadow: inset 0 0 0 1px var(--primary-orange);
+    border-top: 2px solid var(--primary-orange);
+    background: color-mix(in srgb, var(--primary-orange) 6%, transparent);
+    border-radius: 6px;
   }
+}
 
-  /* While something is armed, the legal days lift and the impossible ones recede. */
-  &.legal-target {
-    cursor: copy;
-    background: var(--bg-tertiary);
-  }
+.day-date {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 2px;
+  padding: 0.35rem 0.4rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
 
-  &.illegal-target {
-    opacity: 0.25;
-    cursor: not-allowed;
-  }
-
-  .day-number {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-size: 0.72rem;
-    color: var(--text-secondary);
+  .day-label {
+    font-weight: 600;
+    color: var(--text-primary);
   }
 
   .today-dot {
@@ -379,6 +410,129 @@
   }
 }
 
+.slot {
+  position: relative;
+  min-height: 52px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  padding: 0.2rem 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: border-color 0.13s ease, background 0.13s ease;
+
+  .slot-label {
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
+
+  /* Inside the writer's fifteen-minute lead. Inert, and it reads inert. */
+  &.past {
+    opacity: 0.35;
+    background: transparent;
+    border-style: dashed;
+  }
+
+  /* This is where the tab's channel normally lands. A hint, not a rule — anything can
+     be dropped into any slot. */
+  &.cadence {
+    border-color: color-mix(in srgb, var(--primary-orange) 55%, var(--border-color));
+
+    .slot-label::after {
+      content: ' •';
+      color: var(--primary-orange);
+    }
+  }
+
+  &.drop-ready {
+    border-style: dashed;
+    border-color: var(--primary-orange);
+  }
+
+  &.drop-over {
+    border-style: solid;
+    border-color: var(--primary-orange);
+    background: color-mix(in srgb, var(--primary-orange) 14%, var(--bg-secondary));
+  }
+}
+
+/* A schedule on none of the three slots. Its own strip under the day, at its real time. */
+.other-times {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.2rem 0.4rem 0.3rem;
+
+  .other-label {
+    flex-shrink: 0;
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--warning-text);
+    padding-top: 0.2rem;
+  }
+
+  .other-chips {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+}
+
+.other-row,
+.past-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.other-time,
+.past-date {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  padding-top: 0.2rem;
+  min-width: 4ch;
+}
+
+.past-date {
+  min-width: 13ch;
+}
+
+.chip-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Dated before today: unreachable from the rolling list, so it gets its own strip. */
+.past-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0.5rem 0.6rem;
+  margin-bottom: 0.35rem;
+  border: 1px solid var(--warning-text);
+  border-radius: var(--border-radius);
+  background: color-mix(in srgb, var(--warning-bg) 60%, transparent);
+
+  .past-head {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--warning-text);
+  }
+}
+
+/* ------------------------------------------------------------------- chips */
+
 .chip {
   display: flex;
   align-items: stretch;
@@ -388,6 +542,14 @@
   background: var(--bg-card);
   overflow: hidden;
   font-size: 0.72rem;
+
+  &[draggable='true'] {
+    cursor: grab;
+  }
+
+  &.dragging {
+    opacity: 0.4;
+  }
 
   .chip-bar {
     width: 3px;
@@ -402,16 +564,6 @@
     min-width: 0;
     padding: 0.2rem 0;
     cursor: pointer;
-
-    &.locked {
-      cursor: default;
-    }
-  }
-
-  .chip-time {
-    font-weight: 700;
-    color: var(--text-primary);
-    flex-shrink: 0;
   }
 
   .chip-title {
@@ -452,6 +604,19 @@
     border-left: 3px dashed var(--ch-none);
   }
 
+  /* AFTER .published deliberately: a published chip on another channel's tab is both
+     greyed by state and pushed back by channel, and this is the one that wins. An
+     unrouted chip never gets this class — it needs attention on every tab. */
+  &.dimmed {
+    opacity: 0.4;
+    filter: grayscale(0.85);
+
+    &:hover {
+      opacity: 0.75;
+      filter: grayscale(0.35);
+    }
+  }
+
   .open-report {
     width: 22px;
     height: 22px;
@@ -477,152 +642,23 @@
   font-style: italic;
 }
 
+/* ------------------------------------------------------------------ footers */
+
+.board-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0.2rem 0;
+
+  .beyond-note {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+  }
+}
+
 .empty-note {
   color: var(--text-muted);
   font-size: 0.82rem;
   font-style: italic;
   padding: 0.75rem 0.25rem;
-}
-
-.grid-empty {
-  text-align: center;
-}
-
-/* ------------------------------------------------------------------ popover */
-
-.popover {
-  position: absolute;
-  z-index: 30;
-  top: 100%;
-  left: 0;
-  min-width: 230px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: var(--border-radius);
-  box-shadow: var(--shadow-lg);
-  padding: 0.6rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-
-  .popover-date {
-    font-weight: 600;
-    color: var(--text-primary);
-    font-size: 0.82rem;
-  }
-
-  .popover-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  input[type='time'] {
-    background: var(--bg-secondary);
-    color: var(--text-primary);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    padding: 0.25rem 0.4rem;
-    font: inherit;
-    font-size: 0.85rem;
-  }
-
-  .offset {
-    font-size: 0.72rem;
-    color: var(--text-muted);
-  }
-
-  .popover-hint {
-    font-size: 0.7rem;
-    color: var(--text-secondary);
-  }
-
-  .popover-error {
-    font-size: 0.72rem;
-    color: var(--danger-text);
-    background: var(--danger-bg);
-    border-radius: 4px;
-    padding: 0.3rem 0.4rem;
-    white-space: pre-line;
-  }
-
-  .popover-actions {
-    display: flex;
-    gap: 0.25rem;
-    justify-content: flex-end;
-  }
-}
-
-/* ------------------------------------------------------------------ agenda */
-
-.agenda {
-  overflow-y: auto;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: var(--border-radius-large);
-  padding: 0.5rem 0.75rem;
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.82rem;
-  }
-
-  th {
-    text-align: left;
-    padding: 0.4rem 0.5rem;
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-muted);
-    border-bottom: 1px solid var(--border-color);
-    position: sticky;
-    top: 0;
-    background: var(--bg-card);
-  }
-
-  td {
-    padding: 0.35rem 0.5rem;
-    border-bottom: 1px solid var(--border-color);
-    color: var(--text-secondary);
-    vertical-align: middle;
-  }
-
-  .title-cell {
-    color: var(--text-primary);
-    max-width: 42ch;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  tr.published td {
-    opacity: 0.6;
-  }
-
-  tr.stale td {
-    background: color-mix(in srgb, var(--warning-bg) 40%, transparent);
-  }
-
-  .state {
-    font-size: 0.72rem;
-
-    &.published {
-      color: var(--text-muted);
-    }
-
-    &.stale {
-      color: var(--warning-text);
-    }
-
-    &.unrouted {
-      color: var(--text-muted);
-      font-style: italic;
-      margin-left: 0.35rem;
-    }
-  }
-
-  .row-actions {
-    white-space: nowrap;
-  }
 }

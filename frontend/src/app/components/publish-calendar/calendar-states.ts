@@ -75,6 +75,7 @@ export function channelTag(name: string): string {
   return letters.slice(0, 3).join('') || '?';
 }
 
+/** First of the month, local. Used by the reports page's month grouping. */
 export function startOfMonth(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), 1);
 }

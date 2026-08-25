@@ -4,32 +4,13 @@
     <div class="header-left">
       <h2>Publish Calendar</h2>
       <p class="subtitle">
-        {{ agenda().length }} scheduled · {{ tray().length }} unscheduled
+        {{ scheduledCount() }} scheduled · {{ tray().length }} unscheduled
         @if (loading()) { <span class="loading-note">· reading…</span> }
       </p>
     </div>
 
     <div class="header-actions">
-      <div class="view-toggle" role="group" aria-label="View">
-        <button type="button" [class.active]="view() === 'month'" (click)="setView('month')">Month</button>
-        <button type="button" [class.active]="view() === 'agenda'" (click)="setView('agenda')">Agenda</button>
-      </div>
-
-      <!-- The month arrows belong to the grid. The agenda is chronological across all
-           months by design, so they are hidden there rather than left doing nothing. -->
-      @if (view() === 'month') {
-        <div class="month-nav">
-          <button mat-icon-button (click)="stepMonth(-1)" matTooltip="Previous month">
-            <mat-icon>chevron_left</mat-icon>
-          </button>
-          <span class="month-label">{{ monthLabel() }}</span>
-          <button mat-icon-button (click)="stepMonth(1)" matTooltip="Next month">
-            <mat-icon>chevron_right</mat-icon>
-          </button>
-          <button mat-stroked-button (click)="goToday()">Today</button>
-        </div>
-      }
-
+      <button mat-stroked-button (click)="scrollToToday()">Today</button>
       <button mat-icon-button routerLink="/metadata-reports" matTooltip="Metadata reports">
         <mat-icon>description</mat-icon>
       </button>
@@ -37,6 +18,29 @@
         <mat-icon>refresh</mat-icon>
       </button>
     </div>
+  </div>
+
+  <!-- The tabs are also the colour key: the dot on each is that channel's hue, so the
+       encoding is readable rather than remembered. -->
+  <div class="chan-tabs" role="tablist" aria-label="Channel">
+    @for (tab of channelTabs(); track tab.channelId) {
+      <button type="button" class="chan-tab"
+              role="tab"
+              [class.on]="activeChannelId() === tab.channelId"
+              [attr.aria-selected]="activeChannelId() === tab.channelId"
+              (click)="setActiveChannel(tab.channelId)">
+        <span class="dot" [style.background]="tab.hue"></span>
+        <span class="chan-tab-l">{{ tab.name }}</span>
+      </button>
+    }
+    @if (channelTabs().length === 0) {
+      <span class="empty-note">No channels are registered, so every item reads as unrouted.</span>
+    }
+    @if (activeCadence(); as cadence) {
+      <span class="cadence-note">{{ cadence.note }}</span>
+    } @else if (activeChannel()) {
+      <span class="cadence-note">No release cadence is recorded for this channel.</span>
+    }
   </div>
 
   <!-- One banner for every refusal, carrying the main process's text verbatim. -->
@@ -47,11 +51,157 @@
     </div>
   }
 
+  <div class="calendar-body">
+
+    <!-- The tray is the work surface, and it is also the way back: a chip dragged here
+         loses its date. -->
+    <aside class="tray"
+           [class.drop-ready]="trayAcceptsDrag()"
+           [class.drop-over]="dragOverKey() === 'tray'"
+           (dragover)="onTrayDragOver($event)"
+           (dragleave)="onDragLeaveTarget('tray')"
+           (drop)="onTrayDrop($event)">
+      <div class="tray-header">
+        Unscheduled · {{ tray().length }}
+        @if (trayAcceptsDrag()) { <span class="tray-hint">drop to unschedule</span> }
+      </div>
+
+      @if (tray().length === 0) {
+        <div class="empty-note">
+          Nothing unscheduled — every publish record has a date.
+        </div>
+      }
+
+      @for (item of tray(); track item.itemId) {
+        <div class="tray-item"
+             [class.unrouted]="item.unrouted"
+             [class.dimmed]="item.dimmed"
+             [class.dragging]="draggingItemId() === item.itemId"
+             draggable="true"
+             (dragstart)="onDragStart(item.itemId, $event)"
+             (dragend)="onDragEnd()">
+          <span class="bar" [style.background]="item.hue"></span>
+          <div class="tray-body" (click)="openReport(item.itemId)">
+            <div class="tray-title" [title]="item.title">{{ item.title }}</div>
+            <div class="tray-meta">
+              <span class="tag" [title]="item.channelName">{{ item.channelTag }}</span>
+              @if (item.isPodcast) { <mat-icon class="podcast-glyph">mic</mat-icon> }
+              <span class="ab">A/B {{ item.abCount }}/3</span>
+              @if (item.hasThumbnail) { <mat-icon class="thumb-ok">image</mat-icon> }
+              @if (item.unrouted) { <span class="unrouted-note">no channel</span> }
+              @if (item.unknownChannel) { <span class="unrouted-note">{{ item.channelName }}</span> }
+            </div>
+          </div>
+          <button mat-icon-button class="open-report" (click)="openReport(item.itemId)"
+                  matTooltip="Open the report">
+            <mat-icon>open_in_new</mat-icon>
+          </button>
+        </div>
+      }
+    </aside>
+
+    <section class="board">
+
+      <div class="board-head">
+        <div class="board-head-date"></div>
+        @for (label of slotLabels; track label) {
+          <div class="board-head-slot">{{ label }}</div>
+        }
+      </div>
+
+      <div class="board-scroll">
+
+        <!-- Dated before today. The list cannot scroll back to a day nobody can write to,
+             so these would otherwise vanish — and a lapsed schedule is the row that most
+             needs looking at. -->
+        @if (pastChips().length > 0) {
+          <div class="past-strip">
+            <div class="past-head">
+              Before today · {{ pastChips().length }}
+            </div>
+            @for (chip of pastChips(); track chip.itemId) {
+              <div class="past-row">
+                <span class="past-date">{{ chipDate(chip) }} {{ chip.time }}</span>
+                <div class="chip-wrap">
+                  <ng-container [ngTemplateOutlet]="chipRow" [ngTemplateOutletContext]="{ chip: chip }"></ng-container>
+                </div>
+              </div>
+            }
+          </div>
+        }
+
+        @for (row of dayRows(); track row.dateKey) {
+          <div class="day-row" [class.today]="row.isToday">
+            @if (row.isToday) {
+              <div class="day-date" #todayRow>
+                <span class="day-label">{{ row.label }}</span>
+                <span class="today-dot">today</span>
+              </div>
+            } @else {
+              <div class="day-date">
+                <span class="day-label">{{ row.label }}</span>
+              </div>
+            }
+
+            @for (slot of row.slots; track slot.time) {
+              <div class="slot"
+                   [class.past]="slot.isPast"
+                   [class.cadence]="slot.isCadence"
+                   [class.drop-ready]="draggingItemId() !== null && !slot.isPast"
+                   [class.drop-over]="dragOverKey() === slot.key"
+                   [matTooltip]="slotTooltip(slot)"
+                   (dragover)="onSlotDragOver(slot, $event)"
+                   (dragleave)="onDragLeaveTarget(slot.key)"
+                   (drop)="onSlotDrop(row, slot, $event)">
+                <div class="slot-label">{{ slot.label }}</div>
+                @for (chip of slot.chips; track chip.itemId) {
+                  <ng-container [ngTemplateOutlet]="chipRow" [ngTemplateOutletContext]="{ chip: chip }"></ng-container>
+                }
+              </div>
+            }
+
+            <!-- A schedule that is not on one of the three slots is shown at its real
+                 time rather than rounded into a slot it is not in. -->
+            @if (row.otherChips.length > 0) {
+              <div class="other-times">
+                <span class="other-label">other times</span>
+                <div class="other-chips">
+                  @for (chip of row.otherChips; track chip.itemId) {
+                    <div class="other-row">
+                      <span class="other-time">{{ chip.time }}</span>
+                      <div class="chip-wrap">
+                        <ng-container [ngTemplateOutlet]="chipRow" [ngTemplateOutletContext]="{ chip: chip }"></ng-container>
+                      </div>
+                    </div>
+                  }
+                </div>
+              </div>
+            }
+          </div>
+        }
+
+        <div class="board-foot">
+          <button mat-stroked-button (click)="loadMoreDays()">Load more days</button>
+          @if (beyondHorizon() > 0) {
+            <span class="beyond-note">
+              {{ beyondHorizon() }} scheduled item{{ beyondHorizon() === 1 ? ' is' : 's are' }}
+              further out than the {{ horizonDays() }} days loaded.
+            </span>
+          }
+        </div>
+      </div>
+    </section>
+  </div>
+
   <!-- What could not be read. A quietly shorter calendar is indistinguishable from a
        complete one, so every unreadable thing is counted and named here. -->
   @if (problems().length > 0 || orphanedSelections().length > 0 || faultyRecords().length > 0) {
-    <div class="faults">
-      <mat-icon>report_problem</mat-icon>
+    <details class="faults">
+      <summary>
+        <mat-icon>report_problem</mat-icon>
+        {{ problems().length + faultyRecords().length + orphanedSelections().length }}
+        thing(s) could not be read into this calendar
+      </summary>
       <div class="fault-lines">
         @if (problems().length > 0) {
           <div>
@@ -74,226 +224,44 @@
           </div>
         }
       </div>
-    </div>
+    </details>
   }
-
-  <!-- Colour is never the only encoding: every chip also carries the channel's initials,
-       and this legend is the key. Hues follow the registry's order. -->
-  <div class="legend">
-    @for (channel of legend(); track channel.channelId) {
-      <span class="legend-item">
-        <span class="swatch" [style.background]="channel.hue"></span>
-        <span class="legend-tag">{{ channel.tag }}</span>
-        {{ channel.name }}
-      </span>
-    }
-    @if (legend().length === 0) {
-      <span class="legend-item muted">no channels registered — every chip reads as unrouted</span>
-    }
-    <span class="legend-item">
-      <span class="swatch unrouted"></span>
-      <span class="legend-tag">—</span>
-      not routed
-    </span>
-    <span class="legend-item">
-      <mat-icon class="podcast-glyph">mic</mat-icon>
-      podcast episode
-    </span>
-  </div>
-
-  @if (armedItemId()) {
-    <div class="armed-bar">
-      <mat-icon>touch_app</mat-icon>
-      <span><strong>{{ armedTitle() }}</strong> is armed — click a day to give it a time.</span>
-      <button mat-button (click)="disarm()">Cancel</button>
-    </div>
-  }
-
-  <div class="calendar-body">
-
-    <!-- The tray is the work surface: the grid says what is handled, this says what is not. -->
-    <aside class="tray">
-      <div class="tray-header">Unscheduled · {{ tray().length }}</div>
-
-      @if (tray().length === 0) {
-        <div class="empty-note">
-          Nothing unscheduled — every publish record has a date.
-        </div>
-      }
-
-      @for (item of tray(); track item.itemId) {
-        <div class="tray-item"
-             [class.armed]="isArmed(item.itemId)"
-             [class.unrouted]="item.unrouted">
-          <span class="bar" [style.background]="item.hue"></span>
-          <div class="tray-body" (click)="armTray(item)" [class.locked]="!item.schedulable">
-            <div class="tray-title" [title]="item.title">{{ item.title }}</div>
-            <div class="tray-meta">
-              <span class="tag">{{ item.channelTag }}</span>
-              @if (item.isPodcast) { <mat-icon class="podcast-glyph">mic</mat-icon> }
-              <span class="ab">A/B {{ item.abCount }}/3</span>
-              @if (item.hasThumbnail) { <mat-icon class="thumb-ok">image</mat-icon> }
-              @if (!item.schedulable) { <span class="locked-note">published</span> }
-            </div>
-          </div>
-          <button mat-icon-button class="open-report" (click)="openReport(item.itemId)"
-                  matTooltip="Open the report">
-            <mat-icon>open_in_new</mat-icon>
-          </button>
-        </div>
-      }
-    </aside>
-
-    @if (view() === 'month') {
-      <section class="grid">
-        <div class="weekday-row">
-          @for (day of weekdays; track day) {
-            <div class="weekday">{{ day }}</div>
-          }
-        </div>
-
-        @for (week of weeks(); track $index) {
-          <div class="week">
-            @for (cell of week; track cell.dateKey) {
-              <div class="day"
-                   [class.out-of-month]="!cell.inMonth"
-                   [class.today]="cell.isToday"
-                   [class.past]="cell.isPast"
-                   [class.legal-target]="cellTakesArmed(cell)"
-                   [class.illegal-target]="armedItemId() && cell.isPast"
-                   (click)="clickDay(cell)">
-                <div class="day-number">
-                  {{ cell.dayOfMonth }}
-                  @if (cell.isToday) { <span class="today-dot">today</span> }
-                </div>
-
-                @for (chip of cell.chips; track chip.itemId) {
-                  <div class="chip"
-                       [class.stale]="chip.state === 'stale'"
-                       [class.published]="chip.state === 'published'"
-                       [class.unrouted]="chip.unrouted"
-                       [matTooltip]="chip.channelName + ' · ' + chip.status + (chip.staleNote ? ' · ' + chip.staleNote : '')">
-                    <span class="chip-bar" [style.background]="chip.hue"></span>
-                    <span class="chip-body" (click)="editChip(chip, $event)"
-                          [class.locked]="!chip.schedulable">
-                      <span class="chip-time">{{ chip.time }}</span>
-                      <span class="chip-tag">{{ chip.channelTag }}</span>
-                      @if (chip.isPodcast) { <mat-icon class="podcast-glyph">mic</mat-icon> }
-                      <span class="chip-title">{{ chip.title }}</span>
-                      @if (chip.abPending) { <span class="ab-badge">A/B</span> }
-                      @if (chip.state === 'published') { <mat-icon class="lock">lock</mat-icon> }
-                    </span>
-                    <button mat-icon-button class="open-report" (click)="openReport(chip.itemId); $event.stopPropagation()"
-                            matTooltip="Open the report">
-                      <mat-icon>open_in_new</mat-icon>
-                    </button>
-                  </div>
-
-                  @if (chip.state === 'stale') {
-                    <div class="stale-note">⚠ {{ chip.staleNote }}</div>
-                  }
-                  @if (chip.unrouted) {
-                    <div class="unrouted-note">no channel</div>
-                  }
-                }
-
-                <!-- The inline confirm: same cell, visible time, offset printed. -->
-                @if (popover(); as open) {
-                 @if (open.dateKey === cell.dateKey) {
-                  <div class="popover" (click)="$event.stopPropagation()">
-                    <div class="popover-date">{{ cell.dateKey }}</div>
-                    <div class="popover-row">
-                      <input type="time"
-                             [ngModel]="timeDraft()"
-                             (ngModelChange)="timeDraft.set($event)"
-                             (keydown.enter)="confirmSchedule()"
-                             (keydown.escape)="closePopover()"
-                             autofocus />
-                      <span class="offset">{{ popoverOffsetLabel() }}</span>
-                    </div>
-                    <div class="popover-hint">{{ timeHint() }}</div>
-
-                    @if (popoverError()) {
-                      <div class="popover-error">{{ popoverError() }}</div>
-                    }
-
-                    <div class="popover-actions">
-                      <button mat-flat-button color="primary"
-                              [disabled]="popoverSaving()"
-                              (click)="confirmSchedule()">Set</button>
-                      @if (open.existing) {
-                        <button mat-button [disabled]="popoverSaving()" (click)="clearSchedule()">Clear</button>
-                      }
-                      <button mat-button [disabled]="popoverSaving()" (click)="closePopover()">Cancel</button>
-                    </div>
-                  </div>
-                 }
-                }
-              </div>
-            }
-          </div>
-        }
-
-        @if (chipsThisMonth() === 0) {
-          <div class="empty-note grid-empty">No scheduled items this month.</div>
-        }
-      </section>
-    }
-
-    @if (view() === 'agenda') {
-      <section class="agenda">
-        @if (agenda().length === 0) {
-          <div class="empty-note">Nothing is scheduled, in any month.</div>
-        } @else {
-          <table>
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Time</th>
-                <th>Channel</th>
-                <th>Title</th>
-                <th>State</th>
-                <th>A/B</th>
-                <th>Thumb</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              @for (chip of agenda(); track chip.itemId) {
-                <tr [class.stale]="chip.state === 'stale'" [class.published]="chip.state === 'published'">
-                  <td>{{ agendaDate(chip) }}</td>
-                  <td>{{ chip.time }}</td>
-                  <td>
-                    <span class="swatch" [style.background]="chip.hue"></span>
-                    <span class="tag">{{ chip.channelTag }}</span>
-                    @if (chip.isPodcast) { <mat-icon class="podcast-glyph">mic</mat-icon> }
-                  </td>
-                  <td class="title-cell" [title]="chip.title">{{ chip.title }}</td>
-                  <td>
-                    @if (chip.state === 'published') { <span class="state published">published</span> }
-                    @if (chip.state === 'stale') { <span class="state stale">⚠ {{ chip.staleNote }}</span> }
-                    @if (chip.state === 'scheduled') { <span class="state">scheduled</span> }
-                    @if (chip.unrouted) { <span class="state unrouted">no channel</span> }
-                  </td>
-                  <td>{{ chip.abCount }}/3</td>
-                  <td>{{ chip.hasThumbnail ? '✓' : '—' }}</td>
-                  <td class="row-actions">
-                    @if (chip.schedulable) {
-                      <button mat-icon-button (click)="moveFromAgenda(chip, $event)"
-                              matTooltip="Move this — opens its day in the month grid">
-                        <mat-icon>edit_calendar</mat-icon>
-                      </button>
-                    }
-                    <button mat-icon-button (click)="openReport(chip.itemId)" matTooltip="Open the report">
-                      <mat-icon>open_in_new</mat-icon>
-                    </button>
-                  </td>
-                </tr>
-              }
-            </tbody>
-          </table>
-        }
-      </section>
-    }
-  </div>
 </div>
+
+<!-- One chip, rendered identically wherever it lands: in a slot, in a day's other-times
+     area, or in the before-today strip. -->
+<ng-template #chipRow let-chip="chip">
+  <div class="chip"
+       [class.stale]="chip.state === 'stale'"
+       [class.published]="chip.state === 'published'"
+       [class.unrouted]="chip.unrouted"
+       [class.dimmed]="chip.dimmed"
+       [class.dragging]="draggingItemId() === chip.itemId"
+       [draggable]="chip.schedulable"
+       (dragstart)="onDragStart(chip.itemId, $event)"
+       (dragend)="onDragEnd()"
+       [matTooltip]="chip.channelName + ' · ' + chip.status + (chip.staleNote ? ' · ' + chip.staleNote : '')">
+    <span class="chip-bar" [style.background]="chip.hue"></span>
+    <span class="chip-body" (click)="openReport(chip.itemId)">
+      <span class="chip-tag">{{ chip.channelTag }}</span>
+      @if (chip.isPodcast) { <mat-icon class="podcast-glyph">mic</mat-icon> }
+      <span class="chip-title">{{ chip.title }}</span>
+      @if (chip.abPending) { <span class="ab-badge">A/B</span> }
+      @if (chip.state === 'published') { <mat-icon class="lock">lock</mat-icon> }
+    </span>
+    <button mat-icon-button class="open-report"
+            (click)="openReport(chip.itemId); $event.stopPropagation()"
+            matTooltip="Open the report">
+      <mat-icon>open_in_new</mat-icon>
+    </button>
+  </div>
+  @if (chip.state === 'stale') {
+    <div class="stale-note">⚠ {{ chip.staleNote }}</div>
+  }
+  @if (chip.unrouted) {
+    <div class="unrouted-note">no channel</div>
+  }
+  @if (chip.unknownChannel) {
+    <div class="unrouted-note">{{ chip.channelName }}</div>
+  }
+</ng-template>
