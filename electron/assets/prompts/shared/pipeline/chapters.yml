@@ -22,12 +22,13 @@
 #   — a declared warning, never a rewrite.
 # - REAL NAMES IN THE EXAMPLES, WITH THE RISK STATED. A prompt example naming a real person can
 #   leak into outputs about a DIFFERENT unnamed person of the same archetype, deterministically,
-#   at temperature 0. The operator supplied these titles as the target register and directed
-#   they be used verbatim. What makes that a managed risk: the grounding check tests every
-#   proper noun in a returned title against that chapter's own transcript, so a leaked "Gene
-#   Bailey" is DETECTED and reported rather than shipping unnoticed. If those warnings start
-#   naming these example names on unrelated videos, that is the leak, and the fix is to replace
-#   the examples — not to add a ban list.
+#   at temperature 0. The 2026-08-24 night minimal rewrite (LEDGER #169) removed the Gene Bailey
+#   register examples along with the topic-form spec they anchored — five harness arms showed
+#   the stage-3 bodies concrete WITHOUT them and the operator's bloat diagnosis held. The few
+#   examples left ("God's People", "this is the pastor") are the operator's own promo and
+#   attribution anchors. The managed risk stands: the grounding check tests every proper noun
+#   in a returned title against that chapter's own transcript, so any leaked example name is
+#   DETECTED and reported rather than shipping unnoticed.
 
 # Stage 1 — read the WHOLE transcript in one call and report where the chapters begin.
 #
@@ -99,33 +100,16 @@ whole_transcript_chapters: |-
 #
 # Placeholders: {number}, {video}, {context_lines}, {entity_scaffold}, {transcript}
 summarize_chapter: |-
-  Label chapter {number} of a video transcript.
+  Title chapter {number} of a video transcript.
   Video: {video}
   {context_lines}
   Produce:
-  - a title: one line (max ~15 words) naming what this chapter is about.
+  - a title: one line, up to 15 words — the specific people, claims and events in this stretch, concrete enough that it could only be this video.
   - a summary: 2-3 sentences on what this stretch of the video covers.
 
-  How to write the title:
-  - Title the CONTENT itself, in topic form: a bare noun phrase, or a gerund phrase. Build it around the specific people, claims and events this chapter's transcript contains.
-  - Titles in exactly the right form:
-    - "Gene Bailey's chapter on Christian nationalist action and the David and Goliath framing"
-    - "Debunking Gene Bailey's misreading of Luke 19:13 and his call to occupy territory"
-    - "Gene Bailey's use of Jabez, D.L. Moody, and Isaiah to justify Christian political takeover"
-    - "Roswell and the UAP disclosure order"
-  - Every name in your answer comes from the transcript below. Where the transcript names a person, organisation, story or claim, put that name in the title; where it says only "the mayor", the title says "the mayor".
-  - Where a stretch is somebody's response to something rather than a claim of its own, title the claim and the response as content: "The bridge contract claim, rebutted"; "Patreon plug and a promotion of the book Was Hitler an Atheist"; "Sign-off and a book promotion".
-  - The closing stretch of a video is a chapter of content like the rest: title the thing it closes on and the verdict passed on it, in the same topic form — "The closing prayer, and a final verdict on Gene Bailey's takeover call"; "Gene Bailey's takeover call condemned, and a sign-off". The verdict is itself content: name the claim it lands on and what that claim is called.
-
-  How to write the summary:
-  - The same topic form as the title, in 2-3 sentences: the claims, the people named in the transcript, and what is said about them.
-  - Cover the whole chapter. Where it moves through more than one thing, say what it spends most of itself on.
-
-  For both fields:
-  - Say what is there, plainly. Straight description, no colons, no part numbers.
-  - Attribution follows the first person: a testimony, a conversion story, a claim told in "I" belongs to the person telling it — never to the person it is addressed to, prayed over, or told about. Where the video's own commentary names who is speaking ("he's talking to Jake right now", "this is the pastor"), that identification governs. And every characterization of who is being addressed and whose money, land, group or grievance is meant comes from the words in the transcript: an audience or a group the transcript does not name stays unnamed.
-  - Name the concrete subject matter of this stretch specifically enough that the answer could not be swapped with a chapter of any other video.
-  - A sponsor read, a Patreon plug, a channel promo or a sign-off simply says that is what it is. The creator's own promotions — {promoted_items} — follow that rule: a stretch that IS one of them says so ("Patreon plug and a promotion of the book God's People"), and one mentioned in passing stays out of the title and the summary, which name the content around it.
+  Every name in your answer comes from the transcript below: where the transcript names a person, organisation, story or claim, use that name; where it says only "the mayor", say "the mayor". An audience or a group the transcript does not name stays unnamed.
+  Attribution follows the first person: a testimony, a conversion story, a claim told in "I" belongs to the person telling it — never to the person it is addressed to, prayed over, or told about. Where the video's own commentary names who is speaking ("he's talking to Jake right now", "this is the pastor"), that identification governs.
+  A stretch that IS one of the creator's own promotions — {promoted_items} — simply says that is what it is ("Patreon plug and a promotion of the book God's People"); one mentioned in passing stays out of the title and the summary, which name the content around it.
   {entity_scaffold}
   Output the title on the FIRST line, then the summary on the lines after it — plain text, nothing else: no labels, no numbering, no JSON.
 
@@ -155,40 +139,18 @@ summarize_chapter: |-
 #
 # Placeholders: {number}, {video}, {context_lines}, {entity_scaffold}, {transcript}
 summarize_chapter_tagged: |-
-  Label chapter {number} of a video transcript.
+  Title chapter {number} of a video transcript.
   Video: {video}
   {context_lines}
-  The transcript below is tagged by speaker. HOST: is the creator of this video talking. CLIP: is footage he is playing and reacting to — those words are somebody else's, and the claims in them are not his. UNSURE: is a line that runs across a cut and contains both of them, so the words on it belong to nobody.
+  The transcript below is tagged by speaker. HOST: is the creator of this video talking. CLIP: is footage he is playing and reacting to — those words are somebody else's, and the claims in them are not his. UNSURE: is a line that runs across a cut and contains both of them, so the words on it belong to nobody: read it for its subject matter, and take every attribution you make from the HOST and CLIP lines around it.
 
   Produce:
-  - a title: one line (max ~15 words) naming what this chapter is about.
+  - a title: one line, up to 15 words — the specific people, claims and events in this stretch, concrete enough that it could only be this video. A claim in a CLIP line belongs to the footage and the HOST lines are the response to it: write the chapter around that relation, and where the HOST lines reach a verdict, carry it.
   - a summary: 2-3 sentences on what this stretch of the video covers.
 
-  How to write the title:
-  - Title the CONTENT itself, in topic form: a bare noun phrase, or a gerund phrase. Build it around the specific people, claims and events this chapter's transcript contains.
-  - Titles in exactly the right form:
-    - "Gene Bailey's chapter on Christian nationalist action and the David and Goliath framing"
-    - "Debunking Gene Bailey's misreading of Luke 19:13 and his call to occupy territory"
-    - "Gene Bailey's use of Jabez, D.L. Moody, and Isaiah to justify Christian political takeover"
-    - "The bridge contract claim, rebutted"
-  - Every name in your answer comes from the transcript below. Where the transcript names a person, organisation, story or claim, put that name in the title; where it says only "the mayor", the title says "the mayor".
-  - Where a stretch is somebody's response to something rather than a claim of its own, title the claim and the response as content: "The bridge contract claim, rebutted"; "Patreon plug and a promotion of the book Was Hitler an Atheist"; "Sign-off and a book promotion".
-  - The closing stretch of a video is a chapter of content like the rest: title the thing it closes on and the verdict passed on it, in the same topic form — "The closing prayer, and a final verdict on Gene Bailey's takeover call"; "Gene Bailey's takeover call condemned, and a sign-off". The verdict is itself content: name the claim it lands on and what that claim is called.
-
-  How to use the tags:
-  - A claim in a CLIP line belongs to the footage; the HOST lines are the response to it. Write the chapter around the claim that is actually being made and the response it gets, in that relation.
-  - Where the HOST lines reach a verdict, carry it — as the content it is ("the bridge contract claim, rebutted").
-  - An UNSURE line is evidence that something was said and evidence of nothing about who said it. Read it for the subject matter, and take every attribution you make from the HOST and CLIP lines around it.
-
-  How to write the summary:
-  - The same topic form as the title, in 2-3 sentences: the claims, the people named in the transcript, and what is said about them.
-  - Cover the whole chapter. Where it moves through more than one thing, say what it spends most of itself on.
-
-  For both fields:
-  - Say what is there, plainly. Straight description, no colons, no part numbers.
-  - Attribution follows the first person: a testimony, a conversion story, a claim told in "I" belongs to the person telling it — never to the person it is addressed to, prayed over, or told about. Where the video's own commentary names who is speaking ("he's talking to Jake right now", "this is the pastor"), that identification governs. And every characterization of who is being addressed and whose money, land, group or grievance is meant comes from the words in the transcript: an audience or a group the transcript does not name stays unnamed.
-  - Name the concrete subject matter of this stretch specifically enough that the answer could not be swapped with a chapter of any other video.
-  - A sponsor read, a Patreon plug, a channel promo or a sign-off simply says that is what it is. The creator's own promotions — {promoted_items} — follow that rule: a stretch that IS one of them says so ("Patreon plug and a promotion of the book God's People"), and one mentioned in passing stays out of the title and the summary, which name the content around it.
+  Every name in your answer comes from the transcript below: where the transcript names a person, organisation, story or claim, use that name; where it says only "the mayor", say "the mayor". An audience or a group the transcript does not name stays unnamed.
+  Attribution follows the first person: a testimony, a conversion story, a claim told in "I" belongs to the person telling it — never to the person it is addressed to, prayed over, or told about. Where the video's own commentary names who is speaking ("he's talking to Jake right now", "this is the pastor"), that identification governs.
+  A stretch that IS one of the creator's own promotions — {promoted_items} — simply says that is what it is ("Patreon plug and a promotion of the book God's People"); one mentioned in passing stays out of the title and the summary, which name the content around it.
   {entity_scaffold}
   Output the title on the FIRST line, then the summary on the lines after it — plain text, nothing else: no labels, no numbering, no JSON.
 

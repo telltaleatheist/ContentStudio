@@ -1,39 +1,16 @@
 # The titles instruction block, shared by every channel.
 #
-# It was byte-identical across telltale, fireside and unfiltered; unfiltered's only real
-# difference is its multi-part title FORMAT, which is now channel data ({title_format}) rather
-# than a fourth copy of this section. Shorts and Spreaker are genuinely different jobs and
-# carry their own `overrides` entry below.
+# REWRITTEN TO THE MINIMAL FORM 2026-08-24 night (operator-directed; LEDGER #168). The
+# 20-bullet version — framing taxonomy, swap test, front-load rules, anchor quotas — measured
+# WORSE than this on the same model and transcript: the operator's diagnosis was that the
+# important instruction was drowned out, and five harness arms (opus x3 register variants,
+# opus subject-input, qwen 27B) confirmed it. The core is "find the underlying argument and
+# sell that"; everything else here is either a channel law or a parse contract. The full
+# history of the old block, including the nine defects fixed on the 2026-08-22 consolidation,
+# is in git history and LEDGER.
 #
-# NINE DEFECTS WERE FIXED ON THE WAY IN. Each is listed here because the wording that replaced
-# it looks arbitrary without the reason:
-#
-#  1. QUESTION-TITLE CONTRADICTION. The legal block offered "Did X really...?" as a safe way to
-#     frame an allegation while the runtime A/B block was telling the model question titles
-#     lose. Attributed-claim phrasing ("accused of") is now the only legal-safe example given,
-#     in editorial-core.yml's `legal` block; the question example is gone.
-#  2. DEAD LENGTH FLOOR. "45-70 characters" contradicted the required "one short punchy title
-#     (4-6 words)", which cannot reach 45. It is a 70-character CEILING plus the
-#     hook-inside-45 rule, and nothing else.
-#  3. "Name names. Always." contradicted "if the subject is not widely known, lead with the
-#     deed". The nuanced rule stands; the absolute is gone (editorial-core.yml).
-#  4. FROZEN A/B CITATIONS. "colon titles lost 25 of 31", "questions lost 14 of 17", "digits
-#     underperformed" were baked numbers from one snapshot. The runtime CHANNEL PERFORMANCE
-#     DATA block (analytics/ab-title-rules.ts) derives those same three traits from live data,
-#     with provenance and a strong/weak band. This file keeps the plain style guidance and no
-#     numbers.
-#  5. The "[bracketed tag]" suggestion was unevidenced and pulled against the say-it-out-loud
-#     principle. Gone.
-#  6. "ASCII characters only" in the self-check banned "Beyoncé". It now bans emoji and smart
-#     punctuation and allows diacritics in proper names.
-#  7. "Do not require question-format titles" was a note to the prompt's AUTHOR that shipped to
-#     the model. Gone.
-#  8. The internal-analysis step claimed the search phrase "drives the description's first
-#     sentence and the tags". Neither field is written by this call any more (DescriptionUnit
-#     and code-assembled tags). Reworded to what the phrase does for a TITLE.
-#  9. GROUNDING is checked in CODE, not asked for in the prompt: every proper noun in a
-#     generated title must appear in the transcript or the chapter details, one re-ask, then
-#     the title is KEPT with a declared warning (metadata-tasks.ts, chapter-title-quality.ts).
+# The shorts and spreaker overrides below are DIFFERENT JOBS and still carry their older
+# long-form blocks — not yet re-measured against a minimal form.
 #
 # `{titles_count}` and `{title_format}` are channel data slots (prompts/channels/*.yml).
 section: TITLES
@@ -41,34 +18,22 @@ section: TITLES
 instructions: |-
   ## TITLES
 
-  - Generate {titles_count} options that represent genuinely DIFFERENT ANGLES. Apply the swap test as you go: if two of your titles could be exchanged and nobody would notice, one of them is redundant — replace it with a new angle rather than a new wording.
-  - Before generating, internally identify at least 5 distinct framings, then distribute titles across them. Framing types include:
-    - Plain-language reframe (strip the euphemism, say what they're actually doing)
-    - Person-focused (lead with WHO, make it personal)
-    - "Wait, what?" angle (lead with the most absurd specific detail)
-    - Schadenfreude (the subject embarrassing themselves)
-    - Protective outrage (frame as a threat to real people)
-    - Investigative reveal (something uncovered or underreported)
-    - Confrontational/direct address (talk to the audience or subject)
-    - Counter-narrative (turn the subject's self-image against them)
-    - Pattern/trend (connect to a bigger picture)
-    - Simple declarative (just state the damning fact plainly)
+  - Generate {titles_count} youtube titles.
+  - Find the underlying argument behind this video and sell that.
+  - Write them like you'd say them to a friend — blunt, spoken, a verdict.
+  - Call people what the audience recognizes — their movement, their side, their role; a name alone only when the name itself is famous.
+  - When the subject has a euphemism for what they're doing, put it in quotes.
+  - All lowercase.
   {title_format}
-  - Front-load the subject name OR the plain-language reframe in the first 3-5 words. Where the subject's own terminology belongs in the title at all, it follows the reframe.
-  - Sentence case, exactly like these: "Braden Sorbo bragged about calling ICE on 23 people"; "Right-wing media blew up a case to cover a hate crime". The first word and real names take capitals, and every other word is lowercase — a capitalized word mid-title is a claim that it is somebody's name.
-  - Every title is about the video's subject. The channel's own promotions — {promoted_items} — are ad reads inside the video, and every title is built from the content around them.
-  - Include at least one simple declarative title and one short punchy title (4-6 words).
-  - TRANSCRIPT/SUMMARY inputs: anchor at least 5 titles to specific moments, claims, or quotes from the input
-  - SHORT DESCRIPTION inputs: keep to the quotes, admissions and reactions the input states or clearly implies
-  - Person-focused titles lead with recognizable names. Where the subject is not widely known, lead with what they DID and let the name follow — a viewer won't click on a name they don't recognize.
-  - The top 3 titles are for YouTube's Test & Compare, which measures watch time per impression rather than clicks. Send it three of your genuinely distinct angles — different emotional appeals, different entry points — so the test measures something. A click-baity variant viewers abandon will lose.
+  - Every title is about the video's subject. The channel's own promotions — {promoted_items} — are ad reads inside the video; the titles are built from the content around them.
+  - The top 3 titles are for YouTube's Test & Compare, which measures watch time per impression: make them genuinely different angles on the argument.
+  - Work out the argument before you write, but answer with the titles alone: one per line, nothing else.
 
 # The default title FORMAT line, used where a channel declares no `title_format` of its own.
 # It is a slot rather than a fixed line because Unfiltered's multi-part convention deliberately
 # runs longer than any cap (see prompts/channels/unfiltered.yml).
 default_title_format: |-
-  - Length: 70 characters is the ceiling. The hook must land inside the FIRST 45 characters — that is all mobile search results and notifications show.
-    - Write the title as one unbroken claim; prefer that to a `Topic: elaboration` construction.
+  - Length: 50 to 70 characters, with the hook inside the FIRST 45 — that is all mobile search results and notifications show.
 
 # Lines this field contributes to the FINAL SELF-CHECK, assembled per GROUP.
 #
@@ -77,9 +42,9 @@ default_title_format: |-
 # the same model — the shipped default — both sets of lines ride together and the
 # cross-field check becomes followable again.
 self_check:
-  - "Each title: hook inside the first 45 characters, none over 70 total"
-  - "Each title in sentence case: capitals on the first word and real names only"
-  - "Swap test: no two titles interchangeable"
+  - "Each title: 50-70 characters, hook inside the first 45"
+  - "Each title all lowercase"
+  - "Top 3: genuinely different angles on the argument"
 
 overrides:
   shorts:
