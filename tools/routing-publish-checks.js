@@ -204,7 +204,7 @@ check('the modal is per-field: six big rows, tags row-less, cloud rungs everywhe
     }
   }
   const chapters = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'chapters');
-  eq(chapters.options.join(','), 'qwen38-27b,sonnet5,opus5,haiku45', 'chapters offer the capable rungs only');
+  eq(chapters.options.join(','), 'qwen38-27b,sonnet5,opus5,haiku45,claude-cli,claude-cli-sonnet', 'chapters offer the capable rungs plus the subscription rungs');
 });
 
 check('chapter resolution reads the chapters entry, and the view carries the modal flags', () => {
@@ -238,7 +238,7 @@ check('the self-check is assembled per group and never asks for a field the grou
   if (/[Tt]humbnail/.test(titlesOnly)) {
     throw new Error('a titles-only group was handed a thumbnail check:\n' + titlesOnly);
   }
-  if (!titlesOnly.includes('hook inside the first 45 characters')) {
+  if (!titlesOnly.includes('hook inside the first 45')) {
     throw new Error('the titles group lost its own title check:\n' + titlesOnly);
   }
 
@@ -259,7 +259,7 @@ check('the self-check is assembled per group and never asks for a field the grou
   if (!/covers angles the titles above don't lead with/.test(thumbWithTitlesGiven)) {
     throw new Error('a thumbnail call HANDED the titles lost the cross-field check:\n' + thumbWithTitlesGiven);
   }
-  if (/hook inside the first 45 characters/.test(thumbWithTitlesGiven)) {
+  if (/hook inside the first 45/.test(thumbWithTitlesGiven)) {
     throw new Error('a field supplied as INPUT contributed its own check lines:\n' + thumbWithTitlesGiven);
   }
 
@@ -297,16 +297,20 @@ check('the titles prompt carries none of the nine defects it was rewritten to re
     if (all.includes(needle)) throw new Error(`"${needle}" is still in the prompt (${why})`);
   }
 
-  if (!titles.includes('70 characters is the ceiling')) throw new Error('the 70-character ceiling is missing');
+  if (!titles.includes('50 to 70 characters')) throw new Error('the 50-70 length law is missing');
   if (!editorial.includes('accused of')) throw new Error('the attributed-claim legal example is missing');
   if (!/accented letters in real names/i.test(selfCheck)) {
     throw new Error('the self-check no longer allows diacritics in real names');
   }
 
-  // Stated ONCE where the titles are asked for, not four times across the set.
+  // The minimal rewrite's core (LEDGER #168): the argument instruction is present, and the
+  // swap-test scaffolding it replaced is gone from the shared block (overrides keep their own).
+  if (!titles.includes('underlying argument')) {
+    throw new Error('the underlying-argument instruction — the core of the minimal rewrite — is missing');
+  }
   const swapMentions = (all.match(/swap test/gi) || []).length;
-  if (swapMentions !== 2) {
-    throw new Error(`the "no rephrasings" rule appears ${swapMentions} times; it should be the rule plus one check`);
+  if (swapMentions !== 0) {
+    throw new Error(`the swap test appears ${swapMentions} times in the shared assembly; the minimal rewrite removed it`);
   }
 });
 
