@@ -1437,7 +1437,7 @@ export class MetadataGeneratorService {
       numCtx: params.chapterNumCtx,
       // The queue-time selector's pick; 'detailed' is the declared default for a renderer
       // that did not send one.
-      grain: params.chapterGrain ?? 'detailed',
+      grain: params.chapterGrain ?? 'broad',
       // The detail call's second required context input: what the video IS. A filename like
       // "2026-08-19 jesse watters mocks democrat candidates" tells it who is speaking and
       // why, which is what grounds the names it writes.

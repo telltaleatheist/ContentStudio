@@ -78,7 +78,7 @@ export class InputsStateService {
    * streams), where the chapters are the separate stories. Persisted like the prompt set:
    * the operator's last pick carries to the next batch.
    */
-  chapterGrain = signal<'detailed' | 'broad' | 'stories'>('detailed');
+  chapterGrain = signal<'detailed' | 'broad' | 'stories'>('broad');
 
   // Generation state
   generationState = signal<GenerationState>({

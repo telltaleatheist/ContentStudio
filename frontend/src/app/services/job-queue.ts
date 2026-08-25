@@ -65,7 +65,7 @@ export class JobQueueService {
           // Reset interrupted 'processing' jobs to pending. Also reset 'held' jobs:
           // their transcript lived only in the (now-restarted) main process, so the
           // prompt can't be sent anymore — they must be re-transcribed.
-          chapterGrain: job.chapterGrain ?? 'detailed',
+          chapterGrain: job.chapterGrain ?? 'broad',
           status: (job.status === 'processing' || job.status === 'held') ? 'pending' as const : job.status,
           currentlyProcessing: (job.status === 'processing' || job.status === 'held') ? '' : job.currentlyProcessing,
           heldPrompt: job.status === 'held' ? undefined : job.heldPrompt
