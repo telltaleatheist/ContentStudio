@@ -32,57 +32,80 @@
 
 # Stage 1 — read the WHOLE transcript in one call and report where the chapters begin.
 #
-# PROVENANCE: the cadence rules are the deleted 27B build's, measured as `restoration v2` on
-# 2026-08-22 (kit at /tmp/contentstudio-chapter-eval); the quoting rules are the `llm-beats`
-# measurement, which mapped 137 of 138 quoted first sentences across eight videos with none out
-# of order — the FULL first sentence at six words or longer, long enough to be unique in a
-# whole-video search.
+# THREE GRAINS SINCE 2026-08-24 NIGHT (operator's design; LEDGER #170): the operator picks
+# what is being detected, the model decides the count inside that grain's band.
+#   - whole_transcript_detailed — the DEFAULT: a standalone video's internal turns (the next
+#     clip on the same story, the article's next claim). Validated on the duffy transcript:
+#     10 chapters, ads isolated, no slivers.
+#   - whole_transcript_broad — the same subject in larger pieces. Validated on duffy: 7.
+#   - whole_transcript_stories — compilations (weekly podcast merges, streams): a run of
+#     separate stories. Validated on f1/f3/u1/u2 against the production baseline: counts in
+#     band, every ad isolated two-sided, boundaries on the same turns.
 #
-# THE ANSWER IS LINES, NOT JSON (operator's ruling 2026-08-24: no JSON for these calls unless
-# absolutely necessary). This call asks for exactly one thing per chapter — the verbatim
-# sentence it opens on — so the answer is one sentence per line and nothing else. Labels are
-# GONE from this stage entirely: every chapter is named by stage 3, which reads that chapter's
-# own transcript, so nothing here can name a chapter from a distance. (The nameless-example
-# leak measured 2026-08-23 died with the labels: there are no example labels here to leak.)
+# ALL THREE ARE MINIMAL BODIES, cut from the 600-word 2026-08-22 body the same night the
+# titles prompt went minimal, and re-measured piece by piece: the bare six-line form
+# overcounted 2-4x on every fixture until the size band returned, and the size band alone
+# swallowed ad chapters until the promo exception returned — each surviving line is there
+# because an arm without it failed. The graduated stories band is the restoration-v2
+# measurement; the verbatim-quote contract is the llm-beats measurement (137/138 mapped).
 #
-# THE BAND IS GRADUATED — see the git history of this key for the measurement; a flat floor
-# cost four real boundaries on short videos whose truths sit 30 seconds to 2.5 minutes apart.
+# PROVENANCE of the laws that survive in every grain: the model NEVER emits a timestamp
+# (quotes are mapped by code); the count is the MODEL'S inside the operator's grain; the
+# opening chapter needs no entry (the mapper synthesizes 0:00, and an emitted first line
+# would double it); the answer is LINES, not JSON.
 #
-# WHY THE RUNTIME IS STATED IN WORDS. The transcript deliberately carries no timestamps —
-# chapter-transcript.ts's law, the reason a quote-mapped time is a measurement — so the model
-# is TOLD the runtime, once, as a fact. It is not a count and not a target.
+# ON A TRANSCRIPT TOO LONG FOR ONE CALL the code sends the selected body over a ROLLING
+# WINDOW; each window is told its own runtime. Nothing in these bodies knows about that.
 #
-# ON A TRANSCRIPT TOO LONG FOR ONE CALL the code sends this same body over a ROLLING WINDOW:
-# as much transcript as fits, cut on cue boundaries, starting at 0:00; each next window starts
-# at the LAST boundary the previous one returned, so the tail past that boundary is re-read in
-# full context and no artificial seam ever splits a subject. Each window is told its own
-# runtime. Nothing in this body knows about that.
-#
-# Placeholders: {duration} (e.g. "42 minutes", "1 hour 12 minutes"), {promoted_items},
-# {transcript}
-whole_transcript_chapters: |-
+# Placeholders (all three): {duration}, {promoted_items}, {transcript}
+whole_transcript_detailed: |-
   Below is the complete transcript of one video, with no timestamps. The video runs {duration}.
 
   TRANSCRIPT:
   {transcript}
 
-  The video moves through a series of distinct chapters: separate stories, separate people, separate claims, separate arguments. A new chapter starts wherever the speaker turns away from the subject they were on and takes up a different one, whether they announce it ("listen to this article", "by the way, if you didn't know who this guy was") or simply begin.
+  Split this video into youtube chapters. The video works through one subject; a new chapter starts where the focus moves within it — the next clip on the same story, the article's next claim, the next example taken up, the next person responding: the same subject, seen from its next angle.
 
-  Start a new chapter where the speaker turns to a different subject. How close together those turns sit is set by the runtime stated above:
-  - under 10 minutes: a short video moves quickly, and each separate source is its own chapter — a different clip, a different article, a different person, a different claim. Chapters here run as short as 30 to 60 seconds, and such a video usually has 3 to 6 of them.
-  - 10 to 30 minutes: each chapter covers at least a minute or two, and such a video usually has 3 to 6 of them.
-  - 30 minutes and longer: prefer fewer, longer chapters, each covering at least 3 to 4 minutes. A 30 to 60 minute video usually has 4 to 8 chapters, and a multi-hour video has roughly one chapter every 10 to 20 minutes.
-  Take the line that matches the runtime above, and inside it let the content decide the count. Where you are unsure whether a turn is a new chapter, keep it inside the chapter you are already in.
+  A chapter is a stretch, not a sliver: half a minute is as short as one runs, and a few seconds of connective tissue belong to the chapter beside them. A 10-minute video usually has 5 to 10 chapters, and a longer one carries roughly one every minute or two.
 
-  A chapter is a stretch of the video, never a sliver: at the fastest cadence above, half a minute is as short as a real chapter runs. A few seconds of connective tissue — introducing the next person, cueing up the next clip, finding a place in a recording — belong to a neighbouring chapter. When the thing introduced follows at once, the introduction is the new chapter's first sentence (the rule below). When a promotion cuts in between the introduction and the thing it introduces, the introduction rides at the tail of the chapter before it, and you report two sentences there: the promotion's first sentence, and then the introduced thing's own first words as the chapter after it.
+  An ad, promotion, or plug — {promoted_items} — is its own chapter however short it runs: report the sentence where it starts, and the first sentence of the content it returns to.
 
-  The creator advertises his own promotions inside videos — {promoted_items}. A stretch of the video that IS one of those promotions is its own chapter like any other, however short it runs: report the sentence where it starts — and where the video returns to content afterwards, report the first sentence of that content too, whether it takes up a new subject or picks the interrupted one back up, so the promotion's chapter contains the promotion and nothing else.
+  The opening chapter starts at the beginning of the video and needs no entry. For each chapter after it, report the FIRST sentence of that chapter, copied from the transcript above EXACTLY as it appears there, word for word, at least six words long — a sentence you reworded, tidied up or paraphrased points at the wrong moment.
 
-  Those counts include the opening chapter, which starts at the beginning of the video and needs no entry. Work through the transcript from the beginning to the end and report each chapter AFTER that first one, in the order they occur, and carry on to the end of the transcript so that the chapters cover the whole runtime.
+  Output ONE copied sentence per line, in the order the chapters occur — nothing else: no numbering, no labels, no commentary, no JSON.
 
-  For each chapter, report the FIRST sentence of that chapter, copied from the transcript above EXACTLY as it appears there, word for word, at least six words long. That is the sentence where the speaker turns toward the new subject, which is usually a beat EARLIER than the sentence that first explains it: if the speaker says "anyway, let's talk about the eggs" and explains three sentences later, the first sentence of the chapter is "anyway, let's talk about the eggs".
+whole_transcript_broad: |-
+  Below is the complete transcript of one video, with no timestamps. The video runs {duration}.
 
-  Your copied sentence is what fixes the chapter's position in the video, so a sentence you reworded, tidied up or paraphrased points at the wrong moment.
+  TRANSCRIPT:
+  {transcript}
+
+  Split this video into youtube chapters. The video works through one subject; a new chapter starts where the video moves to a distinctly different piece of it — a new person taken up, a new document or clip set, a new line of argument — and the claims inside one piece stay together.
+
+  A chapter is a stretch of a minute or several: a 10-minute video usually has 4 to 7 chapters, and a longer one carries roughly one every 2 to 4 minutes.
+
+  An ad, promotion, or plug — {promoted_items} — is its own chapter however short it runs: report the sentence where it starts, and the first sentence of the content it returns to.
+
+  The opening chapter starts at the beginning of the video and needs no entry. For each chapter after it, report the FIRST sentence of that chapter, copied from the transcript above EXACTLY as it appears there, word for word, at least six words long — a sentence you reworded, tidied up or paraphrased points at the wrong moment.
+
+  Output ONE copied sentence per line, in the order the chapters occur — nothing else: no numbering, no labels, no commentary, no JSON.
+
+whole_transcript_stories: |-
+  Below is the complete transcript of one video, with no timestamps. The video runs {duration}.
+
+  TRANSCRIPT:
+  {transcript}
+
+  Split this video into youtube chapters. The video is a run of separate stories; a new chapter starts where one story ends and a different one begins — a new story, claim, clip, or ad.
+
+  A chapter is a stretch of minutes, not seconds. How many that makes is set by the runtime stated above:
+  - under 10 minutes: usually 3 to 6 chapters
+  - 10 to 30 minutes: usually 3 to 6, each at least a minute or two
+  - 30 minutes and longer: usually 4 to 8, each covering at least 3 to 4 minutes
+
+  An ad, promotion, or plug — {promoted_items} — is its own chapter however short it runs: report the sentence where it starts, and the first sentence of the content it returns to.
+
+  The opening chapter starts at the beginning of the video and needs no entry. For each chapter after it, report the FIRST sentence of that chapter, copied from the transcript above EXACTLY as it appears there, word for word, at least six words long — a sentence you reworded, tidied up or paraphrased points at the wrong moment.
 
   Output ONE copied sentence per line, in the order the chapters occur — nothing else: no numbering, no labels, no commentary, no JSON.
 

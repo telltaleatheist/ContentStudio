@@ -71,6 +71,14 @@ export class InputsStateService {
    * resolves to nothing.
    */
   masterPromptSet = signal('');
+  /**
+   * What the chapter pipeline detects for every job queued from this page (LEDGER #170).
+   * 'detailed' is the default — a standalone video's internal turns; 'broad' groups the
+   * same subject into larger pieces; 'stories' is for compilations (podcast merges,
+   * streams), where the chapters are the separate stories. Persisted like the prompt set:
+   * the operator's last pick carries to the next batch.
+   */
+  chapterGrain = signal<'detailed' | 'broad' | 'stories'>('detailed');
 
   // Generation state
   generationState = signal<GenerationState>({
@@ -93,7 +101,8 @@ export class InputsStateService {
       const state = {
         inputItems: this.inputItems(),
         compilationMode: this.compilationMode(),
-        masterPromptSet: this.masterPromptSet()
+        masterPromptSet: this.masterPromptSet(),
+        chapterGrain: this.chapterGrain()
       };
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     });
@@ -107,6 +116,9 @@ export class InputsStateService {
         if (state.inputItems) this.inputItems.set(state.inputItems);
         if (state.compilationMode !== undefined) this.compilationMode.set(state.compilationMode);
         if (state.masterPromptSet) this.masterPromptSet.set(state.masterPromptSet);
+        if (state.chapterGrain === 'detailed' || state.chapterGrain === 'broad' || state.chapterGrain === 'stories') {
+          this.chapterGrain.set(state.chapterGrain);
+        }
       }
     } catch (error) {
       console.error('Failed to load inputs state from storage:', error);

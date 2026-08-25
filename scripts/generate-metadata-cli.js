@@ -134,6 +134,9 @@ Everything else:
   --route <f>=<m>      Route one field to one model for THIS run (repeatable), validated
                        against the app's own option lists, e.g. --route description=qwen38-27b.
                        The stored routing is never modified.
+  --grain <g>          What the chapter pipeline detects (LEDGER #170): detailed (default —
+                       a standalone video's internal turns), broad (fewer, bigger pieces),
+                       or stories (compilations). An unknown value fails the run by name.
   --assets <dir>       Prompt assets root. Default: <repo>/electron/assets/prompts.
   --claude-cli         Send every Claude call through \`claude -p --model sonnet\` (the Claude
                        Code subscription) instead of the metered API. ALWAYS sonnet, whatever
@@ -173,6 +176,13 @@ function parseArgs(argv) {
     else if (a === '--assets') args.assets = path.resolve(argv[++i]);
     else if (a === '--output-dir') args.outputDir = path.resolve(argv[++i]);
     else if (a === '--route') (args.routes = args.routes || []).push(argv[++i]);
+    else if (a === '--grain') {
+      args.grain = argv[++i];
+      if (!['detailed', 'broad', 'stories'].includes(args.grain)) {
+        console.error(`--grain must be detailed, broad, or stories (got "${args.grain}")`);
+        process.exit(1);
+      }
+    }
     else if (a === '--out') args.out = path.resolve(argv[++i]);
     else if (a === '--no-insights') args.noInsights = true;
     else if (a === '--recompute-insights') args.recomputeInsights = true;
@@ -367,9 +377,19 @@ async function main() {
     const JSON_NUDGE =
       'You are a helpful assistant. When asked to return JSON, output ONLY valid JSON with no ' +
       'markdown, no commentary, and no extra text. Start your response with { and end with }.';
+    // The claude-cli: routing rung dispatches to its own transport method (ai-manager's
+    // makeClaudeCliRequest, which honours the routed alias — opus since the operator's
+    // switch). A test run must not silently run opus where its banner promises sonnet, so
+    // the override pins that method's alias too. Same transport, still subscription — the
+    // pin is about the banner telling the truth, not about billing.
+    const realCliRequest = AIManagerService.prototype.makeClaudeCliRequest;
+    AIManagerService.prototype.makeClaudeCliRequest = function (prompt, _cliModel, plain) {
+      console.error(`  [claude-cli] routing named claude-cli:${_cliModel} -> pinned to sonnet for this test run`);
+      return realCliRequest.call(this, prompt, 'sonnet', plain);
+    };
     AIManagerService.prototype.makeClaudeRequest = function (prompt, model, plain) {
       const system = plain ? SYSTEM_PROMPTS.PLAIN_SYSTEM : JSON_NUDGE;
-      console.error(`  [claude-cli] ${model} -> claude -p --model opus (${prompt.length} chars)`);
+      console.error(`  [claude-cli] ${model} -> claude -p --model sonnet (${prompt.length} chars)`);
       return new Promise((resolve, reject) => {
         const child = spawn('claude', ['-p', '--model', 'sonnet', '--system-prompt', system], {
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -648,6 +668,9 @@ async function main() {
     jobName: path.basename(args.input),
     inputTranscripts: {},
     chapterNumCtx: settings.chapterNumCtx || undefined,
+    // What the chapter pipeline detects (LEDGER #170); absent = the declared default
+    // ('detailed'), same as the app's queue page preselects.
+    chapterGrain: args.grain,
     // Carried for parity with ipc-handlers' `generate-metadata`. It is a no-op on this call —
     // the generator only resolves a tagging mode when it is the one transcribing, and it is
     // handed `preTranscribedContent` here — but a params object that silently lacks a field the

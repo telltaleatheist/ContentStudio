@@ -1343,6 +1343,10 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // path nobody chose is worse than no path.
         speakerEnrollmentAudio: settings.speakerEnrollmentAudio || undefined,
         chapterNumCtx: settings.chapterNumCtx || undefined,
+        // What the chapter pipeline detects — the queue-time selector's pick, sent per run
+        // by the renderer (LEDGER #170). Absent (older renderer) means the declared
+        // default, applied at the construction site in metadata-generator.
+        chapterGrain: params.chapterGrain,
         // Per-task model routing, read from the store AT JOB TIME. The registry supplies
         // the defaults at the read site (metadata-routing.ts), never the store's
         // `defaults` block: a seeded default freezes the shipped routing into every

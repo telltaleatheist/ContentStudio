@@ -16,14 +16,31 @@ import { promptAssets } from './prompt-assets';
 
 const CHAPTERS_FILE = 'chapters.yml';
 
+/**
+ * What stage 1 is detecting — the operator's pick, made at queue time (LEDGER #170).
+ * 'detailed' is the default: a standalone video's internal turns. 'broad' is the same
+ * subject in larger pieces. 'stories' is for compilations — a run of separate stories.
+ * The model decides the count inside the selected grain's band; code counts nothing.
+ */
+export type ChapterGrain = 'detailed' | 'broad' | 'stories';
+
+const GRAIN_KEYS: Record<ChapterGrain, string> = {
+  detailed: 'whole_transcript_detailed',
+  broad: 'whole_transcript_broad',
+  stories: 'whole_transcript_stories',
+};
+
 export const CHAPTER_PROMPTS = {
   /**
-   * Stage 1 — read the whole transcript in ONE call and report the chapters in it.
+   * Stage 1 — read the whole transcript in ONE call and report the chapters in it, at the
+   * operator's grain. An unknown grain throws — there is no quiet fallback body.
    *
-   * Placeholders: {duration} (the runtime in words), {transcript}
+   * Placeholders: {duration} (the runtime in words), {promoted_items}, {transcript}
    */
-  get WHOLE_TRANSCRIPT_CHAPTERS(): string {
-    return promptAssets().pipeline(CHAPTERS_FILE, 'whole_transcript_chapters');
+  wholeTranscript(grain: ChapterGrain): string {
+    const key = GRAIN_KEYS[grain];
+    if (!key) throw new Error(`unknown chapter grain "${grain}" — expected detailed, broad, or stories`);
+    return promptAssets().pipeline(CHAPTERS_FILE, key);
   },
 
   /**

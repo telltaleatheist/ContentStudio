@@ -14,6 +14,8 @@ export interface QueuedJob {
   inputs: InputItem[];
   promptSet: string; // ID of the prompt set to use
   mode: 'individual' | 'compilation';
+  /** What the chapter pipeline detects for this job — stamped at queue time (LEDGER #170). */
+  chapterGrain: 'detailed' | 'broad' | 'stories';
   // 'held' = transcribed and the prompt is assembled, waiting for the user to send
   // it to the AI (the "Transcribe only" two-stage flow). The backend holds the
   // transcript so sending reuses it without re-transcribing.
@@ -63,6 +65,7 @@ export class JobQueueService {
           // Reset interrupted 'processing' jobs to pending. Also reset 'held' jobs:
           // their transcript lived only in the (now-restarted) main process, so the
           // prompt can't be sent anymore — they must be re-transcribed.
+          chapterGrain: job.chapterGrain ?? 'detailed',
           status: (job.status === 'processing' || job.status === 'held') ? 'pending' as const : job.status,
           currentlyProcessing: (job.status === 'processing' || job.status === 'held') ? '' : job.currentlyProcessing,
           heldPrompt: job.status === 'held' ? undefined : job.heldPrompt
@@ -74,7 +77,7 @@ export class JobQueueService {
     }
   }
 
-  addJob(name: string, inputs: InputItem[], promptSet: string, mode: 'individual' | 'compilation'): string {
+  addJob(name: string, inputs: InputItem[], promptSet: string, mode: 'individual' | 'compilation', chapterGrain: 'detailed' | 'broad' | 'stories'): string {
     const jobId = `job-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const newJob: QueuedJob = {
       id: jobId,
@@ -82,6 +85,7 @@ export class JobQueueService {
       inputs: [...inputs], // Clone the inputs array
       promptSet,
       mode,
+      chapterGrain,
       status: 'pending',
       createdAt: new Date(),
       progress: 0,

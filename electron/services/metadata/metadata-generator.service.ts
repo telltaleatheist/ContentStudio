@@ -10,6 +10,7 @@ import { InputHandlerService, ContentItem } from './input-handler.service';
 import { Chapter } from './chapter-generator.service';
 import { ChapterPipelineResult, MIN_CHAPTERS } from './chapter-transcript';
 import { WholeTranscriptChapterService } from './chapter-whole-transcript.service';
+import { ChapterGrain } from './chapter-prompts';
 import { OutputHandlerService } from './output-handler.service';
 import { ContentDeclaration, ContentOrigin, ItemProvenance, ItemSource, SavedTranscriptReuse, sourceKeyOf } from './item-identity';
 import { resolveOutputDirectory } from './saved-transcript.service';
@@ -120,6 +121,13 @@ export interface GenerationParams {
   metadataRouting?: MetadataRoutingSelections;
   /** Chapter context-window FLOOR. One value for the whole run (Ollama reloads on change). */
   chapterNumCtx?: number;
+  /**
+   * What the chapter pipeline detects (LEDGER #170): 'detailed' (a standalone video's
+   * internal turns — the default the UI preselects), 'broad' (larger pieces of one
+   * subject), or 'stories' (compilations). Absent means the renderer predates the
+   * selector; the declared default applies, stated once at the construction site.
+   */
+  chapterGrain?: ChapterGrain;
   /**
    * Chapters already produced for these sources (keyed by source label), so a run
    * doesn't repeat the pipeline. This is what makes "Show prompt" honest: that flow
@@ -1432,6 +1440,9 @@ export class MetadataGeneratorService {
       // Sizes its own context window from the largest prompt the run will send; a
       // configured value can only raise that floor, never lower it.
       numCtx: params.chapterNumCtx,
+      // The queue-time selector's pick; 'detailed' is the declared default for a renderer
+      // that did not send one.
+      grain: params.chapterGrain ?? 'detailed',
       // The detail call's second required context input: what the video IS. A filename like
       // "2026-08-19 jesse watters mocks democrat candidates" tells it who is speaking and
       // why, which is what grounds the names it writes.

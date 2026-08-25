@@ -1091,29 +1091,47 @@ check('the cadence rung is the one the prompt body states for that runtime', () 
   eq(chapters.cadenceBandFor(4 * 3600), '30-minutes-and-longer');
 });
 
-check('the chapter prompt this build ships states all three rungs and asks for a quote', () => {
-  const body = assets.pipeline('chapters.yml', 'whole_transcript_chapters');
+check('all three chapter grains ship, each with the band and quote contract (LEDGER #170)', () => {
+  // The stories grain keeps the graduated three-rung band (restoration-v2 measurement);
+  // detailed and broad carry their own single band lines, validated 2026-08-24 night.
+  const stories = assets.pipeline('chapters.yml', 'whole_transcript_stories');
   for (const rung of ['under 10 minutes:', '10 to 30 minutes:', '30 minutes and longer:']) {
-    if (!body.includes(rung)) throw new Error(`the shipped prompt has no "${rung}" rung`);
+    if (!stories.includes(rung)) throw new Error(`the stories grain has no "${rung}" rung`);
   }
-  if (!body.includes('{duration}') || !body.includes('{transcript}')) {
-    throw new Error('the shipped prompt lost one of its placeholders');
+  const bands = {
+    detailed: 'usually has 5 to 10',
+    broad: 'usually has 4 to 7',
+  };
+  for (const [grain, band] of Object.entries(bands)) {
+    const body = assets.pipeline('chapters.yml', `whole_transcript_${grain}`);
+    if (!body.includes(band)) throw new Error(`the ${grain} grain lost its band ("${band}")`);
   }
-  // The answer is PLAIN LINES since 2026-08-24 (no-JSON ruling): one verbatim opening
-  // sentence per line is the whole contract, so the prompt must still demand the exact copy
-  // the quote mapper measures, and must no longer ask for any JSON shape.
-  if (!body.includes('FIRST sentence') || !body.includes('EXACTLY as it appears')) {
-    throw new Error('the shipped prompt no longer asks for the verbatim sentence the time is measured from');
+  for (const grain of ['detailed', 'broad', 'stories']) {
+    const body = assets.pipeline('chapters.yml', `whole_transcript_${grain}`);
+    for (const ph of ['{duration}', '{transcript}', '{promoted_items}']) {
+      if (!body.includes(ph)) throw new Error(`the ${grain} grain lost its ${ph} placeholder`);
+    }
+    // The answer is PLAIN LINES since 2026-08-24 (no-JSON ruling): one verbatim opening
+    // sentence per line is the whole contract, so every grain must demand the exact copy
+    // the quote mapper measures, keep the ad exception, and never ask for JSON.
+    if (!body.includes('FIRST sentence') || !body.includes('EXACTLY as it appears')) {
+      throw new Error(`the ${grain} grain no longer asks for the verbatim sentence the time is measured from`);
+    }
+    if (!body.includes('ONE copied sentence per line')) {
+      throw new Error(`the ${grain} grain no longer states the one-sentence-per-line answer shape`);
+    }
+    if (!body.includes('its own chapter however short it runs')) {
+      throw new Error(`the ${grain} grain lost the ad exception (the size band alone swallows ad chapters — measured)`);
+    }
+    if (body.includes('"first_sentence"') || body.includes('"label"')) {
+      throw new Error(`the ${grain} grain still asks for the deleted JSON chapter shape`);
+    }
   }
-  if (!body.includes('ONE copied sentence per line')) {
-    throw new Error('the shipped prompt no longer states the one-sentence-per-line answer shape');
+  for (const gone of ['place_boundary', 'whole_transcript_chapters']) {
+    let threw = false;
+    try { assets.pipeline('chapters.yml', gone); } catch { threw = true; }
+    if (!threw) throw new Error(`the deleted "${gone}" prompt is still shipping`);
   }
-  if (body.includes('"first_sentence"') || body.includes('"label"')) {
-    throw new Error('the shipped prompt still asks for the deleted JSON chapter shape');
-  }
-  let threw = false;
-  try { assets.pipeline('chapters.yml', 'place_boundary'); } catch { threw = true; }
-  if (!threw) throw new Error('the deleted junction-placement prompt is still shipping');
 });
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);

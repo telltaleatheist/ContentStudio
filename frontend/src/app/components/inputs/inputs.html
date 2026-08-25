@@ -89,6 +89,20 @@
             </mat-select>
           </mat-form-field>
 
+          <!-- What the chapter pipeline detects (LEDGER #170). Detailed is the default:
+               a standalone video's internal turns. Stories is for compilations. The pick
+               is stamped onto each job at queue time and persists as the last-used. -->
+          <mat-form-field appearance="outline" class="master-prompt-dropdown chapter-grain-dropdown">
+            <mat-label>Chapters detect</mat-label>
+            <mat-select
+              [ngModel]="inputsState.chapterGrain()"
+              (ngModelChange)="inputsState.chapterGrain.set($event)">
+              <mat-option value="detailed">Detailed chapters (standalone videos)</mat-option>
+              <mat-option value="broad">Broad chapters (fewer, bigger)</mat-option>
+              <mat-option value="stories">Stories (compilations, podcasts)</mat-option>
+            </mat-select>
+          </mat-form-field>
+
           <!-- Compilation Mode Checkbox -->
           <mat-checkbox
             [checked]="inputsState.compilationMode()"

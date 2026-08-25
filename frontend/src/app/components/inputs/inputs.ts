@@ -1040,11 +1040,11 @@ export class Inputs implements OnInit, OnDestroy {
         jobName = `${truncatedName} + ${items.length - 1} more (compilation)`;
       }
 
-      this.jobQueue.addJob(jobName, items, promptSet, 'compilation');
+      this.jobQueue.addJob(jobName, items, promptSet, 'compilation', this.inputsState.chapterGrain());
     } else {
       // Individual mode - each item becomes its own job (like creamsicle)
       this.selectedItems.forEach(item => {
-        this.jobQueue.addJob(item.displayName, [item], item.promptSet, 'individual');
+        this.jobQueue.addJob(item.displayName, [item], item.promptSet, 'individual', this.inputsState.chapterGrain());
       });
     }
 
@@ -1529,6 +1529,7 @@ export class Inputs implements OnInit, OnDestroy {
         inputs,
         promptSet: nextJob.promptSet,
         mode: nextJob.mode,
+        chapterGrain: nextJob.chapterGrain,
         jobId: nextJob.id,
         jobName: nextJob.name,
         inputTranscripts,

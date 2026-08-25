@@ -935,6 +935,8 @@ export class ElectronService {
     inputs: string[] | Array<{ path: string; notes?: string }>;
     promptSet: string;
     mode: string;
+    /** What the chapter pipeline detects for this run — the queue-time pick (LEDGER #170). */
+    chapterGrain?: 'detailed' | 'broad' | 'stories';
     /** Required: the queue row's own id. The main process refuses a request without it. */
     jobId: string;
     jobName?: string;

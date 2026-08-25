@@ -104,7 +104,7 @@ import {
   ChapterPipelineResult,
   Cue,
 } from './chapter-transcript';
-import { CHAPTER_PROMPTS } from './chapter-prompts';
+import { CHAPTER_PROMPTS, ChapterGrain } from './chapter-prompts';
 import { bucketNumCtx, estimateTokens, TOKENS_PER_WORD, OLLAMA_KEEP_ALIVE } from './ollama-json';
 import { askOllamaPlain, parseLines, parseTitleDetail } from './plain-call';
 import { JobModelLifecycle } from './model-lifecycle';
@@ -200,6 +200,11 @@ export interface WholeTranscriptChapterOptions {
   numCtx?: number;
   /** The video's title or filename — the detail call's second required context input. */
   videoTitle?: string;
+  /**
+   * What stage 1 detects: the operator's pick from the queue-time selector (LEDGER #170).
+   * REQUIRED — the caller states the grain; this service never guesses one.
+   */
+  grain: ChapterGrain;
   /**
    * The channel this video is for, when the caller already has it: give the model whatever
    * real context exists. OPTIONAL and never derived — the caller passes the loaded prompt
@@ -451,7 +456,7 @@ export class WholeTranscriptChapterService {
   private static readonly STAGE1_WINDOW_WORDS = 2800;
 
   private windowWordBudget(): number {
-    const overheadChars = CHAPTER_PROMPTS.WHOLE_TRANSCRIPT_CHAPTERS.length + this.promotedItemsLine().length + 64;
+    const overheadChars = CHAPTER_PROMPTS.wholeTranscript(this.options.grain).length + this.promotedItemsLine().length + 64;
     if (this.options.cloudPlain) {
       const ceiling = this.options.cloudWindowChars;
       if (!ceiling || ceiling <= overheadChars) {
@@ -593,7 +598,7 @@ export class WholeTranscriptChapterService {
    */
   private async askWindow(windowCues: Cue[], windowNumber: number): Promise<WindowAnswer> {
     const spanSeconds = windowCues[windowCues.length - 1].endSec - windowCues[0].startSec;
-    const prompt = formatPrompt(CHAPTER_PROMPTS.WHOLE_TRANSCRIPT_CHAPTERS, {
+    const prompt = formatPrompt(CHAPTER_PROMPTS.wholeTranscript(this.options.grain), {
       duration: runtimePhrase(spanSeconds),
       promoted_items: this.promotedItemsLine(),
       // Substituted last, as everywhere else in this codebase: transcript text that happens
@@ -807,7 +812,7 @@ export class WholeTranscriptChapterService {
     const words = Math.min(normalizeWords(transcript).length, this.windowWordBudget());
     const promptTokens =
       Math.ceil(words * TOKENS_PER_WORD) +
-      estimateTokens(CHAPTER_PROMPTS.WHOLE_TRANSCRIPT_CHAPTERS.length);
+      estimateTokens(CHAPTER_PROMPTS.wholeTranscript(this.options.grain).length);
 
     // The GPU ceiling is checked here rather than passed to bucketNumCtx, which only logs it:
     // a run that will be slow for a stated reason is something the job report should carry.
