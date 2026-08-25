@@ -212,7 +212,16 @@ export class PublishBridge {
   constructor(
     private store: PublishStoreService,
     private readGenerated: (itemId: string) => GeneratedFallback | null,
-    private listGenerated: () => GeneratedIndex
+    private listGenerated: () => GeneratedIndex,
+    /**
+     * The original uploaded filename for a videoId, from the official Data API
+     * (videos.list part=fileDetails, owner token) — or null when no connected channel
+     * owns the video. Injected so this module stays ignorant of OAuth. Replaces the
+     * Studio-DOM sidebar scrape as the primary filename source: the extension still
+     * SENDS what it scraped (older extensions, offline app), but a null from the page
+     * no longer ends the resolve.
+     */
+    private lookupFileName: (videoId: string) => Promise<string | null> = async () => null
   ) {}
 
   private toPending(itemId: string): PendingFillItem | null {
@@ -459,10 +468,21 @@ export class PublishBridge {
       notes.push(`the record linked to this video (${best.itemId}) has no report on disk`);
     }
 
+    // The page's filename is a fast path, not the source of truth. When the extension
+    // could not read one (Studio DOM change, localized label, livestream surface), ask
+    // YouTube itself — videos.list part=fileDetails with the owning channel's token.
+    if (!filename) {
+      try {
+        filename = await this.lookupFileName(videoId);
+        if (filename) notes.push(`filename from the YouTube API (page showed none)`);
+      } catch (e) {
+        notes.push(`YouTube filename lookup failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
     if (!filename) {
       return {
         item: null,
-        reason: `No filename on this page.${suffixOf()}`,
+        reason: `No filename on this page, and no connected channel owns this video.${suffixOf()}`,
         linked: false,
         needsTitles: false,
         alternates: [],

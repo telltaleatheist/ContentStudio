@@ -255,6 +255,26 @@ export class YouTubeApiService {
     return { columns, rows };
   }
 
+  /**
+   * The original uploaded filename for one video, e.g. `1 - sean duffy.mov`.
+   *
+   * `videos.list part=fileDetails` — owner-only data, so it needs THIS channel's token.
+   * Returns null when the video is not visible to this channel (empty items): that is
+   * the normal answer when probing "which of my channels owns this videoId", not an
+   * error. Contradicts the 2026-07 note that fileName was never returned — that test
+   * ran without an owner token; verified live 2026-08-25 on a private draft.
+   */
+  async getUploadFileName(channelId: string, videoId: string): Promise<string | null> {
+    const data = await this.dataGet<any>(channelId, 'videos', {
+      part: 'fileDetails',
+      id: videoId,
+    });
+    const item = (data.items || [])[0];
+    if (!item) return null; // not this channel's video (or deleted)
+    const name = item.fileDetails?.fileName;
+    return typeof name === 'string' && name ? name : null;
+  }
+
   // ==================== DATA API: CATALOG ====================
 
   /** Resolve the channel's uploads playlist id (contentDetails.relatedPlaylists.uploads). */

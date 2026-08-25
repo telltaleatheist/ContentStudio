@@ -3143,7 +3143,17 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   // extension has one port to talk to. The server only knows a structural interface, so
   // analytics/ and publish/ remain independent.
   analytics.ingestServer.setPublishRoutes(
-    new PublishBridge(analytics.publishStore, readGeneratedForPublish, listGeneratedForPublish)
+    new PublishBridge(analytics.publishStore, readGeneratedForPublish, listGeneratedForPublish,
+      // Which channel owns a videoId is not known here, so probe every connected one:
+      // videos.list with a non-owner token returns empty items (private videos are
+      // invisible to it), so the first non-null answer is the owner's.
+      async (videoId: string) => {
+        for (const channelId of analytics.youtubeAuth.listConnectedChannelIds()) {
+          const name = await analytics.youtubeApi.getUploadFileName(channelId, videoId);
+          if (name) return name;
+        }
+        return null;
+      })
   );
 
   // ==================== END PUBLISH ====================
