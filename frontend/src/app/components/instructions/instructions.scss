@@ -150,8 +150,8 @@
   padding: 0.875rem 1rem;
   margin-bottom: 1rem;
   border-radius: var(--border-radius);
-  border: 1px solid var(--error-color, #e5484d);
-  background: rgba(229, 72, 77, 0.08);
+  border: 1px solid var(--error-color);
+  background: var(--danger-bg);
   color: var(--text-primary);
   font-size: 0.875rem;
   line-height: 1.5;
@@ -159,7 +159,7 @@
 
   mat-icon {
     flex: none;
-    color: var(--error-color, #e5484d);
+    color: var(--error-color);
   }
 }
 
@@ -228,7 +228,7 @@
     }
 
     &.active {
-      background: rgba(255, 107, 53, 0.1);
+      background: color-mix(in srgb, var(--primary-orange) 10%, transparent);
       border-left-color: var(--primary-orange);
     }
 
@@ -413,7 +413,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--backdrop);
   display: flex;
   align-items: center;
   justify-content: center;
