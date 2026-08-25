@@ -394,3 +394,45 @@ export function deriveProposedThumbnailPaths(
 
   return candidates;
 }
+
+/**
+ * Every image in the sibling thumbnails folder that carries this export's own slot
+ * prefix ("1 - "), for offering BY EYE.
+ *
+ * The static candidates above only name files after the export's full stem or the legacy
+ * suffix -- but the operator's real naming shortens freely ("1 - duffy.png" beside
+ * "1 - sean duffy.mov"), and a name the derivation cannot predict is still perfectly
+ * recognisable to the person who typed it. So this scans the folder for the slot prefix,
+ * and the result is offered as a 'slot'-grade candidate: shown for confirmation, never
+ * attached automatically, exactly like the legacy slot name -- the slot number is the
+ * part that gets renumbered between export and upload, so nothing slot-matched
+ * self-applies.
+ *
+ * A missing thumbnails folder returns [] because "nothing to offer" is the honest answer
+ * for a folder that is not there -- the layout guards mirror deriveProposedThumbnailPaths
+ * so the two cannot disagree about where to look.
+ */
+export function scanSlotThumbnails(sourcePath: string | null | undefined): string[] {
+  if (typeof sourcePath !== 'string' || !sourcePath.trim()) return [];
+  const parent = path.dirname(sourcePath);
+  if (path.basename(parent).toLowerCase() !== EXPORTS_DIR) return [];
+  const weekDir = path.dirname(parent);
+  if (!weekDir || weekDir === parent) return [];
+  const thumbsDir = path.join(weekDir, THUMBNAILS_DIR);
+
+  const slotMatch = /^([A-Za-z]?\d+)\s+-\s+/.exec(path.basename(sourcePath));
+  if (!slotMatch) return [];
+
+  let names: string[];
+  try {
+    names = fs.readdirSync(thumbsDir);
+  } catch {
+    return []; // no thumbnails folder for this week -- nothing to offer
+  }
+  const prefix = new RegExp(`^${slotMatch[1]}\\s+-\\s+`, 'i');
+  const extensions = new Set(PROPOSED_THUMBNAIL_EXTENSIONS.map((e) => e.toLowerCase()));
+  return names
+    .filter((n) => prefix.test(n) && extensions.has(path.extname(n).toLowerCase()))
+    .sort()
+    .map((n) => path.join(thumbsDir, n));
+}

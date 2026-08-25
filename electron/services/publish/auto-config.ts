@@ -55,7 +55,7 @@ import * as fs from 'fs';
 import { RoutableChannel, resolveChannelForPromptSet } from './channel-routing';
 import { FieldPatch } from './field-validators';
 import { ChosenMetadata } from './publish-types';
-import { deriveProposedThumbnailPaths, validateThumbnailFile } from './thumbnail-validate';
+import { deriveProposedThumbnailPaths, scanSlotThumbnails, validateThumbnailFile } from './thumbnail-validate';
 
 /** What one automatic pass is asked to decide about. */
 export interface AutoConfigInput {
@@ -225,6 +225,12 @@ function autoThumbnail(input: AutoConfigInput): FieldOutcome {
   }
 
   const candidates = deriveProposedThumbnailPaths(sourcePath);
+  // Plus whatever actually sits in the folder under this export's slot prefix -- the
+  // operator's shortened names ("1 - duffy.png"). Same 'slot' grade: offered, never
+  // auto-attached.
+  for (const found of scanSlotThumbnails(sourcePath)) {
+    if (!candidates.some((c) => c.path === found)) candidates.push({ path: found, match: 'slot' });
+  }
   if (candidates.length === 0) {
     return {
       patch: null,

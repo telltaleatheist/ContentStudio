@@ -52,8 +52,7 @@ import {
 import {
   ThumbnailValidation,
   deriveProposedThumbnailPaths,
-  validateThumbnailFile,
-} from './thumbnail-validate';
+  validateThumbnailFile, scanSlotThumbnails } from './thumbnail-validate';
 import {
   ThumbnailSource,
   TranscriptRef,
@@ -671,6 +670,11 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       const generated = requireGenerated(id);
 
       const candidates = deriveProposedThumbnailPaths(generated.sourcePath ?? null);
+      // The folder's own slot-prefixed names too ("1 - duffy.png" beside
+      // "1 - sean duffy.mov") -- these exist by construction, so no exists-check race.
+      for (const scanned of scanSlotThumbnails(generated.sourcePath ?? null)) {
+        if (!candidates.some((c) => c.path === scanned)) candidates.push({ path: scanned, match: 'slot' });
+      }
       const found = candidates.find((c) => fs.existsSync(c.path));
       if (!found) return ok(null);
 

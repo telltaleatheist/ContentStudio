@@ -76,7 +76,7 @@ function createMainWindow() {
     : path.join(process.resourcesPath, 'assets', 'icon.png');
 
   mainWindow = new BrowserWindow({
-    width: 1400,
+    width: 1610,
     height: 1000,
     minWidth: 1000,
     minHeight: 800,
