@@ -901,6 +901,31 @@ async function processAiGenerationQueue(): Promise<void> {
   try {
     const result = await job.execute();
     job.resolve(result);
+
+    // THE completion site both generation entry points share. 'generate-metadata' reaches
+    // here through runTranscription and 'send-held-prompt' enqueues onto this same queue,
+    // so hooking here is one hook rather than two that could drift; and it is AFTER
+    // job.resolve, so the record-creation pass cannot delay the answer the renderer is
+    // waiting on.
+    //
+    // `json_file` is the positive evidence that a report was written. A show-prompt run
+    // returns success with prompts and no report — there are no items on disk to give
+    // publish records to — and a failed run wrote nothing either. Both are announced
+    // rather than passed over quietly.
+    if (result && result.success === true && typeof result.json_file === 'string') {
+      void attachPublishRecordsForJob(job.jobId).catch((error) => {
+        log.error(
+          `[Publish] could not create publish records for job ${job.jobId}: ` +
+          `${error instanceof Error ? error.message : String(error)}`
+        );
+      });
+    } else {
+      log.info(
+        `[Publish] job ${job.jobId} wrote no metadata report (${
+          result && result.success === true ? 'show-prompt run — nothing generated yet' : 'the run did not succeed'
+        }), so no publish records were created for it.`
+      );
+    }
   } catch (error) {
     log.error(`[AiQueue] AI job ${job.jobId} failed:`, error);
     job.reject(error);
@@ -908,6 +933,89 @@ async function processAiGenerationQueue(): Promise<void> {
     isAiGenerationRunning = false;
     log.info(`[AiQueue] AI job ${job.jobId} completed`);
     processAiGenerationQueue();
+  }
+}
+
+/**
+ * What the auxiliary post-generation pass needs, bound once by setupIpcHandlers.
+ *
+ * A module-level reference rather than a closure because the AI queue lives OUT HERE, at
+ * module scope, where the publish store and the report readers built inside
+ * setupIpcHandlers are not in scope. Threading them through PipelineJob and
+ * AiGenerationJob would have put the publish store on the shape of every AI job in the
+ * app, including the ones that have nothing to do with publishing.
+ */
+interface PublishAutoAttachDeps {
+  store: PublishStoreService;
+  readGenerated: (itemId: string) => GeneratedFallback | null;
+  listGenerated: () => GeneratedIndex;
+}
+let publishAutoAttach: PublishAutoAttachDeps | null = null;
+
+/**
+ * Give EVERY item of a finished run its publish record, right when the report lands.
+ *
+ * Before this, a record was only born on the first WRITE from the reports page, so a
+ * freshly generated video showed "not routed to a channel yet" and no thumbnail until the
+ * operator saved something — despite the app already knowing both: the channel from the
+ * prompt set he picked before generating, and the thumbnail from the image sitting beside
+ * the export. The empty patch is the whole mechanism. It rides PublishStoreService.update,
+ * which is the one door every write goes through and therefore the one place the automatic
+ * pass runs (auto-config.ts), so this creates records exactly the way the operator's first
+ * save would have and announces the same applied / skipped / refused lines.
+ *
+ * Item ids come from the host's own generated index, the same reader the publish IPC layer
+ * is given, so this cannot disagree with what the reports page will list a second later.
+ */
+async function attachPublishRecordsForJob(jobId: string): Promise<void> {
+  const deps = publishAutoAttach;
+  if (!deps) {
+    throw new Error(
+      `Generation job ${jobId} finished before setupIpcHandlers bound the publish store, so ` +
+      `its items cannot be given publish records. This is a startup-ordering bug: the binding ` +
+      `happens where publish IPC is registered, which is before any job can be enqueued.`
+    );
+  }
+
+  const itemIds = deps
+    .listGenerated()
+    .items.filter((item) => item.jobId === jobId)
+    .map((item) => item.itemId);
+
+  if (itemIds.length === 0) {
+    log.info(
+      `[Publish] job ${jobId} finished but the generated index lists no items under it, so ` +
+      `there were no publish records to create.`
+    );
+    return;
+  }
+
+  for (const itemId of itemIds) {
+    try {
+      const generated = deps.readGenerated(itemId);
+      if (!generated) {
+        log.error(
+          `[Publish] item ${itemId} of job ${jobId} is in the generated index but its report ` +
+          `could not be read back, so it was given no publish record.`
+        );
+        continue;
+      }
+      await deps.store.update(itemId, generated, {});
+    } catch (error) {
+      // CONTAINED PER ITEM, and this is the one place in the publish path where swallowing
+      // a throw is right. Everything this pass does is work the operator has not asked for
+      // yet: if it fails, the record simply stays unborn, which is exactly the state every
+      // item was in before this feature existed. The contradiction that caused it — two
+      // channels claiming one prompt set in channels.json, a thumbnail that will not
+      // validate — is not hidden by that, because the very next manual write to this item
+      // runs the identical pass through the identical door and surfaces it loudly there.
+      // Letting it out instead would mean one malformed image on an external volume takes
+      // down the record creation for every other item of the run.
+      log.error(
+        `[Publish] could not create the publish record for item ${itemId} of job ${jobId}: ` +
+        `${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 }
 
@@ -3199,6 +3307,16 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       log.error(`[Publish] readGenerated failed for ${itemId}:`, error);
       return null;
     }
+  };
+
+  // The same three things the publish IPC layer gets, handed to the AI queue's
+  // post-generation pass (attachPublishRecordsForJob). Bound HERE, beside the call that
+  // registers the publish channels, so the pass and the channels can never be looking at
+  // a different store or a different index than each other.
+  publishAutoAttach = {
+    store: analytics.publishStore,
+    readGenerated: readGeneratedForPublish,
+    listGenerated: listGeneratedForPublish,
   };
 
   setupPublishIpc({

@@ -199,6 +199,18 @@ const api = {
   // for the item's own thumbnail.
   publishReadThumbnail: (itemId: string, maxPx: number, absPath?: string | null) =>
     ipcRenderer.invoke('publish-read-thumbnail', itemId, maxPx, absPath ?? null),
+  // "Look again", for a thumbnail made AFTER the run. Comes back with the automatic pass's
+  // own three buckets — applied / skipped / refused, each a whole sentence — so the panel
+  // can say what it found or why it found nothing. The click authorizes replacing an
+  // automatically attached path; a hand-picked thumbnail (including a hand-cleared one) is
+  // reported as skipped and never touched.
+  publishRescanThumbnail: (itemId: string) =>
+    ipcRenderer.invoke('publish-rescan-thumbnail', itemId),
+  // The LIST form of publishReadThumbnail: one round trip for a whole page of rows instead
+  // of one per row. Rows come back in the order asked for, and a row that cannot be shown
+  // carries its own `fault` sentence rather than emptying the strip.
+  publishThumbStrip: (itemIds: string[], maxPx: number) =>
+    ipcRenderer.invoke('publish-thumb-strip', itemIds, maxPx),
   // Answers only. Seeding channelId from the answer is the panel's decision, not this
   // call's side effect.
   publishResolveChannel: (promptSet: string) =>

@@ -104,6 +104,40 @@ export interface ThumbnailProposal {
   warnings: string[];
 }
 
+/** One field's outcome in a thumbnail rescan — the same field/detail pair a carry uses. */
+export interface RescanFieldOutcome {
+  field: string;
+  detail: string;
+}
+
+/**
+ * What "look for the exported thumbnail again" actually did.
+ *
+ * Three buckets and no fourth, so a rescan that changed nothing still SAYS which of the
+ * two nothings it was: `skipped` is "there was nothing to find", `refused` is "something
+ * was found and this record will not take it" (a manually chosen thumbnail is never
+ * overwritten). A rescan that attached or replaced an auto-found image reports it in
+ * `applied`, and every sentence in all three is written by the main process.
+ */
+export interface ThumbnailRescanOutcome {
+  applied: RescanFieldOutcome[];
+  skipped: RescanFieldOutcome[];
+  refused: RescanFieldOutcome[];
+}
+
+/**
+ * One row's thumbnail in the reports list, as the batch strip call answers it.
+ *
+ * `dataUrl` and `fault` are both null for "nothing is attached", which is a fact rather
+ * than a failure. A non-null `fault` means a file IS attached and could not be read — the
+ * sentence says why, and the list shows the broken placeholder wearing it as its tooltip.
+ */
+export interface ThumbStripEntry {
+  itemId: string;
+  dataUrl: string | null;
+  fault: string | null;
+}
+
 /** A thumbnail preview, downscaled in the main process. */
 export interface ThumbnailPreview {
   path: string;

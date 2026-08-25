@@ -1,6 +1,9 @@
-<!-- Metadata Reports — the copy desk: list | decide | dispatch.
-     Three panes, each with its own scroll, and a page that never scrolls. The rules this
-     template is built to, in one place:
+<!-- Metadata Reports — the copy desk: list | work.
+     Two panes, each with its own scroll, and a page that never scrolls. The work pane
+     carries both halves of an item on a two-tab bar — the metadata blocks and the publish
+     record — with the pane head (crumb, title, readiness meter, error banner) fixed above
+     both, because it describes the item rather than either half. The rules this template
+     is built to, in one place:
 
        · ONE status vocabulary, six facts, one order — TITLES · CHANNEL · MONEY · WHEN ·
          THUMB · LINK. The list rows dot them and the item header names them. Three values:
@@ -16,7 +19,6 @@
          one button — an item goes to one place. -->
 <div class="reports-container">
   <div class="page-content"
-       [class.no-item]="!selectedReport()"
        [style.--left-w.px]="leftWidth()">
 
     <!-- ═══════════════════════════════ ① LIST ═══════════════════════════════ -->
@@ -44,6 +46,27 @@
             <mat-icon>refresh</mat-icon>
           </button>
         </div>
+
+        <!-- Channel tabs. One per registered channel, in registry order, then any channel
+             the index uses that the registry does not know, then Unrouted when something
+             is. The count on a tab is what pressing it leaves on screen. -->
+        @if (channelTabs().length > 0) {
+          <div class="chan-tabs" role="tablist">
+            @for (tab of channelTabs(); track tab.value) {
+              <button class="chan-tab"
+                      role="tab"
+                      [class.on]="activeChannelTab() === tab.value"
+                      [attr.aria-selected]="activeChannelTab() === tab.value"
+                      [title]="tab.unknown
+                                 ? 'This channel id is in the reports but not in the channel registry, so it has no name here.'
+                                 : tab.label"
+                      (click)="chooseChannelTab(tab.value)">
+                <span class="chan-tab-l">{{ tab.label }}</span>
+                <span class="num n">{{ tab.count }}</span>
+              </button>
+            }
+          </div>
+        }
 
         <!-- Search. With 111 rows this is the affordance that matters most. -->
         <div class="list-search">
@@ -73,18 +96,10 @@
           }
         </div>
 
-        <!-- Channel, and the three narrower states. One value, two entry points: picking
-             here un-highlights the segments above, because only one filter is ever on. -->
+        <!-- The three narrower states. One value, two entry points: picking here
+             un-highlights the segments above, because only one filter is ever on. The
+             channel is no longer among them — it is the tab strip at the top. -->
         <div class="list-sub">
-          <select class="quiet-select"
-                  [value]="channelFilter()"
-                  (change)="channelFilter.set($any($event.target).value)"
-                  title="Filter by the channel each item is routed to">
-            <option value="">All channels</option>
-            @for (chip of channelFilterChips(); track chip.value) {
-              <option [value]="chip.value">{{ chip.label }} · {{ chip.count }}</option>
-            }
-          </select>
           <select class="quiet-select"
                   [value]="refineValue()"
                   (change)="onRefineChange($event)"
@@ -140,12 +155,29 @@
                   (click)="selectReport(group.head)"
                   [class.on]="selectedReport()?.path === group.head.path"
                   [class.checked]="group.head.selected"
+                  [class.uploaded]="isUploaded(group.head)"
                   class="row">
                   <input type="checkbox"
                          class="row-check"
                          [checked]="group.head.selected || false"
                          (click)="toggleSelection(group.head, $event)"
                          title="Select for export" />
+                  <!-- The thumbnail, at list resolution. Nothing attached and a file that
+                       will not read both show the broken glyph — the operator asked to be
+                       shown the hole rather than to have it tidied away — and the broken
+                       one wears the main process's sentence as its tooltip. -->
+                  @if (thumbFor(group.head); as strip) {
+                    @if (strip.dataUrl) {
+                      <img class="row-thumb" [src]="strip.dataUrl" alt="" />
+                    } @else {
+                      <span class="row-thumb none"
+                            [title]="strip.fault ?? 'No thumbnail is attached to this item.'">
+                        <mat-icon>broken_image</mat-icon>
+                      </span>
+                    }
+                  } @else {
+                    <span class="row-thumb none pending" title="Reading this item's thumbnail…"></span>
+                  }
                   <span class="row-name" [title]="group.head.displayTitle || group.head.name">
                     {{ group.head.displayTitle || group.head.name }}
                   </span>
@@ -157,6 +189,24 @@
                                        : (group.runs.length + 1) + ' runs of this source — show the earlier ones'">
                       {{ group.runs.length + 1 }}{{ isGroupExpanded(group.key) ? '▴' : '▾' }}
                     </button>
+                  }
+                  <!-- Re-routing. The prompt set decided where this went at generation
+                       time; this is where that decision gets overruled without the item
+                       being generated again. -->
+                  @if (otherChannels(group.head).length > 0) {
+                    <button class="row-more"
+                            [matMenuTriggerFor]="headMenu"
+                            (click)="$event.stopPropagation()"
+                            title="Move this item to another channel">
+                      <mat-icon>more_horiz</mat-icon>
+                    </button>
+                    <mat-menu #headMenu="matMenu">
+                      @for (channel of otherChannels(group.head); track channel.channelId) {
+                        <button mat-menu-item (click)="moveToChannel(group.head, channel.channelId, $event)">
+                          Move to {{ channel.name }}
+                        </button>
+                      }
+                    </mat-menu>
                   }
                   <button class="row-del" (click)="deleteReport(group.head, $event)" title="Delete this report">
                     <mat-icon>close</mat-icon>
@@ -183,15 +233,43 @@
                       (click)="selectReport(run)"
                       [class.on]="selectedReport()?.path === run.path"
                       [class.checked]="run.selected"
+                      [class.uploaded]="isUploaded(run)"
                       class="row is-rerun">
                       <input type="checkbox"
                              class="row-check"
                              [checked]="run.selected || false"
                              (click)="toggleSelection(run, $event)"
                              title="Select for export" />
+                      @if (thumbFor(run); as strip) {
+                        @if (strip.dataUrl) {
+                          <img class="row-thumb" [src]="strip.dataUrl" alt="" />
+                        } @else {
+                          <span class="row-thumb none"
+                                [title]="strip.fault ?? 'No thumbnail is attached to this item.'">
+                            <mat-icon>broken_image</mat-icon>
+                          </span>
+                        }
+                      } @else {
+                        <span class="row-thumb none pending" title="Reading this item's thumbnail…"></span>
+                      }
                       <span class="row-name" [title]="run.displayTitle || run.name">
                         {{ run.displayTitle || run.name }}
                       </span>
+                      @if (otherChannels(run).length > 0) {
+                        <button class="row-more"
+                                [matMenuTriggerFor]="runMenu"
+                                (click)="$event.stopPropagation()"
+                                title="Move this item to another channel">
+                          <mat-icon>more_horiz</mat-icon>
+                        </button>
+                        <mat-menu #runMenu="matMenu">
+                          @for (channel of otherChannels(run); track channel.channelId) {
+                            <button mat-menu-item (click)="moveToChannel(run, channel.channelId, $event)">
+                              Move to {{ channel.name }}
+                            </button>
+                          }
+                        </mat-menu>
+                      }
                       <button class="row-del" (click)="deleteReport(run, $event)" title="Delete this report">
                         <mat-icon>close</mat-icon>
                       </button>
@@ -290,6 +368,30 @@
               <span class="banner-dismiss">dismiss</span>
             </div>
           }
+
+          <!-- The two halves of an item. The record used to be a third column 404px wide;
+               the description, the chapter list and the tag strip all wanted that width
+               more often than the record did, and the record is read in bursts rather
+               than watched. Everything above this bar belongs to BOTH tabs. -->
+          @if (!isLoading() && metadata()) {
+            <div class="wtabs" role="tablist">
+              <button class="wtab"
+                      role="tab"
+                      [class.on]="workTab() === 'metadata'"
+                      [attr.aria-selected]="workTab() === 'metadata'"
+                      (click)="showWorkTab('metadata')">Metadata</button>
+              <button class="wtab"
+                      role="tab"
+                      [class.on]="workTab() === 'record'"
+                      [attr.aria-selected]="workTab() === 'record'"
+                      (click)="showWorkTab('record')">
+                Publish record
+                @if (heldCount() > 0) { <span class="wtab-held num">{{ heldCount() }}</span> }
+              </button>
+              <span class="pane-head-spacer"></span>
+              @if (publish.saving()) { <span class="saving">saving…</span> }
+            </div>
+          }
         </div>
       }
 
@@ -309,7 +411,7 @@
           </div>
         }
 
-        @if (!isLoading() && selectedReport() && metadata()) {
+        @if (!isLoading() && selectedReport() && metadata() && workTab() === 'metadata') {
 
           <!-- ═════ TITLES — the editorial act, and the loudest thing on this page ═════
                The slate is a VIEW of the same chosenTitles() the list below writes, in the
@@ -813,31 +915,16 @@
           }
         }
 
-        @if (!isLoading() && selectedReport() && !metadata()) {
-          <div class="empty-state tall">
-            <mat-icon>info</mat-icon>
-            <p>Failed to load metadata</p>
-            <small>The metadata file may be missing or malformed</small>
-          </div>
-        }
-      </div>
-    </section>
+        <!-- ═══════════════════════════ PUBLISH RECORD ═══════════════════════════
+             The record for this item: where it goes, when it goes live, its thumbnail, and
+             (for a podcast) its audio. INTENT ONLY — nothing in this tab uploads,
+             schedules or publishes anything except the ONE dispatch button at the bottom.
+             Every write is validated in the main process, and a refusal comes back as text
+             and lands in the banner in the pane head above, verbatim — which is why that
+             banner is outside both tabs. -->
+        @if (!isLoading() && selectedReport() && metadata() && workTab() === 'record') {
 
-    <!-- ═══════════════════════════ ③ PUBLISH RECORD ═══════════════════════════
-         The record for this item: where it goes, when it goes live, its thumbnail, and
-         (for a podcast) its audio. INTENT ONLY — nothing in this column uploads,
-         schedules or publishes anything except the ONE dispatch button at the bottom.
-         Every write is validated in the main process, and a refusal comes back as text
-         and lands in the banner in the decide column, verbatim. -->
-    @if (selectedReport()) {
-      <aside class="pane rail-pane">
-        @if (!isLoading() && metadata()) {
-          <div class="rail-head">
-            <span class="kicker">Publish record</span>
-            @if (publish.saving()) { <span class="saving">saving…</span> }
-          </div>
-
-          <div class="pane-body rail-body">
+          <div class="record-body">
 
             <!-- Carry forward. This video was generated before: the earlier run's record
                  holds facts about the VIDEO that a regeneration does not carry, because a
@@ -1167,6 +1254,16 @@
                     <div class="fld">
                       <button class="ghost" [disabled]="publish.saving()" (click)="changeThumbnail()">Change…</button>
                       <button class="ghost" [disabled]="publish.saving()" (click)="publish.clearThumbnail()">Clear</button>
+                      <!-- "Look again". The record's thumbnail is attached automatically
+                           when generation finishes, which is usually before the operator
+                           has made the image. This re-runs that same lookup; whatever it
+                           decides is reported, including deciding nothing. -->
+                      <button class="icon-btn"
+                              [disabled]="publish.saving()"
+                              (click)="rescanThumbnail()"
+                              title="Look for the exported thumbnail again">
+                        <mat-icon>refresh</mat-icon>
+                      </button>
                     </div>
                   } @else if (publish.thumbnailPath(); as path) {
                     <!-- The record has one and the preview did not arrive. The banner in
@@ -1183,6 +1280,16 @@
                     <div class="fld">
                       <button class="ghost" [disabled]="publish.saving()" (click)="changeThumbnail()">Change…</button>
                       <button class="ghost" [disabled]="publish.saving()" (click)="publish.clearThumbnail()">Clear</button>
+                      <!-- "Look again". The record's thumbnail is attached automatically
+                           when generation finishes, which is usually before the operator
+                           has made the image. This re-runs that same lookup; whatever it
+                           decides is reported, including deciding nothing. -->
+                      <button class="icon-btn"
+                              [disabled]="publish.saving()"
+                              (click)="rescanThumbnail()"
+                              title="Look for the exported thumbnail again">
+                        <mat-icon>refresh</mat-icon>
+                      </button>
                     </div>
                   } @else {
                     <div class="fld">
@@ -1197,6 +1304,16 @@
                         }
                       </span>
                       <button class="ghost" [disabled]="publish.saving()" (click)="changeThumbnail()">Choose…</button>
+                      <!-- "Look again". The record's thumbnail is attached automatically
+                           when generation finishes, which is usually before the operator
+                           has made the image. This re-runs that same lookup; whatever it
+                           decides is reported, including deciding nothing. -->
+                      <button class="icon-btn"
+                              [disabled]="publish.saving()"
+                              (click)="rescanThumbnail()"
+                              title="Look for the exported thumbnail again">
+                        <mat-icon>refresh</mat-icon>
+                      </button>
                     </div>
                   }
 
@@ -1556,8 +1673,17 @@
             </div>
           </div>
         }
-      </aside>
-    }
+
+        @if (!isLoading() && selectedReport() && !metadata()) {
+          <div class="empty-state tall">
+            <mat-icon>info</mat-icon>
+            <p>Failed to load metadata</p>
+            <small>The metadata file may be missing or malformed</small>
+          </div>
+        }
+      </div>
+    </section>
+
 
   </div>
 </div>

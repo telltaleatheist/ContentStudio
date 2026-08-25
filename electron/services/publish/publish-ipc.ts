@@ -43,6 +43,11 @@ import {
   validateAudioFile,
 } from './audio-validate';
 import { RoutableChannel, resolveChannelForPromptSet } from './channel-routing';
+// The rescan reports in the automatic pass's own vocabulary — applied / skipped / refused,
+// each a whole sentence — because it answers the same question that pass does, only on a
+// click instead of on a write. A second set of words for the same three outcomes would be
+// a second thing to read the log against.
+import { AutoDecision } from './auto-config';
 import { buildFieldPatch, describeValue } from './field-validators';
 import {
   CarriedRefResolution,
@@ -319,6 +324,64 @@ function requireItemId(value: unknown, name: string): string {
     throw new Error(`${name} must be an item id of the form itm-<time>-<random>; got ${JSON.stringify(value)}`);
   }
   return value;
+}
+
+/**
+ * The most items one `publish-thumb-strip` call may name.
+ *
+ * A ceiling rather than a page size: the reports list is the caller and it holds a few
+ * hundred rows, so the whole visible list fits in one call and nothing has to paginate.
+ * What the number prevents is a caller asking for every item ever generated in a single
+ * synchronous decode pass, which would block the main process — and therefore every
+ * window — for as long as it took.
+ */
+const MAX_THUMB_STRIP_ITEMS = 300;
+
+/** One row of `publish-thumb-strip`. Three states, never fewer — see the handler. */
+export interface ThumbStripEntry {
+  itemId: string;
+  /** The downscaled preview, or null when there is none to show. */
+  dataUrl: string | null;
+  /**
+   * Why there is no preview, when the reason is a PROBLEM. null covers both "there is a
+   * preview" and "nothing is attached to this item", which is not a problem at all.
+   */
+  fault: string | null;
+}
+
+/**
+ * Decode a file that has already been validated and scale its longest edge to `maxPx`.
+ *
+ * ONE definition of what a preview is, shared by the single-item read and the list strip,
+ * because two copies of this arithmetic are two answers to "how big is the image the
+ * operator is looking at" — and the row and the panel showing different crops of the same
+ * thumbnail is exactly the kind of disagreement nobody would think to check for.
+ *
+ * An image SMALLER than maxPx is returned untouched: upscaling a 320px export to fill a
+ * 512px slot would show the operator detail the file does not contain.
+ */
+function renderThumbnailPreview(
+  absPath: string,
+  maxPx: number
+): { dataUrl: string; previewSize: { width: number; height: number } } {
+  const image = nativeImage.createFromPath(absPath);
+  if (image.isEmpty()) {
+    throw new Error(
+      `Thumbnail ${absPath} passed its header checks but could not be decoded for preview.`
+    );
+  }
+  const { width, height } = image.getSize();
+  const longest = Math.max(width, height);
+  const preview =
+    longest > maxPx
+      ? image.resize({
+          width: Math.round((width / longest) * maxPx),
+          height: Math.round((height / longest) * maxPx),
+          quality: 'good',
+        })
+      : image;
+
+  return { dataUrl: preview.toDataURL(), previewSize: preview.getSize() };
 }
 
 
@@ -735,31 +798,257 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       }
 
       const { meta, warnings } = validateThumbnailFile(absPath);
-
-      const image = nativeImage.createFromPath(absPath);
-      if (image.isEmpty()) {
-        throw new Error(
-          `Thumbnail ${absPath} passed its header checks but could not be decoded for preview.`
-        );
-      }
-      const { width, height } = image.getSize();
-      const longest = Math.max(width, height);
-      const preview =
-        longest > maxPx
-          ? image.resize({
-              width: Math.round((width / longest) * maxPx),
-              height: Math.round((height / longest) * maxPx),
-              quality: 'good',
-            })
-          : image;
+      const { dataUrl, previewSize } = renderThumbnailPreview(absPath, maxPx);
 
       return ok({
         path: absPath,
-        dataUrl: preview.toDataURL(),
+        dataUrl,
         meta,
         warnings,
-        previewSize: preview.getSize(),
+        previewSize,
       });
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * "Look again" — re-run thumbnail discovery for ONE item, on the operator's click.
+   *
+   * The automatic pass (auto-config.ts) only ever fills a field NOBODY HAS ANSWERED, and
+   * it runs on writes. Both of those are right for a pass nobody asked for, and both are
+   * wrong for a button: the operator who makes the thumbnail after the run has an item
+   * whose record already says "looked, found nothing", and no write he is about to make
+   * would change that answer. This channel is the ask.
+   *
+   * WHAT THE CLICK AUTHORIZES, precisely: replacing an AUTOMATICALLY attached path with
+   * the one on disk now. That is the stale case — a re-export under the same name, or an
+   * image that arrived after the record was born — and re-deriving it is the whole point.
+   * It authorizes nothing about a MANUAL choice, including a manual clear: a rescan that
+   * could bring back an image the operator deleted by hand would make "remove this
+   * thumbnail" a temporary state, so a 'manual' source is reported as skipped and the
+   * record is not opened at all.
+   *
+   * A 'slot'-only match is still not attached, exactly as the automatic pass refuses to
+   * attach one (see deriveProposedThumbnailPaths): slots are renumbered between export
+   * and upload, so that filename can name another video's image, and a click meaning
+   * "look again" is not a click meaning "and take one you cannot verify". It comes back
+   * as skipped, naming the file, and publish-propose-thumbnail is where it gets confirmed
+   * by eye.
+   *
+   * The three buckets are auto-config.ts's, for the reason they exist there: a field that
+   * ended in none of them would be one the operator cannot account for afterwards.
+   */
+  ipcMain.handle('publish-rescan-thumbnail', async (_e, itemId: string) => {
+    try {
+      const id = requireItemId(itemId, 'itemId');
+
+      const applied: AutoDecision[] = [];
+      const skipped: AutoDecision[] = [];
+      const refused: AutoDecision[] = [];
+
+      // Read BEFORE the record, and failed on rather than worked around: the generated
+      // report carries the sourcePath every candidate is derived from and the jobId every
+      // write is seeded with, so without it there is no rescan to run — not an empty one.
+      const generated = readGenerated(id);
+      if (!generated) {
+        return fail(
+          `Item ${id} has no readable generated report, so there is nowhere to rescan for a ` +
+          `thumbnail: the folder to look in comes from the run's recorded source path, and ` +
+          `that report is missing or could not be read.`
+        );
+      }
+
+      let record = store.get(id);
+      if (!record) {
+        // FIRST FILL. An item nobody has saved anything about has no record yet, and the
+        // empty patch is how it gets one: the write rides the store's single door, so the
+        // automatic pass runs on it and fills the channel and the thumbnail together —
+        // the same thing that would have happened on the operator's first manual save.
+        record = await store.update(id, generated, {});
+        (record.channelId ? applied : skipped).push({
+          field: 'channelId',
+          detail: record.channelId
+            ? `this item had no publish record; the rescan created one and routed it to ` +
+              `${record.channelId} from the prompt set the run recorded.`
+            : `this item had no publish record; the rescan created one, and it is not routed ` +
+              `to a channel — the run recorded no prompt set, or no channel in channels.json ` +
+              `claims the one it did. Pick a channel by hand.`,
+        });
+      }
+
+      if (record.thumbnailSource === 'manual') {
+        skipped.push({
+          field: 'thumbnail',
+          detail: record.thumbnailPath
+            ? `${record.thumbnailPath} was chosen by hand, and a rescan never replaces a ` +
+              `manually chosen thumbnail. Clear it in the panel first if you want the ` +
+              `exported image instead.`
+            : `the thumbnail was cleared by hand, and a rescan never undoes that. Attach one ` +
+              `from the panel if you want an image on this item after all.`,
+        });
+        return ok({ applied, skipped, refused });
+      }
+
+      const candidates = deriveProposedThumbnailPaths(generated.sourcePath ?? null);
+      if (candidates.length === 0) {
+        skipped.push({
+          field: 'thumbnail',
+          detail: generated.sourcePath
+            ? `${generated.sourcePath} is not inside a "complete" export folder, so there is ` +
+              `no sibling "thumbnails" folder to look in.`
+            : `this item has no single source file, so there is nowhere to look for an ` +
+              `exported thumbnail.`,
+        });
+        return ok({ applied, skipped, refused });
+      }
+
+      const found = candidates.find((c) => fs.existsSync(c.path));
+      if (!found) {
+        skipped.push({
+          field: 'thumbnail',
+          detail:
+            `still no exported thumbnail on disk. Looked for ${candidates.length} names, ` +
+            `starting with ${candidates[0].path}.`,
+        });
+        return ok({ applied, skipped, refused });
+      }
+
+      if (found.match === 'slot') {
+        skipped.push({
+          field: 'thumbnail',
+          detail:
+            `${found.path} exists, but it is named after the slot number rather than after ` +
+            `this export, and slots get renumbered between export and upload. Confirm it by ` +
+            `eye from the proposal panel; a rescan will not attach it.`,
+        });
+        return ok({ applied, skipped, refused });
+      }
+
+      let validation: ThumbnailValidation;
+      try {
+        validation = validateThumbnailFile(found.path);
+      } catch (err: any) {
+        // The file IS there and cannot be used. Refused with the validator's own sentence
+        // rather than thrown, so the panel can print what is wrong with the image the
+        // operator just made instead of showing a failed call with no file named.
+        refused.push({ field: 'thumbnail', detail: err?.message || String(err) });
+        return ok({ applied, skipped, refused });
+      }
+
+      if (record.thumbnailPath === found.path) {
+        skipped.push({
+          field: 'thumbnail',
+          detail:
+            `${found.path} is already attached to this item — the rescan found the same file ` +
+            `and left the record untouched.`,
+        });
+        return ok({ applied, skipped, refused });
+      }
+
+      const previous = record.thumbnailPath;
+      await store.update(id, generated, {
+        thumbnailPath: found.path,
+        thumbnailMeta: validation.meta,
+        thumbnailSource: 'auto',
+      });
+
+      const notes = validation.warnings.length ? ` ${validation.warnings.join(' ')}` : '';
+      applied.push({
+        field: 'thumbnail',
+        detail:
+          `attached ${found.path} — the sibling export of ${generated.sourcePath}, ` +
+          `${validation.meta.width}x${validation.meta.height}, ${validation.meta.bytes} bytes` +
+          (previous ? `, replacing the automatically attached ${previous}` : '') +
+          `.${notes}`,
+      });
+
+      return ok({ applied, skipped, refused });
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * One downscaled preview per item, for a LIST.
+   *
+   * publish-read-thumbnail answers the same question for one item, and the reports list
+   * would have to ask it once per row: 111 rows is 111 IPC round trips and 111 separate
+   * decode passes scheduled by the renderer, which is the shape that made the reports page
+   * slow enough to need publish-list-index in the first place. This is that call's list
+   * form — one round trip, one pass, results in the order they were asked for so the
+   * caller can zip them onto its rows without matching on ids.
+   *
+   * NOTHING HERE THROWS FOR ONE ITEM. A list of forty rows must not go blank because one
+   * external volume was unplugged or one PNG is truncated, so per-item trouble travels IN
+   * the row as `fault` — the validator's or the decoder's own sentence — and every other
+   * row still renders. The ARGUMENTS still throw: a bad itemIds array or a bad maxPx is
+   * the caller being wrong about the call, not a file being wrong on disk.
+   *
+   * `dataUrl: null, fault: null` is the ordinary, majority answer and NOT a failure: it
+   * means nothing is attached to that item yet. The two nulls are what let the row render
+   * an empty slot rather than an error badge.
+   */
+  ipcMain.handle('publish-thumb-strip', async (_e, itemIds: string[], maxPx: number) => {
+    try {
+      if (!Array.isArray(itemIds) || itemIds.length === 0) {
+        throw new Error(
+          `publish-thumb-strip needs a non-empty array of item ids — it is the list form of ` +
+          `publish-read-thumbnail and there is nothing to read for an empty list; got ` +
+          `${describeValue(itemIds)}.`
+        );
+      }
+      if (itemIds.length > MAX_THUMB_STRIP_ITEMS) {
+        throw new Error(
+          `publish-thumb-strip was asked for ${itemIds.length} items; the limit is ` +
+          `${MAX_THUMB_STRIP_ITEMS}, because every one of them is decoded on the main ` +
+          `process and the whole app is unresponsive until the batch finishes. Ask for the ` +
+          `rows being shown.`
+        );
+      }
+      // Validated up front, all of them, before a single file is touched: a bad id in the
+      // middle of the list is the caller's bug, and finding out about it after twenty rows
+      // have already been decoded tells nobody which call was wrong.
+      const ids = itemIds.map((value, i) => requireItemId(value, `itemIds[${i}]`));
+
+      if (!Number.isInteger(maxPx) || maxPx < 16 || maxPx > 512) {
+        throw new Error(
+          `maxPx must be a whole number of pixels between 16 and 512 for a list strip ` +
+          `(the row previews are thumbnails of thumbnails; use publish-read-thumbnail for a ` +
+          `full-size preview); got ${describeValue(maxPx)}.`
+        );
+      }
+
+      const results: ThumbStripEntry[] = [];
+      for (const id of ids) {
+        let record;
+        try {
+          record = store.get(id);
+        } catch (err: any) {
+          // An unreadable selection FILE, which is a fault about this row and not about
+          // the image: named here so the list shows which record is corrupt.
+          results.push({ itemId: id, dataUrl: null, fault: err?.message || String(err) });
+          continue;
+        }
+
+        if (!record || !record.thumbnailPath) {
+          results.push({ itemId: id, dataUrl: null, fault: null });
+          continue;
+        }
+
+        try {
+          // Re-validated on every read, exactly as the single-item preview is: the path was
+          // checked when it was stored, which says nothing about the file now that the
+          // volume it lives on can be unplugged or the image replaced.
+          validateThumbnailFile(record.thumbnailPath);
+          const { dataUrl } = renderThumbnailPreview(record.thumbnailPath, maxPx);
+          results.push({ itemId: id, dataUrl, fault: null });
+        } catch (err: any) {
+          results.push({ itemId: id, dataUrl: null, fault: err?.message || String(err) });
+        }
+      }
+
+      return ok(results);
     } catch (err: any) {
       return fail(err?.message || String(err));
     }

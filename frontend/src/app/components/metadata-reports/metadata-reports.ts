@@ -5,6 +5,7 @@ import {
   OnInit,
   ViewChild,
   computed,
+  effect,
   inject,
   signal,
 } from '@angular/core';
@@ -14,6 +15,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
+import { MatMenuModule } from '@angular/material/menu';
 import { AnalyticsChannel, ElectronService, MetadataRoutingOption } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
 import { PublishState } from '../../features/publish/publish-state';
@@ -28,6 +30,7 @@ import {
   SPREAKER_DESTINATION_LABEL,
   type PublishFacts,
   type ReportIndexEntry,
+  type ThumbStripEntry,
 } from '../../features/publish/publish.types';
 import {
   CADENCE_NOTES,
@@ -102,15 +105,46 @@ interface MetadataReport {
 
 // ---------------------------------------------------------------- page shell
 //
-// The three-pane report page (PHASE-4-DESIGN §1.2): list | decide | dispatch. The left
-// split is a real pane, so its width belongs to the operator and outlives the session. A
-// missing key is the first run, not a failure; a stored value outside the draggable range
-// is clamped rather than allowed to hide the pane; and a value that is not a number at
-// all is SAID rather than silently corrected, because something else wrote it.
+// The two-pane report page: list | work. The work pane carries BOTH the metadata blocks
+// and the publish record, on a two-tab bar — the record used to be a third column, and
+// the 404px it held was width the description and the chapter list wanted more.
+//
+// The left split is a real pane, so its width belongs to the operator and outlives the
+// session. A missing key is the first run, not a failure; a stored value outside the
+// draggable range is clamped rather than allowed to hide the pane; and a value that is
+// not a number at all is SAID rather than silently corrected, because something else
+// wrote it.
+//
+// The MINIMUM is also the migration. Rows now carry a 72px thumbnail, so a stored width
+// from before they existed would open the list too narrow to show one. Raising the floor
+// widens those stored widths on read, without anyone having to remember to.
 const LEFT_WIDTH_KEY = 'metadata-reports.left-width';
-const LEFT_WIDTH_DEFAULT = 280;
-const LEFT_WIDTH_MIN = 220;
-const LEFT_WIDTH_MAX = 560;
+const LEFT_WIDTH_DEFAULT = 370;
+const LEFT_WIDTH_MIN = 310;
+const LEFT_WIDTH_MAX = 640;
+
+/**
+ * Which channel tab the list is filtered to, remembered across sessions like the split.
+ *
+ * The value is a channel id, or `UNROUTED_TAB` for the rows nothing routes. It is NOT
+ * validated on read: the registry is not loaded yet at that moment, and a tab that no
+ * longer exists is resolved against the tabs that DO exist every time they are computed.
+ */
+const CHANNEL_TAB_KEY = 'metadata-reports.channel-tab';
+
+/** The trailing tab's value. Not a channel id, and no channel id can look like it. */
+const UNROUTED_TAB = 'unrouted';
+
+/**
+ * How wide a list thumbnail is asked for, in px.
+ *
+ * Twice the 72px the row draws, so the image is still sharp on this Mac's 2x display.
+ * The main process's ceiling is 512.
+ */
+const STRIP_MAX_PX = 144;
+
+/** The main process takes at most this many ids in one strip call. */
+const STRIP_BATCH = 300;
 
 /** YouTube's description limit — what the character count is read against. */
 const MAX_DESCRIPTION_CHARS = 5000;
@@ -134,6 +168,11 @@ function readStoredLeftWidth(): number {
     return LEFT_WIDTH_DEFAULT;
   }
   return clampLeftWidth(px);
+}
+
+/** '' — no tab chosen yet — is the first run, and resolves to the first tab on screen. */
+function readStoredChannelTab(): string {
+  return localStorage.getItem(CHANNEL_TAB_KEY) ?? '';
 }
 
 /**
@@ -192,16 +231,39 @@ interface ReportGroup {
   runs: MetadataReport[];
 }
 
-interface ChannelFilterChip {
+/**
+ * One tab of the list's channel strip: a channel, or the trailing "Unrouted".
+ *
+ * `count` is counted AFTER the search box and the segment filter, so the number on a tab
+ * is exactly how many rows pressing it leaves on screen — the same discipline the segment
+ * counts already keep.
+ */
+interface ChannelTab {
   value: string;
   label: string;
   count: number;
+  /**
+   * True when this channel is in the index but NOT in the registry. It gets a tab anyway,
+   * labelled by its raw id: a tab strip is the only way to a row now, and a row nothing
+   * offers a tab for would be a row that cannot be reached at all.
+   */
+  unknown: boolean;
 }
 
 /**
+ * The work pane's two tabs.
+ *
+ * The pane head — crumb, title, readiness meter, error banner — is outside both: it
+ * describes the ITEM, not either half of it, and a refusal that scrolled out of view with
+ * the tab it was reported on would be a refusal nobody read.
+ */
+type WorkTab = 'metadata' | 'record';
+
+/**
  * One value, two entry points: the four headline states are the segmented control, the
- * three narrower ones live in the "also" picker beside the channel filter. Exactly one is
- * ever active, which is why they are one signal and not two.
+ * three narrower ones live in the "also" picker under it. Exactly one is ever active,
+ * which is why they are one signal and not two. The channel is NOT one of them — it is
+ * the tab strip above the search box, and it filters alongside this rather than instead.
  */
 type StateFilter =
   | 'all'
@@ -331,6 +393,7 @@ interface ParsedMetadata {
     MatProgressSpinnerModule,
     MatChipsModule,
     MatDialogModule,
+    MatMenuModule,
     RouterLink,
   ],
   templateUrl: './metadata-reports.html',
@@ -400,6 +463,17 @@ export class MetadataReports implements OnInit {
   readonly leftWidth = signal(readStoredLeftWidth());
   readonly draggingSplit = signal(false);
 
+  /**
+   * Which half of the work pane is showing. Deliberately NOT persisted: the tab is about
+   * the item open right now, and an operator who left the record tab up last night is
+   * opening this morning's item to write titles.
+   */
+  readonly workTab = signal<WorkTab>('metadata');
+
+  showWorkTab(tab: WorkTab): void {
+    this.workTab.set(tab);
+  }
+
   @ViewChild('searchBox') private searchBox?: ElementRef<HTMLInputElement>;
   @ViewChild('titlesScroll') private titlesScroll?: ElementRef<HTMLElement>;
   @ViewChild('channelSelect') private channelSelect?: ElementRef<HTMLSelectElement>;
@@ -443,46 +517,264 @@ export class MetadataReports implements OnInit {
   // ------------------------------------------------------- left column (§1.7)
 
   readonly searchQuery = signal('');
-  /** '' is every channel; 'unrouted' is the null-channel state, which is a real answer. */
-  readonly channelFilter = signal('');
+  /**
+   * The channel tab the operator last pressed, as stored. A channel id, `UNROUTED_TAB`,
+   * or '' for "never pressed one". Read through `activeChannelTab()`, never directly —
+   * a stored id whose channel has since been disconnected must not filter the list down
+   * to nothing.
+   */
+  readonly storedChannelTab = signal(readStoredChannelTab());
   readonly stateFilter = signal<StateFilter>('all');
 
   /** Which re-run groups the operator has opened. Keyed by sourceKey. */
   readonly expandedGroups = signal<ReadonlySet<string>>(new Set<string>());
 
   /**
-   * The channel registry, for the filter chips' NAMES only.
+   * The channel registry: the list's tab strip, in the order the registry keeps them.
    *
-   * The same call the publish panel and the calendar make. When it fails the chips fall
-   * back to nothing — they show the raw channel ids, which is what the index actually
-   * holds, and the failure is said out loud rather than leaving an empty filter row that
-   * looks like "no channels are in use".
+   * The same call the publish panel and the calendar make. When it fails this stays empty
+   * and the tabs are built from `publish.channels()` instead — the open item's own copy of
+   * the same registry — and the failure is said out loud rather than leaving an empty tab
+   * row that looks like "no channels are in use".
    */
   readonly registryChannels = signal<AnalyticsChannel[]>([]);
 
-  readonly channelFilterChips = computed<ChannelFilterChip[]>(() => {
-    const counts = new Map<string, number>();
-    let unrouted = 0;
-    for (const entry of this.reportIndex()) {
-      // Stored channel first, then the prompt-set routing — the same answer the row's
-      // dot and the filter give, so a chip's count matches what clicking it shows.
-      const id = entry.publish?.channelId ?? entry.promptSetChannelId ?? null;
-      if (id === null) {
-        unrouted++;
-        continue;
-      }
-      counts.set(id, (counts.get(id) ?? 0) + 1);
+  /**
+   * Where this row goes: the stored channel, or — for a row with no record yet — the
+   * channel its prompt set routes to. `UNROUTED_TAB` when neither answers.
+   *
+   * The SAME answer the row's channel dot gives, which is what makes a tab's contents and
+   * a row's own claim about itself impossible to disagree.
+   */
+  private channelOf(report: MetadataReport): string {
+    return report.facts?.channelId ?? report.promptSetChannelId ?? UNROUTED_TAB;
+  }
+
+  /**
+   * The channel tab strip: one tab per registered channel, in registry order, then any
+   * channel the index uses that the registry does not know, then "Unrouted".
+   *
+   * Counted with the search box and the segment filter applied but NOT the channel — a
+   * tab has to be able to say how many rows it would leave without becoming the current
+   * tab first. Sources are counted rather than rows, for the reason the segment counts
+   * are: six re-runs of one source are one line in the list.
+   *
+   * A channel present in the index but absent from the registry still gets a tab, wearing
+   * its raw id. There is no "all" tab, so a channel with no tab would be rows nobody can
+   * reach; showing the id is the honest version of that.
+   *
+   * "Unrouted" is last, and only when something is actually unrouted.
+   */
+  readonly channelTabs = computed<ChannelTab[]>(() => {
+    const state = this.stateFilter();
+    const sources = new Map<string, Set<string>>();
+    for (const report of this.reports()) {
+      // '' as the channel means "do not filter by channel" — this is the count BEFORE
+      // the tab, which is the only count a tab can honestly print on itself.
+      if (!this.matchesFilters(report, state, '')) continue;
+      const id = this.channelOf(report);
+      const key = report.sourceKey ?? ` row:${report.itemId ?? report.path}`;
+      const bucket = sources.get(id);
+      if (bucket) bucket.add(key);
+      else sources.set(id, new Set<string>([key]));
     }
 
-    const named = this.registryChannels();
-    const chips: ChannelFilterChip[] = [...counts.entries()].map(([value, count]) => {
-      const known = named.find((c) => c.channelId === value);
-      return { value, label: known ? known.name : value, count };
-    });
-    chips.sort((a, b) => a.label.localeCompare(b.label));
-    if (unrouted > 0) chips.push({ value: 'unrouted', label: 'unrouted', count: unrouted });
-    return chips;
+    const registry = this.registryChannels().length
+      ? this.registryChannels()
+      : this.publish.channels();
+
+    const tabs: ChannelTab[] = registry.map((channel) => ({
+      value: channel.channelId,
+      label: channel.name,
+      count: sources.get(channel.channelId)?.size ?? 0,
+      unknown: false,
+    }));
+
+    const known = new Set(tabs.map((t) => t.value));
+    for (const [id, keys] of sources) {
+      if (id === UNROUTED_TAB || known.has(id)) continue;
+      tabs.push({ value: id, label: id, count: keys.size, unknown: true });
+    }
+
+    const unrouted = sources.get(UNROUTED_TAB)?.size ?? 0;
+    if (unrouted > 0) {
+      tabs.push({ value: UNROUTED_TAB, label: 'Unrouted', count: unrouted, unknown: false });
+    }
+    return tabs;
   });
+
+  /**
+   * The tab actually in force: the stored one when it is still on screen, otherwise the
+   * first tab there is.
+   *
+   * '' — which is what this answers while the registry is still loading and no tab has
+   * been drawn — means no channel filter at all. The list then shows every row rather
+   * than none, which is the truthful state of a list nobody has narrowed yet.
+   */
+  readonly activeChannelTab = computed<string>(() => {
+    const tabs = this.channelTabs();
+    if (tabs.length === 0) return '';
+    const stored = this.storedChannelTab();
+    return tabs.some((t) => t.value === stored) ? stored : tabs[0].value;
+  });
+
+  chooseChannelTab(value: string): void {
+    this.storedChannelTab.set(value);
+    localStorage.setItem(CHANNEL_TAB_KEY, value);
+  }
+
+  // ------------------------------------------------------- row thumbnails (§D)
+  //
+  // Every visible row draws the item's thumbnail at 72x40. The images are decoded and
+  // downscaled in the main process and arrive as data URLs, so the renderer still never
+  // touches the operator's external volume and webSecurity stays on.
+  //
+  // They are fetched in BATCHES keyed off what is on screen — one call per index load and
+  // per filter change, not one per row. 111 rows would otherwise be 111 IPC round trips
+  // and 111 image decodes every time the search box was typed in.
+
+  /**
+   * itemId -> what the strip call said about it.
+   *
+   * An entry exists for every id that has been ASKED about, including the ones that came
+   * back with nothing and the ones that failed: a missing entry means "not asked yet", and
+   * that is the only thing that triggers a fetch. An id that failed and was left out would
+   * be asked about again on every re-render, forever.
+   */
+  private readonly thumbStrip = signal<ReadonlyMap<string, ThumbStripEntry>>(new Map());
+
+  /** Ids in a call that has not answered yet — so two renders do not both ask. */
+  private readonly stripInFlight = new Set<string>();
+
+  /** This row's thumbnail, or null when nothing has been asked or answered for it yet. */
+  thumbFor(report: MetadataReport): ThumbStripEntry | null {
+    const id = report.itemId;
+    if (!id) return null;
+    return this.thumbStrip().get(id) ?? null;
+  }
+
+  /**
+   * Ask for every visible row whose thumbnail has not been asked for.
+   *
+   * Reads both `visibleReports()` and the cache, so it re-runs when the list changes AND
+   * when an entry is invalidated — which is how a rescan or a drop gets a fresh image
+   * without a full index reload.
+   */
+  private readonly stripFetcher = effect(() => {
+    const cached = this.thumbStrip();
+    const wanted: string[] = [];
+    for (const report of this.visibleReports()) {
+      const id = report.itemId;
+      if (!id || cached.has(id) || this.stripInFlight.has(id)) continue;
+      if (!wanted.includes(id)) wanted.push(id);
+    }
+    if (wanted.length === 0) return;
+    void this.fetchThumbStrip(wanted);
+  });
+
+  /**
+   * One strip call per batch of ids, merged into the cache as each answers.
+   *
+   * A failed call is SAID and every id in it is cached carrying the failure as its fault,
+   * which is what the broken placeholder's tooltip then shows. Leaving them uncached would
+   * put the fetcher above into a loop against a main process that is already unhappy.
+   */
+  private async fetchThumbStrip(ids: string[]): Promise<void> {
+    for (const id of ids) this.stripInFlight.add(id);
+    try {
+      for (let i = 0; i < ids.length; i += STRIP_BATCH) {
+        const batch = ids.slice(i, i + STRIP_BATCH);
+        const res = await this.electron.publishThumbStrip(batch, STRIP_MAX_PX);
+        const next = new Map(this.thumbStrip());
+        if (!res.success || !res.data) {
+          const fault =
+            `The thumbnail strip could not be read (${res.error ?? 'no reason given'}).`;
+          this.notificationService.warning('Row thumbnails unavailable', fault);
+          for (const id of batch) next.set(id, { itemId: id, dataUrl: null, fault });
+        } else {
+          for (const entry of res.data) next.set(entry.itemId, entry);
+          // An id the main process did not answer for at all is not the same as one it
+          // answered "nothing" for, and it must still be cached or it is asked forever.
+          const answered = new Set(res.data.map((e) => e.itemId));
+          for (const id of batch) {
+            if (answered.has(id)) continue;
+            next.set(id, {
+              itemId: id,
+              dataUrl: null,
+              fault: 'The thumbnail strip call returned no entry for this item.',
+            });
+          }
+        }
+        this.thumbStrip.set(next);
+      }
+    } finally {
+      for (const id of ids) this.stripInFlight.delete(id);
+    }
+  }
+
+  /** Forget what we know about these items' thumbnails; the fetcher re-asks on sight. */
+  private invalidateThumbStrip(itemIds: Iterable<string>): void {
+    const next = new Map(this.thumbStrip());
+    let changed = false;
+    for (const id of itemIds) {
+      if (next.delete(id)) changed = true;
+    }
+    if (changed) this.thumbStrip.set(next);
+  }
+
+  // ------------------------------------------------------- move to another channel (§C)
+
+  /**
+   * Send this item to a different channel.
+   *
+   * The operator generates under one prompt set and then decides the video belongs on
+   * another channel; the prompt set's routing is a default, not a verdict. Written
+   * straight to the record — an explicit channelId is what stops the automatic routing
+   * from putting it back — and then the index is re-read so the row hops tabs.
+   *
+   * When the moved item is the one open, its publish facts are re-read the same way
+   * selecting it would, so the record tab and the readiness meter cannot go on naming the
+   * old channel.
+   */
+  async moveToChannel(report: MetadataReport, channelId: string, event: Event): Promise<void> {
+    event.stopPropagation();
+    const itemId = report.itemId;
+    if (!itemId) {
+      this.notificationService.error(
+        'That row cannot be moved',
+        `"${report.displayTitle || report.name}" has no item id — it is from the older ` +
+          'on-disk layout, which has no publish record to write a channel to.',
+      );
+      return;
+    }
+
+    const res = await this.electron.publishSetFields(itemId, { channelId });
+    if (!res.success) {
+      this.notificationService.error(
+        'Could not move that item',
+        res.error ?? 'The main process refused the write and gave no reason.',
+      );
+      return;
+    }
+
+    if (this.selectedReport()?.itemId === itemId) {
+      await this.publish.load(itemId, report.promptSet);
+    }
+    await this.loadReports();
+    this.notificationService.success(
+      'Moved',
+      `"${report.displayTitle || report.name}" is now routed to ${this.channelNameFor(channelId)}.`,
+    );
+  }
+
+  /** The channels this row is NOT on — everything the overflow menu can offer it. */
+  otherChannels(report: MetadataReport): AnalyticsChannel[] {
+    const registry = this.registryChannels().length
+      ? this.registryChannels()
+      : this.publish.channels();
+    const current = this.channelOf(report);
+    return registry.filter((c) => c.channelId !== current);
+  }
 
   /**
    * Does this row survive the search box, the channel picker and one state filter?
@@ -493,7 +785,11 @@ export class MetadataReports implements OnInit {
    * what the first draft of this did — is a write inside a computed, and Angular is right
    * to refuse it.
    */
-  private matchesFilters(report: MetadataReport, state: StateFilter = this.stateFilter()): boolean {
+  private matchesFilters(
+    report: MetadataReport,
+    state: StateFilter = this.stateFilter(),
+    channel: string = this.activeChannelTab(),
+  ): boolean {
     const query = this.searchQuery().trim().toLowerCase();
     if (query) {
       const haystack = [report.displayTitle, report.name, report.sourceFilename]
@@ -503,17 +799,8 @@ export class MetadataReports implements OnInit {
       if (!haystack.includes(query)) return false;
     }
 
-    const channel = this.channelFilter();
-    if (channel) {
-      // The same answer the row's dot gives: stored channel first, then the prompt-set
-      // routing — a row the dot calls "Routed to X" must appear under X's filter.
-      const id = report.facts?.channelId ?? report.promptSetChannelId ?? null;
-      if (channel === 'unrouted') {
-        if (id !== null) return false;
-      } else if (id !== channel) {
-        return false;
-      }
-    }
+    // '' is the no-tab-yet state (see activeChannelTab) and filters nothing.
+    if (channel && this.channelOf(report) !== channel) return false;
 
     switch (state) {
       case 'scheduled':
@@ -614,8 +901,24 @@ export class MetadataReports implements OnInit {
       }
     }
 
-    return groups;
+    // Uploaded sources sink. A group whose newest run is already a video on YouTube is
+    // done with this page — it stays clickable and stays in its tab, but it stops
+    // competing for the top of the list with the ones that still need a decision. Both
+    // buckets keep the order they were built in, which is the index's own order.
+    const pending = groups.filter((g) => !this.isUploaded(g.head));
+    const uploaded = groups.filter((g) => this.isUploaded(g.head));
+    return [...pending, ...uploaded];
   });
+
+  /**
+   * Is this row's video already on YouTube?
+   *
+   * `videoId` is the only field that answers it: a linked draft is a video that exists,
+   * whatever its status. Rows that answer yes sink and go quiet.
+   */
+  isUploaded(report: MetadataReport): boolean {
+    return !!report.facts?.videoId;
+  }
 
   /** Every row on screen — heads, plus the runs of whichever groups are open. */
   readonly visibleReports = computed<MetadataReport[]>(() => {
@@ -1007,7 +1310,10 @@ export class MetadataReports implements OnInit {
    */
   focusTick(key: TickKey): void {
     if (key === 'titles') {
-      this.titlesScroll?.nativeElement.focus();
+      // The titles list lives in the metadata half. A tick is a jump, so it takes the
+      // pane with it rather than scrolling something the operator cannot see.
+      this.workTab.set('metadata');
+      setTimeout(() => this.titlesScroll?.nativeElement.focus());
       return;
     }
     const fact = FACT_FOR_TICK[key];
@@ -1016,6 +1322,8 @@ export class MetadataReports implements OnInit {
     // or links a draft — that happens in the browser. Collapsing whatever the operator had
     // open in order to show them nothing would be worse than doing nothing.
     if (fact === 'audio' && !this.publish.isPodcast()) return;
+    // Every remaining tick names a publish-record fact, and the record is the other tab.
+    this.workTab.set('record');
     this.openFact.set(fact);
     // After the row expands. The control inside it is what the operator came for.
     setTimeout(() => {
@@ -1722,6 +2030,76 @@ export class MetadataReports implements OnInit {
    */
   async changeThumbnail() {
     await this.publish.chooseThumbnail();
+    this.invalidateSelectedThumb();
+  }
+
+  /** The open item's row is now drawing a picture of a file that is no longer the one. */
+  private invalidateSelectedThumb(): void {
+    const itemId = this.selectedReport()?.itemId;
+    if (itemId) this.invalidateThumbStrip([itemId]);
+  }
+
+  /**
+   * Look for the exported thumbnail again (§E).
+   *
+   * The record's thumbnail is attached automatically when generation finishes, which is
+   * routinely BEFORE the operator has made the image. This is the button for "I have made
+   * it now" — it re-runs the same export-layout lookup, and it is the only way to get a
+   * second attempt without clearing the record by hand.
+   *
+   * Every one of the three buckets the call answers with is shown. "Nothing found" is a
+   * result, not silence: it is the answer the operator is checking for when the file they
+   * just exported is not where the layout expects it.
+   */
+  async rescanThumbnail(): Promise<void> {
+    const itemId = this.selectedReport()?.itemId;
+    if (!itemId) {
+      this.notificationService.error(
+        'Nothing to look for',
+        'No item is open, so there is no export layout to look in.',
+      );
+      return;
+    }
+
+    const res = await this.electron.publishRescanThumbnail(itemId);
+    if (!res.success || !res.data) {
+      this.notificationService.error(
+        'The thumbnail could not be looked for',
+        res.error ?? 'The main process refused the rescan and gave no reason.',
+      );
+      return;
+    }
+
+    const outcome = res.data;
+    // Re-read the record the same way every other save on this page does, then drop the
+    // list's cached image for this row — in that order, so the row's picture and the
+    // record's path cannot be two different files for a frame.
+    await this.publish.load(itemId, this.selectedReport()?.promptSet);
+    this.invalidateThumbStrip([itemId]);
+    await this.loadReports();
+
+    // The rescan re-runs the WHOLE automatic pass, so it reports on the channel as well as
+    // the thumbnail. This button asked one question, so it is answered on the thumbnail's
+    // own outcome — every sentence the call returned is still shown, in whichever bucket
+    // it arrived in.
+    const attached = outcome.applied.some((o) => o.field === 'thumbnail');
+    const say = (outcomes: readonly { field: string; detail: string }[]) =>
+      outcomes.map((o) => `${o.field}: ${o.detail}`).join(' ');
+
+    if (attached) {
+      this.notificationService.success('Thumbnail attached', say(outcome.applied));
+      return;
+    }
+
+    // Nothing was attached, and the two ways that happens are different answers. Both are
+    // shown — a rescan that reports nothing is indistinguishable from one that did not run.
+    const said = say([...outcome.refused, ...outcome.skipped, ...outcome.applied]);
+    this.notificationService.warning(
+      'No thumbnail was attached',
+      said.length > 0
+        ? said
+        : 'The rescan returned no outcome at all — nothing was applied, refused or skipped.',
+    );
   }
 
   /**
@@ -1769,6 +2147,7 @@ export class MetadataReports implements OnInit {
       return;
     }
     await this.publish.dropThumbnail(files[0]);
+    this.invalidateSelectedThumb();
   }
 
   // ------------------------------------------------------------- push to YouTube
@@ -2253,8 +2632,9 @@ export class MetadataReports implements OnInit {
   async ngOnInit() {
     await this.loadReports();
 
-    // Names for the channel filter chips. Deliberately after the list: the chips are
-    // derived from the ids the index actually holds, and this call only labels them.
+    // The channels the list's tab strip is built from. Deliberately after the list: the
+    // rows exist first and the tabs are drawn over them, so a slow registry costs the
+    // operator a moment of an unfiltered list rather than a blank page.
     await this.loadChannelRegistry();
 
     // The models "10 more titles" can run on. After the list for the same reason the chips
@@ -2286,7 +2666,7 @@ export class MetadataReports implements OnInit {
       this.notificationService.warning(
         'Channel names unavailable',
         `The channel registry could not be read (${res.error ?? 'no reason given'}), so the ` +
-          'channel filter shows raw channel ids.',
+          'channel tabs are built from whatever the open item last read.',
       );
       return;
     }
@@ -2506,6 +2886,27 @@ export class MetadataReports implements OnInit {
       }
 
       this.reportsDirectory.set(index.directory);
+
+      // A row whose thumbnail changed since the last index — attached, cleared, or taken
+      // over from an automatic find — is holding a picture of the wrong file. Forget it
+      // here, where the two versions of the truth are both in hand; the fetcher re-asks
+      // for it the moment the row is on screen again.
+      const before = new Map(
+        this.reportIndex().map((e) => [
+          e.itemId,
+          `${e.publish?.hasThumbnail ?? false}|${e.publish?.thumbnailSource ?? ''}`,
+        ]),
+      );
+      const stale = index.entries
+        .filter((e) => {
+          const was = before.get(e.itemId);
+          if (was === undefined) return false;
+          return (
+            was !== `${e.publish?.hasThumbnail ?? false}|${e.publish?.thumbnailSource ?? ''}`
+          );
+        })
+        .map((e) => e.itemId);
+      if (stale.length > 0) this.invalidateThumbStrip(stale);
 
       // Kept for the publish facts the index carries (channel, schedule, status). The
       // list below renders none of them yet — the calendar does — but they arrive in the
@@ -2758,6 +3159,9 @@ export class MetadataReports implements OnInit {
       // and "now" is re-read here so a session left open overnight does not go on
       // suggesting yesterday's next slot.
       this.openFact.set(null);
+      // A new item opens on its metadata, always. The record tab is where the operator
+      // goes after they have decided something, not where they land.
+      this.workTab.set('metadata');
       this.calendarNow.set(new Date());
       this.calendarMonth.set(startOfMonth(new Date()));
 

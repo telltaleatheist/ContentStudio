@@ -126,27 +126,23 @@
   height: 100%;
 }
 
-/* ─────────────────────────────── the three panes ─────────────────────────────── */
+/* ─────────────────────────────── the two panes ─────────────────────────────── */
 
+/* The publish record used to be a third column 404px wide. It is a tab in the work pane
+   now, and that width went to the work pane — the description, the chapter list and the
+   tag strip all wanted it more often than the record did. */
 .page-content {
   flex: 1;
   display: grid;
-  grid-template-columns: var(--left-w, 280px) 8px minmax(520px, 1fr) 404px;
-  grid-template-areas: 'list handle work rail';
+  grid-template-columns: var(--left-w, 370px) 8px minmax(0, 1fr);
+  grid-template-areas: 'list handle work';
   gap: 0;
   overflow: hidden;
   min-height: 0;
 }
 
-/* Nothing selected: the rail has nothing to dispatch, so it is not there. */
-.page-content.no-item {
-  grid-template-columns: var(--left-w, 280px) 8px minmax(0, 1fr);
-  grid-template-areas: 'list handle work';
-}
-
 .list-pane { grid-area: list; }
 .work-pane { grid-area: work; }
-.rail-pane { grid-area: rail; }
 
 .pane {
   background: var(--rp-page);
@@ -158,7 +154,6 @@
 }
 
 .list-pane { border-right: 1px solid var(--rp-line-soft); }
-.rail-pane { background: var(--rp-pane); border-left: 1px solid var(--rp-line-soft); }
 
 .pane-head {
   flex-shrink: 0;
@@ -451,6 +446,51 @@ input[type='time'].control { width: 92px; flex: none; }
   &:hover { color: var(--rp-ink); }
 }
 
+/* The channel tab strip. One tab per channel, the count each would leave on screen, and
+   a trailing Unrouted when something is. It wraps rather than scrolls: three channels and
+   an Unrouted fit two lines at the narrowest the split allows, and a horizontally
+   scrolling filter is a filter with tabs nobody finds. */
+.chan-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  border-bottom: 1px solid var(--rp-line-soft);
+  padding-bottom: 4px;
+}
+.chan-tab {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  font: 600 var(--rp-fs-cap) / 1 var(--font-family);
+  color: var(--rp-ink-3);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 4px 4px 0 0;
+  padding: 6px 7px;
+  margin-bottom: -5px;
+  cursor: pointer;
+  min-width: 0;
+  transition: color 0.13s ease, border-color 0.13s ease;
+
+  &:hover { color: var(--rp-ink-2); }
+  .n { font-size: 10.5px; color: var(--rp-ink-3); font-weight: 400; }
+  /* ORANGE — the tab in force. The list under it is the only list on screen, so which
+     one is on has to be answerable without reading the counts. */
+  &.on {
+    color: var(--rp-ink);
+    border-bottom-color: var(--primary-orange);
+    .n { color: var(--rp-ink-2); }
+  }
+}
+.chan-tab-l {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
 /* One 2×2 segmented control where two rows of chips used to be. */
 .seg {
   display: grid;
@@ -505,9 +545,11 @@ input[type='time'].control { width: 92px; flex: none; }
 
 .list-body { padding-bottom: 2rem; }
 
+/* check | thumbnail | name | runs | overflow | delete, with the meta line under
+   everything but the checkbox and the thumbnail. */
 .row {
   display: grid;
-  grid-template-columns: auto 1fr auto auto;
+  grid-template-columns: auto auto 1fr auto auto auto;
   align-items: center;
   gap: 2px 7px;
   padding: 8px 10px 8px 8px;
@@ -523,7 +565,39 @@ input[type='time'].control { width: 92px; flex: none; }
   }
   &.is-rerun { padding-left: 22px; }
   &.checked { background: var(--rp-hover); }
+  /* Already on YouTube. Muted, never hidden — it is still selectable, still exportable,
+     and still the row the operator opens to read what was sent. */
+  &.uploaded { opacity: 0.55; }
+  &.uploaded:hover,
+  &.uploaded.on { opacity: 1; }
 }
+
+/* 16:9 at list resolution. Fixed size in both axes so a portrait image the operator
+   attached by mistake is visibly the wrong shape rather than silently taller. */
+.row-thumb {
+  grid-column: 2;
+  grid-row: 1 / 3;
+  flex: none;
+  width: 72px;
+  height: 40px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--rp-raised);
+  border: 1px solid var(--rp-line-soft);
+}
+/* Nothing attached, or a file that would not read. Both show the broken glyph: the
+   operator asked to be shown the hole rather than to have it tidied away. */
+.row-thumb.none {
+  display: grid;
+  place-items: center;
+  color: var(--rp-ink-3);
+  opacity: 0.45;
+
+  mat-icon { font-size: 18px; width: 18px; height: 18px; }
+}
+/* Asked for and not answered yet. Deliberately empty rather than wearing the broken
+   glyph, which would claim an answer the strip call has not given. */
+.row-thumb.none.pending { opacity: 0.25; }
 
 .row-check {
   grid-column: 1;
@@ -539,7 +613,7 @@ input[type='time'].control { width: 92px; flex: none; }
 .row.checked .row-check { opacity: 1; }
 
 .row-name {
-  grid-column: 2;
+  grid-column: 3;
   grid-row: 1;
   font-size: var(--rp-fs-body);
   line-height: 1.35;
@@ -552,7 +626,7 @@ input[type='time'].control { width: 92px; flex: none; }
 .row.on .row-name { color: var(--rp-ink); font-weight: 500; }
 
 .row-runs {
-  grid-column: 3;
+  grid-column: 4;
   grid-row: 1;
   flex: none;
   font-size: 10.5px;
@@ -565,8 +639,33 @@ input[type='time'].control { width: 92px; flex: none; }
   &:hover { color: var(--rp-ink); border-color: var(--rp-line); }
 }
 
+/* The overflow: the only way to overrule the prompt set's routing without regenerating.
+   Hover-revealed like the delete beside it — a row carries two destructive-looking
+   affordances and neither may compete with the title. */
+.row-more {
+  grid-column: 5;
+  grid-row: 1;
+  flex: none;
+  border: none;
+  background: none;
+  color: var(--rp-ink-3);
+  cursor: pointer;
+  padding: 0;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  transition: opacity 0.13s ease, color 0.13s ease;
+
+  mat-icon { font-size: 15px; width: 15px; height: 15px; }
+  &:hover { color: var(--rp-ink); }
+}
+.row:hover .row-more,
+.row:focus-within .row-more { opacity: 1; }
+
 .row-del {
-  grid-column: 4;
+  grid-column: 6;
   grid-row: 1;
   flex: none;
   border: none;
@@ -588,7 +687,7 @@ input[type='time'].control { width: 92px; flex: none; }
 .row:focus-within .row-del { opacity: 1; }
 
 .row-meta {
-  grid-column: 2 / -1;
+  grid-column: 3 / -1;
   grid-row: 2;
   display: flex;
   align-items: center;
@@ -627,6 +726,46 @@ input[type='time'].control { width: 92px; flex: none; }
 /* ══════════════════════════════════ ② DECIDE ═════════════════════════════════ */
 
 .work-head { padding: 0.9rem 1.5rem 0.75rem; gap: 0.55rem; }
+
+/* The work pane's two tabs. In the pane HEAD, not the body: the crumb, the title, the
+   readiness meter and the error banner above them describe the item rather than either
+   half of it, and a refusal that scrolled away with its tab is a refusal nobody read. */
+.wtabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  /* Pulled onto the pane head's own bottom border, so the active tab's underline and
+     the head's rule are one line rather than two. */
+  margin-bottom: -0.75rem;
+  padding-top: 0.15rem;
+}
+.wtab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 600 var(--rp-fs-small) / 1 var(--font-family);
+  color: var(--rp-ink-3);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 8px 10px;
+  margin-bottom: -1px;
+  cursor: pointer;
+  transition: color 0.13s ease, border-color 0.13s ease;
+
+  &:hover { color: var(--rp-ink-2); }
+  &.on {
+    color: var(--rp-ink);
+    border-bottom-color: var(--primary-orange);
+  }
+}
+/* How many facts are held, on the tab that holds them — the record tab is the one the
+   readiness meter's amber ticks jump to, and this is the same count in the same colour. */
+.wtab-held {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--rp-warn);
+}
 
 .crumb {
   display: flex;
@@ -1125,19 +1264,17 @@ input[type='time'].control { width: 92px; flex: none; }
 .asset-line:hover .asset-copy,
 .asset-line.copied .asset-copy { opacity: 1; }
 
-/* ═══════════════════════════════ ③ PUBLISH RECORD ═══════════════════════════ */
+/* ══════════════════════════ PUBLISH RECORD — the second tab ═════════════════════ */
 
-.rail-head {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0.9rem 1rem 0.65rem;
-  border-bottom: 1px solid var(--rp-line-soft);
-}
 .saving { font-size: var(--rp-fs-cap); color: var(--rp-ink-3); }
 
-.rail-body { padding: 0 0 1rem; }
+/* The record's own column, inside a pane that is now much wider than the 404px rail it
+   came from. Capped rather than stretched: an accordion row whose label is nine hundred
+   pixels from its value is a worse row, and the record is read down, not across. */
+.record-body {
+  padding: 0.4rem 0 1rem;
+  max-width: 560px;
+}
 
 .carry {
   display: flex;
@@ -1475,7 +1612,10 @@ input[type='time'].control { width: 92px; flex: none; }
 /* — dispatch — */
 .dispatch {
   flex: none;
+  /* `margin-top: auto` is a leftover of the rail column this used to sit at the bottom
+     of; in the record tab it is in normal flow, under the last fact row. */
   margin-top: auto;
+  max-width: 560px;
   padding: 0.85rem 1rem 1rem;
   border-top: 1px solid var(--rp-line-soft);
   background: var(--rp-raised);

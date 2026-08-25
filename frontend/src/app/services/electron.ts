@@ -15,7 +15,9 @@ import type {
   SpreakerStatus,
   ThumbnailPreview,
   ThumbnailProposal,
+  ThumbnailRescanOutcome,
   ThumbnailSetResult,
+  ThumbStripEntry,
   TranscriptRef,
   UploadOutcome,
   UploadProgress,
@@ -636,6 +638,11 @@ declare global {
         maxPx: number,
         absPath?: string | null
       ) => Promise<PublishResult<ThumbnailPreview | null>>;
+      publishRescanThumbnail: (itemId: string) => Promise<PublishResult<ThumbnailRescanOutcome>>;
+      publishThumbStrip: (
+        itemIds: string[],
+        maxPx: number
+      ) => Promise<PublishResult<ThumbStripEntry[]>>;
       publishResolveChannel: (promptSet: string) => Promise<PublishResult<ChannelResolution>>;
       publishFindCarryForward: (
         itemId: string
@@ -1394,6 +1401,43 @@ export class ElectronService {
   ): Promise<PublishResult<ThumbnailPreview | null>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.publishReadThumbnail(itemId, maxPx, absPath ?? null);
+  }
+
+  /**
+   * Look for this item's exported thumbnail AGAIN.
+   *
+   * The generator attaches one automatically when it finishes, which is before the
+   * operator has usually made it — this is the "I have made it now" call, and it is the
+   * only reason the button exists. It may attach a first image or replace an image nobody
+   * chose; a MANUALLY chosen thumbnail is never touched, and that refusal comes back as a
+   * sentence in `refused` rather than as a silent no-op.
+   *
+   * Every one of the three buckets is the main process's own wording. None of them is a
+   * failure — a call that fails is a failed PublishResult.
+   */
+  async publishRescanThumbnail(itemId: string): Promise<PublishResult<ThumbnailRescanOutcome>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishRescanThumbnail(itemId);
+  }
+
+  /**
+   * Every named item's thumbnail at list resolution, in ONE call.
+   *
+   * The reports list draws a 72x40 image on every visible row; asking for them one at a
+   * time would be one IPC round trip and one image decode per row, on a list that is 111
+   * rows long here. The answers come back in the order the ids went out, so a caller
+   * never has to match them up by id — and an id the main process could not answer for
+   * still gets an entry, carrying the fault.
+   *
+   * Limits are the main process's and it enforces them: at most 300 ids per call, and
+   * `maxPx` between 16 and 512.
+   */
+  async publishThumbStrip(
+    itemIds: string[],
+    maxPx: number
+  ): Promise<PublishResult<ThumbStripEntry[]>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishThumbStrip(itemIds, maxPx);
   }
 
   /**
