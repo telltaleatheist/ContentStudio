@@ -1538,6 +1538,31 @@ input[type='time'].control { width: 92px; flex: none; }
   span { cursor: help; }
 }
 
+/* — the in-flight upload: bytes on their way, and the one control that stops them — */
+.upload-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: var(--rp-fs-cap);
+  color: var(--rp-ink-3);
+
+  .num { flex: none; }
+}
+.upload-bar {
+  flex: 1;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--rp-line-soft);
+  overflow: hidden;
+}
+.upload-bar-fill {
+  height: 100%;
+  background: linear-gradient(180deg, var(--light-orange), var(--dark-orange));
+  /* The events come at ~4 Hz; this smooths the steps between them. */
+  transition: width 0.25s linear;
+}
+
 /* ─────────────────────────────── scrollbars ─────────────────────────────── */
 
 .pane-body::-webkit-scrollbar { width: 9px; height: 9px; }

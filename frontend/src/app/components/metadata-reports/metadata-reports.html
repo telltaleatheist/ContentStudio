@@ -1383,6 +1383,42 @@
               </div>
             }
 
+            <!-- The upload's receipt: the same accounting as the push's, plus the
+                 audit-gate fact — the video sits LOCKED PRIVATE regardless of its
+                 schedule, and saying so is what keeps a scheduled upload from looking
+                 broken. -->
+            @if (publish.uploadReceipt(); as receipt) {
+              <div class="receipt">
+                <div class="receipt-head">
+                  <mat-icon>task_alt</mat-icon>
+                  <strong>Uploaded as video {{ receipt.videoId }}</strong>
+                  <span class="pane-head-spacer"></span>
+                  <button class="ghost" (click)="publish.dismissUploadReceipt()">Dismiss</button>
+                </div>
+                <dl class="manifest">
+                  <div><span>File</span><span>{{ fileName(receipt.file.path) }} — {{ bytesLabel(receipt.file.bytes) }}</span></div>
+                  <div><span>Title</span><span>{{ receipt.title }}</span></div>
+                  <div>
+                    <span>Description</span>
+                    <span>{{ receipt.description.chars }} chars — “{{ receipt.description.firstLine }}”</span>
+                  </div>
+                  <div><span>Tags</span><span>{{ receipt.tags.count }} sent</span></div>
+                  @if (receipt.publishAt) {
+                    <div><span>Schedule</span><span>{{ localTime(receipt.publishAt) }} — see Visibility below</span></div>
+                  }
+                  @if (receipt.thumbnail) {
+                    <div><span>Thumbnail</span><span>{{ fileName(receipt.thumbnail) }} uploaded</span></div>
+                  } @else if (receipt.skipped.thumbnail) {
+                    <div class="miss"><span>Thumbnail</span><span>{{ receipt.skipped.thumbnail }}</span></div>
+                  }
+                  <div class="miss">
+                    <span>Visibility</span>
+                    <span>Locked private until the Google API audit clears — it cannot go public even at its scheduled time.</span>
+                  </div>
+                </dl>
+              </div>
+            }
+
             <!-- `encodingStatus` is in this one deliberately: a fresh upload is PENDING or
                  PROCESSING and never READY, so it must not read as "the episode is live". -->
             @if (publish.spreakerReceipt(); as receipt) {
@@ -1467,13 +1503,33 @@
                   @if (publish.uploading()) { Uploading… } @else { Upload to Spreaker }
                 </button>
               }
-            } @else {
+            } @else if (publish.videoId()) {
               <button class="dispatch-btn"
                       [class.go]="!dispatchBlockedReason()"
                       [disabled]="!!dispatchBlockedReason() || publish.pushing() || publish.saving()"
                       [title]="dispatchBlockedReason() ?? 'Writes this manifest to the linked video. It asks first.'"
                       (click)="pushToYouTube()">
                 @if (publish.pushing()) { Pushing… } @else { Push to YouTube }
+              </button>
+            } @else {
+              <!-- No linked video, so the dispatch is a CREATE: videos.insert from the
+                   source file, manifest and all. Born private, and locked there until
+                   Google approves the API audit — the foot below says so plainly. -->
+              @if (publish.uploadingYouTube()) {
+                <div class="upload-progress">
+                  <div class="upload-bar">
+                    <div class="upload-bar-fill" [style.width.%]="uploadPercent()"></div>
+                  </div>
+                  <span class="num">{{ uploadProgressLabel() }}</span>
+                  <button class="ghost" (click)="cancelUpload()">Cancel</button>
+                </div>
+              }
+              <button class="dispatch-btn"
+                      [class.go]="!dispatchBlockedReason() && !publish.uploadingYouTube()"
+                      [disabled]="!!dispatchBlockedReason() || publish.uploadingYouTube() || publish.saving()"
+                      [title]="dispatchBlockedReason() ?? 'Creates a NEW private video from the source file. Uploads stay private until the Google API audit clears — release uploads still go through the browser.'"
+                      (click)="uploadToYouTube()">
+                @if (publish.uploadingYouTube()) { Uploading… } @else { Upload to YouTube }
               </button>
             }
 
@@ -1483,6 +1539,10 @@
               } @else if (publish.isPodcast()) {
                 <span [title]="publish.spreakerPublicationNote()">
                   Spreaker has no draft state ⓘ
+                </span>
+              } @else if (!publish.videoId()) {
+                <span title="API-uploaded videos are locked private until Google approves the app's YouTube API audit — they cannot go public even at a scheduled time. Release uploads still go through the browser.">
+                  Uploads stay private until the Google API audit clears ⓘ
                 </span>
               } @else if (publish.lastPushReceipt(); as last) {
                 <span [title]="'&quot;' + last.updated.title + '&quot;'">

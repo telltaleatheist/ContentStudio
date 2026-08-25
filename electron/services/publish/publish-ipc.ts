@@ -31,6 +31,7 @@ import {
 } from './publish-store.service';
 import { matchDraft, toFillCandidates } from './video-matcher';
 import { YouTubePushApi, pushItemToYouTube } from './youtube-push';
+import { YouTubeUploadApi, uploadItemToYouTube } from './youtube-upload';
 import {
   SpreakerTarget,
   SpreakerUploadApi,
@@ -256,6 +257,13 @@ export interface PublishIpcDeps {
    */
   pushApi: YouTubePushApi;
   /**
+   * The three calls "Upload to YouTube" needs (videos.insert, thumbnails.set, and the
+   * categoryId read), injected exactly like pushApi and for the same reason: an insert
+   * CREATES a video on a live channel, and the only acceptable way to exercise the flow
+   * is against a fixture.
+   */
+  uploadApi: YouTubeUploadApi;
+  /**
    * The ONE Spreaker write, injected exactly like pushApi and for a sharper version of
    * the same reason: an episode upload is a CREATE against a live podcast feed, so the
    * only acceptable way to exercise it is against a fixture.
@@ -325,6 +333,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
     listReportRows,
     resolveTranscriptRef,
     pushApi,
+    uploadApi,
     spreakerApi,
     requireSpreakerTarget,
     probeAudio,
@@ -350,6 +359,13 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
     );
   }
 
+  if (!uploadApi || typeof uploadApi.insertVideo !== 'function'
+      || typeof uploadApi.setThumbnail !== 'function' || typeof uploadApi.getLatestCategoryId !== 'function') {
+    throw new Error(
+      'setupPublishIpc requires uploadApi with insertVideo, setThumbnail and getLatestCategoryId. ' +
+      'An upload without all three would half-create videos it cannot finish.'
+    );
+  }
   if (!pushApi || typeof pushApi.getVideoParts !== 'function' || typeof pushApi.updateVideo !== 'function'
       || typeof pushApi.setThumbnail !== 'function') {
     throw new Error(
@@ -873,6 +889,72 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       const id = requireItemId(itemId, 'itemId');
       const outcome = await pushItemToYouTube(id, { store, readGenerated, api: pushApi });
       return ok(outcome);
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * Upload the item's SOURCE FILE as a new video, with its chosen metadata, schedule and
+   * thumbnail — videos.insert, the API sibling of the push above. Refuses items already
+   * linked to a video (that is a push). One upload per item at a time.
+   *
+   * AUDIT GATE: until Google approves the app's API audit the created video is locked
+   * private regardless of its schedule. The UI says so next to the button; the receipt
+   * records it (`lockedPrivatePendingAudit`).
+   *
+   * Progress travels as `publish-upload-progress` {itemId, sentBytes, totalBytes} on the
+   * calling WebContents, throttled to ~4 Hz plus the final tick. Failures arrive
+   * VERBATIM, exactly like the push.
+   */
+  const activeUploads = new Map<string, AbortController>();
+
+  ipcMain.handle('publish-upload-youtube', async (e, itemId: string) => {
+    try {
+      const id = requireItemId(itemId, 'itemId');
+      if (activeUploads.has(id)) {
+        throw new Error(`Item ${id} is already uploading. Cancel it first or wait for it to finish.`);
+      }
+      const controller = new AbortController();
+      activeUploads.set(id, controller);
+      const sender = e.sender;
+      let lastTickMs = 0;
+      try {
+        const outcome = await uploadItemToYouTube(id, {
+          store,
+          readGenerated,
+          api: uploadApi,
+          signal: controller.signal,
+          onProgress: (sentBytes, totalBytes) => {
+            const nowMs = Date.now();
+            if (nowMs - lastTickMs < 250 && sentBytes !== totalBytes) return;
+            lastTickMs = nowMs;
+            if (!sender.isDestroyed()) {
+              sender.send('publish-upload-progress', { itemId: id, sentBytes, totalBytes });
+            }
+          },
+        });
+        return ok(outcome);
+      } finally {
+        activeUploads.delete(id);
+      }
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * Abort a running upload. `cancelled: false` is a FACT (nothing was running), not an
+   * error — the operator clicking cancel a beat after the upload finished did nothing
+   * wrong and there is nothing to report as failed.
+   */
+  ipcMain.handle('publish-upload-cancel', async (_e, itemId: string) => {
+    try {
+      const id = requireItemId(itemId, 'itemId');
+      const controller = activeUploads.get(id);
+      if (!controller) return ok({ cancelled: false });
+      controller.abort();
+      return ok({ cancelled: true });
     } catch (err: any) {
       return fail(err?.message || String(err));
     }

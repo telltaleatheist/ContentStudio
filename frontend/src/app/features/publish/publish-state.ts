@@ -34,6 +34,7 @@ import {
   ThumbnailPreview,
   ThumbnailProposal,
   ThumbnailSource,
+  UploadReceipt,
 } from './publish.types';
 import { composePublishAt } from './publish-schedule';
 
@@ -161,6 +162,38 @@ export class PublishState {
    * another item.
    */
   private readonly _receipt = signal<PushReceipt | null>(null);
+
+  /** True while a YouTube upload is in flight. Distinct from _uploading, which is Spreaker's. */
+  private readonly _uploadingYouTube = signal(false);
+
+  /**
+   * Bytes on their way for the in-flight upload, or null when none is running.
+   *
+   * Written by the progress subscription below and cleared when the call settles — it
+   * describes a transfer, not the record, so nothing about it survives the upload.
+   */
+  private readonly _uploadProgress = signal<{ sentBytes: number; totalBytes: number } | null>(
+    null
+  );
+
+  /**
+   * The receipt from the YouTube upload made in this sitting, or null.
+   *
+   * Not the same thing as `selection().uploadReceipt`, which is the upload whenever it
+   * happened. This one says "the thing you just clicked did this", like _receipt.
+   */
+  private readonly _uploadReceipt = signal<UploadReceipt | null>(null);
+
+  constructor() {
+    // Subscribed once for the service's life (providedIn: 'root', so there is no teardown
+    // to pair it with). Events for any other item — none are expected, since one upload
+    // runs at a time from this panel — are dropped rather than shown against the wrong
+    // report.
+    this.electron.onPublishUploadProgress((p) => {
+      if (p.itemId !== this._itemId()) return;
+      this._uploadProgress.set({ sentBytes: p.sentBytes, totalBytes: p.totalBytes });
+    });
+  }
 
   // --------------------------------------------------------------- the Spreaker half
   //
@@ -389,6 +422,40 @@ export class PublishState {
     if (!this.videoId()) {
       return 'This item is not linked to a YouTube video yet. Upload the draft in the ' +
         'browser and link it first — nothing here uploads video.';
+    }
+    if (!this.channelId()) return 'This item is not routed to a channel yet.';
+    if (!this.pushTitle()) return 'No title is chosen. Variant 1 is what goes on the video.';
+    return null;
+  });
+
+  /** True while the YouTube upload is in flight. */
+  readonly uploadingYouTube = this._uploadingYouTube.asReadonly();
+
+  /** The in-flight upload's bytes, or null when nothing is uploading. */
+  readonly uploadProgress = this._uploadProgress.asReadonly();
+
+  /** The receipt from a YouTube upload made in this sitting. Null until one succeeds here. */
+  readonly uploadReceipt = this._uploadReceipt.asReadonly();
+
+  /** What the API upload created, whenever it happened. Null until there has been one. */
+  readonly lastUploadReceipt = computed<UploadReceipt | null>(
+    () => this._selection()?.uploadReceipt ?? null
+  );
+
+  /**
+   * Why "Upload to YouTube" is unavailable, or null when it is available.
+   *
+   * Same discipline as pushBlockedReason: each of these is also refused by the main
+   * process, so this is the same rule said early, not a second one. The refusals only it
+   * can make — a source file gone from disk, no categoryId derivable from the channel's
+   * uploads — arrive as its verbatim text when the button is actually pressed.
+   */
+  readonly uploadBlockedReason = computed<string | null>(() => {
+    if (!this.hasTarget()) return 'No report is open.';
+    const videoId = this.videoId();
+    if (videoId) {
+      return `Already linked to video ${videoId}. Uploading would create a duplicate — ` +
+        'Push updates the existing video instead.';
     }
     if (!this.channelId()) return 'This item is not routed to a channel yet.';
     if (!this.pushTitle()) return 'No title is chosen. Variant 1 is what goes on the video.';
@@ -747,6 +814,10 @@ export class PublishState {
     // The receipt belongs to the item it was for. Leaving it up while another report is
     // open would credit this item with a push that happened to a different video.
     this._receipt.set(null);
+    // Same for the upload's receipt — and its progress, which described a transfer that
+    // belonged to that item's sitting.
+    this._uploadReceipt.set(null);
+    this._uploadProgress.set(null);
   }
 
   /**
@@ -1513,6 +1584,72 @@ export class PublishState {
   /** Put the receipt away. It stays on the record; this only closes the panel's copy. */
   dismissReceipt(): void {
     this._receipt.set(null);
+  }
+
+  /**
+   * Upload this item's source file to YouTube as a NEW video — videos.insert, resumable.
+   *
+   * The create counterpart of pushToYouTube, and the second remote write in this service.
+   * The video is born PRIVATE with the chosen metadata already on it, and until Google
+   * approves the app's YouTube API audit it is LOCKED private — it cannot go public even
+   * at its scheduled publishAt, which the receipt records as lockedPrivatePendingAudit.
+   *
+   * Nothing is decided here. The main process re-reads the record and refuses what has
+   * to be refused (already linked, no chosen title, no channel, a source file gone from
+   * disk, no categoryId derivable), and its message is shown as it came. Progress arrives
+   * through the subscription in the constructor; both it and the flag are cleared when
+   * the call settles, success or not.
+   */
+  async uploadToYouTube(): Promise<UploadReceipt | null> {
+    const t = this.target('upload to YouTube');
+    if (!t) return null;
+
+    const blocked = this.uploadBlockedReason();
+    if (blocked) {
+      this._error.set(`Cannot upload: ${blocked}`);
+      return null;
+    }
+
+    this._uploadingYouTube.set(true);
+    this._error.set(null);
+    this._uploadReceipt.set(null);
+    this._uploadProgress.set(null);
+    try {
+      const res = await this.electron.publishUploadYouTube(t);
+      if (this._itemId() !== t) return null;
+      if (!res.success || !res.data) {
+        this._error.set(res.error ?? 'The upload failed and the main process gave no reason.');
+        return null;
+      }
+      this._selection.set(res.data.selection);
+      this._uploadReceipt.set(res.data.receipt);
+      return res.data.receipt;
+    } finally {
+      this._uploadingYouTube.set(false);
+      this._uploadProgress.set(null);
+    }
+  }
+
+  /**
+   * Abort the in-flight upload.
+   *
+   * The upload call itself is what reports the outcome: an aborted transfer comes back
+   * through uploadToYouTube's error path with the main process's own words. `cancelled:
+   * false` means there was nothing running — the upload had already finished or failed —
+   * and there is nothing to say about that here that the settled call has not said.
+   */
+  async cancelUpload(): Promise<void> {
+    const t = this._itemId();
+    if (!t) return;
+    const res = await this.electron.publishUploadCancel(t);
+    if (!res.success) {
+      this._error.set(res.error ?? 'The cancel failed and the main process gave no reason.');
+    }
+  }
+
+  /** Put the upload receipt away. It stays on the record; this only closes the panel's copy. */
+  dismissUploadReceipt(): void {
+    this._uploadReceipt.set(null);
   }
 
   // ------------------------------------------------------------ Spreaker, write side

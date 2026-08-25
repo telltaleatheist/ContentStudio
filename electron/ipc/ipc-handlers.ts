@@ -3242,6 +3242,25 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         mime: 'image/png' | 'image/jpeg'
       ) => analytics.youtubeApi.setThumbnail(channelId, videoId, image, mime),
     },
+    // The upload trio, bound the same way. insertVideo CREATES a video on a live
+    // channel (locked private until the API audit clears), so the set of calls that can
+    // do that is written out here beside the push's, where both can be read at a glance.
+    uploadApi: {
+      insertVideo: (
+        channelId: string,
+        filePath: string,
+        body: any,
+        onProgress?: (sentBytes: number, totalBytes: number) => void,
+        signal?: AbortSignal
+      ) => analytics.youtubeApi.insertVideo(channelId, filePath, body, onProgress, signal),
+      setThumbnail: (
+        channelId: string,
+        videoId: string,
+        image: Buffer,
+        mime: 'image/png' | 'image/jpeg'
+      ) => analytics.youtubeApi.setThumbnail(channelId, videoId, image, mime),
+      getLatestCategoryId: (channelId: string) => analytics.youtubeApi.getLatestCategoryId(channelId),
+    },
     // The ONE Spreaker write, bound the same way the YouTube writes are: a narrow
     // function, not the client. A mistake here creates a public episode on a live
     // podcast feed, so this is the seam an upload can be exercised across without one.

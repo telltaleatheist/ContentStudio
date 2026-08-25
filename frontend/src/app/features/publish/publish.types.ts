@@ -307,6 +307,49 @@ export interface PushOutcome {
   receipt: PushReceipt;
 }
 
+/**
+ * What one "Upload to YouTube" (videos.insert) created. Mirrors
+ * electron/services/publish/publish-types.UploadReceipt.
+ *
+ * Same sizes-not-contents discipline as PushReceipt, and the same accounting: a part
+ * that was not sent is in `skipped` with its reason. `lockedPrivatePendingAudit` is the
+ * audit-gate fact — until Google approves the app's YouTube API audit, an API-uploaded
+ * video CANNOT go public, even at its scheduled publishAt — recorded on the receipt so
+ * a report read weeks later says why the video sat private instead of looking broken.
+ */
+export interface UploadReceipt {
+  videoId: string;
+  channelId: string;
+  /** ISO. When the upload completed. */
+  uploadedAt: string;
+  /** The source file that was sent, as it measured at upload time. */
+  file: { path: string; bytes: number };
+  categoryId: string;
+  title: string;
+  description: { chars: number; firstLine: string };
+  tags: { count: number };
+  /** Present exactly when a schedule was sent with the insert. */
+  publishAt?: string;
+  /** Present exactly when a thumbnail was set after the insert. */
+  thumbnail?: string;
+  skipped: { thumbnail?: string };
+  /** The audit-gate fact: the video cannot go public until Google approves the audit. */
+  lockedPrivatePendingAudit: true;
+}
+
+/** What publish-upload-youtube returns: the updated record plus the receipt stored on it. */
+export interface UploadOutcome {
+  selection: ChosenMetadata;
+  receipt: UploadReceipt;
+}
+
+/** One publish-upload-progress event: the resumable upload's bytes, at roughly 4 Hz. */
+export interface UploadProgress {
+  itemId: string;
+  sentBytes: number;
+  totalBytes: number;
+}
+
 export interface ChosenMetadata {
   /** The item's permanent id — the only thing that identifies it. */
   itemId: string;
@@ -388,6 +431,11 @@ export interface ChosenMetadata {
   pushedAt: string | null;
   /** What that push sent, part by part. null exactly when pushedAt is. Last push only. */
   pushReceipt: PushReceipt | null;
+  /**
+   * What the API upload created, when this item's video came into existence through
+   * videos.insert rather than a browser upload. Same one-slot rule as pushReceipt.
+   */
+  uploadReceipt: UploadReceipt | null;
   videoId: string | null;
   sourceFilename: string | null;
   sourceDurationSec: number | null;

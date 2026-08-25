@@ -35,6 +35,8 @@
  */
 
 import axios, { AxiosRequestConfig } from 'axios';
+import * as fs from 'fs';
+import { Transform } from 'stream';
 import { Snapshot } from '../analytics/analytics-types';
 import { YouTubeAuthService } from './youtube-auth.service';
 
@@ -518,6 +520,148 @@ export class YouTubeApiService {
       maxContentLength: Infinity,
     });
     return { videoId, defaultUrl: data?.items?.[0]?.default?.url ?? null };
+  }
+
+  /**
+   * Upload one video file: videos.insert over the RESUMABLE protocol.
+   *
+   * Two requests. (1) POST the metadata to the /upload host with
+   * uploadType=resumable, which answers 200 with a session URL in `Location` and no
+   * body worth keeping. (2) PUT the file bytes to that URL in one streamed request.
+   * A counting Transform between the disk and the wire is what feeds `onProgress` —
+   * axios's own progress events are unreliable under Node's adapter.
+   *
+   * AUDIT GATE: until Google approves the app's API audit, a video uploaded here is
+   * LOCKED PRIVATE — it cannot go public even at its scheduled publishAt. Callers own
+   * saying so to the operator; this client just does the upload.
+   *
+   * No mid-stream resume: a failed PUT throws with YouTube's words and the operator
+   * runs the upload again (YouTube discards the abandoned session). A silent
+   * resume-and-hope here would be a fallback path that only runs when something is
+   * already wrong. `signal` aborts both requests and destroys the file stream.
+   */
+  async insertVideo(
+    channelId: string,
+    filePath: string,
+    body: {
+      snippet: { title: string; description: string; tags: string[]; categoryId: string };
+      status: { privacyStatus: 'private'; publishAt?: string; selfDeclaredMadeForKids: boolean };
+    },
+    onProgress?: (sentBytes: number, totalBytes: number) => void,
+    signal?: AbortSignal
+  ): Promise<{ videoId: string }> {
+    const MIME_BY_EXT: Record<string, string> = {
+      '.mov': 'video/quicktime', '.mp4': 'video/mp4', '.m4v': 'video/x-m4v',
+      '.webm': 'video/webm', '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo',
+      '.mpg': 'video/mpeg', '.mpeg': 'video/mpeg',
+    };
+    const ext = (filePath.match(/\.[^.]+$/)?.[0] || '').toLowerCase();
+    const mime = MIME_BY_EXT[ext];
+    if (!mime) {
+      throw new YouTubeApiError(
+        `"${filePath}" has extension "${ext || '(none)'}", which is not a video type this ` +
+        `uploader knows (${Object.keys(MIME_BY_EXT).join(', ')}).`
+      );
+    }
+    const totalBytes = fs.statSync(filePath).size;
+    if (totalBytes === 0) throw new YouTubeApiError(`"${filePath}" is empty (0 bytes).`);
+
+    const token = await this.auth.getAccessToken(channelId);
+
+    // (1) Open the resumable session. Plain request(): small, JSON, 30s timeout is right.
+    let location: string;
+    try {
+      const resp = await axios.request({
+        method: 'POST',
+        url: `${UPLOAD_API}/videos`,
+        params: { uploadType: 'resumable', part: 'snippet,status' },
+        data: body,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json; charset=UTF-8',
+          'X-Upload-Content-Type': mime,
+          'X-Upload-Content-Length': String(totalBytes),
+        },
+        timeout: 30000,
+        signal,
+      });
+      const loc = resp.headers['location'];
+      if (typeof loc !== 'string' || !loc) {
+        throw new YouTubeApiError('videos.insert resumable init returned no Location header.');
+      }
+      location = loc;
+    } catch (e) {
+      throw this.asInsertError(e, 'videos.insert (session init)');
+    }
+
+    // (2) Stream the bytes. NO timeout — a 1 GB .mov takes as long as it takes; the
+    // abort signal is the operator's way out, not a timer's.
+    let sent = 0;
+    const counter = new Transform({
+      transform(chunk, _enc, cb) {
+        sent += chunk.length;
+        onProgress?.(sent, totalBytes);
+        cb(null, chunk);
+      },
+    });
+    const file = fs.createReadStream(filePath);
+    const onAbort = () => file.destroy(new Error('Upload cancelled.'));
+    signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      const resp = await axios.request<any>({
+        method: 'PUT',
+        url: location,
+        data: file.pipe(counter),
+        headers: { 'Content-Type': mime, 'Content-Length': String(totalBytes) },
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        timeout: 0,
+        signal,
+      });
+      const videoId = resp.data?.id;
+      if (typeof videoId !== 'string' || !videoId) {
+        throw new YouTubeApiError('videos.insert finished but returned no video id.');
+      }
+      return { videoId };
+    } catch (e) {
+      throw this.asInsertError(e, 'videos.insert (byte upload)');
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
+  /** YouTube's words, verbatim, on a named step — insert bypasses request() for streaming. */
+  private asInsertError(e: unknown, step: string): Error {
+    if (e instanceof YouTubeApiError) return e;
+    if (axios.isAxiosError(e)) {
+      const status = e.response?.status ?? null;
+      const apiError = (e.response?.data as any)?.error;
+      const detail = apiError?.message || apiError?.errors?.[0]?.reason || e.message;
+      return new YouTubeApiError(`${step} failed${status ? ` (HTTP ${status})` : ''}: ${detail}`, status);
+    }
+    return new YouTubeApiError(`${step} failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  /**
+   * The categoryId of the channel's most recent upload, or null on a channel with none.
+   *
+   * videos.insert REQUIRES a categoryId, and this app has no category picker — the
+   * honest default is whatever the operator's own latest video uses, read at upload
+   * time rather than hard-coded here and drifting from practice.
+   */
+  async getLatestCategoryId(channelId: string): Promise<string | null> {
+    const uploadsId = await this.getUploadsPlaylistId(channelId);
+    const page = await this.dataGet<any>(channelId, 'playlistItems', {
+      part: 'contentDetails', playlistId: uploadsId, maxResults: '5',
+    });
+    const ids = (page.items || []).map((i: any) => i.contentDetails?.videoId).filter(Boolean);
+    if (!ids.length) return null;
+    const vids = await this.dataGet<any>(channelId, 'videos', { part: 'snippet', id: ids.join(',') });
+    for (const v of vids.items || []) {
+      const cat = v.snippet?.categoryId;
+      if (typeof cat === 'string' && cat) return cat;
+    }
+    return null;
   }
 
   // ==================== ANALYTICS API: CORE METRICS ====================

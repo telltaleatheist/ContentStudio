@@ -185,6 +185,25 @@ export interface PushReceipt {
   };
 }
 
+/** What one API upload (videos.insert) created. Written by youtube-upload.ts only. */
+export interface UploadReceipt {
+  videoId: string;
+  channelId: string;
+  uploadedAt: string; // ISO
+  file: { path: string; bytes: number };
+  categoryId: string;
+  title: string;
+  description: { chars: number; firstLine: string };
+  tags: { count: number };
+  /** Present exactly when a schedule was sent with the insert. */
+  publishAt?: string;
+  /** Present exactly when a thumbnail was set after the insert. */
+  thumbnail?: string;
+  skipped: { thumbnail?: string };
+  /** The audit-gate fact: the video cannot go public until Google approves the audit. */
+  lockedPrivatePendingAudit: true;
+}
+
 /**
  * What was measured about an episode audio file at the moment it was accepted.
  *
@@ -520,6 +539,14 @@ export interface ChosenMetadata {
    */
   pushReceipt: PushReceipt | null;
 
+  /**
+   * What the API upload created, when this item's video came into existence through
+   * videos.insert rather than a browser upload. Same one-slot rule as pushReceipt.
+   * `lockedPrivatePendingAudit` records WHY the video sits private regardless of its
+   * schedule — the audit gate — so the report can say so instead of looking broken.
+   */
+  uploadReceipt: UploadReceipt | null;
+
   /** Set once the item is linked to a real video. */
   videoId: string | null;
 
@@ -854,6 +881,7 @@ export function emptyChosenMetadata(itemId: string, jobId: string): ChosenMetada
     transcriptRef: null,
     pushedAt: null,
     pushReceipt: null,
+    uploadReceipt: null,
     videoId: null,
     sourceFilename: null,
     sourceDurationSec: null,
@@ -928,6 +956,7 @@ export function upgradeStoredMetadata(record: ChosenMetadata): ChosenMetadata {
   if (!('transcriptRef' in stored)) upgraded.transcriptRef = null;
   if (!('pushedAt' in stored)) upgraded.pushedAt = null;
   if (!('pushReceipt' in stored)) upgraded.pushReceipt = null;
+  if (!('uploadReceipt' in stored)) upgraded.uploadReceipt = null;
 
   return upgraded;
 }

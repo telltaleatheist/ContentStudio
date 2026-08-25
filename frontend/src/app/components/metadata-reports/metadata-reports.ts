@@ -946,9 +946,14 @@ export class MetadataReports implements OnInit {
     // So the disagreement is checked rather than assumed: if something is refusing the
     // dispatch and nothing here is amber, the refusal is put on the LINK tick verbatim.
     // A meter that says READY over a dead button is the one failure this cannot have.
+    // Which refusal applies follows the dispatch itself: an unlinked YouTube item's
+    // dispatch is an UPLOAD, and holding it against the push's "not linked" refusal
+    // would show HELD over a button that is ready to go.
     const blocked = toSpreaker
       ? this.publish.spreakerBlockedReason()
-      : this.publish.pushBlockedReason();
+      : this.publish.videoId()
+        ? this.publish.pushBlockedReason()
+        : this.publish.uploadBlockedReason();
     if (blocked && !this.dispatchDone() && !ticks.some((t) => t.state === 'warn')) {
       const link = ticks[ticks.length - 1];
       link.state = 'warn';
@@ -1665,11 +1670,19 @@ export class MetadataReports implements OnInit {
     return rows;
   });
 
-  /** Why the one dispatch button is unavailable, for whichever destination is chosen. */
+  /**
+   * Why the one dispatch button is unavailable, for whichever destination is chosen.
+   *
+   * The YouTube destination has two dispatches: a linked item PUSHES metadata onto its
+   * video, an unlinked one UPLOADS the source file as a new (locked-private) video. The
+   * button and the meter's cross-check both read the same three-way choice, so they
+   * cannot disagree about which rule applies.
+   */
   dispatchBlockedReason(): string | null {
-    return this.publish.isPodcast()
-      ? this.publish.spreakerBlockedReason()
-      : this.publish.pushBlockedReason();
+    if (this.publish.isPodcast()) return this.publish.spreakerBlockedReason();
+    return this.publish.videoId()
+      ? this.publish.pushBlockedReason()
+      : this.publish.uploadBlockedReason();
   }
 
   /** An explicit choice, including the empty option — see PublishState.chooseChannel. */
@@ -1833,6 +1846,53 @@ export class MetadataReports implements OnInit {
   private describeScheduleForPush(iso: string): string {
     const when = describePublishAt(iso);
     return `${when.local} (${when.localOffset}) — stored as ${when.raw}`;
+  }
+
+  // ------------------------------------------------------------- upload to YouTube
+  //
+  // The dispatch an UNLINKED item gets: videos.insert creates the video from the source
+  // file with the manifest above already on it. No confirmation dialog, unlike push and
+  // Spreaker, because nothing an audience can see changes: the video is born PRIVATE,
+  // and until Google approves the app's YouTube API audit it is LOCKED private — it
+  // cannot go public even at its scheduled time. Release uploads still go through the
+  // browser, and the dispatch foot says so next to the button.
+
+  async uploadToYouTube() {
+    const blocked = this.publish.uploadBlockedReason();
+    if (blocked) {
+      this.publish.showError(`Cannot upload: ${blocked}`);
+      return;
+    }
+    const receipt = await this.publish.uploadToYouTube();
+    if (!receipt) return; // the failure is in the banner, verbatim
+    this.notificationService.success(
+      'Uploaded to YouTube',
+      `"${receipt.title}" — video ${receipt.videoId} on ${this.pushChannelLabel()}. ` +
+        'Locked private until the Google API audit clears.'
+    );
+  }
+
+  async cancelUpload() {
+    await this.publish.cancelUpload();
+  }
+
+  /** 0–100 for the bar. Before the first ~4 Hz progress event the bar sits at 0. */
+  uploadPercent(): number {
+    const p = this.publish.uploadProgress();
+    if (!p) return 0;
+    return Math.min(100, Math.floor((p.sentBytes / p.totalBytes) * 100));
+  }
+
+  /** `42% — 123.4 MB of 291.0 MB`, or the pre-first-event word. */
+  uploadProgressLabel(): string {
+    const p = this.publish.uploadProgress();
+    if (!p) return 'starting…';
+    return `${this.uploadPercent()}% — ${formatBytes(p.sentBytes)} of ${formatBytes(p.totalBytes)}`;
+  }
+
+  /** A byte count as the receipt states it — formatBytes, reachable from the template. */
+  bytesLabel(bytes: number): string {
+    return formatBytes(bytes);
   }
 
   // ------------------------------------------------------------ upload to Spreaker

@@ -17,6 +17,8 @@ import type {
   ThumbnailProposal,
   ThumbnailSetResult,
   TranscriptRef,
+  UploadOutcome,
+  UploadProgress,
 } from '../features/publish/publish.types';
 import type {
   CandidateScan,
@@ -643,6 +645,9 @@ declare global {
         fromItemId: string
       ) => Promise<PublishResult<CarryReceipt>>;
       publishPushYouTube: (itemId: string) => Promise<PublishResult<PushOutcome>>;
+      publishUploadYouTube: (itemId: string) => Promise<PublishResult<UploadOutcome>>;
+      publishUploadCancel: (itemId: string) => Promise<PublishResult<{ cancelled: boolean }>>;
+      onPublishUploadProgress: (callback: (p: UploadProgress) => void) => () => void;
 
       // Spreaker (Phase 6) — episode audio, the upload, and the machine's credentials
       publishProposeAudio: (itemId: string) => Promise<PublishResult<AudioFile | null>>;
@@ -1449,6 +1454,39 @@ export class ElectronService {
   async publishPushYouTube(itemId: string): Promise<PublishResult<PushOutcome>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.publishPushYouTube(itemId);
+  }
+
+  /**
+   * Upload the item's source file as a NEW video — videos.insert, resumable — with the
+   * chosen metadata on it from the first byte.
+   *
+   * The create counterpart of publishPushYouTube: the item must NOT already be linked to
+   * a video (that is a push), and everything else the insert needs — a chosen title, a
+   * channel, the source file on disk, a categoryId — is refused BY NAME in the main
+   * process, whose message is shown verbatim.
+   *
+   * Until Google approves the app's YouTube API audit, the video this creates is LOCKED
+   * PRIVATE — it cannot go public even at its scheduled publishAt. The receipt says so
+   * (`lockedPrivatePendingAudit`), and so must any UI near the action.
+   */
+  async publishUploadYouTube(itemId: string): Promise<PublishResult<UploadOutcome>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishUploadYouTube(itemId);
+  }
+
+  /**
+   * Abort the in-flight upload for this item. `cancelled: false` means there was nothing
+   * running to cancel — the upload had already finished or failed.
+   */
+  async publishUploadCancel(itemId: string): Promise<PublishResult<{ cancelled: boolean }>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishUploadCancel(itemId);
+  }
+
+  /** Byte progress of the in-flight upload, at ~4 Hz. Returns the unsubscribe. */
+  onPublishUploadProgress(callback: (p: UploadProgress) => void): () => void {
+    if (!this.ipcRenderer) return () => {};
+    return this.ipcRenderer.onPublishUploadProgress(callback);
   }
 
   // Spreaker (Phase 6)
