@@ -111,7 +111,7 @@
 
       <mat-form-field appearance="outline" class="full-width whisper-default">
         <mat-label>Voice enrollment recording</mat-label>
-        <input matInput [(ngModel)]="speakerEnrollmentAudio" readonly>
+        <input matInput [ngModel]="speakerEnrollmentAudio()" (ngModelChange)="speakerEnrollmentAudio.set($event)" readonly>
         @if (speakerEnrollmentAudio()) {
           <button mat-icon-button matSuffix (click)="clearEnrollmentAudio()" aria-label="Clear voice enrollment recording">
             <mat-icon>close</mat-icon>
@@ -133,7 +133,7 @@
     <mat-card-content>
       <mat-form-field appearance="outline" class="full-width">
         <mat-label>Active Prompt Set</mat-label>
-        <mat-select [(ngModel)]="selectedPromptSet">
+        <mat-select [ngModel]="selectedPromptSet()" (ngModelChange)="selectedPromptSet.set($event)">
           @for (promptSet of availablePromptSets(); track promptSet.id) {
             <mat-option [value]="promptSet.id">
               {{ promptSet.name }}
@@ -165,7 +165,7 @@
     <mat-card-content>
       <mat-form-field appearance="outline" class="full-width">
         <mat-label>Output Directory</mat-label>
-        <input matInput [(ngModel)]="outputDirectory" readonly>
+        <input matInput [ngModel]="outputDirectory()" (ngModelChange)="outputDirectory.set($event)" readonly>
         <button mat-icon-button matSuffix (click)="selectOutputDirectory()">
           <mat-icon>folder_open</mat-icon>
         </button>
@@ -223,33 +223,33 @@
 
       <mat-form-field appearance="outline" class="full-width">
         <mat-label>Show ID</mat-label>
-        <input matInput [(ngModel)]="spreakerShowId" placeholder="1234567">
+        <input matInput [ngModel]="spreakerShowId()" (ngModelChange)="spreakerShowId.set($event)" placeholder="1234567">
         <mat-hint>The number in your show's URL: spreaker.com/show/<strong>1234567</strong></mat-hint>
       </mat-form-field>
 
       <mat-form-field appearance="outline" class="full-width">
         <mat-label>Show name (optional)</mat-label>
-        <input matInput [(ngModel)]="spreakerShowName" placeholder="Fireside Chat">
+        <input matInput [ngModel]="spreakerShowName()" (ngModelChange)="spreakerShowName.set($event)" placeholder="Fireside Chat">
         <mat-hint>A label for the confirmation dialog. Nothing is looked up from Spreaker.</mat-hint>
       </mat-form-field>
 
       <mat-form-field appearance="outline" class="full-width">
         <mat-label>OAuth2 Client ID</mat-label>
-        <input matInput [(ngModel)]="spreakerClientId"
+        <input matInput [ngModel]="spreakerClientId()" (ngModelChange)="spreakerClientId.set($event)"
                [placeholder]="spreakerStatus()?.hasClientId ? 'A client id is stored — leave blank to keep it' : 'The Client ID of your registered app'">
         <mat-hint>From Developer Tools → your app at spreaker.com. Never displayed after saving.</mat-hint>
       </mat-form-field>
 
       <mat-form-field appearance="outline" class="full-width">
         <mat-label>OAuth2 Client Secret</mat-label>
-        <input matInput type="password" [(ngModel)]="spreakerClientSecret"
+        <input matInput type="password" [ngModel]="spreakerClientSecret()" (ngModelChange)="spreakerClientSecret.set($event)"
                [placeholder]="spreakerStatus()?.hasClientSecret ? 'A secret is stored — leave blank to keep it' : 'The Client Secret of that same app'">
         <mat-hint>Stored on this machine only, in the same 0600 file as the token.</mat-hint>
       </mat-form-field>
 
       <mat-form-field appearance="outline" class="full-width">
         <mat-label>Access token</mat-label>
-        <input matInput type="password" [(ngModel)]="spreakerToken"
+        <input matInput type="password" [ngModel]="spreakerToken()" (ngModelChange)="spreakerToken.set($event)"
                [placeholder]="spreakerStatus()?.hasToken ? 'A token is stored — leave blank to keep it' : 'Paste an access_token you minted elsewhere'">
         <mat-hint>
           Only needed if you already have a token. Authorizing below fills this in for you.
@@ -289,7 +289,7 @@
 
       <mat-form-field appearance="outline" class="full-width">
         <mat-label>Authorization code</mat-label>
-        <input matInput [(ngModel)]="spreakerAuthCode"
+        <input matInput [ngModel]="spreakerAuthCode()" (ngModelChange)="spreakerAuthCode.set($event)"
                placeholder="The code= value from the address bar">
         <mat-hint>
           Single-use and valid for minutes. Exchange it straight after authorizing.
