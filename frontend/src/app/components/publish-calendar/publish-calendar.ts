@@ -45,6 +45,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { AnalyticsChannel, ElectronService } from '../../services/electron';
 import { PublishState } from '../../features/publish/publish-state';
+import { NotificationService } from '../../services/notification';
 import type {
   LinkedVideo,
   PublishFacts,
@@ -318,6 +319,12 @@ export class PublishCalendar implements OnInit, OnDestroy {
   private electron = inject(ElectronService);
   private router = inject(Router);
   /**
+   * The app's own toast + bell, rather than a banner only this page knows how to draw.
+   * A refusal here is worth the same attention as one from anywhere else, and it should
+   * survive navigating away — the bell keeps it, a banner on a page you left does not.
+   */
+  private notify = inject(NotificationService);
+  /**
    * The single publishAt writer, shared with the report panel.
    *
    * Injected as the whole state object rather than reimplementing the write: the calendar
@@ -337,12 +344,6 @@ export class PublishCalendar implements OnInit, OnDestroy {
   readonly entries = signal<ReportIndexEntry[]>([]);
   readonly channels = signal<AnalyticsChannel[]>([]);
   readonly loading = signal(false);
-
-  /**
-   * The page's one error line. Carries the main process's refusal text verbatim, and is
-   * dismissed by clicking it — same contract as the reports page's banner.
-   */
-  readonly error = signal<string | null>(null);
 
   /** Report files the index could not read, named. Never a quietly shorter calendar. */
   readonly problems = signal<Array<{ file: string; message: string }>>([]);
@@ -389,8 +390,13 @@ export class PublishCalendar implements OnInit, OnDestroy {
    */
   readonly sweep = signal<ScheduledSweep | null>(null);
   readonly sweeping = signal(false);
-  /** A failed sweep is its own line: the local board is still true, the mirror is not. */
-  readonly sweepError = signal<string | null>(null);
+  /**
+   * Whether the last sweep failed, so the header can say the mirror is stale.
+   *
+   * A boolean, not the text: the text goes to the notifications like every other failure,
+   * and what this page still needs to KNOW is only that what it is showing may be behind.
+   */
+  readonly sweepFailed = signal(false);
 
   // ------------------------------------------------------------ the bulk upload
 
@@ -853,7 +859,6 @@ export class PublishCalendar implements OnInit, OnDestroy {
    */
   async reload(): Promise<void> {
     this.loading.set(true);
-    this.error.set(null);
     try {
       const [indexed, registry] = await Promise.all([
         this.electron.publishListIndex(),
@@ -864,7 +869,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
         this.entries.set([]);
         this.problems.set([]);
         this.orphanedSelections.set([]);
-        this.error.set(indexed.error ?? 'The report index could not be read.');
+        this.report(indexed.error ?? 'The report index could not be read.');
       } else {
         // PRIMARY SETS ONLY, filtered at the ONE point the signal is written so every
         // computed below it — the scheduled chips, the unscheduled tray, the deep-link
@@ -897,7 +902,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
         ]);
         this.orphanedSelections.set(indexed.data.orphanedSelections);
         if (indexed.data.directoryMissing) {
-          this.error.set(
+          this.report(
             `There is no reports directory at ${indexed.data.directory}, so there is nothing to schedule yet.`
           );
         }
@@ -915,14 +920,15 @@ export class PublishCalendar implements OnInit, OnDestroy {
     }
   }
 
-  /** Append rather than replace: two failed reads are two facts, not one. */
+  /**
+   * Every refusal this page produces, sent to the app's notifications.
+   *
+   * One funnel, one destination. Previously these accumulated in a banner that only this
+   * page rendered and that vanished the moment the operator navigated away — which for a
+   * failed write is exactly backwards.
+   */
   private report(message: string): void {
-    const existing = this.error();
-    this.error.set(existing ? `${existing}\n${message}` : message);
-  }
-
-  dismissError(): void {
-    this.error.set(null);
+    this.notify.error('Publish calendar', message);
   }
 
   /**
@@ -935,30 +941,29 @@ export class PublishCalendar implements OnInit, OnDestroy {
    */
   async refreshSweep(): Promise<void> {
     this.sweeping.set(true);
-    this.sweepError.set(null);
     try {
       const res = await this.electron.publishListScheduled();
       if (!res.success || !res.data) {
-        this.sweepError.set(res.error ?? 'YouTube would not say what is scheduled.');
+        this.sweepFailed.set(true);
+        this.notify.warning(
+          'YouTube schedule not read',
+          res.error ?? 'YouTube would not say what is scheduled.'
+        );
         return;
       }
       this.sweep.set(res.data);
-      if (res.data.problems.length > 0) {
-        this.sweepError.set(
-          res.data.problems
-            .map((p) => `${p.channelName}: ${p.message}`)
-            .join('\n')
-        );
+      this.sweepFailed.set(res.data.problems.length > 0);
+      for (const problem of res.data.problems) {
+        // One per channel: two channels failing for different reasons is two facts, and
+        // a joined string makes neither of them actionable.
+        this.notify.warning(`${problem.channelName} — schedule not read`, problem.message);
       }
     } catch (err: any) {
-      this.sweepError.set(err?.message || String(err));
+      this.sweepFailed.set(true);
+      this.notify.warning('YouTube schedule not read', err?.message || String(err));
     } finally {
       this.sweeping.set(false);
     }
-  }
-
-  dismissSweepError(): void {
-    this.sweepError.set(null);
   }
 
   // ---------------------------------------------------------------- channel tabs
@@ -1223,6 +1228,23 @@ export class PublishCalendar implements OnInit, OnDestroy {
     }
 
     this.uploadRun.set(null);
+
+    const failed = results.filter((r) => !r.ok).length;
+    const sent = results.length - failed;
+    if (failed === 0) {
+      this.notify.success(
+        'Uploads finished',
+        `${sent} video${sent === 1 ? '' : 's'} created on YouTube, each private with its schedule.`
+      );
+    } else {
+      // The per-item reasons stay in the results panel; this only says how it ended, so
+      // an operator who walked away is told rather than left to find out.
+      this.notify.error(
+        'Uploads finished with failures',
+        `${sent} uploaded, ${failed} failed. The reasons are listed on the calendar.`
+      );
+    }
+
     // The records now carry video ids, so the board must re-read them — and YouTube now
     // holds videos it did not a minute ago, so the mirror must too.
     await this.reload();

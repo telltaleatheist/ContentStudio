@@ -24,6 +24,7 @@
           YouTube · reading…
         } @else if (sweep(); as swept) {
           YouTube · {{ swept.scheduled.length }} scheduled · as of {{ sweptLabel() }}
+          @if (sweepFailed()) { <span class="sweep-stale">· may be behind</span> }
         } @else {
           YouTube · not read yet
         }
@@ -71,21 +72,6 @@
       <span class="cadence-note">No release cadence is recorded for this channel.</span>
     }
   </div>
-
-  <!-- One banner for every refusal, carrying the main process's text verbatim. -->
-  @if (error()) {
-    <div class="error-banner" (click)="dismissError()" title="Click to dismiss">
-      <mat-icon>error_outline</mat-icon>
-      <span class="error-text">{{ error() }}</span>
-    </div>
-  }
-
-  @if (sweepError()) {
-    <div class="error-banner sweep-banner" (click)="dismissSweepError()" title="Click to dismiss">
-      <mat-icon>cloud_off</mat-icon>
-      <span class="error-text">{{ sweepError() }}</span>
-    </div>
-  }
 
   <!-- The board and YouTube disagree, and YouTube can still be told. This is the whole
        difference between a calendar that plans and one that schedules. -->
@@ -421,6 +407,12 @@
           <!-- The sweep looks at recent UPLOADS, so a video uploaded long ago and
                scheduled far out can sit outside it however wide it is. Saying the number
                is the only honest way to offer this mirror. -->
+          @if (orphanedSelections().length > 0) {
+            <span class="beyond-note quiet">
+              {{ orphanedSelections().length }} leftover publish record{{ orphanedSelections().length === 1 ? '' : 's' }}
+              whose report was deleted — nothing to schedule, safe to ignore.
+            </span>
+          }
           @if (sweep(); as swept) {
             <span class="beyond-note quiet">
               YouTube read from the {{ swept.windowSize }} most recent uploads on
@@ -434,11 +426,14 @@
 
   <!-- What could not be read. A quietly shorter calendar is indistinguishable from a
        complete one, so every unreadable thing is counted and named here. -->
-  @if (problems().length > 0 || orphanedSelections().length > 0 || faultyRecords().length > 0) {
+  <!-- Only genuine READ FAILURES belong here. A record whose report was deleted can be
+       read perfectly well — it simply has nothing left to describe, which is housekeeping
+       and not corruption, and calling it unreadable overstated it every time. -->
+  @if (problems().length > 0 || faultyRecords().length > 0) {
     <details class="faults">
       <summary>
         <mat-icon>report_problem</mat-icon>
-        {{ problems().length + faultyRecords().length + orphanedSelections().length }}
+        {{ problems().length + faultyRecords().length }}
         thing(s) could not be read into this calendar
       </summary>
       <div class="fault-lines">
@@ -455,13 +450,7 @@
             @for (f of faultyRecords(); track f.itemId) {<span class="fault-name">{{ f.itemId }}</span>}
           </div>
         }
-        @if (orphanedSelections().length > 0) {
-          <div>
-            {{ orphanedSelections().length }} publish record{{ orphanedSelections().length === 1 ? '' : 's' }}
-            name an item that is no longer in any report, so there is nothing to show for
-            {{ orphanedSelections().length === 1 ? 'it' : 'them' }}.
-          </div>
-        }
+
       </div>
     </details>
   }

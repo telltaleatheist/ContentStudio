@@ -135,23 +135,6 @@
 
 /* ------------------------------------------------------------------ banners */
 
-.error-banner {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.5rem;
-  padding: 0.6rem 0.85rem;
-  border-radius: var(--border-radius);
-  background: var(--danger-bg);
-  color: var(--danger-text);
-  cursor: pointer;
-  flex-shrink: 0;
-
-  .error-text {
-    white-space: pre-line;   /* two failures are two lines, not one run-on sentence */
-    font-size: 0.85rem;
-  }
-}
-
 .faults {
   border-radius: var(--border-radius);
   background: var(--warning-bg);
@@ -683,13 +666,6 @@
   }
 }
 
-.sweep-banner {
-  /* A failed sweep is not a failed page: the local board is still true. Toned down from
-     the error banner so it cannot be mistaken for one. */
-  border-color: var(--warning-border, var(--border-strong));
-  color: var(--warning-text, var(--text-secondary));
-}
-
 .divergence-banner {
   display: flex;
   align-items: center;
@@ -1154,4 +1130,10 @@
     display: block;
     padding-left: 0.8rem;
   }
+}
+
+/* The mirror answered, but not for every channel. Said next to the timestamp because the
+   count beside it is now known to be short — the reason itself went to the notifications. */
+.sweep-stale {
+  color: var(--warning-text, var(--text-secondary));
 }
