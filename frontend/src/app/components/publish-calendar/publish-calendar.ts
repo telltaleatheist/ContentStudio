@@ -58,10 +58,12 @@ import { CADENCE_NOTES, cadenceKeyFor, isCadenceSlot } from '../../features/publ
 // The §2.5 state table, kept pure so it can be exercised without an Angular test bed.
 import {
   ChipState,
+  Destination,
   Readiness,
   channelTag,
   chipStateOf,
   dateKeyOf,
+  destinationOf,
   distance,
   isSchedulable,
   missingFor,
@@ -156,6 +158,8 @@ export interface CalendarChip {
    * refusing.
    */
   collision: string | null;
+  /** Where this one is going. The bulk upload is YouTube-only and reads this. */
+  destination: Destination;
   /** done / ready / incomplete — what the readiness pip and the bulk upload both read. */
   readiness: Readiness;
   /** What is still missing, when readiness is `incomplete`. Named, never just counted. */
@@ -206,6 +210,7 @@ export interface TrayItem {
   abCount: number;
   hasThumbnail: boolean;
   status: string;
+  destination: Destination;
   readiness: Readiness;
   missing: string[];
 }
@@ -591,12 +596,22 @@ export class PublishCalendar implements OnInit, OnDestroy {
    * is the one it hurts most to still be waiting on.
    */
   readonly uploadable = computed(() =>
-    this.scheduledChips().filter((chip) => chip.readiness === 'ready')
+    this.scheduledChips().filter(
+      (chip) => chip.readiness === 'ready' && chip.destination === 'youtube'
+    )
   );
 
   /** Scheduled but not sendable, so the header can say what is being left behind. */
   readonly incompleteCount = computed(
     () => this.scheduledChips().filter((chip) => chip.readiness === 'incomplete').length
+  );
+
+  /** Ready podcast episodes — counted apart, because the bulk button cannot send them. */
+  readonly podcastReadyCount = computed(
+    () =>
+      this.scheduledChips().filter(
+        (chip) => chip.readiness === 'ready' && chip.destination === 'spreaker'
+      ).length
   );
 
   readonly uploadedCount = computed(
@@ -639,13 +654,27 @@ export class PublishCalendar implements OnInit, OnDestroy {
    * which the planner refuses outright); an incomplete one is missing something named.
    */
   readonly excludedFromRun = computed(() => {
-    const skipped = this.scheduledChips().filter((chip) => chip.readiness !== 'ready');
+    const skipped = this.scheduledChips().filter(
+      (chip) => chip.readiness !== 'ready' || chip.destination !== 'youtube'
+    );
     if (skipped.length === 0) return [];
 
     const done = skipped.filter((chip) => chip.readiness === 'done');
     const incomplete = skipped.filter((chip) => chip.readiness === 'incomplete');
+    // Ready, but not going to YouTube. This button creates YOUTUBE videos; a Spreaker
+    // episode is a different call to a different service that publishes on contact, and
+    // sweeping one into a batch labelled "upload to YouTube" would be a genuine mistake.
+    const elsewhere = this.scheduledChips().filter(
+      (chip) => chip.readiness === 'ready' && chip.destination !== 'youtube'
+    );
 
     const groups: Array<{ reason: string; titles: string[] }> = [];
+    if (elsewhere.length > 0) {
+      groups.push({
+        reason: 'going to Spreaker, not YouTube — dispatch it from its report',
+        titles: elsewhere.map((chip) => chip.title),
+      });
+    }
     if (done.length > 0) {
       groups.push({
         reason:
@@ -799,6 +828,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
           abCount: facts.abCount,
           hasThumbnail: facts.hasThumbnail,
           status: facts.status,
+          destination: destinationOf(facts),
           readiness: readinessOf(facts),
           missing: missingFor(facts),
         };
@@ -1439,6 +1469,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
                 minute: '2-digit',
               })}`
           : null,
+      destination: destinationOf(facts),
       readiness: readinessOf(facts),
       missing: missingFor(facts),
       needsSchedulePush,

@@ -1137,3 +1137,9 @@
 .sweep-stale {
   color: var(--warning-text, var(--text-secondary));
 }
+
+/* Ready podcast episodes, counted apart from the YouTube ones because the bulk button
+   cannot send them — a count that included them would overstate what one click does. */
+.pod-count {
+  color: var(--text-muted);
+}

@@ -127,6 +127,9 @@ export function distance(at: Date, now: Date): string {
  */
 export type Readiness = 'done' | 'ready' | 'incomplete';
 
+/** Where an item is going. The readiness bar is different for each. */
+export type Destination = 'youtube' | 'spreaker';
+
 /** The subset of a record the readiness rules read. */
 export interface ReadinessFacts {
   channelId: string | null;
@@ -135,6 +138,14 @@ export interface ReadinessFacts {
   hasThumbnail: boolean;
   /** How many titles the operator has chosen. The first one IS the video's title. */
   abCount: number;
+  /** The destination flag: a podcast episode goes to Spreaker, never to YouTube. */
+  isPodcast: boolean;
+  /** Set once an episode exists on Spreaker — the podcast's equivalent of a video id. */
+  spreakerEpisodeId: number | null;
+}
+
+export function destinationOf(facts: { isPodcast: boolean }): Destination {
+  return facts.isPodcast ? 'spreaker' : 'youtube';
 }
 
 /**
@@ -149,11 +160,23 @@ export function missingFor(facts: ReadinessFacts): string[] {
   const missing: string[] = [];
   if (facts.channelId === null) missing.push('channel');
   if (facts.abCount < 1) missing.push('title');
-  if (!facts.hasThumbnail) missing.push('thumbnail');
+  // A THUMBNAIL IS A YOUTUBE REQUIREMENT, not a universal one. Spreaker's episode image
+  // is optional and this app never sends one, so demanding it of a podcast episode would
+  // hold back an item that is in fact ready and could never be satisfied.
+  if (!facts.isPodcast && !facts.hasThumbnail) missing.push('thumbnail');
   return missing;
 }
 
+/**
+ * How far along an item is, judged against ITS OWN destination.
+ *
+ * The audio file a Spreaker upload needs is not checked here: the calendar's index does
+ * not carry it, and the push validates it by name before sending a byte. So a podcast
+ * episode can read `ready` here and still be refused at dispatch for a missing file —
+ * which is the honest split, because this rule can only speak for what it can see.
+ */
 export function readinessOf(facts: ReadinessFacts): Readiness {
-  if (facts.videoId !== null || facts.status === 'published') return 'done';
+  const shipped = facts.isPodcast ? facts.spreakerEpisodeId !== null : facts.videoId !== null;
+  if (shipped || facts.status === 'published') return 'done';
   return missingFor(facts).length === 0 ? 'ready' : 'incomplete';
 }

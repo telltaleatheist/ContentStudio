@@ -13,6 +13,9 @@
         <span class="pip ready"></span> {{ uploadable().length }} ready
         <span class="pip incomplete"></span> {{ incompleteCount() }} need filling out
         <span class="pip done"></span> {{ uploadedCount() }} uploaded
+        @if (podcastReadyCount() > 0) {
+          <span class="pod-count">· {{ podcastReadyCount() }} podcast</span>
+        }
       </p>
     </div>
 
@@ -478,7 +481,9 @@
               ? 'Still needs: ' + chip.missing.join(', ')
               : chip.readiness === 'done' ? 'Already uploaded' : 'Ready to upload'"></span>
       <span class="chip-tag">{{ chip.channelTag }}</span>
-      @if (chip.isPodcast) { <mat-icon class="podcast-glyph">mic</mat-icon> }
+      @if (chip.destination === 'spreaker') {
+        <mat-icon class="podcast-glyph" matTooltip="Goes to Spreaker, not YouTube">mic</mat-icon>
+      }
       <span class="chip-title">{{ chip.title }}</span>
       @if (chip.abPending) { <span class="ab-badge">A/B</span> }
       @if (chip.state === 'published') { <mat-icon class="lock">lock</mat-icon> }
