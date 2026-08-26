@@ -491,11 +491,22 @@ export class PublishCalendar implements OnInit, OnDestroy {
     if (facts.publishAt === null) return false;
     // The operator's own say-so. Marked published means finished, whatever else is true.
     if (facts.status === 'published') return false;
-    // Out on YouTube, confirmed by YouTube rather than inferred from a date that has
-    // merely passed. A video that has gone public cannot be rescheduled and has nothing
-    // left to decide, so it leaves the board.
+
     const remote = facts.videoId !== null ? linked.get(facts.videoId) ?? null : null;
-    if (remote !== null && remote.privacyStatus !== 'private') return false;
+    if (remote === null) return true;
+
+    // Already out. Nothing left to decide, and nothing YouTube would accept anyway.
+    if (remote.privacyStatus !== 'private') return false;
+    // Uploaded AND YouTube is holding a date for it. The plan has become a fact, so the
+    // local chip gives way to the mirror of what YouTube actually has — in the same slot,
+    // because the insert carried this very schedule.
+    if (remote.publishAt !== null) return false;
+
+    // Uploaded, private, and YouTube has NO date. This is the browser-upload case, where
+    // a release was made outside the app and linked afterwards, and it is the one state
+    // that must keep its chip: the mirror charts scheduled videos, so an unscheduled one
+    // appears nowhere else, and dropping it here would leave it invisible and unable to
+    // be given the date it is waiting for.
     return true;
   }
 
@@ -1304,9 +1315,11 @@ export class PublishCalendar implements OnInit, OnDestroy {
     }
 
     // The records now carry video ids, so the board must re-read them — and YouTube now
-    // holds videos it did not a minute ago, so the mirror must too.
+    // holds videos it did not a minute ago, so the mirror must too. AWAITED, unlike the
+    // sweep on page load: the uploaded chips have just left the board, and until the
+    // mirror answers their slots read as empty when they are in fact spoken for.
     await this.reload();
-    void this.refreshSweep();
+    await this.refreshSweep();
   }
 
   /**
