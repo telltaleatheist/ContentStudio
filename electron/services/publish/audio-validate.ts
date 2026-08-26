@@ -241,9 +241,20 @@ export function deriveProposedAudioPaths(sourcePath: string | null | undefined):
   const stem = path.basename(sourcePath, extension);
   if (!stem) return [];
 
+  const own = extension.toLowerCase();
+
+  // A SOURCE THAT IS ITSELF AUDIO IS THE EPISODE AUDIO. This used to exclude the source's
+  // own extension, on the reasoning that proposing it back "is not a proposal — it is the
+  // file the operator already has". That reads correctly for the case it was written for,
+  // a .mov beside a .mp3, and is exactly wrong for the other one: an item generated
+  // straight from `podcast 1.mp3` has no sibling to find, so the exclusion left the
+  // episode with no audio and an operator told none was linked while looking at the file
+  // he had handed over. Being the file he already has is the point.
+  if (SPREAKER_AUDIO_EXTENSIONS.includes(own) || UNDOCUMENTED_AUDIO_EXTENSIONS.includes(own)) {
+    return [sourcePath];
+  }
+
   return PROPOSED_AUDIO_EXTENSIONS
-    // A source that IS one of the audio extensions would propose itself, which is not a
-    // proposal — it is the file the operator already has.
-    .filter((candidate) => candidate !== extension.toLowerCase())
+    .filter((candidate) => candidate !== own)
     .map((candidate) => path.join(dir, `${stem}${candidate}`));
 }
