@@ -1,5 +1,5 @@
-@if (connections().length === 0) {
-  <!-- Signed out: plain sign-in button running the Google consent flow. -->
+@if (connections().length === 0 && !spreakerConnected()) {
+  <!-- Nothing connected at all: one button, the commonest first step. -->
   <button
     mat-stroked-button
     class="signin-button"
@@ -11,59 +11,126 @@
     {{ connecting() ? 'Waiting for Google…' : 'Sign in' }}
   </button>
 } @else {
-  <!-- Signed in: avatar button opens the channels menu. -->
   <button
     mat-icon-button
     class="profile-button"
-    [matMenuTriggerFor]="profileMenu"
-    [matTooltip]="'YouTube: ' + primary()!.channelTitle"
+    [matMenuTriggerFor]="accountsMenu"
+    [matTooltip]="toolbarTooltip()"
   >
-    @if (hasAvatar(primary()!)) {
-      <img
-        class="avatar avatar-toolbar"
-        [src]="primary()!.channelThumbnailUrl"
-        alt="{{ primary()!.channelTitle }}"
-        referrerpolicy="no-referrer"
-        (error)="avatarFailed(primary()!.channelId)"
-      />
+    @if (primary(); as first) {
+      @if (hasAvatar(first)) {
+        <img
+          class="avatar avatar-toolbar"
+          [src]="first.channelThumbnailUrl"
+          alt="{{ first.channelTitle }}"
+          referrerpolicy="no-referrer"
+          (error)="avatarFailed(first.channelId)"
+        />
+      } @else {
+        <mat-icon>account_circle</mat-icon>
+      }
     } @else {
       <mat-icon>account_circle</mat-icon>
     }
   </button>
 
-  <mat-menu #profileMenu="matMenu" class="youtube-profile-menu" xPosition="before">
-    @for (conn of connections(); track conn.channelId) {
-      <div class="channel-row" mat-menu-item [disableRipple]="true">
-        @if (hasAvatar(conn)) {
-          <img
-            class="avatar avatar-row"
-            [src]="conn.channelThumbnailUrl"
-            alt=""
-            referrerpolicy="no-referrer"
-            (error)="avatarFailed(conn.channelId)"
-          />
-        } @else {
-          <mat-icon class="avatar-row-icon">account_circle</mat-icon>
-        }
-        <div class="channel-text">
-          <span class="channel-title">{{ conn.channelTitle }}</span>
-          <span class="channel-sub">Connected {{ conn.connectedAt | date: 'mediumDate' }}</span>
-        </div>
-        <button
-          mat-icon-button
-          class="disconnect-button"
-          (click)="disconnect(conn, $event)"
-          [disabled]="disconnecting() === conn.channelId"
-          matTooltip="Sign out of this channel"
-        >
-          <mat-icon>logout</mat-icon>
-        </button>
+  <!-- panelClass, not class: the panel lives in an overlay outside this component, and a
+       plain class on <mat-menu> never reaches it — which is why every rule below used to
+       do nothing and the rows rendered as stacked blocks. -->
+  <mat-menu #accountsMenu="matMenu" panelClass="accounts-menu" xPosition="before">
+    <div class="acct-section">
+      <div class="acct-head">
+        <mat-icon class="acct-head-icon">smart_display</mat-icon>
+        <span>YouTube</span>
+        <span class="acct-count">{{ connections().length }}</span>
       </div>
-    }
+
+      @if (connections().length === 0) {
+        <div class="acct-empty">No channels connected.</div>
+      }
+
+      <!-- Plain rows, deliberately NOT mat-menu-item: these are informational and hold
+           their own button, and the list-item wrapper both broke the layout and nested a
+           button inside a button. -->
+      @for (conn of connections(); track conn.channelId) {
+        <div class="acct-row">
+          @if (hasAvatar(conn)) {
+            <img
+              class="avatar avatar-row"
+              [src]="conn.channelThumbnailUrl"
+              alt=""
+              referrerpolicy="no-referrer"
+              (error)="avatarFailed(conn.channelId)"
+            />
+          } @else {
+            <mat-icon class="avatar-row-icon">account_circle</mat-icon>
+          }
+          <span class="acct-text">
+            <span class="acct-title">{{ conn.channelTitle }}</span>
+            <span class="acct-sub">Connected {{ conn.connectedAt | date: 'mediumDate' }}</span>
+          </span>
+          <button
+            mat-icon-button
+            class="acct-action"
+            (click)="disconnect(conn, $event)"
+            [disabled]="disconnecting() === conn.channelId"
+            matTooltip="Sign out of this channel"
+          >
+            <mat-icon>logout</mat-icon>
+          </button>
+        </div>
+      }
+
+      <button mat-menu-item class="acct-add" (click)="connect()" [disabled]="connecting()">
+        <mat-icon>person_add</mat-icon>
+        <span>{{ connecting() ? 'Waiting for Google…' : 'Add a channel' }}</span>
+      </button>
+    </div>
+
     <mat-divider></mat-divider>
-    <button mat-menu-item (click)="connect()" [disabled]="connecting()">
-      <mat-icon>person_add</mat-icon>
-      <span>{{ connecting() ? 'Waiting for Google…' : 'Sign in to another channel' }}</span>
-    </button>
+
+    <div class="acct-section">
+      <div class="acct-head">
+        <mat-icon class="acct-head-icon">podcasts</mat-icon>
+        <span>Spreaker</span>
+      </div>
+
+      @if (spreaker(); as sp) {
+        @if (sp.configured) {
+          <div class="acct-row">
+            <mat-icon class="avatar-row-icon spreaker-glyph">graphic_eq</mat-icon>
+            <span class="acct-text">
+              <span class="acct-title">{{ sp.showName || 'Show ' + sp.showId }}</span>
+              <span class="acct-sub">
+                @if (sp.savedAt) { Connected {{ sp.savedAt | date: 'mediumDate' }} }
+                @else { Connected }
+              </span>
+            </span>
+            <button
+              mat-icon-button
+              class="acct-action"
+              (click)="disconnectSpreaker($event)"
+              [disabled]="spreakerBusy()"
+              matTooltip="Disconnect Spreaker"
+            >
+              <mat-icon>logout</mat-icon>
+            </button>
+          </div>
+        } @else {
+          <!-- The reason is the main process's own words — a token that is present but
+               rejected reads differently from one that was never set. -->
+          <div class="acct-empty">{{ sp.reason || 'Not connected.' }}</div>
+        }
+      } @else {
+        <div class="acct-empty">Checking…</div>
+      }
+
+      <!-- The token itself is entered in Settings, not in a dropdown: it is a secret, it
+           needs a show id beside it, and it belongs where it can be explained. -->
+      <button mat-menu-item class="acct-add" (click)="openSpreakerSettings()">
+        <mat-icon>key</mat-icon>
+        <span>{{ spreakerConnected() ? 'Change Spreaker credentials' : 'Connect Spreaker' }}</span>
+      </button>
+    </div>
   </mat-menu>
 }

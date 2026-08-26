@@ -28,53 +28,125 @@
   height: 28px;
 }
 
-// Menu content lives in an overlay, outside this component's DOM — ::ng-deep
-// scoped under our panel class is the supported way to style it.
-::ng-deep .youtube-profile-menu {
-  .channel-row {
+/* The panel lives in an overlay outside this component's DOM. ::ng-deep scoped under the
+   PANEL CLASS is the supported way in; the class has to arrive via `panelClass` on
+   <mat-menu>, because a plain class attribute there styles nothing. */
+::ng-deep .accounts-menu {
+  .mat-mdc-menu-content {
+    padding: 0;
+  }
+
+  .acct-section {
+    padding: 6px 0;
+    min-width: 300px;
+  }
+
+  .acct-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 14px 6px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .acct-head-icon {
+    font-size: 15px;
+    width: 15px;
+    height: 15px;
+  }
+
+  .acct-count {
+    margin-left: auto;
+    font-weight: 500;
+    letter-spacing: 0;
+  }
+
+  /* One line per account: art, two lines of text, one action. Fixed height so three
+     channels read as a list rather than as three stacked cards. */
+  .acct-row {
     display: flex;
     align-items: center;
     gap: 10px;
-    // Rows are informational; only their buttons act.
+    padding: 5px 8px 5px 14px;
     cursor: default;
-    min-width: 280px;
+
+    &:hover {
+      background: var(--bg-secondary, rgba(255, 255, 255, 0.04));
+    }
   }
 
   .avatar-row {
-    width: 32px;
-    height: 32px;
+    width: 30px;
+    height: 30px;
     border-radius: 50%;
     object-fit: cover;
     flex-shrink: 0;
   }
 
   .avatar-row-icon {
-    width: 32px;
-    height: 32px;
-    font-size: 32px;
+    width: 30px;
+    height: 30px;
+    font-size: 30px;
     flex-shrink: 0;
+    color: var(--text-muted);
   }
 
-  .channel-text {
+  .spreaker-glyph {
+    font-size: 24px;
+    width: 30px;
+    height: 30px;
+    line-height: 30px;
+    text-align: center;
+  }
+
+  .acct-text {
     display: flex;
     flex-direction: column;
     flex: 1 1 auto;
+    min-width: 0;
+    line-height: 1.25;
+  }
+
+  .acct-title {
+    font-size: 0.85rem;
+    font-weight: 500;
+    white-space: nowrap;
     overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
-    .channel-title {
-      font-weight: 500;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
+  .acct-sub {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
 
-    .channel-sub {
-      font-size: 0.75rem;
-      opacity: 0.7;
+  .acct-action {
+    flex-shrink: 0;
+    width: 30px;
+    height: 30px;
+    line-height: 30px;
+
+    .mat-icon {
+      font-size: 17px;
+      width: 17px;
+      height: 17px;
     }
   }
 
-  .disconnect-button {
-    flex-shrink: 0;
+  .acct-empty {
+    padding: 2px 14px 6px;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+  }
+
+  /* The one genuine menu item per section, so it keeps ripple and keyboard behaviour. */
+  .acct-add {
+    min-height: 34px;
+    font-size: 0.8rem;
   }
 }

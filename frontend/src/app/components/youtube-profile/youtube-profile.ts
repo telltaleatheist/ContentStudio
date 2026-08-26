@@ -5,18 +5,25 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatMenuModule } from '@angular/material/menu';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatDividerModule } from '@angular/material/divider';
+import { Router } from '@angular/router';
 import { ElectronService, YouTubeConnection } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
+import type { SpreakerStatus } from '../../features/publish/publish.types';
 
 /**
- * Toolbar sign-in widget for the YouTube OAuth connections.
+ * Toolbar accounts widget — every destination this app can publish to, in one menu.
  *
- * Signed out: a "Sign in" button that runs the standard Google consent flow
- * (same IPC path the Analytics page uses). Signed in: the first channel's
- * avatar opens a menu listing every connected channel, with per-channel
- * disconnect and a "Sign in to another channel" action. Channels without a
- * stored avatar (pre-avatar bundles whose backfill hasn't succeeded yet)
- * show a generic account icon.
+ * Two sections, because they are two different kinds of connection and saying so is
+ * clearer than pretending otherwise: YouTube is OAuth and holds SEVERAL channels, each
+ * signed in through Google's consent flow; Spreaker is ONE show authenticated by a token
+ * the operator pastes.
+ *
+ * The Spreaker token is not editable here. It is a secret that needs a show id beside it
+ * and a sentence explaining where to get it, none of which belongs in a dropdown — the
+ * menu reports the connection and sends the operator to Settings to change it.
+ *
+ * Channels without a stored avatar (pre-avatar bundles whose backfill hasn't succeeded
+ * yet) show a generic account icon.
  */
 @Component({
   selector: 'youtube-profile',
@@ -34,13 +41,67 @@ export class YouTubeProfileComponent implements OnInit {
   /** channelIds whose avatar <img> failed to load — fall back to the icon. */
   readonly brokenAvatars = signal<Set<string>>(new Set());
 
+  /** The Spreaker connection, or null until the first check answers. */
+  readonly spreaker = signal<SpreakerStatus | null>(null);
+  readonly spreakerBusy = signal(false);
+
   constructor(
     private electron: ElectronService,
     private notifications: NotificationService,
+    private router: Router,
   ) {}
 
   ngOnInit(): void {
     void this.loadConnections();
+    void this.loadSpreaker();
+  }
+
+  async loadSpreaker(): Promise<void> {
+    const result = await this.electron.spreakerGetStatus();
+    if (result.success && result.data) {
+      this.spreaker.set(result.data);
+    } else {
+      // Not a toast: an unconfigured Spreaker is the normal state for anyone who does not
+      // publish a podcast, and greeting them with an error every launch would be noise.
+      this.spreaker.set(null);
+    }
+  }
+
+  spreakerConnected(): boolean {
+    return this.spreaker()?.configured === true;
+  }
+
+  /** What the toolbar avatar says it opens, named by what is actually connected. */
+  toolbarTooltip(): string {
+    const parts: string[] = [];
+    const first = this.primary();
+    if (first) {
+      const others = this.connections().length - 1;
+      parts.push(`YouTube: ${first.channelTitle}${others > 0 ? ` +${others}` : ''}`);
+    }
+    const sp = this.spreaker();
+    if (sp?.configured) parts.push(`Spreaker: ${sp.showName || sp.showId}`);
+    return parts.length > 0 ? parts.join(' · ') : 'Accounts';
+  }
+
+  openSpreakerSettings(): void {
+    void this.router.navigate(['/settings'], { queryParams: { section: 'spreaker' } });
+  }
+
+  async disconnectSpreaker(event: MouseEvent): Promise<void> {
+    event.stopPropagation();
+    this.spreakerBusy.set(true);
+    try {
+      const result = await this.electron.spreakerClearCredentials();
+      if (result.success) {
+        this.notifications.success('Spreaker', 'Disconnected', false);
+        await this.loadSpreaker();
+      } else {
+        this.notifications.error('Spreaker', result.error || 'Disconnect failed', false);
+      }
+    } finally {
+      this.spreakerBusy.set(false);
+    }
   }
 
   async loadConnections(): Promise<void> {

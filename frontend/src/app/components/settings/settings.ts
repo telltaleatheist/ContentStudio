@@ -212,6 +212,20 @@ export class Settings implements OnInit, OnDestroy {
       this.setupAIReason.set(params.get('aiReason') || '');
       this.setupMissingComponents.set((params.get('missing') || '').split('|').filter(Boolean));
       if (required && needsAI) this.showWizard.set(true);
+
+      // `?section=` scrolls a named card into view — the accounts menu links straight to
+      // Spreaker rather than dropping the operator at the top of a long page. Deferred a
+      // beat because the cards below render after the settings read resolves, and
+      // scrolling to an element that is not laid out yet lands nowhere.
+      const section = params.get('section');
+      if (section) {
+        setTimeout(() => {
+          document.getElementById(`${section}-section`)?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start',
+          });
+        }, 350);
+      }
     });
     this.removeComponentProgressListener = this.electron.onComponentProgress((progress) => {
       this.componentProgress.update((current) => ({ ...current, [progress.id]: progress.pct }));
