@@ -173,6 +173,21 @@
         </div>
       }
 
+      <!-- What the count leaves out. The button says how many can be SENT, which is not
+           how many are on the board, and an unexplained gap reads as a bug. -->
+      @if (excludedFromRun().length > 0) {
+        <div class="uc-skipped">
+          @for (group of excludedFromRun(); track group.reason) {
+            <div class="uc-skip-row">
+              <span class="uc-skip-reason">Not included, {{ group.reason }}:</span>
+              @for (title of group.titles; track title) {
+                <span class="uc-skip-title">{{ title }}</span>
+              }
+            </div>
+          }
+        </div>
+      }
+
       @if (confirmCollisions() > 0) {
         <div class="uc-clash-note">
           {{ confirmCollisions() }} of these land at the same moment on the same channel as

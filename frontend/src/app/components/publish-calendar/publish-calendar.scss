@@ -1131,3 +1131,27 @@
   font-size: 0.62rem;
   color: var(--primary-orange);
 }
+
+/* What the run is leaving behind. Stated in the confirm panel because the button's count
+   is what CAN be sent, which is not what is on the board. */
+.upload-confirm .uc-skipped {
+  margin: 0.4rem 0 0;
+  padding: 0.4rem 0.5rem;
+  border-radius: 5px;
+  background: var(--bg-secondary);
+  font-size: 0.68rem;
+  color: var(--text-muted);
+
+  .uc-skip-row {
+    padding: 0.1rem 0;
+  }
+
+  .uc-skip-reason {
+    color: var(--text-secondary);
+  }
+
+  .uc-skip-title {
+    display: block;
+    padding-left: 0.8rem;
+  }
+}

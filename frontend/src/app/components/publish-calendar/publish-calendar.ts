@@ -624,6 +624,36 @@ export class PublishCalendar implements OnInit, OnDestroy {
     this.scheduledChips().filter((chip) => chip.needsSchedulePush)
   );
 
+  /**
+   * Scheduled items the run will NOT include, with the reason, grouped.
+   *
+   * The button counts what it can send, which is not the same number as what is on the
+   * board — and the gap is exactly the kind of silent shortfall that reads as a bug. An
+   * already-uploaded item is not a candidate (a second insert would duplicate the video,
+   * which the planner refuses outright); an incomplete one is missing something named.
+   */
+  readonly excludedFromRun = computed(() => {
+    const skipped = this.scheduledChips().filter((chip) => chip.readiness !== 'ready');
+    if (skipped.length === 0) return [];
+
+    const done = skipped.filter((chip) => chip.readiness === 'done');
+    const incomplete = skipped.filter((chip) => chip.readiness === 'incomplete');
+
+    const groups: Array<{ reason: string; titles: string[] }> = [];
+    if (done.length > 0) {
+      groups.push({
+        reason:
+          `already uploaded — a second insert would duplicate the video, so use Push to ` +
+          `change one of these`,
+        titles: done.map((chip) => chip.title),
+      });
+    }
+    for (const chip of incomplete) {
+      groups.push({ reason: `still needs ${chip.missing.join(', ')}`, titles: [chip.title] });
+    }
+    return groups;
+  });
+
   /** Of the run about to be confirmed, how many land on a slot YouTube already holds. */
   readonly confirmCollisions = computed(
     () => (this.uploadConfirm() ?? []).filter((chip) => chip.collision !== null).length
