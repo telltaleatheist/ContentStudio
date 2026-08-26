@@ -61,10 +61,33 @@ export function mintItemId(now: number = Date.now()): string {
 }
 
 /**
- * The regeneration join key for a FILE input: the normalized basename.
+ * The regeneration join key for a FILE input: the normalized WHOLE PATH.
  *
- * Deliberately the same normalization video-matcher already applies to YouTube titles
- * and source filenames, so "the same source" means one thing across the app.
+ * It was the basename alone, and that was wrong for anyone who names files by a
+ * convention. An operator exporting `podcast 1.mp3` every week produced one key forever,
+ * so every episode joined every earlier one as if it were a regeneration of it — five
+ * items deep on this install before it was noticed (2026-08-26). A recurring name is not
+ * a coincidence to be defended against; it is how people work.
+ *
+ * The path already carries what tells the runs apart, because the exports live in dated
+ * folders. Keying on it gets BOTH cases right, which no rule on the name alone can:
+ *
+ *   .../2026-08-23/complete/podcast 1.mp3  re-exported into the SAME folder  → same key,
+ *      so carry-forward still recognises a genuine regeneration.
+ *   .../2026-08-30/complete/podcast 1.mp3  next week's episode               → new key,
+ *      so it is a new item.
+ *
+ * `normalizeForMatch` strips the trailing extension, so the `.mov` and the `.mp3` of one
+ * episode sitting in one folder still share a key — the same recording in two formats is
+ * one item, which is exactly what the podcast and Patreon halves of a week need.
+ *
+ * SEPARATORS BECOME SPACES because this value is also a FILENAME: saved transcripts are
+ * filed under it (saved-transcript.service.ts). A key containing slashes would name a
+ * directory that does not exist.
+ *
+ * This is NOT the same normalization video-matcher applies, and it no longer claims to
+ * be: the matcher compares against YouTube titles, and YouTube only ever knew the
+ * filename. The two answer different questions and are allowed to differ.
  *
  * Text subjects have no source file and get an explicit null from the caller — never a
  * key derived from the subject text, which would join two unrelated topics that happen
@@ -74,7 +97,7 @@ export function sourceKeyOf(sourcePath: string): string {
   if (typeof sourcePath !== 'string' || !sourcePath.trim()) {
     throw new Error('sourceKeyOf requires a non-empty source path');
   }
-  const key = normalizeForMatch(path.basename(sourcePath.trim()));
+  const key = normalizeForMatch(sourcePath.trim().replace(/[\\/]+/g, ' '));
   if (!key) {
     throw new Error(`Source path normalized to an empty key: ${sourcePath}`);
   }
