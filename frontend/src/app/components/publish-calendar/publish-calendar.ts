@@ -476,6 +476,29 @@ export class PublishCalendar implements OnInit, OnDestroy {
     return map;
   });
 
+  /**
+   * Whether this record is still the CALENDAR's business.
+   *
+   * A date, and nothing on YouTube yet. The moment an item has a video id, YouTube owns
+   * its schedule — the stored publishAt becomes a record of intent rather than the thing
+   * that will happen — and the item returns to the board from the other side, as a mirror
+   * of what YouTube actually holds. An item the operator marked published is finished by
+   * his own say-so and leaves for good.
+   *
+   * So a chip on this board always means one thing: something that still needs doing.
+   */
+  private isOpenWork(facts: PublishFacts, linked: ReadonlyMap<string, LinkedVideo>): boolean {
+    if (facts.publishAt === null) return false;
+    // The operator's own say-so. Marked published means finished, whatever else is true.
+    if (facts.status === 'published') return false;
+    // Out on YouTube, confirmed by YouTube rather than inferred from a date that has
+    // merely passed. A video that has gone public cannot be rescheduled and has nothing
+    // left to decide, so it leaves the board.
+    const remote = facts.videoId !== null ? linked.get(facts.videoId) ?? null : null;
+    if (remote !== null && remote.privacyStatus !== 'private') return false;
+    return true;
+  }
+
   /** Every item that has a publish record and a date on it, as chips. */
   private readonly scheduledChips = computed<CalendarChip[]>(() => {
     const now = this.now();
@@ -484,7 +507,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
     const bySlot = this.mirrorBySlot();
     const linked = this.linkedByVideoId();
     return this.entries()
-      .filter((entry) => entry.publish !== null && entry.publish.publishAt !== null)
+      .filter((entry) => entry.publish !== null && this.isOpenWork(entry.publish, linked))
       .map((entry) =>
         this.toChip(entry, entry.publish as PublishFacts, now, active, mirror, bySlot, linked)
       )
@@ -515,7 +538,11 @@ export class PublishCalendar implements OnInit, OnDestroy {
       const facts = entry.publish;
       if (!facts?.videoId) continue;
       itemByVideo.set(facts.videoId, entry.itemId);
-      if (facts.publishAt !== null) drawn.add(facts.videoId);
+      // Suppressed only when a local chip is genuinely drawn for it — the SAME test the
+      // board uses. A video id now ends local charting, so in practice this suppresses
+      // nothing any more; it stays keyed to the predicate rather than hard-coded, because
+      // the two must never drift apart and hide an item from both halves at once.
+      if (this.isOpenWork(facts, this.linkedByVideoId())) drawn.add(facts.videoId);
     }
 
     const active = this.activeChannelId();
@@ -614,6 +641,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
       ).length
   );
 
+  /** On YouTube, still private, still waiting for its moment. Not yet finished. */
   readonly uploadedCount = computed(
     () => this.scheduledChips().filter((chip) => chip.readiness === 'done').length
   );
