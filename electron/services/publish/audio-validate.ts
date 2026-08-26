@@ -69,6 +69,21 @@ export const UNDOCUMENTED_AUDIO_EXTENSIONS: readonly string[] = ['.m4a'];
  */
 export const PROPOSED_AUDIO_EXTENSIONS: readonly string[] = ['.mp3', '.m4a', '.wav'];
 
+/**
+ * Does Spreaker take a file with this extension?
+ *
+ * The one place that answers it, because two callers now need the same fact for different
+ * reasons: validation refuses a file Spreaker would reject, and destination routing reads
+ * the same list to decide that an audio source is a podcast episode. Two copies of a
+ * format list is how they drift.
+ *
+ * Takes a lower-cased extension WITH its dot, as `path.extname` returns.
+ */
+export function isSpreakerAudioExtension(extension: string): boolean {
+  return SPREAKER_AUDIO_EXTENSIONS.includes(extension) ||
+    UNDOCUMENTED_AUDIO_EXTENSIONS.includes(extension);
+}
+
 /** What one probe of a media file has to answer for this module to decide. */
 export interface AudioProbe {
   /** Seconds. Whatever ffprobe read off the container or the stream. */

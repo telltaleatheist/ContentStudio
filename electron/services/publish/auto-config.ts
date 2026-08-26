@@ -52,6 +52,8 @@
  */
 
 import * as fs from 'fs';
+import * as path from 'path';
+import { isSpreakerAudioExtension } from './audio-validate';
 import { RoutableChannel, resolveChannelForPromptSet } from './channel-routing';
 import { FieldPatch } from './field-validators';
 import { ChosenMetadata } from './publish-types';
@@ -78,7 +80,7 @@ export interface AutoConfigInput {
 
 /** One decision, in the operator's terms. `detail` is a whole sentence. */
 export interface AutoDecision {
-  field: 'channelId' | 'thumbnail';
+  field: 'channelId' | 'thumbnail' | 'isPodcast';
   detail: string;
 }
 
@@ -102,6 +104,13 @@ export function autoConfigure(input: AutoConfigInput): AutoConfigResult {
   const refused: AutoDecision[] = [];
   let patch: FieldPatch = {};
 
+  // Destination BEFORE channel, because it is the coarser question: which service takes
+  // this file at all. The channel is then which YouTube channel, and a podcast keeps one
+  // anyway so it can be routed back.
+  const destination = autoDestination(input);
+  if (destination.patch) patch = { ...patch, ...destination.patch };
+  pushInto(destination.decision, destination.bucket, applied, skipped, refused);
+
   const channel = autoChannel(input);
   if (channel.patch) patch = { ...patch, ...channel.patch };
   pushInto(channel.decision, channel.bucket, applied, skipped, refused);
@@ -111,6 +120,84 @@ export function autoConfigure(input: AutoConfigInput): AutoConfigResult {
   pushInto(thumbnail.decision, thumbnail.bucket, applied, skipped, refused);
 
   return { patch, applied, skipped, refused };
+}
+
+/**
+ * The destination, from what the source file IS.
+ *
+ * The two services take disjoint formats and that decides the routing on its own:
+ * Spreaker takes audio and not video, YouTube takes video and not an mp3. So a source
+ * whose extension Spreaker accepts is a podcast episode, and everything else is a video.
+ * The operator stated the rule in exactly those terms, and it beats asking him to restate
+ * it per item.
+ *
+ * Acts ONLY while the record is still unrouted, which is the same marker the channel uses
+ * and in practice means the first write — the moment the record is born. `isPodcast` is a
+ * strict boolean with no "nobody has decided" value, so an unrouted record is the only
+ * honest opportunity to answer it without overwriting somebody.
+ *
+ * Announced, never silent: it appears in `applied` like every other decision, so a wrong
+ * guess is a line the operator can read rather than a destination that changed by itself.
+ * Correcting it is the destination picker, and a corrected record is routed, so this never
+ * runs on it again.
+ *
+ * The converse is deliberately NOT enforced. A video source already means YouTube, since
+ * that is what `isPodcast: false` says, and flipping a podcast flag OFF because the file
+ * is a .mov would overrule an operator who set it for a reason this function cannot see.
+ */
+function autoDestination(input: AutoConfigInput): FieldOutcome {
+  const { record, sourcePath } = input;
+
+  if (record.channelId !== null) {
+    return {
+      patch: null,
+      bucket: 'skipped',
+      decision: {
+        field: 'isPodcast',
+        detail: 'This item is already routed, so its destination is the operator\'s to change.',
+      },
+    };
+  }
+  if (sourcePath === null) {
+    return {
+      patch: null,
+      bucket: 'skipped',
+      decision: {
+        field: 'isPodcast',
+        detail: 'This item has no source file, so nothing about it says which service takes it.',
+      },
+    };
+  }
+  if (record.isPodcast) {
+    return {
+      patch: null,
+      bucket: 'skipped',
+      decision: { field: 'isPodcast', detail: 'Already marked as a podcast episode.' },
+    };
+  }
+
+  const extension = path.extname(sourcePath).toLowerCase();
+  if (!isSpreakerAudioExtension(extension)) {
+    return {
+      patch: null,
+      bucket: 'skipped',
+      decision: {
+        field: 'isPodcast',
+        detail: `The source is a ${extension || 'file with no extension'}, which Spreaker does ` +
+          `not take, so this stays a video.`,
+      },
+    };
+  }
+
+  return {
+    patch: { isPodcast: true },
+    bucket: 'applied',
+    decision: {
+      field: 'isPodcast',
+      detail: `The source is a ${extension}, which YouTube does not take and Spreaker does. ` +
+        `Routed to Spreaker as a podcast episode.`,
+    },
+  };
 }
 
 /** One field's answer: the patch it decided (or none), and which bucket to say it in. */
