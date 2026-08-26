@@ -34,10 +34,11 @@
     }
   </button>
 
-  <!-- panelClass, not class: the panel lives in an overlay outside this component, and a
-       plain class on <mat-menu> never reaches it — which is why every rule below used to
-       do nothing and the rows rendered as stacked blocks. -->
-  <mat-menu #accountsMenu="matMenu" panelClass="accounts-menu" xPosition="before">
+  <!-- `class`, not `panelClass`: MatMenu declares the input as
+       panelClass with the ALIAS "class", so the attribute that reaches the overlay panel
+       is spelled class. Writing panelClass here binds nothing, the panel gets no class at
+       all, and every rule scoped under it silently does nothing. -->
+  <mat-menu #accountsMenu="matMenu" class="accounts-menu" xPosition="before">
     <div class="acct-section">
       <div class="acct-head">
         <mat-icon class="acct-head-icon">smart_display</mat-icon>

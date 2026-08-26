@@ -32,13 +32,20 @@
    PANEL CLASS is the supported way in; the class has to arrive via `panelClass` on
    <mat-menu>, because a plain class attribute there styles nothing. */
 ::ng-deep .accounts-menu {
+  /* Material caps a menu panel at 280px, which squeezes a channel name onto two lines and
+     makes the whole list look broken. This panel is a list of accounts, not a command
+     menu, so it sets its own width — and must beat that max-width, not just ask. */
+  &.mat-mdc-menu-panel {
+    max-width: none;
+    min-width: 320px;
+  }
+
   .mat-mdc-menu-content {
     padding: 0;
   }
 
   .acct-section {
     padding: 6px 0;
-    min-width: 300px;
   }
 
   .acct-head {
