@@ -670,6 +670,11 @@ export class MetadataReports implements OnInit {
    * a row's own claim about itself impossible to disagree.
    */
   private channelOf(report: MetadataReport): string {
+    // A podcast episode belongs to SPREAKER, whatever YouTube channel its record still
+    // names. `isPodcast` is the destination — channelId rides along unchanged so the item
+    // can be routed back — so grouping by channelId alone filed every episode under a
+    // channel it will never be uploaded to.
+    if (report.facts?.isPodcast) return SPREAKER_DESTINATION;
     return report.facts?.channelId ?? report.promptSetChannelId ?? UNROUTED_TAB;
   }
 
@@ -718,6 +723,17 @@ export class MetadataReports implements OnInit {
       if (id === UNROUTED_TAB || known.has(id)) continue;
       tabs.push({ value: id, label: id, count: keys.size, unknown: true });
     }
+
+    // Spreaker sits beside the channels rather than after the strays: it is a DESTINATION
+    // the operator can route to, exactly like they are, and it is shown at zero for the
+    // same reason an empty channel is — a destination that vanishes when idle is one the
+    // operator cannot see is available.
+    tabs.push({
+      value: SPREAKER_DESTINATION,
+      label: SPREAKER_DESTINATION_LABEL,
+      count: sources.get(SPREAKER_DESTINATION)?.size ?? 0,
+      unknown: false,
+    });
 
     const unrouted = sources.get(UNROUTED_TAB)?.size ?? 0;
     if (unrouted > 0) {
