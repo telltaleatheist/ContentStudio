@@ -1191,14 +1191,21 @@ export class MetadataReports implements OnInit {
 
     // A run that produced NOTHING to pick from is the one row-level warning that is about
     // the generator rather than about a decision the operator has not made yet.
+    // A/B VARIANTS ARE A YOUTUBE IDEA. Spreaker takes ONE title — chosenTitles[0] is the
+    // episode title and the rest are never sent anywhere — so counting a podcast episode
+    // as 1 of 3 held it amber forever against a slate it can never use.
     const titles: RowDot =
       titleCount === 0
         ? { key: 'titles', state: 'warn', label: 'This run produced no titles.' }
-        : ab >= MAX_AB_VARIANTS
-          ? { key: 'titles', state: 'set', label: `All ${MAX_AB_VARIANTS} A/B variants picked` }
-          : ab === 0
-            ? { key: 'titles', state: 'warn', label: 'No title picked — variant 1 is the video title.' }
-            : { key: 'titles', state: 'unset', label: `${ab} of ${MAX_AB_VARIANTS} A/B variants picked` };
+        : facts?.isPodcast
+          ? ab === 0
+            ? { key: 'titles', state: 'warn', label: 'No title picked — the first is the episode title.' }
+            : { key: 'titles', state: 'set', label: 'Title picked — Spreaker uses one' }
+          : ab >= MAX_AB_VARIANTS
+            ? { key: 'titles', state: 'set', label: `All ${MAX_AB_VARIANTS} A/B variants picked` }
+            : ab === 0
+              ? { key: 'titles', state: 'warn', label: 'No title picked — variant 1 is the video title.' }
+              : { key: 'titles', state: 'unset', label: `${ab} of ${MAX_AB_VARIANTS} A/B variants picked` };
 
     // The prompt set answers the channel BEFORE any record exists — the routing decision
     // was made at generation when the operator picked the prompt set (2026-08-24). A

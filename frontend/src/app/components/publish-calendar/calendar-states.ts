@@ -198,7 +198,11 @@ export function dimmedFor(
  */
 export function missingFor(facts: ReadinessFacts): string[] {
   const missing: string[] = [];
-  if (facts.channelId === null) missing.push('channel');
+  // A YOUTUBE CHANNEL IS A YOUTUBE REQUIREMENT. A Spreaker push authorizes against the
+  // show id in the stored credentials and never reads channelId — spreaker-push.ts does
+  // not mention the field. A podcast record keeps one only so the destination can be
+  // changed back, so demanding it held finished episodes at "needs channel" forever.
+  if (!facts.isPodcast && facts.channelId === null) missing.push('channel');
   if (facts.abCount < 1) missing.push('title');
   // A THUMBNAIL IS A YOUTUBE REQUIREMENT, not a universal one. Spreaker's episode image
   // is optional and this app never sends one, so demanding it of a podcast episode would
