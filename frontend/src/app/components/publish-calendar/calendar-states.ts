@@ -7,6 +7,8 @@
  * template or the DOM.
  */
 
+import { SPREAKER_DESTINATION } from '../../features/publish/publish.types';
+
 /** The chip states, exactly as the design names them. */
 export type ChipState = 'scheduled' | 'stale' | 'published';
 
@@ -146,6 +148,44 @@ export interface ReadinessFacts {
 
 export function destinationOf(facts: { isPodcast: boolean }): Destination {
   return facts.isPodcast ? 'spreaker' : 'youtube';
+}
+
+/**
+ * Which tab a row files under: a channel id, `spreaker`, or null for nothing.
+ *
+ * DESTINATION FIRST, and that is the whole rule. A podcast episode keeps the YouTube
+ * channel id it was routed with — it has to, or there would be no way to route it back —
+ * so grouping on the channel id alone would file every episode under a channel it is
+ * never going to reach, and the Spreaker tab would be permanently empty while the podcast
+ * work sat under Unfiltered.
+ *
+ * Null means this row belongs to no tab at all: not routed, and not a podcast. That is a
+ * state, not a default — it is what keeps an unrouted item visible on every tab instead of
+ * being dimmed away on all of them.
+ */
+export function laneTabOf(row: { destination: Destination; channelId: string | null }): string | null {
+  return row.destination === 'spreaker' ? SPREAKER_DESTINATION : row.channelId;
+}
+
+/**
+ * Is this row pushed into the background because some OTHER tab is in force?
+ *
+ * `channelKnown` is passed in rather than looked up because only the component holds the
+ * registry. It is false for both "no channel" and "an id the registry does not have", and
+ * both of those rows stay at full strength on every tab: a row that needs routing
+ * attention must not fade into somebody else's background.
+ */
+export function dimmedFor(
+  row: { destination: Destination; channelId: string | null },
+  channelKnown: boolean,
+  activeTab: string | null
+): boolean {
+  const tab = laneTabOf(row);
+  if (tab === null) return false;
+  // A stored channel id the registry does not hold. It has a tab in name only — there is
+  // no such tab to be on — so it stays at full strength wherever the operator is looking.
+  if (row.destination === 'youtube' && !channelKnown) return false;
+  return tab !== activeTab;
 }
 
 /**

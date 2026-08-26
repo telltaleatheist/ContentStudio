@@ -11,9 +11,9 @@
  * themes: --ch-none is the unrouted grey, and the channel hues arrive per-chip as inline
  * styles from the registry order (see CHANNEL_HUES).
  *
- * The board's four columns are declared ONCE, as --day-cols, because the sticky heading
- * row and every day row have to agree on them; two copies would drift the first time a
- * width changed.
+ * The board's columns are declared ONCE, as --day-cols, because the sticky heading row and
+ * every day row have to agree on them; two copies would drift the first time a width
+ * changed — which is exactly what adding the podcast lane would otherwise have done.
  */
 
 :host {
@@ -26,8 +26,11 @@
   /* The unrouted state's colour. A real state, not an absence — it gets a token. */
   --ch-none: #6b7280;
 
-  /* date column, then the three release slots. */
-  --day-cols: 132px repeat(3, minmax(0, 1fr));
+  /* date column, the podcast lane, then the three YouTube release slots.
+     The podcast lane is deliberately NARROWER than a peer column and carries a gutter of
+     its own (see .lane-spreaker): it is one destination beside three channels, and giving
+     it an equal quarter of the board would overstate it every day of the week. */
+  --day-cols: 132px minmax(118px, 0.62fr) repeat(3, minmax(0, 1fr));
 }
 
 .calendar-container {
@@ -124,6 +127,28 @@
 
 .chan-tab-l {
   white-space: nowrap;
+}
+
+/* Spreaker's end of the strip, set apart from the channels by a rule rather than by a
+   colour: it is not a fourth channel and must not read as one. */
+.tab-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 4px;
+  background: var(--border-color);
+}
+
+.podcast-tab {
+  .tab-glyph {
+    font-size: 15px;
+    width: 15px;
+    height: 15px;
+    color: var(--text-muted);
+  }
+
+  &.on .tab-glyph {
+    color: var(--primary-orange);
+  }
 }
 
 .cadence-note {
@@ -344,6 +369,22 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-muted);
+
+  /* The lane heading carries the same right-hand rule its cells do, so the section reads
+     as one column of the board rather than as a stray label. */
+  &.lane-spreaker {
+    padding-right: 8px;
+    border-right: 1px solid var(--border-color);
+
+    .lane-of {
+      display: block;
+      font-size: 0.58rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      opacity: 0.8;
+    }
+  }
 }
 
 .board-scroll {
@@ -430,9 +471,42 @@
     }
   }
 
+  /* The podcast lane: sectioned off from the three afternoon slots rather than lined up
+     as a fourth one. Its own tint, and a rule down its right-hand side that separates the
+     two destinations at every row of the board.
+     DECLARED BEFORE THE DROP STATES so a drag over it still lights up — a lane tint that
+     outranked the drop fill would make the one slot the podcast work belongs in the one
+     slot that never looks like it would take it. */
+  &.lane-spreaker {
+    background: color-mix(in srgb, var(--text-muted) 7%, var(--bg-secondary));
+    margin-right: 8px;
+
+    &::after {
+      content: '';
+      position: absolute;
+      top: -3px;
+      bottom: -3px;
+      right: -8px;
+      width: 1px;
+      background: var(--border-color);
+    }
+
+    &.past {
+      background: transparent;
+    }
+  }
+
   &.drop-ready {
     border-style: dashed;
     border-color: var(--primary-orange);
+  }
+
+  /* The OTHER lane's slot, while a drag is in flight. It will take the drop — nothing here
+     refuses one — but it offers itself faintly, so the obvious target is the right one and
+     a cross-lane drop has to be aimed at deliberately. */
+  &.drop-weak {
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--primary-orange) 30%, var(--border-color));
   }
 
   &.drop-over {
@@ -1138,8 +1212,44 @@
   color: var(--warning-text, var(--text-secondary));
 }
 
-/* Ready podcast episodes, counted apart from the YouTube ones because the bulk button
-   cannot send them — a count that included them would overstate what one click does. */
-.pod-count {
-  color: var(--text-muted);
+/* The counts speak for ONE lane, so the lane says its own name in front of them. Without
+   it the same three numbers would mean two different things on two different tabs. */
+.lane-name {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+/* Ready work in the half of the board the counts are not describing. The narrower count
+   must never be the quieter one. */
+.other-lane {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+/* Ready podcast episodes the Spreaker run refuses for want of a date. Warning-coloured,
+   because a ready episode that cannot be sent is a thing to act on rather than a note. */
+.spreaker-held {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--warning-text, var(--text-secondary));
+  white-space: nowrap;
+  cursor: help;
+}
+
+.send-spreaker mat-icon {
+  margin-right: 0.3rem;
+  font-size: 17px;
+  width: 17px;
+  height: 17px;
+}
+
+/* The Spreaker confirm panel. The one line in this app that has to be read before it is
+   agreed to: Spreaker has no draft state, so the dates in this list are the only thing
+   between the button and a live episode. */
+.spreaker-confirm .uc-danger {
+  background: color-mix(in srgb, var(--danger-text) 12%, transparent);
+  color: var(--danger-text);
+  font-weight: 600;
+  margin-top: 0;
 }

@@ -7,14 +7,17 @@
         {{ scheduledCount() }} scheduled · {{ tray().length }} unscheduled
         @if (loading()) { <span class="loading-note">· reading…</span> }
       </p>
-      <!-- The three states of a scheduled item, counted. Uploading in bulk is only
-           sensible if it is obvious what is being left behind. -->
+      <!-- The three states of a scheduled item, counted FOR ONE LANE — the one whose tab
+           is in force. Two destinations added together produce a number neither button
+           can act on. What the other lane is holding is said straight afterwards, so the
+           narrower count is never a quieter one. -->
       <p class="readiness-line">
-        <span class="pip ready"></span> {{ uploadable().length }} ready
+        <span class="lane-name">{{ activeDestination() === 'spreaker' ? spreakerLabel : 'YouTube' }}</span>
+        <span class="pip ready"></span> {{ laneReadyCount() }} ready
         <span class="pip incomplete"></span> {{ incompleteCount() }} need filling out
         <span class="pip done"></span> {{ uploadedCount() }} uploaded
-        @if (podcastReadyCount() > 0) {
-          <span class="pod-count">· {{ podcastReadyCount() }} podcast</span>
+        @if (otherLane().ready > 0) {
+          <span class="other-lane">· {{ otherLane().ready }} more ready on {{ otherLane().name }}</span>
         }
       </p>
     </div>
@@ -38,11 +41,29 @@
       </button>
       <button mat-flat-button color="primary" class="upload-all"
               (click)="askUploadAll()"
-              [disabled]="uploadable().length === 0 || uploadRun() !== null"
+              [disabled]="uploadable().length === 0 || uploadRun() !== null || spreakerRun() !== null"
               matTooltip="Upload every ready scheduled video to its channel">
         <mat-icon>cloud_upload</mat-icon>
         Upload all ready ({{ uploadable().length }})
       </button>
+      <!-- The Spreaker lane's own button, next to the YouTube one and never merged into
+           it: two services, two authorizations, and one of them publishes on contact. -->
+      <button mat-stroked-button class="send-spreaker"
+              (click)="askSpreakerRun()"
+              [disabled]="spreakerUploadable().length === 0 || spreakerRun() !== null || uploadRun() !== null"
+              matTooltip="Upload every ready, DATED podcast episode to Spreaker">
+        <mat-icon>podcasts</mat-icon>
+        Send to Spreaker ({{ spreakerUploadable().length }})
+      </button>
+      <!-- Why the count is smaller than the podcast work on the board. Beside the button
+           rather than only inside its panel, because when EVERY ready episode is undated
+           the button is disabled at (0) and that panel can never be opened. -->
+      @if (spreakerHeldBack() > 0) {
+        <span class="spreaker-held"
+              [matTooltip]="'An episode with no publish date goes live the moment Spreaker finishes encoding it, so the run will not send one. Drop it on a 5 AM slot to schedule it.'">
+          {{ spreakerHeldBack() }} undated
+        </span>
+      }
       <button mat-stroked-button (click)="scrollToToday()">Today</button>
       <button mat-icon-button routerLink="/metadata-reports" matTooltip="Metadata reports">
         <mat-icon>description</mat-icon>
@@ -55,24 +76,39 @@
 
   <!-- The tabs are also the colour key: the dot on each is that channel's hue, so the
        encoding is readable rather than remembered. -->
-  <div class="chan-tabs" role="tablist" aria-label="Channel">
+  <div class="chan-tabs" role="tablist" aria-label="Destination">
     @for (tab of channelTabs(); track tab.channelId) {
       <button type="button" class="chan-tab"
               role="tab"
-              [class.on]="activeChannelId() === tab.channelId"
-              [attr.aria-selected]="activeChannelId() === tab.channelId"
-              (click)="setActiveChannel(tab.channelId)">
+              [class.on]="activeTabId() === tab.channelId"
+              [attr.aria-selected]="activeTabId() === tab.channelId"
+              (click)="setActiveTab(tab.channelId)">
         <span class="dot" [style.background]="tab.hue"></span>
         <span class="chan-tab-l">{{ tab.name }}</span>
       </button>
     }
     @if (channelTabs().length === 0) {
-      <span class="empty-note">No channels are registered, so every item reads as unrouted.</span>
+      <span class="empty-note">No channels are registered, so every video reads as unrouted.</span>
     }
+    <!-- Spreaker is not a channel and does not take a channel hue: it is a destination
+         with one show behind it, so it gets the mic and its own end of the strip. Shown
+         at zero exactly as an empty channel tab is — a lane that appeared only once
+         something was in it could never be the place you go to put something there. -->
+    <span class="tab-sep" aria-hidden="true"></span>
+    <button type="button" class="chan-tab podcast-tab"
+            role="tab"
+            [class.on]="activeTabId() === spreakerTab"
+            [attr.aria-selected]="activeTabId() === spreakerTab"
+            (click)="setActiveTab(spreakerTab)">
+      <mat-icon class="tab-glyph">mic</mat-icon>
+      <span class="chan-tab-l">{{ spreakerLabel }}</span>
+    </button>
     @if (activeCadence(); as cadence) {
       <span class="cadence-note">{{ cadence.note }}</span>
     } @else if (activeChannel()) {
       <span class="cadence-note">No release cadence is recorded for this channel.</span>
+    } @else if (activeDestination() === 'spreaker') {
+      <span class="cadence-note">Any day at 5 AM — there is no weekly pattern to keep to.</span>
     }
   </div>
 
@@ -239,7 +275,91 @@
           <mat-icon>{{ r.ok ? 'check_circle' : 'error_outline' }}</mat-icon>
           <span class="ures-title">{{ r.title }}</span>
           @if (r.ok) {
-            <span class="ures-id">{{ r.videoId }}</span>
+            <span class="ures-id">{{ r.remoteId }}</span>
+          } @else {
+            <span class="ures-error">{{ r.error }}</span>
+          }
+        </div>
+      }
+    </div>
+  }
+
+  <!-- The Spreaker lane's confirm panel. Its own, because the decision it guards is not
+       the YouTube one: there the risk is a video on the wrong channel, here it is a
+       release that happens the moment the upload finishes. Every row prints its date and
+       time because that date is the only thing holding the episode back. -->
+  @if (spreakerConfirm(); as pending) {
+    <div class="upload-confirm spreaker-confirm">
+      <div class="uc-head">
+        <mat-icon>podcasts</mat-icon>
+        Upload {{ pending.length }} episode{{ pending.length === 1 ? '' : 's' }}
+        to {{ spreakerLabel }}
+      </div>
+
+      <div class="uc-note uc-danger">
+        A SPREAKER EPISODE WITH NO PUBLISH DATE GOES LIVE IMMEDIATELY — the service has no
+        draft state. Every episode below carries a date, and that date is what keeps it
+        from being released the moment its encode finishes. Read the times.
+      </div>
+
+      @for (item of pending; track item.itemId) {
+        <div class="uc-row">
+          <span class="uc-when">{{ item.when }}</span>
+          <span class="uc-title">{{ item.title }}</span>
+        </div>
+      }
+
+      <!-- What is being left behind, by name. The undated ones are the whole reason this
+           list is here: they are ready, and they are refused. -->
+      @if (spreakerExcluded().length > 0) {
+        <div class="uc-skipped">
+          @for (group of spreakerExcluded(); track group.reason) {
+            <div class="uc-skip-row">
+              <span class="uc-skip-reason">Not included, {{ group.reason }}:</span>
+              @for (title of group.titles; track title) {
+                <span class="uc-skip-title">{{ title }}</span>
+              }
+            </div>
+          }
+        </div>
+      }
+
+      <div class="uc-actions">
+        <button mat-stroked-button (click)="closeSpreakerConfirm()">Cancel</button>
+        <button mat-flat-button color="primary" (click)="confirmSpreakerRun()">
+          Upload {{ pending.length }} now
+        </button>
+      </div>
+    </div>
+  }
+
+  @if (spreakerRun(); as run) {
+    <div class="upload-run">
+      <div class="ur-head">
+        <mat-icon class="spin">autorenew</mat-icon>
+        Uploading episode {{ run.index }} of {{ run.total }} to Spreaker
+      </div>
+      <!-- No bar and no Stop: the Spreaker push reports no bytes and the main process
+           offers no cancel for it, and a control that does nothing is worse than none. -->
+      <div class="ur-title">{{ run.title }}</div>
+    </div>
+  }
+
+  @if (spreakerResults().length > 0 && spreakerRun() === null) {
+    <div class="upload-results" [class.has-failures]="spreakerFailures().length > 0">
+      <div class="ures-head">
+        {{ spreakerResults().length - spreakerFailures().length }} uploaded to Spreaker,
+        {{ spreakerFailures().length }} failed
+        <button mat-icon-button (click)="dismissSpreakerResults()" matTooltip="Dismiss">
+          <mat-icon>close</mat-icon>
+        </button>
+      </div>
+      @for (r of spreakerResults(); track r.itemId) {
+        <div class="ures-row" [class.failed]="!r.ok">
+          <mat-icon>{{ r.ok ? 'check_circle' : 'error_outline' }}</mat-icon>
+          <span class="ures-title">{{ r.title }}</span>
+          @if (r.ok) {
+            <span class="ures-id">episode {{ r.remoteId }}</span>
           } @else {
             <span class="ures-error">{{ r.error }}</span>
           }
@@ -305,8 +425,11 @@
 
       <div class="board-head">
         <div class="board-head-date"></div>
-        @for (label of slotLabels; track label) {
-          <div class="board-head-slot">{{ label }}</div>
+        @for (head of slotHeads; track head.label) {
+          <div class="board-head-slot" [class.lane-spreaker]="head.destination === 'spreaker'">
+            {{ head.label }}
+            @if (head.destination === 'spreaker') { <span class="lane-of">podcast</span> }
+          </div>
         }
       </div>
 
@@ -345,11 +468,16 @@
             }
 
             @for (slot of row.slots; track slot.time) {
+              <!-- drop-ready is the item's own lane; drop-weak is the other one. Both take
+                   the drop — a cross-lane drop is the operator's call — but only one of
+                   them is offered as the obvious answer. -->
               <div class="slot"
+                   [class.lane-spreaker]="slot.destination === 'spreaker'"
                    [class.past]="slot.isPast"
                    [class.taken]="slot.mirrors.length > 0"
                    [class.cadence]="slot.isCadence"
-                   [class.drop-ready]="draggingItemId() !== null && !slot.isPast"
+                   [class.drop-ready]="dropAffinity(slot) === 'match'"
+                   [class.drop-weak]="dropAffinity(slot) === 'other'"
                    [class.drop-over]="dragOverKey() === slot.key"
                    [matTooltip]="slotTooltip(slot)"
                    (dragover)="onSlotDragOver(slot, $event)"
@@ -365,8 +493,8 @@
               </div>
             }
 
-            <!-- A schedule that is not on one of the three slots is shown at its real
-                 time rather than rounded into a slot it is not in. -->
+            <!-- A schedule that is on none of the board's slots is shown at its real time
+                 rather than rounded into a slot it is not in. -->
             @if (row.otherChips.length > 0 || row.otherMirrors.length > 0) {
               <div class="other-times">
                 <span class="other-label">other times</span>

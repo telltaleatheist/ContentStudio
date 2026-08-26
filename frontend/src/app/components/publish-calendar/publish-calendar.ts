@@ -10,8 +10,10 @@
  * round-trippable — every chip and every tray row links to `/metadata-reports?item=<id>`,
  * and the reports header links back here.
  *
- * SHAPE: a rolling list of days starting at TODAY, each with the three slots this install
- * actually publishes into (1 PM / 2 PM / 4 PM). No month grid — a month grid answers "what
+ * SHAPE: a rolling list of days starting at TODAY, each with the slots this install
+ * actually publishes into. TWO LANES, sectioned apart because they are two services and
+ * not four columns of the same thing: 5 AM is the podcast's, every day, and 1 PM / 2 PM /
+ * 4 PM are YouTube's. No month grid — a month grid answers "what
  * does September look like", which is not a question anyone asks here; the work is always
  * "the next few weeks", and it always starts now. Days are appended, never navigated back
  * to: a schedule in the past cannot be written, so a control for reaching one would be a
@@ -32,7 +34,7 @@
  *
  * NOTHING SCHEDULED IS EVER HIDDEN. Three places exist purely so the rolling window cannot
  * quietly shorten the truth: the "before today" strip, each day's "other times" area for a
- * chip that does not sit on one of the three slots, and the beyond-the-horizon count under
+ * chip that does not sit on one of the slots, and the beyond-the-horizon count under
  * the Load-more button. A calendar that silently omits a row is indistinguishable from one
  * with nothing to show.
  */
@@ -53,6 +55,10 @@ import type {
   ScheduledSweep,
   ScheduledVideo,
 } from '../../features/publish/publish.types';
+import {
+  SPREAKER_DESTINATION,
+  SPREAKER_DESTINATION_LABEL,
+} from '../../features/publish/publish.types';
 import { splitPublishAt } from '../../features/publish/publish-schedule';
 import { CADENCE_NOTES, cadenceKeyFor, isCadenceSlot } from '../../features/publish/publish-slots';
 // The §2.5 state table, kept pure so it can be exercised without an Angular test bed.
@@ -64,6 +70,7 @@ import {
   chipStateOf,
   dateKeyOf,
   destinationOf,
+  dimmedFor,
   distance,
   isSchedulable,
   missingFor,
@@ -87,17 +94,30 @@ import {
 const CHANNEL_HUES = ['#ff6b35', '#2dd4bf', '#a78bfa', '#f59e0b', '#38bdf8', '#f472b6'];
 
 /**
- * The three times of day this install releases into, as local wall clock.
+ * The times of day this install releases into, as local wall clock, and which lane each
+ * one serves.
  *
- * Not derived from CADENCES: the cadences say which DAYS each channel uses, and between
- * them they only ever land on these three hours. The board renders all three on every day
- * so a slot is a place to drop something rather than a thing that appears once a channel
- * has been chosen.
+ * Not derived from CADENCES: the cadences say which DAYS each YouTube channel uses, and
+ * between them they only ever land on the three afternoon hours. The board renders every
+ * slot on every day so a slot is a place to drop something rather than a thing that
+ * appears once a channel has been chosen.
+ *
+ * 5 AM IS THE PODCAST'S, EVERY DAY. The episode drops in the morning and there is no
+ * weekday pattern behind it, so there is no cadence to consult and none is marked — the
+ * lane is simply always open. It carries its own destination because a slot that did not
+ * declare one could only be told apart from the YouTube slots by its hour, which is a
+ * coincidence of this install rather than a rule.
  */
-const SLOTS: ReadonlyArray<{ time: string; label: string; hour: number }> = [
-  { time: '13:00', label: '1 PM', hour: 13 },
-  { time: '14:00', label: '2 PM', hour: 14 },
-  { time: '16:00', label: '4 PM', hour: 16 },
+const SLOTS: ReadonlyArray<{
+  time: string;
+  label: string;
+  hour: number;
+  destination: Destination;
+}> = [
+  { time: '05:00', label: '5 AM', hour: 5, destination: 'spreaker' },
+  { time: '13:00', label: '1 PM', hour: 13, destination: 'youtube' },
+  { time: '14:00', label: '2 PM', hour: 14, destination: 'youtube' },
+  { time: '16:00', label: '4 PM', hour: 16, destination: 'youtube' },
 ];
 
 /** Four weeks, today inclusive — the window the work actually happens in. */
@@ -112,7 +132,13 @@ const HORIZON_STEP_DAYS = 14;
  */
 const WRITER_LEAD_MS = 15 * 60_000;
 
-/** Which channel tab was last in force. The id, because names get edited. */
+/**
+ * Which tab was last in force: a channel id, or `spreaker`.
+ *
+ * The id rather than the name, because names get edited. The key keeps its old name so a
+ * remembered channel survives this build — the Spreaker value simply becomes another
+ * legal thing to find in it.
+ */
 const CHANNEL_TAB_KEY = 'publish-calendar.channel-tab';
 
 /** What a slot cell or the before-today strip renders for one scheduled item. */
@@ -136,7 +162,7 @@ export interface CalendarChip {
   unrouted: boolean;
   /** A channel id the registry does not have. Named on screen, never coloured in. */
   unknownChannel: boolean;
-  /** Belongs to a channel other than the active tab's: readable, but out of the way. */
+  /** Files under a tab other than the one in force: readable, but out of the way. */
   dimmed: boolean;
   isPodcast: boolean;
   /** A full A/B slate is picked and the video is not out yet. */
@@ -249,13 +275,21 @@ export interface MirrorChip {
   privacyStatus: string;
 }
 
-/** One of the three release times, on one day. */
+/** One release time, on one day. */
 export interface SlotCell {
   /** `HH:MM`, exactly what the writer is handed. */
   time: string;
   label: string;
   /** The drop key, `dateKey HH:MM`. */
   key: string;
+  /**
+   * Which lane this slot serves.
+   *
+   * A HINT, NEVER A RESTRICTION: a mismatched drop is still taken, because this app
+   * reports and does not enforce, and a deliberate cross-drop is the operator's call. All
+   * it changes is how strongly the slot offers itself while a drag is in flight.
+   */
+  destination: Destination;
   /** Inside the writer's fifteen-minute lead: inert, and it says so rather than bouncing. */
   isPast: boolean;
   /** The active channel normally releases here. A hint, never a restriction. */
@@ -273,7 +307,7 @@ export interface DayRow {
   isToday: boolean;
   slots: SlotCell[];
   /**
-   * Chips whose stored time is none of the three slots. They are shown with their real
+   * Chips whose stored time is none of the board's slots. They are shown with their real
    * time rather than rounded into a slot they are not in, and never dropped.
    */
   otherChips: CalendarChip[];
@@ -281,15 +315,41 @@ export interface DayRow {
   otherMirrors: MirrorChip[];
 }
 
-/** One item's outcome in a bulk upload run. Every attempt gets one, pass or fail. */
+/** One item's outcome in a bulk run. Every attempt gets one, pass or fail. */
 export interface UploadResult {
   itemId: string;
   title: string;
+  /** For a Spreaker row this is the destination's name — the show is where it went. */
   channelName: string;
   ok: boolean;
   /** The main process's refusal, verbatim. Null on success. */
   error: string | null;
-  videoId: string | null;
+  /**
+   * The id the destination now holds this item under: a YouTube video id, or a Spreaker
+   * episode id. Null when there is none to name — a failed attempt creates nothing.
+   */
+  remoteId: string | null;
+}
+
+/**
+ * One episode the Spreaker lane could send, dated or not.
+ *
+ * Drawn from BOTH halves of the board — the scheduled chips and the unscheduled tray —
+ * because the undated ones are the entire reason this list exists. Spreaker has no draft
+ * state: an episode uploaded with no publish date is live the moment its encode finishes.
+ * A candidate list built only from dated chips could never name the episodes that would
+ * go out immediately, and those are the ones the operator has to be told about.
+ */
+export interface SpreakerCandidate {
+  itemId: string;
+  title: string;
+  /** ISO instant, or null — and null is the one state the run refuses outright. */
+  publishAt: string | null;
+  /** `Mon, Aug 31 · 05:00`, or null when there is no date to print. */
+  when: string | null;
+  readiness: Readiness;
+  /** What is still missing, when readiness is `incomplete`. Named, never just counted. */
+  missing: string[];
 }
 
 /** The live state of a bulk run. Null when nothing is uploading. */
@@ -338,8 +398,12 @@ export class PublishCalendar implements OnInit, OnDestroy {
    */
   readonly publish = inject(PublishState);
 
-  /** The three column headings, in the order every day row renders them. */
-  readonly slotLabels = SLOTS.map((slot) => slot.label);
+  /** The column headings, in the order every day row renders them. */
+  readonly slotHeads = SLOTS.map((slot) => ({ label: slot.label, destination: slot.destination }));
+
+  /** The Spreaker tab's value and its label, so template and storage say the same word. */
+  readonly spreakerTab = SPREAKER_DESTINATION;
+  readonly spreakerLabel = SPREAKER_DESTINATION_LABEL;
 
   /** Today's row, so the Today button has something to scroll to. */
   private readonly todayRow = viewChild<ElementRef<HTMLElement>>('todayRow');
@@ -374,10 +438,15 @@ export class PublishCalendar implements OnInit, OnDestroy {
   readonly horizonDays = signal(INITIAL_HORIZON_DAYS);
 
   /**
-   * Which channel's tab is in force. Null only before the registry has arrived — with no
-   * channels registered there is no tab to be on, and the board says so.
+   * Which tab is in force: a channel id, or `spreaker`. Null only before the first load
+   * has settled it.
+   *
+   * One signal for both kinds of tab because they are one strip and one choice. What a
+   * tab MEANS differs — a channel is a place a video is authorized against, Spreaker is a
+   * destination with one show behind it — and every rule that cares reads
+   * `activeDestination()` rather than comparing this string itself.
    */
-  readonly activeChannelId = signal<string | null>(null);
+  readonly activeTabId = signal<string | null>(null);
 
   /** The item currently under the cursor's drag, so cells can offer themselves. */
   readonly draggingItemId = signal<string | null>(null);
@@ -417,6 +486,25 @@ export class PublishCalendar implements OnInit, OnDestroy {
   /** Results of the last run, kept until dismissed. Failures are the point of it. */
   readonly uploadResults = signal<UploadResult[]>([]);
 
+  // ------------------------------------------------------------ the Spreaker run
+
+  /**
+   * The Spreaker lane's own confirm panel, or null when it is closed.
+   *
+   * A SEPARATE ACTION FROM THE YOUTUBE RUN, deliberately, and not one button with two
+   * meanings: these are two services, two authorizations and two irreversible outcomes,
+   * and the Spreaker one carries a rule the YouTube one does not have — an episode with
+   * no date is live on contact.
+   */
+  readonly spreakerConfirm = signal<SpreakerCandidate[] | null>(null);
+  /**
+   * The Spreaker run in flight. No byte counter, because there is none to have: only
+   * `publish-upload-youtube` reports progress, so a bar here would be a bar that never
+   * moves.
+   */
+  readonly spreakerRun = signal<{ index: number; total: number; title: string } | null>(null);
+  readonly spreakerResults = signal<UploadResult[]>([]);
+
   /** The schedule push in flight, or null. Simpler than an upload: no bytes to report. */
   readonly pushRun = signal<{ index: number; total: number; title: string } | null>(null);
   readonly pushResults = signal<UploadResult[]>([]);
@@ -433,11 +521,33 @@ export class PublishCalendar implements OnInit, OnDestroy {
     }))
   );
 
+  /**
+   * Every tab id that currently exists, in strip order. The Spreaker one is ALWAYS last
+   * and always there — an empty destination is the same shape of fact as an empty channel,
+   * and a lane that appeared only once something was in it could never be dropped into.
+   */
+  readonly tabIds = computed(() => [
+    ...this.channelTabs().map((tab) => tab.channelId),
+    SPREAKER_DESTINATION,
+  ]);
+
+  /**
+   * The active tab as a channel, or null when it is not one.
+   *
+   * Null on the Spreaker tab is the honest answer rather than an awkward one: Spreaker is
+   * not a channel, has no hue in the registry order and has no YouTube release cadence, so
+   * everything downstream that asks for a channel correctly gets nothing.
+   */
   readonly activeChannel = computed(() => {
-    const id = this.activeChannelId();
+    const id = this.activeTabId();
     if (id === null) return null;
     return this.channelTabs().find((tab) => tab.channelId === id) ?? null;
   });
+
+  /** Which lane the board is being read as. Every count and every drop hint reads this. */
+  readonly activeDestination = computed<Destination>(() =>
+    this.activeTabId() === SPREAKER_DESTINATION ? 'spreaker' : 'youtube'
+  );
 
   /**
    * The cadence the active channel publishes on, or null when this app has none for it.
@@ -513,7 +623,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
   /** Every item that has a publish record and a date on it, as chips. */
   private readonly scheduledChips = computed<CalendarChip[]>(() => {
     const now = this.now();
-    const active = this.activeChannelId();
+    const active = this.activeTabId();
     const mirror = this.mirrorByVideoId();
     const bySlot = this.mirrorBySlot();
     const linked = this.linkedByVideoId();
@@ -556,7 +666,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
       if (this.isOpenWork(facts, this.linkedByVideoId())) drawn.add(facts.videoId);
     }
 
-    const active = this.activeChannelId();
+    const active = this.activeTabId();
     return swept.scheduled
       .filter((video) => !drawn.has(video.videoId))
       .map((video) => {
@@ -639,23 +749,56 @@ export class PublishCalendar implements OnInit, OnDestroy {
     )
   );
 
+  /**
+   * The scheduled chips of the lane currently being LOOKED AT.
+   *
+   * Every header count is drawn from this rather than from the whole board. A single "12
+   * ready" spanning both destinations answered a question nobody asked: the two lanes are
+   * sent by two different buttons to two different services, so a number that mixes them
+   * cannot be acted on by either one, and on the Spreaker tab it would have been mostly
+   * describing YouTube.
+   *
+   * The lane, not the tab: on a channel tab this is every YouTube channel, because the
+   * board itself still shows every channel and only dims the others.
+   */
+  private readonly laneChips = computed(() => {
+    const lane = this.activeDestination();
+    return this.scheduledChips().filter((chip) => chip.destination === lane);
+  });
+
+  /** Ready in the lane on screen. On YouTube this is exactly what the bulk button sends. */
+  readonly laneReadyCount = computed(
+    () => this.laneChips().filter((chip) => chip.readiness === 'ready').length
+  );
+
   /** Scheduled but not sendable, so the header can say what is being left behind. */
   readonly incompleteCount = computed(
-    () => this.scheduledChips().filter((chip) => chip.readiness === 'incomplete').length
+    () => this.laneChips().filter((chip) => chip.readiness === 'incomplete').length
   );
 
-  /** Ready podcast episodes — counted apart, because the bulk button cannot send them. */
-  readonly podcastReadyCount = computed(
-    () =>
-      this.scheduledChips().filter(
-        (chip) => chip.readiness === 'ready' && chip.destination === 'spreaker'
-      ).length
-  );
-
-  /** On YouTube, still private, still waiting for its moment. Not yet finished. */
+  /** Already at its destination — a video id, or an episode id — and waiting for its moment. */
   readonly uploadedCount = computed(
-    () => this.scheduledChips().filter((chip) => chip.readiness === 'done').length
+    () => this.laneChips().filter((chip) => chip.readiness === 'done').length
   );
+
+  /**
+   * Ready and scheduled in the OTHER lane, with that lane's name.
+   *
+   * The counts above deliberately speak for one lane, so this is what stops that from
+   * being a silent omission: whichever tab is on, the header still says how much work is
+   * ready in the half of the board it is not describing, and where to go to see it.
+   */
+  readonly otherLane = computed(() => {
+    const here = this.activeDestination();
+    const there: Destination = here === 'youtube' ? 'spreaker' : 'youtube';
+    return {
+      destination: there,
+      name: there === 'spreaker' ? SPREAKER_DESTINATION_LABEL : 'YouTube',
+      ready: this.scheduledChips().filter(
+        (chip) => chip.destination === there && chip.readiness === 'ready'
+      ).length,
+    };
+  });
 
   /** The confirm panel's list, grouped by the channel each upload authorizes against. */
   readonly confirmByChannel = computed(() => {
@@ -710,7 +853,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
     const groups: Array<{ reason: string; titles: string[] }> = [];
     if (elsewhere.length > 0) {
       groups.push({
-        reason: 'going to Spreaker, not YouTube — dispatch it from its report',
+        reason: `going to ${SPREAKER_DESTINATION_LABEL}, not YouTube — send it with the Spreaker button`,
         titles: elsewhere.map((chip) => chip.title),
       });
     }
@@ -732,6 +875,110 @@ export class PublishCalendar implements OnInit, OnDestroy {
   readonly confirmCollisions = computed(
     () => (this.uploadConfirm() ?? []).filter((chip) => chip.collision !== null).length
   );
+
+  // ------------------------------------------------------- the Spreaker lane's run
+
+  /**
+   * Every podcast episode the board holds, dated and undated together.
+   *
+   * Both halves, because the two halves are the two answers to the only question this run
+   * asks. A dated episode is a scheduled release; an undated one is an immediate one, and
+   * an immediate release is exactly what nobody meant to click. Reading only the dated
+   * chips would have made the undated episodes invisible to a panel whose whole job is to
+   * name them.
+   */
+  private readonly spreakerCandidates = computed<SpreakerCandidate[]>(() => {
+    const scheduled: SpreakerCandidate[] = this.scheduledChips()
+      .filter((chip) => chip.destination === 'spreaker')
+      .map((chip) => ({
+        itemId: chip.itemId,
+        title: chip.title,
+        publishAt: chip.publishAt,
+        when: `${this.chipDate(chip)} · ${chip.time}`,
+        readiness: chip.readiness,
+        missing: chip.missing,
+      }));
+    const undated: SpreakerCandidate[] = this.tray()
+      .filter((item) => item.destination === 'spreaker')
+      .map((item) => ({
+        itemId: item.itemId,
+        title: item.title,
+        publishAt: null,
+        when: null,
+        readiness: item.readiness,
+        missing: item.missing,
+      }));
+    return [...scheduled, ...undated];
+  });
+
+  /**
+   * What the Spreaker button will actually send, soonest first.
+   *
+   * TWO CONDITIONS, AND THE SECOND IS THE WHOLE POINT. Ready, as everywhere else on this
+   * page — and dated, because Spreaker has no draft state: an episode uploaded without a
+   * publish date is live as soon as its encode finishes. The date is the only thing
+   * standing between this button and a release, so an episode without one is never in the
+   * batch, however ready it otherwise is.
+   */
+  readonly spreakerUploadable = computed(() =>
+    this.spreakerCandidates()
+      .filter((item) => item.readiness === 'ready' && item.publishAt !== null)
+      .sort((a, b) => (a.publishAt as string).localeCompare(b.publishAt as string))
+  );
+
+  /**
+   * The episodes the Spreaker run leaves behind, by reason, named one by one.
+   *
+   * The undated group is first because it is the one that is not a housekeeping note: the
+   * operator has an episode he believes is scheduled work, and what he is being told is
+   * that sending it now would publish it now.
+   */
+  readonly spreakerExcluded = computed(() => {
+    const all = this.spreakerCandidates();
+    const groups: Array<{ reason: string; titles: string[] }> = [];
+
+    const undated = all.filter((item) => item.readiness === 'ready' && item.publishAt === null);
+    if (undated.length > 0) {
+      groups.push({
+        reason:
+          `no publish date — Spreaker has no draft state, so uploading one of these would ` +
+          `put it live immediately. Drop it on a 5 AM slot first`,
+        titles: undated.map((item) => item.title),
+      });
+    }
+
+    const done = all.filter((item) => item.readiness === 'done');
+    if (done.length > 0) {
+      groups.push({
+        reason:
+          `already on Spreaker — a second push creates a SECOND episode rather than ` +
+          `replacing the first, and the main process refuses it by name`,
+        titles: done.map((item) => item.title),
+      });
+    }
+
+    for (const item of all.filter((i) => i.readiness === 'incomplete')) {
+      groups.push({ reason: `still needs ${item.missing.join(', ')}`, titles: [item.title] });
+    }
+    return groups;
+  });
+
+  /**
+   * Ready episodes the button is NOT counting because they carry no date.
+   *
+   * Said in the header rather than only inside the confirm panel, because the panel is
+   * unreachable in exactly the case that most needs explaining: every ready episode is
+   * undated, the button reads (0) and is disabled, and nothing on screen would otherwise
+   * account for the podcast work the operator can plainly see on the board.
+   */
+  readonly spreakerHeldBack = computed(
+    () =>
+      this.spreakerCandidates().filter(
+        (item) => item.readiness === 'ready' && item.publishAt === null
+      ).length
+  );
+
+  readonly spreakerFailures = computed(() => this.spreakerResults().filter((r) => !r.ok));
 
   /** Chips by local day, which is how the day rows ask for them. */
   private readonly chipsByDay = computed(() => {
@@ -773,8 +1020,13 @@ export class PublishCalendar implements OnInit, OnDestroy {
           time: slot.time,
           label: slot.label,
           key: `${dateKey} ${slot.time}`,
+          destination: slot.destination,
           isPast: at.getTime() < earliest,
-          isCadence: cadence !== null && isCadenceSlot(cadence.key, at),
+          // Cadences are YOUTUBE release patterns. Marking the podcast slot with one would
+          // claim the episode follows a channel's schedule, which it does not — it is any
+          // day at 5 AM, and an unmarked lane says that more honestly than a wrong mark.
+          isCadence:
+            slot.destination === 'youtube' && cadence !== null && isCadenceSlot(cadence.key, at),
           chips: chips.filter((chip) => chip.time === slot.time),
           mirrors: mirrors.filter((chip) => chip.time === slot.time),
         };
@@ -841,7 +1093,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
    * it is not waiting for anything.
    */
   readonly tray = computed<TrayItem[]>(() => {
-    const active = this.activeChannelId();
+    const active = this.activeTabId();
     return this.entries()
       .filter(
         (entry) =>
@@ -852,6 +1104,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
       .map((entry) => {
         const facts = entry.publish as PublishFacts;
         const channel = this.channelOf(facts.channelId);
+        const destination = destinationOf(facts);
         return {
           itemId: entry.itemId,
           title: facts.mainTitle ?? entry.displayTitle,
@@ -862,12 +1115,12 @@ export class PublishCalendar implements OnInit, OnDestroy {
           hue: channel.hue,
           unrouted: facts.channelId === null,
           unknownChannel: !channel.known && facts.channelId !== null,
-          dimmed: channel.known && facts.channelId !== active,
+          dimmed: dimmedFor({ destination, channelId: facts.channelId }, channel.known, active),
           isPodcast: facts.isPodcast,
           abCount: facts.abCount,
           hasThumbnail: facts.hasThumbnail,
           status: facts.status,
-          destination: destinationOf(facts),
+          destination,
           readiness: readinessOf(facts),
           missing: missingFor(facts),
         };
@@ -886,6 +1139,18 @@ export class PublishCalendar implements OnInit, OnDestroy {
     if (itemId === null) return false;
     const facts = this.factsOf(itemId);
     return facts !== null && facts.publishAt !== null;
+  });
+
+  /**
+   * Where the item under the cursor is going, or null when nothing is being dragged — and
+   * also when the dragged item's record has gone, which is a real state and not a lane.
+   */
+  readonly draggingDestination = computed<Destination | null>(() => {
+    const itemId = this.draggingItemId();
+    if (itemId === null) return null;
+    const facts = this.factsOf(itemId);
+    if (facts === null) return null;
+    return destinationOf(facts);
   });
 
   /** Items whose selection record could not be read. Shown, never dropped. */
@@ -1035,30 +1300,30 @@ export class PublishCalendar implements OnInit, OnDestroy {
     }
   }
 
-  // ---------------------------------------------------------------- channel tabs
+  // ---------------------------------------------------------------- the tab strip
 
   /**
-   * Which tab is on after a load: the remembered one if the registry still has it, else
-   * the first registered channel.
+   * Which tab is on after a load: the remembered one if it still exists, else the first.
    *
-   * A remembered id for a channel that has since been removed is not honoured — the tab
-   * would show nothing and dim everything, which reads as an empty board rather than as a
-   * stale preference.
+   * The remembered value is compared against EVERY tab that exists, which now includes
+   * `spreaker` — so a reload lands the operator back in the podcast lane rather than
+   * bouncing to a channel he was not looking at. A remembered id for a channel that has
+   * since been removed is still not honoured: the tab would show nothing and dim
+   * everything, which reads as an empty board rather than as a stale preference.
+   *
+   * The list is never empty — the Spreaker tab is always in it — so there is always a tab
+   * to be on, including on an install with no channels registered at all.
    */
   private settleActiveTab(): void {
-    const tabs = this.channelTabs();
-    if (tabs.length === 0) {
-      this.activeChannelId.set(null);
-      return;
-    }
+    const tabs = this.tabIds();
     const remembered = localStorage.getItem(CHANNEL_TAB_KEY);
-    const known = tabs.some((tab) => tab.channelId === remembered);
-    this.activeChannelId.set(known ? remembered : tabs[0].channelId);
+    const known = remembered !== null && tabs.includes(remembered);
+    this.activeTabId.set(known ? remembered : tabs[0]);
   }
 
-  setActiveChannel(channelId: string): void {
-    this.activeChannelId.set(channelId);
-    localStorage.setItem(CHANNEL_TAB_KEY, channelId);
+  setActiveTab(tabId: string): void {
+    this.activeTabId.set(tabId);
+    localStorage.setItem(CHANNEL_TAB_KEY, tabId);
   }
 
   // ---------------------------------------------------------------- navigation
@@ -1086,6 +1351,25 @@ export class PublishCalendar implements OnInit, OnDestroy {
 
   scrollToToday(): void {
     this.todayRow()?.nativeElement.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }
+
+  /**
+   * How strongly this slot should offer itself to the drag in flight.
+   *
+   * `match` — the slot's lane is the item's lane. This is the obvious target.
+   * `other` — a real target that will take the drop, drawn back so it is plainly the
+   *           second answer. NOT refused: the app reports and does not enforce, and a
+   *           podcast dropped at 2 PM or a video at 5 AM is the operator's decision to
+   *           make. Refusing it would be this page inventing a rule the writer does not
+   *           have.
+   * `none`  — nothing is being dragged, or the slot is inside the writer's lead and is
+   *           inert anyway.
+   */
+  dropAffinity(slot: SlotCell): 'match' | 'other' | 'none' {
+    if (slot.isPast) return 'none';
+    const dragging = this.draggingDestination();
+    if (dragging === null) return 'none';
+    return dragging === slot.destination ? 'match' : 'other';
   }
 
   // ---------------------------------------------------------------- drag and drop
@@ -1269,7 +1553,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
             channelName: chip.channelName,
             ok: false,
             error: res.error ?? 'The upload failed and gave no reason.',
-            videoId: null,
+            remoteId: null,
           });
         } else {
           results.push({
@@ -1278,7 +1562,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
             channelName: chip.channelName,
             ok: true,
             error: null,
-            videoId: res.data.receipt.videoId,
+            remoteId: res.data.receipt.videoId,
           });
         }
       } catch (err: any) {
@@ -1288,7 +1572,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
           channelName: chip.channelName,
           ok: false,
           error: err?.message || String(err),
-          videoId: null,
+          remoteId: null,
         });
       }
       // Published as the run goes rather than at the end: a long run should show its
@@ -1352,6 +1636,131 @@ export class PublishCalendar implements OnInit, OnDestroy {
     return Math.round((run.sentBytes / run.totalBytes) * 100);
   }
 
+  // ------------------------------------------------------------- the Spreaker run
+
+  /**
+   * Open the Spreaker confirm panel.
+   *
+   * Nothing is sent until the list has been read, and this list is read for a different
+   * reason from the YouTube one: there, the panel is guarding against creating a video on
+   * the wrong channel; here it is guarding against a release happening NOW. That is why
+   * every row prints its date and time — the date is the mechanism, not decoration.
+   */
+  askSpreakerRun(): void {
+    const items = this.spreakerUploadable();
+    if (items.length === 0) return;
+    this.spreakerResults.set([]);
+    this.spreakerConfirm.set(items);
+  }
+
+  closeSpreakerConfirm(): void {
+    this.spreakerConfirm.set(null);
+  }
+
+  dismissSpreakerResults(): void {
+    this.spreakerResults.set([]);
+  }
+
+  /**
+   * Upload every dated, ready episode to Spreaker, ONE AT A TIME.
+   *
+   * The same sequential discipline as the YouTube run and for the same reasons: one
+   * connection, one attributable failure, and a refusal recorded verbatim against its own
+   * item while the rest of the run continues. There is no progress bar and no Stop, and
+   * neither is an omission — the Spreaker push reports no bytes and the main process
+   * offers no cancel for it, so drawing either would be drawing a control that does
+   * nothing.
+   *
+   * The list is re-read from the panel rather than recomputed, so what is sent is exactly
+   * what was agreed to, even if the board changed underneath while it was open.
+   */
+  async confirmSpreakerRun(): Promise<void> {
+    const items = this.spreakerConfirm();
+    if (!items || items.length === 0) return;
+    this.spreakerConfirm.set(null);
+
+    const results: UploadResult[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+
+      // Re-checked HERE, not only when the list was built. Everything else in this run is
+      // recoverable — a refusal is one line in the results — but a Spreaker push with no
+      // date is a live release, and there is no unpublish. The panel can sit open while
+      // the board changes underneath it, so the last thing before the call re-asks the
+      // question the panel was opened to answer.
+      if (item.publishAt === null) {
+        results.push({
+          itemId: item.itemId,
+          title: item.title,
+          channelName: SPREAKER_DESTINATION_LABEL,
+          ok: false,
+          error:
+            'Not sent: this episode has no publish date any more, and Spreaker has no draft ' +
+            'state — uploading it would have published it immediately.',
+          remoteId: null,
+        });
+        this.spreakerResults.set([...results]);
+        continue;
+      }
+
+      this.spreakerRun.set({ index: i + 1, total: items.length, title: item.title });
+      try {
+        const res = await this.electron.publishPushSpreaker(item.itemId);
+        if (!res.success || !res.data) {
+          results.push({
+            itemId: item.itemId,
+            title: item.title,
+            channelName: SPREAKER_DESTINATION_LABEL,
+            ok: false,
+            error: res.error ?? 'The episode upload failed and gave no reason.',
+            remoteId: null,
+          });
+        } else {
+          results.push({
+            itemId: item.itemId,
+            title: item.title,
+            channelName: SPREAKER_DESTINATION_LABEL,
+            ok: true,
+            error: null,
+            remoteId: String(res.data.receipt.episodeId),
+          });
+        }
+      } catch (err: any) {
+        results.push({
+          itemId: item.itemId,
+          title: item.title,
+          channelName: SPREAKER_DESTINATION_LABEL,
+          ok: false,
+          error: err?.message || String(err),
+          remoteId: null,
+        });
+      }
+      this.spreakerResults.set([...results]);
+    }
+
+    this.spreakerRun.set(null);
+
+    const failed = results.filter((r) => !r.ok).length;
+    const sent = results.length - failed;
+    if (failed === 0) {
+      this.notify.success(
+        'Spreaker uploads finished',
+        `${sent} episode${sent === 1 ? '' : 's'} uploaded, each carrying its scheduled date.`
+      );
+    } else {
+      this.notify.error(
+        'Spreaker uploads finished with failures',
+        `${sent} uploaded, ${failed} failed. The reasons are listed on the calendar.`
+      );
+    }
+
+    // The records now carry episode ids, and an episode id is what turns a chip's
+    // readiness to done. Awaited for the same reason the YouTube run awaits its reload:
+    // until it lands, the board is still offering to send what has just been sent. No
+    // sweep follows — that reads YouTube, which knows nothing about any of this.
+    await this.reload();
+  }
+
   // ---------------------------------------------------------------- schedule push
 
   /**
@@ -1382,7 +1791,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
           channelName: chip.channelName,
           ok: res.success,
           error: res.success ? null : res.error ?? 'The schedule was refused with no reason given.',
-          videoId: chip.videoId,
+          remoteId: chip.videoId,
         });
       } catch (err: any) {
         results.push({
@@ -1391,7 +1800,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
           channelName: chip.channelName,
           ok: false,
           error: err?.message || String(err),
-          videoId: chip.videoId,
+          remoteId: chip.videoId,
         });
       }
       this.pushResults.set([...results]);
@@ -1447,7 +1856,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
     entry: ReportIndexEntry,
     facts: PublishFacts,
     now: Date,
-    activeChannelId: string | null,
+    activeTab: string | null,
     mirror: ReadonlyMap<string, ScheduledVideo>,
     mirrorBySlot: ReadonlyMap<string, MirrorChip>,
     linkedByVideoId: ReadonlyMap<string, LinkedVideo>
@@ -1461,6 +1870,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
     // meant to happen; this describes what did.
     const remote = facts.videoId !== null ? linkedByVideoId.get(facts.videoId) ?? null : null;
     const live = remote !== null && remote.privacyStatus !== 'private' ? remote : null;
+    const destination = destinationOf(facts);
     const state = live !== null ? 'published' : chipStateOf(facts, now);
     const published = state === 'published';
 
@@ -1482,7 +1892,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
       channelId: facts.channelId,
       unrouted: facts.channelId === null,
       unknownChannel: !channel.known && facts.channelId !== null,
-      dimmed: channel.known && facts.channelId !== activeChannelId,
+      dimmed: dimmedFor({ destination, channelId: facts.channelId }, channel.known, activeTab),
       isPodcast: facts.isPodcast,
       abPending: facts.abCount === 3 && !published,
       abCount: facts.abCount,
@@ -1510,7 +1920,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
                 minute: '2-digit',
               })}`
           : null,
-      destination: destinationOf(facts),
+      destination,
       readiness: readinessOf(facts),
       missing: missingFor(facts),
       needsSchedulePush,
