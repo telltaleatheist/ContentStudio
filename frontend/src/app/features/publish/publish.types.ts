@@ -244,6 +244,23 @@ export interface SpreakerStatus {
   credentialsPath: string;
   /** Why `configured` is false, in the words to show. null when it is true. */
   reason: string | null;
+
+  /** Whether the operator's OAuth2 app is on this machine. The values never are. */
+  hasClientId: boolean;
+  hasClientSecret: boolean;
+  hasRefreshToken: boolean;
+  /**
+   * Whether this machine can renew its own access token, rather than needing the operator
+   * to authorize again. Decided in the main process, not recombined here.
+   */
+  canRefresh: boolean;
+  /** ISO expiry of the stored token, or null when it is not known — a pasted one has none. */
+  expiresAt: string | null;
+  /**
+   * The Spreaker approval URL, or null when no client id is stored. Opened in the
+   * operator's own browser; the client id is not sent here in any other form.
+   */
+  authorizeUrl: string | null;
 }
 
 /** What publish-set-thumbnail returns: the updated record plus any non-fatal notes. */

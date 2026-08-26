@@ -50,12 +50,27 @@
  *     - Tokens are sent as `Authorization: Bearer <token>` (or `?oauth2_access_token=`;
  *       this app uses the header, so the token never lands in a URL or a log line).
  *
- *     WHY THIS APP DOES NOT IMPLEMENT THE OAUTH DANCE. A refresh needs the client SECRET,
- *     and a desktop app cannot hold one — anything shipped in the bundle is public. One
- *     account, one show, one operator: he runs the flow once by hand and pastes the
- *     resulting access token into settings. When it expires the app says so, by name,
- *     with the steps. That is a deliberate limit, not an oversight, and it is the reason
- *     an expired token here is a loud error rather than a silent re-auth.
+ *     WHY THIS APP DOES IMPLEMENT THE OAUTH DANCE. This paragraph used to say the
+ *     opposite: that a refresh needs the client SECRET and a desktop app cannot hold one,
+ *     because anything shipped in the bundle is public. That is true of a secret SHIPPED
+ *     IN THE BUNDLE, and it is the right rule for an app with users. It is not the shape
+ *     of this app. The reasoning did not survive contact with the Google integration,
+ *     where the operator's own Desktop-app client id and secret have sat 0600 in
+ *     <userData>/youtube-oauth.json since the analytics collector shipped and refresh
+ *     tokens are renewed from them on every call. The Spreaker client is the same thing:
+ *     his app, his secret, typed in once, on his machine, never in the bundle.
+ *
+ *     So Settings → Spreaker holds a client id and secret, opens the authorize URL in the
+ *     operator's browser, exchanges the code, and renews the access token before an upload
+ *     when it is within a week of expiring. The one step still done by hand is copying the
+ *     code out of the address bar, and that is Spreaker's constraint rather than a choice:
+ *     the registered callback is exactly `http://localhost`, which cannot be a loopback
+ *     server on an ephemeral port the way Google's Desktop-app clients allow.
+ *
+ *     A pasted access token is still accepted, for someone who already minted one. It
+ *     cannot renew itself and the settings page says so. A renewal that FAILS fails the
+ *     upload with Spreaker's own words — nothing here proceeds on a token it has reason to
+ *     doubt.
  *
  *   https://developers.spreaker.com/guides/upload-an-episode/
  *   https://developers.spreaker.com/api/episodes/

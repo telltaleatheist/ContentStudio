@@ -180,10 +180,12 @@
        main process, so a rejected show id must not also fail to save the output directory.
        The API keys have never gone through update-settings either, for the same reason.
 
-       Spreaker offers OAuth2 and nothing else — no API keys, no permanent tokens — and
-       refreshing needs a client secret a desktop app cannot hold. So the token is minted
-       by hand, once, and pasted here. That is why this card explains a procedure instead
-       of offering a Connect button. -->
+       Spreaker offers OAuth2 and nothing else — no API keys, no permanent tokens. The
+       operator registers his own app and its client id and secret live 0600 in userData,
+       exactly as the Google ones do, so this card can mint and renew tokens itself. The
+       one step it cannot take for him is the browser: Spreaker's registered callback is
+       literally http://localhost, so the redirect lands on a page that will not load and
+       the code has to be copied out of the address bar. -->
   <mat-card class="settings-card" id="spreaker-section">
     <mat-card-header>
       <mat-card-title>Spreaker (podcast)</mat-card-title>
@@ -198,6 +200,23 @@
         } @else {
           <p class="small"><strong>Not configured</strong> — {{ status.reason }}</p>
         }
+
+        <!-- The connection, stated rather than inferred: whether there is a token, when it
+             stops working, and whether this machine can renew it without the browser. -->
+        <p class="small">
+          Access token: <strong>{{ status.hasToken ? 'stored' : 'none' }}</strong>.
+          @if (status.expiresAt) {
+            Expires {{ status.expiresAt }}.
+          } @else if (status.hasToken) {
+            Its expiry is not known — it was pasted in rather than minted here.
+          }
+          @if (status.canRefresh) {
+            Automatic renewal is available: it is renewed before an upload once it is within
+            a week of expiring.
+          } @else {
+            Automatic renewal is <strong>not</strong> available — {{ spreakerRefreshBlockers() }}.
+          }
+        </p>
       } @else {
         <p class="small">Reading the stored Spreaker settings…</p>
       }
@@ -215,11 +234,26 @@
       </mat-form-field>
 
       <mat-form-field appearance="outline" class="full-width">
+        <mat-label>OAuth2 Client ID</mat-label>
+        <input matInput [(ngModel)]="spreakerClientId"
+               [placeholder]="spreakerStatus()?.hasClientId ? 'A client id is stored — leave blank to keep it' : 'The Client ID of your registered app'">
+        <mat-hint>From Developer Tools → your app at spreaker.com. Never displayed after saving.</mat-hint>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>OAuth2 Client Secret</mat-label>
+        <input matInput type="password" [(ngModel)]="spreakerClientSecret"
+               [placeholder]="spreakerStatus()?.hasClientSecret ? 'A secret is stored — leave blank to keep it' : 'The Client Secret of that same app'">
+        <mat-hint>Stored on this machine only, in the same 0600 file as the token.</mat-hint>
+      </mat-form-field>
+
+      <mat-form-field appearance="outline" class="full-width">
         <mat-label>Access token</mat-label>
         <input matInput type="password" [(ngModel)]="spreakerToken"
-               [placeholder]="spreakerStatus()?.hasToken ? 'A token is stored — leave blank to keep it' : 'Paste the OAuth2 access_token'">
+               [placeholder]="spreakerStatus()?.hasToken ? 'A token is stored — leave blank to keep it' : 'Paste an access_token you minted elsewhere'">
         <mat-hint>
-          Never displayed after saving. Leave blank to keep the stored one.
+          Only needed if you already have a token. Authorizing below fills this in for you.
+          Never displayed after saving; leave blank to keep the stored one.
         </mat-hint>
       </mat-form-field>
 
@@ -237,6 +271,43 @@
         }
       </div>
 
+      <!-- Authorize → code → exchange. The button is disabled until a client id is stored
+           because there is nothing to authorize without one, and `authorizeUrl` is null. -->
+      <div class="spreaker-actions">
+        <button mat-stroked-button
+                [disabled]="!spreakerStatus()?.hasClientId || spreakerExchanging()"
+                (click)="authorizeSpreaker()">
+          <mat-icon>open_in_new</mat-icon>
+          Authorize with Spreaker
+        </button>
+        @if (spreakerStatus()?.canRefresh) {
+          <button mat-button [disabled]="spreakerExchanging()" (click)="refreshSpreakerToken()">
+            Renew token now
+          </button>
+        }
+      </div>
+
+      <mat-form-field appearance="outline" class="full-width">
+        <mat-label>Authorization code</mat-label>
+        <input matInput [(ngModel)]="spreakerAuthCode"
+               placeholder="The code= value from the address bar">
+        <mat-hint>
+          Single-use and valid for minutes. Exchange it straight after authorizing.
+        </mat-hint>
+      </mat-form-field>
+
+      <div class="spreaker-actions">
+        <!-- Not gated on the client id and secret being stored, unlike Authorize above: the
+             main process names whichever of them is missing, and a named refusal beats a
+             greyed-out button with nothing to say for itself. -->
+        <button mat-raised-button color="primary"
+                [disabled]="spreakerExchanging()"
+                (click)="exchangeSpreakerCode()">
+          <mat-icon>vpn_key</mat-icon>
+          Exchange &amp; save token
+        </button>
+      </div>
+
       <mat-card class="info-card">
         <mat-card-content>
           <div class="info-content">
@@ -244,25 +315,21 @@
             <div>
               <p><strong>Getting an access token</strong></p>
               <p class="small">
-                Spreaker uses OAuth2 only — there is no API key and no permanent token, and
-                refreshing one needs an app secret this app cannot safely hold. So the token
-                is minted once, by hand:
+                Sign in at spreaker.com, enable Developer Tools in your account settings and
+                register an app whose redirect URI is exactly
+                <code>http://localhost</code>. Paste its Client ID and Client Secret above
+                and press Save. Press <strong>Authorize with Spreaker</strong>: your browser
+                opens Spreaker's approval page, and after you approve it the browser tries to
+                load <code>http://localhost</code> and fails — which is expected. Copy the
+                <code>code=</code> value out of the address bar, paste it into
+                <strong>Authorization code</strong>, and press
+                <strong>Exchange &amp; save token</strong>.
               </p>
               <p class="small">
-                1. Sign in at spreaker.com and enable Developer Tools in your account
-                settings to register an app; note its Client ID and Client Secret.<br>
-                2. Visit
-                <code>https://www.spreaker.com/oauth2/authorize?client_id=…&amp;response_type=code&amp;scope=basic&amp;redirect_uri=…</code>
-                and approve it; the redirect carries a <code>code</code>.<br>
-                3. Exchange it server-side:
-                <code>POST https://api.spreaker.com/oauth2/token</code> with
-                <code>grant_type=authorization_code</code>, your client id and secret, the
-                same redirect_uri, and the code.<br>
-                4. Paste the <code>access_token</code> from the reply above.
-              </p>
-              <p class="small">
-                It is stored on this machine only. When it expires, uploads fail by name and
-                you repeat steps 2–4.
+                Everything is stored on this machine only, in a 0600 file, and nothing but the
+                upload itself ever reads it. Once a refresh token is stored the access token
+                renews itself before an upload; if a renewal is ever refused the upload fails
+                with Spreaker's own words rather than trying the stale token.
               </p>
             </div>
           </div>

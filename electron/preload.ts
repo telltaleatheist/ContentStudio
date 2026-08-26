@@ -310,17 +310,28 @@ const api = {
   publishForgetSpreakerEpisode: (itemId: string) =>
     ipcRenderer.invoke('publish-forget-spreaker-episode', itemId),
 
-  // The Spreaker credentials themselves. `status` never carries the token — only whether
-  // one is stored, the show id (public: it is in every episode URL) and the path of the
-  // file, so "where does the token go?" has an answer on screen. Omit accessToken on save
-  // to leave the stored one alone; clearing it is its own call.
+  // The Spreaker credentials themselves. `status` never carries the access token, the
+  // client secret or the refresh token — only whether each is stored, the show id (public:
+  // it is in every episode URL), the token's expiry and the path of the file, so "where
+  // does the token go?" has an answer on screen. Omit accessToken, clientId or
+  // clientSecret on save to leave the stored one alone; clearing them is its own call.
   spreakerGetStatus: () => ipcRenderer.invoke('spreaker-get-status'),
   spreakerSaveCredentials: (input: {
     showId: string;
     showName?: string | null;
     accessToken?: string;
+    clientId?: string;
+    clientSecret?: string;
   }) => ipcRenderer.invoke('spreaker-save-credentials', input),
   spreakerClearCredentials: () => ipcRenderer.invoke('spreaker-clear-credentials'),
+  // The OAuth2 dance, the half of it that is not the browser. `authorizeUrl` on the status
+  // is what the operator opens (externally — openExternal, never this window); the code he
+  // copies back out of the address bar comes in here, is spent, and is never stored.
+  spreakerExchangeCode: (input: { code: string }) =>
+    ipcRenderer.invoke('spreaker-exchange-code', input),
+  // Renew now. The same renewal happens on its own before an upload when the token is
+  // within a week of expiring; this is the operator asking to watch it happen.
+  spreakerRefreshToken: () => ipcRenderer.invoke('spreaker-refresh-token'),
 
   // ==================== EDITOR ====================
   // The ported AutoCutStudio timeline editor. Every member of the editor's `EditorHost`

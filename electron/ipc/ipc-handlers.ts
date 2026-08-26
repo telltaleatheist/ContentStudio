@@ -3620,8 +3620,10 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     // podcast feed, so this is the seam an upload can be exercised across without one.
     spreakerApi: new SpreakerApiService({
       // Read fresh on every call, never captured: a token saved in Settings has to work
-      // without a restart, and an expired one has to fail as an expired one.
-      requireCredentials: () => analytics.spreakerConfig.requireCredentials(),
+      // without a restart, and an expired one has to fail as an expired one. `Fresh` also
+      // RENEWS a token that is close to expiry, before a byte is sent, and fails the upload
+      // with Spreaker's own words when the renewal is refused.
+      requireCredentials: () => analytics.spreakerConfig.requireFreshCredentials(),
     }),
     // The show, WITHOUT the token. publish/ never sees the credential; what it needs is
     // the id to post to and a name to put in a confirmation, plus the assurance —

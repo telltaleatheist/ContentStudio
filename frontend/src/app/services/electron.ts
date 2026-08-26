@@ -720,8 +720,12 @@ declare global {
         showId: string;
         showName?: string | null;
         accessToken?: string;
+        clientId?: string;
+        clientSecret?: string;
       }) => Promise<PublishResult<SpreakerStatus>>;
       spreakerClearCredentials: () => Promise<PublishResult<SpreakerStatus>>;
+      spreakerExchangeCode: (input: { code: string }) => Promise<PublishResult<SpreakerStatus>>;
+      spreakerRefreshToken: () => Promise<PublishResult<SpreakerStatus>>;
 
       // ==================== TRANSCRIPT LINK (Phase 2) ====================
       hasSavedTranscript: (videoPath: string) => Promise<SavedTranscriptCheck>;
@@ -1695,15 +1699,18 @@ export class ElectronService {
   }
 
   /**
-   * Save the show id, and the access token when one is supplied.
+   * Save the show id, and the access token / OAuth2 client when they are supplied.
    *
-   * Omitting `accessToken` leaves the stored one alone — the UI only ever knows WHETHER a
-   * token exists, so re-saving a show id must not demand it again.
+   * Omitting `accessToken`, `clientId` or `clientSecret` leaves the stored one alone — the
+   * UI only ever knows WHETHER each exists, so re-saving a show id must not demand them
+   * again.
    */
   async spreakerSaveCredentials(input: {
     showId: string;
     showName?: string | null;
     accessToken?: string;
+    clientId?: string;
+    clientSecret?: string;
   }): Promise<PublishResult<SpreakerStatus>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.spreakerSaveCredentials(input);
@@ -1713,6 +1720,23 @@ export class ElectronService {
   async spreakerClearCredentials(): Promise<PublishResult<SpreakerStatus>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.spreakerClearCredentials();
+  }
+
+  /**
+   * Trade the authorization code for an access token and store it.
+   *
+   * The code is spent by this call and never persisted anywhere. Spreaker's refusal — an
+   * already-used code, a mismatched secret — comes back as its own words.
+   */
+  async spreakerExchangeCode(input: { code: string }): Promise<PublishResult<SpreakerStatus>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.spreakerExchangeCode(input);
+  }
+
+  /** Renew the stored access token now. Refuses by name when there is nothing to renew with. */
+  async spreakerRefreshToken(): Promise<PublishResult<SpreakerStatus>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.spreakerRefreshToken();
   }
 
   async publishGetResolved(itemId: string): Promise<PublishResult<ResolvedMetadata>> {

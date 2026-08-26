@@ -193,8 +193,14 @@ export function readErrorResponse(body: unknown): string | null {
 
 /** What the client needs to authenticate. Injected so it is re-read on every call. */
 export interface SpreakerApiDeps {
-  /** Throws, naming what is missing, when the app is not configured. */
-  requireCredentials: () => SpreakerCredentials;
+  /**
+   * Throws, naming what is missing, when the app is not configured.
+   *
+   * ASYNC because renewing an access token that is close to expiry happens inside it — an
+   * upload of a 132 MB file is exactly the wrong place to discover that a token lapsed.
+   * A renewal that fails throws here, and the upload never starts.
+   */
+  requireCredentials: () => Promise<SpreakerCredentials>;
   /** Override for the harness. Defaults to the real v2 base. */
   baseUrl?: string;
 }
@@ -219,10 +225,11 @@ export class SpreakerApiService implements SpreakerUploadApi {
    *
    * The token is read HERE and nowhere else, and it is never logged: the log line below
    * names the show, the file and its size, which is everything useful about an upload
-   * that goes wrong.
+   * that goes wrong. That read is awaited because it may renew the token first — see
+   * SpreakerApiDeps.requireCredentials.
    */
   async createEpisode(request: SpreakerEpisodeRequest): Promise<SpreakerEpisodeCreated> {
-    const { accessToken } = this.deps.requireCredentials();
+    const { accessToken } = await this.deps.requireCredentials();
 
     const stat = fs.statSync(request.mediaFilePath);
     if (!stat.isFile()) {
@@ -298,8 +305,9 @@ export class SpreakerApiService implements SpreakerUploadApi {
       const detail = (parsed && readErrorResponse(parsed)) ?? text.trim().slice(0, 400);
       const hint =
         status === 401
-          ? ' The stored access token was rejected — Spreaker tokens expire, so re-mint one ' +
-            'through the OAuth2 flow and save it in Settings → Spreaker.'
+          ? ' The stored access token was rejected — Spreaker tokens expire. Settings → ' +
+            'Spreaker will renew it in one press when a client id, client secret and refresh ' +
+            'token are stored; otherwise authorize there again.'
           : status === 404
             ? ` No show ${request.showId} is reachable with this token — check the show id.`
             : status === 429

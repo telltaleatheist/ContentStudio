@@ -11,6 +11,7 @@ import { NotificationService } from '../../services/notification';
 import { AiSetupWizard } from '../ai-setup-wizard/ai-setup-wizard';
 import { ActivatedRoute, Router } from '@angular/router';
 import type { Subscription } from 'rxjs';
+import type { SpreakerStatus } from '../../features/publish/publish.types';
 
 interface ModelOption {
   value: string;
@@ -101,16 +102,13 @@ export class Settings implements OnInit, OnDestroy {
   // save the output directory. Same reasoning as the API keys, which have never gone
   // through update-settings either.
 
-  /** What the main process says about this machine's Spreaker setup. null until asked. */
-  spreakerStatus = signal<{
-    configured: boolean;
-    hasToken: boolean;
-    showId: string | null;
-    showName: string | null;
-    savedAt: string | null;
-    credentialsPath: string;
-    reason: string | null;
-  } | null>(null);
+  /**
+   * What the main process says about this machine's Spreaker setup. null until asked.
+   *
+   * The shared shape, not a copy of it: this panel and the publish panel have to disagree
+   * about nothing, and a second declaration of the same fields is how they start to.
+   */
+  spreakerStatus = signal<SpreakerStatus | null>(null);
 
   /** The boxes. Seeded from the status for the two that are not secrets. */
   spreakerShowId = signal('');
@@ -126,6 +124,45 @@ export class Settings implements OnInit, OnDestroy {
    */
   spreakerToken = signal('');
   spreakerSaving = signal(false);
+
+  /**
+   * The OAuth2 app's client id and secret, and both boxes are ALWAYS EMPTY on load for the
+   * same reason the token box is: `status` reports only whether each is stored.
+   *
+   * The client id is not a secret — it rides in the authorize URL — but it is not sent to
+   * this window either, so an empty box here means "leave the stored one alone" rather
+   * than "remove it". The main process refuses a blank one and says which button removes
+   * things.
+   */
+  spreakerClientId = signal('');
+  spreakerClientSecret = signal('');
+
+  /**
+   * The authorization code, copied out of the address bar after localhost refuses to load.
+   *
+   * Cleared the moment it has been exchanged. It is single-use and dead within minutes of
+   * being issued, so a copy of it left sitting in a form is only a way to press the button
+   * twice and get a refusal.
+   */
+  spreakerAuthCode = signal('');
+  spreakerExchanging = signal(false);
+
+  /**
+   * Which of the three values automatic renewal needs are not stored, named.
+   *
+   * Only read when `canRefresh` is false, so at least one of them is listed. "Renewal is
+   * not available" without saying which piece is missing is the sentence that sends an
+   * operator to a log file.
+   */
+  spreakerRefreshBlockers = computed(() => {
+    const status = this.spreakerStatus();
+    if (!status) return 'nothing has been read from this machine yet';
+    const missing: string[] = [];
+    if (!status.hasClientId) missing.push('no client id is stored');
+    if (!status.hasClientSecret) missing.push('no client secret is stored');
+    if (!status.hasRefreshToken) missing.push('no refresh token is stored');
+    return missing.join(', ');
+  });
 
   // Model options for dropdown - filtered by configured providers
   modelOptions = computed<ModelOption[]>(() => {
@@ -447,10 +484,14 @@ export class Settings implements OnInit, OnDestroy {
     this.spreakerSaving.set(true);
     try {
       const token = this.spreakerToken().trim();
+      const clientId = this.spreakerClientId().trim();
+      const clientSecret = this.spreakerClientSecret().trim();
       const res = await this.electron.spreakerSaveCredentials({
         showId: this.spreakerShowId().trim(),
         showName: this.spreakerShowName().trim() || null,
         ...(token ? { accessToken: token } : {}),
+        ...(clientId ? { clientId } : {}),
+        ...(clientSecret ? { clientSecret } : {}),
       });
 
       if (!res.success || !res.data) {
@@ -461,8 +502,10 @@ export class Settings implements OnInit, OnDestroy {
       }
 
       this.spreakerStatus.set(res.data);
-      // The typed token has been stored and is never displayed again.
+      // Everything typed has been stored and is never displayed again.
       this.spreakerToken.set('');
+      this.spreakerClientId.set('');
+      this.spreakerClientSecret.set('');
       this.notificationService.success(
         'Spreaker',
         res.data.configured
@@ -495,9 +538,107 @@ export class Settings implements OnInit, OnDestroy {
       this.spreakerShowId.set('');
       this.spreakerShowName.set('');
       this.spreakerToken.set('');
+      this.spreakerClientId.set('');
+      this.spreakerClientSecret.set('');
+      this.spreakerAuthCode.set('');
       this.notificationService.success('Spreaker', 'Credentials removed from this machine.', false);
     } finally {
       this.spreakerSaving.set(false);
+    }
+  }
+
+  /**
+   * Open Spreaker's approval page in the operator's OWN browser.
+   *
+   * Not in this window: he has to be able to see the address bar, because the redirect
+   * lands on a `http://localhost` that nothing is listening on and the `code` in that
+   * failed URL is the entire point of the trip.
+   *
+   * `authorizeUrl` is null exactly when no client id is stored, and the button is disabled
+   * then — so a null here is a bug being reported, not a state being handled.
+   */
+  async authorizeSpreaker(): Promise<void> {
+    const url = this.spreakerStatus()?.authorizeUrl;
+    if (!url) {
+      this.notificationService.error(
+        'Spreaker',
+        'There is no authorize URL because no OAuth2 client id is stored. Enter the client ' +
+        'id and secret of your registered app and save them first.',
+        false
+      );
+      return;
+    }
+    const res = await this.electron.openExternal(url);
+    if (!res.success) {
+      this.notificationService.error(
+        'Spreaker',
+        res.error ?? 'The browser could not be opened for Spreaker authorization.',
+        false
+      );
+      return;
+    }
+    this.notificationService.success(
+      'Spreaker',
+      'Approve the app in your browser. localhost will fail to load — copy the code= value ' +
+      'out of the address bar and paste it below.',
+      false
+    );
+  }
+
+  /** Spend the pasted authorization code on a token. The box is emptied only on success. */
+  async exchangeSpreakerCode(): Promise<void> {
+    const code = this.spreakerAuthCode().trim();
+    if (!code) {
+      this.notificationService.error(
+        'Spreaker',
+        'Paste the code= value from the address bar first.',
+        false
+      );
+      return;
+    }
+
+    this.spreakerExchanging.set(true);
+    try {
+      const res = await this.electron.spreakerExchangeCode({ code });
+      if (!res.success || !res.data) {
+        // Verbatim — Spreaker's own words about which of the code, the client id and the
+        // secret it did not accept.
+        this.notificationService.error('Spreaker', res.error ?? 'The exchange failed', false);
+        return;
+      }
+      this.spreakerStatus.set(res.data);
+      // Spent. Keeping it would only let the button be pressed again for a refusal.
+      this.spreakerAuthCode.set('');
+      this.notificationService.success(
+        'Spreaker',
+        res.data.canRefresh
+          ? 'Access token stored. This machine can renew it on its own from now on.'
+          : 'Access token stored, but Spreaker returned no refresh token — renewals will ' +
+            'need authorizing again.',
+        false
+      );
+    } finally {
+      this.spreakerExchanging.set(false);
+    }
+  }
+
+  /** Renew the access token now, rather than waiting for an upload to do it. */
+  async refreshSpreakerToken(): Promise<void> {
+    this.spreakerExchanging.set(true);
+    try {
+      const res = await this.electron.spreakerRefreshToken();
+      if (!res.success || !res.data) {
+        this.notificationService.error('Spreaker', res.error ?? 'The renewal failed', false);
+        return;
+      }
+      this.spreakerStatus.set(res.data);
+      this.notificationService.success(
+        'Spreaker',
+        `Access token renewed${res.data.expiresAt ? ` — it now expires ${res.data.expiresAt}` : ''}.`,
+        false
+      );
+    } finally {
+      this.spreakerExchanging.set(false);
     }
   }
 
