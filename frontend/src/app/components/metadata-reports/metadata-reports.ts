@@ -155,6 +155,16 @@ const CHANNEL_TAB_KEY = 'metadata-reports.channel-tab';
 const UNROUTED_TAB = 'unrouted';
 
 /**
+ * The tab that filters nothing.
+ *
+ * Its value is the empty string because that is ALREADY what "no channel filter" means to
+ * matchesFilters — the All tab is not a new mode, it is the unfiltered state given a name
+ * and a button. It is first, so it is also what a machine that has never chosen a tab
+ * lands on.
+ */
+const ALL_TAB = '';
+
+/**
  * How wide a list thumbnail is asked for, in px.
  *
  * Twice the 72px the row draws, so the image is still sharp on this Mac's 2x display.
@@ -643,10 +653,10 @@ export class MetadataReports implements OnInit {
 
   readonly searchQuery = signal('');
   /**
-   * The channel tab the operator last pressed, as stored. A channel id, `UNROUTED_TAB`,
-   * or '' for "never pressed one". Read through `activeChannelTab()`, never directly —
-   * a stored id whose channel has since been disconnected must not filter the list down
-   * to nothing.
+   * The channel tab the operator last pressed, as stored. A channel id, or `ALL_TAB` —
+   * which is also what "never pressed one" reads back as, and is the same answer either
+   * way. Read through `activeChannelTab()`, never directly: a stored id whose channel has
+   * since been disconnected must not filter the list down to nothing.
    */
   readonly storedChannelTab = signal(readStoredChannelTab());
   readonly stateFilter = signal<StateFilter>('all');
@@ -696,12 +706,14 @@ export class MetadataReports implements OnInit {
   readonly channelTabs = computed<ChannelTab[]>(() => {
     const state = this.stateFilter();
     const sources = new Map<string, Set<string>>();
+    const everything = new Set<string>();
     for (const report of this.reports()) {
       // '' as the channel means "do not filter by channel" — this is the count BEFORE
       // the tab, which is the only count a tab can honestly print on itself.
       if (!this.matchesFilters(report, state, '')) continue;
       const id = this.channelOf(report);
       const key = report.sourceKey ?? `${NO_SOURCE_KEY}${report.itemId ?? report.path}`;
+      everything.add(key);
       const bucket = sources.get(id);
       if (bucket) bucket.add(key);
       else sources.set(id, new Set<string>([key]));
@@ -735,10 +747,13 @@ export class MetadataReports implements OnInit {
       unknown: false,
     });
 
-    const unrouted = sources.get(UNROUTED_TAB)?.size ?? 0;
-    if (unrouted > 0) {
-      tabs.push({ value: UNROUTED_TAB, label: 'Unrouted', count: unrouted, unknown: false });
-    }
+    // NO UNROUTED TAB. A row nothing routes is not a category of work, it is a row whose
+    // channel has not been chosen yet, and giving it a tab of its own hid it from every
+    // other one — which is how a run can finish and appear nowhere the operator is
+    // looking. It lives in All, like everything else, until it is routed.
+    //
+    // All goes FIRST, so it is also the default for anyone who has never pressed a tab.
+    tabs.unshift({ value: ALL_TAB, label: 'All', count: everything.size, unknown: false });
     return tabs;
   });
 
@@ -752,7 +767,7 @@ export class MetadataReports implements OnInit {
    */
   readonly activeChannelTab = computed<string>(() => {
     const tabs = this.channelTabs();
-    if (tabs.length === 0) return '';
+    if (tabs.length === 0) return ALL_TAB;
     const stored = this.storedChannelTab();
     return tabs.some((t) => t.value === stored) ? stored : tabs[0].value;
   });
@@ -1002,7 +1017,9 @@ export class MetadataReports implements OnInit {
       if (!haystack.includes(query)) return false;
     }
 
-    // '' is the no-tab-yet state (see activeChannelTab) and filters nothing.
+    // ALL_TAB is '' and filters nothing — the All tab, and equally the state before any
+    // tab has been drawn. A row whose channel matches no tab (nothing routes it) is
+    // therefore visible in All and nowhere else, which is where it should be found.
     if (channel && this.channelOf(report) !== channel) return false;
 
     switch (state) {
