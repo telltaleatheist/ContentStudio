@@ -219,7 +219,7 @@ export function validateThumbnailFile(absPath: string): ThumbnailValidation {
     const mib = (st.size / (1024 * 1024)).toFixed(2);
     throw new Error(
       `Thumbnail ${absPath} is ${mib} MiB (${st.size} bytes); YouTube's hard limit is 2 MiB ` +
-      `(${MAX_THUMBNAIL_BYTES} bytes). Re-export it smaller — nothing here will re-compress ` +
+      `(${MAX_THUMBNAIL_BYTES} bytes). ` +
       `an image you approved.`
     );
   }
@@ -380,6 +380,10 @@ export function deriveProposedThumbnailPaths(
       candidates.push({ path: path.join(thumbsDir, `${stem}${ext}`), match: 'basename' });
       candidates.push({ path: path.join(thumbsDir, ` ${stem}${ext}`), match: 'basename' });
     }
+    // The shrunk copy, AFTER the export it was made from. The original is preferred while
+    // it is acceptable; this is reached when it is not — and offering it here means a
+    // later rescan finds the copy that already fits instead of encoding another one.
+    candidates.push({ path: path.join(thumbsDir, `${stem} (2).png`), match: 'basename' });
   }
 
   // Slot: optional channel letter + number, then " - ". Anchored, so a file that does not
@@ -393,4 +397,77 @@ export function deriveProposedThumbnailPaths(
   }
 
   return candidates;
+}
+
+
+// ---------------------------------------------------------------- shrinking
+
+/** Widths tried, in order, when an exported thumbnail is over YouTube's byte limit. */
+const SHRINK_WIDTHS: readonly number[] = [1600, 1440, 1280, 1152, 1024, 854];
+
+/**
+ * The name a shrunk copy is written under: `<stem> (2).png`, beside the original.
+ *
+ * A NEW FILE, never a replacement. The oversized export is the operator's master and this
+ * app has no business overwriting something it did not make — and a silent in-place
+ * re-encode would also mean the next export of the same name looks already-handled.
+ */
+export function shrunkThumbnailPath(originalPath: string): string {
+  const dir = path.dirname(originalPath);
+  const stem = path.basename(originalPath, path.extname(originalPath));
+  return path.join(dir, `${stem} (2).png`);
+}
+
+/**
+ * Write a copy of an oversized thumbnail that YouTube will accept, and return its path.
+ *
+ * YouTube's 2 MiB limit is arbitrary from the operator's side: an export that misses it by
+ * forty kilobytes is not a different picture, and refusing it left a finished thumbnail
+ * sitting on disk next to a video that could not use it. So the file is re-encoded at
+ * progressively smaller widths until it fits.
+ *
+ * DOWNSCALING, not quality reduction, because the failure is a PNG byte count and PNG has
+ * no quality dial — and because 1280x720 is YouTube's own recommended size, so the first
+ * step down is usually into the shape it wanted anyway.
+ *
+ * Throws when even the smallest width will not fit, rather than writing something that
+ * would be refused again on the next read. The caller reports that verbatim.
+ */
+export function shrinkThumbnailToLimit(originalPath: string): { path: string; bytes: number; width: number } {
+  // Imported here rather than at module scope: this file is read by tooling that has no
+  // Electron runtime, and only this one function needs it.
+  const { nativeImage } = require('electron') as typeof import('electron');
+  if (!nativeImage) {
+    // Outside Electron the module resolves to the binary's path, not the API, and the
+    // next line would fail as an unreadable TypeError. This says which it is.
+    throw new Error(
+      'Thumbnails can only be re-encoded inside the Electron main process; nativeImage is ' +
+      'not available here.'
+    );
+  }
+
+  const image = nativeImage.createFromPath(originalPath);
+  if (image.isEmpty()) {
+    throw new Error(
+      `Thumbnail ${originalPath} could not be decoded, so no smaller copy could be made of it.`
+    );
+  }
+
+  const target = shrunkThumbnailPath(originalPath);
+  const original = image.getSize();
+
+  for (const width of SHRINK_WIDTHS) {
+    if (width >= original.width) continue;
+    const encoded = image.resize({ width, quality: 'best' }).toPNG();
+    if (encoded.length <= MAX_THUMBNAIL_BYTES) {
+      fs.writeFileSync(target, encoded);
+      return { path: target, bytes: encoded.length, width };
+    }
+  }
+
+  throw new Error(
+    `Thumbnail ${originalPath} is ${(fs.statSync(originalPath).size / (1024 * 1024)).toFixed(2)} ` +
+    `MiB and could not be brought under YouTube's 2 MiB limit even at ` +
+    `${SHRINK_WIDTHS[SHRINK_WIDTHS.length - 1]}px wide. Re-export it smaller.`
+  );
 }
