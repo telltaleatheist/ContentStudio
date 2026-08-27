@@ -1009,6 +1009,7 @@ async function attachPublishRecordsForJob(jobId: string): Promise<void> {
         continue;
       }
       await deps.store.update(itemId, generated, {});
+      await clearStalePublishedSiblings(itemId, jobId, deps);
     } catch (error) {
       // CONTAINED PER ITEM, and this is the one place in the publish path where swallowing
       // a throw is right. Everything this pass does is work the operator has not asked for
@@ -1024,6 +1025,50 @@ async function attachPublishRecordsForJob(jobId: string): Promise<void> {
         `${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+}
+
+/**
+ * Re-running a source un-declares a DECLARED publish on its earlier runs.
+ *
+ * Generating metadata for a file again is a statement that the work is not finished. If an
+ * earlier run of the same source is sitting at `published`, that mark is now false, and it
+ * is not harmless: the reports list shows one row per source and keeps the first primary it
+ * chose while that item exists, so the new run is displayed behind an older sibling that
+ * claims to be done — greyed, sunk to the bottom, and looking like nothing ran.
+ *
+ * ONLY A BARE DECLARATION IS CLEARED — `published` with NO video id, which is somebody
+ * saying "this is handled" rather than a video that exists. A sibling carrying a video id
+ * really is out on YouTube, and no amount of regenerating metadata makes that untrue; those
+ * are left exactly alone.
+ *
+ * The replacement status is derived the same way un-marking by hand derives it, so the two
+ * routes cannot disagree about what an un-published item is.
+ */
+async function clearStalePublishedSiblings(
+  itemId: string,
+  jobId: string,
+  deps: NonNullable<typeof publishAutoAttach>
+): Promise<void> {
+  const items = deps.listGenerated().items;
+  const self = items.find((item) => item.itemId === itemId);
+  if (!self || self.sourceKey === null) return;
+
+  for (const sibling of items) {
+    if (sibling.itemId === itemId || sibling.sourceKey !== self.sourceKey) continue;
+
+    const record = deps.store.get(sibling.itemId);
+    if (!record || record.status !== 'published' || record.videoId !== null) continue;
+
+    const generated = deps.readGenerated(sibling.itemId);
+    if (!generated) continue;
+
+    const status = record.chosenTitles.length > 0 ? 'ready' : 'selecting';
+    await deps.store.update(sibling.itemId, generated, { status });
+    log.info(
+      `[Publish] item ${sibling.itemId} was marked published with no video, and ${itemId} of ` +
+      `job ${jobId} is a new run of the same source — cleared it back to ${status}.`
+    );
   }
 }
 
