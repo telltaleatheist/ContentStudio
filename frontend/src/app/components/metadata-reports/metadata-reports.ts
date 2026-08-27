@@ -730,22 +730,27 @@ export class MetadataReports implements OnInit {
       unknown: false,
     }));
 
-    const known = new Set(tabs.map((t) => t.value));
-    for (const [id, keys] of sources) {
-      if (id === UNROUTED_TAB || known.has(id)) continue;
-      tabs.push({ value: id, label: id, count: keys.size, unknown: true });
-    }
-
     // Spreaker sits beside the channels rather than after the strays: it is a DESTINATION
     // the operator can route to, exactly like they are, and it is shown at zero for the
     // same reason an empty channel is — a destination that vanishes when idle is one the
     // operator cannot see is available.
+    //
+    // BEFORE the stray loop, and that order is load-bearing: `known` is what stops a
+    // routed row from also minting a tab of its own, labelled with the raw id. Pushed
+    // after, Spreaker was absent from `known` and the page grew two tabs for one
+    // destination — 'spreaker' and 'Spreaker (podcast)'.
     tabs.push({
       value: SPREAKER_DESTINATION,
       label: SPREAKER_DESTINATION_LABEL,
       count: sources.get(SPREAKER_DESTINATION)?.size ?? 0,
       unknown: false,
     });
+
+    const known = new Set(tabs.map((t) => t.value));
+    for (const [id, keys] of sources) {
+      if (id === UNROUTED_TAB || known.has(id)) continue;
+      tabs.push({ value: id, label: id, count: keys.size, unknown: true });
+    }
 
     // NO UNROUTED TAB. A row nothing routes is not a category of work, it is a row whose
     // channel has not been chosen yet, and giving it a tab of its own hid it from every
