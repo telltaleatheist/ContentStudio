@@ -1135,15 +1135,21 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
         });
       }
 
-      if (record.thumbnailSource === 'manual') {
+      // A manual PICK is protected; a manual CLEAR is not.
+      //
+      // Those are different statements. Choosing an image says "use this one", and a
+      // rescan must not overrule it. Clearing says "not the one you found" — and pressing
+      // Look again afterwards is the operator asking for it back, which is the only thing
+      // that press can mean. Refusing left the button permanently inert on that item, with
+      // the file picker as the sole way home; a stray second click could therefore cost a
+      // thumbnail with no way to undo it.
+      if (record.thumbnailSource === 'manual' && record.thumbnailPath) {
         skipped.push({
           field: 'thumbnail',
-          detail: record.thumbnailPath
-            ? `${record.thumbnailPath} was chosen by hand, and a rescan never replaces a ` +
-              `manually chosen thumbnail. Clear it in the panel first if you want the ` +
-              `exported image instead.`
-            : `the thumbnail was cleared by hand, and a rescan never undoes that. Attach one ` +
-              `from the panel if you want an image on this item after all.`,
+          detail:
+            `${record.thumbnailPath} was chosen by hand, and a rescan never replaces a ` +
+            `manually chosen thumbnail. Clear it in the panel first if you want the ` +
+            `exported image instead.`,
         });
         return ok({ applied, skipped, refused });
       }

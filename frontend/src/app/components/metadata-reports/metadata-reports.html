@@ -1283,8 +1283,6 @@
                       </div>
                     </div>
                     <div class="fld">
-                      <button class="ghost" [disabled]="publish.saving()" (click)="changeThumbnail()">Change…</button>
-                      <button class="ghost" [disabled]="publish.saving()" (click)="publish.clearThumbnail()">Clear</button>
                       <!-- "Look again". The record's thumbnail is attached automatically
                            when generation finishes, which is usually before the operator
                            has made the image. This re-runs that same lookup; whatever it
@@ -1294,6 +1292,13 @@
                               (click)="rescanThumbnail()"
                               title="Look for the exported thumbnail again">
                         <mat-icon>refresh</mat-icon>
+                      </button>
+                      <button class="ghost" [disabled]="publish.saving()" (click)="changeThumbnail()">Change…</button>
+                      <button class="ghost" [class.armed]="clearThumbArmed()"
+                              [disabled]="publish.saving()"
+                              (click)="armClearThumbnail()"
+                              (mouseleave)="disarmClearThumbnail()">
+                        {{ clearThumbArmed() ? 'Really clear?' : 'Clear' }}
                       </button>
                     </div>
                   } @else if (publish.thumbnailPath(); as path) {
@@ -1309,8 +1314,6 @@
                       </div>
                     </div>
                     <div class="fld">
-                      <button class="ghost" [disabled]="publish.saving()" (click)="changeThumbnail()">Change…</button>
-                      <button class="ghost" [disabled]="publish.saving()" (click)="publish.clearThumbnail()">Clear</button>
                       <!-- "Look again". The record's thumbnail is attached automatically
                            when generation finishes, which is usually before the operator
                            has made the image. This re-runs that same lookup; whatever it
@@ -1321,9 +1324,26 @@
                               title="Look for the exported thumbnail again">
                         <mat-icon>refresh</mat-icon>
                       </button>
+                      <button class="ghost" [disabled]="publish.saving()" (click)="changeThumbnail()">Change…</button>
+                      <button class="ghost" [class.armed]="clearThumbArmed()"
+                              [disabled]="publish.saving()"
+                              (click)="armClearThumbnail()"
+                              (mouseleave)="disarmClearThumbnail()">
+                        {{ clearThumbArmed() ? 'Really clear?' : 'Clear' }}
+                      </button>
                     </div>
                   } @else {
                     <div class="fld">
+                      <!-- "Look again". The record's thumbnail is attached automatically
+                           when generation finishes, which is usually before the operator
+                           has made the image. This re-runs that same lookup; whatever it
+                           decides is reported, including deciding nothing. -->
+                      <button class="icon-btn"
+                              [disabled]="publish.saving()"
+                              (click)="rescanThumbnail()"
+                              title="Look for the exported thumbnail again">
+                        <mat-icon>refresh</mat-icon>
+                      </button>
                       <span class="why">
                         @if (publish.thumbnailSource() === 'manual') {
                           Cleared — this one stays empty. Nothing will attach an image to it
@@ -1335,16 +1355,6 @@
                         }
                       </span>
                       <button class="ghost" [disabled]="publish.saving()" (click)="changeThumbnail()">Choose…</button>
-                      <!-- "Look again". The record's thumbnail is attached automatically
-                           when generation finishes, which is usually before the operator
-                           has made the image. This re-runs that same lookup; whatever it
-                           decides is reported, including deciding nothing. -->
-                      <button class="icon-btn"
-                              [disabled]="publish.saving()"
-                              (click)="rescanThumbnail()"
-                              title="Look for the exported thumbnail again">
-                        <mat-icon>refresh</mat-icon>
-                      </button>
                     </div>
                   }
 

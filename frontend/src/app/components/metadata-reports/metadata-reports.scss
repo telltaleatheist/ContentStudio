@@ -1856,3 +1856,12 @@ input[type='time'].control { width: 92px; flex: none; }
 
 .links-text { min-height: 90px; }
 .tag.warn { color: var(--danger-text); border-color: currentColor; }
+
+/* A Clear that has been pressed once and is waiting for the press that means it. Danger
+   colours only in this state — the resting button is one of three neighbours and should
+   not shout, but the armed one has to be unmistakably different from what was just there. */
+.fld button.ghost.armed {
+  border-color: var(--danger-text);
+  color: var(--danger-text);
+  background: color-mix(in srgb, var(--danger-text) 12%, transparent);
+}

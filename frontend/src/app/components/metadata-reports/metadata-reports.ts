@@ -2295,7 +2295,42 @@ export class MetadataReports implements OnInit {
    * result, not silence: it is the answer the operator is checking for when the file they
    * just exported is not where the layout expects it.
    */
+  /**
+   * Clearing the thumbnail takes two clicks, and the second one has to mean it.
+   *
+   * It sits beside a button whose whole purpose is to be pressed repeatedly, in a row
+   * that CHANGES SHAPE the moment the rescan succeeds — attach one and a third button
+   * appears, moving everything along. A double click on Look again therefore landed its
+   * second press on Clear, which until now was instant and, because clearing marks the
+   * source manual, could not be undone by the button that caused it.
+   *
+   * The arming lapses on its own so a half-pressed Clear cannot sit waiting for an
+   * unrelated click minutes later.
+   */
+  readonly clearThumbArmed = signal(false);
+  private clearThumbTimer: ReturnType<typeof setTimeout> | null = null;
+
+  armClearThumbnail(): void {
+    if (this.clearThumbArmed()) {
+      this.disarmClearThumbnail();
+      void this.publish.clearThumbnail();
+      return;
+    }
+    this.clearThumbArmed.set(true);
+    if (this.clearThumbTimer) clearTimeout(this.clearThumbTimer);
+    this.clearThumbTimer = setTimeout(() => this.clearThumbArmed.set(false), 4000);
+  }
+
+  disarmClearThumbnail(): void {
+    this.clearThumbArmed.set(false);
+    if (this.clearThumbTimer) {
+      clearTimeout(this.clearThumbTimer);
+      this.clearThumbTimer = null;
+    }
+  }
+
   async rescanThumbnail(): Promise<void> {
+    this.disarmClearThumbnail();
     const itemId = this.selectedReport()?.itemId;
     if (!itemId) {
       this.notificationService.error(
