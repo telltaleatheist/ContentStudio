@@ -471,3 +471,104 @@ export function shrinkThumbnailToLimit(originalPath: string): { path: string; by
     `${SHRINK_WIDTHS[SHRINK_WIDTHS.length - 1]}px wide. Re-export it smaller.`
   );
 }
+
+
+/** A usable thumbnail, and how it was arrived at. */
+export interface ThumbnailPick {
+  path: string;
+  match: ThumbnailCandidate['match'];
+  meta: ThumbnailMeta;
+  warnings: string[];
+  /** Non-empty only when a smaller copy had to be written to get under the byte limit. */
+  note: string;
+}
+
+export type ThumbnailLookup =
+  | { ok: true; pick: ThumbnailPick }
+  | { ok: false; bucket: 'skipped' | 'refused'; detail: string };
+
+/**
+ * Find a thumbnail this app can actually use for a source, making one if it has to.
+ *
+ * THE ONE IMPLEMENTATION. There were two — the automatic pass and the rescan button each
+ * had their own find-and-validate — and they drifted the moment one of them learned to
+ * shrink an oversized file: the button kept refusing exports the automatic pass had
+ * started accepting, which from the outside looked like the button doing nothing.
+ *
+ * Every candidate that EXISTS is tried, not just the first, so a usable file behind an
+ * unusable one is reachable. If none validates and the only objection was the byte limit,
+ * a smaller copy is written beside the original and used — see shrinkThumbnailToLimit.
+ */
+export function findUsableThumbnail(sourcePath: string | null | undefined): ThumbnailLookup {
+  const candidates = deriveProposedThumbnailPaths(sourcePath ?? null);
+  if (candidates.length === 0) {
+    return {
+      ok: false,
+      bucket: 'skipped',
+      detail: sourcePath
+        ? `${sourcePath} is not inside a "complete" export folder, so there is no sibling ` +
+          `"thumbnails" folder to look in.`
+        : `this item has no single source file, so there is nowhere to look for an exported ` +
+          `thumbnail.`,
+    };
+  }
+
+  const present = candidates.filter((c) => fs.existsSync(c.path));
+  if (present.length === 0) {
+    return {
+      ok: false,
+      bucket: 'skipped',
+      detail:
+        `no exported thumbnail on disk. Looked for ${candidates.length} names, starting with ` +
+        `${candidates[0].path}.`,
+    };
+  }
+
+  const rejections: string[] = [];
+  for (const candidate of present) {
+    try {
+      const validation = validateThumbnailFile(candidate.path);
+      return {
+        ok: true,
+        pick: {
+          path: candidate.path,
+          match: candidate.match,
+          meta: validation.meta,
+          warnings: validation.warnings,
+          note: '',
+        },
+      };
+    } catch (err) {
+      rejections.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  const oversized = present.find((c) => fs.statSync(c.path).size > MAX_THUMBNAIL_BYTES);
+  if (!oversized) {
+    return { ok: false, bucket: 'refused', detail: rejections.join(' ') };
+  }
+
+  try {
+    const shrunk = shrinkThumbnailToLimit(oversized.path);
+    const validation = validateThumbnailFile(shrunk.path);
+    return {
+      ok: true,
+      pick: {
+        path: shrunk.path,
+        match: oversized.match,
+        meta: validation.meta,
+        warnings: validation.warnings,
+        note:
+          ` ${path.basename(oversized.path)} was over YouTube's 2 MiB limit, so it was ` +
+          `re-encoded ${shrunk.width}px wide as ${path.basename(shrunk.path)} and that copy ` +
+          `was attached. The original is untouched.`,
+      },
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      bucket: 'refused',
+      detail: `${rejections.join(' ')} ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}

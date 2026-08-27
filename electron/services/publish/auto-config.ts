@@ -54,16 +54,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { isSpreakerAudioExtension } from './audio-validate';
-import { MAX_THUMBNAIL_BYTES } from './thumbnail-validate';
 import { RoutableChannel, resolveChannelForPromptSet } from './channel-routing';
 import { FieldPatch } from './field-validators';
 import { ChosenMetadata } from './publish-types';
-import {
-  deriveProposedThumbnailPaths,
-  shrinkThumbnailToLimit,
-  shrunkThumbnailPath,
-  validateThumbnailFile,
-} from './thumbnail-validate';
+import { findUsableThumbnail } from './thumbnail-validate';
 
 /** What one automatic pass is asked to decide about. */
 export interface AutoConfigInput {
@@ -320,93 +314,17 @@ function autoThumbnail(input: AutoConfigInput): FieldOutcome {
     return { patch: null, bucket: 'skipped', decision: { field: 'thumbnail', detail } };
   }
 
-  const candidates = deriveProposedThumbnailPaths(sourcePath);
-  if (candidates.length === 0) {
+  const lookup = findUsableThumbnail(sourcePath);
+  if (!lookup.ok) {
     return {
       patch: null,
-      bucket: 'skipped',
-      decision: {
-        field: 'thumbnail',
-        detail: sourcePath
-          ? `${sourcePath} is not inside a "complete" export folder, so there is no ` +
-            `sibling "thumbnails" folder to look in.`
-          : `this item has no single source file, so there is nowhere to look for an ` +
-            `exported thumbnail.`,
-      },
+      bucket: lookup.bucket,
+      decision: { field: 'thumbnail', detail: lookup.detail },
     };
   }
-
-  // EVERY candidate that exists is tried, not just the first. A shrunk copy sits behind
-  // its oversized original in this list, so stopping at the first file on disk meant the
-  // copy made specifically to be acceptable could never be reached.
-  const present = candidates.filter((c) => fs.existsSync(c.path));
-  if (present.length === 0) {
-    return {
-      patch: null,
-      bucket: 'skipped',
-      decision: {
-        field: 'thumbnail',
-        detail:
-          `no exported thumbnail on disk. Looked for ${candidates.length} names, ` +
-          `starting with ${candidates[0].path}.`,
-      },
-    };
-  }
-
-  let found: (typeof present)[number] | null = null;
-  let validation: ReturnType<typeof validateThumbnailFile> | null = null;
-  const rejections: string[] = [];
-
-  for (const candidate of present) {
-    try {
-      validation = validateThumbnailFile(candidate.path);
-      found = candidate;
-      break;
-    } catch (err) {
-      rejections.push(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  // Nothing on disk was acceptable. If the only thing wrong was the byte count, that is a
-  // fixable objection: YouTube's 2 MiB limit is arbitrary from here, and an export missing
-  // it by forty kilobytes is not a different picture. A smaller copy is written beside the
-  // original — never over it — and used.
-  let shrunkNote = '';
-  if (!found) {
-    const oversized = present.find((c) => fs.statSync(c.path).size > MAX_THUMBNAIL_BYTES);
-    if (!oversized) {
-      return {
-        patch: null,
-        bucket: 'refused',
-        decision: { field: 'thumbnail', detail: rejections.join(' ') },
-      };
-    }
-    try {
-      const shrunk = shrinkThumbnailToLimit(oversized.path);
-      validation = validateThumbnailFile(shrunk.path);
-      found = { path: shrunk.path, match: oversized.match };
-      shrunkNote =
-        ` ${path.basename(oversized.path)} was over YouTube's 2 MiB limit, so it was ` +
-        `re-encoded ${shrunk.width}px wide as ${path.basename(shrunk.path)} and that copy ` +
-        `was attached. The original is untouched.`;
-    } catch (err) {
-      return {
-        patch: null,
-        bucket: 'refused',
-        decision: {
-          field: 'thumbnail',
-          detail: `${rejections.join(' ')} ${err instanceof Error ? err.message : String(err)}`,
-        },
-      };
-    }
-  }
-
-  if (!found || !validation) {
-    throw new Error(
-      'autoThumbnail reached its attach step with no candidate and no validation, which ' +
-      'the loop above makes impossible — this is a bug, not a state.'
-    );
-  }
+  const found = { path: lookup.pick.path, match: lookup.pick.match };
+  const validation = { meta: lookup.pick.meta, warnings: lookup.pick.warnings };
+  const shrunkNote = lookup.pick.note;
 
   const notes =
     (validation.warnings.length ? ` ${validation.warnings.join(' ')}` : '') + shrunkNote;

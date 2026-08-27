@@ -57,6 +57,7 @@ import {
 import {
   ThumbnailValidation,
   deriveProposedThumbnailPaths,
+  findUsableThumbnail,
   validateThumbnailFile } from './thumbnail-validate';
 import {
   ThumbnailSource,
@@ -1147,43 +1148,20 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
         return ok({ applied, skipped, refused });
       }
 
-      const candidates = deriveProposedThumbnailPaths(generated.sourcePath ?? null);
-      if (candidates.length === 0) {
-        skipped.push({
+      // THE SAME resolver the automatic pass uses. These were two implementations of
+      // "find and validate a thumbnail", and they drifted the moment one of them learned
+      // to shrink an oversized export: this button went on refusing files the automatic
+      // pass had started accepting, which from the outside was a button that did nothing.
+      const lookup = findUsableThumbnail(generated.sourcePath ?? null);
+      if (!lookup.ok) {
+        (lookup.bucket === 'refused' ? refused : skipped).push({
           field: 'thumbnail',
-          detail: generated.sourcePath
-            ? `${generated.sourcePath} is not inside a "complete" export folder, so there is ` +
-              `no sibling "thumbnails" folder to look in.`
-            : `this item has no single source file, so there is nowhere to look for an ` +
-              `exported thumbnail.`,
+          detail: lookup.detail,
         });
         return ok({ applied, skipped, refused });
       }
-
-      const found = candidates.find((c) => fs.existsSync(c.path));
-      if (!found) {
-        skipped.push({
-          field: 'thumbnail',
-          detail:
-            `still no exported thumbnail on disk. Looked for ${candidates.length} names, ` +
-            `starting with ${candidates[0].path}.`,
-        });
-        return ok({ applied, skipped, refused });
-      }
-
-      // A slot-only match attaches like any other since 2026-08-25 (the operator's call,
-      // made the day row thumbnails became visible): the attach sentence below flags it,
-      // and a wrong image is caught by eye and corrected rather than gated up front.
-      let validation: ThumbnailValidation;
-      try {
-        validation = validateThumbnailFile(found.path);
-      } catch (err: any) {
-        // The file IS there and cannot be used. Refused with the validator's own sentence
-        // rather than thrown, so the panel can print what is wrong with the image the
-        // operator just made instead of showing a failed call with no file named.
-        refused.push({ field: 'thumbnail', detail: err?.message || String(err) });
-        return ok({ applied, skipped, refused });
-      }
+      const found = { path: lookup.pick.path, match: lookup.pick.match };
+      const validation = { meta: lookup.pick.meta, warnings: lookup.pick.warnings };
 
       if (record.thumbnailPath === found.path) {
         skipped.push({
@@ -1202,7 +1180,9 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
         thumbnailSource: 'auto',
       });
 
-      const notes = validation.warnings.length ? ` ${validation.warnings.join(' ')}` : '';
+      const notes =
+        (validation.warnings.length ? ` ${validation.warnings.join(' ')}` : '') +
+        lookup.pick.note;
       applied.push({
         field: 'thumbnail',
         detail:
