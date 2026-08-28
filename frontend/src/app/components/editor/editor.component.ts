@@ -5007,7 +5007,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         try { el.currentTime = Math.max(0, desired); } catch { /* not seekable yet */ }
       }
       if (el.paused) {
-        el.play().catch((e: any) => this.onMediaError(`Audio track (${file}) failed to play: ${e?.message || e}`));
+        this.safePlay(el, (detail) => `Audio track (${file}) failed to play: ${detail}`);
       }
     }
   }
@@ -5032,10 +5032,35 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       try { v.currentTime = Math.max(0, desired); } catch { /* not seekable yet */ }
     }
     if (playing) {
-      if (v.paused) v.play().catch((e: any) => this.onMediaError(`Video playback failed: ${e?.message || e}`));
+      if (v.paused) this.safePlay(v, (detail) => `Video playback failed: ${detail}`);
     } else {
       try { v.pause(); } catch { /* already */ }
     }
+  }
+
+  /**
+   * play() that tolerates being superseded.
+   *
+   * A pending play() promise REJECTS with AbortError when a pause(), a seek or a src
+   * change lands before it resolves — and this transport drives every element from a
+   * tick, so that happens whenever a play and the next frame's decision disagree by a few
+   * milliseconds. It is not a failure: it is the element doing exactly what it was told,
+   * one instruction later.
+   *
+   * Treating it as one was worse than noisy. onMediaError STOPS PLAYBACK, so a race that
+   * had already resolved itself halted the viewer and put a red banner over it.
+   *
+   * Every other rejection still surfaces. NotAllowedError in particular — the autoplay
+   * policy refusing — is a real condition the operator has to act on, and it must not be
+   * swallowed along with the harmless one.
+   */
+  private safePlay(el: HTMLMediaElement, describe: (detail: string) => string): void {
+    const started = el.play();
+    if (!started || typeof started.catch !== 'function') return;
+    started.catch((e: any) => {
+      if (e?.name === 'AbortError') return;
+      this.onMediaError(describe(e?.message || e));
+    });
   }
 
   /** Get (or lazily create) the <audio> element for a file. Returns null on hard failure. */
