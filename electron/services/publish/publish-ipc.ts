@@ -1474,6 +1474,9 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
           store,
           readGenerated,
           api: uploadApi,
+          // The already-on-the-channel check. Same call the Fill flow uses, so both
+          // answer "is this video up there?" from the same list.
+          listRecentUploads,
           signal: controller.signal,
           onProgress: (sentBytes, totalBytes) => {
             const nowMs = Date.now();

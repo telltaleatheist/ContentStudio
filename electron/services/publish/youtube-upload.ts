@@ -43,6 +43,9 @@
  */
 
 import * as fs from 'fs';
+import * as path from 'path';
+import { matchDraft, toFillCandidates } from './video-matcher';
+import type { UploadStatusEntry } from '../youtube/youtube-api.service';
 import { PublishStoreService, GeneratedFallback, resolveChosenMetadata } from './publish-store.service';
 import { validateThumbnailFile } from './thumbnail-validate';
 import { ChosenMetadata, UploadReceipt } from './publish-types';
@@ -151,6 +154,14 @@ export interface UploadDeps {
   store: PublishStoreService;
   readGenerated: (itemId: string) => GeneratedFallback | null;
   api: YouTubeUploadApi;
+  /**
+   * The channel's recent uploads, for the already-there check below.
+   *
+   * REQUIRED, not optional. An upload that cannot see what is already on the channel is
+   * the one that made seven duplicates on 2026-08-27, and a dependency that can be left
+   * out is one that will be.
+   */
+  listRecentUploads: (channelId: string) => Promise<UploadStatusEntry[]>;
   onProgress?: (sentBytes: number, totalBytes: number) => void;
   signal?: AbortSignal;
   now?: () => Date;
@@ -213,6 +224,48 @@ export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Pro
     file: { path: sourcePath, sizeBytes },
     categoryId,
   });
+
+  // ALREADY ON THE CHANNEL?
+  //
+  // videos.insert has no idea it has seen this file before; it creates a video every time
+  // it is called. The record's own videoId catches a second upload FROM HERE, and catches
+  // nothing at all when the first upload happened somewhere else — which is the normal
+  // case on this install, because releases go through the browser while the API audit is
+  // unresolved. On 2026-08-27 that produced seven duplicate uploads: the browser copies
+  // were on the channel under their raw filenames, the records knew nothing about them,
+  // and every one was uploaded again with metadata.
+  //
+  // So the channel is asked. The same matcher the Fill flow uses answers it, on the same
+  // key — the original filename, which is what YouTube titles an unconfigured upload.
+  // Only an EXACT match refuses: filename and duration both agreeing means this cut is up
+  // there already. A filename match with a different duration is a re-export and is
+  // allowed through, because that is a new cut of the same subject and uploading it is
+  // the point.
+  const existing = matchDraft(
+    { sourceFilename: path.basename(sourcePath), sourceDurationSec: resolved.sourceDurationSec },
+    toFillCandidates(await deps.listRecentUploads(record.channelId!), record.channelId!)
+  );
+
+  // 'exact' is filename AND duration agreeing: the same cut is already up there.
+  //
+  // 'filename' alone is ambiguous, and which way it falls depends on whether THIS side
+  // knows its own duration. Knowing it, and finding it different, means a re-export — a
+  // new cut of the same subject, which is exactly what an upload is for. NOT knowing it
+  // means the durations were never compared, so a duplicate cannot be ruled out, and the
+  // safe answer is to stop: a blocked upload costs a click, a duplicate costs a video on
+  // the channel and a deletion.
+  const sameCut =
+    existing.confidence === 'exact' ||
+    (existing.confidence === 'filename' && resolved.sourceDurationSec === null);
+
+  if (existing.candidate && sameCut) {
+    throw new Error(
+      `${path.basename(sourcePath)} is already on this channel as "${existing.candidate.title}" ` +
+      `(${existing.candidate.videoId}, ${existing.candidate.privacyStatus}). Uploading would ` +
+      `create a second copy of the same video. Link this item to that video and push the ` +
+      `metadata to it instead, or delete it on YouTube first if it was a mistake.`
+    );
+  }
 
   const { videoId } = await api.insertVideo(plan.channelId, sourcePath, plan.body, onProgress, signal);
 
