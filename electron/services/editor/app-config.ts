@@ -85,16 +85,22 @@ export class EditorPaths {
 
   /**
    * The config directory exported to Python as AUTOCUT_CONFIG_DIR — keep that env var
-   * NAME, `core/config.py` reads it. Dev: the repo's `config/`. Packaged: a writable
-   * copy under userData (the app bundle is read-only and the Settings UI writes here).
+   * NAME, `core/config.py` reads it.
+   *
+   * ONE DIRECTORY FOR BOTH RUNS: userData/config, always. It used to be the repo's
+   * `config/` in development and userData only when packaged, and the two then kept
+   * separate project lists — a week edited in dev was simply absent from the packaged
+   * build, which had a copy frozen at whenever it was last seeded. Same app, same Mac,
+   * same folders on disk, two answers to "which projects exist".
+   *
+   * The repo's `config/` keeps its job as the SEED (see bundledConfigPath), which is what
+   * it always was for packaged builds. It is no longer read at run time.
    *
    * This is also where projects.json and drift_corrections.json live, so the Python side
    * and the Electron side always agree on one directory.
    */
   static get configDir(): string {
-    return app.isPackaged
-      ? path.join(app.getPath('userData'), 'config')
-      : path.join(EditorPaths.repoRoot(), 'config');
+    return path.join(app.getPath('userData'), 'config');
   }
 
   /** The bundled (read-only) copy of a config file, used to seed the packaged userData copy. */
@@ -105,15 +111,16 @@ export class EditorPaths {
   }
 
   /**
-   * Absolute path to a config file in `configDir`, seeding it from the bundled copy when
-   * packaged and it is not there yet (ACS's ensureUserConfig, verbatim in behaviour).
-   * In development this is just the repo's config/ file — nothing is copied.
+   * Absolute path to a config file in `configDir`, seeding it from the bundled copy the
+   * first time it is not there (ACS's ensureUserConfig, verbatim in behaviour).
    */
   static ensureConfigFile(filename: string): string {
     const dir = EditorPaths.configDir;
     const target = path.join(dir, filename);
-    if (!app.isPackaged) return target;
 
+    // Seeds in BOTH runs now. It used to return early in development, because development
+    // read the repo's config/ directly and there was nothing to seed; now both read
+    // userData, so a fresh dev machine needs the same copy a packaged one does.
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
       log.info('[EditorPaths] Created user config directory:', dir);
