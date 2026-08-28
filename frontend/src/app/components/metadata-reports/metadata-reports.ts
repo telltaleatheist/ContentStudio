@@ -1207,7 +1207,27 @@ export class MetadataReports implements OnInit {
    * is an answer, and six hollow rings say it in the same shape as every other row.
    */
   rowDots(report: MetadataReport): RowDot[] {
-    const facts = report.facts;
+    // The OPEN row reads from the panel, not from the index.
+    //
+    // `report.facts` is a snapshot taken when the list was last read, so picking a title
+    // moved nothing on the rail until something happened to reload — the dots described
+    // the item as it was before the operator started work on it. Re-reading the whole
+    // index on every click is not the fix; one row is already live in memory, so that row
+    // answers from the panel and every other keeps its snapshot.
+    const open =
+      !!report.itemId && this.selectedReport()?.itemId === report.itemId && this.publish.hasTarget();
+
+    const snapshot = report.facts;
+    const facts = open
+      ? {
+          ...(snapshot ?? {}),
+          abCount: this.publish.chosenTitles().length,
+          channelId: this.publish.selectedChannelId(),
+          isPodcast: this.publish.isPodcast(),
+          hasThumbnail: this.publish.thumbnailPath() !== null,
+        }
+      : snapshot;
+
     const ab = facts?.abCount ?? 0;
     const titleCount = report.titleCount;
 
@@ -1253,32 +1273,17 @@ export class MetadataReports implements OnInit {
       ? { key: 'money', state: 'na', label: 'Monetization is a YouTube setting; this goes to Spreaker.' }
       : { key: 'money', state: 'set', label: 'Monetized — every video is.' };
 
-    const when: RowDot = facts?.publishAt
-      ? new Date(facts.publishAt).getTime() < Date.now()
-        ? { key: 'when', state: 'warn', label: 'The scheduled time has already passed.' }
-        : { key: 'when', state: 'set', label: 'Scheduled' }
-      : { key: 'when', state: 'unset', label: 'No publish time recorded.' };
-
     const thumb: RowDot = facts?.hasThumbnail
       ? { key: 'thumb', state: 'set', label: 'Thumbnail attached' }
       : { key: 'thumb', state: 'unset', label: 'No thumbnail chosen.' };
 
-    const link: RowDot = facts?.isPodcast
-      ? facts.spreakerEpisodeId !== null
-        ? { key: 'link', state: 'set', label: `Uploaded as episode ${facts.spreakerEpisodeId}` }
-        : { key: 'link', state: 'warn', label: 'No Spreaker episode yet.' }
-      : facts?.videoId
-        ? { key: 'link', state: 'set', label: `Linked to video ${facts.videoId}` }
-        : // Hollow, not amber (2026-08-24): an unlinked draft is a FACT about where the
-          // browser-side upload stands, not a fault this page can act on. The open item's
-          // meter still ambers it when it is the one thing holding a dispatch.
-          {
-            key: 'link',
-            state: 'unset',
-            label: 'Not linked to a YouTube video yet — upload the draft in the browser, then link it here.',
-          };
-
-    return [titles, channel, money, when, thumb, link];
+    // WHEN and LINK are gone from this rail deliberately. A row here is a piece of
+    // metadata work, and neither of those is work at this stage: a publish time is set on
+    // the calendar afterwards, and a video id appears only once something has been
+    // uploaded. Both showed hollow on every fresh item, so the rail read as four things
+    // undone when two of them were not yet anybody's move. The open item's readiness
+    // meter still tracks them, where they are actually being decided.
+    return [titles, channel, money, thumb];
   }
 
   /** A channel's registry name, or its raw id when the registry has no name for it. */
