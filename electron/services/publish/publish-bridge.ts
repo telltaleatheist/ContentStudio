@@ -437,13 +437,16 @@ export class PublishBridge {
    * Given what the extension sees on a Studio details page, decide which item it is.
    *
    * Resolution order, most to least trustworthy:
-   *   1. an explicit link to this exact videoId (the operator already confirmed it)
+   *   1. an explicit link to this exact videoId (the operator already confirmed it),
+   *      RESOLVED THROUGH THE PRIMARY SET — see the swap in step 1 below
    *   2. an exact normalized-filename match against the Studio sidebar filename
    *   3. nothing -- the shelf shows its report browser rather than guessing
    *
    * Step 1 searches EVERY selection on disk, not just the `ready|linked|filled` ones the
    * pending endpoint serves: an item can be linked to a video while still sitting in
    * `selecting`, and filtering it out made the operator's own confirmed link invisible.
+   * The link picks the SOURCE; which of that source's sets supplies the words is the
+   * primary registry's answer, not the link's.
    *
    * Step 2 searches EVERY generated report, not just ones with titles picked: a fresh
    * report whose filename matches is exactly the case where the operator still needs to
@@ -475,34 +478,83 @@ export class PublishBridge {
       // Nothing stops two records naming the same video. The operator's most recent
       // decision stands, and the count travels in the reason.
       const best = [...links].sort(byNewestSelection)[0]!;
-      const item = this.toPending(best.itemId);
+      const index = this.listGenerated().items;
+      const linkedSummary = index.find((i) => i.itemId === best.itemId) ?? null;
+
+      // THE PRIMARY SET WINS, EVEN OVER AN EXPLICIT LINK.
+      //
+      // This used to serve the linked set whatever its primary standing, on the reasoning
+      // that "a record naming this video IS the record for this video" and that refusing it
+      // would strand a linked video with no way back to its own metadata. The first half of
+      // that is true about the LINK and false about the WORDS: the link says which video is
+      // on screen, not which set's text belongs in it. The law is the other one — "even if
+      // other metadata sets are filled out, if they aren't primary, they aren't used" — and
+      // every other surface here already obeys it (listPending, listReports, the filename
+      // match below, requirePrimarySet).
+      //
+      // The case that proved it: a set is linked and pushed, THEN a softened sibling is
+      // generated for monetization and promoted. Nothing about the link changed, so the
+      // shelf went on filling Studio with the un-softened original — the exact text the
+      // softening pass existed to replace — while a note nobody had to read said so.
+      // Serving the operator's stated choice is not a guess; the promotion IS the decision.
+      //
+      // The stranding worry is answered without giving up the law: the swap only happens
+      // when a primary sibling actually EXISTS, the linked set travels back in
+      // `alternates` so it is one click away, and the reason names both. A linked set whose
+      // source has no primary at all is still served as-is, which is the case that worry
+      // was really about.
+      const primarySibling =
+        linkedSummary && !linkedSummary.isPrimary && linkedSummary.sourceKey !== null
+          ? index.find(
+              (i) => i.sourceKey === linkedSummary.sourceKey && i.isPrimary
+            ) ?? null
+          : null;
+
+      const servedId = primarySibling ? primarySibling.itemId : best.itemId;
+      // toPendingFromGenerated rather than toPending: a freshly promoted sibling often has
+      // no selection record yet, and requiring one would drop us back to the un-softened
+      // set by another route.
+      const item = this.toPendingFromGenerated(servedId);
       if (item) {
-        // NOT filtered to primaries, deliberately. A record naming this video IS the record
-        // for this video — it is how the app knows what is already on screen — and refusing
-        // it because a sibling set was promoted since would strand a linked video with no
-        // way back to its own metadata. It is SAID instead, so a description that is not the
-        // one the operator expects has a reason attached.
-        const summary = this.listGenerated().items.find((i) => i.itemId === best.itemId);
-        if (summary && !summary.isPrimary) {
+        if (primarySibling) {
+          notes.push(
+            `this video is linked to ${best.itemId}, which is no longer the primary set ` +
+              `for "${linkedSummary!.sourceKey}" — serving the primary set ` +
+              `${primarySibling.itemId} (generated ${primarySibling.createdAt}) instead`
+          );
+        } else if (linkedSummary && !linkedSummary.isPrimary) {
+          // Not primary and no sibling is: there is nothing better to serve, so this is
+          // the stranded case the old comment describes. Say it and carry on.
           notes.push(
             `the set linked to this video (${best.itemId}) is not the primary set for ` +
-              `"${summary.sourceKey}"`
+              `"${linkedSummary.sourceKey}", and no sibling set is either`
           );
         }
+        const servedRecord = this.store.get(servedId);
         return {
           item,
-          reason:
-            links.length > 1
+          // A swap says so in the HEADLINE, not only in the notes. The words about to go
+          // into Studio are not the ones the link implies, and that is the first thing the
+          // operator needs to read — the previous version buried it in a trailing clause.
+          reason: primarySibling
+            ? `Already linked to this video — filling from the PRIMARY set for this source, not the linked one.${suffixOf()}`
+            : links.length > 1
               ? `Already linked to this video (${links.length} records name it; showing the most recently updated).${suffixOf()}`
               : `Already linked to this video.${suffixOf()}`,
           linked: true,
           // A linked item with nothing picked still needs picking. Reporting false here
           // is what let the shelf offer a fill that would have typed the generator's
-          // top 3 in as if they had been chosen.
-          needsTitles: best.chosenTitles.length === 0,
+          // top 3 in as if they had been chosen. Read off the set actually being SERVED —
+          // the linked set's picks say nothing about a sibling's.
+          needsTitles: (servedRecord?.chosenTitles.length ?? 0) === 0,
           // An explicit link is not a choice between reports: it IS the choice, already
-          // made. Offering alternates here would invite undoing it by accident.
-          alternates: [],
+          // made, so there is normally nothing to offer. The one exception is a swap: the
+          // set that was demoted travels back so the operator can go straight to it if the
+          // promotion was not what they meant.
+          alternates:
+            primarySibling && linkedSummary
+              ? [alternateOf({ summary: linkedSummary, chosen: best })]
+              : [],
         };
       }
       // The link is real but its report is gone from disk. Say so, then carry on to the

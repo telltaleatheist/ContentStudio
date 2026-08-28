@@ -130,6 +130,21 @@ export class StudioChannelUnavailableError extends StudioCollectionError {
 export class StudioTabError extends StudioCollectionError {
   constructor(channelId: string, code: string, message: string) { super('StudioTabError', channelId, code, message); }
 }
+/**
+ * No Studio tab is open on this channel and this pass is not allowed to open one.
+ *
+ * A DEFERRAL, not a failure: nothing was collected, nothing is wrong, and the next pass
+ * that finds a tab (or the operator pressing Sync now) will pick it up. Its own class so
+ * the cycle can log it as the routine event it is instead of an error, and so the popup
+ * can say "waiting for a Studio tab" rather than showing a red line every six hours.
+ */
+export class NoStudioTabError extends StudioCollectionError {
+  constructor(channelId: string, detail: string) {
+    super('NoStudioTabError', channelId, 'NO_STUDIO_TAB',
+      `No open studio.youtube.com tab is on channel ${channelId}, and a background pass ` +
+      `does not open one (${detail}). Open Studio on that channel, or press "Sync now".`);
+  }
+}
 
 // ============================================================================
 // Constants
@@ -157,8 +172,21 @@ const CADENCE_SKEW_MS = 3 * HOUR_MS;
 // Public entry point — called once per channel by the background cycle
 // ============================================================================
 
-export async function collectChannel(channelId: string): Promise<ChannelCollectionResult> {
-  const tabId = await ensureStudioTabForChannel(channelId);
+/**
+ * Whether this pass may put a Studio tab on screen.
+ *
+ * `false` for the six-hourly alarm, `true` only when the operator asked for a sync. See
+ * ensureStudioTabForChannel for why the distinction exists at all.
+ */
+export interface CollectOptions {
+  mayOpenTab: boolean;
+}
+
+export async function collectChannel(
+  channelId: string,
+  options: CollectOptions,
+): Promise<ChannelCollectionResult> {
+  const tabId = await ensureStudioTabForChannel(channelId, options.mayOpenTab);
   const injected = await runInjectedCollection(tabId, channelId);
   if (!injected.ok) throw mapInjectedError(injected, channelId);
 
@@ -337,7 +365,111 @@ async function tabExists(tabId: number): Promise<boolean> {
   }
 }
 
-async function ensureStudioTabForChannel(channelId: string): Promise<number> {
+/**
+ * A tab the OPERATOR already has open that is sitting on the channel we want.
+ *
+ * The probe is the real test and the only one worth trusting. A url match says the tab is
+ * on Studio, not that Studio finished booting, not which channel ytcfg ended up on (the
+ * operator can switch accounts inside one tab without the url changing), and not that a
+ * delegation context is present. readStudioContext answers all three, and it is the SAME
+ * probe the injected collection requires to succeed, so a tab this accepts is a tab the
+ * fetch will work in.
+ *
+ * A candidate that cannot be probed is skipped rather than thrown on — being un-injectable
+ * is a fact ABOUT that tab (still loading, discarded, a Chrome error page), not a failure
+ * of the scan. Every skip is recorded and travels out in `notes` so that "no tab found"
+ * can say what it looked at instead of being a bare no.
+ *
+ * The collector's OWN tab is excluded: adopting it would make closeCollectorTab's
+ * ownership question unanswerable.
+ */
+async function findStudioTabOnChannel(
+  channelId: string,
+): Promise<{ tabId: number | null; notes: string[] }> {
+  const notes: string[] = [];
+  let tabs: chrome.tabs.Tab[];
+  try {
+    tabs = await chrome.tabs.query({ url: 'https://studio.youtube.com/*' });
+  } catch (err) {
+    throw new StudioTabError(channelId, 'TAB_QUERY_FAILED', `Could not list studio.youtube.com tabs: ${msg(err)}`);
+  }
+
+  const ownId = await getStoredTabId();
+  if (tabs.length === 0) return { tabId: null, notes: ['no studio.youtube.com tab is open'] };
+
+  for (const tab of tabs) {
+    if (typeof tab.id !== 'number' || tab.id === ownId) continue;
+    if (tab.discarded) {
+      notes.push(`tab ${tab.id} is discarded`);
+      continue;
+    }
+    let ctx: StudioContext | null = null;
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: 'MAIN',
+        func: readStudioContext,
+      });
+      ctx = (results[0]?.result as StudioContext | undefined) ?? null;
+    } catch (err) {
+      notes.push(`tab ${tab.id} could not be probed (${msg(err)})`);
+      continue;
+    }
+    if (!ctx || !ctx.ytcfgPresent) {
+      notes.push(`tab ${tab.id} has no ytcfg yet (readyState ${ctx?.readyState ?? 'unknown'})`);
+      continue;
+    }
+    if (ctx.channelId !== channelId) {
+      notes.push(`tab ${tab.id} is on channel ${ctx.channelId ?? 'none'}`);
+      continue;
+    }
+    if (!ctx.hasDelegation) {
+      notes.push(`tab ${tab.id} is on the right channel but carries no delegation context`);
+      continue;
+    }
+    return { tabId: tab.id, notes };
+  }
+
+  return { tabId: null, notes };
+}
+
+/**
+ * The tab this channel's collection will run in, and whether WE opened it.
+ *
+ * ─── WHY THIS PREFERS A TAB THE OPERATOR ALREADY HAS ───
+ *
+ * The collector needs a page in the target channel's Studio context because the analytics
+ * endpoint only answers to one (ytcfg's CHANNEL_ID and delegation context — see
+ * collectStudioAnalytics). It does NOT need that page to be one we made. Opening our own
+ * was simply the easiest way to guarantee the context, and the cost of that convenience
+ * landed entirely on the operator: a tab appearing unbidden every six hours, including
+ * mid-livestream. That is not a cosmetic complaint. A tab that shows up during a broadcast
+ * is a tab that gets closed in a hurry, and closing it mid-pass kills the injected fetch
+ * ("Frame with ID 0 was removed") and loses that channel's collection anyway.
+ *
+ * So: adopt first. The operator keeps Studio pinned, that tab already has exactly the
+ * context we need, and injecting a MAIN-world fetch into it changes nothing they can see —
+ * no navigation, no DOM writes, and it is emphatically not ours to close.
+ *
+ * ─── WHY A BACKGROUND PASS CANNOT FALL BACK TO OPENING ONE ───
+ *
+ * Because that is the behaviour being fixed. If the alarm may open a tab when adoption
+ * misses, it opens one every time the pinned tab is on a different channel — which, with
+ * three channels and one pinned tab, is most of the time. The deferral is the point: the
+ * unattended path uses what is there or waits, and only the operator's own "Sync now"
+ * is allowed to put something on screen.
+ */
+async function ensureStudioTabForChannel(channelId: string, mayOpenTab: boolean): Promise<number> {
+  const adopted = await findStudioTabOnChannel(channelId);
+  if (adopted.tabId !== null) return adopted.tabId;
+
+  if (!mayOpenTab) {
+    throw new NoStudioTabError(
+      channelId,
+      adopted.notes.length ? adopted.notes.join('; ') : 'no candidate tabs',
+    );
+  }
+
   const url = `https://studio.youtube.com/channel/${channelId}/analytics`;
   let tabId = await getStoredTabId();
   if (tabId !== null && !(await tabExists(tabId))) tabId = null;
@@ -357,6 +489,8 @@ async function ensureStudioTabForChannel(channelId: string): Promise<number> {
     throw new StudioTabError(channelId, 'TAB_DRIVE_FAILED', `Could not open/navigate a studio.youtube.com tab: ${msg(err)}`);
   }
 
+  // Stored ONLY on the path that created it. The id in session storage is the answer to
+  // "which tab is ours to close", and an adopted tab must never be able to answer it.
   await setStoredTabId(tabId);
   await waitForChannelContext(tabId, channelId);
   return tabId;

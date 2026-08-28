@@ -7,6 +7,14 @@
 //     returned channel. Per-video cadence tiering (age <7d every cycle, 7-28d
 //     daily, 28-365d weekly, >1y monthly) is the COLLECTOR's concern — see
 //     src/collector.ts.
+//
+//     THE ALARM NEVER PUTS A TAB ON SCREEN. It collects through whatever Studio
+//     tab the operator already has open on that channel and defers the channels
+//     it cannot reach that way (NoStudioTabError). Only a manual "Sync now" is
+//     allowed to open or navigate a tab, because only then is somebody asking.
+//     The old behaviour opened one per channel per cycle — including in the
+//     middle of a livestream, which is both an interruption and a data loss:
+//     the tab gets closed in a hurry and takes the in-flight fetch with it.
 //   - Records lastAttempt / lastError / snapshot count per channel in
 //     chrome.storage.local.
 //   - Flushes the outbox after every cycle (and on manual "Sync now").
@@ -16,7 +24,7 @@
 // cycle records that as its channelSourceError and stops — it never collects
 // against a stale/cached list.
 
-import { CollectorNotImplementedError, closeCollectorTab, collectChannel } from './collector';
+import { CollectorNotImplementedError, NoStudioTabError, closeCollectorTab, collectChannel } from './collector';
 import {
   PublishClientError,
   fetchItem,
@@ -109,7 +117,7 @@ async function doRunCollectionCycle(trigger: CycleSummary['trigger']): Promise<C
   }
 
   try {
-    await collectAllChannels(channels);
+    await collectAllChannels(channels, trigger);
   } finally {
     // The collector tab is scoped to the cycle, so it closes here even if a channel threw.
     // A failure to close is NOT a collection failure — everything is already enqueued — but
@@ -150,11 +158,15 @@ async function doRunCollectionCycle(trigger: CycleSummary['trigger']): Promise<C
  * Split out of the cycle so the tab's lifetime is a single try/finally around exactly the
  * work that needs it, instead of the whole cycle including the outbox flush.
  */
-async function collectAllChannels(channels: Awaited<ReturnType<typeof fetchChannels>>): Promise<void> {
+async function collectAllChannels(
+  channels: Awaited<ReturnType<typeof fetchChannels>>,
+  trigger: CycleSummary['trigger'],
+): Promise<void> {
   for (const channel of channels) {
     const attemptAt = new Date().toISOString();
     try {
-      const result = await collectChannel(channel.channelId);
+      // Only the operator's own sync may open a tab. See ensureStudioTabForChannel.
+      const result = await collectChannel(channel.channelId, { mayOpenTab: trigger === 'manual' });
       if (result.videos.length > 0) {
         await enqueueVideos(result.videos);
       }
@@ -175,7 +187,12 @@ async function collectAllChannels(channels: Awaited<ReturnType<typeof fetchChann
         name: error.name,
         message: error.message,
       });
-      if (err instanceof CollectorNotImplementedError) {
+      if (err instanceof NoStudioTabError) {
+        // Routine, not a fault: an unattended pass with no tab to borrow. It is still
+        // RECORDED above so the popup can say why a channel has not updated — silence
+        // here would look identical to a channel nobody has looked at in a week.
+        console.info(`[background] ${channel.channelId}: ${error.message}`);
+      } else if (err instanceof CollectorNotImplementedError) {
         console.info(`[background] ${channel.channelId}: ${error.message} (collector pending Studio recon)`);
       } else {
         console.error(`[background] collection failed for ${channel.channelId}:`, err);

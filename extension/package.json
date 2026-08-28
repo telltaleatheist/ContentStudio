@@ -1,6 +1,6 @@
 {
   "name": "contentstudio-companion",
-  "version": "0.2.2",
+  "version": "0.2.4",
   "private": true,
   "description": "Chrome MV3 extension that collects YouTube Studio analytics and pushes them to the ContentStudio desktop app.",
   "type": "module",

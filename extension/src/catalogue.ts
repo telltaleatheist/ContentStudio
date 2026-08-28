@@ -15,7 +15,7 @@
 //   videoCreatorExperiment.result.armResults[]         { arm, watchtimeFraction }
 //   videoCreatorExperiment.result.winnerArm            which one won
 //   videoCreatorExperiment.result.resultState          CREATOR_EXPERIMENT_RESULT_STATE_*
-//                                                      (WINNER | NO_WINNER |
+//                                                      (WINNER | NO_WINNER | PREFERRED |
 //                                                       NOT_CONCLUSIVE_YET | NOT_ENOUGH_DATA
 //                                                       — wire format captured 2026-08-23)
 //
@@ -398,7 +398,20 @@ export async function fetchExperimentsInPage(channelId: string, videoIds: string
       const state = String(result.resultState).replace(/^CREATOR_EXPERIMENT_RESULT_STATE_/, '');
       // Decided-without-a-winner and the two still-undecided states all mean the same thing
       // here: there is no winner to record. Only a genuinely unknown value stops the run.
-      if (state === 'NO_WINNER' || state === 'NOT_CONCLUSIVE_YET' || state === 'NOT_ENOUGH_DATA') continue;
+      //
+      // PREFERRED joined that list on 2026-08-25, when the guard below caught it live. It is
+      // Studio's softer outcome — the test ended without a statistically significant winner
+      // and YouTube nominates the option it would lean toward anyway. It is NOT a win, and
+      // the whole reason `resultState` is read at all is that `winnerArm` is populated on
+      // exactly these undecided tests; admitting PREFERRED as a WINNER would reintroduce the
+      // bug the state check was written to kill, one enum later. Skipped, not recorded:
+      // "Winner: <title>" is the highest-leverage text in the system and a lean is not a win.
+      if (
+        state === 'NO_WINNER' ||
+        state === 'NOT_CONCLUSIVE_YET' ||
+        state === 'NOT_ENOUGH_DATA' ||
+        state === 'PREFERRED'
+      ) continue;
       if (state !== 'WINNER') {
         unrecognized.add(String(result.resultState));
         continue;
@@ -445,7 +458,8 @@ export async function fetchExperimentsInPage(channelId: string, videoIds: string
       `get_creator_videos returned resultState value(s) this build does not recognise: ` +
       `${[...unrecognized].map((s) => JSON.stringify(s)).join(', ')}. Known values (with or ` +
       `without the CREATOR_EXPERIMENT_RESULT_STATE_ prefix, which is stripped before ` +
-      `comparison): WINNER, NO_WINNER, NOT_CONCLUSIVE_YET, NOT_ENOUGH_DATA. No A/B results ` +
+      `comparison): WINNER, NO_WINNER, NOT_CONCLUSIVE_YET, NOT_ENOUGH_DATA, PREFERRED. ` +
+      `No A/B results ` +
       `were recorded from this pass — YouTube has grown a new state and ` +
       `extension/src/catalogue.ts needs to learn what it means.`,
     );
