@@ -20,6 +20,28 @@ import { stopArchiveSyncOnQuit } from './services/editor/editor-ipc';
  * Pure TypeScript implementation - no Python dependencies!
  */
 
+/**
+ * ONE userData DIRECTORY FOR DEV AND PACKAGED, pinned before anything can ask for it.
+ *
+ * Electron derives userData from the app's name, and the two runs disagree about what
+ * that is: `electron .` takes package.json's `name` ("contentstudio"), while a built app
+ * takes electron-builder's `productName` ("ContentStudio"). macOS filesystems are usually
+ * case-insensitive, so this is not always two folders — but it is two ANSWERS, and on a
+ * case-sensitive volume it is two stores holding two sets of OAuth tokens, prompt sets,
+ * publish records and analytics, with the packaged one empty because it has never been
+ * run.
+ *
+ * Pinned by PATH rather than by app.setName, because the name is also what macOS shows in
+ * the menu bar and the About panel; "ContentStudio" is right there and "contentstudio" is
+ * not. This changes nothing in development — that is already the path — so the only run
+ * whose behaviour moves is the packaged one, which is the run that was wrong.
+ *
+ * It must happen before ANY getPath('userData') call, which in practice means before
+ * electron-store is constructed and before app.whenReady, because Electron caches the
+ * resolved path on first use.
+ */
+app.setPath('userData', path.join(app.getPath('appData'), 'contentstudio'));
+
 // Configure logging with rotation
 log.transports.console.level = 'info';
 log.transports.file.level = 'debug';
