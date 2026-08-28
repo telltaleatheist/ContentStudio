@@ -74,12 +74,15 @@
             context: { path: g.path, kind: 'week', label: g.label }"></ng-container>
         </ng-container>
 
-        <!-- Delete the LOCAL copy. Only on a week whose own folder is verified in the
-             archive — not on one that merely reads green because its days are. -->
-        <button class="pp-week-x" *ngIf="canDeleteLocal(g)"
-                [disabled]="!!deleteBlockedBySync(g)"
+        <!-- Delete the LOCAL copy. DRAWN on every real week, and disabled when it cannot
+             act — a week whose days are archived reads green, and a green row with no ✕
+             beside it looks like a missing button rather than a refused one. The title
+             says which it is, and when it is refused the reason is the useful part: bytes
+             on this Mac that are not in the archive. -->
+        <button class="pp-week-x" *ngIf="showsDeleteLocal(g)"
+                [disabled]="!canDeleteLocal(g) || !!deleteLocalBlockedReason(g)"
                 (click)="openDeleteLocal($event, g)"
-                [title]="deleteLocalTitle(g)"
+                [title]="deleteLocalBlockedReason(g) ?? deleteLocalTitle(g)"
                 [attr.aria-label]="'Delete the local copy of ' + g.label">✕</button>
 
         <!-- Delete the ARCHIVED copy. For a ghost that is the only copy there is, which is

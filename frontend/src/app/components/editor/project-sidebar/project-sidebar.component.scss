@@ -259,14 +259,25 @@
 }
 
 .pp-remove {
+  /* THE SAME 18px BOX AS .pp-week-x, deliberately. These two are the last control in their
+     rows — a day's and a week's — and they were a padded text button and a fixed circle, so
+     the ✕ column zigzagged down the pane and never lined up with the ✓ above it. Matching
+     the box is what makes one straight edge; the day's still fades in on hover, because it
+     removes a row from a list rather than deleting anything. */
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 18px;
+  height: 18px;
+  padding: 0;
   opacity: 0;
   background: transparent;
   border: none;
   color: #8a8a92;
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1;
-  padding: 6px 8px;
   cursor: pointer;
   transition: opacity 0.1s ease, color 0.1s ease;
 
@@ -723,4 +734,20 @@
     margin: 4px 6px;
     background: #3d3d44;
   }
+}
+
+
+/* A local-delete ✕ that is drawn but cannot act. Dimmed rather than hidden, and it keeps
+   its box so the column stays straight — the tooltip carries the reason. */
+.pp-week-x:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* One straight edge for the whole pane. Both rows end with the same two controls in the
+   same order — the sync glyph, then a ✕ — so both get the same trailing footprint and the
+   name beside them takes whatever is left. */
+.pp-sync {
+  box-sizing: border-box;
+  min-width: 26px;
 }

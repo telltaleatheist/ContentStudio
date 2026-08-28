@@ -672,6 +672,11 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
    * A destination the host reported is also required: the confirmation has to name where the
    * surviving copy lives, and a week nobody has checked this session has no such answer.
    */
+  /** Is the local-delete ✕ drawn at all? Separate from whether it can be PRESSED. */
+  showsDeleteLocal(g: WeekGroup): boolean {
+    return !g.ghost && !!g.path && this.archiveSupported && this.deleteLocalSupported;
+  }
+
   canDeleteLocal(g: WeekGroup): boolean {
     if (g.ghost || !g.path) return false;
     if (!this.archiveSupported || !this.deleteLocalSupported) return false;
@@ -694,6 +699,44 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
   }
 
   /** Tooltip for the red ✕ on a green week. */
+  /**
+   * Why the local-delete ✕ on this week cannot be pressed, or null when it can.
+   *
+   * The button is now DRAWN either way. Omitting it was defensible while the row that
+   * lacked it also looked unfinished — but a week whose days are all archived reads green,
+   * and a green row with no ✕ next to it looks like a missing button rather than a refused
+   * one. The reason a thing is unavailable is worth more than the tidiness of hiding it,
+   * and here the reason is the interesting part: there are bytes on this Mac that are not
+   * in the archive, and they are the Final Cut library and the exports, not the days.
+   */
+  deleteLocalBlockedReason(g: WeekGroup): string | null {
+    if (g.ghost || !g.path) return null;
+    if (!this.archiveSupported || !this.deleteLocalSupported) return null;
+
+    const busy = this.deleteBlockedBySync(g);
+    if (busy) return busy;
+
+    if (this.weekPartlyArchived(g.path)) {
+      return `${g.label} cannot be deleted locally yet.\n` +
+             `Every day in it is archived, which is why it reads green — but the week folder ` +
+             `itself still holds ${this.archive.extrasSummary(g.path)} that is NOT in the ` +
+             `archive: the Final Cut library, complete/, thumbnails/, and any day folder not ` +
+             `on this list.\n` +
+             `Sync the week to finish it, and the ✕ becomes usable.`;
+    }
+    if (this.syncState(g.path) !== 'done') {
+      return `${g.label} has not been verified against the archive this session.\n` +
+             `Press the refresh button at the top to re-check it, then sync anything still ` +
+             `outstanding.`;
+    }
+    if (!this.archive.destinationOf(g.path)) {
+      return `${g.label} has no archived location on record this session, so there is nothing ` +
+             `to check the local copy against.\n` +
+             `Press the refresh button at the top first.`;
+    }
+    return null;
+  }
+
   deleteLocalTitle(g: WeekGroup): string {
     return this.deleteBlockedBySync(g) ??
            (`Delete the local copy of ${g.label}.\n` +
