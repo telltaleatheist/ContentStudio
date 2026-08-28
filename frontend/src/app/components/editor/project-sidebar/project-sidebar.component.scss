@@ -132,6 +132,11 @@
 .pp-row {
   display: flex;
   align-items: center;
+  /* MATCHES .pp-week exactly: same 6px inset from the pane's right edge, same 6px between
+     the sync glyph and the ✕. Both rows end with the same two controls, so given the same
+     gap and the same inset they form one straight column. */
+  gap: 6px;
+  padding-right: 6px;
   border-left: 2px solid transparent;
   transition: background 0.1s ease, border-color 0.1s ease;
 
@@ -309,6 +314,10 @@
     display: flex;
     align-items: center;
     gap: 6px;
+    /* No right padding of its own. The week already insets 6px, and a second 5px here put
+       the week's controls 11px from the edge while a day's sat at 0 — which is why the two
+       ✓ columns never lined up however the buttons themselves were sized. */
+    padding-right: 0;
   }
 
   .pp-week-label {
