@@ -141,6 +141,20 @@ export interface ArchiveCheck {
   neverArchived?: boolean;
 }
 
+/**
+ * One folder a sync has actually completed on, remembered across restarts.
+ *
+ * The record is of INTENT, not of state: it says the operator chose to put this folder in the
+ * archive, which is a thing that stays true while the app is closed. Whether the archive copy
+ * is still current is a question only a dry run can answer, and the sidebar still asks it.
+ */
+export interface ArchiveSyncedEntry {
+  /** The absolute local folder path, exactly as it was synced — a week folder or a day. */
+  path: string;
+  /** ISO timestamp of its most recent successful sync. */
+  at: string;
+}
+
 /** One week folder that exists on the archive server. `path` is its absolute path there. */
 export interface RemoteWeek {
   name: string;
@@ -626,6 +640,21 @@ export interface EditorHost {
    * A week's answer also settles the days inside it, via `pending`.
    */
   archiveCheck?(payload: { localPath: string; kind: 'week' | 'day' }): Promise<ArchiveCheck>;
+
+  /**
+   * Every folder a sync has completed on, across every previous run of the app.
+   *
+   * OPTIONAL, and its absence is a real state rather than an oversight: a host without it
+   * behaves exactly as this app did before the ledger existed — marks last one session, and
+   * nothing ever uploads without a click. What it adds is that the folders the operator
+   * already chose keep their green mark across restarts, by being re-checked and, when they
+   * have drifted, re-synced without being asked twice.
+   *
+   * REJECTS if the record cannot be read. It is never returned half-read: a short list would
+   * silently drop weeks from the automatic pass, which is the failure this whole feature is
+   * meant to prevent.
+   */
+  archiveSyncedPaths?(): Promise<{ synced: ArchiveSyncedEntry[] }>;
 
   /** Progress ticks for the running sync. */
   onArchiveProgress?(callback: (p: ArchiveProgress) => void): void;

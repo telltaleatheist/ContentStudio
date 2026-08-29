@@ -517,6 +517,10 @@ const api = {
   archiveCheck: (payload: { localPath: string; kind: 'week' | 'day' }) => ipcRenderer.invoke('archive:check', payload),
   archiveDestination: (payload: { localPath: string; kind: 'week' | 'day' }) =>
     ipcRenderer.invoke('archive:destination', payload),
+  // The folders a sync has actually completed on, remembered across restarts. Not a claim
+  // that they are in the archive NOW — it is what the sidebar re-verifies on launch, and
+  // finishes on its own if the share has fallen behind.
+  archiveSyncedPaths: () => ipcRenderer.invoke('archive:synced-list'),
 
   // Reclaiming space, in both directions. All three REJECT with the reason — the sidebar
   // prints it on the confirm row it was clicked from, so the message is the UI.

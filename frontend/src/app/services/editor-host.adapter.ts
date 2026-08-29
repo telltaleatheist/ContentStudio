@@ -21,6 +21,7 @@ import { EditorProcessingService } from './editor-processing.service';
 import type { EditorManifest } from '../components/editor/host-data/editor-manifest';
 import type {
   ArchiveCheck, ArchiveDeleteProgress, ArchiveProgress, ArchiveQueue, ArchiveResult, ArchiveStatus,
+  ArchiveSyncedEntry,
   AssetComponentStatus, AssetInstallProgress, AssetInstallResult, AssetPaths,
   DeleteLocalWeekResult, DeleteRemoteWeekResult, EditorHost, ProcessingJob,
   ProjectScanResult, ProjectsRegistry, RemoteWeekListing, TitleHandoff
@@ -327,6 +328,10 @@ export class EditorHostAdapter implements EditorHost {
 
   archiveCheck(payload: { localPath: string; kind: 'week' | 'day' }): Promise<ArchiveCheck> {
     return this.unwrap(this.electron.archiveCheck(payload));
+  }
+
+  archiveSyncedPaths(): Promise<{ synced: ArchiveSyncedEntry[] }> {
+    return this.unwrap(this.electron.archiveSyncedPaths());
   }
 
   archiveListRemoteWeeks(): Promise<RemoteWeekListing> {

@@ -99,6 +99,7 @@ export interface PublishFields {
 }
 import type {
   ArchiveCheck, ArchiveDeleteProgress, ArchiveProgress, ArchiveQueue, ArchiveResult, ArchiveStatus,
+  ArchiveSyncedEntry,
   AssetComponentStatus, AssetInstallProgress, AssetInstallResult,
   AssetPaths, DeleteLocalWeekResult, DeleteRemoteWeekResult, ProjectScanResult,
   ProjectsRegistry, RemoteWeekListing, TitleHandoff
@@ -881,6 +882,8 @@ declare global {
         => Promise<{ ids: string[] }>;
       archiveCancel: (payload: { paths: string[] }) => Promise<{ canceled: number }>;
       archiveCheck: (payload: { localPath: string; kind: 'week' | 'day' }) => Promise<ArchiveCheck>;
+      /** Folders a sync has completed on, from every previous run. REJECTS if unreadable. */
+      archiveSyncedPaths: () => Promise<{ synced: ArchiveSyncedEntry[] }>;
       /** Week folders on the NAS. REJECTS when the archive is unreachable; never mounts it. */
       archiveListRemoteWeeks: () => Promise<RemoteWeekListing>;
       /** Removes a week from the NAS — the only copy, for a week with no local folder left. */
@@ -2169,6 +2172,11 @@ export class ElectronService {
 
   async archiveCheck(payload: { localPath: string; kind: 'week' | 'day' }): Promise<ArchiveCheck> {
     return this.editorBridge.archiveCheck(payload);
+  }
+
+  /** Folders the operator has synced before. Says nothing about the archive's current state. */
+  async archiveSyncedPaths(): Promise<{ synced: ArchiveSyncedEntry[] }> {
+    return this.editorBridge.archiveSyncedPaths();
   }
 
   /** Week folders on the NAS. REJECTS when it is unreachable — the caller shows no ghosts. */

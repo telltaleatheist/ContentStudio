@@ -17,6 +17,7 @@ import { analyzeChapters, suggestTitle, Segment } from './chapter-splitter';
 import {
   ArchiveSync, comparablePath, destinationFor, DEFAULT_ARCHIVE_ROOT, DEFAULT_ARCHIVE_MOUNT_URL
 } from './archive-sync';
+import { readArchiveLedger, recordArchived, forgetArchivedUnder } from './archive-ledger';
 import { createEditorWindow, getEditorWindow } from './editor-window';
 import { getMainWindow } from '../../main';
 
@@ -1887,7 +1888,15 @@ function setupArchiveHandlers(store: Store<any>): void {
 
   const sync = new ArchiveSync(
     p => broadcast('archive:progress', p),
-    r => broadcast('archive:complete', r),
+    r => {
+      // EVERY completed transfer is recorded before it is announced, because a completion is
+      // the only evidence that the operator meant this folder to be in the archive. That
+      // record is what the next launch re-verifies and, if the folder has drifted, finishes
+      // on its own — see archive-ledger.ts. A cancelled or failed job proves no such intent
+      // and is not recorded.
+      if (r.ok && !r.canceled) recordArchived(r.localPath);
+      broadcast('archive:complete', r);
+    },
     q => broadcast('archive:queue', q)
   );
   archiveSyncInstance = sync;
@@ -1976,6 +1985,24 @@ function setupArchiveHandlers(store: Store<any>): void {
       throw new Error(status.reason || `${root} is not available.`);
     }
     return sync.check(payload.localPath, payload.kind, root);
+  });
+
+  /**
+   * The folders the operator has actually synced at some point, from the ledger.
+   *
+   * NOT a list of what is currently in the archive, and it must never be rendered as one: it
+   * says which rows are the operator's to keep up to date, so the sidebar knows which ones to
+   * re-verify on launch and finish automatically if they have drifted. The verdict still comes
+   * from a dry run against the share, exactly as it did before.
+   *
+   * NOTHING IS PRUNED HERE. A folder on a drive that is merely unplugged does not exist as far
+   * as `fs` is concerned, and dropping its entry would quietly cancel a backup the operator set
+   * up. The sidebar intersects this against the projects it can actually see.
+   *
+   * THROWS on an unreadable ledger, like every other reader of a user-config file in here.
+   */
+  ipcMain.handle('archive:synced-list', async () => {
+    return { synced: readArchiveLedger().synced };
   });
 
   /** Where a folder WOULD go. The UI shows this in the button tooltip before anything runs. */
@@ -2366,6 +2393,27 @@ function setupArchiveHandlers(store: Store<any>): void {
           throw new Error(
             `${name} was deleted from ${realWeek}, but the projects list could not be updated: ` +
             `${err?.message || String(err)}. Its rows disappear on the next reload.`
+          );
+        }
+
+        // The same week leaves the archive ledger. Its local folder is gone, so there is
+        // nothing left here to keep in step with the archive — and an entry naming it would
+        // have every future launch check a path that no longer exists and try to sync it.
+        //
+        // Its own try, with its own sentence: the registry failing above leaves a stale ROW
+        // the user can see, and this failing leaves a stale BACKUP INSTRUCTION they cannot.
+        // Reporting the second under the first's wording would name the wrong file.
+        try {
+          const forgotten = forgetArchivedUnder(week);
+          if (forgotten) {
+            log.info(`[archive] dropped ${forgotten} archive-ledger entr` +
+              `${forgotten === 1 ? 'y' : 'ies'} under ${week}`);
+          }
+        } catch (err: any) {
+          throw new Error(
+            `${name} was deleted from ${realWeek} and removed from the projects list, but the ` +
+            `record of what has been archived could not be updated: ${err?.message || String(err)}. ` +
+            `Until that file is fixed, every launch will try to re-sync a week that is no longer here.`
           );
         }
 

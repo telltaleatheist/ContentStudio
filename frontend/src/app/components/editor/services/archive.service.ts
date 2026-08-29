@@ -65,13 +65,17 @@ export interface ArchiveRow {
  * The archive sync's renderer half: one state per syncable folder, driven by the host's
  * archive events.
  *
- * NOTHING here starts a transfer on its own. The user asked for that explicitly — opening a
- * project must never begin a 300 GB upload — and it is also the only safe default when the
- * destination is a shared NAS. The one thing that does happen unprompted is a single silent
- * connect attempt on load, which mounts the share if it can and says nothing if it cannot.
+ * NOTHING here starts a transfer on a folder the operator has not already chosen. Opening a
+ * project must never begin a 300 GB upload of something nobody asked to back up, and that is
+ * also the only safe default when the destination is a shared NAS. Two things happen
+ * unprompted: a single silent connect attempt on load, which mounts the share if it can and
+ * says nothing if it cannot — and, for the folders a sync HAS completed on before, finishing
+ * the job. See `intentional` below.
  *
- * State is per window and per session. It is not persisted, because a checkmark restored from
- * disk would be a claim about the NAS that this process has not verified.
+ * The MARKS are still per window and per session, and are still never restored from disk: a
+ * checkmark read out of a file would be a claim about the NAS that this process has not
+ * verified. What is restored is the operator's INTENT — which folders they chose to keep in
+ * the archive — and every mark on those rows is re-earned by an actual dry run.
  */
 @Injectable()
 export class ArchiveService implements OnDestroy {
@@ -158,6 +162,24 @@ export class ArchiveService implements OnDestroy {
    * a destination.
    */
   private destPaths = new Map<string, string>();
+  /**
+   * THE FOLDERS THE OPERATOR HAS DELIBERATELY PUT IN THE ARCHIVE — every one a sync has
+   * completed on, in this session or in any previous run of the app.
+   *
+   * This is what makes a green mark survive a restart. Not by restoring the mark, which would
+   * be a claim nobody had checked, but by knowing which rows are worth checking: the startup
+   * pass re-verifies each of these against the share, and the sidebar finishes the ones that
+   * have drifted without asking. A week that was backed up a month ago and has since gained
+   * 12 MB of renders goes green again on its own, exactly as it was left.
+   *
+   * A folder NOT in here is never checked for drift and never uploaded unprompted — it was
+   * never put in the archive, so there is nothing about it to keep in sync.
+   *
+   * Seeded from the host's record on `init`, and added to by every successful transfer. Empty
+   * on a host with no such record, which is precisely the old behaviour: marks for a session,
+   * uploads only on a click.
+   */
+  private intentional = new Set<string>();
 
   constructor(@Inject(EDITOR_HOST) private host: EditorHost) {
     this.supported = typeof this.host.archiveStatus === 'function'
@@ -183,6 +205,10 @@ export class ArchiveService implements OnDestroy {
   async init(): Promise<void> {
     if (!this.supported) return;
     this.attachListeners();
+
+    // BEFORE the probe, so that whichever way the probe lands, the rows already know which of
+    // them are the operator's to keep up to date.
+    await this.loadIntentional();
 
     try {
       let status = await this.host.archiveStatus!();
@@ -219,6 +245,63 @@ export class ArchiveService implements OnDestroy {
     } catch (err: any) {
       this.adoptStatus(false, this.root, err?.message || String(err));
     }
+  }
+
+  /**
+   * Read which folders the operator has synced before, from the host's record.
+   *
+   * A HOST WITHOUT THE RECORD IS NOT AN ERROR — it leaves the set empty, and the sidebar
+   * behaves exactly as it did before this existed. A host that HAS it and cannot read it IS
+   * an error, and it goes on the pane's error line rather than being swallowed: the cost is
+   * that weeks the operator set up will silently stop being kept current, which is the one
+   * failure this feature exists to prevent. It is said out loud and the app carries on with
+   * click-to-sync, rather than guessing at a list of folders to upload.
+   */
+  private async loadIntentional(): Promise<void> {
+    if (!this.host.archiveSyncedPaths) return;
+    try {
+      const record = await this.host.archiveSyncedPaths();
+      this.intentional = new Set(record.synced.map(e => this.key(e.path)));
+    } catch (err: any) {
+      this.errorSubject.next(
+        `The record of what has been archived could not be read: ${err?.message || String(err)}. ` +
+        `Nothing will be re-checked or re-synced automatically until it is fixed — the sync ` +
+        `buttons still work.`
+      );
+    }
+  }
+
+  /**
+   * Has a sync ever completed on this exact folder?
+   *
+   * The question the automatic pass asks before it uploads anything. It is about the folder
+   * the operator ACTED ON, not about coverage: a day inside a week that was synced as a week
+   * is recorded too, because that week's push really did complete on it.
+   */
+  wasIntentionallySynced(localPath: string): boolean {
+    return this.intentional.has(this.key(localPath));
+  }
+
+  /**
+   * Start a sync THE OPERATOR DID NOT JUST CLICK — resuming a folder they had already put in
+   * the archive and which has since drifted.
+   *
+   * Separate from `sync` for one reason that matters: a click on something already running
+   * means STOP, and `sync` implements that. Reaching that branch from an automatic pass would
+   * silently cancel a transfer the operator started, which is the exact opposite of the job.
+   * So anything already in flight or waiting is left alone here, and it returns false.
+   *
+   * Refuses on an unreachable archive rather than queueing against a share nobody can see.
+   */
+  async autoSync(localPath: string, kind: 'week' | 'day', days: string[] = []): Promise<boolean> {
+    if (!this.supported || !this.available) return false;
+    if (!this.wasIntentionallySynced(localPath)) return false;
+
+    const group = kind === 'week' ? [...days, localPath] : [localPath];
+    if (group.some(p => this.isActive(p))) return false;
+
+    await this.sync(localPath, kind, days);
+    return true;
   }
 
   /**
@@ -558,6 +641,10 @@ export class ArchiveService implements OnDestroy {
       this.totalBytes.delete(p);
       this.weekExtras.delete(p);
       this.destPaths.delete(p);
+      // The folder is gone, so it is no longer anything to keep in the archive. The host
+      // prunes its own record as part of the delete; this keeps the session in step with it,
+      // so nothing in this window tries to re-sync a path that no longer exists.
+      this.intentional.delete(this.key(p));
     }
     this.rowsSubject.next(rows);
   }
@@ -759,6 +846,10 @@ export class ArchiveService implements OnDestroy {
       // Where it actually landed, from the transfer itself. Same purpose as the one a check
       // records: the delete confirmation names this folder, and never one it worked out.
       this.destPaths.set(r.localPath, r.destPath);
+      // This folder is now the operator's to keep in the archive. The host writes the same
+      // fact to disk for the next launch; this is the copy THIS session reads, so a folder
+      // synced a minute ago is already covered by a refresh a minute later.
+      this.intentional.add(this.key(r.localPath));
       this.paint(r.localPath, {
         state: 'done', label: null, percent: null, counter: null, speed: null,
         detail: `${moved} → ${r.destPath}${skipped}`
@@ -810,11 +901,27 @@ export class ArchiveService implements OnDestroy {
   }
 
   private idleDetail(localPath: string): string {
-    return `Sync ${this.leaf(localPath)} to ${this.root || 'the archive'}`;
+    const where = `Sync ${this.leaf(localPath)} to ${this.root || 'the archive'}`;
+    // A row that is about to start uploading without being clicked says so. The transfer is
+    // what the operator asked for when they synced this folder, but it is not what they did
+    // in the last five seconds, and a spinner appearing on its own with no explanation is
+    // indistinguishable from a bug.
+    return this.wasIntentionallySynced(localPath)
+      ? `${where}.\nThis folder is kept in the archive: it is checked when the app opens, and ` +
+        `anything it still owes is sent without being asked.`
+      : where;
   }
 
   private leaf(p: string): string {
     return p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
+  }
+
+  /**
+   * A folder path as the intent set keys it. Trailing separators only, so the same folder is
+   * never held under two spellings — the host normalises identically when it writes.
+   */
+  private key(p: string): string {
+    return p.replace(/[\\/]+$/, '');
   }
 
   private humanBytes(n: number): string {

@@ -44,6 +44,14 @@
           aria-label="Dismiss">✕</button>
 </div>
 
+<!-- Uploads that started without a click, on folders the operator had already archived. The
+     pane never consumes the network in silence any more than it edits the list in silence. -->
+<div class="pp-notice" *ngIf="resumeNotice">
+  <span class="pp-notice-text">{{ resumeNotice }}</span>
+  <button class="pp-notice-x" (click)="dismissResumeNotice()" title="Dismiss"
+          aria-label="Dismiss">✕</button>
+</div>
+
 <div class="pp-list" [class.dragover]="dragOver"
      (dragover)="onDragOver($event)" (dragleave)="onDragLeave($event)" (drop)="onDrop($event)">
 

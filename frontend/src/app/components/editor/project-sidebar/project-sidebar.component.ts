@@ -87,6 +87,15 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
   archiveError: string | null = null;
   /** "Removed N projects whose folders are gone" — the list never changes itself in silence. */
   prunedNotice: string | null = null;
+  /**
+   * "Finishing 2 weeks that had fallen behind" — the same rule applied to transfers.
+   *
+   * Uploads that nobody just clicked are the one thing in this pane that can consume the
+   * network for hours on its own, and they are only ever started on folders the operator has
+   * already put in the archive. That is a promise being kept rather than a surprise, but it
+   * is still said out loud, with the names, and dismissed with the ✕.
+   */
+  resumeNotice: string | null = null;
   dragOver = false;
 
   /**
@@ -218,6 +227,10 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
 
   dismissPrunedNotice(): void {
     this.projectsService.clearPrunedNotice();
+  }
+
+  dismissResumeNotice(): void {
+    this.resumeNotice = null;
   }
 
   ngOnDestroy(): void {
@@ -595,6 +608,12 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
 
     this.refreshing = true;
     this.cdr.markForCheck();
+    // Folders the operator had already put in the archive that this pass finds behind. They
+    // are COLLECTED here and started after every check has run, never as they are found: the
+    // archive queue serializes checks against transfers, so kicking off a four-hour week the
+    // moment it is spotted would park every remaining week's verification behind it, and the
+    // marks the operator is watching would arrive one upload at a time.
+    const behind: Array<{ path: string; kind: 'week' | 'day'; days: string[] }> = [];
     try {
       for (const group of this.groups) {
         if (!group.path) continue;
@@ -610,7 +629,10 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
         const settled = await this.archive.refresh(group.path, present, force);
         // Only a week that actually got an answer is struck off. One skipped because the
         // archive was unreachable must remain eligible for the next attempt.
-        if (settled) this.autoCheckedWeeks.add(group.path);
+        if (settled) {
+          this.autoCheckedWeeks.add(group.path);
+          this.collectBehind(group.path, present, behind);
+        }
         this.cdr.markForCheck();
       }
       // Same pass, same question asked of the other side: what the server holds that this
@@ -620,6 +642,67 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
       this.refreshing = false;
       this.cdr.markForCheck();
     }
+
+    // Outside the `finally`, so the refresh spinner stops when the CHECKING stops. What
+    // follows is transfers, and each one is drawn on its own row.
+    await this.resumeBehind(behind);
+  }
+
+  /**
+   * Which of this week's rows the operator had already put in the archive and which the check
+   * just found behind.
+   *
+   * `syncState`, not `displaySyncState`: a week whose days are all archived reads green while
+   * the week folder itself still owes the archive its Final Cut library and `complete/`, and
+   * that hollow green check is exactly the case this is here to finish. The underlying state
+   * is `idle`, and after a check that settled, `idle` means one thing — it has something to
+   * send.
+   *
+   * A synced WEEK swallows its days: `sync(week)` already queues a job per day plus the week
+   * folder, so listing them separately would queue each day twice.
+   */
+  private collectBehind(
+    week: string,
+    days: string[],
+    out: Array<{ path: string; kind: 'week' | 'day'; days: string[] }>
+  ): void {
+    if (this.archive.wasIntentionallySynced(week) && this.syncState(week) === 'idle') {
+      out.push({ path: week, kind: 'week', days });
+      return;
+    }
+    for (const day of days) {
+      if (!this.archive.wasIntentionallySynced(day)) continue;
+      if (this.syncState(day) !== 'idle') continue;
+      out.push({ path: day, kind: 'day', days: [] });
+    }
+  }
+
+  /**
+   * Finish the folders the operator had already put in the archive.
+   *
+   * Nothing here can start an upload of a folder that has never been synced — `autoSync`
+   * refuses one — so the worst this can do is send what the operator asked to be sent, later
+   * than they asked for it. It also refuses anything already running or queued, which is what
+   * keeps a second pass from cancelling the transfers the first one started.
+   */
+  private async resumeBehind(
+    behind: Array<{ path: string; kind: 'week' | 'day'; days: string[] }>
+  ): Promise<void> {
+    if (behind.length === 0) return;
+
+    const started: string[] = [];
+    for (const job of behind) {
+      if (await this.archive.autoSync(job.path, job.kind, job.days)) {
+        started.push(this.basename(job.path));
+      }
+    }
+    if (started.length === 0) return;
+
+    this.resumeNotice =
+      `${started.length === 1 ? 'Finishing' : `Finishing ${started.length}`} ` +
+      `${started.length === 1 ? 'a folder' : 'folders'} already in the archive that had ` +
+      `fallen behind: ${started.join(', ')}.`;
+    this.cdr.markForCheck();
   }
 
   /**
