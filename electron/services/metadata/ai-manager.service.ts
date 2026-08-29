@@ -7,7 +7,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { spawn } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import * as os from 'os';
 import * as yaml from 'js-yaml';
 import axios, { AxiosInstance } from 'axios';
@@ -1889,13 +1889,90 @@ export class AIManagerService {
    * carried over via --system-prompt, and the model is ALWAYS sonnet — that is the option's
    * declared meaning, not a default.
    *
-   * FAILS LOUDLY, never falls through to the API: a spawn error (binary not on PATH — a GUI
-   * launch does not inherit the shell's PATH) or a nonzero exit throws naming the fix.
-   * Falling back to the API would silently bill the key this transport exists to protect.
+   * FAILS LOUDLY, never falls through to the API: an unresolvable binary or a nonzero exit
+   * throws naming the fix. Falling back to the API would silently bill the key this transport
+   * exists to protect.
+   *
+   * The binary is LOOKED UP rather than assumed to be on PATH — a GUI launch does not inherit
+   * the shell's, and this used to fail with ENOENT in the packaged app while working in every
+   * terminal. See resolveClaudeBinary.
    *
    * Cancellation kills the child; unlike the API path there is no server-side abort, so the
    * kill is the whole cancel.
    */
+  /**
+   * Where `claude` actually is, asked of the operator's own login shell.
+   *
+   * A DOUBLE-CLICKED APP DOES NOT INHERIT A SHELL'S PATH. macOS hands a GUI launch the bare
+   * `/usr/bin:/bin:/usr/sbin:/sbin`, and `claude` on this machine lives under nvm
+   * (`~/.nvm/versions/node/<version>/bin`), a directory that exists only because a shell rc
+   * file put it there. So `spawn('claude')` from the packaged app failed with ENOENT while the
+   * exact same command worked in every terminal the operator had open — and the error told
+   * them to relaunch from a terminal, which is a workaround for a lookup this can just do.
+   *
+   * The lookup is `command -v` in the operator's own shell, because that is the same question
+   * their terminal answers, asked the same way. Not a hardcoded list of install locations: the
+   * nvm path carries a node version in it and would be wrong the day node is upgraded, which
+   * is exactly the silently-substituted-binary failure this codebase refuses elsewhere (see
+   * BinaryResolver).
+   *
+   * `-ilc`, AND THE `i` IS NOT OPTIONAL. A login shell alone (`-lc`) reads .zshenv/.zprofile
+   * and answers with nothing here — nvm is set up in .zshrc, which only an INTERACTIVE shell
+   * sources. Measured from an environment stripped to a GUI launch's PATH: `-lc` returned an
+   * empty string, `-ilc` returned the real path. A login shell appeared to work only when it
+   * was handed a PATH that already had the answer in it.
+   *
+   * The value is fenced in sentinels because an interactive shell runs the operator's whole
+   * .zshrc, and anything in there that prints lands on the same stdout. Reading between the
+   * markers takes the answer and ignores the greeting.
+   *
+   * THROWS when the shell cannot name it — there is no second strategy and no bare-name
+   * attempt, because a spawn that then fails somewhere later with a worse message is the bug,
+   * not the fix. Cached on success only, so fixing an install and retrying does not need a
+   * restart.
+   */
+  private static claudeBinaryPath: string | null = null;
+
+  private resolveClaudeBinary(): string {
+    if (AIManagerService.claudeBinaryPath) return AIManagerService.claudeBinaryPath;
+
+    // The operator's OWN shell, so their own rc files are the ones consulted. The default is
+    // resolved at the read site per this app's convention; macOS has made zsh the login shell
+    // since Catalina.
+    const shell = process.env.SHELL || '/bin/zsh';
+    const script = 'printf __CS_CLAUDE__%s__CS_END__ "$(command -v claude)"';
+    let out = '';
+    try {
+      out = execFileSync(shell, ['-ilc', script], {
+        encoding: 'utf8',
+        timeout: 30_000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err: any) {
+      throw new Error(
+        `the claude-cli transport could not locate the \`claude\` binary: \`${shell} -ilc\` ` +
+        `failed (${err?.message || String(err)}). Install Claude Code, or route this field to ` +
+        `a different model.`
+      );
+    }
+
+    const found = (/__CS_CLAUDE__([\s\S]*?)__CS_END__/.exec(out)?.[1] || '').trim();
+    // `command -v` answers with nothing when there is no claude, and can name a shell function
+    // or an alias rather than a file. Only a real executable is accepted — spawning anything
+    // else fails later and less clearly.
+    if (!found || !fs.existsSync(found)) {
+      throw new Error(
+        `the claude-cli transport could not locate the \`claude\` binary: \`${shell} -ilc ` +
+        `'command -v claude'\` answered ${found ? `"${found}", which is not a file on disk` : 'nothing'}. ` +
+        `Install Claude Code, or route this field to a different model.`
+      );
+    }
+
+    log.info(`[AIManager] resolved claude to ${found} (via ${shell} -ilc)`);
+    AIManagerService.claudeBinaryPath = found;
+    return found;
+  }
+
   private makeClaudeCliRequest(prompt: string, cliModel: string, plain?: boolean): Promise<string | null> {
     const system = plain
       ? SYSTEM_PROMPTS.PLAIN_SYSTEM
@@ -1910,12 +1987,23 @@ export class AIManagerService {
     const hermeticCwd = path.join(os.tmpdir(), 'contentstudio-claude-cli');
     fs.mkdirSync(hermeticCwd, { recursive: true });
 
+    // Resolved BEFORE the promise, so a missing binary throws to the caller as itself rather
+    // than as a rejection racing the spawn.
+    const binary = this.resolveClaudeBinary();
+
     return new Promise<string | null>((resolve, reject) => {
-      const child = spawn('claude', ['-p', '--model', cliModel, '--system-prompt', system], {
+      const child = spawn(binary, ['-p', '--model', cliModel, '--system-prompt', system], {
         stdio: ['pipe', 'pipe', 'pipe'],
         cwd: hermeticCwd,
-        // A run inside a Claude Code session must not inherit its entrypoint state.
-        env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: undefined } as NodeJS.ProcessEnv,
+        env: {
+          ...process.env,
+          // The CLI's own directory goes on the child's PATH for the same reason the binary
+          // had to be resolved at all: a GUI launch has none of it, and anything the CLI
+          // shells out to would hit the identical ENOENT one level deeper.
+          PATH: `${path.dirname(binary)}${path.delimiter}${process.env.PATH || ''}`,
+          // A run inside a Claude Code session must not inherit its entrypoint state.
+          CLAUDE_CODE_ENTRYPOINT: undefined,
+        } as NodeJS.ProcessEnv,
       });
 
       const abortSignal = this.config.abortSignal;
@@ -1933,11 +2021,16 @@ export class AIManagerService {
       child.on('error', (error: NodeJS.ErrnoException) => {
         clearTimeout(timer);
         abortSignal?.removeEventListener('abort', onAbort);
+        // ENOENT here no longer means "not on PATH" — the binary was resolved to an existing
+        // file moments ago, so it means the file has since gone or cannot be executed. Said
+        // as what it is, naming the path, rather than repeating the old PATH advice that
+        // would now send the operator after the wrong thing entirely.
         reject(
           error.code === 'ENOENT'
             ? new Error(
-                `the claude-cli transport could not find the \`claude\` binary on this process's PATH — ` +
-                  `launch the app from a terminal where \`claude\` runs, or route this field to a different model`
+                `the claude-cli transport resolved \`claude\` to ${binary}, but spawning it failed ` +
+                  `with ENOENT — the file has gone, or it is not executable. Reinstall Claude Code, ` +
+                  `or route this field to a different model.`
               )
             : error
         );
