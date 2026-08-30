@@ -55,6 +55,33 @@ export interface OllamaPlainRequest {
   /** Output budget. Sized for THINKING as much as the answer — see the callers. */
   numPredict: number;
   keepAlive?: string;
+  /**
+   * Sampling temperature, sent only when set. The 2026-08-24 no-sampling-parameters ruling
+   * stands for every ordinary call — provider defaults, and a model that cannot perform there
+   * is replaced, not tuned. This field exists for the ONE caller that ruling was never about:
+   * the chapter stage's consensus sampling (2026-08-30 campaign), which asks the same question
+   * several times ON PURPOSE and majority-votes the answers. Diversity across those samples is
+   * the mechanism, not a rescue, and 0.7 is the measured setting (chapter-campaign ledger,
+   * rounds 8-12: default temp gave 19-vs-14-chapter run variance; 0.2 froze one mediocre
+   * reading; 0.7 with a >=3-of-5 vote produced the boundary sets that matched the shipped
+   * baseline). Leave it unset everywhere else.
+   */
+  temperature?: number;
+  /**
+   * `false` disables the model's thinking pass — set ONLY by the chapter stage's consensus
+   * samples and its name-scaffold call (2026-08-30 campaign), and it changes the TRANSPORT:
+   * the request goes to /api/chat, where `think: false` genuinely turns thinking off and the
+   * answer arrives alone in `message.content`. It must never be sent to /api/generate — trap 2
+   * (ollama-json.ts): there it does not disable thinking, it RELOCATES the reasoning into
+   * `response`, which for a plain call means reasoning prose above the answer lines.
+   *
+   * Why it exists: five consensus samples at temperature 0.7 with thinking ON produced
+   * 15-minute reasoning loops on a 10-minute video (verified on the first integration run);
+   * the campaign's measured recipe ran /api/chat + think:false for every sample all night at
+   * about a minute per sample with clean line output. Leave it unset everywhere else: the
+   * detail calls' quality was measured with thinking on, and they keep it.
+   */
+  think?: false;
   timeoutMs: number;
   signal?: AbortSignal;
   /** What this call is FOR, in a few words. The noun in every log and error message here. */
@@ -80,22 +107,38 @@ export async function askOllamaPlain(
   client: AxiosInstance,
   request: OllamaPlainRequest
 ): Promise<OllamaPlainResult> {
+  const options = {
+    num_ctx: request.numCtx,
+    num_predict: request.numPredict,
+    ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+  };
   let data: any;
   try {
-    const response = await client.post(
-      '/api/generate',
-      {
-        model: request.model,
-        prompt: request.prompt,
-        stream: false,
-        keep_alive: request.keepAlive || PLAIN_KEEP_ALIVE,
-        options: {
-          num_ctx: request.numCtx,
-          num_predict: request.numPredict,
-        },
-      },
-      { timeout: request.timeoutMs, signal: request.signal }
-    );
+    const response =
+      request.think === false
+        ? await client.post(
+            '/api/chat',
+            {
+              model: request.model,
+              messages: [{ role: 'user', content: request.prompt }],
+              stream: false,
+              think: false,
+              keep_alive: request.keepAlive || PLAIN_KEEP_ALIVE,
+              options,
+            },
+            { timeout: request.timeoutMs, signal: request.signal }
+          )
+        : await client.post(
+            '/api/generate',
+            {
+              model: request.model,
+              prompt: request.prompt,
+              stream: false,
+              keep_alive: request.keepAlive || PLAIN_KEEP_ALIVE,
+              options,
+            },
+            { timeout: request.timeoutMs, signal: request.signal }
+          );
     data = response.data;
   } catch (error) {
     throw plainTransportError(error, request);
@@ -111,7 +154,15 @@ export async function askOllamaPlain(
     };
   }
 
-  const text = stripThinking(typeof data?.response === 'string' ? data.response : '');
+  const raw =
+    request.think === false
+      ? typeof data?.message?.content === 'string'
+        ? data.message.content
+        : ''
+      : typeof data?.response === 'string'
+        ? data.response
+        : '';
+  const text = stripThinking(raw);
   if (text.length === 0) {
     // The `thinking` field is deliberately NOT read as the answer here: without a JSON
     // grammar there is nothing to push the answer into it, so a run whose `response` is

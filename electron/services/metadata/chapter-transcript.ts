@@ -170,14 +170,19 @@ export interface ChapterRunStats {
   durationSeconds: number;
   /** Which rung of the prompt's cadence band this runtime landed on. */
   band: CadenceBand;
-  /** Chapters the one call claimed, before any were dropped for an unmappable quote. */
+  /**
+   * Distinct boundary candidates stage 1 proposed. On a consensus run (local transport,
+   * several samples — 2026-08-30 campaign) this is the count of vote clusters; on a
+   * single-sample run it is the old meaning, the chapters the one call claimed.
+   */
   chaptersClaimed: number;
-  /** ...and how many of those quotes measured to a time ahead of the previous chapter. */
+  /** ...and how many of those survived to the published list. */
   chaptersMapped: number;
   /**
-   * Claimed chapters DROPPED because their quote could not be measured: it is not in the
-   * transcript, or it resolves behind a chapter already placed. Each one is also named in
-   * `warnings` — this is the count for the report, not the account for the user.
+   * Candidates DROPPED before publishing. Single-sample: quotes that could not be measured
+   * (not in the transcript, or behind a chapter already placed), each also named in
+   * `warnings`. Consensus: clusters that failed the vote — which is the mechanism working,
+   * so those are counted here but NOT warned about one by one.
    */
   chaptersDropped: number;
   /**
@@ -453,6 +458,56 @@ export function findQuoteTime(quote: string, cues: Cue[]): number | null {
   }
 
   return null;
+}
+
+// =============================================================================
+// CONSENSUS VOTING — the pure half of stage 1's sampling (2026-08-30 campaign)
+// =============================================================================
+
+/** One boundary candidate after clustering: the time that represents it, and its vote count. */
+export interface BoundaryVote {
+  /** The median member's time — always a measured cue start, never an average of them. */
+  time: number;
+  /** How many DISTINCT samples put a boundary inside this cluster. */
+  votes: number;
+}
+
+/**
+ * Cluster boundary times from several stage-1 samples and count each cluster's votes.
+ *
+ * WHY THIS EXISTS (chapter-campaign ledger, rounds 8-12): one stage-1 sample is one reading
+ * of the video's structure, and at provider-default temperature two readings of the SAME
+ * video differ by five chapters. Lowering temperature freezes ONE reading, mediocre parts
+ * included. Asking several times and keeping the boundaries most samples agree on kills both
+ * the run-to-run variance and the sliver chapters, and the boundaries it keeps matched the
+ * shipped baseline's on the measured corpus.
+ *
+ * Times within `clusterWindowSec` of the cluster's LAST member join it (greedy, in time
+ * order); a sample voting twice inside one cluster still counts once. The representative is
+ * the median member, which is a real measured time from a real sample — never an arithmetic
+ * mean, which would be a time no sample measured.
+ */
+export function voteBoundaries(sampleTimes: number[][], clusterWindowSec: number): BoundaryVote[] {
+  const all: { time: number; sample: number }[] = [];
+  sampleTimes.forEach((times, sample) => {
+    for (const time of times) all.push({ time, sample });
+  });
+  all.sort((a, b) => a.time - b.time);
+
+  const clusters: { members: { time: number; sample: number }[] }[] = [];
+  for (const entry of all) {
+    const last = clusters[clusters.length - 1];
+    if (last && entry.time - last.members[last.members.length - 1].time <= clusterWindowSec) {
+      last.members.push(entry);
+    } else {
+      clusters.push({ members: [entry] });
+    }
+  }
+
+  return clusters.map((cluster) => ({
+    time: cluster.members[Math.floor(cluster.members.length / 2)].time,
+    votes: new Set(cluster.members.map((m) => m.sample)).size,
+  }));
 }
 
 // =============================================================================

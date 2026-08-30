@@ -30,13 +30,25 @@
  *                         derives the COUNT. A longer transcript rolls: the next window
  *                         starts at the last boundary the previous one mapped, so the tail
  *                         is re-read in full context and no seam splits a subject.
+ *                         ON THE LOCAL TRANSPORT each window is asked FIVE TIMES and the
+ *                         boundaries are put to a vote (2026-08-30 campaign — see the
+ *                         consensus constants below for the measurement); the cloud path
+ *                         keeps its measured-good single ask.
  *   2. MAP        code    each quoted sentence -> a second, forwards only, against that
- *                         window's caption word stream. Unmappable is DROPPED and named,
- *                         never guessed at.
- *   3. DETAIL     LLM     one call per chapter, from its RAW transcript: a title line and
+ *                         window's caption word stream, per sample. Unmappable casts no
+ *                         vote (single-sample: is DROPPED and named), never guessed at.
+ *                         Then the VOTE: mapped times cluster within 25s and a boundary is
+ *                         published when >=3 of 5 samples agree on it.
+ *   3. SCAFFOLD   LLM     one whole-video call (windowed on long videos): the people and
+ *                         organisations in the video with STANDARD SPELLINGS, shown to
+ *                         every detail call so all chapters spell a garbled name the same
+ *                         way (2026-08-30 campaign: one person, four spellings, without it).
+ *   4. DETAIL     LLM     one call per chapter, from its RAW transcript: a title line and
  *                         the 20-45 word prose the description and tag stages condition on.
+ *                         It sees the last few titles already written, and names what is
+ *                         NEW rather than repeating their angle.
  *
- * 1 + N calls, N being 3 to 8. An hour of video costs 5 to 9 generation calls.
+ * 5-per-window + 1 + N calls locally, N being 3 to 8; 1 + 1 + N on the cloud.
  *
  * WHAT THE MODEL DECIDES AND WHAT CODE DECIDES. The model decides where the chapters are,
  * how many there are, and what they are called. Code decides nothing about content: it
@@ -100,6 +112,7 @@ import {
   mapChapterQuotes,
   normalizeWords,
   runtimePhrase,
+  voteBoundaries,
   ChapterClaim,
   ChapterPipelineResult,
   Cue,
@@ -157,11 +170,37 @@ const ENTITY_SCAFFOLD_LIMIT = 8;
 
 /*
  * No sampling parameters are set anywhere in this pipeline (operator's ruling 2026-08-24:
- * provider defaults everywhere; a model that cannot perform there is replaced, not tuned).
- * The earlier temperature-0/seed-0 measurement design is superseded, and the re-ask
- * machinery that once rode on it is GONE with the no-re-asks ruling of the same day: every
- * call is asked once, and what comes back is what the run has.
+ * provider defaults everywhere; a model that cannot perform there is replaced, not tuned) —
+ * WITH ONE MEASURED EXCEPTION, below: stage 1's consensus samples set a temperature, because
+ * diversity across deliberate repeat-asks is their mechanism, not a tuning rescue. The
+ * re-ask machinery that once rode on the old temperature-0 design is GONE with the
+ * no-re-asks ruling of the same day, and consensus is not it coming back: a re-ask asks
+ * again because the first answer failed; consensus asks five times because ONE answer of
+ * this question is a coin-flip, and publishes only what most of them agree on.
  */
+
+/**
+ * STAGE 1 CONSENSUS (2026-08-30 overnight campaign; ledger and run-book in
+ * /Volumes/Callisto/ContentStudio/.contentstudio/chapter-campaign/).
+ *
+ * The measurement that forced this: two stage-1 asks of the SAME prompt on the SAME video at
+ * provider defaults returned 19 and 14 chapters. Variance, not prompt wording, was the
+ * dominant failure — sliver chapters, missed plugs and drifting boundaries all traced to it.
+ * Freezing it with low temperature locked in one mediocre reading instead. What matched the
+ * shipped baseline's boundaries on the measured corpus (including every isolated ad read) was:
+ * ask five times at temperature 0.7, cluster the mapped boundary times within 25 seconds, and
+ * keep the clusters at least three samples voted for.
+ *
+ * LOCAL TRANSPORT ONLY. The cloud models were already measured single-call good (2026-08-24,
+ * u2/dont-be-a-sucker runs), a cloud call costs real money per sample, and the campaign's
+ * evidence is all from the local 27B — so the cloud path keeps its one ask, which is exactly
+ * what SAMPLES=1 degrades to. One pipeline, one code path, two sample counts.
+ */
+const STAGE1_SAMPLES_LOCAL = 5;
+const STAGE1_SAMPLE_TEMPERATURE = 0.7;
+const CONSENSUS_CLUSTER_SECONDS = 25;
+/** ceil(samples * this) votes keep a boundary: 3 of 5, and 1 of 1 on the cloud path. */
+const CONSENSUS_VOTE_FRACTION = 0.6;
 
 
 /**
@@ -304,6 +343,8 @@ export class WholeTranscriptChapterService {
   private numCtx = 0;
   private speakerTagged = false;
   private groundingUsable = false;
+  /** The whole-video name list (standard spellings), comma-joined. Empty when it could not be written. */
+  private nameScaffold = '';
 
   constructor(options: WholeTranscriptChapterOptions) {
     this.options = options;
@@ -400,13 +441,20 @@ export class WholeTranscriptChapterService {
       })),
     ];
 
+    // ---- the name scaffold: one whole-video list every detail call reads ------
+    this.nameScaffold = await this.wholeVideoNameScaffold(cues);
+
     // ---- stage 3: one call per chapter for its detail -------------------------
     const working = await this.detailChapters(spans, cues);
 
     const chapters = this.toChapters(working, durationSeconds);
     log.info(
       `[Chapters] ${chapters.length} chapters in ${this.calls} model calls` +
-        (dropped > 0 ? ` (${dropped} dropped for an unmeasurable opening sentence)` : '') +
+        (dropped > 0
+          ? this.options.cloudPlain
+            ? ` (${dropped} dropped for an unmeasurable opening sentence)`
+            : ` (${dropped} candidate boundary(ies) failed the consensus vote or could not be measured)`
+          : '') +
         ': ' +
         chapters.map((c) => `${c.timestamp} ${c.title}`).join(' | ')
     );
@@ -537,32 +585,82 @@ export class WholeTranscriptChapterService {
       const windowEndSec = windowCues[windowCues.length - 1].endSec;
       ranges.push(`${formatClock(windowStartSec)}-${formatClock(windowEndSec)}`);
 
-      const answer = await this.askWindow(windowCues, ranges.length);
-      claimed += answer.claims.length;
+      // CONSENSUS SAMPLING (see the constants block): several asks of the same window on the
+      // local transport, one on the cloud. Each sample's quotes are measured exactly as one
+      // call's always were; what changes is that a boundary is published on AGREEMENT rather
+      // than on one sample's say-so.
+      const sampleCount = this.options.cloudPlain ? 1 : STAGE1_SAMPLES_LOCAL;
+      const sampleTimes: number[][] = [];
+      for (let sample = 1; sample <= sampleCount; sample++) {
+        const answer = await this.askWindow(windowCues, ranges.length, sample, sampleCount);
+        if (!answer) continue; // a lost vote, already warned about — the vote absorbs it
+        if (sampleCount === 1) claimed += answer.claims.length;
 
-      const mappings = mapChapterQuotes(answer.claims, windowCues);
-      for (const mapping of mappings) {
-        if (mapping.status === 'mapped') {
-          log.info(
-            `[Chapters] boundary at ${formatClock(mapping.time!)}: "${mapping.quote.slice(0, 60)}"`
-          );
-          continue;
+        const mappings = mapChapterQuotes(answer.claims, windowCues);
+        for (const mapping of mappings) {
+          if (mapping.status === 'mapped') {
+            log.info(
+              `[Chapters] sample ${sample}/${sampleCount} boundary at ${formatClock(mapping.time!)}: ` +
+                `"${mapping.quote.slice(0, 60)}"`
+            );
+            continue;
+          }
+          // Single-sample: the old declared drop — that quote was the only measurement there
+          // was. Consensus: one sample failing to cast a vote at one spot is what the vote
+          // threshold exists to absorb, so it is logged, not warned — a warning per occurrence
+          // would report the mechanism working as a defect several times a run.
+          if (sampleCount === 1) {
+            dropped++;
+            this.warn(
+              mapping.status === 'out-of-order'
+                ? `a chapter boundary was DROPPED: its opening sentence ("${mapping.quote.slice(0, 60)}") is in ` +
+                    `this transcript at ${formatClock(mapping.wholeVideoTime!)}, which is not after the boundary ` +
+                    `before it, so the model listed it out of order or quoted a sentence the speaker says twice`
+                : `a chapter boundary was DROPPED: its opening sentence ("${mapping.quote.slice(0, 60)}") is not ` +
+                    `in this transcript, so there is no measured time for it and nothing is guessed at`
+            );
+          } else {
+            log.info(
+              `[Chapters] sample ${sample}/${sampleCount}: a quote did not map ` +
+                `("${mapping.quote.slice(0, 60)}") — that sample casts no vote there`
+            );
+          }
         }
-        dropped++;
-        this.warn(
-          mapping.status === 'out-of-order'
-            ? `a chapter boundary was DROPPED: its opening sentence ("${mapping.quote.slice(0, 60)}") is in ` +
-                `this transcript at ${formatClock(mapping.wholeVideoTime!)}, which is not after the boundary ` +
-                `before it, so the model listed it out of order or quoted a sentence the speaker says twice`
-            : `a chapter boundary was DROPPED: its opening sentence ("${mapping.quote.slice(0, 60)}") is not ` +
-                `in this transcript, so there is no measured time for it and nothing is guessed at`
+        sampleTimes.push(mappings.filter((m) => m.status === 'mapped').map((m) => m.time!));
+      }
+
+      if (sampleTimes.length === 0) {
+        throw new Error(
+          `The chapter call on ${this.options.model} returned no usable boundary list in any of ` +
+            `${sampleCount} sample(s) (see the log for what came back). Nothing is substituted and nothing ` +
+            `more is asked: these calls are the chapter list, and the fix belongs at the source — the ` +
+            `prompt, the window size, or the model.`
+        );
+      }
+
+      // The vote. On the single-sample path every mapped time is its own one-vote cluster and
+      // the threshold is 1, so this stage is exactly the old behavior there.
+      const minVotes = Math.max(1, Math.ceil(sampleTimes.length * CONSENSUS_VOTE_FRACTION));
+      const candidates = voteBoundaries(sampleTimes, CONSENSUS_CLUSTER_SECONDS);
+      const kept = candidates.filter((c) => c.votes >= minVotes);
+      if (sampleCount > 1) {
+        claimed += candidates.length;
+        dropped += candidates.length - kept.length;
+        log.info(
+          `[Chapters] consensus over ${sampleTimes.length} sample(s): ${candidates.length} candidate ` +
+            `boundaries -> ${kept.length} with >=${minVotes} votes`
         );
       }
 
       // The window's own start is already a chapter start; a line mapping at (or before) it
-      // is the redundant echo described above, not a boundary.
-      const mapped = mappings.filter((m) => m.status === 'mapped').map((m) => m.time!);
-      const fresh = mapped.filter((timeSec) => timeSec > windowStartSec);
+      // is the redundant echo described above, not a boundary. Under consensus the echo zone
+      // widens to one cluster width: at temperature 0.7 several samples quote the video's
+      // SECOND sentence as a turn, which clusters into a "boundary" seconds after the start
+      // (verified on the first integration run — a 5-second opening chapter), and a boundary
+      // closer to the start than the vote's own resolution is the start, restated.
+      const echoZoneSec = sampleCount > 1 ? CONSENSUS_CLUSTER_SECONDS : 0;
+      const mapped = kept.map((c) => c.time).sort((a, b) => a - b);
+      const fresh = mapped.filter((timeSec) => timeSec > windowStartSec + echoZoneSec);
       if (mapped.length > fresh.length) {
         log.info(
           `[Chapters] ${mapped.length - fresh.length} reported boundary(ies) sit at this window's own start ` +
@@ -600,15 +698,24 @@ export class WholeTranscriptChapterService {
   }
 
   /**
-   * ONE window's stage-1 call: its transcript slice in, opening-sentence lines out.
+   * ONE window's stage-1 call — one SAMPLE of it, under consensus.
    *
-   * ONE ask, and an unusable answer THROWS — no re-ask (operator, 2026-08-24: "let it fail
-   * and we'll tweak things until it's right"; a retry is a fallback covering the failure the
-   * prompt should be fixed for). These calls ARE the chapter list; resolveChapters records
-   * `chaptersSkipped` with this message on it, so the item says out loud that it has no
-   * chapters and why, which is a state the user sees and fixes at the source.
+   * Single-sample (cloud): an unusable answer THROWS, exactly as it always has — no re-ask
+   * (operator, 2026-08-24: "let it fail and we'll tweak things until it's right"). That call
+   * IS the chapter list.
+   *
+   * Consensus (local, several samples): an unusable answer is ONE LOST VOTE, warned about and
+   * returned as null — the other samples still are the chapter list. This is not a retry in
+   * disguise: nothing is asked again because this answer failed, and a window where EVERY
+   * sample fails still throws (the caller owns that). The sample temperature is the campaign's
+   * measured setting; the single-sample path sends none and stays on provider defaults.
    */
-  private async askWindow(windowCues: Cue[], windowNumber: number): Promise<WindowAnswer> {
+  private async askWindow(
+    windowCues: Cue[],
+    windowNumber: number,
+    sample: number,
+    sampleCount: number
+  ): Promise<WindowAnswer | null> {
     const spanSeconds = windowCues[windowCues.length - 1].endSec - windowCues[0].startSec;
     const prompt = formatPrompt(CHAPTER_PROMPTS.wholeTranscript(this.options.grain), {
       duration: runtimePhrase(spanSeconds),
@@ -617,9 +724,22 @@ export class WholeTranscriptChapterService {
       // to contain a brace token must not be rewritten by a later pass.
       transcript: plainTranscript(windowCues),
     });
-    const what = windowNumber > 1 ? `this video's chapters, window ${windowNumber}` : "this video's chapters";
+    const windowWhat =
+      windowNumber > 1 ? `this video's chapters, window ${windowNumber}` : "this video's chapters";
+    const what = sampleCount > 1 ? `${windowWhat}, sample ${sample}/${sampleCount}` : windowWhat;
 
-    const text = await this.ask('chapters', prompt, what, CHAPTERS_TIMEOUT_MS);
+    // Consensus samples run without the thinking pass, exactly as the campaign measured them:
+    // with it, one temp-0.7 sample can reason for 15 minutes; without it, a sample is about a
+    // minute and the answer shape is the same quote lines. The single-sample (cloud) path is
+    // untouched.
+    const text = await this.ask(
+      'chapters',
+      prompt,
+      what,
+      CHAPTERS_TIMEOUT_MS,
+      sampleCount > 1 ? STAGE1_SAMPLE_TEMPERATURE : undefined,
+      sampleCount > 1 ? false : undefined
+    );
     if (text) {
       try {
         return { claims: readQuoteLines(text, `${what} (chapters)`) };
@@ -627,11 +747,88 @@ export class WholeTranscriptChapterService {
         log.warn(`[Chapters] ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+    if (sampleCount > 1) {
+      this.warn(
+        `stage 1's ${what} returned no usable boundary list, so that sample cast no votes — the ` +
+          `published boundaries rest on the remaining samples' agreement`
+      );
+      return null;
+    }
     throw new Error(
       `The chapter call on ${this.options.model} returned no usable boundary list (see the log for what ` +
         `came back). Nothing is substituted and nothing is re-asked: this call is the chapter list, and ` +
         `the fix belongs at the source — the prompt, the window size, or the model.`
     );
+  }
+
+  // ------------------------------------------------------------------ name scaffold
+
+  /**
+   * ONE list of the video's people and organisations, with standard public spellings, shown
+   * to EVERY detail call (2026-08-30 campaign; ledger in
+   * /Volumes/Callisto/ContentStudio/.contentstudio/chapter-campaign/).
+   *
+   * WHY A MODEL CALL, AND WHY WHOLE-VIDEO. The per-chapter scaffold reads capitalization out
+   * of each chapter's own slice, so a garbled name reaches each chapter in whatever form
+   * whisper left it THERE — and the campaign's held-out run rendered one person four ways
+   * across four chapters ("Johnny N. Lowe" / "Johnny envelope" / "Johnny Unlow" / "Johnny and
+   * low lay"). No per-chapter prompt can fix that: each call corrects blindly, alone. One
+   * whole-video list, shown to every detail call with "use exactly these spellings", made
+   * every chapter agree. A bigger model does NOT fix the garble itself — the 72B also wrote
+   * "Johnny N. Lowe" — so consistent-and-garbled is the local ceiling, and one consistent
+   * spelling is one operator spot-fix instead of four.
+   *
+   * Windowed under stage 1's word budget so it can never outgrow the run's context window;
+   * window lists are merged, deduped case-insensitively, and capped — past a point a scaffold
+   * stops being a spelling reference and starts being a checklist.
+   *
+   * FAILURE IS A DECLARED DEGRADATION, never a throw: with no scaffold the detail calls keep
+   * the per-chapter capitalization scaffold they always had, and the run says so once.
+   */
+  private static readonly NAME_SCAFFOLD_MAX = 40;
+
+  private async wholeVideoNameScaffold(cues: Cue[]): Promise<string> {
+    const budgetWords = this.windowWordBudget();
+    const names: string[] = [];
+    const seen = new Set<string>();
+    let answered = 0;
+    let windows = 0;
+    let from = 0;
+    while (from < cues.length && names.length < WholeTranscriptChapterService.NAME_SCAFFOLD_MAX) {
+      const to = WholeTranscriptChapterService.windowEnd(cues, from, budgetWords);
+      windows++;
+      const prompt = formatPrompt(CHAPTER_PROMPTS.NAME_SCAFFOLD, {
+        transcript: plainTranscript(cues.slice(from, to)),
+      });
+      const what = windows > 1 ? `this video's name list, window ${windows}` : "this video's name list";
+      // No thinking pass: listing names is transcription, not reasoning, and the campaign ran
+      // this call thinking-off. On the cloud transport `ask` ignores both extra arguments.
+      const text = await this.ask('detail', prompt, what, DETAIL_TIMEOUT_MS, undefined, false);
+      if (text) {
+        try {
+          for (const line of parseLines(text, `${what} (chapters)`)) {
+            const key = line.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+            if (key.length === 0 || seen.has(key)) continue;
+            if (names.length >= WholeTranscriptChapterService.NAME_SCAFFOLD_MAX) break;
+            seen.add(key);
+            names.push(line);
+          }
+          answered++;
+        } catch (error) {
+          log.warn(`[Chapters] ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      from = to;
+    }
+    if (answered === 0 || names.length === 0) {
+      this.warn(
+        `the whole-video name list could not be written, so each chapter was scaffolded only by the ` +
+          `capitalized names in its own slice — the same person may be spelled differently across chapters`
+      );
+      return '';
+    }
+    log.info(`[Chapters] name scaffold: ${names.length} name(s) from ${windows} window(s): ${names.join(', ')}`);
+    return names.join(', ');
   }
 
   // ---------------------------------------------------------------------- stage 3
@@ -668,9 +865,11 @@ export class WholeTranscriptChapterService {
       }
 
       const body = this.speakerTagged ? this.transcriptBetween(cues, startSec, endSec, true) : raw;
-      // Per-chapter and never whole-video: the names in THIS slice, so the model is
-      // scaffolded toward what is here and not toward what chapter 2 was about.
-      const entities = this.groundingUsable ? topEntities(raw, ENTITY_SCAFFOLD_LIMIT) : [];
+      // The whole-video name scaffold when it exists (cross-chapter spelling consistency —
+      // see wholeVideoNameScaffold); the per-chapter capitalization scaffold is the declared
+      // degradation when it does not, warned about once where the list failed to be written.
+      const entities =
+        !this.nameScaffold && this.groundingUsable ? topEntities(raw, ENTITY_SCAFFOLD_LIMIT) : [];
       const what = `chapter ${i + 1}/${spans.length} (${formatClock(startSec)}-${formatClock(endSec)})`;
       const prompt = formatPrompt(
         this.speakerTagged ? CHAPTER_PROMPTS.SUMMARIZE_CHAPTER_TAGGED : CHAPTER_PROMPTS.SUMMARIZE_CHAPTER,
@@ -678,9 +877,11 @@ export class WholeTranscriptChapterService {
           number: i + 1,
           video: this.options.videoTitle || 'untitled',
           promoted_items: this.promotedItemsLine(),
-          context_lines: this.contextLines(previousDetail),
-          entity_scaffold:
-            entities.length > 0
+          context_lines: this.contextLines(previousDetail, chapters.slice(-3).map((c) => c.title)),
+          entity_scaffold: this.nameScaffold
+            ? `\nPeople and organisations in this video, with standard spellings — when this chapter's ` +
+              `title or summary refers to one of them, use exactly these spellings: ${this.nameScaffold}.\n`
+            : entities.length > 0
               ? `\nNames this chapter's transcript uses, to build the title around where they fit: ${entities.join(', ')}.\n`
               : '',
           transcript: body,
@@ -735,16 +936,27 @@ export class WholeTranscriptChapterService {
   }
 
   /**
-   * The two context lines above the transcript: the channel, and the previous chapter.
+   * The context lines above the transcript: the channel, the previous chapter's detail, and
+   * the last few chapter TITLES with a do-not-repeat instruction.
    *
-   * Both are context seeding — give the model whatever real context exists. The previous
+   * All are context seeding — give the model whatever real context exists. The previous
    * detail is the deleted pipeline's law and has always been here; the channel is only
-   * present when the caller had one to give.
+   * present when the caller had one to give. The recent-titles line is the 2026-08-30
+   * campaign's fix for adjacent near-duplicate titles: two neighbouring chapters about the
+   * same claim were both titled by it ("Trump is King Cyrus", twice) until the call could
+   * SEE the titles already written and was told to name what is new instead.
    */
-  private contextLines(previousDetail: string): string {
+  private contextLines(previousDetail: string, previousTitles: string[]): string {
     const lines: string[] = [];
     if (this.options.channelName) lines.push(`Channel: ${this.options.channelName}`);
     if (previousDetail) lines.push(`Previous chapter: "${previousDetail}"`);
+    if (previousTitles.length > 0) {
+      lines.push(
+        `The chapters just before this one are titled ${previousTitles.map((t) => `"${t}"`).join(', ')} — ` +
+          `this chapter continues from them, so its title names what is NEW in this stretch, not their ` +
+          `wording or their angle re-used.`
+      );
+    }
     return lines.length > 0 ? `${lines.join('\n')}\n` : '';
   }
 
@@ -773,7 +985,13 @@ export class WholeTranscriptChapterService {
       // legitimately knows the video title and the threaded context; a name is invented when
       // the VIDEO never contains it, which still catches world-knowledge names and the
       // prompt-example leak this check exists for.
-      const grounding = groundTitle(title, `${this.options.videoTitle || ''}\n${chapterTranscript}\n${this.wholeTranscriptText}`);
+      // The name scaffold is part of the grounding context: a title spelling "Daigle" the
+      // standard way over a transcript that garbled it to "Dagle" took that spelling from an
+      // input the prompt itself supplied, which is the opposite of inventing a name.
+      const grounding = groundTitle(
+        title,
+        `${this.options.videoTitle || ''}\n${this.nameScaffold}\n${chapterTranscript}\n${this.wholeTranscriptText}`
+      );
       if (!grounding.grounded) {
         faults.push(
           `it names ${grounding.ungrounded.map((n) => `"${n}"`).join(', ')}, which this video ` +
@@ -919,7 +1137,9 @@ export class WholeTranscriptChapterService {
     stage: ChapterStage,
     prompt: string,
     what: string,
-    timeoutMs: number
+    timeoutMs: number,
+    temperature?: number,
+    think?: false
   ): Promise<string | null> {
     this.checkCancelled();
     this.calls++;
@@ -927,6 +1147,7 @@ export class WholeTranscriptChapterService {
     if (this.options.cloudPlain) {
       // Same policy as the local branch: an empty ANSWER comes back as null and costs the
       // caller one decision; a TRANSPORT failure affects every remaining call and throws.
+      // `temperature` never reaches here: the cloud path is single-sample by construction.
       return await this.options.cloudPlain(prompt, this.options.model, `${what} (chapters)`);
     }
 
@@ -936,6 +1157,8 @@ export class WholeTranscriptChapterService {
       numCtx: this.numCtx,
       numPredict: NUM_PREDICT,
       keepAlive: KEEP_ALIVE,
+      temperature,
+      think,
       timeoutMs,
       signal: this.options.abortSignal,
       what: `${what} (chapters)`,

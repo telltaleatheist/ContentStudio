@@ -1127,6 +1127,12 @@ export class MetadataGeneratorService {
             what,
           }),
           numPredict: GUIDELINES_NUM_PREDICT,
+          // Thinking off (the /api/chat transport in plain-call.ts). With it on, the local
+          // 27B reasons past the whole 2048-token budget and returns a truncated fragment —
+          // hit live on both channels on 2026-08-30, and the second ask failed the same way
+          // because it was the same coin flipped twice. The lesson list is exactly the plain
+          // line output the 2026-08-30 campaign measured clean with thinking off.
+          think: false,
           timeoutMs: 600_000,
           signal: params.cancelSignal,
           what,

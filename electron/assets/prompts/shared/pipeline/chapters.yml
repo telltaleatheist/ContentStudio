@@ -59,10 +59,10 @@ summarize_chapter: |-
   Video: {video}
   {context_lines}
   Produce:
-  - a title: one line, up to 15 words — the specific people, claims and events in this stretch, concrete enough that it could only be this video.
+  - a title: one line, up to 15 words — the one or two most important people or claims of this stretch, concrete enough that it could only be this video: a chapter name, not an inventory of everyone mentioned.
   - a summary: 2-3 sentences on what this stretch of the video covers.
 
-  Every name in your answer comes from the transcript below: where the transcript names a person, organisation, story or claim, use that name; where it says only "the mayor", say "the mayor". An audience or a group the transcript does not name stays unnamed.
+  Every name in your answer comes from the transcript below: where the transcript names a person, organisation, story or claim, use that name; where it says only "the mayor", say "the mayor". An audience or a group the transcript does not name stays unnamed. Where the transcript garbles the spelling of a well-known name — a transcription artifact — use the standard spelling of that SAME person’s name, never a different person’s.
   Attribution follows the first person: a testimony, a conversion story, a claim told in "I" belongs to the person telling it — never to the person it is addressed to, prayed over, or told about. Where the video's own commentary names who is speaking ("he's talking to Jake right now", "this is the pastor"), that identification governs. A stretch that is a response to a claim is titled by the claim and the verdict on it, as content: "The bridge contract claim, rebutted".
   A stretch that IS one of the creator's own promotions — {promoted_items} — simply says that is what it is ("Patreon plug and a promotion of the book God's People"); one mentioned in passing stays out of the title and the summary, which name the content around it. That list exists so you can recognize an ad: the names and sites in it belong to the ads, and every person your answer names comes from the transcript below.
   {entity_scaffold}
@@ -78,14 +78,20 @@ summarize_chapter_tagged: |-
   The transcript below is tagged by speaker. HOST: is the creator of this video talking. CLIP: is footage he is playing and reacting to — those words are somebody else's, and the claims in them are not his. UNSURE: is a line that runs across a cut and contains both of them, so the words on it belong to nobody: read it for its subject matter, and take every attribution you make from the HOST and CLIP lines around it.
 
   Produce:
-  - a title: one line, up to 15 words — the specific people, claims and events in this stretch, concrete enough that it could only be this video. A claim in a CLIP line belongs to the footage and the HOST lines are the response to it: write the chapter around that relation, and where the HOST lines reach a verdict, carry it.
+  - a title: one line, up to 15 words — the one or two most important people or claims of this stretch, concrete enough that it could only be this video: a chapter name, not an inventory of everyone mentioned. A claim in a CLIP line belongs to the footage and the HOST lines are the response to it: write the chapter around that relation, and where the HOST lines reach a verdict, carry it.
   - a summary: 2-3 sentences on what this stretch of the video covers.
 
-  Every name in your answer comes from the transcript below: where the transcript names a person, organisation, story or claim, use that name; where it says only "the mayor", say "the mayor". An audience or a group the transcript does not name stays unnamed.
+  Every name in your answer comes from the transcript below: where the transcript names a person, organisation, story or claim, use that name; where it says only "the mayor", say "the mayor". An audience or a group the transcript does not name stays unnamed. Where the transcript garbles the spelling of a well-known name — a transcription artifact — use the standard spelling of that SAME person’s name, never a different person’s.
   Attribution follows the first person: a testimony, a conversion story, a claim told in "I" belongs to the person telling it — never to the person it is addressed to, prayed over, or told about. Where the video's own commentary names who is speaking ("he's talking to Jake right now", "this is the pastor"), that identification governs. A stretch that is a response to a claim is titled by the claim and the verdict on it, as content: "The bridge contract claim, rebutted".
   A stretch that IS one of the creator's own promotions — {promoted_items} — simply says that is what it is ("Patreon plug and a promotion of the book God's People"); one mentioned in passing stays out of the title and the summary, which name the content around it. That list exists so you can recognize an ad: the names and sites in it belong to the ads, and every person your answer names comes from the transcript below.
   {entity_scaffold}
   Output the title on the FIRST line, then the summary on the lines after it — plain text, nothing else: no labels, no numbering, no JSON.
+
+  TRANSCRIPT:
+  {transcript}
+
+name_scaffold: |-
+  Below is the transcript of one YouTube video, transcribed by speech recognition that often garbles proper names. List the people and organisations that actually figure in this video, one per line, using the standard public spelling of each name: fix an obvious transcription garble by writing that SAME person's standard spelling, and never add anyone the transcript does not mention. The video's own creator and his channels are not part of the list. Output nothing but the list: no numbering, no commentary, no JSON.
 
   TRANSCRIPT:
   {transcript}

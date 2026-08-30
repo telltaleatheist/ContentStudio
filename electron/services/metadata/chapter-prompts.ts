@@ -65,4 +65,15 @@ export const CHAPTER_PROMPTS = {
   get SUMMARIZE_CHAPTER_TAGGED(): string {
     return promptAssets().pipeline(CHAPTERS_FILE, 'summarize_chapter_tagged');
   },
+
+  /**
+   * The whole-video name list — people and organisations with standard public spellings, one
+   * per line, shown to every detail call so the chapters agree on how a garbled name is
+   * spelled (2026-08-30 campaign; wholeVideoNameScaffold in the service says why).
+   *
+   * Placeholders: {transcript}
+   */
+  get NAME_SCAFFOLD(): string {
+    return promptAssets().pipeline(CHAPTERS_FILE, 'name_scaffold');
+  },
 };

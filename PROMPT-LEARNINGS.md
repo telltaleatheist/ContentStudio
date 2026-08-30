@@ -661,3 +661,47 @@ transport (every key resolves, every `{count}` fills, every shape contract holds
 model. The wording is a first draft the operator is expected to tune on the Instructions page —
 which is exactly why it is an asset and not a string constant.
 
+
+---
+
+## Part 9 — The 2026-08-30 chapter/title campaign (overnight prompt campaign, integrated same day)
+
+Full experimental record: `/Volumes/Callisto/ContentStudio/.contentstudio/chapter-campaign/`
+(chapter-ledger.md, title-ledger.md, RUNBOOK.md, TITLE-RUNBOOK.md — predictions written before
+results, exclusion tables of dead theories). What changed in the prompt tree and why:
+
+**`pipeline/chapters.yml` — the title bullet now says "the one or two most important people or
+claims ... not an inventory of everyone mentioned".** Without the cap the detail call lists
+4-6 names per title ("Kamal Saleem, Uma Abadine, Hillary Clinton, Richard Dawkins, and Sam
+Harris and ..."), and the campaign's polish arm (v024) measured the cap fixing it with no loss
+of specificity.
+
+**`pipeline/chapters.yml` — the name law gained a spelling clause** ("use the standard spelling
+of that SAME person's name, never a different person's"). Whisper-base garbles names ("Dalai
+Parton", "Carvill"); the grounding law as written forced the garble into the title. The clause
+lets the model normalize spelling without licensing substitution of a different person.
+
+**`pipeline/chapters.yml` — new `name_scaffold` prompt.** One whole-video call listing people
+and organisations with standard spellings, shown to every detail call. Without it the same
+person appeared four ways across four chapters ("Johnny N. Lowe / Johnny envelope / Johnny
+Unlow / Johnny and low lay") — per-chapter prompts cannot fix cross-chapter consistency because
+each call corrects blindly, alone. The creator/channel exclusion is measured too: a scaffold
+that volunteers the creator's name leaks narrator framing into titles (campaign v027). Note the
+72B also failed to recover the true name — consistent-and-garbled is the local ceiling.
+
+**`fields/titles.yml` — claims-as-claims clause, placed AFTER the craft lines on purpose.**
+The campaign's t006 arm measured that "blunt, spoken, a verdict" OVERRIDES attribution when the
+safety language comes first: titles endorsed the very claims the video debunks ("stop calling
+islam a religion it is a political tool"). Order is load-bearing; the clause also says so
+("blunt never outranks this rule").
+
+**`fields/titles.yml` — one-chapter-per-title clause.** Titles written from the chapter list
+weld names across chapter lines ("oliver moskowitz" — two people fused; "hillary clinton and
+sam harris linked to anti islam"). Anchoring each title to ONE chapter killed the weld class.
+
+**What did NOT change, on evidence:** the stage-1 grain prompts (the campaign's from-scratch
+boundary prompt converged on the same band + turn-definition + named-plug-items design already
+in them — independent validation, not coincidence); the titles-from-chapters input choice
+(already the 2026-08-24 measurement); q4 quantization (q8_0 measured no better for boundaries).
+The consensus sampling and the scaffold CALL are code, not prompt bodies —
+chapter-whole-transcript.service.ts carries their measurements.
