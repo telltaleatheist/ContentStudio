@@ -74,15 +74,13 @@ export interface OllamaPlainRequest {
    * (ollama-json.ts): there it does not disable thinking, it RELOCATES the reasoning into
    * `response`, which for a plain call means reasoning prose above the answer lines.
    *
-   * WHO SETS IT (operator's rule, 2026-08-30: every call runs in the configuration it was
-   * TESTED in): the chapter stage's consensus samples and name scaffold, the titles call and
-   * the insights distiller — the line-shaped outputs the overnight campaign measured clean
-   * and fast thinking-off, and the calls where thinking-on burned entire output budgets or
-   * looped for 15 minutes. The chapter DETAIL and DESCRIPTION calls keep thinking ON: their
-   * two-part shapes were tested with it, and thinking-off measurably broke them (details
-   * dropped their summaries; descriptions never wrote the blank line — 2/6 at best across
-   * six contract wordings, exclusion-tested 2026-08-30). Their budgets and timeouts carry
-   * the reasoning instead. Callers on the cloud transport never pass it.
+   * WHO SETS IT: the chapter stage's consensus samples and name scaffold, the titles call,
+   * the insights distiller, and (since the evening of 2026-08-30) the DESCRIPTION calls —
+   * whose contract was reshaped to the one-paragraph form thinking-off reliably produces
+   * (parseLeadBody), after thinking-on's 4-5 minutes per call was measured as the whole cost
+   * of the operator's 20-minute runs. The chapter DETAIL calls are the one place thinking
+   * stays ON: their title-plus-summary shape was tested with it, and thinking-off dropped
+   * the summaries. Callers on the cloud transport never pass it.
    */
   think?: false;
   timeoutMs: number;
@@ -231,28 +229,44 @@ export function parseLines(text: string, what: string): string[] {
 }
 
 /**
- * A description: the hook on the first line, a blank line, then the body.
+ * A description: ONE paragraph whose first sentence is the hook.
  *
- * The blank line is the format's one structural element and it is REQUIRED: a first "line"
- * that runs straight into the body is a model that did not write a standalone search snippet,
- * and no split this code could invent would recover the sentence it did not write. The caller's
- * one-re-ask policy is the recovery.
+ * The shape the description prompt asks for since 2026-08-30 evening (operator: descriptions
+ * run thinking-off; ship it). The old hook / blank line / body shape needed the model to emit
+ * a structural blank line, which thinking-off never reliably did (0-2 of 6 across six contract
+ * wordings) — while a single paragraph opening with the snippet sentence is what it produced
+ * in EVERY measured run. So the contract now asks for exactly that, and the hook is measured
+ * off the answer rather than demanded as layout: the first sentence, which the rules already
+ * define as the standalone search snippet.
+ *
+ * The split point is the first sentence-ending period followed by whitespace (or end) after a
+ * minimum believable hook length. No boundary inside the first `maxHookChars` is NOT repaired
+ * by cutting mid-clause — it throws naming what came back, exactly like every other parser
+ * here, and the caller's declared policy owns it.
  */
-export function parseHookBody(text: string, what: string): { hook: string; body: string } {
-  const normalized = text.replace(/\r\n/g, '\n').trim();
-  const blankAt = normalized.search(/\n\s*\n/);
-  if (blankAt === -1) {
+export function parseLeadBody(
+  text: string,
+  what: string,
+  maxHookChars: number
+): { hook: string; body: string } {
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (normalized.length === 0) {
+    throw new Error(`The answer to ${what} is empty`);
+  }
+  const sentenceEnd = /[.!?]["'”’)]?(?=\s|$)/g;
+  sentenceEnd.lastIndex = 30; // a hook shorter than this is not a sentence, whatever the dot is
+  const m = sentenceEnd.exec(normalized);
+  if (!m || m.index + m[0].length > maxHookChars) {
     throw new Error(
-      `The answer to ${what} is not in the hook / blank line / body shape — it has no blank line ` +
-        `(got: "${normalized.slice(0, 120)}")`
+      `The answer to ${what} has no sentence boundary inside its first ${maxHookChars} characters, so ` +
+        `there is no opening line to measure off it (got: "${normalized.slice(0, 120)}")`
     );
   }
-  const hook = normalized.slice(0, blankAt).replace(/\n/g, ' ').trim();
-  const body = normalized.slice(blankAt).trim();
-  if (hook.length === 0 || body.length === 0) {
-    throw new Error(
-      `The answer to ${what} has an empty ${hook.length === 0 ? 'opening line' : 'body'} around its blank line`
-    );
+  const cut = m.index + m[0].length;
+  const hook = normalized.slice(0, cut).trim();
+  const body = normalized.slice(cut).trim();
+  if (body.length === 0) {
+    throw new Error(`The answer to ${what} is a single sentence — it has a hook and no body`);
   }
   return { hook, body };
 }

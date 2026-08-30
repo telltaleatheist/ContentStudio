@@ -45,7 +45,7 @@ candidate: |-
 
   {rules}
 
-  Write the WHOLE description those rules lay out, as plain text in EXACTLY this shape: the opening line, then ONE blank line, then the rest of the description as one paragraph. Nothing else — no labels, no commentary, no JSON, no quotation marks around any of it.
+  Write the WHOLE description those rules lay out, as plain text, as ONE paragraph whose FIRST SENTENCE is the opening line described below. Nothing else — no labels, no commentary, no JSON, no quotation marks around any of it, no blank lines.
 
   THE OPENING LINE is sentence 1 of paragraph 1 — the standalone search snippet the rules above describe. One complete sentence with a finite verb, ending in a full stop, of at most {hookTargetChars} characters. Name the two or three things above that would draw a viewer in — not all of them — and put the words somebody would type into search at the front. Write about the claim, the event or the argument itself: the real names from the material go in as possessives or objects inside the sentence, and the thing doing something is always a person, claim or event from inside the video: the page making the claim, the person being debunked, the evidence that undoes them. That holds in every clause of the sentence, on both sides of a comma or a "but".
 
@@ -53,7 +53,7 @@ candidate: |-
   "Gene Bailey's chapter on Ziklag tells Christians to weaponize their wounds against trans kids."
   "Iowa spent three years blocking the Satanic Temple's holiday display while the man who axed their statue got probation."
 
-  THE REST, after the blank line, is {bodyMinWords} to {bodyMaxWords} words: the rest of the ONE paragraph the rules above lay out, closing on the sentence those rules ask it to close on. Carry on from your opening line rather than restating it or its examples. Every name you use comes from the material above, and you write about the claims, the events and the arguments themselves. This is a YouTube description that sells the video to a stranger scrolling past, in the channel's own confident voice: the real names go in as possessives or objects, the subject of every clause of every sentence is a person, claim or event from inside the video — the page making the claim, the argument under examination, the evidence that undoes it — and that subject DOES something, with a finite active verb, in every sentence.
+  THE REST of the paragraph, after that opening sentence, is {bodyMinWords} to {bodyMaxWords} words: the rest of the ONE paragraph the rules above lay out, closing on the sentence those rules ask it to close on. Carry on from your opening line rather than restating it or its examples. Every name you use comes from the material above, and you write about the claims, the events and the arguments themselves. This is a YouTube description that sells the video to a stranger scrolling past, in the channel's own confident voice: the real names go in as possessives or objects, the subject of every clause of every sentence is a person, claim or event from inside the video — the page making the claim, the argument under examination, the evidence that undoes it — and that subject DOES something, with a finite active verb, in every sentence.
 
   Sentences in exactly the right form:
   "Every policy branded communist in the segment — universal healthcare, ending private prisons, a green new deal — turns out to be a mainstream position."

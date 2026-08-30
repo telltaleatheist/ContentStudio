@@ -3,7 +3,7 @@
  *
  * SINCE 2026-08-24 (operator's ruling: no JSON for these calls unless absolutely necessary)
  * each candidate is written by ONE call whose answer is the shape the composer publishes —
- * the hook, a blank line, the body — parsed by plain-call.ts. The hook/body split below is
+ * one paragraph whose first sentence is the hook — parsed by plain-call.ts. The hook/body split below is
  * unchanged as a CONTRACT (two fields, two judges, the same failure policies); what changed
  * is that no JSON string literal ever carries the prose, which is where the "..."-as-body
  * bail-out and the close-quote runaway both lived. The history in the rest of this header is
@@ -122,7 +122,7 @@
 import axios, { AxiosInstance } from 'axios';
 import * as log from 'electron-log';
 import { estimateTokens } from './ollama-json';
-import { askOllamaPlain, parseHookBody } from './plain-call';
+import { askOllamaPlain, parseLeadBody } from './plain-call';
 import { JobModelLifecycle } from './model-lifecycle';
 import { MetadataRoutingOption } from './metadata-routing';
 import { queueAITask } from '../queue-manager.service';
@@ -250,16 +250,14 @@ const SHORT_HOOK_FAULT = 'it came back as ';
  * 2). The ceiling is sized so that a model which reasons anyway still finishes.
  */
 /**
- * Sized for THINKING, not for the answer, exactly as the chapter stage's budget is: a
- * description is a few hundred tokens, but the local model reasons first and 4096 was hit
- * mid-reasoning live on 2026-08-30 (the primary came back a truncated fragment). Thinking
- * stays ON for this field — the operator's call, 2026-08-30, after measurement: thinking-off
- * never reliably wrote the hook / blank line / body shape (best 2/6 across six contract
- * wordings on the real assembled prompt; ~30s per call but unparseable), while thinking-on
- * is 100% in shape at ~4-5 minutes per call — so the budget carries the reasoning and the
- * timeout below carries the budget.
+ * Thinking is OFF for descriptions (operator, 2026-08-30 evening: "turn thinking off, pack
+ * and ship") — the 4-5 minutes of reasoning per call was the whole cost of the 20-minute
+ * runs, and what it bought (the hook / blank line / body layout) is no longer asked for:
+ * the contract is now ONE paragraph whose first sentence is the hook, which thinking-off
+ * produced in every measured run (~15-45s per call), parsed by parseLeadBody. 4096 is
+ * answer-sized with a wide margin — there is no reasoning to carry any more.
  */
-const NUM_PREDICT = 8192;
+const NUM_PREDICT = 4096;
 
 /**
  * 600s, not 300: with thinking ON and the 8192 budget, the arithmetic of a spilled or long
@@ -362,7 +360,7 @@ export class DescriptionUnit implements MetadataUnit {
     return (
       `# ${DESCRIPTION_CANDIDATES} DESCRIPTIONS ARE WRITTEN FROM THIS ONE PROMPT.\n` +
       `# The primary and ${DESCRIPTION_CANDIDATES - 1} alternative(s), each one whole answer — the\n` +
-      `# opening line, a blank line, the body. The prompt is identical for all of them — every\n` +
+      `# paragraph opening on its hook sentence. The prompt is identical for all of them — every\n` +
       `# draw runs at the provider's default sampling — so it is shown once.\n\n` +
       `# DESCRIPTION (${this.option.model}, plain text, provider default sampling)\n\n` +
       this.buildPrompt(DESCRIPTION_PROMPTS.CANDIDATE, ctx, '')
@@ -484,7 +482,7 @@ export class DescriptionUnit implements MetadataUnit {
    * re-asking. i think we should let it fail. thats a band aid thats covering up real
    * failure points... the fact that it's re-asking is a programmed in bug." A judge fault is
    * a WARNING on the answer, kept exactly as written, for the operator and the prompt-tuning
-   * loop to fix at the source; an answer that cannot be PARSED (no blank line) throws, and
+   * loop to fix at the source; an answer that cannot be PARSED (no measurable opening sentence) throws, and
    * the caller's policy decides what that costs — the primary fails the item loudly, an
    * option is dropped with a warning. One call per candidate, always.
    */
@@ -504,14 +502,17 @@ export class DescriptionUnit implements MetadataUnit {
 
   // ------------------------------------------------------------------------ the one call
 
-  /** One candidate draw: the plain answer, split at its blank line. Throws when it has none. */
+  /**
+   * One candidate draw: one paragraph, hook measured off its first sentence (parseLeadBody
+   * says why the blank-line shape went). Throws when there is no sentence to measure.
+   */
   private async askCandidate(
     prompt: string,
     what: string,
     ctx: MetadataRunContext
   ): Promise<{ hook: string; body: string }> {
     const text = await this.askPlain(prompt, what, ctx);
-    return parseHookBody(text, `the description ${what} for ${ctx.sourceLabel}`);
+    return parseLeadBody(text, `the description ${what} for ${ctx.sourceLabel}`, HOOK_MAX_CHARS + 40);
   }
 
   private judgeHook(hook: string): string[] {
@@ -597,10 +598,9 @@ export class DescriptionUnit implements MetadataUnit {
           numCtx,
           numPredict: NUM_PREDICT,
           keepAlive: KEEP_ALIVE,
-          // Thinking deliberately ON for descriptions — the one local call where turning it
-          // off was tried (2026-08-30) and measured WORSE: the model answered fast but
-          // stopped writing the hook / blank line / body shape. The truncation failure that
-          // motivated the attempt is handled by NUM_PREDICT's reasoning headroom instead.
+          // Thinking off (operator, 2026-08-30 evening). The old two-part layout needed the
+          // reasoning pass; the one-paragraph contract does not — see NUM_PREDICT above.
+          think: false,
           timeoutMs: CALL_TIMEOUT_MS,
           signal: this.abortSignal,
           what: fullWhat,
