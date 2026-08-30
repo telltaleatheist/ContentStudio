@@ -1112,7 +1112,12 @@ export class WholeTranscriptChapterService {
    * out of `ask` beneath.
    */
   private async askDetail(prompt: string, what: string): Promise<{ title: string; detail: string }> {
-    const text = await this.ask('detail', prompt, what, DETAIL_TIMEOUT_MS);
+    // Thinking off, like every other local call in this pipeline now: the campaign's naming
+    // quality — the clause set this prompt carries — was measured entirely thinking-off, and
+    // the thinking pass is the one mechanism that has produced unusable local answers here
+    // (four sightings on 2026-08-30: stage-1 samples, the insights distiller, titles, the
+    // description). The cloud transport ignores both trailing arguments.
+    const text = await this.ask('detail', prompt, what, DETAIL_TIMEOUT_MS, undefined, false);
     if (!text) return { title: '', detail: '' };
     try {
       return parseTitleDetail(text, `${what} (chapters)`);

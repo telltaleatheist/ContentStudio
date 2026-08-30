@@ -789,13 +789,15 @@ export class LocalFieldUnit implements MetadataUnit {
           numCtx,
           numPredict: LOCAL_FIELD_NUM_PREDICT,
           keepAlive: LOCAL_FIELD_KEEP_ALIVE,
-          // Titles run with the thinking pass off (the /api/chat transport in plain-call.ts).
-          // With it on, the local 27B spent the entire 8192-token budget reasoning about the
-          // ten titles and returned a truncated fragment (verified 2026-08-30); the campaign's
-          // title arms all ran thinking-off on this model and produced clean ten-line answers
-          // in about a minute. The other fields keep their measured-with-thinking behavior —
-          // this is scoped to the one field with evidence, not a blanket change.
-          think: this.spec.field === 'titles' ? false : undefined,
+          // Thinking off for every field this unit carries (the /api/chat transport in
+          // plain-call.ts). The local 27B's thinking pass reasoned entire output budgets away
+          // into truncated fragments four times on 2026-08-30 (stage-1 samples, the insights
+          // distiller, titles at 8192, the description at 4096), and the campaign measured
+          // these line-shaped outputs clean and fast thinking-off. The DESCRIPTION is not one
+          // of this unit's fields and is the deliberate exception — thinking off broke its
+          // hook/blank-line/body shape, so description-unit.ts keeps thinking and carries
+          // reasoning headroom in its budget instead.
+          think: false,
           timeoutMs: LOCAL_FIELD_TIMEOUT_MS,
           signal: this.abortSignal,
           what,

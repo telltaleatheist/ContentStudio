@@ -51,9 +51,59 @@ function spanSeconds(chapter: Chapter): number | null {
   return Number.isFinite(span) && span >= 0 ? span : null;
 }
 
-function promoMatch(chapter: Chapter): string | undefined {
+/**
+ * The distinctive phrases of the channel's own promoted items, for the second match below.
+ *
+ * Each promoted_items entry ('the book "God''s People: Christian Nationalism in the Third
+ * Reich"', 'the Patreon (owenmorgan.com/patreon)') is reduced to the substring a chapter
+ * title would actually carry: the quoted span when there is one, otherwise the entry with
+ * its leading article/category words and any parenthetical stripped. Lowercased for the
+ * containment test; empty results are dropped.
+ */
+function promotedPhrases(promotedItems: string[]): string[] {
+  return promotedItems
+    .map((item) => {
+      const quoted = item.match(/"([^"]+)"/);
+      const phrase = quoted
+        ? quoted[1]
+        : item
+            .replace(/\([^)]*\)/g, ' ')
+            .replace(/^\s*the\s+(?:book|website|merch shop|creator's[^,]*)?\s*/i, '')
+            .trim();
+      return normalizeForContainment(phrase);
+    })
+    .filter((p) => p.length > 3);
+}
+
+/**
+ * Lowercase, apostrophes dropped (not split — "Jehovah's" must equal "Jehovahs"), remaining
+ * punctuation collapsed to spaces. The same apostrophe rule normalizeWords uses.
+ */
+function normalizeForContainment(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/['’]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function promoMatch(chapter: Chapter, phrases: string[]): string | undefined {
   const hit = chapter.title.match(PROMO_PATTERN);
-  return hit ? hit[0] : undefined;
+  if (hit) return hit[0];
+  // "Promotion of the book God's People..." (2026-08-30). The generic promotion words are
+  // deliberately NOT in PROMO_PATTERN — a chapter about someone ELSE'S promotion is content,
+  // which is the measured rule above — but a title that both speaks of promoting and names
+  // one of the CREATOR'S OWN promoted items is the creator's plug by definition. The chapter
+  // prompt's plug register leads with "Promotion of ..." often enough that the word-list
+  // alone misses it (seen live the day the register shipped: the plug stayed in the
+  // published list and drew a sliver warning meant for content).
+  if (/\bpromot(?:ion|ions|ing|es?)\b/i.test(chapter.title)) {
+    const title = normalizeForContainment(chapter.title);
+    for (const phrase of phrases) {
+      if (title.includes(phrase)) return `promotion of "${phrase}"`;
+    }
+  }
+  return undefined;
 }
 
 
@@ -83,7 +133,9 @@ export function excludePromoChapters(
   chapters: Chapter[],
   subjects: string[],
   details: string[],
-  sourceLabel: string
+  sourceLabel: string,
+  /** The channel's promoted_items list, for the own-item promotion match. Absent = word-list only. */
+  promotedItems: string[] = []
 ): PromoPartition {
   if (subjects.length !== chapters.length) {
     throw new Error(
@@ -105,8 +157,9 @@ export function excludePromoChapters(
   const warnings: string[] = [];
   const reasons: string[] = [];
 
+  const phrases = promotedPhrases(promotedItems);
   chapters.forEach((chapter, i) => {
-    const matched = promoMatch(chapter);
+    const matched = promoMatch(chapter, phrases);
     if (matched) {
       excluded.push({ ...chapter, isPromo: true });
       reasons.push(`"${chapter.title}" (${chapter.timestamp}, matched "${matched}")`);
@@ -154,7 +207,7 @@ export function excludePromoChapters(
   // The video opens with a plug. The next chapter's real timestamp stays where the
   // pipeline measured it — YouTube simply will not build a chapter bar from a list whose
   // first entry is not 0:00, and the user needs to know that before they paste it.
-  if (chapters[0].isPromo || promoMatch(chapters[0])) {
+  if (chapters[0].isPromo || promoMatch(chapters[0], phrases)) {
     warnings.push(
       `the video opens with a promo ("${chapters[0].title}"), which was excluded, so the chapter list now starts at ` +
         `${content[0].timestamp} instead of 0:00. YouTube only builds chapter markers when the first timestamp is ` +

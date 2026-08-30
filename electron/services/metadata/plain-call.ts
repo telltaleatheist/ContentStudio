@@ -68,18 +68,20 @@ export interface OllamaPlainRequest {
    */
   temperature?: number;
   /**
-   * `false` disables the model's thinking pass — set ONLY by the chapter stage's consensus
-   * samples and its name-scaffold call (2026-08-30 campaign), and it changes the TRANSPORT:
-   * the request goes to /api/chat, where `think: false` genuinely turns thinking off and the
-   * answer arrives alone in `message.content`. It must never be sent to /api/generate — trap 2
+   * `false` disables the model's thinking pass, and it changes the TRANSPORT: the request
+   * goes to /api/chat, where `think: false` genuinely turns thinking off and the answer
+   * arrives alone in `message.content`. It must never be sent to /api/generate — trap 2
    * (ollama-json.ts): there it does not disable thinking, it RELOCATES the reasoning into
    * `response`, which for a plain call means reasoning prose above the answer lines.
    *
-   * Why it exists: five consensus samples at temperature 0.7 with thinking ON produced
-   * 15-minute reasoning loops on a 10-minute video (verified on the first integration run);
-   * the campaign's measured recipe ran /api/chat + think:false for every sample all night at
-   * about a minute per sample with clean line output. Leave it unset everywhere else: the
-   * detail calls' quality was measured with thinking on, and they keep it.
+   * As of 2026-08-30 every LOCAL metadata call sets it EXCEPT the description (which
+   * measured worse thinking-off — it stopped writing its hook/blank-line/body shape — and
+   * carries reasoning headroom in its output budget instead). The thinking pass produced four
+   * distinct failures in one day — 15-minute stage-1 reasoning loops, and the insights
+   * distiller, titles and description calls all reasoning their entire output budgets away
+   * into truncated fragments — and the overnight campaign's quality evidence for the
+   * line-shaped outputs was measured thinking-off throughout (about a minute per call,
+   * clean plain-text answers). Callers on the cloud transport never pass it.
    */
   think?: false;
   timeoutMs: number;

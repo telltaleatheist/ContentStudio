@@ -1191,7 +1191,7 @@ export class MetadataGeneratorService {
       // pass, which already reported them, and repeating them would read as a second
       // set of failures. The promo split is re-run rather than carried across, because it
       // is a pure function of the chapters and re-deriving it cannot disagree with them.
-      return this.splitOutPromos(reuse, sourceLabel, []);
+      return this.splitOutPromos(reuse, sourceLabel, [], aiManager.promotedItems());
     }
 
     this.throwIfCancelled(params, `before the chapter pipeline for ${sourceLabel}`);
@@ -1232,7 +1232,7 @@ export class MetadataGeneratorService {
       // The sink holds the PIPELINE's result, promos included: it is what "Send to AI"
       // reuses, and it must be the same list this pass started from, not the filtered one.
       if (sink) sink[sourceLabel] = result;
-      return this.splitOutPromos(result, sourceLabel, warnings);
+      return this.splitOutPromos(result, sourceLabel, warnings, aiManager.promotedItems());
     } catch (error) {
       // A cancelled run is not a degraded chapter list. Reporting it as a warning here
       // would let the item carry on and pay for the metadata call the user just stopped.
@@ -1259,13 +1259,15 @@ export class MetadataGeneratorService {
   private static splitOutPromos(
     result: ChapterPipelineResult,
     sourceLabel: string,
-    warnings: string[]
+    warnings: string[],
+    promotedItems: string[]
   ): ChapterOutcome {
     const partition = excludePromoChapters(
       result.chapters,
       result.subjects,
       result.subjectDetails.map((s) => s.detail),
-      sourceLabel
+      sourceLabel,
+      promotedItems
     );
 
     for (const warning of partition.warnings) {

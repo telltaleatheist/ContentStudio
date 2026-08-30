@@ -249,7 +249,14 @@ const SHORT_HOOK_FAULT = 'it came back as ';
  * measured 1,900-2,900 tokens of it — and `think: false` is not an option (ollama-json trap
  * 2). The ceiling is sized so that a model which reasons anyway still finishes.
  */
-const NUM_PREDICT = 4096;
+/**
+ * Sized for THINKING, not for the answer, exactly as the chapter stage's budget is: a
+ * description is a few hundred tokens, but the local model reasons first and 4096 was hit
+ * mid-reasoning live on 2026-08-30 (the primary came back a truncated fragment). Thinking
+ * stays ON for this field — it was tried off the same day and the model stopped writing the
+ * hook / blank line / body shape the parser requires — so the budget carries the reasoning.
+ */
+const NUM_PREDICT = 8192;
 
 const CALL_TIMEOUT_MS = 300_000;
 const KEEP_ALIVE = '10m';
@@ -580,6 +587,10 @@ export class DescriptionUnit implements MetadataUnit {
           numCtx,
           numPredict: NUM_PREDICT,
           keepAlive: KEEP_ALIVE,
+          // Thinking deliberately ON for descriptions — the one local call where turning it
+          // off was tried (2026-08-30) and measured WORSE: the model answered fast but
+          // stopped writing the hook / blank line / body shape. The truncation failure that
+          // motivated the attempt is handled by NUM_PREDICT's reasoning headroom instead.
           timeoutMs: CALL_TIMEOUT_MS,
           signal: this.abortSignal,
           what: fullWhat,
