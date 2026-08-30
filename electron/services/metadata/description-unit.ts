@@ -253,12 +253,22 @@ const SHORT_HOOK_FAULT = 'it came back as ';
  * Sized for THINKING, not for the answer, exactly as the chapter stage's budget is: a
  * description is a few hundred tokens, but the local model reasons first and 4096 was hit
  * mid-reasoning live on 2026-08-30 (the primary came back a truncated fragment). Thinking
- * stays ON for this field — it was tried off the same day and the model stopped writing the
- * hook / blank line / body shape the parser requires — so the budget carries the reasoning.
+ * stays ON for this field — the operator's call, 2026-08-30, after measurement: thinking-off
+ * never reliably wrote the hook / blank line / body shape (best 2/6 across six contract
+ * wordings on the real assembled prompt; ~30s per call but unparseable), while thinking-on
+ * is 100% in shape at ~4-5 minutes per call — so the budget carries the reasoning and the
+ * timeout below carries the budget.
  */
 const NUM_PREDICT = 8192;
 
-const CALL_TIMEOUT_MS = 300_000;
+/**
+ * 600s, not 300: with thinking ON and the 8192 budget, the arithmetic of a spilled or long
+ * call is ~60s of prefill plus generation at ~30 tok/s — a full-budget answer needs ~330s,
+ * so a 300s wall guarantees the timeout fires JUST before the budget can complete (measured
+ * live on 2026-08-30: 4 - jehovahs witnesses died at exactly 300s). The detail calls have
+ * used 600s all along for the same reason.
+ */
+const CALL_TIMEOUT_MS = 600_000;
 const KEEP_ALIVE = '10m';
 
 /**

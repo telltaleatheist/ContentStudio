@@ -74,14 +74,15 @@ export interface OllamaPlainRequest {
    * (ollama-json.ts): there it does not disable thinking, it RELOCATES the reasoning into
    * `response`, which for a plain call means reasoning prose above the answer lines.
    *
-   * As of 2026-08-30 every LOCAL metadata call sets it EXCEPT the description (which
-   * measured worse thinking-off — it stopped writing its hook/blank-line/body shape — and
-   * carries reasoning headroom in its output budget instead). The thinking pass produced four
-   * distinct failures in one day — 15-minute stage-1 reasoning loops, and the insights
-   * distiller, titles and description calls all reasoning their entire output budgets away
-   * into truncated fragments — and the overnight campaign's quality evidence for the
-   * line-shaped outputs was measured thinking-off throughout (about a minute per call,
-   * clean plain-text answers). Callers on the cloud transport never pass it.
+   * WHO SETS IT (operator's rule, 2026-08-30: every call runs in the configuration it was
+   * TESTED in): the chapter stage's consensus samples and name scaffold, the titles call and
+   * the insights distiller — the line-shaped outputs the overnight campaign measured clean
+   * and fast thinking-off, and the calls where thinking-on burned entire output budgets or
+   * looped for 15 minutes. The chapter DETAIL and DESCRIPTION calls keep thinking ON: their
+   * two-part shapes were tested with it, and thinking-off measurably broke them (details
+   * dropped their summaries; descriptions never wrote the blank line — 2/6 at best across
+   * six contract wordings, exclusion-tested 2026-08-30). Their budgets and timeouts carry
+   * the reasoning instead. Callers on the cloud transport never pass it.
    */
   think?: false;
   timeoutMs: number;

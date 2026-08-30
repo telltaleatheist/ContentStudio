@@ -104,6 +104,7 @@
 
 import axios, { AxiosInstance } from 'axios';
 import * as log from 'electron-log';
+import * as os from 'os';
 import { SRTSegment } from './whisper.service';
 import { Chapter, TimeUtils } from './chapter-generator.service';
 import {
@@ -207,8 +208,17 @@ const CONSENSUS_VOTE_FRACTION = 0.6;
  * Above this the KV cache spills off the GPU and every token slows down. It is a PERFORMANCE
  * ceiling, not a correctness one: a run that needs more gets more, and says so in a warning,
  * because a truncated prompt would be a wrong answer while a slow one is only a slow one.
+ *
+ * MEMORY-AWARE since 2026-08-30: the flat 12288 was sized for a constrained machine, and on
+ * the operator's 64GB Studio it produced a spill warning on every 16k-context run while
+ * `ollama ps` reported the model 100% ON the GPU (measured that day: 27B q4 + 16384 ctx =
+ * 18GB resident, fully on-GPU, 46GB of unified memory free). A warning that cries slowness
+ * on runs that are not slow teaches the operator to ignore warnings. With 48GB+ of unified
+ * memory the whole CTX_MAX window fits beside a 27B with room to spare, so the ceiling lifts
+ * out of the warning's range there; the small-machine numbers are unchanged.
  */
 function numCtxGpuCeiling(model: string): number {
+  if (os.totalmem() >= 48 * 1024 ** 3) return CTX_MAX;
   const moe = /(\d+)x(\d+(?:\.\d+)?)b/i.exec(model);
   const dense = /(\d+(?:\.\d+)?)b/i.exec(model);
   const sizeB = moe ? parseInt(moe[1], 10) * parseFloat(moe[2]) : dense ? parseFloat(dense[1]) : null;
@@ -1112,12 +1122,14 @@ export class WholeTranscriptChapterService {
    * out of `ask` beneath.
    */
   private async askDetail(prompt: string, what: string): Promise<{ title: string; detail: string }> {
-    // Thinking off, like every other local call in this pipeline now: the campaign's naming
-    // quality — the clause set this prompt carries — was measured entirely thinking-off, and
-    // the thinking pass is the one mechanism that has produced unusable local answers here
-    // (four sightings on 2026-08-30: stage-1 samples, the insights distiller, titles, the
-    // description). The cloud transport ignores both trailing arguments.
-    const text = await this.ask('detail', prompt, what, DETAIL_TIMEOUT_MS, undefined, false);
+    // Thinking ON, deliberately — the operator's rule (2026-08-30): every call runs in the
+    // configuration it was TESTED in. The campaign tested a title-only naming shape
+    // thinking-off; THIS prompt's title-plus-summary shape was tested thinking-on across the
+    // pipeline's whole history, and the one afternoon it ran thinking-off it started dropping
+    // the summary (two "could not be described" chapters in one video) and slipping register.
+    // Detail prompts are chunk-sized, so the thinking tail that breaks the big-prompt calls
+    // has never been a failure mode here.
+    const text = await this.ask('detail', prompt, what, DETAIL_TIMEOUT_MS);
     if (!text) return { title: '', detail: '' };
     try {
       return parseTitleDetail(text, `${what} (chapters)`);
