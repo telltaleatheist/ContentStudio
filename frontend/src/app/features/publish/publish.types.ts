@@ -567,6 +567,8 @@ export interface PublishFacts {
   pushedAt: string | null;
   filledAt: string | null;
   hasThumbnail: boolean;
+  /** Is an episode audio file attached? The decision, not a measurement of the file. */
+  hasEpisodeAudio: boolean;
   /** Who attached it — 'auto', 'manual', or null when nobody has decided. */
   thumbnailSource: ThumbnailSource | null;
   /** Always true. Kept in the projection so the fact row can ANSWER rather than assume. */
@@ -693,4 +695,39 @@ export interface ScheduledSweep {
   sweptAt: string;
   channelsSwept: number;
   windowSize: number;
+}
+
+/**
+ * Mirror of SpreakerScheduledEpisode — one episode the SHOW says is scheduled.
+ *
+ * `publishAt` is already a real instant: Spreaker stores `auto_published_at` as a UTC
+ * wall-clock stamp with no zone marker on it, and the main process converts it before it
+ * ever reaches here. Handing that bare stamp to `new Date()` in a renderer would parse it
+ * as local time and move every episode by this machine's offset.
+ */
+export interface SpreakerScheduledEpisode {
+  episodeId: number;
+  title: string;
+  publishAt: string;
+  /** Spreaker's own stamp, verbatim, for when the exact stored value matters. */
+  autoPublishedAt: string;
+  siteUrl: string | null;
+  durationSec: number | null;
+}
+
+/** Mirror of SpreakerShowSweep. The window is carried because it bounds what was seen. */
+export interface SpreakerSweep {
+  showId: string;
+  showName: string | null;
+  episodes: SpreakerScheduledEpisode[];
+  sweptAt: string;
+  /** How many episodes were read looking for them. */
+  scanned: number;
+  windowSize: number;
+  /**
+   * Why the read stopped: `dry` (a whole page held nothing scheduled — the archive),
+   * `end` (the show ran out), or `window` (the cap was hit while episodes were still
+   * being found, which is the only one that means something is missing).
+   */
+  stoppedAt: 'dry' | 'end' | 'window';
 }

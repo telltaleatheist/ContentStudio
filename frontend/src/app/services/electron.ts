@@ -11,6 +11,7 @@ import type {
   PushOutcome,
   ReportIndexResponse,
   ScheduledSweep,
+  SpreakerSweep,
   SchedulePushOutcome,
   ResolvedMetadata,
   SpreakerPushOutcome,
@@ -727,6 +728,7 @@ declare global {
       spreakerClearCredentials: () => Promise<PublishResult<SpreakerStatus>>;
       spreakerExchangeCode: (input: { code: string }) => Promise<PublishResult<SpreakerStatus>>;
       spreakerRefreshToken: () => Promise<PublishResult<SpreakerStatus>>;
+      spreakerListScheduled: () => Promise<PublishResult<SpreakerSweep>>;
 
       // ==================== TRANSCRIPT LINK (Phase 2) ====================
       hasSavedTranscript: (videoPath: string) => Promise<SavedTranscriptCheck>;
@@ -1740,6 +1742,20 @@ export class ElectronService {
   async spreakerRefreshToken(): Promise<PublishResult<SpreakerStatus>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.spreakerRefreshToken();
+  }
+
+  /**
+   * Every episode the SHOW itself says is scheduled and not yet out.
+   *
+   * The podcast half of the calendar's mirror. A local record holds the date this app
+   * PUSHED with; that date stops being true the moment it is edited on Spreaker's own
+   * site, and an episode created over there was never in this app at all. Refuses by name
+   * when Spreaker is not configured — "the show holds nothing" and "nobody asked the
+   * show" are different answers.
+   */
+  async spreakerListScheduled(): Promise<PublishResult<SpreakerSweep>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.spreakerListScheduled();
   }
 
   async publishGetResolved(itemId: string): Promise<PublishResult<ResolvedMetadata>> {

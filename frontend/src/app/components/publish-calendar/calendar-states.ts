@@ -144,6 +144,8 @@ export interface ReadinessFacts {
   isPodcast: boolean;
   /** Set once an episode exists on Spreaker — the podcast's equivalent of a video id. */
   spreakerEpisodeId: number | null;
+  /** Is an episode audio file attached? An episode with none cannot be uploaded at all. */
+  hasEpisodeAudio: boolean;
 }
 
 export function destinationOf(facts: { isPodcast: boolean }): Destination {
@@ -208,16 +210,23 @@ export function missingFor(facts: ReadinessFacts): string[] {
   // is optional and this app never sends one, so demanding it of a podcast episode would
   // hold back an item that is in fact ready and could never be satisfied.
   if (!facts.isPodcast && !facts.hasThumbnail) missing.push('thumbnail');
+  // AN EPISODE IS ITS AUDIO. The mirror image of the thumbnail rule above, and the harder
+  // of the two: a video with no thumbnail still uploads, while spreaker-push refuses an
+  // episode with no audio before sending a byte — "an episode is the audio", in its own
+  // words. Leaving it out of the checklist is what let the board call an episode ready
+  // and then offer a run that could only fail.
+  if (facts.isPodcast && !facts.hasEpisodeAudio) missing.push('episode audio');
   return missing;
 }
 
 /**
  * How far along an item is, judged against ITS OWN destination.
  *
- * The audio file a Spreaker upload needs is not checked here: the calendar's index does
- * not carry it, and the push validates it by name before sending a byte. So a podcast
- * episode can read `ready` here and still be refused at dispatch for a missing file —
- * which is the honest split, because this rule can only speak for what it can see.
+ * WHAT THIS STILL CANNOT SEE is the file itself. `hasEpisodeAudio` is the presence of a
+ * PATH on the record, so an episode whose audio has since been moved, renamed or left on
+ * an unmounted volume reads `ready` here and is refused at dispatch — the push re-measures
+ * the file against the bytes every time, and it is right to. That is the honest split:
+ * this rule speaks for the decisions, and the push speaks for the disk.
  */
 export function readinessOf(facts: ReadinessFacts): Readiness {
   const shipped = facts.isPodcast ? facts.spreakerEpisodeId !== null : facts.videoId !== null;

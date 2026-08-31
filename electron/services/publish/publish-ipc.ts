@@ -97,6 +97,19 @@ export interface PublishFacts {
   filledAt: string | null;
   hasThumbnail: boolean;
   /**
+   * Is an episode audio file attached?
+   *
+   * THE PRESENCE OF A PATH, not a measurement of the file: a duration and a size are facts
+   * about a file on an external volume at a moment, and the panel re-measures them on
+   * every open for exactly that reason. What a LIST needs is the decision — has this
+   * episode been given its audio — and that is a field on the record.
+   *
+   * Projected because an episode IS its audio: without it the Spreaker push refuses
+   * before sending a byte, so a calendar that could not see this field called an episode
+   * ready and then offered an upload that could not run.
+   */
+  hasEpisodeAudio: boolean;
+  /**
    * Who put that thumbnail there — 'auto', 'manual', or null for "nobody has decided".
    *
    * Projected alongside hasThumbnail rather than folded into it because the two answer
@@ -674,6 +687,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
                 pushedAt: record.pushedAt,
                 filledAt: record.filledAt,
                 hasThumbnail: record.thumbnailPath !== null,
+                hasEpisodeAudio: record.spreakerAudioPath !== null,
                 thumbnailSource: record.thumbnailSource,
                 monetize: MONETIZATION_ALWAYS_ON,
                 spreakerEpisodeId: record.spreakerEpisodeId,

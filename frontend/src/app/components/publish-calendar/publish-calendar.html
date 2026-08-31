@@ -39,6 +39,27 @@
               matTooltip="Re-read what YouTube has scheduled">
         <mat-icon>cloud_sync</mat-icon>
       </button>
+      <!-- The podcast lane's own mirror, and only on the podcast tab: every episode lands
+           at 5 AM, a column no channel tab is about. Never read is not the same as read
+           and empty, and this line says which — the dates on the board come from Spreaker
+           itself, not from what this app recorded when it pushed. -->
+      @if (activeDestination() === 'spreaker') {
+        <span class="sweep-state" [class.stale-sweep]="spreakerSweep() === null"
+              [matTooltip]="spreakerReachNote()">
+          @if (spreakerSweeping()) {
+            Spreaker · reading…
+          } @else if (spreakerSweep(); as swept) {
+            Spreaker · {{ swept.episodes.length }} scheduled · as of {{ spreakerSweptLabel() }}
+            @if (spreakerSweepFailed()) { <span class="sweep-stale">· may be behind</span> }
+          } @else {
+            Spreaker · not read yet
+          }
+        </span>
+        <button mat-icon-button (click)="refreshSpreakerSweep()" [disabled]="spreakerSweeping()"
+                matTooltip="Re-read what Spreaker has scheduled">
+          <mat-icon>podcasts</mat-icon>
+        </button>
+      }
       <button mat-flat-button color="primary" class="upload-all"
               (click)="askUploadAll()"
               [disabled]="uploadable().length === 0 || uploadRun() !== null || spreakerRun() !== null"
@@ -427,16 +448,26 @@
         <!-- Dated before today. The list cannot scroll back to a day nobody can write to,
              so these would otherwise vanish — and a lapsed schedule is the row that most
              needs looking at. -->
-        @if (pastChips().length > 0) {
+        @if (pastChips().length > 0 || pastEpisodes().length > 0) {
           <div class="past-strip">
             <div class="past-head">
-              Before today · {{ pastChips().length }}
+              Before today · {{ pastChips().length + pastEpisodes().length }}
             </div>
             @for (chip of pastChips(); track chip.itemId) {
               <div class="past-row">
                 <span class="past-date">{{ chipDate(chip) }} {{ chip.time }}</span>
                 <div class="chip-wrap">
                   <ng-container [ngTemplateOutlet]="chipRow" [ngTemplateOutletContext]="{ chip: chip }"></ng-container>
+                </div>
+              </div>
+            }
+            <!-- A past-dated episode is normally an encode still finishing, and one that is
+                 days old is a stuck one. Either way it is a real row and it is not dropped. -->
+            @for (ep of pastEpisodes(); track ep.episodeId) {
+              <div class="past-row">
+                <span class="past-date">{{ episodeDate(ep) }} {{ ep.time }}</span>
+                <div class="chip-wrap">
+                  <ng-container [ngTemplateOutlet]="episodeRow" [ngTemplateOutletContext]="{ e: ep }"></ng-container>
                 </div>
               </div>
             }
@@ -463,7 +494,7 @@
               <div class="slot"
                    [class.lane-spreaker]="slot.destination === 'spreaker'"
                    [class.past]="slot.isPast"
-                   [class.taken]="slot.mirrors.length > 0"
+                   [class.taken]="slot.mirrors.length > 0 || slot.episodes.length > 0"
                    [class.cadence]="slot.isCadence"
                    [class.drop-ready]="dropAffinity(slot) === 'match'"
                    [class.drop-weak]="dropAffinity(slot) === 'other'"
@@ -479,12 +510,15 @@
                 @for (mirror of slot.mirrors; track mirror.videoId) {
                   <ng-container [ngTemplateOutlet]="mirrorRow" [ngTemplateOutletContext]="{ m: mirror }"></ng-container>
                 }
+                @for (ep of slot.episodes; track ep.episodeId) {
+                  <ng-container [ngTemplateOutlet]="episodeRow" [ngTemplateOutletContext]="{ e: ep }"></ng-container>
+                }
               </div>
             }
 
             <!-- A schedule that is on none of the board's slots is shown at its real time
                  rather than rounded into a slot it is not in. -->
-            @if (row.otherChips.length > 0 || row.otherMirrors.length > 0) {
+            @if (row.otherChips.length > 0 || row.otherMirrors.length > 0 || row.otherEpisodes.length > 0) {
               <div class="other-times">
                 <span class="other-label">other times</span>
                 <div class="other-chips">
@@ -504,6 +538,14 @@
                       </div>
                     </div>
                   }
+                  @for (ep of row.otherEpisodes; track ep.episodeId) {
+                    <div class="other-row">
+                      <span class="other-time">{{ ep.time }}</span>
+                      <div class="chip-wrap">
+                        <ng-container [ngTemplateOutlet]="episodeRow" [ngTemplateOutletContext]="{ e: ep }"></ng-container>
+                      </div>
+                    </div>
+                  }
                 </div>
               </div>
             }
@@ -512,6 +554,13 @@
 
         <div class="board-foot">
           <button mat-stroked-button (click)="loadMoreDays()">Load more days</button>
+          @if (episodesBeyondHorizon() > 0) {
+            <span class="beyond-note">
+              {{ episodesBeyondHorizon() }} Spreaker
+              episode{{ episodesBeyondHorizon() === 1 ? ' is' : 's are' }}
+              scheduled further out than the {{ horizonDays() }} days loaded.
+            </span>
+          }
           @if (beyondHorizon() > 0) {
             <span class="beyond-note">
               {{ beyondHorizon() }} scheduled item{{ beyondHorizon() === 1 ? ' is' : 's are' }}
@@ -634,6 +683,30 @@
   }
   @if (chip.unknownChannel) {
     <div class="unrouted-note">{{ chip.channelName }}</div>
+  }
+</ng-template>
+
+<!-- An episode SPREAKER has a date on. Read-only like the YouTube mirror, and drawn in
+     the same visual register — but this is the ONLY true answer about a podcast release:
+     the date can be moved on Spreaker's own site, and nothing tells this app when it is.
+     Where the last episode actually landed is the fact the next one gets placed against. -->
+<ng-template #episodeRow let-e="e">
+  <div class="episode-mirror"
+       [matTooltip]="'Scheduled on Spreaker · episode ' + e.episodeId + ' · not yet released'">
+    <span class="episode-bar"></span>
+    <span class="episode-body">
+      <mat-icon class="sp-glyph">podcasts</mat-icon>
+      <span class="episode-title">{{ e.title }}</span>
+    </span>
+    @if (e.itemId) {
+      <button mat-icon-button class="open-report" (click)="openReport(e.itemId)"
+              matTooltip="This episode has a report here — open it">
+        <mat-icon>open_in_new</mat-icon>
+      </button>
+    }
+  </div>
+  @if (e.divergence) {
+    <div class="divergence-note">⇄ {{ e.divergence }}</div>
   }
 </ng-template>
 

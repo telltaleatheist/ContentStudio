@@ -332,6 +332,11 @@ const api = {
   // Renew now. The same renewal happens on its own before an upload when the token is
   // within a week of expiring; this is the operator asking to watch it happen.
   spreakerRefreshToken: () => ipcRenderer.invoke('spreaker-refresh-token'),
+  // What the SHOW says is scheduled, straight from Spreaker. The calendar's podcast
+  // mirror: this app's records hold the date it PUSHED with, and that date stops being
+  // true the moment it is edited on Spreaker's own site — so the release dates on the
+  // board come from here rather than from what was intended locally.
+  spreakerListScheduled: () => ipcRenderer.invoke('spreaker-list-scheduled'),
 
   // ==================== EDITOR ====================
   // The ported AutoCutStudio timeline editor. Every member of the editor's `EditorHost`

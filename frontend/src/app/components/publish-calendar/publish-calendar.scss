@@ -826,6 +826,55 @@
   }
 }
 
+/* An episode Spreaker already has a date on.
+   Solid-left rather than dashed-all-round like the YouTube mirror: this is not a
+   maybe-taken slot, it is a release the show is committed to and the only place the true
+   date is written down. Read-only all the same — nothing here can be dragged. */
+.episode-mirror {
+  display: flex;
+  align-items: stretch;
+  gap: 0.25rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--primary-orange) 6%, transparent);
+  overflow: hidden;
+  font-size: 0.72rem;
+  cursor: default;
+
+  .episode-bar {
+    width: 3px;
+    flex-shrink: 0;
+    background: var(--primary-orange);
+    opacity: 0.7;
+  }
+
+  .episode-body {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex: 1;
+    min-width: 0;
+    padding: 0.2rem 0;
+  }
+
+  .sp-glyph {
+    font-size: 13px;
+    width: 13px;
+    height: 13px;
+    color: var(--primary-orange);
+    flex-shrink: 0;
+  }
+
+  .episode-title {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-secondary);
+  }
+}
+
 /* A slot YouTube already has something in. Not blocked — a deliberate double release is
    the operator's call — but it stops looking empty, which is the entire point. */
 .slot.taken {

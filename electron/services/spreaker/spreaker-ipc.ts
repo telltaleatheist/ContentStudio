@@ -21,6 +21,7 @@
 import { ipcMain } from 'electron';
 import * as log from 'electron-log';
 import { SpreakerConfigSave, SpreakerConfigService } from './spreaker-config.service';
+import type { SpreakerScheduleReader, SpreakerShowSweep } from './spreaker-api.service';
 
 /** Uniform envelope, matching every publish-* channel. */
 type Result<T> = { success: true; data: T } | { success: false; error: string };
@@ -32,9 +33,18 @@ function fail(error: string): Result<never> {
   return { success: false, error };
 }
 
-export function setupSpreakerIpc(config: SpreakerConfigService): void {
+export function setupSpreakerIpc(
+  config: SpreakerConfigService,
+  api: SpreakerScheduleReader
+): void {
   if (!config || typeof config.status !== 'function') {
     throw new Error('setupSpreakerIpc requires a SpreakerConfigService.');
+  }
+  if (!api || typeof api.listScheduledEpisodes !== 'function') {
+    throw new Error(
+      'setupSpreakerIpc requires a schedule reader — the calendar mirrors what the show ' +
+      'itself is holding, and there is no local answer to fall back on.'
+    );
   }
 
   /**
@@ -129,6 +139,34 @@ export function setupSpreakerIpc(config: SpreakerConfigService): void {
       log.info('[Spreaker] credentials cleared');
       return ok(status);
     } catch (err: any) {
+      return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * What the SHOW says is scheduled — the calendar's Spreaker mirror.
+   *
+   * The counterpart of `publish-list-scheduled`, and needed for the same reason: this
+   * app's records hold what it MEANT to publish and when it pushed, while the release
+   * date can be moved afterwards in Spreaker's own web UI, and an episode released from
+   * there was never in this app at all. Without this read the podcast lane can only draw
+   * the app's own intentions, so the operator cannot see where the last episode actually
+   * landed — which is the one thing he needs in order to place the next one.
+   *
+   * A missing configuration comes back as a REFUSAL naming what to do, not as an empty
+   * sweep: "the show holds nothing" and "nobody asked the show" are different answers,
+   * and the calendar draws them differently.
+   */
+  ipcMain.handle('spreaker-list-scheduled', async () => {
+    try {
+      const { showId } = config.requireTarget();
+      const sweep: SpreakerShowSweep = await api.listScheduledEpisodes(showId);
+      log.info(
+        `[Spreaker] ${sweep.episodes.length} scheduled episode(s) on show ${sweep.showId}`
+      );
+      return ok(sweep);
+    } catch (err: any) {
+      log.error('[Spreaker] reading the show schedule failed:', err?.message || err);
       return fail(err?.message || String(err));
     }
   });

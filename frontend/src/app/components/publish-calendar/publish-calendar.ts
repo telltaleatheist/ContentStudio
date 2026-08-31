@@ -54,6 +54,7 @@ import type {
   ReportIndexEntry,
   ScheduledSweep,
   ScheduledVideo,
+  SpreakerSweep,
 } from '../../features/publish/publish.types';
 import {
   SPREAKER_DESTINATION,
@@ -275,6 +276,40 @@ export interface MirrorChip {
   privacyStatus: string;
 }
 
+/**
+ * An episode SPREAKER says is scheduled, mirrored onto the podcast lane.
+ *
+ * The exact counterpart of MirrorChip, and here for the same reason: it has no publish
+ * record behind it, no drag and no write, and it exists so a 5 AM slot that is already
+ * taken looks taken.
+ *
+ * IT IS ALSO THE ONLY TRUE ANSWER ABOUT A PODCAST RELEASE. A local record holds the date
+ * this app PUSHED with; Spreaker's own site can move that date afterwards, and nothing
+ * tells this app when it does. So where the last episode actually landed — the one fact
+ * needed to place the next one — can only come from the show itself.
+ */
+export interface EpisodeMirrorChip {
+  episodeId: number;
+  title: string;
+  /** Local wall time, `HH:MM`. */
+  time: string;
+  dateKey: string;
+  publishAt: string;
+  /**
+   * The local item that pushed this episode, when one did. Present so the report is one
+   * click away from the row that proves the episode exists.
+   */
+  itemId: string | null;
+  /**
+   * Set when the local record holds a DIFFERENT moment for this same episode.
+   *
+   * Spreaker's is what will actually happen; the record is only what was pushed. Both are
+   * shown rather than reconciled — silently preferring either would hide the fact that
+   * they disagree, and that fact is the whole warning.
+   */
+  divergence: string | null;
+}
+
 /** One release time, on one day. */
 export interface SlotCell {
   /** `HH:MM`, exactly what the writer is handed. */
@@ -297,6 +332,8 @@ export interface SlotCell {
   chips: CalendarChip[];
   /** What YouTube already has here. Read-only, and the reason a slot can look full. */
   mirrors: MirrorChip[];
+  /** What SPREAKER already has here. The podcast lane's half of the same answer. */
+  episodes: EpisodeMirrorChip[];
 }
 
 /** One day of the rolling list. */
@@ -313,6 +350,8 @@ export interface DayRow {
   otherChips: CalendarChip[];
   /** The same, for YouTube-side videos scheduled at some other hour. */
   otherMirrors: MirrorChip[];
+  /** The same, for episodes Spreaker holds at some hour that is not 5 AM. */
+  otherEpisodes: EpisodeMirrorChip[];
 }
 
 /** One item's outcome in a bulk run. Every attempt gets one, pass or fail. */
@@ -471,6 +510,25 @@ export class PublishCalendar implements OnInit, OnDestroy {
    * and what this page still needs to KNOW is only that what it is showing may be behind.
    */
   readonly sweepFailed = signal(false);
+
+  // ----------------------------------------------------------- the Spreaker mirror
+
+  /**
+   * What the SHOW says is scheduled, or null before anyone has asked it.
+   *
+   * Null and empty are different answers, exactly as with the YouTube sweep: null means
+   * Spreaker has not been read, so an empty-looking 5 AM lane is only empty as far as this
+   * app's own records go — and those records are precisely what cannot be trusted about a
+   * date, because Spreaker's site can move it without telling anything here.
+   *
+   * READ ON DEMAND rather than on load: it is one more network call on a page that already
+   * makes several, and it answers a question only the podcast tab asks. Opening that tab
+   * is the trigger; see `setActiveTab`.
+   */
+  readonly spreakerSweep = signal<SpreakerSweep | null>(null);
+  readonly spreakerSweeping = signal(false);
+  /** Whether the last read failed, so the header can say the mirror may be behind. */
+  readonly spreakerSweepFailed = signal(false);
 
   // ------------------------------------------------------------ the bulk upload
 
@@ -1006,6 +1064,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
     const todayKey = dateKeyOf(now);
 
     const byDayMirror = this.mirrorsByDay();
+    const byDayEpisode = this.episodesByDay();
 
     const rows: DayRow[] = [];
     for (let offset = 0; offset < this.horizonDays(); offset++) {
@@ -1013,6 +1072,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
       const dateKey = dateKeyOf(day);
       const chips = byDay.get(dateKey) ?? [];
       const mirrors = byDayMirror.get(dateKey) ?? [];
+      const episodes = byDayEpisode.get(dateKey) ?? [];
 
       const slots: SlotCell[] = SLOTS.map((slot) => {
         const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), slot.hour, 0, 0, 0);
@@ -1029,6 +1089,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
             slot.destination === 'youtube' && cadence !== null && isCadenceSlot(cadence.key, at),
           chips: chips.filter((chip) => chip.time === slot.time),
           mirrors: mirrors.filter((chip) => chip.time === slot.time),
+          episodes: episodes.filter((chip) => chip.time === slot.time),
         };
       });
 
@@ -1039,6 +1100,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
         slots,
         otherChips: chips.filter((chip) => !SLOTS.some((slot) => slot.time === chip.time)),
         otherMirrors: mirrors.filter((chip) => !SLOTS.some((slot) => slot.time === chip.time)),
+        otherEpisodes: episodes.filter((chip) => !SLOTS.some((slot) => slot.time === chip.time)),
       });
     }
     return rows;
@@ -1080,6 +1142,147 @@ export class PublishCalendar implements OnInit, OnDestroy {
     return this.mirrorChips().filter(
       (chip) => chip.dateKey < firstKey || chip.dateKey > lastKey
     ).length;
+  });
+
+  /**
+   * What Spreaker itself is holding, as rows the board can draw.
+   *
+   * ONLY ON THE PODCAST TAB. Every episode lands in the 5 AM lane, which no YouTube
+   * channel uses, so on a channel tab these rows could only ever be noise in a column that
+   * tab is not about. The read that fills the sweep is triggered by opening the tab for
+   * the same reason — see `setActiveTab`.
+   *
+   * An episode is dropped here only when the local record already draws a chip AT THE SAME
+   * MOMENT. Same instant is the whole condition, and a weaker one — "the record draws a
+   * chip at all" — is what would hide the very thing this lane is for: an episode pushed on
+   * one date and then MOVED on Spreaker's own site leaves a record still claiming the old
+   * one, and suppressing Spreaker's answer to avoid a second row would leave the board
+   * confidently showing a date that is no longer true.
+   *
+   * So when they disagree, BOTH are drawn and the mirror says what the record thinks. That
+   * is two rows for one release, which is right: there are two claims about it, and the
+   * disagreement is the fact worth seeing. Spreaker's is the one that will happen.
+   */
+  readonly episodeMirrorChips = computed<EpisodeMirrorChip[]>(() => {
+    if (this.activeDestination() !== 'spreaker') return [];
+    const swept = this.spreakerSweep();
+    if (!swept) return [];
+
+    // Which episode ids this app has a record for, what that record believes about the
+    // date, and whether it is drawing a chip for it. All three: the id is the join, the
+    // date is the thing that may have been edited out from under it, and a record that
+    // draws nothing cannot be the row this one would be duplicating.
+    const recordByEpisode = new Map<
+      number,
+      { itemId: string; publishAt: string | null; draws: boolean }
+    >();
+    for (const entry of this.entries()) {
+      const facts = entry.publish;
+      if (!facts || facts.spreakerEpisodeId === null) continue;
+      recordByEpisode.set(facts.spreakerEpisodeId, {
+        itemId: entry.itemId,
+        publishAt: facts.publishAt,
+        draws: this.isOpenWork(facts, this.linkedByVideoId()),
+      });
+    }
+
+    const sameMoment = (a: string, b: string | null): boolean =>
+      b !== null && new Date(a).getTime() === new Date(b).getTime();
+
+    return swept.episodes
+      .filter((episode) => {
+        const record = recordByEpisode.get(episode.episodeId);
+        if (!record || !record.draws) return true;
+        return !sameMoment(episode.publishAt, record.publishAt);
+      })
+      .map((episode) => {
+        const at = new Date(episode.publishAt);
+        if (Number.isNaN(at.getTime())) {
+          throw new Error(
+            `Spreaker returned ${JSON.stringify(episode.publishAt)} as the schedule for ` +
+            `episode ${episode.episodeId}, which is not a date this can read.`
+          );
+        }
+        const record = recordByEpisode.get(episode.episodeId) ?? null;
+        const local = record?.publishAt ?? null;
+        return {
+          episodeId: episode.episodeId,
+          title: episode.title,
+          time: splitPublishAt(episode.publishAt).time,
+          dateKey: dateKeyOf(at),
+          publishAt: episode.publishAt,
+          itemId: record?.itemId ?? null,
+          divergence:
+            local !== null && !sameMoment(episode.publishAt, local)
+              ? `this app recorded ${new Date(local).toLocaleString([], {
+                  weekday: 'short',
+                  month: 'short',
+                  day: 'numeric',
+                  hour: 'numeric',
+                  minute: '2-digit',
+                })}`
+              : null,
+        };
+      })
+      .sort((a, b) => a.publishAt.localeCompare(b.publishAt));
+  });
+
+  private readonly episodesByDay = computed(() => {
+    const map = new Map<string, EpisodeMirrorChip[]>();
+    for (const chip of this.episodeMirrorChips()) {
+      const list = map.get(chip.dateKey);
+      if (list) list.push(chip);
+      else map.set(chip.dateKey, [chip]);
+    }
+    return map;
+  });
+
+  /**
+   * Scheduled episodes dated before today.
+   *
+   * Not a contradiction: Spreaker releases on its own schedule and an episode stays in the
+   * author's listing as unpublished until its encode finishes, so a stamp a few minutes or
+   * a few hours old is normal — and one days old is a stuck encode worth seeing.
+   */
+  readonly pastEpisodes = computed(() => {
+    const todayKey = dateKeyOf(this.now());
+    return this.episodeMirrorChips().filter((chip) => chip.dateKey < todayKey);
+  });
+
+  /** Episodes dated past the far end of the loaded window. Counted, never dropped. */
+  readonly episodesBeyondHorizon = computed(() => {
+    const rows = this.dayRows();
+    if (rows.length === 0) return 0;
+    const lastKey = rows[rows.length - 1].dateKey;
+    return this.episodeMirrorChips().filter((chip) => chip.dateKey > lastKey).length;
+  });
+
+  /**
+   * How far the read actually looked, said in the lane's own tooltip.
+   *
+   * The listing is newest-first and the unpublished episodes sit at its front, so the read
+   * normally stops the moment it reaches the released archive. That is complete for every
+   * episode scheduled the ordinary way — and it is NOT complete for an old episode given a
+   * far-future date, so the rule is stated rather than implied.
+   */
+  readonly spreakerReachNote = computed(() => {
+    const swept = this.spreakerSweep();
+    if (!swept) return 'Spreaker has not been read yet, so this lane shows only what this app pushed.';
+    const found = `${swept.episodes.length} scheduled in the ${swept.scanned} most recent episodes`;
+    if (swept.stoppedAt === 'end') return `${found} — the whole show was read.`;
+    if (swept.stoppedAt === 'window') {
+      return `${found}. The read stopped at its ${swept.windowSize}-episode limit while ` +
+        `still finding scheduled ones, so there may be more.`;
+    }
+    return `${found}. The read stopped where the released archive begins, so an OLD ` +
+      `episode given a far-future date would not be here.`;
+  });
+
+  /** When the show was last read, for the line that says how fresh the podcast lane is. */
+  readonly spreakerSweptLabel = computed(() => {
+    const swept = this.spreakerSweep();
+    if (!swept) return null;
+    return new Date(swept.sweptAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   });
 
   /**
@@ -1177,6 +1380,9 @@ export class PublishCalendar implements OnInit, OnDestroy {
     // mirror is a live API sweep of three channels. Making the page wait for the network
     // would delay everything for the sake of an overlay.
     void this.refreshSweep();
+    // The remembered tab decides whether Spreaker is read at all. `reload` has settled it
+    // by now, and the podcast lane is the only place the answer is drawn.
+    if (this.activeTabId() === SPREAKER_DESTINATION) void this.refreshSpreakerSweep();
   }
 
   ngOnDestroy(): void {
@@ -1300,6 +1506,50 @@ export class PublishCalendar implements OnInit, OnDestroy {
     }
   }
 
+  /**
+   * Ask Spreaker what the show is actually holding.
+   *
+   * Its own call and its own failure line, kept off `reload()` exactly as the YouTube
+   * sweep is: the local board must not go blank because a podcast token lapsed, and the
+   * podcast lane must not look empty because nobody read it. A failed read leaves the
+   * previous answer in place — it is still the last thing Spreaker said — and says that it
+   * failed.
+   *
+   * Spreaker not being configured arrives here as a refusal naming Settings, which is the
+   * right answer to see once rather than a lane that is quietly always empty.
+   */
+  async refreshSpreakerSweep(): Promise<void> {
+    this.spreakerSweeping.set(true);
+    try {
+      const res = await this.electron.spreakerListScheduled();
+      if (!res.success || !res.data) {
+        this.spreakerSweepFailed.set(true);
+        this.notify.warning(
+          'Spreaker schedule not read',
+          res.error ?? 'Spreaker would not say what the show has scheduled.'
+        );
+        return;
+      }
+      this.spreakerSweepFailed.set(false);
+      this.spreakerSweep.set(res.data);
+      // `window` is the ONE ending worth interrupting for: the read stopped with episodes
+      // still being found, so the lane is short and looks complete. `dry` and `end` are
+      // the normal endings and say so in the lane's own tooltip instead of a toast.
+      if (res.data.stoppedAt === 'window') {
+        this.notify.warning(
+          'Spreaker read only part of the show',
+          `The ${res.data.windowSize} most recent episodes were read and scheduled ones ` +
+          `were still turning up, so there may be more that are not on this board.`
+        );
+      }
+    } catch (err: any) {
+      this.spreakerSweepFailed.set(true);
+      this.notify.warning('Spreaker schedule not read', err?.message || String(err));
+    } finally {
+      this.spreakerSweeping.set(false);
+    }
+  }
+
   // ---------------------------------------------------------------- the tab strip
 
   /**
@@ -1321,9 +1571,19 @@ export class PublishCalendar implements OnInit, OnDestroy {
     this.activeTabId.set(known ? remembered : tabs[0]);
   }
 
+  /**
+   * Switch tabs, and read Spreaker the first time the podcast tab is opened.
+   *
+   * ONCE PER PAGE, not once per switch: the sweep is a network call and flipping between
+   * tabs is not new information. The refresh button beside the lane's state line is how it
+   * is asked again, the same as the YouTube mirror's.
+   */
   setActiveTab(tabId: string): void {
     this.activeTabId.set(tabId);
     localStorage.setItem(CHANNEL_TAB_KEY, tabId);
+    if (tabId === SPREAKER_DESTINATION && this.spreakerSweep() === null && !this.spreakerSweeping()) {
+      void this.refreshSpreakerSweep();
+    }
   }
 
   // ---------------------------------------------------------------- navigation
@@ -1938,6 +2198,15 @@ export class PublishCalendar implements OnInit, OnDestroy {
       status: facts.status,
       videoId: facts.videoId,
     };
+  }
+
+  /** The same, for a Spreaker episode in the before-today strip. */
+  episodeDate(chip: EpisodeMirrorChip): string {
+    return new Date(chip.publishAt).toLocaleDateString([], {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    });
   }
 
   /** `Mon, Aug 24` for a before-today row, which is off the rolling list's calendar. */

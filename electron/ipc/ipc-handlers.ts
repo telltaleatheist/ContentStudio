@@ -3599,6 +3599,17 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     listGenerated: listGeneratedForPublish,
   };
 
+  // The Spreaker client, constructed ONCE and shared by the two seams that need it:
+  // the publish bridge, which uploads an episode, and setupSpreakerIpc, which reads
+  // the show's schedule back for the calendar. One client means one credential
+  // policy — the token is read fresh on every call, never captured, so a token saved
+  // in Settings works without a restart and an expired one fails as an expired one.
+  // `Fresh` also RENEWS a token close to expiry before a byte is sent, and fails the
+  // call with Spreaker's own words when the renewal is refused.
+  const spreakerApi = new SpreakerApiService({
+    requireCredentials: () => analytics.spreakerConfig.requireFreshCredentials(),
+  });
+
   setupPublishIpc({
     store: analytics.publishStore,
     readGenerated: readGeneratedForPublish,
@@ -3663,13 +3674,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     // The ONE Spreaker write, bound the same way the YouTube writes are: a narrow
     // function, not the client. A mistake here creates a public episode on a live
     // podcast feed, so this is the seam an upload can be exercised across without one.
-    spreakerApi: new SpreakerApiService({
-      // Read fresh on every call, never captured: a token saved in Settings has to work
-      // without a restart, and an expired one has to fail as an expired one. `Fresh` also
-      // RENEWS a token that is close to expiry, before a byte is sent, and fails the upload
-      // with Spreaker's own words when the renewal is refused.
-      requireCredentials: () => analytics.spreakerConfig.requireFreshCredentials(),
-    }),
+    spreakerApi,
     // The show, WITHOUT the token. publish/ never sees the credential; what it needs is
     // the id to post to and a name to put in a confirmation, plus the assurance —
     // carried by this call throwing — that there is a token to authenticate with.
@@ -3693,7 +3698,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   // panel (which shows "not configured" with the file path rather than a dead button).
   // Its own seam, like publish/ and editor/ — these channels are about the machine's
   // connection to Spreaker, not about any one item.
-  setupSpreakerIpc(analytics.spreakerConfig);
+  setupSpreakerIpc(analytics.spreakerConfig, spreakerApi);
 
   // Expose the publish routes on the existing localhost ingest server so the companion
   // extension has one port to talk to. The server only knows a structural interface, so
