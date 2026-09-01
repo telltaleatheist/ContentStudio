@@ -259,11 +259,27 @@ export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Pro
     (existing.confidence === 'filename' && resolved.sourceDurationSec === null);
 
   if (existing.candidate && sameCut) {
+    // Two refusals, because two different things are known. 'exact' verified the cut;
+    // 'filename' with no local duration verified only the name, and a message that said
+    // "already on this channel" for it would state as fact the very thing that could not
+    // be checked — and its "link and push" remedy would write a NEW cut's metadata onto
+    // an OLD video.
+    if (existing.confidence === 'exact') {
+      throw new Error(
+        `${path.basename(sourcePath)} is already on this channel as "${existing.candidate.title}" ` +
+        `(${existing.candidate.videoId}, ${existing.candidate.privacyStatus}) — same name, same ` +
+        `duration. Uploading would create a second copy of the same video. Link this item to ` +
+        `that video and push the metadata to it instead, or delete it on YouTube first if it ` +
+        `was a mistake.`
+      );
+    }
     throw new Error(
-      `${path.basename(sourcePath)} is already on this channel as "${existing.candidate.title}" ` +
-      `(${existing.candidate.videoId}, ${existing.candidate.privacyStatus}). Uploading would ` +
-      `create a second copy of the same video. Link this item to that video and push the ` +
-      `metadata to it instead, or delete it on YouTube first if it was a mistake.`
+      `A video with this filename is already on this channel: "${existing.candidate.title}" ` +
+      `(${existing.candidate.videoId}, ${existing.candidate.privacyStatus}). This item's own ` +
+      `duration is not recorded, so the two could not be compared — this may be the same cut ` +
+      `or a re-export, and the safe answer is to stop. Check that video: if it is the same ` +
+      `cut, link this item to it and push the metadata instead; if it is an old cut this one ` +
+      `replaces, delete it on YouTube and upload again.`
     );
   }
 

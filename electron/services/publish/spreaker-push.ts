@@ -317,7 +317,8 @@ export function planEpisode(input: {
       `Item ${item} was already uploaded to Spreaker as episode ${record.spreakerEpisodeId}` +
       `${record.spreakerPushedAt ? ` on ${record.spreakerPushedAt}` : ''}. Uploading again ` +
       `would create a SECOND episode in the feed, not replace that one. Delete the episode ` +
-      `on Spreaker (or forget the link here) if you mean to upload it again.`
+      `on Spreaker (or press "Forget episode" on this item's metadata page) if you mean to ` +
+      `upload it again.`
     );
   }
 

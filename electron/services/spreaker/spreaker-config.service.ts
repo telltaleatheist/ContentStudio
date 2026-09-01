@@ -297,12 +297,24 @@ export class SpreakerConfigService {
    * or after a token expires, and "Spreaker is not configured" without the steps is a dead
    * end at exactly the moment the steps are wanted.
    */
-  requireCredentials(): SpreakerCredentials {
+  requireCredentials(context: 'upload' | 'read' = 'upload'): SpreakerCredentials {
     const stored = this.read();
     const token = stored?.accessToken.trim() ?? '';
     const showId = stored?.showId.trim() ?? '';
 
     if (!token || !showId) {
+      // The read path gets the short form. The calendar shows this refusal as a toast
+      // titled "Spreaker schedule not read", and six token-setup steps in a toast serve
+      // nobody who was only looking at the board; the walkthrough belongs to the moment
+      // an upload is being set up.
+      if (context === 'read') {
+        throw new Error(
+          `Spreaker is not configured, so the show's schedule cannot be read. ` +
+          `${!token ? 'No access token is stored. ' : ''}` +
+          `${!showId ? 'No show id is stored. ' : ''}` +
+          `Set them in Settings → Spreaker.`
+        );
+      }
       throw new Error(
         `Spreaker is not configured, so nothing can be uploaded. ` +
         `${!token ? 'No access token is stored. ' : ''}` +
@@ -327,8 +339,8 @@ export class SpreakerConfigService {
    * that would 401 must be refused before the file is read, not after — but the value
    * never crosses into the publish module.
    */
-  requireTarget(): { showId: string; showName: string | null } {
-    const { showId, showName } = this.requireCredentials();
+  requireTarget(context: 'upload' | 'read' = 'upload'): { showId: string; showName: string | null } {
+    const { showId, showName } = this.requireCredentials(context);
     return { showId, showName };
   }
 
@@ -537,8 +549,9 @@ export class SpreakerConfigService {
         accessToken = input.accessToken.trim();
         if (!accessToken) {
           throw new Error(
-            `The Spreaker access token is empty. To remove the integration use Clear, which ` +
-            `says what it does; saving a blank token would silently disconnect it.`
+            `The Spreaker access token is empty. To remove the integration use "Remove from ` +
+            `this machine", which says what it does; saving a blank token would silently ` +
+            `disconnect it.`
           );
         }
         if (looksLikePlaceholder(accessToken)) {
@@ -629,7 +642,7 @@ export class SpreakerConfigService {
     if (!value) {
       throw new Error(
         `The Spreaker ${field.label} is empty. Leave the box blank to keep the stored one; ` +
-        `to remove the integration use Remove, which says what it does.`
+        `to remove the integration use "Remove from this machine", which says what it does.`
       );
     }
     if (looksLikePlaceholder(value)) {

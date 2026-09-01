@@ -159,7 +159,7 @@ export function setupSpreakerIpc(
    */
   ipcMain.handle('spreaker-list-scheduled', async () => {
     try {
-      const { showId } = config.requireTarget();
+      const { showId } = config.requireTarget('read');
       const sweep: SpreakerShowSweep = await api.listScheduledEpisodes(showId);
       log.info(
         `[Spreaker] ${sweep.episodes.length} scheduled episode(s) on show ${sweep.showId}`

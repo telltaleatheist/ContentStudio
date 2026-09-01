@@ -72,16 +72,33 @@ export const PROPOSED_AUDIO_EXTENSIONS: readonly string[] = ['.mp3', '.m4a', '.w
 /**
  * Does Spreaker take a file with this extension?
  *
- * The one place that answers it, because two callers now need the same fact for different
- * reasons: validation refuses a file Spreaker would reject, and destination routing reads
- * the same list to decide that an audio source is a podcast episode. Two copies of a
- * format list is how they drift.
+ * ACCEPTANCE ONLY. This answers "would Spreaker's uploader take the file", which is the
+ * validation question. It is NOT the routing question — see `isAudioOnlyExtension` below
+ * for why the two must read different lists.
  *
  * Takes a lower-cased extension WITH its dot, as `path.extname` returns.
  */
 export function isSpreakerAudioExtension(extension: string): boolean {
   return SPREAKER_AUDIO_EXTENSIONS.includes(extension) ||
     UNDOCUMENTED_AUDIO_EXTENSIONS.includes(extension);
+}
+
+/**
+ * Is a file with this extension audio, and only audio?
+ *
+ * The subset of what Spreaker takes that cannot be a video. Destination routing reads
+ * THIS list and never the acceptance list above: Spreaker's documented formats include
+ * `.mp4`, `.3gp` and `.asf` — video containers YouTube uploads every day — and a routing
+ * rule that read them as "Spreaker takes it, so podcast" silently flagged video items as
+ * episodes on their first save. "Would Spreaker take it" and "is it audio by nature" are
+ * different questions, and only the second one is allowed to decide where an item goes.
+ */
+export const AUDIO_ONLY_EXTENSIONS: readonly string[] = [
+  '.aac', '.amr', '.flac', '.m4a', '.mp3', '.ogg', '.ra', '.wav', '.wma',
+];
+
+export function isAudioOnlyExtension(extension: string): boolean {
+  return AUDIO_ONLY_EXTENSIONS.includes(extension);
 }
 
 /** What one probe of a media file has to answer for this module to decide. */
@@ -172,7 +189,8 @@ export async function validateAudioFile(
     throw new Error(
       `Episode audio ${absPath} has extension ${JSON.stringify(extension || '(none)')}, ` +
       `which Spreaker does not accept. It takes: ` +
-      `${SPREAKER_AUDIO_EXTENSIONS.join(' ')}.`
+      `${SPREAKER_AUDIO_EXTENSIONS.join(' ')} — and ${UNDOCUMENTED_AUDIO_EXTENSIONS.join(' ')}, ` +
+      `with a warning.`
     );
   }
 

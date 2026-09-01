@@ -991,9 +991,10 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
    * file at the derived path) are all "there is nothing to offer". A rejection would be
    * a file that IS there and is not usable, and that still throws.
    *
-   * WHAT REACHES HERE, now that auto-config.ts exists: the SLOT-ONLY spelling, and only
-   * it. A thumbnail named after this export has already been attached automatically by
-   * the time the panel opens, so the item has one and never asks; a thumbnail named
+   * WHAT USUALLY REACHES HERE, now that auto-config.ts exists: the SLOT-ONLY spelling.
+   * A thumbnail named after this export is normally attached automatically by the time
+   * the panel opens — but a basename match still lands here whenever the automatic pass
+   * has not run for the item, so neither spelling can be assumed. A thumbnail named
    * `2 - youtube-thumbnail.png` follows the slot, and slots are renumbered between export
    * and upload often enough (13 of 40 live exports) that attaching one would be wrong
    * routinely and invisibly. So this is what is left to confirm by eye, which is what it
@@ -1101,12 +1102,11 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
    * thumbnail" a temporary state, so a 'manual' source is reported as skipped and the
    * record is not opened at all.
    *
-   * A 'slot'-only match is still not attached, exactly as the automatic pass refuses to
-   * attach one (see deriveProposedThumbnailPaths): slots are renumbered between export
-   * and upload, so that filename can name another video's image, and a click meaning
-   * "look again" is not a click meaning "and take one you cannot verify". It comes back
-   * as skipped, naming the file, and publish-propose-thumbnail is where it gets confirmed
-   * by eye.
+   * A 'slot'-only match IS attached (2026-08-25, when the slot gate was retired and this
+   * button took the same findUsableThumbnail the automatic pass uses) — it lands in
+   * `applied` with the caution spelled out in its detail: the match was on the slot
+   * number, and a renumbered slot can point at another video's thumbnail, so check the
+   * image.
    *
    * The three buckets are auto-config.ts's, for the reason they exist there: a field that
    * ended in none of them would be one the operator cannot account for afterwards.

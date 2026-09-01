@@ -53,7 +53,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { isSpreakerAudioExtension } from './audio-validate';
+import { isAudioOnlyExtension } from './audio-validate';
 import { RoutableChannel, resolveChannelForPromptSet } from './channel-routing';
 import { FieldPatch } from './field-validators';
 import { ChosenMetadata } from './publish-types';
@@ -125,11 +125,11 @@ export function autoConfigure(input: AutoConfigInput): AutoConfigResult {
 /**
  * The destination, from what the source file IS.
  *
- * The two services take disjoint formats and that decides the routing on its own:
- * Spreaker takes audio and not video, YouTube takes video and not an mp3. So a source
- * whose extension Spreaker accepts is a podcast episode, and everything else is a video.
- * The operator stated the rule in exactly those terms, and it beats asking him to restate
- * it per item.
+ * An audio source is a podcast episode and everything else is a video — the operator
+ * stated the rule in exactly those terms, and it beats asking him to restate it per
+ * item. The test is `isAudioOnlyExtension`, NOT "does Spreaker accept it": Spreaker's
+ * acceptance list includes video containers (.mp4, .3gp, .asf) that YouTube uploads
+ * every day, so acceptance is not allowed to route.
  *
  * Acts ONLY while the record is still unrouted, which is the same marker the channel uses
  * and in practice means the first write — the moment the record is born. `isPodcast` is a
@@ -177,14 +177,14 @@ function autoDestination(input: AutoConfigInput): FieldOutcome {
   }
 
   const extension = path.extname(sourcePath).toLowerCase();
-  if (!isSpreakerAudioExtension(extension)) {
+  if (!isAudioOnlyExtension(extension)) {
     return {
       patch: null,
       bucket: 'skipped',
       decision: {
         field: 'isPodcast',
-        detail: `The source is a ${extension || 'file with no extension'}, which Spreaker does ` +
-          `not take, so this stays a video.`,
+        detail: `The source is a ${extension || 'file with no extension'}, which is not an ` +
+          `audio file, so this stays a video.`,
       },
     };
   }
@@ -194,8 +194,8 @@ function autoDestination(input: AutoConfigInput): FieldOutcome {
     bucket: 'applied',
     decision: {
       field: 'isPodcast',
-      detail: `The source is a ${extension}, which YouTube does not take and Spreaker does. ` +
-        `Routed to Spreaker as a podcast episode.`,
+      detail: `The source is a ${extension}, an audio file — so this is a podcast episode, ` +
+        `and it is routed to Spreaker.`,
     },
   };
 }

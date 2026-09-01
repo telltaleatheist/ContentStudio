@@ -219,8 +219,8 @@ export function validateThumbnailFile(absPath: string): ThumbnailValidation {
     const mib = (st.size / (1024 * 1024)).toFixed(2);
     throw new Error(
       `Thumbnail ${absPath} is ${mib} MiB (${st.size} bytes); YouTube's hard limit is 2 MiB ` +
-      `(${MAX_THUMBNAIL_BYTES} bytes). ` +
-      `an image you approved.`
+      `(${MAX_THUMBNAIL_BYTES} bytes). Re-export it smaller, or press "Look again" — the ` +
+      `automatic pass writes a shrunk copy beside the original and attaches that.`
     );
   }
 

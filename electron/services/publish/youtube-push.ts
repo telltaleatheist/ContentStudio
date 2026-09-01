@@ -11,8 +11,9 @@
  * public. Videos uploaded in the BROWSER carry no such restriction, and editing their
  * metadata over the API is not audit-gated. So the flow this file serves is: Owen uploads
  * the draft in Chrome, the extension links its videoId onto the publish record, and this
- * pushes the finished metadata to it. `videos.insert` is deliberately absent — see
- * PUBLISH-PIPELINE-PLAN.md Phase 3.
+ * pushes the finished metadata to it. `videos.insert` is deliberately absent FROM THIS
+ * FILE — the API upload exists, in youtube-upload.ts, wearing the audit lock described
+ * above; see PUBLISH-PIPELINE-PLAN.md Phase 3.
  *
  * ── The rule that shapes every line below ────────────────────────────────────────────
  *
@@ -525,15 +526,9 @@ export async function pushScheduleToYouTube(
   if (!record) {
     throw new Error(`Nothing has been saved for item ${itemId}, so it has no schedule to send.`);
   }
-  const { videoId, channelId } = requireLink(record);
-
-  const video = await api.getVideoParts(channelId, videoId);
-  if (!video) {
-    throw new Error(
-      `Channel ${channelId} has no video ${videoId} — it was deleted, or the link is wrong. ` +
-      `Nothing was sent.`
-    );
-  }
+  // The same missing-video refusal the full push gives — one failure, one sentence,
+  // whichever button was pressed.
+  const video = await requireVideo(record, api);
 
   const previousPublishAt =
     typeof video.status?.publishAt === 'string' ? video.status.publishAt : null;

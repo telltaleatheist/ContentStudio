@@ -312,9 +312,18 @@ export class SpreakerApiService implements SpreakerUploadApi, SpreakerScheduleRe
             ? ` No show ${request.showId} is reachable with this token — check the show id.`
             : status === 429
               ? ' Rate limited. Nothing is retried automatically; wait before trying again.'
-              : '';
+              : status >= 500
+                ? ' That is a server-side answer given AFTER the whole file was sent, so it ' +
+                  'says nothing about whether Spreaker kept it. The episode may exist — ' +
+                  'check the show before uploading again.'
+                : '';
+      // "Refused" is earned by a 4xx — the server read the request and said no. A 5xx is
+      // not a refusal, it is an accident, and calling it one invites the retry that makes
+      // a second episode.
       throw new Error(
-        `Spreaker refused the upload (HTTP ${status}): ${detail || 'no detail given'}.${hint}`
+        status >= 500
+          ? `Spreaker's server failed (HTTP ${status}): ${detail || 'no detail given'}.${hint}`
+          : `Spreaker refused the upload (HTTP ${status}): ${detail || 'no detail given'}.${hint}`
       );
     }
 
