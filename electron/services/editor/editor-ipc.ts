@@ -14,7 +14,7 @@ import { AlignmentAudioService } from './alignment-audio-service';
 import * as assetManager from './asset-manager';
 import * as ollamaService from './ollama-service';
 import { analyzeChapters, suggestTitle, Segment } from './chapter-splitter';
-import {
+import { ArchiveBusyError,
   ArchiveSync, comparablePath, destinationFor, DEFAULT_ARCHIVE_ROOT, DEFAULT_ARCHIVE_MOUNT_URL
 } from './archive-sync';
 import { readArchiveLedger, recordArchived, forgetArchivedUnder } from './archive-ledger';
@@ -1984,7 +1984,16 @@ function setupArchiveHandlers(store: Store<any>): void {
     if (!status.available) {
       throw new Error(status.reason || `${root} is not available.`);
     }
-    return sync.check(payload.localPath, payload.kind, root);
+    try {
+      return await sync.check(payload.localPath, payload.kind, root);
+    } catch (err) {
+      // Busy is an answer, not an accident. Returned as a value so Electron does not
+      // stamp "Error occurred in handler" over a state the sidebar renders calmly every
+      // day; the preload turns it back into the same thrown Error the renderer already
+      // catches, so nothing downstream changes.
+      if (err instanceof ArchiveBusyError) return { __archiveBusy: err.message };
+      throw err;
+    }
   });
 
   /**

@@ -29,6 +29,15 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as log from 'electron-log';
 
+/**
+ * "Busy right now" as a type, not a string. This is a ROUTINE answer — the sidebar polls
+ * while syncs run — and the IPC layer needs to tell it apart from a genuine failure so it
+ * can travel as a value instead of a rejected promise: every rejection out of an
+ * ipcMain.handle prints "Error occurred in handler" into the terminal, which dressed the
+ * ordinary case as a crash, once per row per poll, for the length of every sync.
+ */
+export class ArchiveBusyError extends Error {}
+
 export interface ArchiveStatus {
   /** The archive root is a reachable directory right now. */
   available: boolean;
@@ -1042,7 +1051,7 @@ export class ArchiveSync {
    */
   check(localPath: string, kind: ArchiveKind, root: string): Promise<ArchiveCheck> {
     if (this.transfersPending) {
-      throw new Error('A sync is running — status checks wait until it finishes.');
+      throw new ArchiveBusyError('A sync is running — status checks wait until it finishes.');
     }
     return this.runExclusive('check', localPath, kind, root, () => this.runCheck(localPath, kind, root));
   }

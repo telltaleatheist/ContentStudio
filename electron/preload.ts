@@ -519,7 +519,16 @@ const api = {
     ipcRenderer.invoke('archive:sync', payload),
   archiveQueue: () => ipcRenderer.invoke('archive:queue'),
   archiveCancel: (payload: { paths: string[] }) => ipcRenderer.invoke('archive:cancel', payload),
-  archiveCheck: (payload: { localPath: string; kind: 'week' | 'day' }) => ipcRenderer.invoke('archive:check', payload),
+  archiveCheck: async (payload: { localPath: string; kind: 'week' | 'day' }) => {
+    const result = await ipcRenderer.invoke('archive:check', payload);
+    // The busy refusal travels as a value (see editor-ipc) purely so the main process
+    // does not log it as a handler crash; here it becomes the thrown Error the
+    // renderer's catch already handles.
+    if (result && typeof result === 'object' && typeof result.__archiveBusy === 'string') {
+      throw new Error(result.__archiveBusy);
+    }
+    return result;
+  },
   archiveDestination: (payload: { localPath: string; kind: 'week' | 'day' }) =>
     ipcRenderer.invoke('archive:destination', payload),
   // The folders a sync has actually completed on, remembered across restarts. Not a claim
