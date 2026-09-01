@@ -72,9 +72,9 @@
   --rp-mono: 'SF Mono', 'JetBrains Mono', Menlo, ui-monospace, monospace;
 
   --rp-fs-body: 14px;
-  --rp-fs-small: 12.5px;
-  --rp-fs-cap: 11.5px;
-  --rp-fs-kicker: 10.5px;
+  --rp-fs-small: 13px;
+  --rp-fs-cap: 12px;
+  --rp-fs-kicker: 11.5px;
 
   --rp-radius: 8px;
 
@@ -208,7 +208,7 @@
 
 .kbd {
   font-family: var(--rp-mono);
-  font-size: 10.5px;
+  font-size: 11.5px;
   color: var(--rp-ink-3);
   border: 1px solid var(--rp-line);
   border-radius: 4px;
@@ -357,7 +357,7 @@ input[type='time'].control { width: 92px; flex: none; }
   }
   code {
     font-family: var(--rp-mono);
-    font-size: 10.5px;
+    font-size: 11.5px;
     color: var(--rp-ink-2);
     overflow-wrap: anywhere;
   }
@@ -475,7 +475,7 @@ input[type='time'].control { width: 92px; flex: none; }
   transition: color 0.13s ease, border-color 0.13s ease, background 0.13s ease;
 
   &:hover { color: var(--rp-ink); border-color: var(--rp-ink-3); }
-  .n { font-size: 10.5px; color: var(--rp-ink-3); font-weight: 400; }
+  .n { font-size: 11.5px; color: var(--rp-ink-3); font-weight: 400; }
   /* ORANGE — the button in force. The list under it is the only list on screen, so
      which one is on has to be answerable without reading the counts. */
   &.on {
@@ -513,7 +513,7 @@ input[type='time'].control { width: 92px; flex: none; }
   transition: color 0.13s ease, background 0.13s ease;
 
   &:hover { color: var(--rp-ink-2); }
-  .n { font-size: 10.5px; color: var(--rp-ink-3); font-weight: 400; }
+  .n { font-size: 11.5px; color: var(--rp-ink-3); font-weight: 400; }
   &.on {
     background: var(--rp-hover);
     color: var(--rp-ink);
@@ -624,7 +624,7 @@ input[type='time'].control { width: 92px; flex: none; }
   grid-column: 4;
   grid-row: 1;
   flex: none;
-  font-size: 10.5px;
+  font-size: 11.5px;
   color: var(--rp-ink-3);
   background: none;
   border: 1px solid var(--rp-line-soft);
@@ -763,7 +763,7 @@ input[type='time'].control { width: 92px; flex: none; }
 /* How many facts are held, on the tab that holds them — the record tab is the one the
    readiness meter's amber ticks jump to, and this is the same count in the same colour. */
 .wtab-held {
-  font-size: 10.5px;
+  font-size: 11.5px;
   font-weight: 700;
   color: var(--rp-warn);
 }
@@ -953,7 +953,7 @@ input[type='time'].control { width: 92px; flex: none; }
   }
   kbd {
     font-family: var(--rp-mono);
-    font-size: 10.5px;
+    font-size: 11.5px;
     color: var(--rp-ink-2);
     background: var(--rp-raised);
     border: 1px solid var(--rp-line);
@@ -1295,7 +1295,7 @@ input[type='time'].control { width: 92px; flex: none; }
   mat-icon { flex: none; font-size: 15px; width: 15px; height: 15px; color: var(--rp-ink-3); }
 }
 .asset-name { flex: 1; min-width: 0; font-size: var(--rp-fs-small); }
-.chev { flex: none; font-size: 10px; color: var(--rp-ink-3); }
+.chev { flex: none; font-size: 11px; color: var(--rp-ink-3); }
 .asset-body { padding: 0 0 10px; }
 .asset-actions { display: flex; justify-content: flex-end; padding-bottom: 6px; }
 .asset-line {
@@ -1387,7 +1387,7 @@ input[type='time'].control { width: 92px; flex: none; }
     > span:last-child {
       color: var(--rp-ink-2);
       font-family: var(--rp-mono);
-      font-size: 10.5px;
+      font-size: 11.5px;
       text-align: right;
       min-width: 0;
       overflow: hidden;
