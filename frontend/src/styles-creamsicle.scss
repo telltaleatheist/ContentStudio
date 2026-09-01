@@ -16,7 +16,7 @@
 
   --text-primary: #212529;
   --text-secondary: #6c757d;
-  --text-muted: #adb5bd;
+  --text-muted: #79818a;    // was #adb5bd — 2.3:1 on white, below reading contrast; this is ~4:1
   // The one Material never gives us on a themed surface: its light default
   // (rgba(0,0,0,.38)) is baked black, so a disabled control on the dark theme
   // renders near-invisible. Every disabled state below reads this instead.

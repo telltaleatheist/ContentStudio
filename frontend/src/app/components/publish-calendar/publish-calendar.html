@@ -23,22 +23,26 @@
     </div>
 
     <div class="header-actions">
-      <!-- The mirror's own freshness, next to its own refresh. Never read is not the
-           same as read and empty, and this line says which. -->
-      <span class="sweep-state" [class.stale-sweep]="sweep() === null">
-        @if (sweeping()) {
-          YouTube · reading…
-        } @else if (sweep(); as swept) {
-          YouTube · {{ swept.scheduled.length }} scheduled · as of {{ sweptLabel() }}
-          @if (sweepFailed()) { <span class="sweep-stale">· may be behind</span> }
-        } @else {
-          YouTube · not read yet
-        }
-      </span>
-      <button mat-icon-button (click)="refreshSweep()" [disabled]="sweeping()"
-              matTooltip="Re-read what YouTube has scheduled">
-        <mat-icon>cloud_sync</mat-icon>
-      </button>
+      <!-- Each lane's mirror chrome appears only on that lane's tab: the header answers
+           for the board being looked at, and the other lane's freshness is that tab's
+           business. Never read is not the same as read and empty, and this line says
+           which. -->
+      @if (activeDestination() === 'youtube') {
+        <span class="sweep-state" [class.stale-sweep]="sweep() === null">
+          @if (sweeping()) {
+            YouTube · reading…
+          } @else if (sweep(); as swept) {
+            YouTube · {{ swept.scheduled.length }} scheduled · as of {{ sweptLabel() }}
+            @if (sweepFailed()) { <span class="sweep-stale">· may be behind</span> }
+          } @else {
+            YouTube · not read yet
+          }
+        </span>
+        <button mat-icon-button (click)="refreshSweep()" [disabled]="sweeping()"
+                matTooltip="Re-read what YouTube has scheduled">
+          <mat-icon>cloud_sync</mat-icon>
+        </button>
+      }
       <!-- The podcast lane's own mirror, and only on the podcast tab: every episode lands
            at 5 AM, a column no channel tab is about. Never read is not the same as read
            and empty, and this line says which — the dates on the board come from Spreaker
@@ -60,30 +64,35 @@
           <mat-icon>podcasts</mat-icon>
         </button>
       }
-      <button mat-flat-button color="primary" class="upload-all"
-              (click)="askUploadAll()"
-              [disabled]="uploadable().length === 0 || uploadRun() !== null || spreakerRun() !== null"
-              matTooltip="Upload every ready scheduled video to its channel">
-        <mat-icon>cloud_upload</mat-icon>
-        Upload all ready ({{ uploadable().length }})
-      </button>
-      <!-- The Spreaker lane's own button, next to the YouTube one and never merged into
-           it: two services, two authorizations, and one of them publishes on contact. -->
-      <button mat-stroked-button class="send-spreaker"
-              (click)="askSpreakerRun()"
-              [disabled]="spreakerUploadable().length === 0 || spreakerRun() !== null || uploadRun() !== null"
-              matTooltip="Upload every ready, DATED podcast episode to Spreaker">
-        <mat-icon>podcasts</mat-icon>
-        Send to Spreaker ({{ spreakerUploadable().length }})
-      </button>
-      <!-- Why the count is smaller than the podcast work on the board. Beside the button
-           rather than only inside its panel, because when EVERY ready episode is undated
-           the button is disabled at (0) and that panel can never be opened. -->
-      @if (spreakerHeldBack() > 0) {
-        <span class="spreaker-held"
-              [matTooltip]="'An episode with no publish date goes live the moment Spreaker finishes encoding it, so the run will not send one. Drop it on a 5 AM slot to schedule it.'">
-          {{ spreakerHeldBack() }} undated
-        </span>
+      <!-- One send button, the active lane's. Two services, two authorizations, one of
+           which publishes on contact — and a second button for the lane not being looked
+           at was one more thing to misread. The readiness line names what the other lane
+           has ready. Both run-guards stay on each button: two runs at once is never on. -->
+      @if (activeDestination() === 'youtube') {
+        <button mat-flat-button color="primary" class="upload-all"
+                (click)="askUploadAll()"
+                [disabled]="uploadable().length === 0 || uploadRun() !== null || spreakerRun() !== null"
+                matTooltip="Upload every ready scheduled video to its channel">
+          <mat-icon>cloud_upload</mat-icon>
+          Upload all ready ({{ uploadable().length }})
+        </button>
+      } @else {
+        <button mat-flat-button color="primary" class="send-spreaker"
+                (click)="askSpreakerRun()"
+                [disabled]="spreakerUploadable().length === 0 || spreakerRun() !== null || uploadRun() !== null"
+                matTooltip="Upload every ready, DATED podcast episode to Spreaker">
+          <mat-icon>podcasts</mat-icon>
+          Send to Spreaker ({{ spreakerUploadable().length }})
+        </button>
+        <!-- Why the count is smaller than the podcast work on the board. Beside the button
+             rather than only inside its panel, because when EVERY ready episode is undated
+             the button is disabled at (0) and that panel can never be opened. -->
+        @if (spreakerHeldBack() > 0) {
+          <span class="spreaker-held"
+                [matTooltip]="'An episode with no publish date goes live the moment Spreaker finishes encoding it, so the run will not send one. Drop it on a 5 AM slot to schedule it.'">
+            {{ spreakerHeldBack() }} undated
+          </span>
+        }
       }
       <button mat-stroked-button (click)="scrollToToday()">Today</button>
       <button mat-icon-button routerLink="/metadata-reports" matTooltip="Metadata reports">
@@ -579,7 +588,7 @@
               further out than the {{ horizonDays() }} days loaded.
             </span>
           }
-          @if (mirrorsOutsideWindow() > 0) {
+          @if (activeDestination() === 'youtube' && mirrorsOutsideWindow() > 0) {
             <span class="beyond-note">
               {{ mirrorsOutsideWindow() }} YouTube schedule{{ mirrorsOutsideWindow() === 1 ? '' : 's' }}
               fall outside these days.
@@ -594,7 +603,7 @@
               whose report was deleted — nothing to schedule, safe to ignore.
             </span>
           }
-          @if (sweep(); as swept) {
+          @if (activeDestination() === 'youtube' && sweep(); as swept) {
             <span class="beyond-note quiet">
               YouTube read from the {{ swept.windowSize }} most recent uploads on
               {{ swept.channelsSwept }} channel{{ swept.channelsSwept === 1 ? '' : 's' }}.

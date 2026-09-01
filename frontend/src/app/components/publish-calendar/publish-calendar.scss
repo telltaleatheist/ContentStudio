@@ -198,7 +198,7 @@
 
 .tag,
 .chip-tag {
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.04em;
   color: var(--text-secondary);
@@ -291,12 +291,12 @@
 
   /* Another channel's item. Still readable, still draggable — just not the subject. */
   &.dimmed {
-    opacity: 0.4;
-    filter: grayscale(0.85);
+    opacity: 0.62;
+    filter: grayscale(0.5);
 
     &:hover {
-      opacity: 0.75;
-      filter: grayscale(0.35);
+      opacity: 0.9;
+      filter: grayscale(0.15);
     }
   }
 
@@ -378,7 +378,7 @@
 
     .lane-of {
       display: block;
-      font-size: 0.58rem;
+      font-size: 0.7rem;
       font-weight: 600;
       letter-spacing: 0.05em;
       color: var(--text-muted);
@@ -426,7 +426,7 @@
   }
 
   .today-dot {
-    font-size: 0.62rem;
+    font-size: 0.7rem;
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--primary-orange);
@@ -447,7 +447,7 @@
   transition: border-color 0.13s ease, background 0.13s ease;
 
   .slot-label {
-    font-size: 0.6rem;
+    font-size: 0.7rem;
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--text-muted);
@@ -455,7 +455,7 @@
 
   /* Inside the writer's fifteen-minute lead. Inert, and it reads inert. */
   &.past {
-    opacity: 0.35;
+    opacity: 0.45;
     background: transparent;
     border-style: dashed;
   }
@@ -526,7 +526,7 @@
 
   .other-label {
     flex-shrink: 0;
-    font-size: 0.6rem;
+    font-size: 0.7rem;
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--warning-text);
@@ -636,7 +636,7 @@
     border: 1px solid var(--text-muted);
     border-radius: 3px;
     padding: 0 3px;
-    font-size: 0.6rem;
+    font-size: 0.7rem;
     color: var(--text-muted);
   }
 
@@ -653,7 +653,7 @@
   }
 
   &.published {
-    opacity: 0.55;
+    opacity: 0.68;
   }
 
   &.unrouted .chip-bar {
@@ -665,12 +665,12 @@
      greyed by state and pushed back by channel, and this is the one that wins. An
      unrouted chip never gets this class — it needs attention on every tab. */
   &.dimmed {
-    opacity: 0.4;
-    filter: grayscale(0.85);
+    opacity: 0.62;
+    filter: grayscale(0.5);
 
     &:hover {
-      opacity: 0.75;
-      filter: grayscale(0.35);
+      opacity: 0.9;
+      filter: grayscale(0.15);
     }
   }
 
@@ -689,12 +689,12 @@
 }
 
 .stale-note {
-  font-size: 0.64rem;
+  font-size: 0.72rem;
   color: var(--warning-text);
 }
 
 .unrouted-note {
-  font-size: 0.64rem;
+  font-size: 0.72rem;
   color: var(--text-muted);
   font-style: italic;
 }
@@ -795,7 +795,7 @@
   }
 
   .mirror-tag {
-    font-size: 0.6rem;
+    font-size: 0.7rem;
     color: var(--text-muted);
     flex-shrink: 0;
   }
@@ -816,12 +816,12 @@
   }
 
   &.dimmed {
-    opacity: 0.35;
-    filter: grayscale(0.85);
+    opacity: 0.55;
+    filter: grayscale(0.5);
 
     &:hover {
-      opacity: 0.7;
-      filter: grayscale(0.3);
+      opacity: 0.85;
+      filter: grayscale(0.15);
     }
   }
 }
@@ -884,7 +884,7 @@
 /* YouTube disagrees with the record about when this goes out. */
 .divergence-note {
   margin: 0.1rem 0 0.2rem;
-  font-size: 0.62rem;
+  font-size: 0.7rem;
   color: var(--warning-text, var(--text-secondary));
 }
 
@@ -928,7 +928,7 @@
   align-items: center;
   gap: 0.3rem;
   margin: 0.15rem 0 0;
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   color: var(--text-muted);
 
   .pip {
@@ -949,7 +949,7 @@
 
 .missing-note {
   margin: 0.1rem 0 0.2rem;
-  font-size: 0.62rem;
+  font-size: 0.7rem;
   color: var(--warning-text, var(--text-secondary));
 }
 
@@ -1081,7 +1081,7 @@
     align-items: center;
     justify-content: space-between;
     margin-top: 0.35rem;
-    font-size: 0.68rem;
+    font-size: 0.72rem;
     color: var(--text-muted);
   }
 }
@@ -1143,7 +1143,7 @@
   .ures-id {
     color: var(--text-muted);
     font-family: monospace;
-    font-size: 0.65rem;
+    font-size: 0.72rem;
   }
 
   /* Verbatim, and allowed to wrap: a refusal that is cut off is a refusal nobody can act
@@ -1160,7 +1160,7 @@
    said plainly at the two places the decision gets made: the chip, and the confirm list. */
 .clash-note {
   margin: 0.1rem 0 0.2rem;
-  font-size: 0.62rem;
+  font-size: 0.7rem;
   color: var(--danger-text);
 }
 
@@ -1170,7 +1170,7 @@
   }
 
   .uc-clash {
-    font-size: 0.65rem;
+    font-size: 0.72rem;
     color: var(--danger-text);
     white-space: nowrap;
     overflow: hidden;
@@ -1192,7 +1192,7 @@
    cannot know it — publishAt is cleared the moment a video publishes. */
 .live-note {
   margin: 0.1rem 0 0.2rem;
-  font-size: 0.62rem;
+  font-size: 0.7rem;
   color: var(--success-text, #16a34a);
 }
 
@@ -1227,7 +1227,7 @@
 
 .pending-push-note {
   margin: 0.1rem 0 0.2rem;
-  font-size: 0.62rem;
+  font-size: 0.7rem;
   color: var(--primary-orange);
 }
 
@@ -1238,7 +1238,7 @@
   padding: 0.4rem 0.5rem;
   border-radius: 5px;
   background: var(--bg-secondary);
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   color: var(--text-muted);
 
   .uc-skip-row {
