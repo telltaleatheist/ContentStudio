@@ -762,7 +762,10 @@
           <section class="block">
             <div class="bhead">
               <h3>Tags</h3>
-              <span class="cnt num">{{ editedTagsArray().length }}</span>
+              <span class="cnt num" [class.over]="tagsOverLimit()"
+                    [title]="tagsOverLimit()
+                               ? 'Spreaker takes at most ' + SPREAKER_MAX_TAGS + ' tags; the push will refuse this list. Edit some out.'
+                               : ''">{{ editedTagsArray().length }}</span>
               @if (publish.tagsOverride() !== null) {
                 <span class="tag" title="You edited these. The generated tags are kept and can be restored.">edited</span>
               }

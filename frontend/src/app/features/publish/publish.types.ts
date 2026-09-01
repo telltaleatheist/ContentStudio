@@ -30,6 +30,14 @@ export const SPREAKER_DESTINATION = 'spreaker';
 /** How the podcast destination reads in the picker and the manifest. */
 export const SPREAKER_DESTINATION_LABEL = 'Spreaker (podcast)';
 
+/**
+ * The most tags Spreaker takes on one episode. Mirrors SPREAKER_MAX_TAGS in
+ * electron/services/publish/publish-types.ts, where its provenance is recorded (read off
+ * a live 400, not from the docs) — the push refuses over-limit items there; this copy
+ * lets the report page say so while the operator is still editing.
+ */
+export const SPREAKER_MAX_TAGS = 20;
+
 export type PublishStatus = 'selecting' | 'ready' | 'linked' | 'filled' | 'published';
 
 /** What a thumbnail file measured when it was accepted. */

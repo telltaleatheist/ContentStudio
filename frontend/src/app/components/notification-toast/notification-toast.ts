@@ -48,10 +48,14 @@ export class NotificationToastComponent implements OnInit, OnDestroy {
     // Add to notifications list
     this.notifications.push(notification);
 
-    // Auto-remove after 5 seconds
+    // An error stays until the operator closes it: it usually reports the end of
+    // something that took a while, and a report that deletes itself in five seconds has
+    // to be reproduced to be reread. Everything else auto-dismisses — warnings a little
+    // slower than good news.
+    if (notification.type === 'error') return;
     const timer = setTimeout(() => {
       this.removeToast(notification.id);
-    }, 5000);
+    }, notification.type === 'warning' ? 10000 : 5000);
 
     this.toastTimers.set(notification.id, timer);
   }

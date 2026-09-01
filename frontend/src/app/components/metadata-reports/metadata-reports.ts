@@ -31,6 +31,7 @@ import {
   type PublishFacts,
   type ReportIndexEntry,
   type ThumbStripEntry,
+  SPREAKER_MAX_TAGS,
 } from '../../features/publish/publish.types';
 import {
   CADENCE_NOTES,
@@ -590,6 +591,7 @@ export class MetadataReports implements OnInit {
 
   readonly MAX_DESCRIPTION_CHARS = MAX_DESCRIPTION_CHARS;
   readonly TAGS_CLAMP_THRESHOLD = TAGS_CLAMP_THRESHOLD;
+  readonly SPREAKER_MAX_TAGS = SPREAKER_MAX_TAGS;
 
   /** One slot per A/B variant, always rendered — an empty slot is a state, not a gap. */
   readonly SLATE_SLOTS = Array.from({ length: MAX_AB_VARIANTS }, (_, i) => i);
@@ -1725,6 +1727,15 @@ export class MetadataReports implements OnInit {
     return this.descriptionValue().length > MAX_DESCRIPTION_CHARS;
   }
 
+  /**
+   * Too many tags for where this item is going. Only Spreaker has a count cap; the push
+   * refuses an over-limit episode before sending a byte, and this is the same fact said
+   * while the list is still being edited instead of at dispatch.
+   */
+  tagsOverLimit(): boolean {
+    return this.publish.isPodcast() && this.editedTagsArray().length > SPREAKER_MAX_TAGS;
+  }
+
   readonly tagsExpanded = signal(false);
 
   /** The extract sections, collapsed to their counts until the text is wanted. */
@@ -2191,7 +2202,14 @@ export class MetadataReports implements OnInit {
     });
 
     const tagCount = this.editedTagsArray().length;
-    rows.push({ label: 'Tags', value: String(tagCount), missing: tagCount === 0 });
+    const tagsOver = this.tagsOverLimit();
+    rows.push({
+      label: 'Tags',
+      value: tagsOver
+        ? `${tagCount} — Spreaker takes at most ${SPREAKER_MAX_TAGS}; the push will refuse this`
+        : String(tagCount),
+      missing: tagCount === 0 || tagsOver,
+    });
 
     if (this.publish.isPodcast()) {
       const audio = this.publish.audio();
