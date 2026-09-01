@@ -562,7 +562,7 @@ input[type='time'].control { width: 92px; flex: none; }
   &.checked { background: var(--rp-hover); }
   /* Already on YouTube. Muted, never hidden — it is still selectable, still exportable,
      and still the row the operator opens to read what was sent. */
-  &.uploaded { opacity: 0.55; }
+  &.uploaded { opacity: 0.68; }
   &.uploaded:hover,
   &.uploaded.on { opacity: 1; }
 }

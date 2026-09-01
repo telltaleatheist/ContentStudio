@@ -20,7 +20,7 @@
   // The one Material never gives us on a themed surface: its light default
   // (rgba(0,0,0,.38)) is baked black, so a disabled control on the dark theme
   // renders near-invisible. Every disabled state below reads this instead.
-  --text-disabled: rgba(33, 37, 41, 0.38);
+  --text-disabled: rgba(33, 37, 41, 0.52);  // 0.38 read as 'barely there'; disabled must still be readable
 
   --border-color: #d1d5db;
   --border-strong: #adb5bd;   // emphasised outlines (outlined buttons)
@@ -101,7 +101,7 @@
   --text-primary: #ffffff;
   --text-secondary: #d1d5db;
   --text-muted: #9ca3af;
-  --text-disabled: rgba(255, 255, 255, 0.38);
+  --text-disabled: rgba(255, 255, 255, 0.5);
 
   --border-color: #374151;
   --border-strong: #666666;
