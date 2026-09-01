@@ -78,6 +78,10 @@
  *     - REQUIRED: `title` (max 140 chars) and `media_file` (the audio).
  *     - Optional and used here: `description` (plain text), `tags` (comma-separated),
  *       `auto_published_at` (schedule).
+ *     - **`tags` is capped at 20**, which the reference does not say. Spreaker does, in
+ *       the refusal: `HTTP 400 — tags: You can add up to 20 tags.` on an episode sent with
+ *       21 of them. It arrives AFTER the audio has been read, so the cap is enforced here
+ *       before a byte is sent — see SPREAKER_MAX_TAGS.
  *     - Optional and NOT used here, listed so the next person does not have to go
  *       looking: `explicit`, `download_enabled`, `hidden`, `visibility`
  *       (PUBLIC|PRIVATE|LIMITED), `image_file` (≥400x400, ≤5 MB), `image_crop`,
@@ -137,6 +141,7 @@ import {
   AudioMeta,
   ChosenMetadata,
   ResolvedMetadata,
+  SPREAKER_MAX_TAGS,
   SPREAKER_MAX_TITLE_LENGTH,
   SpreakerReceipt,
 } from './publish-types';
@@ -355,6 +360,19 @@ export function planEpisode(input: {
   // poor episode, not a destroyed one.
   const description = resolved.description ?? '';
   const tags = splitTags(resolved.tags ?? '');
+
+  // REFUSED HERE, BEFORE THE AUDIO. Spreaker enforces this itself, but its 400 comes back
+  // only after the whole multipart body has been read — a 150 MB upload spent to be told
+  // there is one tag too many. Nothing is truncated to fit: which tag to lose is an
+  // editorial call, and a push that quietly dropped the last one would publish an episode
+  // the operator never approved the tags of.
+  if (tags.length > SPREAKER_MAX_TAGS) {
+    throw new Error(
+      `Item ${item} resolves to ${tags.length} tags; Spreaker's limit is ` +
+      `${SPREAKER_MAX_TAGS}. Trim ${tags.length - SPREAKER_MAX_TAGS} of them before ` +
+      `uploading — nothing was sent.`
+    );
+  }
 
   // ---- the audio ---------------------------------------------------------------
   if (!audio || typeof audio.path !== 'string' || !audio.path.trim()) {

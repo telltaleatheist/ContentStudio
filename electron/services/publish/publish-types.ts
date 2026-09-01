@@ -56,6 +56,16 @@ export const MAX_TITLE_LENGTH = 100;
 export const SPREAKER_MAX_TITLE_LENGTH = 140;
 
 /**
+ * The most tags Spreaker will take on one episode.
+ *
+ * NOT FROM THE DOCS — the create-episode reference lists `tags` without a count. This is
+ * Spreaker's own refusal, read off the wire: `HTTP 400 — tags: You can add up to 20 tags.`
+ * on an episode carrying 21. Recorded here so the next upload is refused before its audio
+ * is sent rather than after.
+ */
+export const SPREAKER_MAX_TAGS = 20;
+
+/**
  * A schedule must be at least this far in the future when it is SET.
  *
  * Not re-checked on read: a schedule that has since gone stale is a real state the

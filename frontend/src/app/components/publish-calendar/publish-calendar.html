@@ -295,9 +295,18 @@
   }
 
   <!-- The Spreaker lane's confirm panel. Its own, because the decision it guards is not
-       the YouTube one: there the risk is a video on the wrong channel, here it is a
-       release that happens the moment the upload finishes. Every row prints its date and
-       time because that date is the only thing holding the episode back. -->
+       the YouTube one: there the risk is a video on the wrong channel, here it is an
+       episode created in a public feed that nothing on this page can take back. Every row
+       prints its date and time because that date is the only thing holding it back.
+
+       WHAT THE NOTE WARNS ABOUT IS THIS RUN, not a hypothetical one. It used to open
+       "A SPREAKER EPISODE WITH NO PUBLISH DATE GOES LIVE IMMEDIATELY", which reads as an
+       accusation about the list underneath it — and cannot ever be true of that list,
+       because `spreakerUploadable` admits only dated episodes. An operator who has just
+       dragged an episode onto a slot is told, in capitals, that it has no date. The rule
+       still belongs here, as the REASON the times matter; the alarm belongs on the thing
+       that is actually irreversible. The undated case has its own line already, in the
+       excluded groups below, where it is said only when it is true. -->
   @if (spreakerConfirm(); as pending) {
     <div class="upload-confirm spreaker-confirm">
       <div class="uc-head">
@@ -307,9 +316,12 @@
       </div>
 
       <div class="uc-note uc-danger">
-        A SPREAKER EPISODE WITH NO PUBLISH DATE GOES LIVE IMMEDIATELY — the service has no
-        draft state. Every episode below carries a date, and that date is what keeps it
-        from being released the moment its encode finishes. Read the times.
+        THIS CREATES {{ pending.length === 1 ? 'AN EPISODE' : 'EPISODES' }} IN THE PUBLIC
+        FEED and nothing here can undo it — there is no replace, so a second upload of the
+        same episode is a second episode.
+        {{ pending.length === 1 ? 'It is held' : 'Each one is held' }} until the time below
+        and goes out then: Spreaker has no draft state, so that date is the only thing
+        holding it back. Read the times.
       </div>
 
       @for (item of pending; track item.itemId) {
