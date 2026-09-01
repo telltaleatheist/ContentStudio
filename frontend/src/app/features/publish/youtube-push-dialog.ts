@@ -31,6 +31,8 @@ export interface YouTubePushDialogData {
   tagsPreview: string;
   /** Human rendering of the schedule, or null when no schedule will be sent. */
   scheduleLabel: string | null;
+  /** True when that schedule has already passed — YouTube publishes on receipt, not later. */
+  schedulePast: boolean;
   /** Basename of the thumbnail file, or null when none will be uploaded. */
   thumbnailName: string | null;
   /** The thumbnail itself, when the panel already has a preview of it. */
@@ -71,7 +73,11 @@ export interface YouTubePushDialogData {
         <dd>
           @if (data.scheduleLabel) {
             <span class="value">{{ data.scheduleLabel }}</span>
-            <span class="meta">the video stays private until then</span>
+            @if (data.schedulePast) {
+              <span class="meta past-warn">this time has already passed — sending publishes the video immediately</span>
+            } @else {
+              <span class="meta">the video stays private until then</span>
+            }
           } @else {
             <span class="untouched">Not sent — the video's current privacy and schedule are left alone.</span>
           }
@@ -101,6 +107,7 @@ export interface YouTubePushDialogData {
     </mat-dialog-actions>
   `,
   styles: [`
+    .past-warn { color: var(--danger-text, #dc2626); font-weight: 600; }
     mat-dialog-content { min-width: 520px; max-width: 720px; }
     .lead { color: rgba(255,255,255,0.7); font-size: 13px; line-height: 1.5; margin: 0 0 16px; }
     .lead code { font-family: 'SF Mono', Menlo, monospace; font-size: 12px;

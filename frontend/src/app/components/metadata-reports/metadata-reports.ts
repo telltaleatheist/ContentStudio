@@ -2,6 +2,7 @@ import {
   Component,
   ElementRef,
   HostListener,
+  OnDestroy,
   OnInit,
   ViewChild,
   computed,
@@ -461,7 +462,7 @@ interface ParsedMetadata {
   templateUrl: './metadata-reports.html',
   styleUrl: './metadata-reports.scss'
 })
-export class MetadataReports implements OnInit {
+export class MetadataReports implements OnInit, OnDestroy {
   reports = signal<MetadataReport[]>([]);
   /**
    * The main process's joined index, as it arrived — one entry per item, each carrying
@@ -710,6 +711,9 @@ export class MetadataReports implements OnInit {
     const sources = new Map<string, Set<string>>();
     const everything = new Set<string>();
     for (const report of this.reports()) {
+      // The same rules the list runs, INCLUDING the primary filter: a tab that counted a
+      // non-primary sibling promised a row that pressing it would not show.
+      if (!this.isPrimaryRow(report)) continue;
       // '' as the channel means "do not filter by channel" — this is the count BEFORE
       // the tab, which is the only count a tab can honestly print on itself.
       if (!this.matchesFilters(report, state, '')) continue;
@@ -1070,6 +1074,9 @@ export class MetadataReports implements OnInit {
       SEGMENT_FILTERS.map((f) => [f.value, new Set<string>()]),
     );
     for (const report of this.reports()) {
+      // Primaries only — same reason as the tab counts: the list will only ever show
+      // primary rows, so a count over siblings promises rows the press cannot deliver.
+      if (!this.isPrimaryRow(report)) continue;
       const key = report.sourceKey ?? `${NO_SOURCE_KEY}${report.itemId ?? report.path}`;
       for (const f of SEGMENT_FILTERS) {
         if (this.matchesFilters(report, f.value)) counts.get(f.value)!.add(key);
@@ -1179,6 +1186,16 @@ export class MetadataReports implements OnInit {
   /** Every row on screen — one per source. */
   readonly visibleReports = computed<MetadataReport[]>(() =>
     this.visibleGroups().map((group) => group.head),
+  );
+
+  /**
+   * How many rows the list holds with nothing filtered — one per source, primaries only,
+   * the same unit as `visibleReports`. `reports().length` counts every metadata SET
+   * (siblings and softened copies included), and 80/111 with no filter on read as "31
+   * rows hidden" every time.
+   */
+  readonly sourceCount = computed(
+    () => this.reports().filter((report) => this.isPrimaryRow(report)).length,
   );
 
   focusSearch(): void {
@@ -1309,17 +1326,33 @@ export class MetadataReports implements OnInit {
     const ticks: ReadinessTick[] = [];
 
     // -- TITLES -- variant 1 is the video's title, so zero picked is what blocks a push.
+    // A/B variants are a YouTube idea; Spreaker takes ONE title (the same split rowDots
+    // already makes) — a podcast at 1/3 was being told two-thirds of a job that does not
+    // exist for it.
     const chosen = this.publish.chosenCount();
-    ticks.push({
-      key: 'titles',
-      label: 'Titles',
-      state: chosen === MAX_AB_VARIANTS ? 'set' : chosen === 0 ? 'warn' : 'unset',
-      value: `${chosen}/${MAX_AB_VARIANTS}`,
-      hint:
-        chosen === 0
-          ? 'No titles picked. Variant 1 is what goes on the video, so nothing can be sent yet.'
-          : `${chosen} picked, in click order — #1 is the video's title and YouTube's fallback.`,
-    });
+    if (toSpreaker) {
+      ticks.push({
+        key: 'titles',
+        label: 'Titles',
+        state: chosen >= 1 ? 'set' : 'warn',
+        value: chosen >= 1 ? '1' : '0/1',
+        hint:
+          chosen >= 1
+            ? 'Title picked — Spreaker takes one, the first picked.'
+            : 'No title picked. The first picked title is the episode title, so nothing can be sent yet.',
+      });
+    } else {
+      ticks.push({
+        key: 'titles',
+        label: 'Titles',
+        state: chosen === MAX_AB_VARIANTS ? 'set' : chosen === 0 ? 'warn' : 'unset',
+        value: `${chosen}/${MAX_AB_VARIANTS}`,
+        hint:
+          chosen === 0
+            ? 'No titles picked. Variant 1 is what goes on the video, so nothing can be sent yet.'
+            : `${chosen} picked, in click order — #1 is the video's title and YouTube's fallback.`,
+      });
+    }
 
     // -- CHANNEL -- one routing decision: a YouTube channel, or Spreaker.
     const unknown = this.publish.unknownStoredChannel();
@@ -1352,18 +1385,21 @@ export class MetadataReports implements OnInit {
       });
     } else if (this.publish.channelIsSuggested()) {
       // The routing decision was made at generation, when the prompt set was picked
-      // (2026-08-24) — the suggestion IS the answer, and the auto-route writes it into
-      // the record on the first save of anything. Not 'warn': there is no decision left
-      // to make here.
+      // (2026-08-24) — but until the first save writes it, the RECORD is unrouted and
+      // the dispatch button refuses on exactly that. 'warn', so the amber lands on the
+      // tick whose row can fix it: a green Channel over a button refusing "not routed"
+      // was the meter and the button contradicting each other, with the refusal then
+      // dumped on the Link tick by the disagreement guard.
       const suggestedId = this.publish.selectedChannelId();
       ticks.push({
         key: 'channel',
         label: 'Channel',
-        state: 'set',
-        value: suggestedId ? this.channelNameFor(suggestedId) : 'routed',
+        state: 'warn',
+        value: suggestedId ? `${this.channelNameFor(suggestedId)} (suggested)` : 'suggested',
         hint:
-          `${this.publish.channelNote() ?? ''} Routed from the prompt set picked at ` +
-          'generation; recorded with the first save.',
+          `${this.publish.channelNote() ?? ''} Suggested from the prompt set picked at ` +
+          'generation, and recorded the moment anything about this item is saved — save ' +
+          'any field, or confirm it here.',
       });
     } else {
       ticks.push({
@@ -1523,6 +1559,23 @@ export class MetadataReports implements OnInit {
   );
 
   /**
+   * The held work split by which tab answers it, so each tab's badge counts only what
+   * pressing that tab can fix. Titles are the one tick the record tab does not own —
+   * a "1" on Publish record that meant "pick a title on Metadata" pointed at the wrong
+   * door.
+   */
+  readonly recordHeldCount = computed(
+    () =>
+      this.readinessTicks().filter((t) => t.state === 'warn' && FACT_FOR_TICK[t.key] !== null)
+        .length,
+  );
+  readonly metadataHeldCount = computed(
+    () =>
+      this.readinessTicks().filter((t) => t.state === 'warn' && FACT_FOR_TICK[t.key] === null)
+        .length,
+  );
+
+  /**
    * True when this item's dispatch has already happened and cannot honestly be repeated.
    *
    * Only Spreaker: a YouTube push REWRITES the linked video, so pushing again is a
@@ -1532,6 +1585,20 @@ export class MetadataReports implements OnInit {
   readonly dispatchDone = computed(
     () => this.publish.isPodcast() && this.publish.spreakerEpisodeId() !== null,
   );
+
+  /**
+   * What hovering the meter word says. The word and its hover must agree: "Held" with
+   * "everything is recorded" underneath was the meter contradicting itself — held count
+   * and blocked reason are different rules, and the hover now follows the word.
+   */
+  readonly meterHint = computed(() => {
+    if (this.dispatchDone()) {
+      return `Already uploaded as episode ${this.publish.spreakerEpisodeId()}. A second upload would be a second episode.`;
+    }
+    const next = this.nextAction();
+    if (next) return `${next.tick.label} — ${next.tick.hint}`;
+    return this.dispatchBlockedReason() ?? 'Everything this item needs is recorded.';
+  });
 
   /** One word: Sent, Ready, or Held - n. */
   readonly readinessWord = computed(() => {
@@ -1860,6 +1927,11 @@ export class MetadataReports implements OnInit {
    * is for.
    */
   readonly scheduleDescription = computed(() => {
+    // The clock is a dependency ON PURPOSE. "Is this schedule in the past" gates a
+    // warning ("pushing now publishes immediately"), and a warning frozen at load time
+    // is silent in exactly the minutes it exists for — the panel sitting open while the
+    // scheduled moment goes by.
+    this.clock();
     const at = this.publish.publishAt();
     return at ? describePublishAt(at) : null;
   });
@@ -2193,8 +2265,16 @@ export class MetadataReports implements OnInit {
     });
 
     const description = this.publish.resolvedDescription();
+    // The SURVIVING chapters, not the generated ones: deletions count, and a deleted
+    // 0:00 disables the whole list on YouTube's side however many rows remain.
+    const surviving = this.chapterRows().filter((row) => !row.dropped);
+    const zeroDropped = this.chapterRows().some((row) => row.dropped && row.timestamp === '0:00');
     const chapters =
-      this.publish.chaptersInDescription() && this.hasChapters() ? 'with chapters' : 'no chapters';
+      !this.publish.chaptersInDescription() || surviving.length === 0
+        ? 'no chapters'
+        : zeroDropped
+          ? `${surviving.length} chapters — list disabled (0:00 deleted)`
+          : `with ${surviving.length} chapters`;
     rows.push({
       label: 'Description',
       value: `${description.length.toLocaleString()} chars · ${chapters}`,
@@ -2219,19 +2299,37 @@ export class MetadataReports implements OnInit {
         missing: !audio,
       });
       rows.push({ label: 'Show', value: this.spreakerShowLabel(), missing: false });
+      // 'immediate' is the loudest fact in this manifest — an episode public on encode —
+      // and .miss styling would whisper it as "nothing happens here". It is a value that
+      // WILL be sent (by omission), so it renders at full strength.
+      const podWhen = this.scheduleDescription();
       rows.push({
         label: 'Publication',
-        value: this.publish.publishAt() ? 'held until the schedule' : 'immediate',
-        missing: !this.publish.publishAt(),
+        value: podWhen
+          ? podWhen.isPast
+            ? `${podWhen.local} — already passed; Spreaker will refuse this upload`
+            : `held until ${podWhen.local}`
+          : 'immediate — public as soon as encoding finishes',
+        missing: false,
       });
       return rows;
     }
 
     const when = this.scheduleDescription();
+    // Which dispatch this manifest feeds decides what "none" means: a push leaves the
+    // linked video's privacy and schedule alone; an upload creates the video private.
+    // "publishes on push" was true of neither.
+    const noneMeans = this.publish.videoId()
+      ? 'none — the video keeps its current privacy and schedule'
+      : 'none — the video is created private and left there';
     rows.push({
       label: 'Schedule',
-      value: when ? (when.isPast ? `${when.local} — in the past` : when.local) : 'none — publishes on push',
-      missing: !when || when.isPast,
+      value: when
+        ? when.isPast
+          ? `${when.local} — already passed; sending now publishes immediately`
+          : when.local
+        : noneMeans,
+      missing: !when,
     });
 
     const thumbnailPath = this.publish.thumbnailPath();
@@ -2504,6 +2602,7 @@ export class MetadataReports implements OnInit {
       tagCount: tags.length,
       tagsPreview: tags.slice(0, 8).join(', ') + (tags.length > 8 ? `, +${tags.length - 8} more` : ''),
       scheduleLabel: schedule ? this.describeScheduleForPush(schedule) : null,
+      schedulePast: schedule ? describePublishAt(schedule).isPast : false,
       thumbnailName: thumbnailPath ? this.fileName(thumbnailPath) : null,
       // Only the image already on screen. Reading one here would be a second read of a
       // file the panel has already read, and a slow dialog for no new information.
@@ -2940,7 +3039,16 @@ export class MetadataReports implements OnInit {
       .filter(Boolean);
   }
 
+  /** A coarse clock for the strings that say "in N minutes" / "has passed". */
+  private readonly clock = signal(Date.now());
+  private clockTimer: ReturnType<typeof setInterval> | null = null;
+
+  ngOnDestroy(): void {
+    if (this.clockTimer !== null) clearInterval(this.clockTimer);
+  }
+
   async ngOnInit() {
+    this.clockTimer = setInterval(() => this.clock.set(Date.now()), 30_000);
     await this.loadReports();
 
     // The channels the list's tab strip is built from. Deliberately after the list: the
@@ -3200,8 +3308,9 @@ export class MetadataReports implements OnInit {
         lines.push(`Skipped: ${skipped.map((s) => `${s.field} — ${s.reason}`).join(' ')}`);
       }
       lines.push(
-        'The original set is untouched and is still the primary — this new set is NOT ' +
-          'published anywhere until you press "Set as primary" on the version picker above.',
+        'The set you softened is untouched, and which set is primary has not changed — ' +
+          'the new set is not published anywhere until you press "Set as primary" on the ' +
+          'version picker above.',
       );
       if (result.warning) notes.push(result.warning);
       for (const note of notes) lines.push(note);

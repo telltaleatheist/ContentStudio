@@ -551,9 +551,23 @@ export class PublishState {
    */
   readonly spreakerPublicationNote = computed(() => {
     const at = this.publishAt();
-    return at
-      ? `Scheduled — Spreaker holds it until ${at} and publishes it then.`
-      : 'Published as soon as Spreaker finishes encoding it. There is no draft state.';
+    if (!at) return 'Published as soon as Spreaker finishes encoding it. There is no draft state.';
+    // Local wall clock, not the raw ISO — this sentence is read in a confirmation, and
+    // "2026-09-02T05:00:00-04:00" is a spelling for machines. And a date already behind
+    // us holds nothing: the push refuses it by name.
+    const when = new Date(at);
+    const local = Number.isNaN(when.getTime())
+      ? at
+      : when.toLocaleString([], {
+          weekday: 'short',
+          month: 'short',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+        });
+    return when.getTime() <= Date.now()
+      ? `This schedule (${local}) has already passed — Spreaker will refuse the upload. Pick a future time.`
+      : `Scheduled — Spreaker holds it until ${local} and publishes it then.`;
   });
 
   /**

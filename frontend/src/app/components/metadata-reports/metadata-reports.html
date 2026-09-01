@@ -27,8 +27,8 @@
         <div class="pane-head-line">
           <h2 class="pane-heading">Reports</h2>
           <span class="pane-count num"
-                [title]="reports().length + ' report(s) indexed'">
-            {{ visibleReports().length }}<span class="pane-count-of">/{{ reports().length }}</span>
+                [title]="sourceCount() + ' source(s), ' + reports().length + ' metadata set(s) indexed. The list shows one row per source — its primary set.'">
+            {{ visibleReports().length }}<span class="pane-count-of">/{{ sourceCount() }}</span>
           </span>
           <span class="pane-head-spacer"></span>
           @if (hasSelectedReports()) {
@@ -226,7 +226,8 @@
                       }
                     </mat-menu>
                   }
-                  <button class="row-del" (click)="deleteReport(group.head, $event)" title="Delete this report">
+                  <button class="row-del" (click)="deleteReport(group.head, $event)"
+                          [title]="'Delete this metadata set' + (group.versionCount > 1 ? ' — this source has ' + group.versionCount + ', and only this one is deleted' : '')">
                     <mat-icon>close</mat-icon>
                   </button>
                   <span class="row-meta">
@@ -345,7 +346,7 @@
               <span class="meter-word"
                     [class.ready]="heldCount() === 0"
                     [class.held]="heldCount() > 0"
-                    [title]="dispatchBlockedReason() ?? 'Everything this item needs is recorded.'">
+                    [title]="meterHint()">
                 {{ readinessWord() }}
               </span>
               <div class="ticks">
@@ -384,14 +385,17 @@
                       role="tab"
                       [class.on]="workTab() === 'metadata'"
                       [attr.aria-selected]="workTab() === 'metadata'"
-                      (click)="showWorkTab('metadata')">Metadata</button>
+                      (click)="showWorkTab('metadata')">
+                Metadata
+                @if (metadataHeldCount() > 0) { <span class="wtab-held num">{{ metadataHeldCount() }}</span> }
+              </button>
               <button class="wtab"
                       role="tab"
                       [class.on]="workTab() === 'record'"
                       [attr.aria-selected]="workTab() === 'record'"
                       (click)="showWorkTab('record')">
                 Publish record
-                @if (heldCount() > 0) { <span class="wtab-held num">{{ heldCount() }}</span> }
+                @if (recordHeldCount() > 0) { <span class="wtab-held num">{{ recordHeldCount() }}</span> }
               </button>
               <span class="pane-head-spacer"></span>
               @if (publish.saving()) { <span class="saving">saving…</span> }
@@ -424,11 +428,15 @@
           @if (metadata()!.titles && metadata()!.titles.length > 0) {
             <section class="block titles-block">
               <div class="bhead">
-                <h3>A/B test — three variants</h3>
+                <!-- A/B variants are a YouTube idea. Spreaker takes one title — the first
+                     picked — and a podcast header counting to three assigned two-thirds
+                     of a job that does not exist for it. -->
+                <h3>{{ publish.isPodcast() ? 'Title — Spreaker takes one' : 'A/B test — three variants' }}</h3>
                 <span class="cnt num">{{ metadata()!.titles.length }} generated</span>
                 <span class="pane-head-spacer"></span>
-                <span class="ab-progress num" [class.complete]="publish.chosenCount() === MAX_AB_VARIANTS">
-                  {{ publish.chosenCount() }}/{{ MAX_AB_VARIANTS }}
+                <span class="ab-progress num"
+                      [class.complete]="publish.isPodcast() ? publish.chosenCount() >= 1 : publish.chosenCount() === MAX_AB_VARIANTS">
+                  {{ publish.isPodcast() ? (publish.chosenCount() >= 1 ? '1/1' : '0/1') : publish.chosenCount() + '/' + MAX_AB_VARIANTS }}
                 </span>
                 <!-- The keyboard legend moved off the page and into a hover popover. -->
                 <span class="keys">
@@ -968,7 +976,7 @@
                   @if (offer.fromIsPrimary) {
                     The primary set for this video ({{ localTime(offer.jobCreatedAt) }})
                   } @else {
-                    An earlier set ({{ localTime(offer.jobCreatedAt) }}) — not the primary one —
+                    Another set of this video ({{ localTime(offer.jobCreatedAt) }}) — not the primary one —
                   }
                   carries {{ carryFieldList() }}. Carry it forward?
                 </span>
@@ -989,7 +997,7 @@
               <div class="receipt">
                 <div class="receipt-head">
                   <mat-icon>fact_check</mat-icon>
-                  <strong>Carried forward from the earlier run</strong>
+                  <strong>Carried forward from the other set</strong>
                   <span class="pane-head-spacer"></span>
                   <button class="ghost" (click)="publish.dismissCarryReceipt()">Close</button>
                 </div>
@@ -1229,8 +1237,8 @@
                         <span>
                           <b>Stored in a different offset</b>
                           Stored as {{ when.raw }} ({{ when.storedOffset }}), which is not the
-                          offset in effect here now — the row above is that same moment read
-                          in {{ when.localOffset }}.
+                          offset this Mac uses on that date — the row above is that same
+                          moment read in {{ when.localOffset }}.
                         </span>
                       </div>
                     }
@@ -1272,8 +1280,8 @@
                      (drop)="onThumbnailDrop($event)">
                   @if (publish.thumbnailSource() === 'auto') {
                     <p class="why">
-                      Found automatically in this week's <code>thumbnails</code> folder,
-                      beside the export. Nobody chose it — drop a different image here, or
+                      Found automatically in the <code>thumbnails</code> folder beside this
+                      video's export. Nobody chose it — drop a different image here, or
                       use Change…, and that choice sticks.
                     </p>
                   }
@@ -1657,7 +1665,7 @@
                 </button>
               } @else {
                 <button class="dispatch-btn"
-                        [class.go]="!dispatchBlockedReason()"
+                        [class.go]="!dispatchBlockedReason() && !nextAction()"
                         [disabled]="!!dispatchBlockedReason() || publish.uploading() || publish.saving()"
                         [title]="dispatchBlockedReason() ?? publish.spreakerPublicationNote()"
                         (click)="uploadToSpreaker()">
@@ -1666,7 +1674,7 @@
               }
             } @else if (publish.videoId()) {
               <button class="dispatch-btn"
-                      [class.go]="!dispatchBlockedReason()"
+                      [class.go]="!dispatchBlockedReason() && !nextAction()"
                       [disabled]="!!dispatchBlockedReason() || publish.pushing() || publish.saving()"
                       [title]="dispatchBlockedReason() ?? 'Writes this manifest to the linked video. It asks first.'"
                       (click)="pushToYouTube()">
@@ -1686,7 +1694,7 @@
                 </div>
               }
               <button class="dispatch-btn"
-                      [class.go]="!dispatchBlockedReason() && !publish.uploadingYouTube()"
+                      [class.go]="!dispatchBlockedReason() && !nextAction() && !publish.uploadingYouTube()"
                       [disabled]="!!dispatchBlockedReason() || publish.uploadingYouTube() || publish.saving()"
                       [title]="dispatchBlockedReason() ?? 'Creates a NEW private video from the source file, carrying its schedule when one is set. Whether that schedule releases it depends on the audit standing of this API project — verify the first one.'"
                       (click)="uploadToYouTube()">
@@ -1695,11 +1703,21 @@
             }
 
             <div class="dispatch-foot">
-              @if (dispatchBlockedReason(); as why) {
+              @if (dispatchDone()) {
+                <!-- Not "Held · 0": nothing is held, the work is done. The blocked reason
+                     for a sent episode is the duplicate guard, which is a fact about the
+                     past, not a request. -->
+                <span [title]="dispatchBlockedReason() ?? ''">
+                  Uploaded as episode {{ publish.spreakerEpisodeId() }}
+                </span>
+              } @else if (dispatchBlockedReason(); as why) {
                 <span class="held" [title]="why">Held · {{ heldCount() }} — hover for why</span>
               } @else if (publish.isPodcast()) {
+                <!-- The label follows the same branch its tooltip takes: announcing "no
+                     draft state" over a tooltip saying "held until Friday" was the label
+                     and its hover disagreeing. -->
                 <span [title]="publish.spreakerPublicationNote()">
-                  Spreaker has no draft state ⓘ
+                  {{ publish.publishAt() ? 'Held until the schedule ⓘ' : 'Spreaker has no draft state — public on encode ⓘ' }}
                 </span>
               } @else if (!publish.videoId()) {
                 <span title="API-uploaded videos are created private. Google's policy locks them private for unaudited projects created after 28 July 2020, but the one upload made from here published on schedule — so verify what your project actually does before trusting a batch.">
