@@ -3,8 +3,9 @@
   <div class="header">
     <div class="header-left">
       <h2>Publish Calendar</h2>
-      <p class="subtitle">
-        {{ scheduledCount() }} scheduled · {{ tray().length }} unscheduled
+      <p class="subtitle"
+         title="Chips this app still owns. A video already uploaded with its date on YouTube is drawn as a mirror row instead, and is not in this count.">
+        {{ scheduledCount() }} scheduled here · {{ tray().length }} unscheduled
         @if (loading()) { <span class="loading-note">· reading…</span> }
       </p>
       <!-- The three states of a scheduled item, counted FOR ONE LANE — the one whose tab
@@ -35,7 +36,7 @@
             YouTube · {{ swept.scheduled.length }} scheduled · as of {{ sweptLabel() }}
             @if (sweepFailed()) { <span class="sweep-stale">· may be behind</span> }
           } @else {
-            YouTube · not read yet
+            {{ sweepFailed() ? 'YouTube · could not be read' : 'YouTube · not read yet' }}
           }
         </span>
         <button mat-icon-button (click)="refreshSweep()" [disabled]="sweeping()"
@@ -56,7 +57,7 @@
             Spreaker · {{ swept.episodes.length }} scheduled · as of {{ spreakerSweptLabel() }}
             @if (spreakerSweepFailed()) { <span class="sweep-stale">· may be behind</span> }
           } @else {
-            Spreaker · not read yet
+            {{ spreakerSweepFailed() ? 'Spreaker · could not be read' : 'Spreaker · not read yet' }}
           }
         </span>
         <button mat-icon-button (click)="refreshSpreakerSweep()" [disabled]="spreakerSweeping()"
@@ -118,7 +119,7 @@
       </button>
     }
     @if (channelTabs().length === 0) {
-      <span class="empty-note">No channels are registered, so every video reads as unrouted.</span>
+      <span class="empty-note">No channels available — the registry is empty or could not be read, so no chip can name its channel.</span>
     }
     <!-- Spreaker is not a channel and does not take a channel hue: it is a destination
          with one show behind it, so it gets the mic and its own end of the strip. Shown
@@ -144,7 +145,7 @@
 
   <!-- The board and YouTube disagree, and YouTube can still be told. This is the whole
        difference between a calendar that plans and one that schedules. -->
-  @if (needsSchedulePush().length > 0 && pushRun() === null) {
+  @if (activeDestination() === 'youtube' && needsSchedulePush().length > 0 && pushRun() === null) {
     <div class="push-banner">
       <mat-icon>schedule_send</mat-icon>
       <span>
@@ -188,13 +189,13 @@
     </div>
   }
 
-  @if (divergentCount() > 0) {
+  @if (activeDestination() === 'youtube' && divergentCount() > 0) {
     <div class="divergence-banner">
       <mat-icon>sync_problem</mat-icon>
       <span>
         {{ divergentCount() }} scheduled item{{ divergentCount() === 1 ? '' : 's' }}
         {{ divergentCount() === 1 ? 'is' : 'are' }} set to a different time on YouTube than
-        the record here says. YouTube's time is what will happen.
+        this calendar says. YouTube's time is what will happen.
       </span>
     </div>
   }
@@ -265,7 +266,7 @@
       <div class="ur-head">
         <mat-icon class="spin">autorenew</mat-icon>
         Uploading {{ run.index }} of {{ run.total }}
-        @if (run.cancelling) { <span class="ur-stopping">· stopping after this one</span> }
+        @if (run.cancelling) { <span class="ur-stopping">· stopping — this transfer is being abandoned and the rest are skipped</span> }
       </div>
       <div class="ur-title">{{ run.currentTitle }}</div>
       <div class="ur-bar">
@@ -416,7 +417,7 @@
 
       @if (tray().length === 0) {
         <div class="empty-note">
-          Nothing unscheduled — every publish record has a date.
+          Nothing waiting for a date — every unfinished publish record is scheduled.
         </div>
       }
 
@@ -600,7 +601,7 @@
           @if (orphanedSelections().length > 0) {
             <span class="beyond-note quiet">
               {{ orphanedSelections().length }} leftover publish record{{ orphanedSelections().length === 1 ? '' : 's' }}
-              whose report was deleted — nothing to schedule, safe to ignore.
+              whose report was deleted — nothing left to schedule.
             </span>
           }
           @if (activeDestination() === 'youtube' && sweep(); as swept) {
@@ -619,18 +620,19 @@
   <!-- Only genuine READ FAILURES belong here. A record whose report was deleted can be
        read perfectly well — it simply has nothing left to describe, which is housekeeping
        and not corruption, and calling it unreadable overstated it every time. -->
-  @if (problems().length > 0 || faultyRecords().length > 0) {
+  @if (problems().length > 0 || faultyRecords().length > 0 || withheldSchedules().length > 0) {
     <details class="faults">
       <summary>
         <mat-icon>report_problem</mat-icon>
-        {{ problems().length + faultyRecords().length }}
-        thing(s) could not be read into this calendar
+        {{ problems().length + faultyRecords().length + withheldSchedules().length }}
+        thing(s) need a look before this calendar is complete
       </summary>
       <div class="fault-lines">
         @if (problems().length > 0) {
           <div>
-            {{ problems().length }} report file{{ problems().length === 1 ? '' : 's' }} could not be
-            indexed: @for (p of problems(); track p.file) {<span class="fault-name">{{ p.file }}</span>}
+            {{ problems().length }} thing{{ problems().length === 1 ? '' : 's' }} could not be
+            indexed (hover for why):
+            @for (p of problems(); track p.file) {<span class="fault-name" [title]="p.message">{{ p.file }}</span>}
           </div>
         }
         @if (faultyRecords().length > 0) {
@@ -640,7 +642,15 @@
             @for (f of faultyRecords(); track f.itemId) {<span class="fault-name">{{ f.itemId }}</span>}
           </div>
         }
-
+        <!-- Healthy records, deliberately off the board: another set of the same source is
+             the primary. Their own sentence — "could not be read" was never true of them. -->
+        @if (withheldSchedules().length > 0) {
+          <div>
+            {{ withheldSchedules().length }} scheduled item{{ withheldSchedules().length === 1 ? ' is' : 's are' }}
+            not the primary set for {{ withheldSchedules().length === 1 ? 'its' : 'their' }} source, so no chip is drawn (hover for the fix):
+            @for (w of withheldSchedules(); track w.title) {<span class="fault-name" [title]="w.note">{{ w.title }}</span>}
+          </div>
+        }
       </div>
     </details>
   }
@@ -658,7 +668,7 @@
        [draggable]="chip.schedulable"
        (dragstart)="onDragStart(chip.itemId, $event)"
        (dragend)="onDragEnd()"
-       [matTooltip]="chip.channelName + ' · ' + chip.status + (chip.staleNote ? ' · ' + chip.staleNote : '')">
+       [matTooltip]="chipHover(chip)">
     <span class="chip-bar" [style.background]="chip.hue"></span>
     <span class="chip-body" (click)="openReport(chip.itemId)">
       <!-- One vocabulary everywhere: ready / needs filling out / uploaded. What is
@@ -688,7 +698,7 @@
     <div class="divergence-note">⇄ {{ chip.mirrorDivergence }}</div>
   }
   @if (chip.needsSchedulePush && !chip.mirrorDivergence) {
-    <div class="pending-push-note">⇡ not on YouTube yet</div>
+    <div class="pending-push-note">⇡ this time not sent to YouTube yet</div>
   }
   @if (chip.liveNote) {
     <div class="live-note">● {{ chip.liveNote }}</div>
@@ -738,7 +748,7 @@
   <div class="mirror"
        [class.dimmed]="m.dimmed"
        [class.out]="!m.pending"
-       [matTooltip]="m.channelName + ' · scheduled on YouTube · ' + (m.pending ? 'private until release' : m.privacyStatus)">
+       [matTooltip]="m.channelName + (m.pending ? ' · scheduled on YouTube · private until release' : ' · already released on YouTube (' + m.privacyStatus + ')')">
     <span class="mirror-bar" [style.background]="m.hue"></span>
     <span class="mirror-body">
       <mat-icon class="yt-glyph">smart_display</mat-icon>

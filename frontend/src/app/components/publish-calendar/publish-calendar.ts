@@ -406,6 +406,11 @@ export interface UploadRun {
   cancelling: boolean;
 }
 
+/** One instant, two spellings — offsets differ, the moment may not. Both lanes' rule. */
+function sameMoment(a: string, b: string): boolean {
+  return new Date(a).getTime() === new Date(b).getTime();
+}
+
 @Component({
   selector: 'app-publish-calendar',
   standalone: true,
@@ -455,6 +460,9 @@ export class PublishCalendar implements OnInit, OnDestroy {
 
   /** Report files the index could not read, named. Never a quietly shorter calendar. */
   readonly problems = signal<Array<{ file: string; message: string }>>([]);
+
+  /** Healthy records whose schedule draws nothing because another set is primary. */
+  readonly withheldSchedules = signal<Array<{ title: string; note: string }>>([]);
   /** Selection records whose report is gone: nothing to render, so they are counted. */
   readonly orphanedSelections = signal<string[]>([]);
 
@@ -665,10 +673,16 @@ export class PublishCalendar implements OnInit, OnDestroy {
 
     // Already out. Nothing left to decide, and nothing YouTube would accept anyway.
     if (remote.privacyStatus !== 'private') return false;
-    // Uploaded AND YouTube is holding a date for it. The plan has become a fact, so the
+    // Uploaded AND YouTube is holding THE SAME date. The plan has become a fact, so the
     // local chip gives way to the mirror of what YouTube actually has — in the same slot,
-    // because the insert carried this very schedule.
-    if (remote.publishAt !== null) return false;
+    // because the insert carried this very schedule. Same instant is the whole condition:
+    // a date MOVED on YouTube's side must keep its chip, or the disagreement the chip's
+    // divergence note exists to show would be silently resolved in YouTube's favour —
+    // the mirror row would stand alone at the new time with nothing saying the plan here
+    // said otherwise. (Exactly the rule the Spreaker lane already applies.)
+    if (remote.publishAt !== null && sameMoment(remote.publishAt, facts.publishAt as string)) {
+      return false;
+    }
 
     // Uploaded, private, and YouTube has NO date. This is the browser-upload case, where
     // a release was made outside the app and linked afterwards, and it is the one state
@@ -711,22 +725,27 @@ export class PublishCalendar implements OnInit, OnDestroy {
     // dropping its mirror too would leave a genuinely occupied slot looking empty. That
     // is not hypothetical: the backlog mark-as-published pass sets a status and a video
     // id without ever setting a publishAt.
-    const drawn = new Set<string>();
+    const openAtByVideo = new Map<string, string>();
     const itemByVideo = new Map<string, string>();
     for (const entry of this.entries()) {
       const facts = entry.publish;
       if (!facts?.videoId) continue;
       itemByVideo.set(facts.videoId, entry.itemId);
-      // Suppressed only when a local chip is genuinely drawn for it — the SAME test the
-      // board uses. A video id now ends local charting, so in practice this suppresses
-      // nothing any more; it stays keyed to the predicate rather than hard-coded, because
-      // the two must never drift apart and hide an item from both halves at once.
-      if (this.isOpenWork(facts, this.linkedByVideoId())) drawn.add(facts.videoId);
+      // A chip is drawn for this video. Its mirror is suppressed only when the two would
+      // say the same moment — when they DISAGREE, both rows belong on the board: the chip
+      // where the plan here put it, the mirror where YouTube will actually publish, with
+      // the chip's divergence note tying them together. (The Spreaker lane's rule.)
+      if (this.isOpenWork(facts, this.linkedByVideoId())) {
+        openAtByVideo.set(facts.videoId, facts.publishAt as string);
+      }
     }
 
     const active = this.activeTabId();
     return swept.scheduled
-      .filter((video) => !drawn.has(video.videoId))
+      .filter((video) => {
+        const localAt = openAtByVideo.get(video.videoId);
+        return localAt === undefined || !sameMoment(video.publishAt, localAt);
+      })
       .map((video) => {
         const at = new Date(video.publishAt);
         if (Number.isNaN(at.getTime())) {
@@ -765,6 +784,10 @@ export class PublishCalendar implements OnInit, OnDestroy {
   private readonly mirrorBySlot = computed(() => {
     const map = new Map<string, MirrorChip>();
     for (const chip of this.mirrorChips()) {
+      // Already-public videos keep their leftover publishAt, but a release that has
+      // happened is not a booking: warning that an upload "lands at the same moment as a
+      // video YouTube already has scheduled" would be false of it.
+      if (!chip.pending) continue;
       map.set(`${chip.channelId}|${chip.dateKey}|${chip.time}`, chip);
     }
     return map;
@@ -899,8 +922,12 @@ export class PublishCalendar implements OnInit, OnDestroy {
     );
     if (skipped.length === 0) return [];
 
-    const done = skipped.filter((chip) => chip.readiness === 'done');
-    const incomplete = skipped.filter((chip) => chip.readiness === 'incomplete');
+    // Only this lane's chips get this panel's YouTube wording: a Spreaker episode in
+    // `skipped` is not "a second insert would duplicate the video", it is a different
+    // service entirely, and the `elsewhere` group below is where it is said.
+    const laneSkipped = skipped.filter((chip) => chip.destination === 'youtube');
+    const done = laneSkipped.filter((chip) => chip.readiness === 'done');
+    const incomplete = laneSkipped.filter((chip) => chip.readiness === 'incomplete');
     // Ready, but not going to YouTube. This button creates YOUTUBE videos; a Spreaker
     // episode is a different call to a different service that publishes on contact, and
     // sweeping one into a batch labelled "upload to YouTube" would be a genuine mistake.
@@ -923,9 +950,18 @@ export class PublishCalendar implements OnInit, OnDestroy {
         titles: done.map((chip) => chip.title),
       });
     }
+    // Grouped BY REASON, one group per distinct missing-list: the template tracks these
+    // groups by their reason string, and two chips missing the same things would
+    // otherwise mint two identical keys — which is a render error, in the panel that
+    // matters most.
+    const byReason = new Map<string, string[]>();
     for (const chip of incomplete) {
-      groups.push({ reason: `still needs ${chip.missing.join(', ')}`, titles: [chip.title] });
+      const reason = `still needs ${chip.missing.join(', ')}`;
+      const titles = byReason.get(reason);
+      if (titles) titles.push(chip.title);
+      else byReason.set(reason, [chip.title]);
     }
+    for (const [reason, titles] of byReason) groups.push({ reason, titles });
     return groups;
   });
 
@@ -978,11 +1014,22 @@ export class PublishCalendar implements OnInit, OnDestroy {
    * standing between this button and a release, so an episode without one is never in the
    * batch, however ready it otherwise is.
    */
-  readonly spreakerUploadable = computed(() =>
-    this.spreakerCandidates()
-      .filter((item) => item.readiness === 'ready' && item.publishAt !== null)
-      .sort((a, b) => (a.publishAt as string).localeCompare(b.publishAt as string))
-  );
+  readonly spreakerUploadable = computed(() => {
+    // THREE conditions now: ready, dated, and the date still ahead. The push refuses a
+    // past date by name (Spreaker would publish immediately), so counting a lapsed
+    // episode here would sell a run guaranteed to fail on it — and the confirm panel
+    // above that count promises "held until the time below", which a past time cannot
+    // honour.
+    const now = this.now().getTime();
+    return this.spreakerCandidates()
+      .filter(
+        (item) =>
+          item.readiness === 'ready' &&
+          item.publishAt !== null &&
+          new Date(item.publishAt).getTime() > now
+      )
+      .sort((a, b) => (a.publishAt as string).localeCompare(b.publishAt as string));
+  });
 
   /**
    * The episodes the Spreaker run leaves behind, by reason, named one by one.
@@ -1005,6 +1052,25 @@ export class PublishCalendar implements OnInit, OnDestroy {
       });
     }
 
+    // Dated in the past. Ready, dated — and the date can no longer hold anything back:
+    // Spreaker refuses a schedule that has passed, and sending without one publishes on
+    // encode. The remedy is a new date, and this line is where the operator learns it.
+    const nowMs = this.now().getTime();
+    const lapsed = all.filter(
+      (item) =>
+        item.readiness === 'ready' &&
+        item.publishAt !== null &&
+        new Date(item.publishAt).getTime() <= nowMs
+    );
+    if (lapsed.length > 0) {
+      groups.push({
+        reason:
+          `its date has already passed — Spreaker refuses a schedule in the past. Drop it ` +
+          `on a future 5 AM slot`,
+        titles: lapsed.map((item) => item.title),
+      });
+    }
+
     const done = all.filter((item) => item.readiness === 'done');
     if (done.length > 0) {
       groups.push({
@@ -1015,9 +1081,16 @@ export class PublishCalendar implements OnInit, OnDestroy {
       });
     }
 
+    // By reason, not one group per item — the template tracks groups by reason, and two
+    // identical keys are a render error.
+    const byReason = new Map<string, string[]>();
     for (const item of all.filter((i) => i.readiness === 'incomplete')) {
-      groups.push({ reason: `still needs ${item.missing.join(', ')}`, titles: [item.title] });
+      const reason = `still needs ${item.missing.join(', ')}`;
+      const titles = byReason.get(reason);
+      if (titles) titles.push(item.title);
+      else byReason.set(reason, [item.title]);
     }
+    for (const [reason, titles] of byReason) groups.push({ reason, titles });
     return groups;
   });
 
@@ -1186,14 +1259,14 @@ export class PublishCalendar implements OnInit, OnDestroy {
       });
     }
 
-    const sameMoment = (a: string, b: string | null): boolean =>
-      b !== null && new Date(a).getTime() === new Date(b).getTime();
+    const sameMomentOrNull = (a: string, b: string | null): boolean =>
+      b !== null && sameMoment(a, b);
 
     return swept.episodes
       .filter((episode) => {
         const record = recordByEpisode.get(episode.episodeId);
         if (!record || !record.draws) return true;
-        return !sameMoment(episode.publishAt, record.publishAt);
+        return !sameMomentOrNull(episode.publishAt, record.publishAt);
       })
       .map((episode) => {
         const at = new Date(episode.publishAt);
@@ -1267,8 +1340,18 @@ export class PublishCalendar implements OnInit, OnDestroy {
    */
   readonly spreakerReachNote = computed(() => {
     const swept = this.spreakerSweep();
-    if (!swept) return 'Spreaker has not been read yet, so this lane shows only what this app pushed.';
-    const found = `${swept.episodes.length} scheduled in the ${swept.scanned} most recent episodes`;
+    if (!swept) {
+      return (
+        'Spreaker has not been read yet, so this lane shows only the dates this app ' +
+        'recorded — not what the show is actually holding.'
+      );
+    }
+    // A later read can fail while this one's answer stays on the board. Say which read
+    // is being narrated rather than narrating a stale one as current.
+    const stalePrefix = this.spreakerSweepFailed()
+      ? 'The last read failed; this is the previous answer. '
+      : '';
+    const found = `${stalePrefix}${swept.episodes.length} scheduled in the ${swept.scanned} most recent episodes`;
     if (swept.stoppedAt === 'end') return `${found} — the whole show was read.`;
     if (swept.stoppedAt === 'window') {
       return `${found}. The read stopped at its ${swept.windowSize}-episode limit while ` +
@@ -1408,6 +1491,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
       if (!indexed.success || !indexed.data) {
         this.entries.set([]);
         this.problems.set([]);
+        this.withheldSchedules.set([]);
         this.orphanedSelections.set([]);
         this.report(indexed.error ?? 'The report index could not be read.');
       } else {
@@ -1430,16 +1514,19 @@ export class PublishCalendar implements OnInit, OnDestroy {
         const withheld = indexed.data.entries.filter(
           (entry) => !entry.isPrimary && entry.publish?.publishAt,
         );
-        this.problems.set([
-          ...indexed.data.problems,
-          ...withheld.map((entry) => ({
-            file: entry.displayTitle || entry.itemId,
-            message:
-              `is scheduled for ${entry.publish!.publishAt} but is not the primary metadata ` +
-              `set for "${entry.sourceKey}", so it is not on the calendar. Promote it on the ` +
-              `metadata page to schedule it.`,
-          })),
-        ]);
+        this.problems.set(indexed.data.problems);
+        // Read perfectly well — just not the set any push would honour. Their own line in
+        // the fault strip, in their own words: filing them under "could not be read"
+        // called healthy records corrupt every time.
+        this.withheldSchedules.set(
+          withheld.map((entry) => ({
+            title: entry.displayTitle || entry.itemId,
+            note:
+              `scheduled for ${entry.publish!.publishAt} but not the primary metadata set ` +
+              `for its source — no chip is drawn and no push would honour it. Promote it ` +
+              `on the metadata page to schedule it.`,
+          }))
+        );
         this.orphanedSelections.set(indexed.data.orphanedSelections);
         if (indexed.data.directoryMissing) {
           this.report(
@@ -1601,6 +1688,26 @@ export class PublishCalendar implements OnInit, OnDestroy {
    * Why a cadence slot is marked. Empty when there is nothing to say, which is what turns
    * the tooltip off rather than showing an empty bubble.
    */
+  /**
+   * The chip's hover line: destination first, then its state in the same three words the
+   * pips use. The raw stored status ('selecting', 'linked') was jargon, and naming a
+   * YouTube channel first on a Spreaker chip promised a destination the episode will
+   * never reach — the channel it was routed VIA is still said, second.
+   */
+  chipHover(chip: CalendarChip): string {
+    const stateWord =
+      chip.readiness === 'done'
+        ? 'uploaded'
+        : chip.readiness === 'ready'
+          ? 'ready'
+          : 'needs filling out';
+    const who =
+      chip.destination === 'spreaker'
+        ? `${this.spreakerLabel} · routed via ${chip.channelName}`
+        : chip.channelName;
+    return `${who} · ${stateWord}${chip.staleNote ? ' · ' + chip.staleNote : ''}`;
+  }
+
   slotTooltip(slot: SlotCell): string {
     if (!slot.isCadence) return '';
     const channel = this.activeChannel();
@@ -1795,6 +1902,28 @@ export class PublishCalendar implements OnInit, OnDestroy {
       const run = this.uploadRun();
       if (!run || run.cancelling) break;
 
+      // The panel is a snapshot and the board keeps moving under it — the same reason the
+      // Spreaker run re-reads its items at send time. An item that is no longer ready (or
+      // no longer on this lane) is skipped BY NAME rather than sent on month-old consent.
+      const current = this.scheduledChips().find((c) => c.itemId === chip.itemId);
+      if (!current || current.readiness !== 'ready' || current.destination !== 'youtube') {
+        results.push({
+          itemId: chip.itemId,
+          title: chip.title,
+          channelName: chip.channelName,
+          ok: false,
+          error:
+            'not sent — this item changed while the confirm panel was open ' +
+            (current
+              ? `(it now reads ${current.readiness === 'done' ? 'already uploaded' : `as needing ${current.missing.join(', ')}`})`
+              : '(it is no longer on the board)') +
+            '. Nothing was uploaded for it.',
+          remoteId: null,
+        });
+        this.uploadResults.set([...results]);
+        continue;
+      }
+
       this.uploadRun.set({
         ...run,
         index: i + 1,
@@ -1840,14 +1969,31 @@ export class PublishCalendar implements OnInit, OnDestroy {
       this.uploadResults.set([...results]);
     }
 
+    const endedByStop = this.uploadRun()?.cancelling ?? false;
     this.uploadRun.set(null);
 
     const failed = results.filter((r) => !r.ok).length;
     const sent = results.length - failed;
-    if (failed === 0) {
+    const skippedByStop = endedByStop ? chips.length - results.length : 0;
+    if (endedByStop) {
+      // A stop is not a failure and not a finish: the in-flight transfer was aborted (it
+      // lands in the failed count with its own reason) and the rest were never attempted.
+      this.notify.warning(
+        'Uploads stopped',
+        `${sent} uploaded before the stop; ` +
+          `${failed > 0 ? `the one in flight was abandoned; ` : ''}` +
+          `${skippedByStop} never started.`
+      );
+    } else if (failed === 0) {
+      // Created private is a FACT; released-on-schedule is not one this app can promise —
+      // API uploads are policy-locked private pending Google's audit, and the one live
+      // observation contradicts the policy, so the claim stays hedged the same way the
+      // metadata page hedges it.
       this.notify.success(
         'Uploads finished',
-        `${sent} video${sent === 1 ? '' : 's'} created on YouTube, each private with its schedule.`
+        `${sent} video${sent === 1 ? '' : 's'} created on YouTube, private, each carrying ` +
+        `its schedule. Whether the schedule releases them depends on this API project's ` +
+        `audit standing — verify the first one on YouTube rather than assuming.`
       );
     } else {
       // The per-item reasons stay in the results panel; this only says how it ended, so
