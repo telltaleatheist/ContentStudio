@@ -48,6 +48,13 @@ export class NotificationToastComponent implements OnInit, OnDestroy {
     // Add to notifications list
     this.notifications.push(notification);
 
+    // Sticky errors accumulate (a batch of failed handoffs is one error EACH), and a
+    // stack taller than the window puts the close buttons out of reach. Oldest goes
+    // first — everything lives on in the bell's history either way.
+    while (this.notifications.length > 5) {
+      this.removeToast(this.notifications[0].id);
+    }
+
     // An error stays until the operator closes it: it usually reports the end of
     // something that took a while, and a report that deletes itself in five seconds has
     // to be reproduced to be reread. Everything else auto-dismisses — warnings a little

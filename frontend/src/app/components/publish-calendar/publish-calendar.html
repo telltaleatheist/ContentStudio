@@ -4,7 +4,7 @@
     <div class="header-left">
       <h2>Publish Calendar</h2>
       <p class="subtitle"
-         title="Chips this app still owns. A video already uploaded with its date on YouTube is drawn as a mirror row instead, and is not in this count.">
+         title="Chips this app still owns. A video already uploaded whose YouTube date matches the one here is drawn as a mirror row instead and is not in this count; when the two dates disagree, the chip stays alongside the mirror.">
         {{ scheduledCount() }} scheduled here · {{ tray().length }} unscheduled
         @if (loading()) { <span class="loading-note">· reading…</span> }
       </p>
@@ -92,6 +92,16 @@
           <span class="spreaker-held"
                 [matTooltip]="'An episode with no publish date goes live the moment Spreaker finishes encoding it, so the run will not send one. Drop it on a 5 AM slot to schedule it.'">
             {{ spreakerHeldBack() }} undated
+          </span>
+        }
+        <!-- The OTHER way the button's count runs short of "ready": a date that has
+             already passed. Same placement logic as the undated chip — when every ready
+             episode is lapsed the button reads (0) and its panel cannot open, so this is
+             the one place the gap can be accounted for. -->
+        @if (spreakerLapsed() > 0) {
+          <span class="spreaker-held"
+                [matTooltip]="'Ready, but its date has already passed — Spreaker refuses a schedule in the past, so the run will not send it. Drop it on a future 5 AM slot.'">
+            {{ spreakerLapsed() }} date passed
           </span>
         }
       }
@@ -236,7 +246,7 @@
           @for (group of excludedFromRun(); track group.reason) {
             <div class="uc-skip-row">
               <span class="uc-skip-reason">Not included, {{ group.reason }}:</span>
-              @for (title of group.titles; track title) {
+              @for (title of group.titles; track $index) {
                 <span class="uc-skip-title">{{ title }}</span>
               }
             </div>
@@ -348,7 +358,7 @@
           @for (group of spreakerExcluded(); track group.reason) {
             <div class="uc-skip-row">
               <span class="uc-skip-reason">Not included, {{ group.reason }}:</span>
-              @for (title of group.titles; track title) {
+              @for (title of group.titles; track $index) {
                 <span class="uc-skip-title">{{ title }}</span>
               }
             </div>
@@ -648,7 +658,7 @@
           <div>
             {{ withheldSchedules().length }} scheduled item{{ withheldSchedules().length === 1 ? ' is' : 's are' }}
             not the primary set for {{ withheldSchedules().length === 1 ? 'its' : 'their' }} source, so no chip is drawn (hover for the fix):
-            @for (w of withheldSchedules(); track w.title) {<span class="fault-name" [title]="w.note">{{ w.title }}</span>}
+            @for (w of withheldSchedules(); track w.itemId) {<span class="fault-name" [title]="w.note">{{ w.title }}</span>}
           </div>
         }
       </div>

@@ -184,7 +184,17 @@ export class PublishState {
    */
   private readonly _uploadReceipt = signal<UploadReceipt | null>(null);
 
+  /**
+   * A coarse clock for the strings whose truth depends on the time of day: "held until
+   * 5 AM" and "already passed" swap places while a panel sits open, and a computed with
+   * no time dependency freezes at whichever side was true on load. Root service, so the
+   * interval lives for the app — 30s of granularity for messages, never for dispatch
+   * decisions (the main process re-checks every date itself).
+   */
+  private readonly clock = signal(Date.now());
+
   constructor() {
+    setInterval(() => this.clock.set(Date.now()), 30_000);
     // Subscribed once for the service's life (providedIn: 'root', so there is no teardown
     // to pair it with). Events for any other item — none are expected, since one upload
     // runs at a time from this panel — are dropped rather than shown against the wrong
@@ -539,6 +549,15 @@ export class PublishState {
     if (!this._audio()) {
       return 'The chosen audio file has not been measured — see the error above.';
     }
+
+    // The same rule the push enforces: Spreaker refuses a schedule in the past, so a
+    // lapsed date is a blocked dispatch here too — with the remedy, not just the rule.
+    // Clock-reactive, because this flips while the panel sits open.
+    const at = this.publishAt();
+    if (at !== null && new Date(at).getTime() <= this.clock()) {
+      return 'The publish date has already passed — Spreaker refuses a schedule in the ' +
+        'past. Set a future time (or clear the date to publish on encode, deliberately).';
+    }
     return null;
   });
 
@@ -565,7 +584,7 @@ export class PublishState {
           hour: 'numeric',
           minute: '2-digit',
         });
-    return when.getTime() <= Date.now()
+    return when.getTime() <= this.clock()
       ? `This schedule (${local}) has already passed — Spreaker will refuse the upload. Pick a future time.`
       : `Scheduled — Spreaker holds it until ${local} and publishes it then.`;
   });

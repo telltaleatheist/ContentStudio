@@ -2265,16 +2265,20 @@ export class MetadataReports implements OnInit, OnDestroy {
     });
 
     const description = this.publish.resolvedDescription();
-    // The SURVIVING chapters, not the generated ones: deletions count, and a deleted
-    // 0:00 disables the whole list on YouTube's side however many rows remain.
+    // The SURVIVING chapters, not the generated ones: deletions count, and YouTube
+    // ignores the whole list unless the FIRST surviving marker is zero — however the
+    // zero was lost. chapterRows reads the resolved sections, which are null until the
+    // resolve round-trip lands, so before that the line says it is still reading rather
+    // than asserting "no chapters" about an item that has them.
     const surviving = this.chapterRows().filter((row) => !row.dropped);
-    const zeroDropped = this.chapterRows().some((row) => row.dropped && row.timestamp === '0:00');
-    const chapters =
-      !this.publish.chaptersInDescription() || surviving.length === 0
+    const firstIsZero = surviving.length > 0 && /^0(:0{1,2})+$/.test(surviving[0].timestamp);
+    const chapters = !this.publish.hasResolved()
+      ? 'chapters still being read'
+      : !this.publish.chaptersInDescription() || surviving.length === 0
         ? 'no chapters'
-        : zeroDropped
-          ? `${surviving.length} chapters — list disabled (0:00 deleted)`
-          : `with ${surviving.length} chapters`;
+        : firstIsZero
+          ? `with ${surviving.length} chapters`
+          : `${surviving.length} chapters — list disabled (the first is not 0:00)`;
     rows.push({
       label: 'Description',
       value: `${description.length.toLocaleString()} chars · ${chapters}`,

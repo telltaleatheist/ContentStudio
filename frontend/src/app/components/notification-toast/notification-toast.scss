@@ -7,6 +7,10 @@
   flex-direction: column;
   gap: 12px;
   pointer-events: none;
+  /* Errors are sticky now, so the stack can grow — it must never grow past the close
+     buttons' reach. The count is capped in the component; this is the belt to that. */
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
 }
 
 .toast {

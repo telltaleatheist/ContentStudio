@@ -462,7 +462,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
   readonly problems = signal<Array<{ file: string; message: string }>>([]);
 
   /** Healthy records whose schedule draws nothing because another set is primary. */
-  readonly withheldSchedules = signal<Array<{ title: string; note: string }>>([]);
+  readonly withheldSchedules = signal<Array<{ itemId: string; title: string; note: string }>>([]);
   /** Selection records whose report is gone: nothing to render, so they are counted. */
   readonly orphanedSelections = signal<string[]>([]);
 
@@ -673,15 +673,17 @@ export class PublishCalendar implements OnInit, OnDestroy {
 
     // Already out. Nothing left to decide, and nothing YouTube would accept anyway.
     if (remote.privacyStatus !== 'private') return false;
-    // Uploaded AND YouTube is holding THE SAME date. The plan has become a fact, so the
-    // local chip gives way to the mirror of what YouTube actually has — in the same slot,
-    // because the insert carried this very schedule. Same instant is the whole condition:
-    // a date MOVED on YouTube's side must keep its chip, or the disagreement the chip's
-    // divergence note exists to show would be silently resolved in YouTube's favour —
-    // the mirror row would stand alone at the new time with nothing saying the plan here
-    // said otherwise. (Exactly the rule the Spreaker lane already applies.)
-    if (remote.publishAt !== null && sameMoment(remote.publishAt, facts.publishAt as string)) {
-      return false;
+    // Uploaded AND YouTube is holding a date.
+    //
+    // The same date: the plan became a fact, the chip gives way to the mirror. A MOVED
+    // date keeps its chip — the disagreement the divergence note exists to show must not
+    // be silently resolved in YouTube's favour (the Spreaker lane's rule) — but only
+    // while the plan here is still ahead: a local date already in the past is a dead
+    // plan, and a chip for it would sit in the before-today strip forever saying "was
+    // due 2 months ago" about a video YouTube is handling on its own schedule.
+    if (remote.publishAt !== null) {
+      if (sameMoment(remote.publishAt, facts.publishAt as string)) return false;
+      return dateKeyOf(new Date(facts.publishAt as string)) >= dateKeyOf(this.now());
     }
 
     // Uploaded, private, and YouTube has NO date. This is the browser-upload case, where
@@ -1109,6 +1111,22 @@ export class PublishCalendar implements OnInit, OnDestroy {
       ).length
   );
 
+  /**
+   * Ready episodes whose date has already passed — the OTHER way the button's count can
+   * be smaller than the ready count. Same placement logic as `spreakerHeldBack`: when
+   * every ready episode is lapsed the button reads (0) and its panel cannot open, so the
+   * only honest place to account for the gap is beside the button.
+   */
+  readonly spreakerLapsed = computed(() => {
+    const now = this.now().getTime();
+    return this.spreakerCandidates().filter(
+      (item) =>
+        item.readiness === 'ready' &&
+        item.publishAt !== null &&
+        new Date(item.publishAt).getTime() <= now
+    ).length;
+  });
+
   readonly spreakerFailures = computed(() => this.spreakerResults().filter((r) => !r.ok));
 
   /** Chips by local day, which is how the day rows ask for them. */
@@ -1520,6 +1538,9 @@ export class PublishCalendar implements OnInit, OnDestroy {
         // called healthy records corrupt every time.
         this.withheldSchedules.set(
           withheld.map((entry) => ({
+            // itemId is the track key: sibling sets of one source share a displayTitle,
+            // and two identical @for keys are a render error in the fault strip.
+            itemId: entry.itemId,
             title: entry.displayTitle || entry.itemId,
             note:
               `scheduled for ${entry.publish!.publishAt} but not the primary metadata set ` +
@@ -1897,14 +1918,19 @@ export class PublishCalendar implements OnInit, OnDestroy {
       cancelling: false,
     });
 
+    // Re-read the index ONCE, before anything is sent. The panel is a snapshot and the
+    // board can have changed while it sat open — and `scheduledChips` only moves when
+    // `entries` does, so without this read the per-item check below would be comparing
+    // the snapshot with itself.
+    await this.reload();
+
     for (let i = 0; i < chips.length; i++) {
       const chip = chips[i];
       const run = this.uploadRun();
       if (!run || run.cancelling) break;
 
-      // The panel is a snapshot and the board keeps moving under it — the same reason the
-      // Spreaker run re-reads its items at send time. An item that is no longer ready (or
-      // no longer on this lane) is skipped BY NAME rather than sent on month-old consent.
+      // An item that is no longer ready (or no longer on this lane) is skipped BY NAME
+      // rather than sent on stale consent — the Spreaker run's rule.
       const current = this.scheduledChips().find((c) => c.itemId === chip.itemId);
       if (!current || current.readiness !== 'ready' || current.destination !== 'youtube') {
         results.push({
@@ -2109,6 +2135,25 @@ export class PublishCalendar implements OnInit, OnDestroy {
         continue;
       }
 
+      // The same question, asked of the clock: the count already excludes lapsed dates,
+      // but the panel can sit open across the scheduled minute — confirmed at 4:59 for a
+      // 5:00 episode, pressed at 5:01. The push would refuse it anyway; refusing here
+      // keeps the refusal in this run's own results instead of a main-process error.
+      if (new Date(item.publishAt).getTime() <= Date.now()) {
+        results.push({
+          itemId: item.itemId,
+          title: item.title,
+          channelName: SPREAKER_DESTINATION_LABEL,
+          ok: false,
+          error:
+            `Not sent: its date (${item.when}) passed while this panel was open, and ` +
+            'Spreaker refuses a schedule in the past. Drop it on a future 5 AM slot.',
+          remoteId: null,
+        });
+        this.spreakerResults.set([...results]);
+        continue;
+      }
+
       this.spreakerRun.set({ index: i + 1, total: items.length, title: item.title });
       try {
         const res = await this.electron.publishPushSpreaker(item.itemId);
@@ -2280,13 +2325,15 @@ export class PublishCalendar implements OnInit, OnDestroy {
     const state = live !== null ? 'published' : chipStateOf(facts, now);
     const published = state === 'published';
 
-    // Still private, so YouTube can still take a date — and it does not have this one.
-    // Null publishAt on a private video means it has never been given a schedule at all,
-    // which is exactly what a drag leaves behind until something pushes it.
+    // Still private and YouTube has NO date at all — the browser-upload case, where the
+    // date this board holds has simply never been sent. ONLY that case: a video whose
+    // date was MOVED on YouTube's side must never enter this set, because the banner
+    // this flag feeds pushes every member in one click, and "overwrite YouTube's chosen
+    // time with the older one recorded here" is not a housekeeping nudge — with a lapsed
+    // local date it would publish the video on the spot. A moved date renders as the
+    // divergence note instead, and YouTube's time stands unless the operator re-drags.
     const needsSchedulePush =
-      remote !== null &&
-      remote.privacyStatus === 'private' &&
-      (remote.publishAt === null || new Date(remote.publishAt).getTime() !== at.getTime());
+      remote !== null && remote.privacyStatus === 'private' && remote.publishAt === null;
 
     return {
       itemId: entry.itemId,
