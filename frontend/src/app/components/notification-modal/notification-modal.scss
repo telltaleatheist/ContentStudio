@@ -139,7 +139,7 @@
   word-break: break-word;
   overflow-wrap: break-word;
   text-align: left;
-  font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+  font-family: var(--font-mono);
 }
 
 .modal-footer {

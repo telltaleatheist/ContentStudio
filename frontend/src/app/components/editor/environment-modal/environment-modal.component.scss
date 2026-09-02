@@ -245,7 +245,7 @@
   color: #9a9aa2;
 
   .evm-bytes {
-    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+    font-family: var(--font-mono);
     color: #cfe6d5;
   }
 }

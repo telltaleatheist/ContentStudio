@@ -109,7 +109,7 @@
 }
 
 .psm-path {
-  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   color: #cfe6d5;
   word-break: break-all;
@@ -439,7 +439,7 @@
   border: 1px solid #333338;
   border-radius: 6px;
   padding: 8px 10px;
-  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
   line-height: 1.45;
   color: #9a9aa2;

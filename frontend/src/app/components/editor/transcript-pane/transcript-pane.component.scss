@@ -329,7 +329,7 @@
         .tx-tc {
           margin-left: auto;
           font-size: 10.5px;
-          font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+          font-family: var(--font-mono);
           font-variant-numeric: tabular-nums;
           color: #74747a;
           letter-spacing: 0.02em;

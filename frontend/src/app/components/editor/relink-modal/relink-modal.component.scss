@@ -154,7 +154,7 @@
 
 .rlm-path {
   align-self: stretch;
-  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   color: #cfe6d5;
   word-break: break-all;
@@ -238,7 +238,7 @@
 
   .rlm-row-path {
     margin-top: 2px;
-    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+    font-family: var(--font-mono);
     font-size: 10.5px;
     color: #9a9aa2;
     overflow: hidden;

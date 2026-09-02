@@ -4,6 +4,61 @@
 // Import Creamsicle Theme
 @use './styles-creamsicle.scss';
 
+/* Material typography → the app font.
+   The prebuilt theme names Roboto on every component token, so buttons, selects, menus
+   and tooltips came up in a second family beside the Inter everything else is set in.
+   Every *-font token the theme sets is repointed here; the selectors match where the
+   theme sets them (a few tokens are scoped to a component rather than html). */
+html,
+.mat-mdc-standard-chip,
+.mat-mdc-tab-header,
+html .mat-mdc-slide-toggle {
+  --mat-badge-text-font: var(--font-family);
+  --mat-bottom-sheet-container-text-font: var(--font-family);
+  --mat-button-filled-label-text-font: var(--font-family);
+  --mat-button-outlined-label-text-font: var(--font-family);
+  --mat-button-protected-label-text-font: var(--font-family);
+  --mat-button-text-label-text-font: var(--font-family);
+  --mat-button-toggle-label-text-font: var(--font-family);
+  --mat-button-toggle-legacy-label-text-font: var(--font-family);
+  --mat-button-tonal-label-text-font: var(--font-family);
+  --mat-card-subtitle-text-font: var(--font-family);
+  --mat-card-title-text-font: var(--font-family);
+  --mat-checkbox-label-text-font: var(--font-family);
+  --mat-chip-label-text-font: var(--font-family);
+  --mat-datepicker-calendar-text-font: var(--font-family);
+  --mat-dialog-subhead-font: var(--font-family);
+  --mat-dialog-supporting-text-font: var(--font-family);
+  --mat-expansion-container-text-font: var(--font-family);
+  --mat-expansion-header-text-font: var(--font-family);
+  --mat-fab-extended-label-text-font: var(--font-family);
+  --mat-form-field-container-text-font: var(--font-family);
+  --mat-form-field-filled-label-text-font: var(--font-family);
+  --mat-form-field-outlined-label-text-font: var(--font-family);
+  --mat-form-field-subscript-text-font: var(--font-family);
+  --mat-list-list-item-label-text-font: var(--font-family);
+  --mat-list-list-item-supporting-text-font: var(--font-family);
+  --mat-list-list-item-trailing-supporting-text-font: var(--font-family);
+  --mat-menu-item-label-text-font: var(--font-family);
+  --mat-optgroup-label-text-font: var(--font-family);
+  --mat-option-label-text-font: var(--font-family);
+  --mat-paginator-container-text-font: var(--font-family);
+  --mat-radio-label-text-font: var(--font-family);
+  --mat-select-trigger-text-font: var(--font-family);
+  --mat-slide-toggle-label-text-font: var(--font-family);
+  --mat-slider-label-label-text-font: var(--font-family);
+  --mat-snack-bar-supporting-text-font: var(--font-family);
+  --mat-stepper-container-text-font: var(--font-family);
+  --mat-stepper-header-label-text-font: var(--font-family);
+  --mat-tab-label-text-font: var(--font-family);
+  --mat-table-footer-supporting-text-font: var(--font-family);
+  --mat-table-header-headline-font: var(--font-family);
+  --mat-table-row-item-label-text-font: var(--font-family);
+  --mat-toolbar-title-text-font: var(--font-family);
+  --mat-tooltip-supporting-text-font: var(--font-family);
+  --mat-tree-node-text-font: var(--font-family);
+}
+
 /* Global styles */
 html, body {
   height: 100%;

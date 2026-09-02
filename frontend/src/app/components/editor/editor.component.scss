@@ -467,7 +467,7 @@
     .story-tc {
       flex: 0 0 auto;
       font-size: 10px;
-      font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+      font-family: var(--font-mono);
       color: #7a7a80;
       white-space: nowrap;
     }
@@ -709,7 +709,7 @@
 
 .timecode {
   flex: 0 0 auto;
-  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-family: var(--font-mono);
   font-weight: 300;
   font-size: 20px;
   letter-spacing: 0.08em;
@@ -1128,7 +1128,7 @@
       .split-chapter-time {
         flex: 0 0 auto;
         font-size: 10px;
-        font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+        font-family: var(--font-mono);
         color: #7a7a80;
         width: 118px;
         white-space: nowrap;
