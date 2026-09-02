@@ -11,20 +11,13 @@ import {
   signal,
 } from '@angular/core';
 import { ActivatedRoute, RouterLink } from '@angular/router';
-import { firstValueFrom } from 'rxjs';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
-import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatMenuModule } from '@angular/material/menu';
 import { AnalyticsChannel, ElectronService, MetadataRoutingOption } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
 import { PublishState } from '../../features/publish/publish-state';
-import { YouTubePushDialog, YouTubePushDialogData } from '../../features/publish/youtube-push-dialog';
-import {
-  SpreakerUploadDialog,
-  SpreakerUploadDialogData,
-} from '../../features/publish/spreaker-upload-dialog';
 import {
   MAX_AB_VARIANTS,
   SPREAKER_DESTINATION,
@@ -35,25 +28,10 @@ import {
   SPREAKER_MAX_TAGS,
 } from '../../features/publish/publish.types';
 import {
-  CADENCE_NOTES,
-  cadenceKeyFor,
-  collidesWith,
-  isCadenceSlot,
-  nextOpenSlot,
-  slotKeyOf,
-  splitSlot,
-  type CadenceKey,
-} from '../../features/publish/publish-slots';
-// The calendar's pure day arithmetic, reused rather than written a second time.
-import { dateKeyOf, startOfMonth } from '../publish-calendar/calendar-states';
-import {
   basename,
   describePublishAt,
   formatBytes,
   formatDuration,
-  offsetLabel,
-  offsetStringFor,
-  splitPublishAt,
 } from '../../features/publish/publish-schedule';
 import type { AudioMeta } from '../../features/publish/publish.types';
 import {
@@ -314,15 +292,6 @@ interface ChannelTab {
 }
 
 /**
- * The work pane's two tabs.
- *
- * The pane head — crumb, title, readiness meter, error banner — is outside both: it
- * describes the ITEM, not either half of it, and a refusal that scrolled out of view with
- * the tab it was reported on would be a refusal nobody read.
- */
-type WorkTab = 'metadata' | 'record';
-
-/**
  * One value, two entry points: the four headline states are the segmented control, the
  * three narrower ones live in the "also" picker under it. Exactly one is ever active,
  * which is why they are one signal and not two. The channel is NOT one of them — it is
@@ -359,11 +328,11 @@ interface RowDot {
   label: string;
 }
 
-/** Which rail fact a tick opens. `titles` is in the work column and opens nothing here. */
+/** Which setup row a tick opens. `titles` is the titles list and opens nothing here. */
 type FactKey = 'destination' | 'money' | 'when' | 'thumb' | 'audio';
 
 /**
- * Which rail row answers which tick, and back again.
+ * Which setup row answers which tick, and back again.
  *
  * Declared as one pair of tables rather than as two switch statements, because the ONE
  * thing that must never drift is that a tick and the row it opens describe the same fact.
@@ -375,7 +344,7 @@ const FACT_FOR_TICK: Readonly<Record<TickKey, FactKey | null>> = {
   money: 'money',
   when: 'when',
   thumb: 'thumb',
-  // The Spreaker link IS the episode audio; for a YouTube item there is no rail row that
+  // The Spreaker link IS the episode audio; for a YouTube item there is no setup row that
   // sets it, because nothing in this app uploads video or links a draft.
   link: 'audio',
 };
@@ -387,31 +356,6 @@ const TICK_FOR_FACT: Readonly<Record<FactKey, TickKey | null>> = {
   thumb: 'thumb',
   audio: 'link',
 };
-
-/** One line of the dispatch manifest: exactly what this button would send. */
-interface ManifestRow {
-  label: string;
-  value: string;
-  /** True when this part will NOT be sent — rendered quiet, never as a value. */
-  missing: boolean;
-}
-
-/** A day cell in the schedule row's calendar. */
-interface CalendarDay {
-  dateKey: string;
-  date: Date;
-  dayOfMonth: number;
-  inMonth: boolean;
-  isToday: boolean;
-  isPast: boolean;
-  /** How many OTHER items are already scheduled on this day, on any channel. */
-  count: number;
-  /** True when at least one of those is on this item's own channel. */
-  onThisChannel: boolean;
-  /** True when this day carries one of this channel's cadence slots. */
-  isReleaseDay: boolean;
-  selected: boolean;
-}
 
 interface ParsedMetadata {
   titles: string[];
@@ -447,15 +391,15 @@ interface ParsedMetadata {
 @Component({
   selector: 'app-metadata-reports',
   standalone: true,
-  // Four Material pieces earn their keep here and the rest were dropped with the chrome
-  // they used to carry: icons, the spinner, the tag chips (restyled flat, not fought) and
-  // the dialog service the two confirmations open. Cards, lists, buttons and checkboxes
-  // are plain elements now — they were being overridden into plain elements anyway.
+  // Three Material pieces earn their keep here and the rest were dropped with the chrome
+  // they used to carry: icons, the spinner and the tag chips (restyled flat, not fought).
+  // Cards, lists, buttons and checkboxes are plain elements now — they were being
+  // overridden into plain elements anyway. Nothing here opens a dialog: sending lives on
+  // the calendar, and the confirmations went with it.
   imports: [
     MatIconModule,
     MatProgressSpinnerModule,
     MatChipsModule,
-    MatDialogModule,
     MatMenuModule,
     RouterLink,
   ],
@@ -579,7 +523,6 @@ export class MetadataReports implements OnInit, OnDestroy {
   constructor(
     private electron: ElectronService,
     private notificationService: NotificationService,
-    private dialog: MatDialog,
     private route: ActivatedRoute
   ) {}
 
@@ -601,21 +544,10 @@ export class MetadataReports implements OnInit, OnDestroy {
   readonly leftWidth = signal(readStoredLeftWidth());
   readonly draggingSplit = signal(false);
 
-  /**
-   * Which half of the work pane is showing. Deliberately NOT persisted: the tab is about
-   * the item open right now, and an operator who left the record tab up last night is
-   * opening this morning's item to write titles.
-   */
-  readonly workTab = signal<WorkTab>('metadata');
-
-  showWorkTab(tab: WorkTab): void {
-    this.workTab.set(tab);
-  }
-
   @ViewChild('searchBox') private searchBox?: ElementRef<HTMLInputElement>;
   @ViewChild('titlesScroll') private titlesScroll?: ElementRef<HTMLElement>;
   @ViewChild('channelSelect') private channelSelect?: ElementRef<HTMLSelectElement>;
-  @ViewChild('scheduleDateInput') private scheduleDateInput?: ElementRef<HTMLInputElement>;
+  @ViewChild('scheduleRow') private scheduleRow?: ElementRef<HTMLElement>;
   @ViewChild('thumbnailRow') private thumbnailRow?: ElementRef<HTMLElement>;
   @ViewChild('podcastRow') private podcastRow?: ElementRef<HTMLElement>;
 
@@ -1559,23 +1491,6 @@ export class MetadataReports implements OnInit, OnDestroy {
   );
 
   /**
-   * The held work split by which tab answers it, so each tab's badge counts only what
-   * pressing that tab can fix. Titles are the one tick the record tab does not own —
-   * a "1" on Publish record that meant "pick a title on Metadata" pointed at the wrong
-   * door.
-   */
-  readonly recordHeldCount = computed(
-    () =>
-      this.readinessTicks().filter((t) => t.state === 'warn' && FACT_FOR_TICK[t.key] !== null)
-        .length,
-  );
-  readonly metadataHeldCount = computed(
-    () =>
-      this.readinessTicks().filter((t) => t.state === 'warn' && FACT_FOR_TICK[t.key] === null)
-        .length,
-  );
-
-  /**
    * True when this item's dispatch has already happened and cannot honestly be repeated.
    *
    * Only Spreaker: a YouTube push REWRITES the linked video, so pushing again is a
@@ -1623,45 +1538,45 @@ export class MetadataReports implements OnInit, OnDestroy {
   });
 
   /**
-   * A tick is a jump target: it opens the rail row that sets that fact, or focuses the
-   * titles pane for the one fact the rail does not own.
+   * A tick is a jump target: it opens the setup row that sets that fact, scrolls the
+   * schedule line into view, or focuses the titles list for the one fact the setup block
+   * does not own.
    */
   focusTick(key: TickKey): void {
     if (key === 'titles') {
-      // The titles list lives in the metadata half. A tick is a jump, so it takes the
-      // pane with it rather than scrolling something the operator cannot see.
-      this.workTab.set('metadata');
       setTimeout(() => this.titlesScroll?.nativeElement.focus());
       return;
     }
     const fact = FACT_FOR_TICK[key];
     if (fact === null) return;
-    // LINK on a YouTube item has no rail row, because nothing in this app uploads a video
+    // LINK on a YouTube item has no setup row, because nothing in this app uploads a video
     // or links a draft — that happens in the browser. Collapsing whatever the operator had
     // open in order to show them nothing would be worse than doing nothing.
     if (fact === 'audio' && !this.publish.isPodcast()) return;
-    // Every remaining tick names a publish-record fact, and the record is the other tab.
-    this.workTab.set('record');
+    // The schedule is read-only here — the calendar sets it — so its tick only brings the
+    // line that says so into view.
+    if (fact === 'when') {
+      setTimeout(() => this.scheduleRow?.nativeElement.scrollIntoView({ block: 'nearest' }));
+      return;
+    }
     this.openFact.set(fact);
     // After the row expands. The control inside it is what the operator came for.
     setTimeout(() => {
       const el =
         fact === 'destination'
           ? this.channelSelect?.nativeElement
-          : fact === 'when'
-            ? this.scheduleDateInput?.nativeElement
-            : fact === 'thumb'
-              ? this.thumbnailRow?.nativeElement
-              : this.podcastRow?.nativeElement;
+          : fact === 'thumb'
+            ? this.thumbnailRow?.nativeElement
+            : this.podcastRow?.nativeElement;
       if (!el) return;
       el.scrollIntoView({ block: 'nearest' });
-      if (el instanceof HTMLSelectElement || el instanceof HTMLInputElement) el.focus();
+      if (el instanceof HTMLSelectElement) el.focus();
     });
   }
 
-  // ------------------------------------------------- the publish record accordion
+  // ------------------------------------------------------ the publish setup accordion
   //
-  // One card, five label/value rows, one open at a time. The control that SETS a fact
+  // One block, four label/value rows and a read-only schedule line, one open at a time. The control that SETS a fact
   // lives inside the row that STATES it, so nothing has to be explained in advance —
   // which is what replaced the 41 resident paragraphs this panel used to carry.
 
@@ -1675,7 +1590,7 @@ export class MetadataReports implements OnInit, OnDestroy {
     this.openFact.set(this.openFact() === key ? null : key);
   }
 
-  /** The tick that describes a rail row, so the row's dot and the meter never disagree. */
+  /** The tick that describes a setup row, so the row's dot and the meter never disagree. */
   tickFor(fact: FactKey): ReadinessTick | null {
     const key = TICK_FOR_FACT[fact];
     if (key === null) return null;
@@ -1873,50 +1788,11 @@ export class MetadataReports implements OnInit, OnDestroy {
     return this.publish.isBlocked(this.getTitleText(title));
   }
 
-  // -------------------------------------------------------------- publish panel
+  // ------------------------------------------------------------- publish setup
   //
-  // The panel above Titles. Everything it edits lives in PublishState — what is here is
-  // the two schedule boxes and the handlers that turn one click into one call.
-  //
-  // The boxes hold LOCAL WALL-CLOCK text with no zone in it, which is not yet a moment;
-  // PublishState composes it with the offset in effect on that date before anything is
-  // saved. That is why the offset is printed next to them rather than assumed.
-
-  /** The operator's draft, or null for "show what is stored". */
-  readonly scheduleDateDraft = signal<string | null>(null);
-  readonly scheduleTimeDraft = signal<string | null>(null);
-
-  /** What the date box shows: the draft if there is one, else the stored schedule. */
-  readonly scheduleDate = computed(() => {
-    const draft = this.scheduleDateDraft();
-    if (draft !== null) return draft;
-    const at = this.publish.publishAt();
-    return at ? splitPublishAt(at).date : '';
-  });
-
-  readonly scheduleTime = computed(() => {
-    const draft = this.scheduleTimeDraft();
-    if (draft !== null) return draft;
-    const at = this.publish.publishAt();
-    return at ? splitPublishAt(at).time : '';
-  });
-
-  /** A moment needs both halves. Until then there is nothing to compose. */
-  readonly scheduleComplete = computed(() => !!this.scheduleDate() && !!this.scheduleTime());
-
-  /**
-   * The offset the boxes will be composed with.
-   *
-   * The one in effect ON THAT DATE, which is not always the one in effect today — that
-   * is the whole reason it is on screen. Before both boxes are filled there is no moment
-   * to ask about, so it shows today's.
-   */
-  readonly scheduleOffset = computed(() => {
-    if (!this.scheduleComplete()) return offsetLabel(offsetStringFor(new Date()));
-    const at = new Date(`${this.scheduleDate()}T${this.scheduleTime()}:00`);
-    if (Number.isNaN(at.getTime())) return offsetLabel(offsetStringFor(new Date()));
-    return offsetLabel(offsetStringFor(at));
-  });
+  // The block above Titles. Everything it edits lives in PublishState — what is here
+  // turns one click into one call. The schedule is NOT edited here: the calendar is the
+  // one place a date is set, moved or cleared, and this page only states it.
 
   /**
    * How the stored schedule reads: local wall time, the offset it is read in, the offset
@@ -2003,388 +1879,19 @@ export class MetadataReports implements OnInit, OnDestroy {
     return this.channelNameFor(id);
   }
 
-  /** The registry name of the channel this item is routed to, or null when it has none. */
-  private currentChannelName(): string | null {
-    const id = this.publish.selectedChannelId();
-    if (!id) return null;
-    const known = this.publish.channels().find((c) => c.channelId === id);
-    return known ? known.name : null;
-  }
-
   /**
-   * The release cadence this item's channel publishes on, or null when this app has none
-   * recorded for it.
+   * Why this item could not be sent right now, for whichever destination is chosen.
    *
-   * NULL IS SAID OUT LOUD in the schedule row rather than filled in with somebody else's
-   * schedule. A channel nobody has told this app about gets a calendar with no suggestion,
-   * which is the truth; a guessed release day would be an upload at the wrong hour that
-   * looked exactly like an intentional one.
-   */
-  readonly cadence = computed<CadenceKey | null>(() => {
-    if (this.publish.isPodcast()) return null;
-    return cadenceKeyFor(this.currentChannelName());
-  });
-
-  /** The one line that explains what "next open slot" means for this channel. */
-  cadenceNote(): string | null {
-    const key = this.cadence();
-    return key === null ? null : CADENCE_NOTES[key];
-  }
-
-  // ---------------------------------------------------------------- the calendar
-  //
-  // The schedule row opens a month, not a bare date box, and the month is populated from
-  // the SAME publish-list-index this page already read for its list — the call that also
-  // powers /publish-calendar. There is no second index and no second IPC read.
-
-  /** Which month the calendar is showing. Local midnight on the first. */
-  readonly calendarMonth = signal<Date>(startOfMonth(new Date()));
-
-  /** Recomputed when the panel opens a different item, so "today" is not last week's. */
-  private readonly calendarNow = signal<Date>(new Date());
-
-  stepCalendar(months: number): void {
-    const at = this.calendarMonth();
-    this.calendarMonth.set(new Date(at.getFullYear(), at.getMonth() + months, 1));
-  }
-
-  calendarMonthLabel(): string {
-    return this.calendarMonth().toLocaleDateString([], { month: 'long', year: 'numeric' });
-  }
-
-  readonly WEEKDAY_INITIALS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
-
-  /**
-   * Every OTHER item's schedule, by local day.
-   *
-   * "Other" is doing real work: an item's own schedule is not a clash with itself, and
-   * showing it as one would make every already-scheduled item look like a conflict.
-   */
-  private readonly schedulesByDay = computed<Map<string, ReportIndexEntry[]>>(() => {
-    const openItemId = this.selectedReport()?.itemId ?? null;
-    const byDay = new Map<string, ReportIndexEntry[]>();
-    for (const entry of this.reportIndex()) {
-      const at = entry.publish?.publishAt;
-      if (!at || entry.itemId === openItemId) continue;
-      const when = new Date(at);
-      if (Number.isNaN(when.getTime())) continue; // said by the calendar page, not here
-      const key = dateKeyOf(when);
-      const list = byDay.get(key);
-      if (list) list.push(entry);
-      else byDay.set(key, [entry]);
-    }
-    return byDay;
-  });
-
-  /**
-   * The slots already taken ON THIS ITEM'S CHANNEL, as `slotKeyOf` strings.
-   *
-   * Per channel, not global: Unfiltered at 4pm and Fireside at 1pm on the same Tuesday are
-   * two releases on two channels, which is the schedule working, not a collision.
-   */
-  private readonly occupiedSlots = computed<ReadonlySet<string>>(() => {
-    const channelId = this.publish.selectedChannelId();
-    const openItemId = this.selectedReport()?.itemId ?? null;
-    const taken = new Set<string>();
-    if (!channelId) return taken;
-    for (const entry of this.reportIndex()) {
-      const at = entry.publish?.publishAt;
-      if (!at || entry.itemId === openItemId) continue;
-      if (entry.publish?.channelId !== channelId) continue;
-      const when = new Date(at);
-      if (Number.isNaN(when.getTime())) continue;
-      taken.add(slotKeyOf(when));
-    }
-    return taken;
-  });
-
-  /**
-   * The earliest future slot for this channel that nothing else on it holds.
-   *
-   * A SUGGESTION. Any day and any time is allowed, including an occupied one — the
-   * calendar flags a clash and never blocks it.
-   */
-  readonly suggestedSlot = computed<Date | null>(() => {
-    const key = this.cadence();
-    if (key === null) return null;
-    return nextOpenSlot(key, this.calendarNow(), this.occupiedSlots());
-  });
-
-  suggestedSlotLabel(): string | null {
-    const at = this.suggestedSlot();
-    if (at === null) return null;
-    return at.toLocaleString([], {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    });
-  }
-
-  /** Put the suggestion in the two boxes. It is not saved until Set is pressed. */
-  useSuggestedSlot(): void {
-    const at = this.suggestedSlot();
-    if (at === null) return;
-    const { date, time } = splitSlot(at);
-    this.scheduleDateDraft.set(date);
-    this.scheduleTimeDraft.set(time);
-    this.calendarMonth.set(startOfMonth(at));
-  }
-
-  /** Six weeks of day cells, Sunday-first — the same shape the calendar page renders. */
-  readonly calendarWeeks = computed<CalendarDay[][]>(() => {
-    const first = this.calendarMonth();
-    const now = this.calendarNow();
-    const todayKey = dateKeyOf(now);
-    const selectedKey = this.scheduleDate();
-    const channelId = this.publish.selectedChannelId();
-    const cadence = this.cadence();
-    const byDay = this.schedulesByDay();
-
-    const gridStart = new Date(first.getFullYear(), first.getMonth(), 1 - first.getDay());
-    const weeks: CalendarDay[][] = [];
-    for (let w = 0; w < 6; w++) {
-      const row: CalendarDay[] = [];
-      for (let d = 0; d < 7; d++) {
-        const date = new Date(
-          gridStart.getFullYear(),
-          gridStart.getMonth(),
-          gridStart.getDate() + w * 7 + d,
-        );
-        const key = dateKeyOf(date);
-        const onDay = byDay.get(key) ?? [];
-        row.push({
-          dateKey: key,
-          date,
-          dayOfMonth: date.getDate(),
-          inMonth: date.getMonth() === first.getMonth(),
-          isToday: key === todayKey,
-          isPast: key < todayKey,
-          count: onDay.length,
-          onThisChannel:
-            channelId !== null && onDay.some((e) => e.publish?.channelId === channelId),
-          // "Is this a release day for this channel" — the cadence's own answer, so the
-          // dot and the suggestion can never disagree about which days are release days.
-          isReleaseDay:
-            cadence !== null &&
-            this.cadenceSlotsOn(cadence, date).length > 0,
-          selected: key === selectedKey,
-        });
-      }
-      weeks.push(row);
-    }
-    return weeks;
-  });
-
-  /** The cadence slots that fall on one day. Empty for a day this channel does not use. */
-  private cadenceSlotsOn(cadence: CadenceKey, day: Date): Date[] {
-    const out: Date[] = [];
-    for (let hour = 0; hour < 24; hour++) {
-      const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hour, 0, 0, 0);
-      if (isCadenceSlot(cadence, at)) out.push(at);
-    }
-    return out;
-  }
-
-  /**
-   * Pick a day. The time comes from the channel's cadence when that day has one, and is
-   * otherwise left exactly as it was for the operator to type.
-   *
-   * Nothing is saved here — this fills the two boxes, and Set is what writes. A past day
-   * is pickable: the boxes are the operator's, and the refusal that matters (a schedule
-   * less than 15 minutes out) belongs to the main process and arrives verbatim.
-   */
-  pickCalendarDay(day: CalendarDay): void {
-    this.scheduleDateDraft.set(day.dateKey);
-    const cadence = this.cadence();
-    if (cadence === null) return;
-    const slots = this.cadenceSlotsOn(cadence, day.date);
-    if (slots.length === 0) return;
-    // The first slot of the day that is still free, else the first slot at all — an
-    // occupied one is offered rather than withheld, and flagged below.
-    const taken = this.occupiedSlots();
-    const open = slots.find((at) => !taken.has(slotKeyOf(at)));
-    this.scheduleTimeDraft.set(splitSlot(open ?? slots[0]).time);
-  }
-
-  /**
-   * Whether the two boxes name a moment something else on this channel already holds.
-   *
-   * Reported, never enforced. A deliberate double release is the operator's call, and the
-   * only thing this app is entitled to do about it is say so.
-   */
-  scheduleCollision(): string | null {
-    if (!this.scheduleComplete()) return null;
-    const at = new Date(`${this.scheduleDate()}T${this.scheduleTime()}:00`);
-    if (Number.isNaN(at.getTime())) return null;
-    if (!collidesWith(at, this.occupiedSlots())) return null;
-    const name = this.currentChannelName() ?? 'this channel';
-    return `Another item on ${name} is already scheduled for that exact time. That is ` +
-      'allowed — this is only saying so.';
-  }
-
-  /** What is already on the day the boxes name, for the line under the calendar. */
-  daySummary(): string | null {
-    const date = this.scheduleDate();
-    if (!date) return null;
-    const onDay = this.schedulesByDay().get(date) ?? [];
-    if (onDay.length === 0) return null;
-    return onDay
-      .map((e) => {
-        const at = new Date(e.publish!.publishAt!);
-        const time = at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-        const channel = e.publish?.channelId ? this.channelNameFor(e.publish.channelId) : 'unrouted';
-        return `${time} · ${e.publish?.mainTitle ?? e.displayTitle} (${channel})`;
-      })
-      .join('\n');
-  }
-
-  dayCount(): number {
-    const date = this.scheduleDate();
-    if (!date) return 0;
-    return (this.schedulesByDay().get(date) ?? []).length;
-  }
-
-  // ------------------------------------------------------------- dispatch manifest
-  //
-  // The exact payload, stated above the button that sends it. This replaced four resident
-  // paragraphs with a table nobody has to read unless they want to — and every value in it
-  // is the value that will actually go, read from the same resolved record the confirm
-  // dialog assembles its own copy from. Nothing here is recomposed for display.
-
-  readonly dispatchManifest = computed<ManifestRow[]>(() => {
-    if (!this.publish.hasResolved()) return [];
-    const rows: ManifestRow[] = [];
-
-    const title = this.publish.pushTitle();
-    rows.push({
-      label: 'Title',
-      value: title ? `variant 1 of ${this.publish.chosenCount()}` : 'none picked',
-      missing: !title,
-    });
-
-    const description = this.publish.resolvedDescription();
-    // The SURVIVING chapters, not the generated ones: deletions count, and YouTube
-    // ignores the whole list unless the FIRST surviving marker is zero — however the
-    // zero was lost. chapterRows reads the resolved sections, which are null until the
-    // resolve round-trip lands, so before that the line says it is still reading rather
-    // than asserting "no chapters" about an item that has them.
-    const surviving = this.chapterRows().filter((row) => !row.dropped);
-    const firstIsZero = surviving.length > 0 && /^0(:0{1,2})+$/.test(surviving[0].timestamp);
-    const chapters = !this.publish.hasResolved()
-      ? 'chapters still being read'
-      : !this.publish.chaptersInDescription() || surviving.length === 0
-        ? 'no chapters'
-        : firstIsZero
-          ? `with ${surviving.length} chapters`
-          : `${surviving.length} chapters — list disabled (the first is not 0:00)`;
-    rows.push({
-      label: 'Description',
-      value: `${description.length.toLocaleString()} chars · ${chapters}`,
-      missing: description.length === 0,
-    });
-
-    const tagCount = this.editedTagsArray().length;
-    const tagsOver = this.tagsOverLimit();
-    rows.push({
-      label: 'Tags',
-      value: tagsOver
-        ? `${tagCount} — Spreaker takes at most ${SPREAKER_MAX_TAGS}; the push will refuse this`
-        : String(tagCount),
-      missing: tagCount === 0 || tagsOver,
-    });
-
-    if (this.publish.isPodcast()) {
-      const audio = this.publish.audio();
-      rows.push({
-        label: 'Audio',
-        value: audio ? `${this.fileName(audio.path)} · ${this.audioFacts(audio.meta)}` : 'none',
-        missing: !audio,
-      });
-      rows.push({ label: 'Show', value: this.spreakerShowLabel(), missing: false });
-      // 'immediate' is the loudest fact in this manifest — an episode public on encode —
-      // and .miss styling would whisper it as "nothing happens here". It is a value that
-      // WILL be sent (by omission), so it renders at full strength.
-      const podWhen = this.scheduleDescription();
-      rows.push({
-        label: 'Publication',
-        value: podWhen
-          ? podWhen.isPast
-            ? `${podWhen.local} — already passed; Spreaker will refuse this upload`
-            : `held until ${podWhen.local}`
-          : 'immediate — public as soon as encoding finishes',
-        missing: false,
-      });
-      return rows;
-    }
-
-    const when = this.scheduleDescription();
-    // Which dispatch this manifest feeds decides what "none" means: a push leaves the
-    // linked video's privacy and schedule alone; an upload creates the video private.
-    // "publishes on push" was true of neither.
-    const noneMeans = this.publish.videoId()
-      ? 'none — the video keeps its current privacy and schedule'
-      : 'none — the video is created private and left there';
-    rows.push({
-      label: 'Schedule',
-      value: when
-        ? when.isPast
-          ? `${when.local} — already passed; sending now publishes immediately`
-          : when.local
-        : noneMeans,
-      missing: !when,
-    });
-
-    const thumbnailPath = this.publish.thumbnailPath();
-    rows.push({
-      label: 'Thumbnail',
-      value: thumbnailPath ? this.fileName(thumbnailPath) : 'none — the video keeps its own',
-      missing: !thumbnailPath,
-    });
-
-    rows.push({ label: 'Channel', value: this.destinationLabel(), missing: !this.publish.channelId() });
-    return rows;
-  });
-
-  /**
-   * Why the one dispatch button is unavailable, for whichever destination is chosen.
-   *
-   * The YouTube destination has two dispatches: a linked item PUSHES metadata onto its
-   * video, an unlinked one UPLOADS the source file as a new (locked-private) video. The
-   * button and the meter's cross-check both read the same three-way choice, so they
-   * cannot disagree about which rule applies.
+   * Sending happens on the calendar; this page only reads the reason for the meter's
+   * hover. The YouTube destination has two dispatches — a linked item PUSHES metadata
+   * onto its video, an unlinked one UPLOADS the source file — so the three-way choice
+   * is read here exactly as the calendar reads it.
    */
   dispatchBlockedReason(): string | null {
     if (this.publish.isPodcast()) return this.publish.spreakerBlockedReason();
     return this.publish.videoId()
       ? this.publish.pushBlockedReason()
       : this.publish.uploadBlockedReason();
-  }
-
-  /** An explicit choice, including the empty option — see PublishState.chooseChannel. */
-  async onChannelChange(event: Event) {
-    const value = (event.target as HTMLSelectElement).value;
-    await this.publish.chooseChannel(value === '' ? null : value);
-  }
-
-  async saveSchedule() {
-    await this.publish.setPublishAtLocal(this.scheduleDate(), this.scheduleTime());
-    // A rejected schedule keeps what was typed so it can be corrected; an accepted one
-    // drops the drafts so the boxes go back to reflecting the record.
-    if (this.publish.error()) return;
-    this.clearScheduleDrafts();
-  }
-
-  async clearSchedule() {
-    await this.publish.clearPublishAt();
-    if (this.publish.error()) return;
-    this.clearScheduleDrafts();
-  }
-
-  private clearScheduleDrafts() {
-    this.scheduleDateDraft.set(null);
-    this.scheduleTimeDraft.set(null);
   }
 
   /**
@@ -2554,157 +2061,19 @@ export class MetadataReports implements OnInit, OnDestroy {
     this.invalidateSelectedThumb();
   }
 
-  // ------------------------------------------------------------- push to YouTube
+  // --------------------------------------------------------------- sending
   //
-  // The only control on this page that changes something the audience can see. Two steps,
-  // always: a dialog listing exactly what will be sent, then the call. There is no
-  // "push without asking" path and there is no batch push — one video at a time, looked at.
+  // Nothing on this page sends. Push, upload and the Spreaker upload live on the calendar,
+  // with their confirmations; what remains here are the readers the setup rows use.
 
-  /** An ISO instant as this Mac reads it. Used for push timestamps in the panel. */
+  /** An ISO instant as this Mac reads it. Used for the carry-forward offer. */
   localTime(iso: string): string {
     return describePublishAt(iso).local;
   }
 
-  /** The channel's display name, or its raw id when the registry has no name for it. */
-  pushChannelLabel(): string {
-    const id = this.publish.channelId();
-    if (!id) return 'no channel';
-    const known = this.publish.channels().find((c) => c.channelId === id);
-    return known ? `${known.name} (${id})` : id;
-  }
-
-  /**
-   * Confirm, then push.
-   *
-   * Everything shown in the dialog is the value that will actually be sent: the title is
-   * chosen variant 1, the description and tags are the RESOLVED ones (overrides applied,
-   * composed in the main process) — the same values the extension would have typed into
-   * Studio. Nothing is recomposed here for display.
-   */
-  async pushToYouTube() {
-    const blocked = this.publish.pushBlockedReason();
-    if (blocked) {
-      this.publish.showError(`Cannot push: ${blocked}`);
-      return;
-    }
-
-    const description = this.publish.resolvedDescription();
-    const tags = this.publish.resolvedTags()
-      .split(',')
-      .map((t) => t.trim())
-      .filter((t) => t.length > 0);
-    const schedule = this.publish.publishAt();
-    const thumbnailPath = this.publish.thumbnailPath();
-    const preview = this.publish.thumbnailPreview();
-
-    const data: YouTubePushDialogData = {
-      videoId: this.publish.videoId()!,
-      channelLabel: this.pushChannelLabel(),
-      title: this.publish.pushTitle()!,
-      descriptionFirstLine: description.split('\n')[0].trim(),
-      descriptionChars: description.length,
-      tagCount: tags.length,
-      tagsPreview: tags.slice(0, 8).join(', ') + (tags.length > 8 ? `, +${tags.length - 8} more` : ''),
-      scheduleLabel: schedule ? this.describeScheduleForPush(schedule) : null,
-      schedulePast: schedule ? describePublishAt(schedule).isPast : false,
-      thumbnailName: thumbnailPath ? this.fileName(thumbnailPath) : null,
-      // Only the image already on screen. Reading one here would be a second read of a
-      // file the panel has already read, and a slow dialog for no new information.
-      thumbnailDataUrl: preview && preview.path === thumbnailPath ? preview.dataUrl : null,
-    };
-
-    const confirmed = await firstValueFrom(
-      this.dialog.open(YouTubePushDialog, { data, width: '640px' }).afterClosed()
-    );
-    if (!confirmed) return;
-
-    const receipt = await this.publish.pushToYouTube();
-    if (!receipt) return; // the failure is in the banner, verbatim
-    this.notificationService.success(
-      'Pushed to YouTube',
-      `"${receipt.updated.title}" — video ${receipt.videoId} on ${this.pushChannelLabel()}.`
-    );
-  }
-
-  /** The schedule as the dialog states it: local wall clock, its offset, and the raw instant. */
-  private describeScheduleForPush(iso: string): string {
-    const when = describePublishAt(iso);
-    return `${when.local} (${when.localOffset}) — stored as ${when.raw}`;
-  }
-
-  // ------------------------------------------------------------- upload to YouTube
-  //
-  // The dispatch an UNLINKED item gets: videos.insert creates the video from the source
-  // file with the manifest above already on it, INCLUDING its publishAt when the record
-  // carries one.
-  //
-  // There is no confirmation dialog here, unlike push and Spreaker. That was justified by
-  // the audit gate — a video born private and locked private cannot change anything an
-  // audience sees — and THAT JUSTIFICATION IS NO LONGER SOUND. Google locks API uploads
-  // private only for unaudited projects created after 28 July 2020, and the one upload
-  // ever made from this app published on schedule (2026-08-25, VIviaw58P88, public at its
-  // scheduled minute). So an upload from here may well be a release.
-  //
-  // Left as-is rather than quietly given a dialog: whether this project is exempt, or
-  // audited, or simply not enforcing, is unresolved, and adding a gate is an interaction
-  // change the operator should choose. The strings around the button no longer claim the
-  // upload is safely inert.
-
-  async uploadToYouTube() {
-    const blocked = this.publish.uploadBlockedReason();
-    if (blocked) {
-      this.publish.showError(`Cannot upload: ${blocked}`);
-      return;
-    }
-    const receipt = await this.publish.uploadToYouTube();
-    if (!receipt) return; // the failure is in the banner, verbatim
-    this.notificationService.success(
-      'Uploaded to YouTube',
-      `"${receipt.title}" — video ${receipt.videoId} on ${this.pushChannelLabel()}. ` +
-        'Created private — verify whether this project releases on schedule.'
-    );
-  }
-
-  async cancelUpload() {
-    await this.publish.cancelUpload();
-  }
-
-  /** 0–100 for the bar. Before the first ~4 Hz progress event the bar sits at 0. */
-  uploadPercent(): number {
-    const p = this.publish.uploadProgress();
-    if (!p) return 0;
-    return Math.min(100, Math.floor((p.sentBytes / p.totalBytes) * 100));
-  }
-
-  /** `42% — 123.4 MB of 291.0 MB`, or the pre-first-event word. */
-  uploadProgressLabel(): string {
-    const p = this.publish.uploadProgress();
-    if (!p) return 'starting…';
-    return `${this.uploadPercent()}% — ${formatBytes(p.sentBytes)} of ${formatBytes(p.totalBytes)}`;
-  }
-
-  /** A byte count as the receipt states it — formatBytes, reachable from the template. */
-  bytesLabel(bytes: number): string {
-    return formatBytes(bytes);
-  }
-
-  // ------------------------------------------------------------ upload to Spreaker
-  //
-  // The other control that changes something an audience can see, and the one that
-  // CREATES: after it there is an episode in a public podcast feed. Two steps, always —
-  // a dialog listing exactly what will be sent and saying that Spreaker has no draft
-  // state, then the call. No batch upload, and nothing here retries.
-
   /** `1:04:12 · 126.6 MB · mp3` for whichever audio file the row is describing. */
   audioFacts(meta: AudioMeta): string {
     return `${formatDuration(meta.durationSec)} · ${formatBytes(meta.bytes)} · ${meta.extension.replace(/^\./, '')}`;
-  }
-
-  /** The show as the dialog names it: the operator's label, else the bare show id. */
-  spreakerShowLabel(): string {
-    const status = this.publish.spreakerStatus();
-    if (!status || !status.showId) return 'the configured show';
-    return status.showName ? `${status.showName} (show ${status.showId})` : `show ${status.showId}`;
   }
 
   /** Pick an episode audio file. Unfiltered dialog; the main process decides usability. */
@@ -2719,82 +2088,6 @@ export class MetadataReports implements OnInit, OnDestroy {
       return;
     }
     await this.publish.setAudio(picked.files[0]);
-  }
-
-  /**
-   * Confirm, then upload.
-   *
-   * Everything shown is the value that will actually be sent: the title is chosen variant
-   * 1, the description and tags are the RESOLVED ones — the same values the YouTube push
-   * would send and the extension would type into Studio. Nothing is recomposed here.
-   */
-  async uploadToSpreaker() {
-    const blocked = this.publish.spreakerBlockedReason();
-    if (blocked) {
-      this.publish.showError(`Cannot upload: ${blocked}`);
-      return;
-    }
-
-    const audio = this.publish.audio();
-    if (!audio) {
-      // spreakerBlockedReason already covers this; the guard is here because the dialog
-      // below cannot describe a file it does not have, and a dialog with blanks in it is
-      // worse than no dialog.
-      this.publish.showError('The episode audio has not been measured, so there is nothing to confirm.');
-      return;
-    }
-
-    const description = this.publish.resolvedDescription();
-    const tags = this.publish.resolvedTags()
-      .split(',')
-      .map((t) => t.trim())
-      .filter((t) => t.length > 0);
-
-    const data: SpreakerUploadDialogData = {
-      showLabel: this.spreakerShowLabel(),
-      title: this.publish.pushTitle()!,
-      descriptionFirstLine: description.split('\n')[0].trim(),
-      descriptionChars: description.length,
-      tagCount: tags.length,
-      tagsPreview: tags.slice(0, 8).join(', ') + (tags.length > 8 ? `, +${tags.length - 8} more` : ''),
-      audioName: this.fileName(audio.path),
-      audioPath: audio.path,
-      audioFacts: this.audioFacts(audio.meta),
-      publicationNote: this.publish.spreakerPublicationNote(),
-      warnings: audio.warnings,
-    };
-
-    const confirmed = await firstValueFrom(
-      this.dialog.open(SpreakerUploadDialog, { data, width: '640px' }).afterClosed()
-    );
-    if (!confirmed) return;
-
-    const receipt = await this.publish.uploadToSpreaker();
-    if (!receipt) return; // the failure is in the banner, verbatim
-    this.notificationService.success(
-      'Uploaded to Spreaker',
-      `"${receipt.uploaded.title}" — episode ${receipt.episodeId}, ` +
-      `${(receipt.encodingStatus ?? 'queued').toLowerCase()}.`
-    );
-  }
-
-  /**
-   * Forget the recorded episode so the item can be uploaded again.
-   *
-   * Confirmed in plain words, because the thing people will assume it does — delete the
-   * episode — is the one thing it cannot do.
-   */
-  async forgetSpreakerEpisode() {
-    const episodeId = this.publish.spreakerEpisodeId();
-    if (episodeId === null) return;
-    const ok = window.confirm(
-      `Forget Spreaker episode ${episodeId}?\n\n` +
-      `This does NOT delete the episode — it still exists on your show. It only lets this ` +
-      `item be uploaded again, which will create a SECOND episode unless you have already ` +
-      `deleted the first one on Spreaker.`
-    );
-    if (!ok) return;
-    await this.publish.forgetSpreakerEpisode();
   }
 
   // ------------------------------------------------------------------- editing
@@ -3760,7 +3053,6 @@ export class MetadataReports implements OnInit, OnDestroy {
       this.cancelEditTitle();
       this.cancelEditDescription();
       this.cancelEditTags();
-      this.clearScheduleDrafts();
 
       // View state that named a row or a section of the PREVIOUS item. Keyboard focus on
       // "row 7" means nothing here, and an expanded tag strip is about the item it was
@@ -3768,16 +3060,9 @@ export class MetadataReports implements OnInit, OnDestroy {
       this.focusedTitleIndex.set(null);
       this.tagsExpanded.set(false);
       this.openAssets.set(new Set<string>(['chapters']));
-      // The rail's accordion and its calendar are both about the item that was open. A
-      // month scrolled to December and a Schedule row left expanded belong to that item,
-      // and "now" is re-read here so a session left open overnight does not go on
-      // suggesting yesterday's next slot.
+      // The setup accordion is about the item that was open: a Thumbnail row left
+      // expanded belongs to that item.
       this.openFact.set(null);
-      // A new item opens on its metadata, always. The record tab is where the operator
-      // goes after they have decided something, not where they land.
-      this.workTab.set('metadata');
-      this.calendarNow.set(new Date());
-      this.calendarMonth.set(startOfMonth(new Date()));
 
       // The titles picker belongs to the item now open, and its default is that item's own
       // recorded model. AFTER metadata() is set — it is read off this item's trace.

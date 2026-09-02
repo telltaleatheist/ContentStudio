@@ -1,9 +1,10 @@
 <!-- Metadata Reports — the copy desk: list | work.
-     Two panes, each with its own scroll, and a page that never scrolls. The work pane
-     carries both halves of an item on a two-tab bar — the metadata blocks and the publish
-     record — with the pane head (crumb, title, readiness meter, error banner) fixed above
-     both, because it describes the item rather than either half. The rules this template
-     is built to, in one place:
+     Two panes, each with its own scroll, and a page that never scrolls. The work pane is
+     ONE scrolling view of an item — publish setup first, then titles, description, tags
+     and assets — with the pane head (crumb, title, readiness meter, error banner) fixed
+     above it, because it describes the item rather than any one block. Nothing on this
+     page schedules or sends: that is the calendar's job, and the setup block only points
+     there. The rules this template is built to, in one place:
 
        · ONE status vocabulary, six facts, one order — TITLES · CHANNEL · MONEY · WHEN ·
          THUMB · LINK. The list rows dot them and the item header names them. Three values:
@@ -12,11 +13,10 @@
        · NO RESIDENT PROSE. A paragraph is on screen only when it reports a real problem
          that needs the operator. Everything else is a tooltip or the inside of an opened
          accordion row. This page used to carry 41 standing paragraphs.
-       · THE ONLY FILLED ORANGE ON SCREEN IS THE NEXT THING TO DO. When nothing is held it
-         is the dispatch button; when something is, that button goes quiet and the one rail
-         row that needs answering wears it instead. Never both.
-       · ONE DESTINATION. Three YouTube channels and Spreaker in one picker, one manifest,
-         one button — an item goes to one place. -->
+       · THE ONLY FILLED ORANGE ON SCREEN IS THE NEXT THING TO DO: the one setup row that
+         needs answering wears it, and nothing else does. Never two.
+       · ONE DESTINATION. Three YouTube channels and Spreaker in one picker — an item goes
+         to one place, and the calendar sends it there. -->
 <div class="reports-container">
   <div class="page-content"
        [style.--left-w.px]="leftWidth()">
@@ -269,7 +269,7 @@
           <div class="crumb">
             <span class="kicker">Report</span>
             @if (selectedReport()!.promptSet; as promptSet) {
-              <span class="crumb-src num">{{ promptSet }}</span>
+              <span class="crumb-src mono">{{ promptSet }}</span>
             }
             <span class="crumb-src num">{{ formatDate(selectedReport()!.date) }}</span>
             <!-- Provenance: which transcript wrote these words, and (always) that chapters
@@ -282,6 +282,7 @@
               </span>
             }
             <span class="pane-head-spacer"></span>
+            @if (publish.saving()) { <span class="saving">saving…</span> }
             <button class="ghost" (click)="showInFolder(selectedReport()!)">Show in Folder</button>
           </div>
 
@@ -375,32 +376,6 @@
             </div>
           }
 
-          <!-- The two halves of an item. The record used to be a third column 404px wide;
-               the description, the chapter list and the tag strip all wanted that width
-               more often than the record did, and the record is read in bursts rather
-               than watched. Everything above this bar belongs to BOTH tabs. -->
-          @if (!isLoading() && metadata()) {
-            <div class="wtabs" role="tablist">
-              <button class="wtab"
-                      role="tab"
-                      [class.on]="workTab() === 'metadata'"
-                      [attr.aria-selected]="workTab() === 'metadata'"
-                      (click)="showWorkTab('metadata')">
-                Metadata
-                @if (metadataHeldCount() > 0) { <span class="wtab-held num">{{ metadataHeldCount() }}</span> }
-              </button>
-              <button class="wtab"
-                      role="tab"
-                      [class.on]="workTab() === 'record'"
-                      [attr.aria-selected]="workTab() === 'record'"
-                      (click)="showWorkTab('record')">
-                Publish record
-                @if (recordHeldCount() > 0) { <span class="wtab-held num">{{ recordHeldCount() }}</span> }
-              </button>
-              <span class="pane-head-spacer"></span>
-              @if (publish.saving()) { <span class="saving">saving…</span> }
-            </div>
-          }
         </div>
       }
 
@@ -420,7 +395,454 @@
           </div>
         }
 
-        @if (!isLoading() && selectedReport() && metadata() && workTab() === 'metadata') {
+        @if (!isLoading() && selectedReport() && metadata()) {
+
+          <!-- ═════ PUBLISH SETUP ═════
+               The facts about the VIDEO that publishing needs and that nothing else in
+               this app sets: where it goes, whether it is monetized, the thumbnail and
+               (for Spreaker) the audio. Scheduling and sending live on the calendar —
+               this block states the schedule and points there, it does not set it. -->
+          <section class="block setup-block">
+            <div class="bhead">
+              <h3>Publish setup</h3>
+              <span class="pane-head-spacer"></span>
+              <a class="ghost link" routerLink="/publish-calendar">Open the calendar</a>
+            </div>
+            <!-- Carry forward. This video was generated before: the earlier run's record
+                 holds facts about the VIDEO that a regeneration does not carry, because a
+                 new run is a new item id. Offered on one line, applied on one click, never
+                 inherited — every value is re-read and re-validated in the main process
+                 when Apply is pressed. -->
+            @if (publish.carryOffer(); as offer) {
+              <div class="carry">
+                <mat-icon>history</mat-icon>
+                <span>
+                  <!-- WHICH set the offer came from. The candidates are looked at
+                       primary-first, so "the primary set" is the ordinary answer; the other
+                       sentence means the primary held nothing worth carrying and this is the
+                       newest sibling that did. Said either way, because the operator is
+                       about to accept a channel and a thumbnail he did not type. -->
+                  @if (offer.fromIsPrimary) {
+                    The primary set for this video ({{ localTime(offer.jobCreatedAt) }})
+                  } @else {
+                    Another set of this video ({{ localTime(offer.jobCreatedAt) }}) — not the primary one —
+                  }
+                  carries {{ carryFieldList() }}. Carry it forward?
+                </span>
+                <button class="ghost"
+                        [disabled]="publish.carrying() || publish.saving()"
+                        (click)="publish.applyCarryForward()">
+                  @if (publish.carrying()) { Carrying… } @else { Apply }
+                </button>
+                <button class="ghost"
+                        [disabled]="publish.carrying()"
+                        (click)="publish.dismissCarryForward()">Dismiss</button>
+              </div>
+            }
+
+            <!-- The receipt. All four fields, always: what was written, what had nothing to
+                 write, and what was REFUSED because it no longer validates. -->
+            @if (publish.carryReceipt(); as receipt) {
+              <div class="receipt">
+                <div class="receipt-head">
+                  <mat-icon>fact_check</mat-icon>
+                  <strong>Carried forward from the other set</strong>
+                  <span class="pane-head-spacer"></span>
+                  <button class="ghost" (click)="publish.dismissCarryReceipt()">Close</button>
+                </div>
+                <dl class="receipt-rows">
+                  @for (outcome of receipt.applied; track outcome.field) {
+                    <div><span>{{ outcome.field }}</span><span>{{ outcome.detail }}</span></div>
+                  }
+                  @for (outcome of receipt.refused; track outcome.field) {
+                    <div class="miss"><span>{{ outcome.field }}</span><span>not carried — {{ outcome.detail }}</span></div>
+                  }
+                  @for (outcome of receipt.skipped; track outcome.field) {
+                    <div class="miss"><span>{{ outcome.field }}</span><span>nothing to carry — {{ outcome.detail }}</span></div>
+                  }
+                </dl>
+                @for (warning of receipt.warnings; track $index) {
+                  <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ warning }}</span></div>
+                }
+              </div>
+            }
+
+            <div class="facts">
+
+              <!-- ── DESTINATION ── One question with four answers. The three YouTube
+                   channels come from the registry; Spreaker is what `isPodcast` means. -->
+              <button class="fact"
+                      [class.open]="isFactOpen('destination')"
+                      [class.next]="isNextAction('destination')"
+                      (click)="toggleFact('destination')">
+                <span class="dot" [class]="'dot ' + (tickFor('destination')?.state ?? 'unset')"></span>
+                <span class="fact-l">Destination</span>
+                <span class="fact-v" [class.warn]="tickFor('destination')?.state === 'warn'">{{ destinationLabel() }}</span>
+                @if (isNextAction('destination')) { <span class="fact-do">set it</span> }
+                <span class="chev">{{ isFactOpen('destination') ? '▴' : '▾' }}</span>
+              </button>
+              @if (isFactOpen('destination')) {
+                <div class="editor">
+                  <div class="fld">
+                    <select #channelSelect
+                            class="control"
+                            [disabled]="publish.saving()"
+                            (change)="onDestinationChange($event)">
+                      <!-- DISABLED, not removed. It has to be able to SHOW — an item whose
+                           prompt set no channel claims really is unrouted — but it is not
+                           an answer any more: the channel comes from the prompt set the
+                           operator picked before generating, so clearing it would only be
+                           undone by the same write that cleared it. -->
+                      <option value="" disabled [selected]="publish.destination() === ''">— not routed —</option>
+                      @for (channel of publish.channels(); track channel.channelId) {
+                        <option [value]="channel.channelId"
+                                [selected]="publish.destination() === channel.channelId">
+                          {{ channel.name }}
+                        </option>
+                      }
+                      <option [value]="SPREAKER_DESTINATION"
+                              [selected]="publish.destination() === SPREAKER_DESTINATION">
+                        {{ SPREAKER_DESTINATION_LABEL }}
+                      </option>
+                    </select>
+                  </div>
+                  <p class="why">
+                    This is the routing decision: the calendar sends this item where it
+                    says. It is made for you from the prompt set you picked before
+                    generating — this picker is here to override it, not to make it.
+                    @if (publish.channelIsSuggested()) {
+                      {{ publish.channelNote() }} It is recorded automatically the moment
+                      anything about this item is saved.
+                    } @else if (publish.channelNote(); as note) {
+                      {{ note }}
+                    }
+                  </p>
+                  @if (publish.unknownStoredChannel(); as unknown) {
+                    <div class="banner warn">
+                      <mat-icon>warning_amber</mat-icon>
+                      <span>
+                        <b>Routed to a channel the registry does not have</b>
+                        This item points at {{ unknown }}, so the picker cannot show it.
+                        Re-connect that channel, or choose another.
+                      </span>
+                    </div>
+                  }
+                </div>
+              }
+
+              <!-- ── MONETIZATION ── A statement, not a question: monetization is on for
+                   every video. It is still shown because it is the one publish field the
+                   YouTube Data API cannot write at all — the companion extension fills it
+                   in Studio's Monetization tab on the operator's click — and a fact row
+                   that stops mentioning money reads as one that forgot to check. Hidden
+                   for a Spreaker item — monetization is a YouTube setting and a row about
+                   it on a podcast episode would be answering a question nobody asked. -->
+              @if (!publish.isPodcast()) {
+                <button class="fact"
+                        [class.open]="isFactOpen('money')"
+                        [class.next]="isNextAction('money')"
+                        (click)="toggleFact('money')">
+                  <span class="dot" [class]="'dot ' + (tickFor('money')?.state ?? 'unset')"></span>
+                  <span class="fact-l">Monetization</span>
+                  <span class="fact-v">{{ tickFor('money')?.value }}</span>
+                  <span class="chev">{{ isFactOpen('money') ? '▴' : '▾' }}</span>
+                </button>
+                <!-- No picker. Monetization is on for every video and stopped being a
+                     per-item choice on 2026-08-23; a control with one option is a control
+                     that cannot do anything, so this states the rule instead of offering
+                     a decision that has already been made. -->
+                @if (isFactOpen('money')) {
+                  <div class="editor">
+                    <p class="why">
+                      Every video is monetized. The extension switches it on in Studio's
+                      Monetization tab when you click it there and reads the control back
+                      to confirm it took — the YouTube API cannot set this field at all,
+                      so nothing here changes YouTube on its own.
+                    </p>
+                  </div>
+                }
+              }
+
+              <!-- ── SCHEDULE ── Read-only here. The calendar is where a date is set,
+                   moved or cleared; this row states what the record holds and points
+                   there, so there is exactly one place a schedule can change. -->
+              <div class="fact static" #scheduleRow>
+                <span class="dot" [class]="'dot ' + (tickFor('when')?.state ?? 'unset')"></span>
+                <span class="fact-l">Schedule</span>
+                <span class="fact-v" [class.warn]="tickFor('when')?.state === 'warn'">{{ tickFor('when')?.value }}</span>
+                <a class="fact-go" routerLink="/publish-calendar">set in the calendar</a>
+              </div>
+
+              <!-- ── THUMBNAIL ── The image is decoded and downscaled in the main process;
+                   the renderer never reads the file, so webSecurity stays on. The image,
+                   the name and the measurements are one row and the buttons are the next,
+                   so the facts column is never asked to be one character wide. -->
+              <button class="fact"
+                      [class.open]="isFactOpen('thumb')"
+                      [class.next]="isNextAction('thumb')"
+                      (click)="toggleFact('thumb')">
+                <span class="dot" [class]="'dot ' + (tickFor('thumb')?.state ?? 'unset')"></span>
+                <span class="fact-l">Thumbnail</span>
+                <span class="fact-v" [class.warn]="tickFor('thumb')?.state === 'warn'">{{ tickFor('thumb')?.value }}</span>
+                @if (isNextAction('thumb')) { <span class="fact-do">check it</span> }
+                <span class="chev">{{ isFactOpen('thumb') ? '▴' : '▾' }}</span>
+              </button>
+              <!-- The whole editor is a DROP TARGET, not just the empty state: replacing a
+                   thumbnail by dropping the new one on top of the old one is the gesture
+                   the operator already has in their hands with Finder open. `Choose…`
+                   stays beside it because a drop needs two windows arranged and a picker
+                   does not. -->
+              @if (isFactOpen('thumb')) {
+                <div class="editor drop-zone"
+                     #thumbnailRow
+                     [class.dragover]="dragOverThumbnail()"
+                     (dragover)="onThumbnailDragOver($event)"
+                     (dragleave)="onThumbnailDragLeave()"
+                     (drop)="onThumbnailDrop($event)">
+                  @if (publish.thumbnailSource() === 'auto') {
+                    <p class="why">
+                      Found automatically in the <code>thumbnails</code> folder beside this
+                      video's export. Nobody chose it — drop a different image here, or
+                      use Change…, and that choice sticks.
+                    </p>
+                  }
+                  @if (publish.thumbnailPreview(); as preview) {
+                    <div class="thumb">
+                      <img class="thumb-img" [src]="preview.dataUrl" [alt]="fileName(preview.path)" />
+                      <div class="thumb-facts">
+                        <span class="thumb-fn" [title]="preview.path">{{ fileName(preview.path) }}</span>
+                        <span class="thumb-dim num">{{ thumbnailFacts(preview.meta) }}</span>
+                      </div>
+                    </div>
+                    <div class="fld">
+                      <!-- "Look again". The record's thumbnail is attached automatically
+                           when generation finishes, which is usually before the operator
+                           has made the image. This re-runs that same lookup; whatever it
+                           decides is reported, including deciding nothing. -->
+                      <button class="icon-btn"
+                              [disabled]="publish.saving()"
+                              (click)="rescanThumbnail()"
+                              title="Look for the exported thumbnail again">
+                        <mat-icon>refresh</mat-icon>
+                      </button>
+                      <button class="ghost" [disabled]="publish.saving()" (click)="changeThumbnail()">Change…</button>
+                      <button class="ghost" [class.armed]="clearThumbArmed()"
+                              [disabled]="publish.saving()"
+                              (click)="armClearThumbnail()"
+                              (mouseleave)="disarmClearThumbnail()">
+                        {{ clearThumbArmed() ? 'Really clear?' : 'Clear' }}
+                      </button>
+                    </div>
+                  } @else if (publish.thumbnailPath(); as path) {
+                    <!-- The record has one and the preview did not arrive. The banner in
+                         the decide column says why; the path is still what was chosen. -->
+                    <div class="thumb">
+                      <div class="thumb-img missing">no preview</div>
+                      <div class="thumb-facts">
+                        <span class="thumb-fn" [title]="path">{{ fileName(path) }}</span>
+                        @if (publish.thumbnailMeta(); as meta) {
+                          <span class="thumb-dim num">{{ thumbnailFacts(meta) }}</span>
+                        }
+                      </div>
+                    </div>
+                    <div class="fld">
+                      <!-- "Look again". The record's thumbnail is attached automatically
+                           when generation finishes, which is usually before the operator
+                           has made the image. This re-runs that same lookup; whatever it
+                           decides is reported, including deciding nothing. -->
+                      <button class="icon-btn"
+                              [disabled]="publish.saving()"
+                              (click)="rescanThumbnail()"
+                              title="Look for the exported thumbnail again">
+                        <mat-icon>refresh</mat-icon>
+                      </button>
+                      <button class="ghost" [disabled]="publish.saving()" (click)="changeThumbnail()">Change…</button>
+                      <button class="ghost" [class.armed]="clearThumbArmed()"
+                              [disabled]="publish.saving()"
+                              (click)="armClearThumbnail()"
+                              (mouseleave)="disarmClearThumbnail()">
+                        {{ clearThumbArmed() ? 'Really clear?' : 'Clear' }}
+                      </button>
+                    </div>
+                  } @else {
+                    <div class="fld">
+                      <!-- "Look again". The record's thumbnail is attached automatically
+                           when generation finishes, which is usually before the operator
+                           has made the image. This re-runs that same lookup; whatever it
+                           decides is reported, including deciding nothing. -->
+                      <button class="icon-btn"
+                              [disabled]="publish.saving()"
+                              (click)="rescanThumbnail()"
+                              title="Look for the exported thumbnail again">
+                        <mat-icon>refresh</mat-icon>
+                      </button>
+                      <span class="why">
+                        @if (publish.thumbnailSource() === 'manual') {
+                          Cleared — this one stays empty. Nothing will attach an image to it
+                          on its own; the video keeps whatever thumbnail YouTube gave it.
+                        } @else {
+                          Nothing chosen, and no image was exported beside this video. Drop
+                          one here or choose a file — the video keeps whatever thumbnail it
+                          has otherwise.
+                        }
+                      </span>
+                      <button class="ghost" [disabled]="publish.saving()" (click)="changeThumbnail()">Choose…</button>
+                    </div>
+                  }
+
+                  @for (warning of publish.thumbnailWarnings(); track $index) {
+                    <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ warning }}</span></div>
+                  }
+
+                  <!-- A thumbnail found on disk next to this item's export. NEVER applied
+                       on its own: slots are renumbered between export and upload often
+                       enough (13 of 40 live exports) that a pre-applied proposal would be
+                       wrong routinely and invisibly. Confirm waits for the image. -->
+                  @if (publish.proposal(); as proposal) {
+                    <div class="proposal">
+                      <div class="receipt-head">
+                        <mat-icon>help_outline</mat-icon>
+                        <strong>Proposed — not applied</strong>
+                      </div>
+                      <div class="thumb">
+                        @if (publish.proposalPreview(); as preview) {
+                          <img class="thumb-img" [src]="preview.dataUrl" [alt]="fileName(proposal.path)" />
+                        } @else {
+                          <div class="thumb-img missing">reading…</div>
+                        }
+                        <div class="thumb-facts">
+                          <span class="thumb-fn" [title]="proposal.path">{{ fileName(proposal.path) }}</span>
+                          <span class="thumb-dim num">{{ thumbnailFacts(proposal.meta) }}</span>
+                        </div>
+                      </div>
+                      <div class="banner warn">
+                        <mat-icon>warning_amber</mat-icon>
+                        <span>
+                          <b>Check the slot number</b>
+                          This image was exported alongside the video, but slots get
+                          renumbered between export and upload.
+                        </span>
+                      </div>
+                      @for (warning of proposal.warnings; track $index) {
+                        <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ warning }}</span></div>
+                      }
+                      <div class="fld">
+                        <button class="ghost primary-ghost"
+                                [disabled]="!publish.proposalPreview() || publish.saving()"
+                                (click)="publish.confirmProposal()">Use this one</button>
+                        <button class="ghost"
+                                [disabled]="publish.saving()"
+                                (click)="publish.dismissProposal()">Not this one</button>
+                      </div>
+                    </div>
+                  }
+                </div>
+              }
+
+              <!-- ── EPISODE AUDIO ── Only for an item routed to Spreaker: an episode IS
+                   the audio. Measured every time this panel opens rather than remembered —
+                   a size and a duration are facts about a file at a moment. -->
+              @if (publish.isPodcast()) {
+                <button class="fact"
+                        [class.open]="isFactOpen('audio')"
+                        [class.next]="isNextAction('audio')"
+                        (click)="toggleFact('audio')">
+                  <span class="dot" [class]="'dot ' + (tickFor('audio')?.state ?? 'unset')"></span>
+                  <span class="fact-l">Episode audio</span>
+                  <span class="fact-v" [class.warn]="tickFor('audio')?.state === 'warn'">{{ tickFor('audio')?.value }}</span>
+                  @if (isNextAction('audio')) { <span class="fact-do">choose it</span> }
+                  <span class="chev">{{ isFactOpen('audio') ? '▴' : '▾' }}</span>
+                </button>
+                @if (isFactOpen('audio')) {
+                  <div class="editor" #podcastRow>
+                    @if (publish.spreakerStatus(); as status) {
+                      @if (!status.configured) {
+                        <div class="banner warn">
+                          <mat-icon>warning_amber</mat-icon>
+                          <span>
+                            <b>Spreaker is not configured</b>
+                            {{ status.reason }} Add the access token and the show id in
+                            Settings → Spreaker. They are stored on this machine only, in
+                            <code>{{ status.credentialsPath }}</code>.
+                          </span>
+                        </div>
+                      }
+                    }
+
+                    @if (publish.audio(); as audio) {
+                      <div class="thumb">
+                        <div class="thumb-facts">
+                          <span class="thumb-fn" [title]="audio.path">{{ fileName(audio.path) }}</span>
+                          <span class="thumb-dim num">{{ audioFacts(audio.meta) }}</span>
+                        </div>
+                      </div>
+                      <div class="fld">
+                        <button class="ghost" [disabled]="publish.saving()" (click)="chooseAudio()">Change…</button>
+                        <button class="ghost" [disabled]="publish.saving()" (click)="publish.clearAudio()">Clear</button>
+                      </div>
+                      @for (warning of audio.warnings; track $index) {
+                        <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ warning }}</span></div>
+                      }
+                    } @else if (publish.spreakerAudioPath(); as path) {
+                      <!-- The record names a file and the file did not answer. -->
+                      <div class="thumb">
+                        <div class="thumb-facts">
+                          <span class="thumb-fn" [title]="path">{{ fileName(path) }}</span>
+                          <span class="thumb-dim num">could not be measured</span>
+                        </div>
+                      </div>
+                      <div class="fld">
+                        <button class="ghost" [disabled]="publish.saving()" (click)="chooseAudio()">Change…</button>
+                        <button class="ghost" [disabled]="publish.saving()" (click)="publish.clearAudio()">Clear</button>
+                      </div>
+                    } @else {
+                      <div class="fld">
+                        <span class="why">An episode is the audio, so this is required.</span>
+                        <button class="ghost" [disabled]="publish.saving()" (click)="chooseAudio()">Choose…</button>
+                      </div>
+                    }
+
+                    <!-- The sibling export: `podcast 1.mp3` beside `podcast 1.mov`.
+                         Offered, never applied — the convention says where a file is, not
+                         that this item is that episode. -->
+                    @if (publish.audioProposal(); as proposal) {
+                      <div class="proposal">
+                        <div class="receipt-head">
+                          <mat-icon>help_outline</mat-icon>
+                          <strong>Proposed — not applied</strong>
+                        </div>
+                        <div class="thumb">
+                          <div class="thumb-facts">
+                            <span class="thumb-fn" [title]="proposal.path">{{ fileName(proposal.path) }}</span>
+                            <span class="thumb-dim num">{{ audioFacts(proposal.meta) }}</span>
+                          </div>
+                        </div>
+                        <div class="banner warn">
+                          <mat-icon>warning_amber</mat-icon>
+                          <span>
+                            <b>Check that this is the right file</b>
+                            It was exported beside the video, and it is going to a public feed.
+                          </span>
+                        </div>
+                        @for (warning of proposal.warnings; track $index) {
+                          <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ warning }}</span></div>
+                        }
+                        <div class="fld">
+                          <button class="ghost primary-ghost"
+                                  [disabled]="publish.saving()"
+                                  (click)="publish.confirmAudioProposal()">Use this one</button>
+                          <button class="ghost"
+                                  [disabled]="publish.saving()"
+                                  (click)="publish.dismissAudioProposal()">Not this one</button>
+                        </div>
+                      </div>
+                    }
+                  </div>
+                }
+              }
+            </div>
+          </section>
+
 
           <!-- ═════ TITLES — the editorial act, and the loudest thing on this page ═════
                The slate is a VIEW of the same chosenTitles() the list below writes, in the
@@ -946,794 +1368,6 @@
               }
             </section>
           }
-        }
-
-        <!-- ═══════════════════════════ PUBLISH RECORD ═══════════════════════════
-             The record for this item: where it goes, when it goes live, its thumbnail, and
-             (for a podcast) its audio. INTENT ONLY — nothing in this tab uploads,
-             schedules or publishes anything except the ONE dispatch button at the bottom.
-             Every write is validated in the main process, and a refusal comes back as text
-             and lands in the banner in the pane head above, verbatim — which is why that
-             banner is outside both tabs. -->
-        @if (!isLoading() && selectedReport() && metadata() && workTab() === 'record') {
-
-          <div class="record-body">
-
-            <!-- Carry forward. This video was generated before: the earlier run's record
-                 holds facts about the VIDEO that a regeneration does not carry, because a
-                 new run is a new item id. Offered on one line, applied on one click, never
-                 inherited — every value is re-read and re-validated in the main process
-                 when Apply is pressed. -->
-            @if (publish.carryOffer(); as offer) {
-              <div class="carry">
-                <mat-icon>history</mat-icon>
-                <span>
-                  <!-- WHICH set the offer came from. The candidates are looked at
-                       primary-first, so "the primary set" is the ordinary answer; the other
-                       sentence means the primary held nothing worth carrying and this is the
-                       newest sibling that did. Said either way, because the operator is
-                       about to accept a channel and a thumbnail he did not type. -->
-                  @if (offer.fromIsPrimary) {
-                    The primary set for this video ({{ localTime(offer.jobCreatedAt) }})
-                  } @else {
-                    Another set of this video ({{ localTime(offer.jobCreatedAt) }}) — not the primary one —
-                  }
-                  carries {{ carryFieldList() }}. Carry it forward?
-                </span>
-                <button class="ghost"
-                        [disabled]="publish.carrying() || publish.saving()"
-                        (click)="publish.applyCarryForward()">
-                  @if (publish.carrying()) { Carrying… } @else { Apply }
-                </button>
-                <button class="ghost"
-                        [disabled]="publish.carrying()"
-                        (click)="publish.dismissCarryForward()">Dismiss</button>
-              </div>
-            }
-
-            <!-- The receipt. All four fields, always: what was written, what had nothing to
-                 write, and what was REFUSED because it no longer validates. -->
-            @if (publish.carryReceipt(); as receipt) {
-              <div class="receipt">
-                <div class="receipt-head">
-                  <mat-icon>fact_check</mat-icon>
-                  <strong>Carried forward from the other set</strong>
-                  <span class="pane-head-spacer"></span>
-                  <button class="ghost" (click)="publish.dismissCarryReceipt()">Close</button>
-                </div>
-                <dl class="manifest">
-                  @for (outcome of receipt.applied; track outcome.field) {
-                    <div><span>{{ outcome.field }}</span><span>{{ outcome.detail }}</span></div>
-                  }
-                  @for (outcome of receipt.refused; track outcome.field) {
-                    <div class="miss"><span>{{ outcome.field }}</span><span>not carried — {{ outcome.detail }}</span></div>
-                  }
-                  @for (outcome of receipt.skipped; track outcome.field) {
-                    <div class="miss"><span>{{ outcome.field }}</span><span>nothing to carry — {{ outcome.detail }}</span></div>
-                  }
-                </dl>
-                @for (warning of receipt.warnings; track $index) {
-                  <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ warning }}</span></div>
-                }
-              </div>
-            }
-
-            <div class="facts">
-
-              <!-- ── DESTINATION ── One question with four answers. The three YouTube
-                   channels come from the registry; Spreaker is what `isPodcast` means. -->
-              <button class="fact"
-                      [class.open]="isFactOpen('destination')"
-                      [class.next]="isNextAction('destination')"
-                      (click)="toggleFact('destination')">
-                <span class="dot" [class]="'dot ' + (tickFor('destination')?.state ?? 'unset')"></span>
-                <span class="fact-l">Destination</span>
-                <span class="fact-v" [class.warn]="tickFor('destination')?.state === 'warn'">{{ destinationLabel() }}</span>
-                @if (isNextAction('destination')) { <span class="fact-do">set it</span> }
-                <span class="chev">{{ isFactOpen('destination') ? '▴' : '▾' }}</span>
-              </button>
-              @if (isFactOpen('destination')) {
-                <div class="editor">
-                  <div class="fld">
-                    <select #channelSelect
-                            class="control"
-                            [disabled]="publish.saving()"
-                            (change)="onDestinationChange($event)">
-                      <!-- DISABLED, not removed. It has to be able to SHOW — an item whose
-                           prompt set no channel claims really is unrouted — but it is not
-                           an answer any more: the channel comes from the prompt set the
-                           operator picked before generating, so clearing it would only be
-                           undone by the same write that cleared it. -->
-                      <option value="" disabled [selected]="publish.destination() === ''">— not routed —</option>
-                      @for (channel of publish.channels(); track channel.channelId) {
-                        <option [value]="channel.channelId"
-                                [selected]="publish.destination() === channel.channelId">
-                          {{ channel.name }}
-                        </option>
-                      }
-                      <option [value]="SPREAKER_DESTINATION"
-                              [selected]="publish.destination() === SPREAKER_DESTINATION">
-                        {{ SPREAKER_DESTINATION_LABEL }}
-                      </option>
-                    </select>
-                  </div>
-                  <p class="why">
-                    This is the routing decision: the dispatch at the foot of this column
-                    follows it. It is made for you from the prompt set you picked before
-                    generating — this picker is here to override it, not to make it.
-                    @if (publish.channelIsSuggested()) {
-                      {{ publish.channelNote() }} It is recorded automatically the moment
-                      anything about this item is saved.
-                    } @else if (publish.channelNote(); as note) {
-                      {{ note }}
-                    }
-                  </p>
-                  @if (publish.unknownStoredChannel(); as unknown) {
-                    <div class="banner warn">
-                      <mat-icon>warning_amber</mat-icon>
-                      <span>
-                        <b>Routed to a channel the registry does not have</b>
-                        This item points at {{ unknown }}, so the picker cannot show it.
-                        Re-connect that channel, or choose another.
-                      </span>
-                    </div>
-                  }
-                </div>
-              }
-
-              <!-- ── MONETIZATION ── A statement, not a question: monetization is on for
-                   every video. It is still shown because it is the one publish field the
-                   YouTube Data API cannot write at all — the companion extension fills it
-                   in Studio's Monetization tab on the operator's click — and a fact row
-                   that stops mentioning money reads as one that forgot to check. Hidden
-                   for a Spreaker item — monetization is a YouTube setting and a row about
-                   it on a podcast episode would be answering a question nobody asked. -->
-              @if (!publish.isPodcast()) {
-                <button class="fact"
-                        [class.open]="isFactOpen('money')"
-                        [class.next]="isNextAction('money')"
-                        (click)="toggleFact('money')">
-                  <span class="dot" [class]="'dot ' + (tickFor('money')?.state ?? 'unset')"></span>
-                  <span class="fact-l">Monetization</span>
-                  <span class="fact-v">{{ tickFor('money')?.value }}</span>
-                  <span class="chev">{{ isFactOpen('money') ? '▴' : '▾' }}</span>
-                </button>
-                <!-- No picker. Monetization is on for every video and stopped being a
-                     per-item choice on 2026-08-23; a control with one option is a control
-                     that cannot do anything, so this states the rule instead of offering
-                     a decision that has already been made. -->
-                @if (isFactOpen('money')) {
-                  <div class="editor">
-                    <p class="why">
-                      Every video is monetized. The extension switches it on in Studio's
-                      Monetization tab when you click it there and reads the control back
-                      to confirm it took — the YouTube API cannot set this field at all,
-                      so nothing here changes YouTube on its own.
-                    </p>
-                  </div>
-                }
-              }
-
-              <!-- ── SCHEDULE ── A calendar, not a bare date box: the month is drawn from
-                   the same index this page already read, so the other pending items are on
-                   it, and the channel's own release cadence suggests the next open slot.
-                   Any day and any time is allowed; a clash is flagged, never blocked. -->
-              <button class="fact"
-                      [class.open]="isFactOpen('when')"
-                      [class.next]="isNextAction('when')"
-                      (click)="toggleFact('when')">
-                <span class="dot" [class]="'dot ' + (tickFor('when')?.state ?? 'unset')"></span>
-                <span class="fact-l">Schedule</span>
-                <span class="fact-v" [class.warn]="tickFor('when')?.state === 'warn'">{{ tickFor('when')?.value }}</span>
-                @if (isNextAction('when')) { <span class="fact-do">fix it</span> }
-                <span class="chev">{{ isFactOpen('when') ? '▴' : '▾' }}</span>
-              </button>
-              @if (isFactOpen('when')) {
-                <div class="editor">
-                  @if (suggestedSlotLabel(); as suggestion) {
-                    <div class="suggest">
-                      <span class="suggest-l">Next open slot</span>
-                      <span class="suggest-v">{{ suggestion }}</span>
-                      <button class="ghost" (click)="useSuggestedSlot()"
-                              [title]="cadenceNote() ?? ''">Use it</button>
-                    </div>
-                  } @else if (publish.isPodcast()) {
-                    <p class="why">
-                      Spreaker has no release cadence recorded, so there is no slot to
-                      suggest. Pick any day and time.
-                    </p>
-                  } @else if (publish.selectedChannelId()) {
-                    <p class="why">
-                      No release cadence is recorded for this channel, so there is no slot to
-                      suggest. Pick any day and time.
-                    </p>
-                  } @else {
-                    <p class="why">Route this item to a destination and it will suggest that channel's next open slot.</p>
-                  }
-
-                  <div class="cal">
-                    <div class="cal-top">
-                      <button class="icon-btn" (click)="stepCalendar(-1)" title="Previous month">‹</button>
-                      <span class="cal-month">{{ calendarMonthLabel() }}</span>
-                      <button class="icon-btn" (click)="stepCalendar(1)" title="Next month">›</button>
-                    </div>
-                    <div class="cal-grid">
-                      @for (initial of WEEKDAY_INITIALS; track $index) {
-                        <span class="cal-wd">{{ initial }}</span>
-                      }
-                      @for (week of calendarWeeks(); track $index) {
-                        @for (day of week; track day.dateKey) {
-                          <button class="cal-day"
-                                  [class.out]="!day.inMonth"
-                                  [class.today]="day.isToday"
-                                  [class.past]="day.isPast"
-                                  [class.release]="day.isReleaseDay"
-                                  [class.selected]="day.selected"
-                                  (click)="pickCalendarDay(day)"
-                                  [title]="day.dateKey
-                                             + (day.isReleaseDay ? ' · a release day for this channel' : '')
-                                             + (day.count ? ' · ' + day.count + ' already scheduled' : '')">
-                            <span class="num">{{ day.dayOfMonth }}</span>
-                            @if (day.count > 0) {
-                              <span class="cal-mark" [class.mine]="day.onThisChannel"></span>
-                            }
-                          </button>
-                        }
-                      }
-                    </div>
-                  </div>
-
-                  <!-- The stored value is an instant, and an instant needs a zone — which
-                       is why the offset is printed rather than assumed. -->
-                  <div class="fld">
-                    <input #scheduleDateInput
-                           type="date"
-                           class="control"
-                           [value]="scheduleDate()"
-                           [disabled]="publish.saving()"
-                           (input)="scheduleDateDraft.set($any($event.target).value)" />
-                    <input type="time"
-                           class="control"
-                           [value]="scheduleTime()"
-                           [disabled]="publish.saving()"
-                           (input)="scheduleTimeDraft.set($any($event.target).value)" />
-                    <span class="zone num"
-                          title="This Mac's zone, for that date. There is no zone picker in this release, so the offset is shown rather than assumed.">
-                      {{ scheduleOffset() }}
-                    </span>
-                  </div>
-                  <div class="fld">
-                    <button class="ghost"
-                            [disabled]="!scheduleComplete() || publish.saving()"
-                            (click)="saveSchedule()">Set</button>
-                    @if (publish.publishAt()) {
-                      <button class="ghost"
-                              [disabled]="publish.saving()"
-                              (click)="clearSchedule()">Clear</button>
-                    }
-                    @if (dayCount() > 0) {
-                      <span class="zone" [title]="daySummary() ?? ''">
-                        {{ dayCount() }} already on that day
-                      </span>
-                    }
-                  </div>
-
-                  <!-- Prose that reports a real problem: the two things about a schedule
-                       that cost an upload if nobody says them. -->
-                  @if (scheduleDescription(); as when) {
-                    @if (when.isPast) {
-                      <div class="banner warn">
-                        <mat-icon>warning_amber</mat-icon>
-                        <span>
-                          <b>This time has passed</b>
-                          It was due {{ when.relative }}. Pushing now would publish the video
-                          immediately. Set a new time, or clear the schedule.
-                        </span>
-                      </div>
-                    }
-                    @if (!when.offsetsAgree) {
-                      <div class="banner warn">
-                        <mat-icon>warning_amber</mat-icon>
-                        <span>
-                          <b>Stored in a different offset</b>
-                          Stored as {{ when.raw }} ({{ when.storedOffset }}), which is not the
-                          offset this Mac uses on that date — the row above is that same
-                          moment read in {{ when.localOffset }}.
-                        </span>
-                      </div>
-                    }
-                  }
-                  @if (scheduleCollision(); as clash) {
-                    <div class="banner warn">
-                      <mat-icon>warning_amber</mat-icon>
-                      <span><b>Two releases at once</b>{{ clash }}</span>
-                    </div>
-                  }
-                </div>
-              }
-
-              <!-- ── THUMBNAIL ── The image is decoded and downscaled in the main process;
-                   the renderer never reads the file, so webSecurity stays on. The image,
-                   the name and the measurements are one row and the buttons are the next,
-                   so the facts column is never asked to be one character wide. -->
-              <button class="fact"
-                      [class.open]="isFactOpen('thumb')"
-                      [class.next]="isNextAction('thumb')"
-                      (click)="toggleFact('thumb')">
-                <span class="dot" [class]="'dot ' + (tickFor('thumb')?.state ?? 'unset')"></span>
-                <span class="fact-l">Thumbnail</span>
-                <span class="fact-v" [class.warn]="tickFor('thumb')?.state === 'warn'">{{ tickFor('thumb')?.value }}</span>
-                @if (isNextAction('thumb')) { <span class="fact-do">check it</span> }
-                <span class="chev">{{ isFactOpen('thumb') ? '▴' : '▾' }}</span>
-              </button>
-              <!-- The whole editor is a DROP TARGET, not just the empty state: replacing a
-                   thumbnail by dropping the new one on top of the old one is the gesture
-                   the operator already has in their hands with Finder open. `Choose…`
-                   stays beside it because a drop needs two windows arranged and a picker
-                   does not. -->
-              @if (isFactOpen('thumb')) {
-                <div class="editor drop-zone"
-                     #thumbnailRow
-                     [class.dragover]="dragOverThumbnail()"
-                     (dragover)="onThumbnailDragOver($event)"
-                     (dragleave)="onThumbnailDragLeave()"
-                     (drop)="onThumbnailDrop($event)">
-                  @if (publish.thumbnailSource() === 'auto') {
-                    <p class="why">
-                      Found automatically in the <code>thumbnails</code> folder beside this
-                      video's export. Nobody chose it — drop a different image here, or
-                      use Change…, and that choice sticks.
-                    </p>
-                  }
-                  @if (publish.thumbnailPreview(); as preview) {
-                    <div class="thumb">
-                      <img class="thumb-img" [src]="preview.dataUrl" [alt]="fileName(preview.path)" />
-                      <div class="thumb-facts">
-                        <span class="thumb-fn" [title]="preview.path">{{ fileName(preview.path) }}</span>
-                        <span class="thumb-dim num">{{ thumbnailFacts(preview.meta) }}</span>
-                      </div>
-                    </div>
-                    <div class="fld">
-                      <!-- "Look again". The record's thumbnail is attached automatically
-                           when generation finishes, which is usually before the operator
-                           has made the image. This re-runs that same lookup; whatever it
-                           decides is reported, including deciding nothing. -->
-                      <button class="icon-btn"
-                              [disabled]="publish.saving()"
-                              (click)="rescanThumbnail()"
-                              title="Look for the exported thumbnail again">
-                        <mat-icon>refresh</mat-icon>
-                      </button>
-                      <button class="ghost" [disabled]="publish.saving()" (click)="changeThumbnail()">Change…</button>
-                      <button class="ghost" [class.armed]="clearThumbArmed()"
-                              [disabled]="publish.saving()"
-                              (click)="armClearThumbnail()"
-                              (mouseleave)="disarmClearThumbnail()">
-                        {{ clearThumbArmed() ? 'Really clear?' : 'Clear' }}
-                      </button>
-                    </div>
-                  } @else if (publish.thumbnailPath(); as path) {
-                    <!-- The record has one and the preview did not arrive. The banner in
-                         the decide column says why; the path is still what was chosen. -->
-                    <div class="thumb">
-                      <div class="thumb-img missing">no preview</div>
-                      <div class="thumb-facts">
-                        <span class="thumb-fn" [title]="path">{{ fileName(path) }}</span>
-                        @if (publish.thumbnailMeta(); as meta) {
-                          <span class="thumb-dim num">{{ thumbnailFacts(meta) }}</span>
-                        }
-                      </div>
-                    </div>
-                    <div class="fld">
-                      <!-- "Look again". The record's thumbnail is attached automatically
-                           when generation finishes, which is usually before the operator
-                           has made the image. This re-runs that same lookup; whatever it
-                           decides is reported, including deciding nothing. -->
-                      <button class="icon-btn"
-                              [disabled]="publish.saving()"
-                              (click)="rescanThumbnail()"
-                              title="Look for the exported thumbnail again">
-                        <mat-icon>refresh</mat-icon>
-                      </button>
-                      <button class="ghost" [disabled]="publish.saving()" (click)="changeThumbnail()">Change…</button>
-                      <button class="ghost" [class.armed]="clearThumbArmed()"
-                              [disabled]="publish.saving()"
-                              (click)="armClearThumbnail()"
-                              (mouseleave)="disarmClearThumbnail()">
-                        {{ clearThumbArmed() ? 'Really clear?' : 'Clear' }}
-                      </button>
-                    </div>
-                  } @else {
-                    <div class="fld">
-                      <!-- "Look again". The record's thumbnail is attached automatically
-                           when generation finishes, which is usually before the operator
-                           has made the image. This re-runs that same lookup; whatever it
-                           decides is reported, including deciding nothing. -->
-                      <button class="icon-btn"
-                              [disabled]="publish.saving()"
-                              (click)="rescanThumbnail()"
-                              title="Look for the exported thumbnail again">
-                        <mat-icon>refresh</mat-icon>
-                      </button>
-                      <span class="why">
-                        @if (publish.thumbnailSource() === 'manual') {
-                          Cleared — this one stays empty. Nothing will attach an image to it
-                          on its own; the video keeps whatever thumbnail YouTube gave it.
-                        } @else {
-                          Nothing chosen, and no image was exported beside this video. Drop
-                          one here or choose a file — the video keeps whatever thumbnail it
-                          has otherwise.
-                        }
-                      </span>
-                      <button class="ghost" [disabled]="publish.saving()" (click)="changeThumbnail()">Choose…</button>
-                    </div>
-                  }
-
-                  @for (warning of publish.thumbnailWarnings(); track $index) {
-                    <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ warning }}</span></div>
-                  }
-
-                  <!-- A thumbnail found on disk next to this item's export. NEVER applied
-                       on its own: slots are renumbered between export and upload often
-                       enough (13 of 40 live exports) that a pre-applied proposal would be
-                       wrong routinely and invisibly. Confirm waits for the image. -->
-                  @if (publish.proposal(); as proposal) {
-                    <div class="proposal">
-                      <div class="receipt-head">
-                        <mat-icon>help_outline</mat-icon>
-                        <strong>Proposed — not applied</strong>
-                      </div>
-                      <div class="thumb">
-                        @if (publish.proposalPreview(); as preview) {
-                          <img class="thumb-img" [src]="preview.dataUrl" [alt]="fileName(proposal.path)" />
-                        } @else {
-                          <div class="thumb-img missing">reading…</div>
-                        }
-                        <div class="thumb-facts">
-                          <span class="thumb-fn" [title]="proposal.path">{{ fileName(proposal.path) }}</span>
-                          <span class="thumb-dim num">{{ thumbnailFacts(proposal.meta) }}</span>
-                        </div>
-                      </div>
-                      <div class="banner warn">
-                        <mat-icon>warning_amber</mat-icon>
-                        <span>
-                          <b>Check the slot number</b>
-                          This image was exported alongside the video, but slots get
-                          renumbered between export and upload.
-                        </span>
-                      </div>
-                      @for (warning of proposal.warnings; track $index) {
-                        <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ warning }}</span></div>
-                      }
-                      <div class="fld">
-                        <button class="ghost primary-ghost"
-                                [disabled]="!publish.proposalPreview() || publish.saving()"
-                                (click)="publish.confirmProposal()">Use this one</button>
-                        <button class="ghost"
-                                [disabled]="publish.saving()"
-                                (click)="publish.dismissProposal()">Not this one</button>
-                      </div>
-                    </div>
-                  }
-                </div>
-              }
-
-              <!-- ── EPISODE AUDIO ── Only for an item routed to Spreaker: an episode IS
-                   the audio. Measured every time this panel opens rather than remembered —
-                   a size and a duration are facts about a file at a moment. -->
-              @if (publish.isPodcast()) {
-                <button class="fact"
-                        [class.open]="isFactOpen('audio')"
-                        [class.next]="isNextAction('audio')"
-                        (click)="toggleFact('audio')">
-                  <span class="dot" [class]="'dot ' + (tickFor('audio')?.state ?? 'unset')"></span>
-                  <span class="fact-l">Episode audio</span>
-                  <span class="fact-v" [class.warn]="tickFor('audio')?.state === 'warn'">{{ tickFor('audio')?.value }}</span>
-                  @if (isNextAction('audio')) { <span class="fact-do">choose it</span> }
-                  <span class="chev">{{ isFactOpen('audio') ? '▴' : '▾' }}</span>
-                </button>
-                @if (isFactOpen('audio')) {
-                  <div class="editor" #podcastRow>
-                    @if (publish.spreakerStatus(); as status) {
-                      @if (!status.configured) {
-                        <div class="banner warn">
-                          <mat-icon>warning_amber</mat-icon>
-                          <span>
-                            <b>Spreaker is not configured</b>
-                            {{ status.reason }} Add the access token and the show id in
-                            Settings → Spreaker. They are stored on this machine only, in
-                            <code>{{ status.credentialsPath }}</code>.
-                          </span>
-                        </div>
-                      }
-                    }
-
-                    @if (publish.audio(); as audio) {
-                      <div class="thumb">
-                        <div class="thumb-facts">
-                          <span class="thumb-fn" [title]="audio.path">{{ fileName(audio.path) }}</span>
-                          <span class="thumb-dim num">{{ audioFacts(audio.meta) }}</span>
-                        </div>
-                      </div>
-                      <div class="fld">
-                        <button class="ghost" [disabled]="publish.saving()" (click)="chooseAudio()">Change…</button>
-                        <button class="ghost" [disabled]="publish.saving()" (click)="publish.clearAudio()">Clear</button>
-                      </div>
-                      @for (warning of audio.warnings; track $index) {
-                        <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ warning }}</span></div>
-                      }
-                    } @else if (publish.spreakerAudioPath(); as path) {
-                      <!-- The record names a file and the file did not answer. -->
-                      <div class="thumb">
-                        <div class="thumb-facts">
-                          <span class="thumb-fn" [title]="path">{{ fileName(path) }}</span>
-                          <span class="thumb-dim num">could not be measured</span>
-                        </div>
-                      </div>
-                      <div class="fld">
-                        <button class="ghost" [disabled]="publish.saving()" (click)="chooseAudio()">Change…</button>
-                        <button class="ghost" [disabled]="publish.saving()" (click)="publish.clearAudio()">Clear</button>
-                      </div>
-                    } @else {
-                      <div class="fld">
-                        <span class="why">An episode is the audio, so this is required.</span>
-                        <button class="ghost" [disabled]="publish.saving()" (click)="chooseAudio()">Choose…</button>
-                      </div>
-                    }
-
-                    <!-- The sibling export: `podcast 1.mp3` beside `podcast 1.mov`.
-                         Offered, never applied — the convention says where a file is, not
-                         that this item is that episode. -->
-                    @if (publish.audioProposal(); as proposal) {
-                      <div class="proposal">
-                        <div class="receipt-head">
-                          <mat-icon>help_outline</mat-icon>
-                          <strong>Proposed — not applied</strong>
-                        </div>
-                        <div class="thumb">
-                          <div class="thumb-facts">
-                            <span class="thumb-fn" [title]="proposal.path">{{ fileName(proposal.path) }}</span>
-                            <span class="thumb-dim num">{{ audioFacts(proposal.meta) }}</span>
-                          </div>
-                        </div>
-                        <div class="banner warn">
-                          <mat-icon>warning_amber</mat-icon>
-                          <span>
-                            <b>Check that this is the right file</b>
-                            It was exported beside the video, and it is going to a public feed.
-                          </span>
-                        </div>
-                        @for (warning of proposal.warnings; track $index) {
-                          <div class="banner warn"><mat-icon>warning_amber</mat-icon><span>{{ warning }}</span></div>
-                        }
-                        <div class="fld">
-                          <button class="ghost primary-ghost"
-                                  [disabled]="publish.saving()"
-                                  (click)="publish.confirmAudioProposal()">Use this one</button>
-                          <button class="ghost"
-                                  [disabled]="publish.saving()"
-                                  (click)="publish.dismissAudioProposal()">Not this one</button>
-                        </div>
-                      </div>
-                    }
-                  </div>
-                }
-              }
-            </div>
-
-            <!-- The receipt for the dispatch made just now: every part either sent, with
-                 what was sent, or named with the reason it was not. -->
-            @if (publish.receipt(); as receipt) {
-              <div class="receipt">
-                <div class="receipt-head">
-                  <mat-icon>task_alt</mat-icon>
-                  <strong>Pushed to {{ receipt.videoId }}</strong>
-                  <span class="pane-head-spacer"></span>
-                  <button class="ghost" (click)="publish.dismissReceipt()">Dismiss</button>
-                </div>
-                <dl class="manifest">
-                  <div><span>Title</span><span>{{ receipt.updated.title }}</span></div>
-                  <div>
-                    <span>Description</span>
-                    <span>{{ receipt.updated.description.chars }} chars — “{{ receipt.updated.description.firstLine }}”</span>
-                  </div>
-                  <div><span>Tags</span><span>{{ receipt.updated.tags.count }} sent</span></div>
-                  @if (receipt.updated.publishAt) {
-                    <div><span>Schedule</span><span>{{ localTime(receipt.updated.publishAt) }} — private until then</span></div>
-                  } @else if (receipt.skipped.publishAt) {
-                    <div class="miss"><span>Schedule</span><span>{{ receipt.skipped.publishAt }}</span></div>
-                  }
-                  @if (receipt.updated.thumbnail) {
-                    <div><span>Thumbnail</span><span>{{ fileName(receipt.updated.thumbnail) }} uploaded</span></div>
-                  } @else if (receipt.skipped.thumbnail) {
-                    <div class="miss"><span>Thumbnail</span><span>{{ receipt.skipped.thumbnail }}</span></div>
-                  }
-                </dl>
-              </div>
-            }
-
-            <!-- The upload's receipt: the same accounting as the push's, plus the
-                 audit-gate fact — the video sits LOCKED PRIVATE regardless of its
-                 schedule, and saying so is what keeps a scheduled upload from looking
-                 broken. -->
-            @if (publish.uploadReceipt(); as receipt) {
-              <div class="receipt">
-                <div class="receipt-head">
-                  <mat-icon>task_alt</mat-icon>
-                  <strong>Uploaded as video {{ receipt.videoId }}</strong>
-                  <span class="pane-head-spacer"></span>
-                  <button class="ghost" (click)="publish.dismissUploadReceipt()">Dismiss</button>
-                </div>
-                <dl class="manifest">
-                  <div><span>File</span><span>{{ fileName(receipt.file.path) }} — {{ bytesLabel(receipt.file.bytes) }}</span></div>
-                  <div><span>Title</span><span>{{ receipt.title }}</span></div>
-                  <div>
-                    <span>Description</span>
-                    <span>{{ receipt.description.chars }} chars — “{{ receipt.description.firstLine }}”</span>
-                  </div>
-                  <div><span>Tags</span><span>{{ receipt.tags.count }} sent</span></div>
-                  @if (receipt.publishAt) {
-                    <div><span>Schedule</span><span>{{ localTime(receipt.publishAt) }} — see Visibility below</span></div>
-                  }
-                  @if (receipt.thumbnail) {
-                    <div><span>Thumbnail</span><span>{{ fileName(receipt.thumbnail) }} uploaded</span></div>
-                  } @else if (receipt.skipped.thumbnail) {
-                    <div class="miss"><span>Thumbnail</span><span>{{ receipt.skipped.thumbnail }}</span></div>
-                  }
-                  <div class="miss">
-                    <span>Visibility</span>
-                    <span>Created private. Whether its scheduled time releases it depends on this API project's audit standing — verify the first one rather than assuming either way.</span>
-                  </div>
-                </dl>
-              </div>
-            }
-
-            <!-- `encodingStatus` is in this one deliberately: a fresh upload is PENDING or
-                 PROCESSING and never READY, so it must not read as "the episode is live". -->
-            @if (publish.spreakerReceipt(); as receipt) {
-              <div class="receipt">
-                <div class="receipt-head">
-                  <mat-icon>task_alt</mat-icon>
-                  <strong>Uploaded as episode {{ receipt.episodeId }}</strong>
-                  <span class="pane-head-spacer"></span>
-                  <button class="ghost" (click)="publish.dismissSpreakerReceipt()">Dismiss</button>
-                </div>
-                <dl class="manifest">
-                  <div><span>Title</span><span>{{ receipt.uploaded.title }}</span></div>
-                  <div>
-                    <span>Description</span>
-                    <span>{{ receipt.uploaded.description.chars }} chars — “{{ receipt.uploaded.description.firstLine }}”</span>
-                  </div>
-                  <div><span>Tags</span><span>{{ receipt.uploaded.tags.count }} sent</span></div>
-                  <div><span>Audio</span><span>{{ fileName(receipt.uploaded.audio.path) }} uploaded</span></div>
-                  @if (receipt.uploaded.autoPublishedAt) {
-                    <div><span>Publication</span><span>scheduled for {{ receipt.uploaded.autoPublishedAt }} UTC</span></div>
-                  } @else if (receipt.skipped.autoPublishedAt) {
-                    <div class="miss"><span>Publication</span><span>{{ receipt.skipped.autoPublishedAt }}</span></div>
-                  }
-                  @if (receipt.encodingStatus) {
-                    <div class="miss">
-                      <span>Encoding</span>
-                      <span>{{ receipt.encodingStatus }} — not playable until that finishes</span>
-                    </div>
-                  }
-                  @if (receipt.siteUrl) {
-                    <div><span>URL</span><span>{{ receipt.siteUrl }}</span></div>
-                  }
-                </dl>
-              </div>
-            }
-          </div>
-
-          <!-- ═════ DISPATCH ═════
-               ONE section, following the destination. The manifest states the exact payload
-               so nobody has to be told about it in advance, and the button under it is the
-               only control on this page that changes something an audience can see. It
-               always asks first, listing the same values again. -->
-          <div class="dispatch">
-            <div class="dl">
-              <span class="kicker">Dispatch</span>
-              <span class="pane-head-spacer"></span>
-              <span class="dl-id num">
-                @if (publish.isPodcast()) {
-                  @if (publish.spreakerEpisodeId(); as episodeId) { episode {{ episodeId }} }
-                  @else { no episode yet }
-                } @else {
-                  @if (publish.videoId(); as videoId) { {{ videoId }} }
-                  @else { no video linked }
-                }
-              </span>
-            </div>
-
-            <div class="dl-dest">{{ destinationLabel() }}</div>
-
-            @if (dispatchManifest().length > 0) {
-              <dl class="manifest">
-                @for (row of dispatchManifest(); track row.label) {
-                  <div [class.miss]="row.missing"><span>{{ row.label }}</span><span>{{ row.value }}</span></div>
-                }
-              </dl>
-            }
-
-            @if (publish.isPodcast()) {
-              @if (publish.spreakerEpisodeId()) {
-                <button class="ghost wide"
-                        [disabled]="publish.saving() || publish.uploading()"
-                        (click)="forgetSpreakerEpisode()"
-                        title="Lets this item be uploaded again. It does NOT delete the episode.">
-                  Forget episode
-                </button>
-              } @else {
-                <button class="dispatch-btn"
-                        [class.go]="!dispatchBlockedReason() && !nextAction()"
-                        [disabled]="!!dispatchBlockedReason() || publish.uploading() || publish.saving()"
-                        [title]="dispatchBlockedReason() ?? publish.spreakerPublicationNote()"
-                        (click)="uploadToSpreaker()">
-                  @if (publish.uploading()) { Uploading… } @else { Upload to Spreaker }
-                </button>
-              }
-            } @else if (publish.videoId()) {
-              <button class="dispatch-btn"
-                      [class.go]="!dispatchBlockedReason() && !nextAction()"
-                      [disabled]="!!dispatchBlockedReason() || publish.pushing() || publish.saving()"
-                      [title]="dispatchBlockedReason() ?? 'Writes this manifest to the linked video. It asks first.'"
-                      (click)="pushToYouTube()">
-                @if (publish.pushing()) { Pushing… } @else { Push to YouTube }
-              </button>
-            } @else {
-              <!-- No linked video, so the dispatch is a CREATE: videos.insert from the
-                   source file, manifest and all. Born private, and locked there until
-                   Google approves the API audit — the foot below says so plainly. -->
-              @if (publish.uploadingYouTube()) {
-                <div class="upload-progress">
-                  <div class="upload-bar">
-                    <div class="upload-bar-fill" [style.width.%]="uploadPercent()"></div>
-                  </div>
-                  <span class="num">{{ uploadProgressLabel() }}</span>
-                  <button class="ghost" (click)="cancelUpload()">Cancel</button>
-                </div>
-              }
-              <button class="dispatch-btn"
-                      [class.go]="!dispatchBlockedReason() && !nextAction() && !publish.uploadingYouTube()"
-                      [disabled]="!!dispatchBlockedReason() || publish.uploadingYouTube() || publish.saving()"
-                      [title]="dispatchBlockedReason() ?? 'Creates a NEW private video from the source file, carrying its schedule when one is set. Whether that schedule releases it depends on the audit standing of this API project — verify the first one.'"
-                      (click)="uploadToYouTube()">
-                @if (publish.uploadingYouTube()) { Uploading… } @else { Upload to YouTube }
-              </button>
-            }
-
-            <div class="dispatch-foot">
-              @if (dispatchDone()) {
-                <!-- Not "Held · 0": nothing is held, the work is done. The blocked reason
-                     for a sent episode is the duplicate guard, which is a fact about the
-                     past, not a request. -->
-                <span [title]="dispatchBlockedReason() ?? ''">
-                  Uploaded as episode {{ publish.spreakerEpisodeId() }}
-                </span>
-              } @else if (dispatchBlockedReason(); as why) {
-                <span class="held" [title]="why">Held · {{ heldCount() }} — hover for why</span>
-              } @else if (publish.isPodcast()) {
-                <!-- The label follows the same branch its tooltip takes: announcing "no
-                     draft state" over a tooltip saying "held until Friday" was the label
-                     and its hover disagreeing. -->
-                <span [title]="publish.spreakerPublicationNote()">
-                  {{ publish.publishAt() ? 'Held until the schedule ⓘ' : 'Spreaker has no draft state — public on encode ⓘ' }}
-                </span>
-              } @else if (!publish.videoId()) {
-                <span title="API-uploaded videos are created private. Google's policy locks them private for unaudited projects created after 28 July 2020, but the one upload made from here published on schedule — so verify what your project actually does before trusting a batch.">
-                  Uploads are created private — check whether yours release on schedule ⓘ
-                </span>
-              } @else if (publish.lastPushReceipt(); as last) {
-                <span [title]="'&quot;' + last.updated.title + '&quot;'">
-                  Last pushed {{ localTime(last.pushedAt) }}
-                </span>
-              } @else {
-                <span title="Nothing is created. This writes to the draft you already linked, and asks for confirmation with the exact payload before it sends.">
-                  It asks first ⓘ
-                </span>
-              }
-            </div>
-          </div>
         }
 
         @if (!isLoading() && selectedReport() && !metadata()) {
