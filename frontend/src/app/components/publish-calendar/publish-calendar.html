@@ -482,8 +482,9 @@
              needs looking at. -->
         @if (pastChips().length > 0 || pastEpisodes().length > 0) {
           <div class="past-strip">
-            <div class="past-head">
-              Before today · {{ pastChips().length + pastEpisodes().length }}
+            <div class="past-head"
+                 title="Dated before today and not sent. Videos already uploaded are not listed here — they are on YouTube and in History.">
+              Before today · {{ pastChips().length + pastEpisodes().length }} still open
             </div>
             @for (chip of pastChips(); track chip.itemId) {
               <div class="past-row">
@@ -535,7 +536,6 @@
                    (dragover)="onSlotDragOver(slot, $event)"
                    (dragleave)="onDragLeaveTarget(slot.key)"
                    (drop)="onSlotDrop(row, slot, $event)">
-                <div class="slot-label">{{ slot.label }}</div>
                 @for (chip of slot.chips; track chip.itemId) {
                   <ng-container [ngTemplateOutlet]="chipRow" [ngTemplateOutletContext]="{ chip: chip }"></ng-container>
                 }

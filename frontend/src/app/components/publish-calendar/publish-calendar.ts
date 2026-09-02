@@ -1198,15 +1198,21 @@ export class PublishCalendar implements OnInit, OnDestroy {
   });
 
   /**
-   * Scheduled items dated before today.
+   * Scheduled items dated before today that are STILL OPEN.
    *
    * The list starts at today and there is no way to scroll back to a day nobody can write
    * to, so these would otherwise disappear — and a lapsed schedule is exactly the row that
    * most needs looking at. They get their own strip above the rolling list.
+   *
+   * A video already uploaded and dated in the past is finished work: it is on YouTube and
+   * in History, and eight of them stacked in a warning-coloured strip made the one lapsed
+   * row impossible to spot. Only what still needs a hand is kept here.
    */
   readonly pastChips = computed(() => {
     const todayKey = dateKeyOf(this.now());
-    return this.scheduledChips().filter((chip) => chip.dateKey < todayKey);
+    return this.scheduledChips().filter(
+      (chip) => chip.dateKey < todayKey && chip.readiness !== 'done'
+    );
   });
 
   /** Scheduled beyond the loaded window. Counted under the button that would reach them. */

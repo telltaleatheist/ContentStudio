@@ -192,7 +192,7 @@
   .fault-name {
     display: inline-block;
     margin-right: 0.4rem;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-family: var(--font-mono);
   }
 }
 
@@ -436,38 +436,42 @@
 
 .slot {
   position: relative;
-  min-height: 52px;
-  border: 1px solid var(--border-color);
+  min-height: 44px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
   border-radius: 6px;
-  background: var(--bg-secondary);
-  padding: 0.2rem 0.25rem;
+  background: transparent;
+  padding: 0.25rem;
+  justify-content: center;
   display: flex;
   flex-direction: column;
   gap: 2px;
   transition: border-color 0.13s ease, background 0.13s ease;
 
-  .slot-label {
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-muted);
-  }
+  /* No time label inside the cell: the column header names the slot once, and a label
+     repeated in every cell of every row was most of the small text on the board. The
+     tooltip still says the time and what the slot holds. */
 
   /* Inside the writer's fifteen-minute lead. Inert, and it reads inert. */
   &.past {
-    opacity: 0.45;
+    opacity: 0.55;
     background: transparent;
     border-style: dashed;
   }
 
   /* This is where the tab's channel normally lands. A hint, not a rule — anything can
-     be dropped into any slot. */
+     be dropped into any slot. The dot in the corner is the same hint at a glance. */
   &.cadence {
     border-color: color-mix(in srgb, var(--primary-orange) 55%, var(--border-color));
 
-    .slot-label::after {
-      content: ' •';
-      color: var(--primary-orange);
+    &::before {
+      content: '';
+      position: absolute;
+      top: 5px;
+      right: 5px;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--primary-orange);
     }
   }
 
@@ -1142,7 +1146,7 @@
 
   .ures-id {
     color: var(--text-muted);
-    font-family: monospace;
+    font-family: var(--font-mono);
     font-size: 0.72rem;
   }
 
