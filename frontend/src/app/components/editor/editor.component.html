@@ -91,7 +91,7 @@
   <app-project-setup-modal *ngIf="setupEntry"
     [entry]="setupEntry"
     [attachRunning]="setupAttachRunning"
-    (started)="onProjectSetupStarted()"
+    (started)="onProjectSetupStarted($event)"
     (closed)="onProjectSetupClosed()"
     (openEnvironment)="onEnvironmentFromSetup()"
     (completed)="onProjectSetupCompleted($event)"></app-project-setup-modal>

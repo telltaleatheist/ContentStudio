@@ -452,6 +452,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * the moment that job reaches a terminal state.
    */
   private processingEntryPath: string | null = null;
+  /**
+   * The current run was asked to transcribe when it finishes. Recorded here, from the START
+   * event, rather than read off the modal at the end: the modal is expected to be closed by
+   * then — clicking once and walking away is the whole point of the option. Cleared by
+   * whichever path consumes it, and by a run that ends in error (nothing to transcribe);
+   * a new run simply overwrites it with its own answer.
+   */
+  private transcribeAfterProcessing = false;
   private jobSub?: Subscription;
 
   constructor(
@@ -4429,10 +4437,15 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.setupEntry = entry;
   }
 
-  /** The modal started a run — record which project owns it and light the pane's row up. */
-  onProjectSetupStarted(): void {
+  /**
+   * The modal started a run — record which project owns it, whether it should be transcribed
+   * when it lands, and light the pane's row up. The transcribe request is taken here, at the
+   * start, because the modal is free to close (and usually does) long before the run ends.
+   */
+  onProjectSetupStarted(payload: { transcribe: boolean }): void {
     if (!this.setupEntry) return;
     this.processingEntryPath = this.setupEntry.path;
+    this.transcribeAfterProcessing = payload.transcribe;
     this.projectBusyPath = this.setupEntry.path;
     this.projectBusyPercent = 0;
   }
@@ -4444,16 +4457,41 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /**
-   * A run finished and produced a session: refresh that project's scan (it is no longer raw),
-   * stamp it as opened, and load it into this window through the one sanctioned path.
+   * A run finished with the modal still open: it hands the session over here. The transcribe
+   * request is taken from what was recorded at START, not from the event, so the two completion
+   * routes answer the same question the same way.
    */
   async onProjectSetupCompleted(result: { zipPath: string }): Promise<void> {
     const entry = this.setupEntry;
+    const transcribe = this.transcribeAfterProcessing;
     this.setupEntry = null;
     this.setupAttachRunning = false;
     this.processingEntryPath = null;
+    this.transcribeAfterProcessing = false;
     this.projectBusyPath = null;
     this.projectBusyPercent = null;
+    await this.openProcessedSession(result.zipPath, entry, transcribe);
+  }
+
+  /**
+   * The single road from "a run produced a session" to "that session is open in this window":
+   * refresh the project's scan (it is no longer raw), stamp it as opened, load it through the
+   * one sanctioned bootstrap, and — when the run was started with "transcribe when processing
+   * finishes" ticked — start transcription on it.
+   *
+   * Both completion routes come through here (the modal's `completed`, and the job stream when
+   * the modal was closed mid-run) precisely so they cannot drift apart.
+   *
+   * Transcription is started ONLY against a session this bootstrap actually loaded — same zip,
+   * manifest present, no error. A failed load already shows its reason in the workspace, but
+   * that says nothing about the transcript nobody is going to get, so the skip is said out loud
+   * rather than left as silence.
+   */
+  private async openProcessedSession(
+    zipPath: string,
+    entry: { path: string; name: string } | null,
+    transcribe: boolean
+  ): Promise<void> {
     if (entry) {
       try {
         await this.projectsService.rescan(entry.path);
@@ -4466,7 +4504,16 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         );
       }
     }
-    await this.bootstrap(result.zipPath);
+    await this.bootstrap(zipPath);
+    if (!transcribe) return;
+    if (this.manifest && this.currentZipPath === zipPath && !this.errorMessage) {
+      await this.startTranscription();   // opens the activity dock itself, so progress is visible
+      return;
+    }
+    this.projectSidebar?.showError(
+      `Processing finished, but the session could not be opened here — transcription did not ` +
+      `start. Open the project and press Transcribe once the problem above is fixed.`
+    );
   }
 
   /** Job → pane busy row. Only a job this window attributed to a project is shown there. */
@@ -4484,7 +4531,31 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.projectBusyPath = null;
       this.projectBusyPercent = null;
       this.processingEntryPath = null;
-      if (job && (job.status === 'completed' || job.status === 'error')) {
+      // A modal open ON THIS PROJECT is attached to this run and emits `completed` for the
+      // same event: it owns the hand-off, and doing it here as well would bootstrap the
+      // session (and start transcription) twice off one finished run.
+      const modalOwnsCompletion = this.setupEntry?.path === owner;
+      const transcribe = this.transcribeAfterProcessing;
+      // This run is over, so its transcribe request is over with it — a failure, a cancel or
+      // a cleared job leaves nothing to transcribe, and a request left standing would fire
+      // against whatever run finished next. The one exception is a modal still open on this
+      // project: it owns the hand-off, and clears the flag itself when it lands.
+      if (!modalOwnsCompletion) this.transcribeAfterProcessing = false;
+      if (job && job.status === 'completed' && transcribe && !modalOwnsCompletion) {
+        // Nobody is watching: the modal was closed and the run was asked to transcribe, so
+        // this is the only place left that can honour it. Open the finished session through
+        // the same road the modal's hand-off takes, then transcribe it.
+        const zipPath = job.results?.zipPath;
+        if (typeof zipPath === 'string' && zipPath) {
+          void this.openProcessedSession(zipPath, { path: owner, name: deriveName(zipPath) }, true);
+        } else {
+          // Exit code 0 but no session to open — the contradiction the modal reports inline,
+          // reported here instead because there is no modal to report it in.
+          this.projectSidebar?.showError(
+            `“${owner}” reported success but produced no session zip, so it could not be ` +
+            `opened and transcription did not start.`);
+        }
+      } else if (job && (job.status === 'completed' || job.status === 'error')) {
         this.projectsService.rescan(owner).catch((err: any) => {
           this.projectSidebar?.showError(
             `Could not refresh “${owner}” after its run ended: ${err?.message || String(err)}`);

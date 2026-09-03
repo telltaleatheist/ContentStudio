@@ -186,6 +186,22 @@
               </span>
             </span>
           </label>
+
+          <!-- Queues the transcription step behind the run. Last in the list because it is the
+               last thing to happen, and ticked by default: the run is long and unattended, and
+               this is what makes it one click instead of two visits. The request is handed to
+               the host the moment the run starts, so closing this modal does not cancel it. -->
+          <label class="psm-toggle">
+            <input type="checkbox" [(ngModel)]="transcribeAfter" name="transcribeAfter" />
+            <span class="psm-toggle-text">
+              <span class="psm-toggle-title">Transcribe when processing finishes</span>
+              <span class="psm-toggle-desc">
+                Opens the finished session in this window and starts transcribing it, so one
+                click covers the whole wait. You can close this window — the run and the
+                transcription both carry on.
+              </span>
+            </span>
+          </label>
         </div>
 
         <div class="psm-note">
