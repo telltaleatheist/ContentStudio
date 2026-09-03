@@ -253,31 +253,97 @@
   }
 }
 
-/* Story right-click menu. Fixed-positioned at the cursor so one menu serves both the story list
-   and the timeline ribbon, which live in different scroll containers. */
-.story-ctx {
+/* Context menus. Fixed-positioned at the cursor so one menu serves the story list and the canvas
+   alike, which live in different scroll containers.
+
+   THE WIDTHS AND THE ROW HEIGHT BELOW ARE DUPLICATED IN EditorComponent (STORY_CTX_W /
+   TRACK_CTX_W / CTX_SUBMENU_W / CTX_ROW_H): a menu has to be positioned before it exists, so the
+   off-screen clamp needs the numbers up front rather than measuring. Change one side, change the
+   other. */
+.story-ctx, .track-ctx {
   position: fixed;
   z-index: 60;
-  min-width: 170px;
   background: #2c2c30;
   border: 1px solid #0d0d0e;
   border-radius: 6px;
   padding: 4px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
 
-  button {
-    display: block;
+  .ctx-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     width: 100%;
+    height: 28px;          /* == CTX_ROW_H */
     text-align: left;
     font-size: 12px;
     color: #e2e2e6;
     background: transparent;
     border: none;
     border-radius: 4px;
-    padding: 6px 10px;
+    padding: 0 10px;
     cursor: pointer;
+    /* The row height is fixed (the clamp computes with it), so a wrapping label would spill out
+       of its own row rather than grow it. */
+    white-space: nowrap;
     &:hover:not(:disabled) { background: #3a7bd0; color: #fff; }
     &:disabled { opacity: 0.4; cursor: default; }
+  }
+
+  .ctx-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Shortcut hint + submenu arrow read as annotations, not as part of the label. */
+  .ctx-shortcut, .ctx-arrow {
+    flex: 0 0 auto;
+    font-size: 11px;
+    color: #8b8b93;
+  }
+  .ctx-row:hover:not(:disabled) .ctx-shortcut,
+  .ctx-row:hover:not(:disabled) .ctx-arrow { color: #dce6f5; }
+  .ctx-swatch {
+    flex: 0 0 auto;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+  }
+  .ctx-num {
+    flex: 0 0 auto;
+    width: 14px;
+    text-align: right;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    color: #9a9aa2;
+  }
+  .ctx-row:hover:not(:disabled) .ctx-num { color: #dce6f5; }
+}
+
+.story-ctx { width: 260px; }    /* == STORY_CTX_W */
+.track-ctx { width: 210px; }    /* == TRACK_CTX_W */
+
+/* Add-to-story flyout. Anchored to its parent row and opened on hover; it flips to the left when
+   the parent sits close enough to the window edge that the default side would go off-screen. */
+.ctx-sub {
+  position: relative;
+
+  .ctx-submenu {
+    position: absolute;
+    top: -4px;
+    left: 100%;
+    width: 240px;             /* == CTX_SUBMENU_W */
+    max-height: 260px;
+    overflow-y: auto;
+    background: #2c2c30;
+    border: 1px solid #0d0d0e;
+    border-radius: 6px;
+    padding: 4px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+
+    &.flip-left { left: auto; right: 100%; }
   }
 }
 
@@ -289,7 +355,7 @@
   background: transparent;
 }
 
-/* Stories pane — fills the left pane under the Edit/Stories tabs (story mode). */
+/* Stories pane — fills the left pane when the Stories tab is showing. */
 .stories-pane {
   flex: 1 1 auto;
   min-height: 0;
@@ -304,18 +370,7 @@
     padding: 2px 4px 6px;
     line-height: 1.35;
 
-    /* A captured paint target is otherwise invisible until a drag lands in the wrong
-       story — this is the one hint that has to be noticed. */
-    &.active-target {
-      color: #e8c07d;
-      background: rgba(232, 163, 61, 0.10);
-      border: 1px solid rgba(232, 163, 61, 0.28);
-      border-radius: 5px;
-      padding: 5px 7px;
-      margin: 0 2px 6px;
-
-      b { color: #f0b155; font-weight: 600; }
-    }
+    b { color: #d8d8de; font-weight: 600; }
   }
   .stories-empty {
     font-size: 11px;
@@ -356,9 +411,9 @@
       cursor: pointer;
       &:hover { background: #34343a; color: #fff; }
     }
-    /* Analyze and Merge share a shape; only the emphasis differs — Merge is a repair, not the
+    /* Analyze and Join share a shape; only the emphasis differs — Join is a repair, not the
        primary action, so it stays quiet. */
-    .story-analyze, .story-merge {
+    .story-analyze, .story-join {
       flex: 0 0 auto;
       font-size: 11px;
       font-weight: 600;
@@ -373,13 +428,13 @@
       border: 1px solid #2b5ea0;
       &:hover:not(:disabled) { background: #4589e0; }
     }
-    .story-merge {
+    .story-join {
       color: #c4c4ca;
       background: #2b2b30;
       border: 1px solid #3a3a40;
       &:hover:not(:disabled) { background: #34343a; color: #fff; }
     }
-    /* Hand-off to the main window's Titles tab — same quiet weight as Merge. */
+    /* Hand-off to the main window's Titles tab — same quiet weight as Join. */
     .story-titles {
       flex: 0 0 auto;
       font-size: 11px;
@@ -405,19 +460,14 @@
 
     &:hover { background: #26262a; }
 
-    /* Active paint target: amber left rail + subtle wash. */
-    &.active {
-      background: #2c2618;
-      box-shadow: inset 2px 0 0 #e8a33d;
-    }
-    /* Selected (chunk or whole story): brighter blue rail so it reads as the delete target. */
+    /* Selected (chunk or whole story): blue rail so it reads as the delete target. */
     &.selected {
       background: #1b2740;
       box-shadow: inset 2px 0 0 #4a9eff;
     }
-    /* ⌘-picked for merging. An outline, not a box-shadow, so it stacks with the active/selected
-       left rails instead of replacing one — a story can be all three at once. */
-    &.merge-picked {
+    /* Picked for Join. An outline, not a box-shadow, so it stacks with the selected left rail
+       instead of replacing it — a story is usually both. */
+    &.picked {
       outline: 2px solid #4a9eff;
       outline-offset: -2px;
       background: #1b2740;
@@ -570,7 +620,7 @@
   flex-direction: column;
   overflow: hidden;
 
-  /* Edit / Stories tabs — the Stories tab IS story mode. */
+  /* Edit / Stories tabs — which pane is shown, nothing more. */
   .pane-tabs {
     flex: 0 0 auto;
     display: flex;
@@ -868,9 +918,6 @@
         url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M8 2 h6 v11 l-3 8 -3 -8 z' fill='%23e8e8ea' stroke='%23141414' stroke-width='1.4' stroke-linejoin='round'/%3E%3C/svg%3E") 11 21,
         crosshair;
     }
-
-    /* Story Mode → crosshair, signalling drag-to-mark. tool-blade wins if somehow both set. */
-    &.tool-story:not(.tool-blade) { cursor: crosshair; }
   }
 }
 

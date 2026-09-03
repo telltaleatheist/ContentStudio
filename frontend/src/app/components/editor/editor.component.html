@@ -56,14 +56,47 @@
        (contextmenu)="$event.preventDefault(); closeStoryCtxMenu()"></div>
   <div class="story-ctx" *ngIf="storyCtxMenu"
        [style.left.px]="storyCtxMenu!.x" [style.top.px]="storyCtxMenu!.y">
-    <button (click)="mergeFromCtxMenu()" [disabled]="!canMergeStories">
-      {{ canMergeStories ? 'Merge ' + storyMergeIds.size + ' stories' : 'Merge (pick 2+ with ⌘-click)' }}
+    <button class="ctx-row" (click)="joinFromCtxMenu()" [disabled]="!canJoinStories">
+      {{ canJoinStories ? 'Join ' + storyPickIds.size + ' stories' : 'Join (pick 2+ with ⌘-click)' }}
     </button>
-    <button (click)="sendStoryToMetadataFromCtxMenu()" [disabled]="!storyMergeIds.size || analyzing"
+    <button class="ctx-row" (click)="sendStoryToMetadataFromCtxMenu()" [disabled]="!storyPickIds.size || analyzing"
             title="Send every picked story's chapters to the Metadata page, one item each — chapters are derived first for a story that has none, and re-derived if its regions changed since they were. If any picked story can't be sent, none are.">
-      {{ storyMergeIds.size > 1 ? 'Send ' + storyMergeIds.size + ' stories to Metadata' : 'Send to Metadata' }}
+      {{ storyPickIds.size > 1 ? 'Send ' + storyPickIds.size + ' stories to Metadata' : 'Send to Metadata' }}
     </button>
-    <button (click)="closeStoryCtxMenu()">Cancel</button>
+    <button class="ctx-row" (click)="closeStoryCtxMenu()">Cancel</button>
+  </div>
+
+  <!-- Track-lane right-click menu: turn the current highlight into a story. Same fixed-position
+       pattern and backdrop as .story-ctx. "Add to story" is a hover submenu because the story
+       list can be long and the common case (a brand-new story) must stay one click deep. -->
+  <div class="menu-backdrop" *ngIf="trackCtxMenu" (click)="closeTrackCtxMenu()"
+       (contextmenu)="$event.preventDefault(); closeTrackCtxMenu()"></div>
+  <div class="track-ctx" *ngIf="trackCtxMenu"
+       [style.left.px]="trackCtxMenu!.x" [style.top.px]="trackCtxMenu!.y">
+    <button class="ctx-row" (click)="saveSelectionAsStoryFromCtxMenu()"
+            [disabled]="!hasTimelineSelection"
+            title="Turn the highlighted span into a new story. Any story it overlaps yields that span, so stories never overlap.">
+      <span class="ctx-label">Save as story</span>
+      <span class="ctx-shortcut">⌘S</span>
+    </button>
+    <div class="ctx-sub" *ngIf="hasStories()"
+         (mouseenter)="trackCtxAddOpen = true" (mouseleave)="trackCtxAddOpen = false">
+      <button class="ctx-row" [disabled]="!hasTimelineSelection"
+              title="Append the highlighted span to a story that already exists.">
+        <span class="ctx-label">Add to story</span>
+        <span class="ctx-arrow">▸</span>
+      </button>
+      <div class="ctx-submenu" *ngIf="trackCtxAddOpen && hasTimelineSelection"
+           [class.flip-left]="trackCtxFlipLeft">
+        <button class="ctx-row" *ngFor="let s of storiesForDisplay()"
+                (click)="addSelectionToStoryFromCtxMenu(s.id)">
+          <span class="ctx-swatch" [style.background]="storyColor(s.number)"></span>
+          <span class="ctx-num">{{ s.number }}</span>
+          <span class="ctx-label">{{ s.title.trim() || 'Story ' + s.number }}</span>
+        </button>
+      </div>
+    </div>
+    <button class="ctx-row" (click)="closeTrackCtxMenu()">Cancel</button>
   </div>
 
   <!-- Export dialogs: the chooser (what to export) and the result/error modal. The child is
@@ -274,12 +307,13 @@
       </div>
     </div>
 
-    <!-- Left pane: Edit (transcript) / Stories tabs. The Stories tab IS story mode — while
-         it's active, timeline drags mark story regions. -->
+    <!-- Left pane: Edit (transcript) / Stories tabs. Purely which pane is SHOWN — the pointer
+         tool and the timeline selection are untouched by switching, because stories are made out
+         of the ordinary selection (⌘S / right-click ▸ Add to story), not by a mode. -->
     <div class="transcript-pane" *ngIf="sessionReady" [style.flexBasis.%]="splitV * 100">
       <div class="pane-tabs">
-        <button class="pane-tab" [class.active]="!storyMode" (click)="setStoryMode(false)">Edit</button>
-        <button class="pane-tab" [class.active]="storyMode" (click)="setStoryMode(true)">
+        <button class="pane-tab" [class.active]="leftPane === 'edit'" (click)="setLeftPane('edit')">Edit</button>
+        <button class="pane-tab" [class.active]="leftPane === 'stories'" (click)="setLeftPane('stories')">
           Stories<ng-container *ngIf="hasStories()"> ({{ stories.length }})</ng-container>
         </button>
         <button class="pane-activity-btn" [class.busy]="hasBackgroundActivity"
@@ -291,10 +325,10 @@
       </div>
 
       <!-- Stories tab: analyze toolbar + story list (color notch / sequential number / editable
-           title / total length / split / delete). Clicking a row makes it the active paint
-           target; clicking the color notch selects the whole story; Split opens the chapter
-           modal. -->
-      <div class="stories-pane" *ngIf="storyMode">
+           title / total length / split / delete). Clicking a row picks it and selects the whole
+           story on the timeline; ⌘/Shift-click picks more; Join makes the picked ones one; Split
+           opens the chapter modal. -->
+      <div class="stories-pane" *ngIf="leftPane === 'stories'">
         <div class="stories-toolbar">
           <select class="story-model" [value]="selectedOllamaModel"
                   (change)="onOllamaModelChange($any($event.target).value)"
@@ -310,44 +344,41 @@
                       : 'Split the whole timeline into stories by subject'">
             {{ analyzing ? 'Analyzing…' : (hasStories() ? 'Chapter + title' : 'Auto-split') }}
           </button>
-          <button class="story-merge" *ngIf="hasStories()" (click)="mergeSelectedStories()"
-                  [disabled]="!canMergeStories"
-                  [title]="canMergeStories
-                      ? 'Merge the picked stories into the first one'
-                      : '⌘-click two or more stories — in this list or on the timeline ribbon — to merge them'">
-            Merge{{ storyMergeIds.size >= 2 ? ' ' + storyMergeIds.size : '' }}
+          <button class="story-join" *ngIf="hasStories()" (click)="joinSelectedStories()"
+                  [disabled]="!canJoinStories"
+                  [title]="canJoinStories
+                      ? 'Join the picked stories into the first one'
+                      : 'Click a story, then ⌘-click (or Shift-click) more — in this list or on the timeline ribbon — to join them'">
+            Join{{ storyPickIds.size >= 2 ? ' ' + storyPickIds.size : '' }}
           </button>
           <button class="story-titles" *ngIf="hasStories()" (click)="sendAllStoriesToTitles()"
                   title="Send every story to the Metadata queue — each becomes its own item carrying its own chapter list. Chapters are derived first where missing or stale.">
             → Metadata
           </button>
         </div>
-        <div class="stories-hint" *ngIf="storyMergeIds.size">
-          {{ storyMergeIds.size }} picked for merging — ⌘-click more, or hit Merge. Any plain click clears the pick.
+        <div class="stories-hint" *ngIf="storyPickIds.size >= 2">
+          {{ storyPickIds.size }} picked — hit <b>Join</b> to make them one story (the first keeps
+          its title and place). ⌘-click or Shift-click to pick more; any plain click starts over.
         </div>
-        <div class="stories-hint active-target" *ngIf="!storyMergeIds.size && activeStoryId">
-          Drags are going into <b>{{ activeStoryTitle }}</b>. Click it again, click empty
-          timeline, or press Escape to deselect — then the next drag starts a new story.
-        </div>
-        <div class="stories-hint" *ngIf="!storyMergeIds.size && !activeStoryId">
-          Drag on the timeline to start a new story — edges take whole clips. Click a story
-          below (or its block in the strip) to add more regions to that one instead. Need a
+        <div class="stories-hint" *ngIf="storyPickIds.size < 2">
+          Highlight a span on the timeline and press <b>⌘S</b> to save it as a story — or
+          right-click it and choose <b>Add to story</b> to append it to one that exists. Click a
+          story here to select it (⌘-click or Shift-click for more), then <b>Join</b>. Need a
           mid-clip boundary? Cut it with the Blade (B) first.
         </div>
-        <div class="stories-empty" *ngIf="!hasStories()">No stories yet — drag on the timeline to mark one, or Auto-split.</div>
+        <div class="stories-empty" *ngIf="!hasStories()">No stories yet — highlight a span on the timeline and press ⌘S, or Auto-split.</div>
         <ng-container *ngFor="let s of stories">
         <div class="story-drop-line" *ngIf="dragStoryId && dropBeforeId === s.id"></div>
         <div class="story-row"
-             [class.active]="s.id === activeStoryId"
              [class.selected]="storySelection?.storyId === s.id"
-             [class.merge-picked]="storyMergeIds.has(s.id)"
+             [class.picked]="storyPickIds.has(s.id)"
              [class.dragging]="dragStoryId === s.id"
              (mousedown)="onStoryRowMouseDown(s, $event)"
              (click)="onStoryRowClick(s, $event)"
              (contextmenu)="onStoryRowContextMenu(s, $event)"
              (dragover)="onStoryDragOver(s, $event)"
              (drop)="onStoryDrop($event)"
-             [title]="s.id === activeStoryId ? 'Active — drags add regions here' : 'Click to make active · ⌘-click to pick for merging'">
+             title="Click to select this story on the timeline · ⌘-click or Shift-click to pick more, then Join">
           <span class="story-swatch" [style.background]="storyColor(s.number)"
                 (click)="onStorySwatchClick(s, $event)"
                 title="Select the whole story"></span>
@@ -408,7 +439,7 @@
 
       <!-- Transcript body: the four lifecycle states. Data, filtering and the karaoke index
            all stay here; the child renders and reports intent. -->
-      <app-transcript-pane *ngIf="!storyMode"
+      <app-transcript-pane *ngIf="leftPane === 'edit'"
         [state]="transcriptState"
         [error]="transcriptError"
         [progress]="transcribeProgress"
@@ -456,7 +487,7 @@
 
   <!-- Timeline pane. -->
   <section class="timeline-pane" *ngIf="sessionReady" [style.flexBasis.%]="splitH * 100">
-    <!-- Toolbar strip above the ruler: Select / Blade / Story tools. -->
+    <!-- Toolbar strip above the ruler: Select / Blade tools. -->
     <div class="timeline-toolbar">
       <div class="tool-toggle">
         <button class="tool-btn" [class.active]="toolMode === 'select'"
@@ -466,10 +497,6 @@
         <button class="tool-btn" [class.active]="toolMode === 'blade'"
                 (click)="setTool('blade')" title="Blade (B)" aria-label="Blade tool">
           <span class="tool-ico">▮</span>
-        </button>
-        <button class="tool-btn" [class.active]="toolMode === 'story'"
-                (click)="setTool('story')" title="Story (S)" aria-label="Story tool">
-          <span class="tool-ico">▤</span>
         </button>
       </div>
     </div>
@@ -494,7 +521,6 @@
       <div class="canvas-wrap">
         <canvas #timelineCanvas
                 [class.tool-blade]="toolMode === 'blade'"
-                [class.tool-story]="storyMode"
                 (mousedown)="onCanvasMouseDown($event)"
                 (contextmenu)="onCanvasContextMenu($event)"
                 (mousemove)="onCanvasHover($event)"

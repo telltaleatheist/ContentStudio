@@ -26,7 +26,9 @@ export interface TimelineScene {
   moveDrag: MoveDrag | null;
   stories: { id: string; number: number; title: string; regions: { start: number; end: number }[] }[];
   storyRibbonPieces: (r: { start: number; end: number }) => { lo: number; hi: number }[];
-  activeStoryId: string | null;
-  mergePicked: ReadonlySet<string>;
+  /** The story the user has SELECTED (storySelection), outlined white so the ribbon shows it. */
+  selectedStoryId: string | null;
+  /** Stories ticked for Join, outlined blue — the pending action. */
+  pickedStoryIds: ReadonlySet<string>;
   hasStories: boolean;
 }
