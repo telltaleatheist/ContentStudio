@@ -1284,13 +1284,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * Sums allSelectionRanges(), which is already sorted and merged, so overlapping or adjacent
    * ranges are counted once rather than twice. The in-flight marquee is folded in as one more
    * range (and re-merged) so the number tracks the drag live instead of appearing only after
-   * mouseup — a story-mode paint is excluded because it is painting a region, not selecting
-   * footage. Same formatTimecode + frameSeconds as the main timecode above, so the two readouts
+   * mouseup. Same formatTimecode + frameSeconds as the main timecode above, so the two readouts
    * are the same shape and can be compared at a glance.
    */
   get selectionDurationLabel(): string | null {
     const ranges = this.allSelectionRanges();
-    if (this.marqueeActive && this.marqueeMoved && !this.marqueeForStory) {
+    if (this.marqueeActive && this.marqueeMoved) {
       const lo = Math.min(this.marqueeStartTime, this.marqueeEndTime);
       const hi = Math.max(this.marqueeStartTime, this.marqueeEndTime);
       if (hi - lo > EPS) ranges.push({ lo, hi });
@@ -2791,6 +2790,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * to show a list would cost more than it tells them.
    */
   saveSelectionAsStory(): void {
+    // A whole story selected on the ribbon puts ITS regions in the timeline highlight (see
+    // selectWholeStory) — and ⌘S lands the user exactly there right after saving. Saving that
+    // highlight again would mint a duplicate and empty the original through the claim rule, so a
+    // highlight that already IS a story has nothing new to save.
+    if (this.storySelection && this.storySelection.regionIndex === null) return;
     const regions = this.selectionAsRegions('save the selection as a story');
     if (regions.length === 0) return;
     this.pushUndo();
