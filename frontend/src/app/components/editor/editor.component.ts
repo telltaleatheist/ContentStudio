@@ -1071,18 +1071,35 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return this.scrollOffset + x / this.pxPerSec;
   }
   /**
-   * Over-scroll breathing room so the first/last clips aren't jammed against the edges:
-   * allow a small pad before 0 and past (editedDuration - viewport). The pad is small
-   * (<= 2s, and <= 15% of the visible span). initialZoomToFit still fits [0, editedDuration]
-   * exactly — the margin is a clamp relaxation only, never baked into the fit.
+   * Over-scroll breathing room on the LEFT so the first clip isn't jammed against the edge:
+   * a small pad before 0 (<= 2s, and <= 15% of the visible span). initialZoomToFit still fits
+   * [0, editedDuration] exactly — the margin is a clamp relaxation only, never baked into the
+   * fit. The right-hand end needs no such pad: maxScrollOffset() already leaves half a viewport
+   * of empty timeline past the tail.
    */
   private overscrollMargin(): number {
     return Math.min(2, 0.15 * this.viewportSec);
   }
+  /**
+   * The far end of the scroll range: far enough right that the END of the timeline sits at the
+   * viewport CENTRE, and not one second further. Owen asked for exactly that — parking the tail
+   * mid-screen to work on it, instead of being shoved against the right edge by a clamp that
+   * stopped at (duration - viewport).
+   *
+   * ONE function owns this number because three places need it — clampScroll, the scrollbar
+   * thumb, and the thumb drag — and if any of them recomputed it themselves they would drift
+   * apart: dragging the thumb to the right end has to land on exactly the value the clamp
+   * allows, or the thumb sticks short of its own track.
+   *
+   * It agrees with minZoom by construction. At the zoom floor the whole timeline is half a
+   * viewport wide (editedDuration === viewportSec / 2), so this returns 0: zoomed all the way
+   * out there is nothing left to scroll, and the tail is already sitting in the middle.
+   */
+  private maxScrollOffset(): number {
+    return Math.max(0, this.editedDuration - this.viewportSec / 2);
+  }
   private clampScroll(v: number): number {
-    const margin = this.overscrollMargin();
-    const max = Math.max(0, this.editedDuration - this.viewportSec) + margin;
-    return Math.min(max, Math.max(-margin, v));
+    return Math.min(this.maxScrollOffset(), Math.max(-this.overscrollMargin(), v));
   }
 
   private initialZoomToFit(): void {
@@ -1093,14 +1110,18 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.scrollOffset = 0;
   }
   /**
-   * Dynamic zoom floor: all the way out = the WHOLE edited timeline fits the viewport
-   * (viewportWidth / editedDuration px/s). Capped at 1 so short sessions keep the old floor
-   * (their fit zoom is above 1 anyway, so they can always fit too).
+   * Dynamic zoom floor: all the way out = the whole edited timeline shrunk to HALF the viewport
+   * width (viewportWidth / (2 * editedDuration) px/s). The old floor was fit-exactly, which for
+   * any session with more seconds than the viewport has pixels IS the right edge — so zooming
+   * out snapped the tail to the edge and refused to go further, while a short session (floor
+   * capped at 1 px/s, below its own fit) happily zoomed past it. That inconsistency was the
+   * "sometimes it works" Owen hit; one rule now covers both. Still capped at 1 px/s so short
+   * sessions behave exactly as before.
    */
   private get minZoom(): number {
     const dur = this.editedDuration;
     if (!(dur > 0)) return 1;
-    return Math.min(1, this.viewportWidth / dur);
+    return Math.min(1, this.viewportWidth / (2 * dur));
   }
   private clampZoom(v: number): number {
     return Math.min(ZOOM_MAX, Math.max(this.minZoom, v));
@@ -1239,6 +1260,31 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // ── Timecode readout (HH:MM:SS:FF, NDF colons) ──────────────────────────────
   get timecode(): string {
     return formatTimecode(this.playheadTime, this.manifest?.frameSeconds || (1001 / 30000));
+  }
+
+  /**
+   * TOTAL length of the current highlight as HH:MM:SS:FF, or null when nothing is highlighted
+   * (the template hides the readout entirely on null). Owen wants to know how much footage a
+   * multi-block highlight adds up to without doing the arithmetic himself.
+   *
+   * Sums allSelectionRanges(), which is already sorted and merged, so overlapping or adjacent
+   * ranges are counted once rather than twice. The in-flight marquee is folded in as one more
+   * range (and re-merged) so the number tracks the drag live instead of appearing only after
+   * mouseup — a story-mode paint is excluded because it is painting a region, not selecting
+   * footage. Same formatTimecode + frameSeconds as the main timecode above, so the two readouts
+   * are the same shape and can be compared at a glance.
+   */
+  get selectionDurationLabel(): string | null {
+    const ranges = this.allSelectionRanges();
+    if (this.marqueeActive && this.marqueeMoved && !this.marqueeForStory) {
+      const lo = Math.min(this.marqueeStartTime, this.marqueeEndTime);
+      const hi = Math.max(this.marqueeStartTime, this.marqueeEndTime);
+      if (hi - lo > EPS) ranges.push({ lo, hi });
+    }
+    let total = 0;
+    for (const r of mergeRanges(ranges)) total += r.hi - r.lo;
+    if (!(total > EPS)) return null;
+    return formatTimecode(total, this.manifest?.frameSeconds || (1001 / 30000));
   }
 
   get sessionName(): string { return this.manifest?.session || ''; }
@@ -1848,9 +1894,15 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   // ── Scrollbar ───────────────────────────────────────────────────────────────
   get scrollbarThumb(): { left: number; width: number } {
-    const dur = this.editedDuration || 1;
-    const width = Math.max(6, Math.min(100, (this.viewportSec / dur) * 100));
-    const maxScroll = Math.max(1e-6, dur - this.viewportSec);
+    // The track stands for the SCROLLABLE EXTENT — the full travel of the viewport's left edge
+    // (maxScrollOffset) plus the viewport itself — not for editedDuration. Measuring the thumb
+    // against the duration would over-report once the timeline is shorter than the viewport
+    // (zoomed out past fit, where the extent is all viewport and the thumb should be full-width),
+    // and mapping `left` over anything but maxScrollOffset would put the thumb's right end at a
+    // scroll position clampScroll refuses.
+    const maxScroll = this.maxScrollOffset();
+    const extent = maxScroll + this.viewportSec;
+    const width = Math.max(6, Math.min(100, (this.viewportSec / extent) * 100));
     const left = maxScroll <= 0 ? 0 : (this.scrollOffset / maxScroll) * (100 - width);
     return { left, width };
   }
@@ -1872,13 +1924,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const canvas = this.canvasRef?.nativeElement;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const dur = this.editedDuration;
     const thumb = this.scrollbarThumb;
     const trackW = rect.width;
     const thumbWpx = (thumb.width / 100) * trackW;
     const leftPx = (ev.clientX - rect.left) - this.scrollbarGrabDx;
     const frac = trackW - thumbWpx <= 0 ? 0 : Math.min(1, Math.max(0, leftPx / (trackW - thumbWpx)));
-    this.scrollOffset = this.clampScroll(frac * Math.max(0, dur - this.viewportSec));
+    // Same range the clamp and the thumb geometry use, so a thumb dragged to the end of its
+    // track lands exactly on the maximum scroll rather than stopping short of it.
+    this.scrollOffset = this.clampScroll(frac * this.maxScrollOffset());
     this.requestRender();
   }
 

@@ -719,6 +719,16 @@
     color: #e8a33d;
     font-weight: 500;
   }
+
+  /* Total length of the current highlight, secondary to the playhead clock: same mono face and
+     tracking so the digits line up, but smaller and muted so it reads as an annotation on the
+     main timecode rather than a second clock competing with it. Hidden outright when nothing
+     is highlighted (*ngIf on selectionDurationLabel). */
+  .sel-badge {
+    color: #9a9aa2;
+    font-weight: 400;
+    font-size: 14px;
+  }
 }
 
 .transport-error {
