@@ -1,4 +1,4 @@
-import { Component, EventEmitter, HostListener, Inject, Input, OnDestroy, OnInit, Output, ChangeDetectorRef } from '@angular/core';
+import { Component, EventEmitter, HostListener, Inject, Input, OnChanges, OnDestroy, OnInit, Output, SimpleChanges, ChangeDetectorRef } from '@angular/core';
 import { Subscription } from 'rxjs';
 import { EDITOR_HOST, EditorHost, RemoteWeek } from '../editor-host';
 import { ProjectEntry, ProjectsService } from '../services/projects.service';
@@ -56,11 +56,14 @@ const WEEK_FOLDER_RE = /^\d{4}-\d{2}-\d{2}$/;
   styleUrls: ['./project-sidebar.component.scss'],
   standalone: false
 })
-export class ProjectSidebarComponent implements OnInit, OnDestroy {
+export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
   /**
    * The project a job is currently running on, by `entry.path`. Renders a spinner (and the
-   * percent, when given) on that row. Nothing here drives it yet — a later agent feeds it from
-   * the processing job.
+   * percent, when given) on that row. The editor sets it when a run starts and clears it when
+   * the run reaches a terminal state.
+   *
+   * It is also the ONE FACT that stops the automatic archive catch-up from uploading a folder
+   * that is being written — see `processingUnder`.
    */
   @Input() busyPath: string | null = null;
   /** Optional 0-100 progress for `busyPath`; null shows an indeterminate spinner. */
@@ -96,6 +99,19 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
    * is still said out loud, with the names, and dismissed with the ✕.
    */
   resumeNotice: string | null = null;
+  /**
+   * "2026-08-30 is not being caught up yet: 2026-09-03 is still processing."
+   *
+   * The counterpart to `resumeNotice`, and it exists for the same reason: an automatic
+   * transfer that starts on its own is said out loud, so an automatic transfer that DOESN'T
+   * start has to be too. Otherwise the only evidence of the decision is a week that quietly
+   * stays behind, which reads as the catch-up being broken.
+   *
+   * Also carries the warning a MANUAL sync gets while a run is in flight. That one is not a
+   * refusal — the operator stays in charge — it just says that what goes up will be a
+   * half-written folder and will need another sync afterwards.
+   */
+  processingNotice: string | null = null;
   dragOver = false;
 
   /**
@@ -159,6 +175,12 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
    */
   private autoCheckedWeeks = new Set<string>();
   private autoCheckTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Week/day labels whose catch-up THIS pass held back because a run was processing inside
+   * them. Collected during the sweep and rendered once at the end, the way `resumeBehind`
+   * renders the transfers it started — one line naming everything, not one line per folder.
+   */
+  private deferredForProcessing: string[] = [];
 
   private archiveRows: Record<string, ArchiveRow> = {};
   /**
@@ -225,12 +247,52 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
     void this.refreshGhostWeeks();
   }
 
+  /**
+   * A processing run ENDING is what releases the catch-up it was holding back.
+   *
+   * `busyPath` going from a path to null is the only signal this component gets that the
+   * folder has stopped moving, and it is the moment the archive copy of that day is knowably
+   * stale: the run has just written its outputs and deleted its `*_ALTERED*.fcpxml`
+   * intermediates. So the week is RE-ARMED — struck out of `autoCheckedWeeks` — and the
+   * automatic pass is scheduled again, through the same debounce every other trigger uses.
+   *
+   * Re-arming matters even when nothing was deferred: a pass that settled this week BEFORE
+   * the run started recorded a verdict that the run has since invalidated, and without this
+   * that week would not be looked at again until the next launch.
+   */
+  ngOnChanges(changes: SimpleChanges): void {
+    const change = changes['busyPath'];
+    if (!change) return;
+    const previous: string | null = change.previousValue ?? null;
+    const current: string | null = change.currentValue ?? null;
+    if (!previous || current) return;
+
+    const week = this.weekOf(previous);
+    if (week) this.autoCheckedWeeks.delete(week);
+    // The notice describes a CONDITION ("waiting for processing to finish", "it will need
+    // another sync"), and the condition has just ended. Left up, it would still be claiming
+    // the pane was waiting on a run that is over. What happens next gets its own line — the
+    // resume notice, from the pass this schedules.
+    this.processingNotice = null;
+    // DECLARED, like the deferral it undoes.
+    console.info(
+      `[projects] Processing of ${previous} finished — re-checking ` +
+      `${week || 'the archive'} so anything held back while it ran is caught up now.`
+    );
+    this.scheduleAutoCheck();
+    this.cdr.markForCheck();
+  }
+
   dismissPrunedNotice(): void {
     this.projectsService.clearPrunedNotice();
   }
 
   dismissResumeNotice(): void {
     this.resumeNotice = null;
+  }
+
+  dismissProcessingNotice(): void {
+    this.processingNotice = null;
   }
 
   ngOnDestroy(): void {
@@ -570,7 +632,37 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
     ev.preventDefault();
     this.closeContextMenu();
     if (!path) return;
+    this.noteProcessingBeforeSync(path, kind);
     await this.archive.sync(path, kind, this.daysOf(path, kind));
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * A manual sync of something that is being processed: SAY IT, then do it.
+   *
+   * The operator stays in charge. The automatic catch-up defers because nobody asked it for
+   * anything in particular, but a click is a specific instruction and refusing it would leave
+   * the one control that can force an archive copy unusable for the duration of a run — which
+   * is precisely when a copy is most likely to be wanted. What was missing was not a block but
+   * a sentence: the copy will be of a half-written folder, and the archive will need another
+   * sync once the run ends. Said BEFORE the transfer starts, so it is on screen while the bar
+   * moves rather than after it has finished lying.
+   *
+   * Silent when the click means STOP — a group already in flight is cancelled by `sync`, and
+   * nothing new is written to the archive by cancelling it.
+   */
+  private noteProcessingBeforeSync(path: string, kind: 'week' | 'day'): void {
+    const days = this.daysOf(path, kind);
+    const busyStates: Array<ArchiveRow['state']> = ['queued', 'connecting', 'scanning', 'uploading'];
+    if ([path, ...days].some(p => busyStates.includes(this.syncState(p)))) return;
+
+    const busy = this.processingUnder(path, kind, days);
+    if (!busy) return;
+
+    this.processingNotice =
+      `${this.basename(busy)} is being processed right now. Syncing ${this.basename(path)} ` +
+      `anyway — the archive gets the folder as it stands mid-run, so it will need another ` +
+      `sync once the run finishes.`;
     this.cdr.markForCheck();
   }
 
@@ -614,6 +706,7 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
     // moment it is spotted would park every remaining week's verification behind it, and the
     // marks the operator is watching would arrive one upload at a time.
     const behind: Array<{ path: string; kind: 'week' | 'day'; days: string[] }> = [];
+    this.deferredForProcessing = [];
     try {
       for (const group of this.groups) {
         if (!group.path) continue;
@@ -626,12 +719,24 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
           .filter(e => this.isActionable(e))
           .map(e => e.path);
         if (present.length === 0) continue;
+        // The CHECK still runs on a week that is being processed. It is `rsync -n` — it reads
+        // and transfers nothing — and its verdict is what the pane's marks are made of, so
+        // refusing it would blank the row of the week the operator is watching most closely.
+        // Only the TRANSFER is gated, below.
         const settled = await this.archive.refresh(group.path, present, force);
         // Only a week that actually got an answer is struck off. One skipped because the
-        // archive was unreachable must remain eligible for the next attempt.
-        if (settled) {
+        // archive was unreachable must remain eligible for the next attempt — and so is one
+        // whose catch-up `collectBehind` held back, because a folder still being written has
+        // no verdict worth keeping until the run that is writing it ends.
+        //
+        // A deferred week is therefore re-scanned by every pass until the run ends, and a
+        // scan is minutes. That is affordable because passes are EVENTS, not a poll — the
+        // projects list publishing, or the run ending — and a run does not republish the
+        // list while it works. Leaving the week un-recorded is also the fail-safe half of
+        // the pair: if the `busyPath` transition were ever missed, the next list publication
+        // still picks the week up, where a week marked settled would sit behind until relaunch.
+        if (settled && this.collectBehind(group.path, present, behind)) {
           this.autoCheckedWeeks.add(group.path);
-          this.collectBehind(group.path, present, behind);
         }
         this.cdr.markForCheck();
       }
@@ -643,9 +748,65 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
       this.cdr.markForCheck();
     }
 
+    // What this pass decided NOT to send, said before what it decided to send. A pass that
+    // deferred everything it found would otherwise end in silence, which is exactly what the
+    // resume notice exists to prevent for the opposite case.
+    if (this.deferredForProcessing.length > 0) {
+      const names = this.deferredForProcessing.join(', ');
+      this.processingNotice =
+        `Waiting for processing to finish before catching ${names} up in the archive — ` +
+        `a folder being written mid-run would be archived half-finished. ` +
+        `It is synced as soon as the run ends.`;
+      this.cdr.markForCheck();
+    }
+
     // Outside the `finally`, so the refresh spinner stops when the CHECKING stops. What
     // follows is transfers, and each one is drawn on its own row.
     await this.resumeBehind(behind);
+  }
+
+  /**
+   * The processing run in flight inside `path`, or null when there is none.
+   *
+   * THE GATE between two subsystems that had never been introduced. The editor knows a run is
+   * happening (`busyPath`); ArchiveService knows what is queued and what has been synced.
+   * Neither one knows the other's fact, and `autoSync` could not learn it without the sidebar
+   * handing it over — which is why the gate lives HERE rather than in the service: this
+   * component is the only place that holds both `busyPath` and the week→days grouping that
+   * says which folders a week push would actually send.
+   *
+   * For a WEEK that is the week folder itself and every day under it, because `sync(week)`
+   * queues a job per day: a run on one day makes the whole week's push unsafe to start, not
+   * just that day's. The grouping is consulted first and `weekOf` second, so a day being
+   * processed that was never added to the projects list is still caught — it is on disk under
+   * `files/`, and the week push would send it regardless of what the list says.
+   *
+   * For a DAY it is that day and nothing else. A sibling day's folder is not being written,
+   * and holding its backup hostage to an unrelated run would be caution, not correctness.
+   */
+  private processingUnder(path: string, kind: 'week' | 'day', days: string[]): string | null {
+    if (!this.busyPath) return null;
+    if (this.busyPath === path) return this.busyPath;
+    if (kind !== 'week') return null;
+    if (days.includes(this.busyPath)) return this.busyPath;
+    return this.weekOf(this.busyPath) === path ? this.busyPath : null;
+  }
+
+  /**
+   * Record that a catch-up was held back, in the log and on the pane.
+   *
+   * Both, deliberately. The log line is the one that survives to be read after the fact — the
+   * incident this gate exists for was diagnosed from a message on screen that named an rsync
+   * exit code and nothing about why the transfer had started at all.
+   */
+  private deferForProcessing(target: string, busy: string): void {
+    console.info(
+      `[projects] Deferred the automatic archive catch-up of ${target}: a processing run is ` +
+      `in flight on ${busy}, which writes and then deletes its *_ALTERED*.fcpxml ` +
+      `intermediates inside that folder. It is resumed when the run ends.`
+    );
+    const label = this.basename(target);
+    if (!this.deferredForProcessing.includes(label)) this.deferredForProcessing.push(label);
   }
 
   /**
@@ -660,21 +821,50 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
    *
    * A synced WEEK swallows its days: `sync(week)` already queues a job per day plus the week
    * folder, so listing them separately would queue each day twice.
+   *
+   * NOTHING WITH A PROCESSING RUN INSIDE IT IS COLLECTED. The workflow writes its
+   * `*_ALTERED*.fcpxml` intermediates next to the recordings, zips them and deletes them, so
+   * an rsync that listed the folder a moment earlier finds them gone and exits 24 — which is
+   * reported verbatim, correctly, and reads as an archive fault when the real fault is having
+   * started at all. Nothing is lost either way; the copy is simply taken mid-run and is stale
+   * before the run finishes, which is the part worth preventing.
+   *
+   * RESIDUAL CASE, deliberately left open: a run that STARTS after the rsync of its week has
+   * already begun. `busyPath` is null at the moment of the decision, so this gate cannot see
+   * it, and a transfer already in flight is not cancelled to chase it — abandoning hours of a
+   * 300 GB push is worse than an archived copy that is one run out of date. What closes it
+   * afterwards is `ngOnChanges`: the run ending re-arms its week and schedules another pass,
+   * so the stale copy is corrected on the next sweep rather than at the next launch.
+   *
+   * Returns FALSE when it held something back, which is the caller's signal not to record the
+   * week as settled.
    */
   private collectBehind(
     week: string,
     days: string[],
     out: Array<{ path: string; kind: 'week' | 'day'; days: string[] }>
-  ): void {
+  ): boolean {
     if (this.archive.wasIntentionallySynced(week) && this.syncState(week) === 'idle') {
+      const busy = this.processingUnder(week, 'week', days);
+      if (busy) {
+        this.deferForProcessing(week, busy);
+        return false;
+      }
       out.push({ path: week, kind: 'week', days });
-      return;
+      return true;
     }
+    let deferred = false;
     for (const day of days) {
       if (!this.archive.wasIntentionallySynced(day)) continue;
       if (this.syncState(day) !== 'idle') continue;
+      if (this.processingUnder(day, 'day', [])) {
+        this.deferForProcessing(day, day);
+        deferred = true;
+        continue;
+      }
       out.push({ path: day, kind: 'day', days: [] });
     }
+    return !deferred;
   }
 
   /**
@@ -1064,6 +1254,8 @@ export class ProjectSidebarComponent implements OnInit, OnDestroy {
     const menu = this.contextMenu;
     this.closeContextMenu();
     if (!menu) return;
+    // Same click, a different control: the menu item and the button share one warning.
+    this.noteProcessingBeforeSync(menu.path, menu.kind);
     await this.archive.sync(menu.path, menu.kind, this.daysOf(menu.path, menu.kind));
     this.cdr.markForCheck();
   }
