@@ -181,17 +181,20 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private marqueeMoved = false;
   private marqueeStartTime = 0;          // EDITED seconds
   private marqueeEndTime = 0;            // EDITED seconds
-  // True when the in-flight marquee is a Story-Mode paint (drop → a story region) rather than
-  // a cut selection. Set at mousedown, consumed + cleared at mouseup.
-  private marqueeForStory = false;
   // In-flight story-region edge drag (grabbed an edge in the ribbon). The story's regions are
   // canonicalized (merged) at grab time so regionIndex addresses story.regions directly.
   private draggingStoryEdge: { storyId: string; regionIndex: number; edge: 'start' | 'end' } | null = null;
-  // Frozen regions of every OTHER story (id → merged regions), captured when a story gesture
-  // (edge drag or Story-Mode paint) starts. Each mousemove restores neighbors FROM this baseline
-  // and re-applies the push/claim against the gesture's current extent — which is what makes the
-  // interaction elastic: slide into a neighbor and its boundary retreats, slide back out and it
-  // returns to exactly where it was. Cleared at mouseup (whatever positions stand then commit).
+  // The edit state as it stood when the in-flight story-edge drag began. A drag is ONE undo step
+  // or none: pushing at mousedown would leave a step behind for a grab that never moved, and
+  // pushing per mousemove would bury every real step under a hundred frames of the same drag. So
+  // the baseline is captured here and pushed at mouseup — only if the drag actually changed a
+  // region. Null whenever no story gesture is in flight.
+  private storyGestureUndo: EditSnapshot | null = null;
+  // Frozen regions of every OTHER story (id → merged regions), captured when a ribbon edge drag
+  // starts. Each mousemove restores neighbors FROM this baseline and re-applies the push against
+  // the drag's current extent — which is what makes the interaction elastic: slide into a
+  // neighbor and its boundary retreats, slide back out and it returns to exactly where it was.
+  // Cleared at mouseup (whatever positions stand then commit).
   private storyPushBaseline: Map<string, { start: number; end: number }[]> | null = null;
   /**
    * In-flight "move this footage somewhere else" drag: grabbed inside an existing highlight with
@@ -267,19 +270,19 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // IPC, or any data contract. Reset on session re-init.
   stories: Story[] = [];
   private storyIdCounter = 0;          // monotonic id source (reset per session)
-  // Story Mode is the THIRD pointer tool (alongside Select and Blade). While the tool is
-  // 'story', a canvas drag paints a region into the ACTIVE story (activeStoryId), or starts a
-  // new story when none is active. `storyMode` is DERIVED from toolMode (see getter) so the
-  // tabs, ribbon and paint logic all track the single tool state.
-  activeStoryId: string | null = null;
-  // A selected story for delete: `regionIndex` null = the WHOLE story (notch click), a number =
+  // Which pane the left column shows. This is PANE state, not tool state: stories are made out of
+  // the ordinary timeline selection (Cmd+S / right-click ▸ Add to story), so looking at the story
+  // list must never change what the pointer does — a user reading the list still has the Arrow (or
+  // the Blade) in their hand.
+  leftPane: 'edit' | 'stories' = 'edit';
+  // A selected story for delete: `regionIndex` null = the WHOLE story (row/notch click), a number =
   // one CHUNK (ribbon-bar click), addressing the story's CANONICAL (merged) regions. Delete /
   // Cmd+X act on THIS (a chunk removes just that region; a whole selection removes the story) —
   // never rippling the timeline. Cleared by any other canvas gesture, Escape, or session reset.
   storySelection: { storyId: string; regionIndex: number | null } | null = null;
-  // Stories ticked for merging. Deliberately separate from `storySelection` (which drives region
-  // editing and paint targeting) so ticking a box never disturbs what the timeline is showing.
-  storyMergeIds = new Set<string>();
+  // Stories ticked for Join. Deliberately separate from `storySelection` (which drives region
+  // editing) so ticking a box never disturbs what the timeline is showing.
+  storyPickIds = new Set<string>();
 
   // ── Story analysis (local Ollama LLM) ────────────────────────────────────────
   // Chapter splitting + title suggestions. Ollama-only for now (no downloads); the model is the
@@ -662,10 +665,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.stories = [];
     this.storyIdCounter = 0;
     this.toolMode = 'select';
-    this.activeStoryId = null;
+    this.leftPane = 'edit';
     this.storySelection = null;
-    this.marqueeForStory = false;
+    this.storyPickIds.clear();
+    this.storyCtxMenu = null;
+    this.trackCtxMenu = null;
+    this.trackCtxAddOpen = false;
     this.draggingStoryEdge = null;
+    this.storyGestureUndo = null;
     this.moveDrag = null;
     // A pending debounced save belongs to the PREVIOUS session — never let it fire
     // across a switch (it would snapshot post-reset state).
@@ -1151,8 +1158,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       moveDrag: this.moveDrag,
       stories: storiesForDisplay(this.stories),
       storyRibbonPieces: r => this.editedRangesForOriginal(r.start, r.end),
-      activeStoryId: this.activeStoryId,
-      mergePicked: this.storyMergeIds,
+      selectedStoryId: this.storySelection?.storyId ?? null,
+      pickedStoryIds: this.storyPickIds,
       hasStories: this.hasStories(),
     };
   }
@@ -1201,7 +1208,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
     this.marqueeActive = false;
     this.marqueeMoved = false;
-    this.marqueeForStory = false;
     this.draggingSelection = false;
     this.selStart = null;
     this.selEnd = null;
@@ -1246,8 +1252,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // ── Scrub / drag on canvas ──────────────────────────────────────────────────
   onCanvasMouseDown(ev: MouseEvent): void {
     if (this.errorMessage || !this.manifest) return;
-    ev.preventDefault();
     this.menuOpen = false;                 // a canvas interaction dismisses the File menu
+    // Right-click belongs to onCanvasContextMenu, and contextmenu fires AFTER mousedown. Running
+    // the click logic first would scrub the playhead and REPLACE the selection on the way to a
+    // menu whose whole purpose is to act on that selection — the user would right-click a
+    // highlighted span and get a menu offering to save the one section under the cursor.
+    if (ev.button === 2) return;
+    ev.preventDefault();
     const t = this.canvasEventTime(ev);
     const y = this.canvasEventY(ev);
     const inRuler = y <= RULER_H;
@@ -1255,25 +1266,20 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // Any fresh canvas gesture drops a prior story selection; the ribbon branch below re-sets it.
     this.storySelection = null;
 
-    // A mousedown in the stories ribbon: grabbing a region EDGE (any tool) starts an edge drag
-    // that redefines that boundary. Otherwise a click on a ribbon block SELECTS that story chunk
-    // (the delete target) and makes its story active — in any tool.
+    // A mousedown in the stories ribbon: grabbing a region EDGE starts an edge drag that
+    // redefines that boundary; otherwise a click on a ribbon block SELECTS that story chunk (the
+    // delete target). Both work with whichever tool is in hand — the ribbon is not the tracks.
     if (inRibbon) {
-      // Right-click is the story menu's gesture, and contextmenu fires AFTER mousedown — running
-      // the click logic first would clear the merge pick on the way to the menu, leaving Merge
-      // grayed out on the very selection the user right-clicked. openStoryCtxMenu owns the pick
-      // rules (keep it when clicking inside it, replace it when clicking outside).
-      if (ev.button === 2) return;
-      // ⌘-click on a story block picks it for merging instead of selecting a chunk — the same
+      // ⌘-click on a story block picks it for Join instead of selecting a chunk — the same
       // gesture as in the story list, so a run of mis-split stories can be picked off the ribbon
       // where the split is actually visible. Checked before the edge grab so a ⌘-click near a
       // boundary picks rather than starting an edge drag.
       if (isMultiPick(ev)) {
         const hit = this.storyRegionAtEdited(t);
-        if (hit) this.toggleStoryMerge(hit.storyId);   // re-renders the ribbon itself
+        if (hit) this.toggleStoryPick(hit.storyId);   // re-renders the ribbon itself
         return;
       }
-      this.clearStoryMergePick();
+      this.clearStoryPick();
       const edgeHit = this.storyEdgeAtX(this.timeToX(t));
       if (edgeHit) {
         const story = this.stories.find(st => st.id === edgeHit.storyId);
@@ -1281,6 +1287,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
           // Canonicalize so the display-region index addresses story.regions directly.
           story.regions = mergeRegions(story.regions);
           this.captureStoryPushBaseline(story.id);
+          // One undo step per drag, and only if it moves something — see storyGestureUndo.
+          this.storyGestureUndo = this.editSnapshot();
           this.draggingStoryEdge = edgeHit;
           window.addEventListener('mousemove', this.onWindowMouseMove);
           window.addEventListener('mouseup', this.onWindowMouseUp);
@@ -1289,19 +1297,15 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         }
       }
       // A click on a ribbon block SELECTS that story chunk (region) — the target of a
-      // chunk-delete — and makes its story active, highlighting just that region. Clicking a
-      // GAP in the ribbon selects nothing and deselects the active story, so the ribbon can
-      // undo its own selection rather than leaving a paint target the next drag falls into.
+      // chunk-delete — highlighting just that region. Clicking a GAP in the ribbon selects
+      // nothing (storySelection was already cleared above), so the ribbon can undo its own
+      // selection.
       const chunk = this.storyRegionAtEdited(t);
-      if (chunk) {
-        this.selectStoryChunk(chunk.storyId, chunk.regionIndex);
-      } else {
-        this.activeStoryId = null;
-      }
+      if (chunk) this.selectStoryChunk(chunk.storyId, chunk.regionIndex);
       this.requestRender();
       return;
     }
-    this.clearStoryMergePick();   // any gesture outside the ribbon abandons the pick
+    this.clearStoryPick();   // any gesture outside the ribbon abandons the pick
 
     if (ev.shiftKey) {
       // Shift+drag paints a single free range (edited seconds) instead of scrubbing — a manual
@@ -1322,31 +1326,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (inRuler) {
       this.draggingPlayhead = true;
       this.setPlayhead(t);
-      window.addEventListener('mousemove', this.onWindowMouseMove);
-      window.addEventListener('mouseup', this.onWindowMouseUp);
-      this.requestRender();
-      return;
-    }
-
-    // STORY MODE + Select tool: a drag in a track lane paints a region (committed on release
-    // into the active story, or a new one). Reuses the marquee gesture, flagged so mouseup
-    // routes it to a story rather than a cut selection. A bare click (no move) is a no-op.
-    // With the BLADE tool active, story mode defers to the blade branch below — so the user
-    // can pre-cut a section mid-clip and then paint stories against the new boundary.
-    if (this.toolMode === 'story') {
-      this.selectedRanges = [];
-      this.selStart = null;
-      this.selEnd = null;
-      this.selectedGroupStart = null;
-      this.selectedGroupEnd = null;
-      this.marqueeActive = true;
-      this.marqueeMoved = false;
-      this.marqueeForStory = true;
-      // The paint claims its span from every story except the one it lands in (the active
-      // story, or a brand-new one when none is active — then EVERY existing story yields).
-      this.captureStoryPushBaseline(this.activeStoryId);
-      this.marqueeStartTime = this.snapEdited(t, false, Infinity);   // whole sections only
-      this.marqueeEndTime = this.marqueeStartTime;
       window.addEventListener('mousemove', this.onWindowMouseMove);
       window.addEventListener('mouseup', this.onWindowMouseUp);
       this.requestRender();
@@ -1378,7 +1357,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
 
     if (this.toolMode === 'select') {
-      this.marqueeForStory = false;
       // SELECT tool, track lane: a plain CLICK scrubs + selects the clicked section (or clears
       // in a gap); a DRAG turns into a marquee (committed on release). Set the click outcome
       // now; commitMarquee overrides it iff the pointer actually moves.
@@ -1636,17 +1614,20 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     });
   }
 
-  /** Switch the active pointer tool (Arrow / Blade / Story). Entering Story shows the Stories
-   *  tab (the tab binds to the derived `storyMode`); leaving it drops the active paint target
-   *  and any story selection. */
+  /** Switch the active pointer tool (Arrow / Blade). Nothing else rides on the tool: the left
+   *  pane and the stories are independent of it, so switching tools never disturbs either. */
   setTool(mode: ToolMode): void {
     if (this.toolMode === mode) return;
-    if (this.toolMode === 'story' && mode !== 'story') {
-      this.activeStoryId = null;
-      this.storySelection = null;
-    }
     this.toolMode = mode;
     this.requestRender();
+  }
+
+  /** Show the Edit (transcript) or Stories pane on the left. PANE state only — the pointer tool,
+   *  the timeline selection and the stories themselves are all untouched. */
+  setLeftPane(pane: 'edit' | 'stories'): void {
+    if (this.leftPane === pane) return;
+    this.leftPane = pane;
+    this.cdr.detectChanges();
   }
 
   private onWindowMouseMove = (ev: MouseEvent): void => {
@@ -1654,17 +1635,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     else if (this.moveDrag) { this.updateMoveDrag(ev); }
     else if (this.draggingSelection) { this.selEnd = this.snapEdited(this.canvasEventTime(ev), ev.altKey); this.requestRender(); }
     else if (this.marqueeActive) {
-      this.marqueeEndTime = this.marqueeForStory
-        ? this.snapEdited(this.canvasEventTime(ev), false, Infinity)   // whole sections only
-        : this.snapEdited(this.canvasEventTime(ev), ev.altKey);
+      this.marqueeEndTime = this.snapEdited(this.canvasEventTime(ev), ev.altKey);
       // Promote to a real marquee only past a small pixel threshold, so a jittery click stays
       // a click (section select) instead of collapsing the selection to a hairline range.
       if (Math.abs(this.timeToX(this.marqueeEndTime) - this.timeToX(this.marqueeStartTime)) > 3) {
         this.marqueeMoved = true;
       }
-      // A Story-Mode paint pushes neighbors back LIVE (baseline-restore each frame, so
-      // retreating the marquee gives their territory back before drop).
-      if (this.marqueeForStory && this.marqueeMoved) this.applyStoryPaintClaim();
       this.requestRender();
     }
     else if (this.draggingPlayhead) this.setPlayheadFromEvent(ev);
@@ -1691,6 +1667,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       if (story) story.regions = mergeRegions(story.regions);
       this.draggingStoryEdge = null;
       this.storyPushBaseline = null;
+      this.commitStoryGestureUndo();
       this.scheduleEditsSave();
     }
     // A selection-move drag that actually moved relocates the footage; one that never passed the
@@ -1711,30 +1688,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // A marquee that actually moved commits its section selection; a bare click leaves the
     // section-select outcome from mousedown untouched.
     if (this.marqueeActive) {
-      if (this.marqueeForStory) {
-        if (this.marqueeMoved) {
-          // A moved Story-Mode drag paints a region — into the active story if there is one,
-          // otherwise into a brand-new story (see paintStoryRegion).
-          const lo = Math.min(this.marqueeStartTime, this.marqueeEndTime);
-          const hi = Math.max(this.marqueeStartTime, this.marqueeEndTime);
-          this.paintStoryRegion(this.editedToOriginal(lo), this.editedToOriginal(hi));
-        } else if (this.activeStoryId) {
-          // A bare click on empty timeline DESELECTS the active story, so the next drag starts
-          // a fresh one. Without this the paint target is sticky: selecting a story to look at
-          // it (row, swatch, or its ribbon block) silently captures every later drag.
-          this.activeStoryId = null;
-          this.requestRender();
-          this.cdr.detectChanges();
-        }
-      } else if (this.marqueeMoved) {
-        this.commitMarquee();
-      }
+      if (this.marqueeMoved) this.commitMarquee();
       this.marqueeActive = false;
       this.marqueeMoved = false;
-      this.marqueeForStory = false;
-      // Neighbors trimmed by a moved paint keep their pushed-back regions (paintStoryRegion's
-      // scheduleEditsSave persists them); an unmoved click never touched them.
-      this.storyPushBaseline = null;
     }
     this.draggingPlayhead = false;
     this.draggingScrollbar = false;
@@ -1979,8 +1935,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       const anchorX = this.timeToX(this.playheadTime);
       this.setZoom(this.pxPerSec / 1.25, this.playheadTime, anchorX);
     } else if ((ev.metaKey || ev.ctrlKey) && (ev.key === 'z' || ev.key === 'Z')) {
-      // Undo / redo the cut list (Shift adds redo). Guarded off while loading.
-      if (this.loading) return;
+      // Undo / redo the edit state — cuts, blades, order AND stories (Shift adds redo). Guarded
+      // off while loading, and while a story-edge drag is mid-flight: that gesture holds a live
+      // reference into a story's region array and has not decided its own undo step yet, so
+      // swapping the story list under it would commit a half-finished drag against the wrong
+      // regions. Title TYPING is not affected either way — isTypingTarget above hands ⌘Z to the
+      // input's own native undo, which is what a per-keystroke undo step would otherwise bury.
+      if (this.loading || this.draggingStoryEdge) return;
       ev.preventDefault();
       if (ev.shiftKey) this.redo(); else this.undo();
     } else if ((ev.metaKey || ev.ctrlKey) && (ev.key === 'e' || ev.key === 'E')) {
@@ -2010,11 +1971,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     } else if (ev.key === 'b' || ev.key === 'B') {
       ev.preventDefault();
       this.setTool('blade');               // FCP Blade tool
-    } else if ((ev.key === 's' || ev.key === 'S') && !ev.metaKey && !ev.ctrlKey) {
-      // S: switch to the Story tool (like A=Select, B=Blade). A/B leave it.
+    } else if ((ev.metaKey || ev.ctrlKey) && (ev.key === 's' || ev.key === 'S')) {
+      // Cmd/Ctrl+S: save the highlighted span as a new story. Nothing highlighted is a no-op,
+      // not an error — "nothing to save" is a normal state, and there is no other meaning ⌘S
+      // could have here (the editor persists itself; there is no document to save).
       if (this.loading) return;
       ev.preventDefault();
-      this.setTool('story');
+      this.saveSelectionAsStory();
     } else if ((ev.metaKey || ev.ctrlKey) && (ev.key === 'x' || ev.key === 'X')) {
       // Cmd/Ctrl+X: a selected story chunk/story is removed from the story list; otherwise it's
       // the FCP ripple-delete alias for the timeline selection.
@@ -2034,11 +1997,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       // else. Otherwise clear the timeline selection + transcript highlight + story selection.
       if (this.abortInFlightGesture()) { this.requestRender(); return; }
       this.clearSelection();
-      // Escape also drops the active story: it is the one gesture that always means "I am done
-      // with what I had selected", and a stuck paint target is invisible until a drag lands in
-      // the wrong story. Deliberately NOT inside clearSelection(), which undo/redo and the
-      // cut paths also call — those must not silently change where painting goes.
-      this.activeStoryId = null;
       this.requestRender();
     }
   }
@@ -2060,13 +2018,40 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * The SEQUENCE has to ride along with the cuts: the two are read together by
    * rebuildEditedModel, so undoing to a cut list from before a reorder while leaving the new
    * order in place would re-tile the restored footage into the wrong slots.
+   *
+   * The STORIES ride along for the same reason from the other direction: a cut edit and a story
+   * edit are the same undo stack, so a step that changes only the cuts still has to say what the
+   * stories were at that moment — otherwise undoing past a story edit would restore the old cuts
+   * and leave the new stories. Stories are ORIGINAL seconds, so the copy taken during a cut edit
+   * is exactly right: cutting footage never moves a story region.
+   *
+   * The story copy is a JSON round-trip. `Story` is by construction JSON — it is written verbatim
+   * into the edits sidecar and read back — so a JSON clone is lossless for it BY THE SAME
+   * DEFINITION that makes the sidecar work, which no other clone gives us for free. It is also
+   * cheap: a session holds a handful of stories of a few regions each, so UNDO_LIMIT (100) steps
+   * of them stay in the tens of KB.
    */
   private editSnapshot(): EditSnapshot {
     return {
       cuts: [...this.cuts],
       blades: [...this.bladeBoundaries],
       sequence: this.sequence ? this.sequence.map(s => ({ start: s.start, end: s.end })) : null,
+      stories: this.cloneStories(this.stories),
+      storyIdCounter: this.storyIdCounter,
     };
+  }
+
+  /** Deep copy of a story list — see editSnapshot() for why JSON is the right clone here. */
+  private cloneStories(stories: Story[]): Story[] {
+    return JSON.parse(JSON.stringify(stories)) as Story[];
+  }
+
+  /** True when two story lists are identical in content. Used to decide whether a gesture that
+   *  MIGHT have changed something (an edge drag, a reorder drop, an analysis run) earned an undo
+   *  step. Same JSON basis as cloneStories: field order is stable because both sides are built by
+   *  the same code paths. */
+  private storiesEqual(a: Story[] | undefined, b: Story[]): boolean {
+    return JSON.stringify(a ?? []) === JSON.stringify(b);
   }
 
   /** Restore a snapshot onto the live state (the caller rebuilds the model). */
@@ -2077,11 +2062,51 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // SOURCE ORDER, not as an empty sequence — sequenceSpans() would then tile nothing and the
     // undo would blank the whole timeline.
     this.sequence = s.sequence ?? null;
+    // `stories` is optional for exactly the reason `sequence` is (see restoreEdits): sidecars
+    // written before stories were undoable hold snapshots without it, and EDITS_SCHEMA_VERSION
+    // must not be bumped over an added optional field or every project on disk is orphaned.
+    // ABSENT therefore means "this step says nothing about stories" — leave the current ones
+    // exactly as they are. Restoring [] instead would silently delete a user's whole story list
+    // the first time they undid a cut made by an older build.
+    if (s.stories) {
+      // Cloned on the way OUT as well as in: unlike cuts and sequence (always replaced wholesale)
+      // story regions are mutated IN PLACE by the edge drag, Split ▸ Apply and Join, so handing
+      // the live state the stack's own objects would let a later edit rewrite history.
+      this.stories = this.cloneStories(s.stories);
+      if (Number.isInteger(s.storyIdCounter)) this.storyIdCounter = s.storyIdCounter!;
+      this.reconcileStoryRefs();
+    }
+  }
+
+  /** Drop story references that the just-restored list no longer contains. The selection and the
+   *  Join pick both address stories BY ID, and an id that vanished with an undo would leave the
+   *  Join button lit for a story nobody can see. */
+  private reconcileStoryRefs(): void {
+    const alive = new Set(this.stories.map(s => s.id));
+    if (this.storySelection && !alive.has(this.storySelection.storyId)) this.storySelection = null;
+    for (const id of [...this.storyPickIds]) {
+      if (!alive.has(id)) this.storyPickIds.delete(id);
+    }
   }
 
   private pushUndo(): void {
-    this.undoStack.push(this.editSnapshot());
+    this.pushSnapshot(this.editSnapshot());
+  }
+
+  /** Push a snapshot taken EARLIER (a gesture's baseline) rather than the state right now. */
+  private pushSnapshot(snapshot: EditSnapshot): void {
+    this.undoStack.push(snapshot);
     if (this.undoStack.length > this.UNDO_LIMIT) this.undoStack.shift();
+  }
+
+  /** Close out a story gesture's undo baseline (see storyGestureUndo): one step if the gesture
+   *  actually changed a story, none at all if it was a grab that never moved. */
+  private commitStoryGestureUndo(): void {
+    const before = this.storyGestureUndo;
+    this.storyGestureUndo = null;
+    if (!before || this.storiesEqual(before.stories, this.stories)) return;
+    this.pushSnapshot(before);
+    this.redoStack = [];
   }
 
   /**
@@ -2234,6 +2259,17 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // the default, mute armed. Only `false` is ever written.
     if (e.muteMicDuringScreen !== undefined && typeof e.muteMicDuringScreen !== 'boolean') {
       throw new Error(`edit-state sidecar field 'muteMicDuringScreen' is not a boolean — fix or delete the file`);
+    }
+    // Snapshot `stories` is optional under the SAME rule: a sidecar written before stories were
+    // undoable has snapshots without it, and applyEditSnapshot reads that absence as "leave the
+    // current stories alone". Present-but-not-an-array is a corrupt file, not an old one, and is
+    // named here rather than blowing up later inside an undo.
+    for (const key of ['undoStack', 'redoStack'] as const) {
+      for (const snap of e[key]) {
+        if (snap && snap.stories !== undefined && !Array.isArray(snap.stories)) {
+          throw new Error(`edit-state sidecar has a '${key}' snapshot whose 'stories' is not an array — fix or delete the file`);
+        }
+      }
     }
     this.suppressEditsSave = true;
     try {
@@ -2468,7 +2504,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   /**
    * The story regions AS EXPORTED: each story's merged regions widened by
    * STORY_EXPORT_PAD_SECONDS on both sides (clamped to the timeline). On the ribbon stories are
-   * disjoint — the paint/edge gestures push neighbors out of the way — but the exported material
+   * disjoint — every save claims its span from the others — but the exported material
    * deliberately overlaps its neighbors by the pad: a story drawn tight against the next one
    * must not lose its shoulder footage. Python's validator only checks disjointness WITHIN a
    * story (satisfied — padRegions re-merges), and cross-story overlap simply duplicates the
@@ -2510,19 +2546,16 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
 
-  /** Story Mode is derived from the tool: it's ON exactly when the Story tool is active. Drives
-   *  the Edit/Stories tab highlight, the stories pane, and the paint gesture. */
-  get storyMode(): boolean {
-    return this.toolMode === 'story';
+  /** Stories in display (export) order, for the Add-to-story submenu. Delegates to the pure
+   *  helper — strictTemplates cannot call an imported function from a binding. */
+  storiesForDisplay(): { id: string; number: number; title: string; regions: { start: number; end: number }[] }[] {
+    return storiesForDisplay(this.stories);
   }
 
-  /** Enter/leave Story Mode by switching the tool (the left-pane tabs land here). */
-  setStoryMode(on: boolean): void {
-    this.setTool(on ? 'story' : 'select');
-  }
-
-  toggleStoryMode(): void {
-    this.setTool(this.storyMode ? 'select' : 'story');
+  /** True when the timeline has a highlight worth saving — what the lane menu's items are enabled
+   *  on, and what decides whether a right-click first selects the section under the cursor. */
+  get hasTimelineSelection(): boolean {
+    return this.allSelectionRanges().length > 0;
   }
 
   /** Re-assign story numbers to 1..N in array order so project numbering is always sequential:
@@ -2557,15 +2590,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /**
-   * Select/deselect a story as the ACTIVE paint target. Clicking the active story again
-   * deselects it (so the next drag starts a fresh story). Only meaningful in Story Mode.
-   */
-  toggleActiveStory(id: string): void {
-    this.activeStoryId = this.activeStoryId === id ? null : id;
-    this.requestRender();
-  }
-
-  /**
    * True once the loaded session has changed since `generation` was captured.
    *
    * Long-running renderer work (story analysis is hours of model calls) writes through
@@ -2586,16 +2610,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return true;
   }
 
-  /** The active paint target's name, for the hint that says where drags are landing. */
-  get activeStoryTitle(): string {
-    const story = this.stories.find(s => s.id === this.activeStoryId);
-    if (!story) return '';
-    return story.title?.trim() || `Story ${story.number}`;
-  }
-
-  /** Strip-row click: select the row's story active, unless the click was on an input/button. */
   /**
-   * ⌘-picking is handled on MOUSEDOWN, not click, and at the ROW level.
+   * Multi-picking is handled on MOUSEDOWN, not click, and at the ROW level.
    *
    * Three parts of a row swallow a click before it can reach the row handler: the title <input>
    * (flex:1, so it covers most of the row's width, and the click handler must skip it to let the
@@ -2604,7 +2620,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * preventDefault() stops the title field stealing focus on the way.
    */
   onStoryRowMouseDown(story: Story, ev: MouseEvent): void {
-    if (!isMultiPick(ev)) {
+    if (!this.isRowPickGesture(ev)) {
       // A plain press clears any stale suppression from a press that never produced a click
       // (mousedown here, mouseup elsewhere) — otherwise it would eat the NEXT ordinary click.
       this.suppressStoryClick = false;
@@ -2612,7 +2628,19 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
     ev.preventDefault();
     this.suppressStoryClick = true;
-    this.toggleStoryMerge(story.id);
+    this.toggleStoryPick(story.id);
+  }
+
+  /**
+   * ⌘-click or Shift-click on a story ROW adds/removes it from the Join pick — except that Shift
+   * inside the title field still means "extend the text selection", which is what shift-click in
+   * a text input does everywhere else and is worth more than a second picking modifier over that
+   * one strip of the row. The ribbon keeps ⌘ only (isMultiPick), where there is no field to
+   * protect and no second gesture to confuse it with.
+   */
+  private isRowPickGesture(ev: MouseEvent): boolean {
+    if (isMultiPick(ev)) return true;
+    return ev.shiftKey && (ev.target as HTMLElement | null)?.tagName !== 'INPUT';
   }
 
   /** True once, when the click that follows a ⌘-pick mousedown should be ignored. */
@@ -2623,12 +2651,17 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return true;
   }
 
+  /** Plain row click: this story becomes the ONE pick (so Join is always built from what is
+   *  highlighted in the list) and its whole span is selected on the timeline — the same thing the
+   *  colour swatch does, because "click a story to see it" is what the row is for. */
   onStoryRowClick(story: Story, ev: Event): void {
-    if (this.consumeStoryClickSuppression()) return;   // the ⌘-pick already happened on mousedown
+    if (this.consumeStoryClickSuppression()) return;   // the pick already happened on mousedown
     const tag = (ev.target as HTMLElement | null)?.tagName;
     if (tag === 'INPUT' || tag === 'BUTTON') return;   // let field/delete handle their own click
-    this.clearStoryMergePick();                        // a plain click abandons a half-made pick
-    this.toggleActiveStory(story.id);
+    this.storyPickIds.clear();
+    this.storyPickIds.add(story.id);
+    this.selectWholeStory(story);
+    this.cdr.detectChanges();
   }
 
   /** Swatch click — selects the whole story, unless this click is the tail of a ⌘-pick. */
@@ -2645,30 +2678,97 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /**
-   * Paint one region [startOrig, endOrig] (ORIGINAL seconds) into a story. With a story active
-   * the region is appended to it (regions re-merged); with none active a brand-new story is
-   * created — deliberately NOT auto-activated, so consecutive drags make separate stories and
-   * the user accumulates regions by first selecting a story. Off the cut undo stack.
+   * The current timeline highlight as ORIGINAL-second regions — the one mapping both story-making
+   * gestures share.
+   *
+   * Every selected EDITED range is mapped with originalSpansForEdited, never by mapping its two
+   * edges: once footage has been reordered, one contiguous highlight can come from several places
+   * in the original recording, and a two-edge map would hand the story everything lying between
+   * them — footage the user never highlighted.
+   *
+   * Returns [] when nothing is highlighted (a normal state the callers treat as a no-op). A
+   * highlight that maps to NO original footage is a wiring fault, not a normal state — the edited
+   * timeline is built out of original footage — so it throws rather than making an empty story.
    */
-  private paintStoryRegion(startOrig: number, endOrig: number): void {
-    const lo = Math.min(startOrig, endOrig);
-    const hi = Math.max(startOrig, endOrig);
-    if (!(hi - lo > EPS)) return;
-
-    const active = this.activeStoryId ? this.stories.find(s => s.id === this.activeStoryId) : null;
-    if (active) {
-      active.regions = mergeRegions([...active.regions, { start: lo, end: hi }]);
-    } else {
-      const number = this.stories.length + 1;
-      const story: Story = {
-        id: `story-${++this.storyIdCounter}`,
-        number,
-        title: `Story ${number}`,
-        regions: [{ start: lo, end: hi }],
-      };
-      this.stories = [...this.stories, story];
-      this.renumberStories();
+  private selectionAsRegions(what: string): { start: number; end: number }[] {
+    const ranges = this.allSelectionRanges();
+    if (ranges.length === 0) return [];
+    const regions = mergeRegions(ranges.flatMap(r => this.originalSpansForEdited(r.lo, r.hi)));
+    if (regions.length === 0) {
+      throw new Error(
+        `Cannot ${what}: the highlighted ${ranges.length === 1 ? 'span' : 'spans'} of the edited ` +
+        `timeline map to no original footage at all. The edited timeline is built out of original ` +
+        `footage, so this means the kept-interval index (keptBySequence) disagrees with the ` +
+        `selection — a wiring fault, not an empty selection.`);
     }
+    return regions;
+  }
+
+  /**
+   * Every OTHER story yields `regions`. Stories on the ribbon are disjoint, and this is what keeps
+   * them that way: saving a span that overlaps a neighbour pushes the neighbour's boundary back to
+   * the claimed edge, and a story claimed clean through the middle splits around it. A story
+   * claimed away entirely keeps an EMPTY region list rather than disappearing — same rule as
+   * chunk-delete: it stays in the list until the user removes it with ×.
+   */
+  private claimRegionsFromOtherStories(keepId: string, regions: { start: number; end: number }[]): void {
+    for (const s of this.stories) {
+      if (s.id === keepId) continue;
+      let out = mergeRegions(s.regions);
+      for (const r of regions) out = subtractRegion(out, r.start, r.end);
+      s.regions = out;
+    }
+  }
+
+  /**
+   * ⌘S / right-click ▸ Save as story: the highlighted span becomes a NEW story.
+   *
+   * Nothing highlighted is a no-op — there is nothing to save, which is not an error. The new
+   * story is then SELECTED (its regions highlighted on the timeline, its row lit) so the user can
+   * see what they just made in the ribbon. The left pane is deliberately NOT switched to the
+   * Stories tab: they may be reading the transcript to find the next span, and yanking that away
+   * to show a list would cost more than it tells them.
+   */
+  saveSelectionAsStory(): void {
+    const regions = this.selectionAsRegions('save the selection as a story');
+    if (regions.length === 0) return;
+    this.pushUndo();
+    this.redoStack = [];
+    const number = this.stories.length + 1;
+    const story: Story = {
+      id: `story-${++this.storyIdCounter}`,
+      number,
+      title: `Story ${number}`,
+      regions,
+    };
+    this.stories = [...this.stories, story];
+    this.claimRegionsFromOtherStories(story.id, regions);
+    this.renumberStories();
+    this.selectWholeStory(story);
+    this.scheduleEditsSave();
+    this.requestRender();
+    this.cdr.detectChanges();
+  }
+
+  /**
+   * Right-click ▸ Add to story ▸ <story>: the highlighted span is appended to an EXISTING story,
+   * with the same claim rule as saving a new one (every other story yields it). The story is left
+   * selected so its new shape is visible on the ribbon.
+   */
+  addSelectionToStory(storyId: string): void {
+    const target = this.stories.find(s => s.id === storyId);
+    if (!target) {
+      throw new Error(`Cannot add the selection to story '${storyId}': no story with that id ` +
+        `exists. The menu was built from the current story list, so this means the list changed ` +
+        `while the menu was open without the menu being closed.`);
+    }
+    const regions = this.selectionAsRegions(`add the selection to “${target.title.trim() || `Story ${target.number}`}”`);
+    if (regions.length === 0) return;
+    this.pushUndo();
+    this.redoStack = [];
+    target.regions = mergeRegions([...target.regions, ...regions]);
+    this.claimRegionsFromOtherStories(target.id, regions);
+    this.selectWholeStory(target);
     this.scheduleEditsSave();
     this.requestRender();
     this.cdr.detectChanges();
@@ -2685,25 +2785,23 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.requestRender();
   }
 
-  /** Color-notch click: select the WHOLE story (all its regions) and make it the active paint
-   *  target. A follow-up Delete removes the whole story (× does the same); it never ripples the
-   *  timeline. */
+  /** Select the WHOLE story (all its regions) — the row click, the colour notch, and what a
+   *  freshly saved story lands on. A follow-up Delete removes the whole story (× does the same);
+   *  it never ripples the timeline. */
   selectWholeStory(story: Story): void {
     this.storySelection = { storyId: story.id, regionIndex: null };
-    this.activeStoryId = story.id;
     this.selectResolvedStory({ regions: mergeRegions(story.regions) });
     this.requestRender();
   }
 
-  /** Select one story CHUNK (region) as the delete target and make its story active. The story's
-   *  regions are canonicalized (merged) so `regionIndex` addresses story.regions directly, and
-   *  only that region is reflected into the timeline highlight. */
+  /** Select one story CHUNK (region) as the delete target. The story's regions are canonicalized
+   *  (merged) so `regionIndex` addresses story.regions directly, and only that region is
+   *  reflected into the timeline highlight. */
   selectStoryChunk(storyId: string, regionIndex: number): void {
     const story = this.stories.find(s => s.id === storyId);
     if (!story) return;
     story.regions = mergeRegions(story.regions);
     this.storySelection = { storyId, regionIndex };
-    this.activeStoryId = storyId;
     const region = story.regions[regionIndex];
     this.selectResolvedStory({ regions: region ? [region] : [] });
     this.requestRender();
@@ -2718,11 +2816,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const story = this.stories.find(s => s.id === sel.storyId);
     if (!story) { this.storySelection = null; return; }
     if (sel.regionIndex === null) {
-      this.deleteStory(story);
+      this.deleteStory(story);   // pushes its own undo step
       return;
     }
     story.regions = mergeRegions(story.regions);
     if (sel.regionIndex >= 0 && sel.regionIndex < story.regions.length) {
+      this.pushUndo();
+      this.redoStack = [];
       story.regions.splice(sel.regionIndex, 1);
     }
     this.storySelection = null;
@@ -2732,11 +2832,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.cdr.detectChanges();
   }
 
-  // ── Merging stories ─────────────────────────────────────────────────────────
-  /** Add/remove a story from the merge pick. */
-  toggleStoryMerge(id: string): void {
-    if (this.storyMergeIds.has(id)) this.storyMergeIds.delete(id);
-    else this.storyMergeIds.add(id);
+  // ── Joining stories ─────────────────────────────────────────────────────────
+  /** Add/remove a story from the Join pick. */
+  toggleStoryPick(id: string): void {
+    if (this.storyPickIds.has(id)) this.storyPickIds.delete(id);
+    else this.storyPickIds.add(id);
     this.requestRender();          // the ribbon outlines picked stories too
     this.cdr.detectChanges();
   }
@@ -2801,6 +2901,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (to < 0) to = rest.length;
     rest.splice(to, 0, moving);
 
+    // Dropping a row back where it started is not an edit — no undo step for a drag that moved
+    // nothing, exactly like the ribbon edge drag and the marquee's promotion threshold.
+    const reordered = rest.some((st, i) => st.id !== this.stories[i].id);
+    if (reordered) {
+      this.pushUndo();
+      this.redoStack = [];
+    }
     this.stories = rest;
     this.dragStoryId = null;
     this.dropBeforeId = null;
@@ -2827,28 +2934,52 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.openStoryCtxMenu(story.id, ev.clientX, ev.clientY);
   }
 
-  /** Right-click on the timeline ribbon. Ignored (native menu allowed through) anywhere else on
-   *  the canvas, so this never steals a right-click from the tracks. */
+  /**
+   * Right-click on the canvas. TWO menus live here, chosen by where the click lands:
+   *   - in the stories ribbon → the story menu (Join / Send to Metadata) for the block under it;
+   *   - in a track lane → the selection menu (Save as story / Add to story).
+   * Anywhere else (the ruler, the empty space below the last lane) the native menu is allowed
+   * through untouched.
+   */
   onCanvasContextMenu(ev: MouseEvent): void {
-    if (!this.hasStories() || this.errorMessage || !this.manifest) return;
+    if (this.errorMessage || !this.manifest) return;
     const y = this.canvasEventY(ev);
-    if (y <= RULER_H || y > RULER_H + this.ribbonHeight) return;
-    const hit = this.storyRegionAtEdited(this.canvasEventTime(ev));
-    if (!hit) return;
+    if (this.hasStories() && y > RULER_H && y <= RULER_H + this.ribbonHeight) {
+      const hit = this.storyRegionAtEdited(this.canvasEventTime(ev));
+      if (!hit) return;
+      ev.preventDefault();
+      this.openStoryCtxMenu(hit.storyId, ev.clientX, ev.clientY);
+      return;
+    }
+    const row = this.rowAt(y);
+    if (!row) return;
     ev.preventDefault();
-    this.openStoryCtxMenu(hit.storyId, ev.clientX, ev.clientY);
+    // With NOTHING highlighted, the right-click first selects the section under the cursor exactly
+    // as a plain click would — so right-clicking a section and hitting Save as story is one
+    // gesture, not "click, then right-click again". An existing highlight is left alone: the user
+    // built it, and replacing it with the one section under the cursor would silently shrink what
+    // the menu is about to save.
+    if (!this.hasTimelineSelection) {
+      const t = this.canvasEventTime(ev);
+      if (this.segmentAt(row.track.id, t)) {
+        this.selectedRanges = [];
+        this.selectSectionAround(t);
+        this.requestRender();
+      }
+    }
+    this.openTrackCtxMenu(ev.clientX, ev.clientY);
   }
 
   private openStoryCtxMenu(storyId: string, x: number, y: number): void {
     // Right-clicking OUTSIDE the current pick replaces it with just this story. The menu must only
     // ever act on stories the user can currently see highlighted — never on a pick they made
-    // earlier and forgot, which would silently merge the wrong things.
-    if (!this.storyMergeIds.has(storyId)) {
-      this.storyMergeIds.clear();
-      this.storyMergeIds.add(storyId);
+    // earlier and forgot, which would silently join the wrong things.
+    if (!this.storyPickIds.has(storyId)) {
+      this.storyPickIds.clear();
+      this.storyPickIds.add(storyId);
       this.requestRender();
     }
-    this.storyCtxMenu = { x, y };
+    this.storyCtxMenu = this.clampMenu(x, y, EditorComponent.STORY_CTX_W, 3);
     this.cdr.detectChanges();
   }
 
@@ -2857,58 +2988,122 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.cdr.detectChanges();
   }
 
-  /** Merge from the context menu. Closes first so the menu cannot outlive the stories it names. */
-  mergeFromCtxMenu(): void {
+  /** Join from the context menu. Closes first so the menu cannot outlive the stories it names. */
+  joinFromCtxMenu(): void {
     this.closeStoryCtxMenu();
-    this.mergeSelectedStories();
+    this.joinSelectedStories();
   }
 
-  /** Drop the pick. Any plain (unmodified) click does this, so a partial selection can never
-   *  linger unnoticed and merge something the user forgot they had picked. */
-  private clearStoryMergePick(): void {
-    if (this.storyMergeIds.size === 0) return;
-    this.storyMergeIds.clear();
+  /** Drop the pick. Any plain (unmodified) click does this, so a partial pick can never linger
+   *  unnoticed and join something the user forgot they had picked. */
+  private clearStoryPick(): void {
+    if (this.storyPickIds.size === 0) return;
+    this.storyPickIds.clear();
     this.requestRender();
     this.cdr.detectChanges();
   }
 
-  /** Merge needs at least two stories ticked. */
-  get canMergeStories(): boolean {
-    return this.storyMergeIds.size >= 2;
+  /** Join needs at least two stories ticked. */
+  get canJoinStories(): boolean {
+    return this.storyPickIds.size >= 2;
+  }
+
+  // ── Track-lane right-click menu (Save as story / Add to story) ───────────────
+  // Fixed-positioned at the cursor, same pattern as .story-ctx. `addOpen` is the hover state of
+  // the Add-to-story submenu.
+  trackCtxMenu: { x: number; y: number } | null = null;
+  trackCtxAddOpen = false;
+  /**
+   * Menu geometry, in CSS px, DUPLICATED from the stylesheet — .story-ctx and .track-ctx pin these
+   * exact widths, and .ctx-row pins the row height. A context menu has to be positioned before it
+   * is rendered (there is nothing to measure yet), so the clamp needs the numbers up front; the
+   * alternative is a measure-then-reposition pass that makes the menu visibly jump. Change either
+   * side and change the other.
+   */
+  private static readonly STORY_CTX_W = 260;
+  private static readonly TRACK_CTX_W = 210;
+  private static readonly CTX_SUBMENU_W = 240;
+  private static readonly CTX_ROW_H = 28;
+  private static readonly CTX_PAD = 8;   // the menu's own vertical padding + border
+  /** True when the Add-to-story submenu has to open to the LEFT of its parent to stay on screen. */
+  trackCtxFlipLeft = false;
+
+  /**
+   * Place a menu of `rows` rows at the cursor, pulled back inside the window if it would hang off
+   * the right or bottom edge. Off-screen items are simply unreachable — there is no scrolling the
+   * viewport to a fixed-position menu — so this is correctness, not polish.
+   */
+  private clampMenu(x: number, y: number, width: number, rows: number): { x: number; y: number } {
+    const height = rows * EditorComponent.CTX_ROW_H + EditorComponent.CTX_PAD;
+    const MARGIN = 6;
+    return {
+      x: Math.max(MARGIN, Math.min(x, window.innerWidth - width - MARGIN)),
+      y: Math.max(MARGIN, Math.min(y, window.innerHeight - height - MARGIN)),
+    };
+  }
+
+  private openTrackCtxMenu(x: number, y: number): void {
+    this.trackCtxAddOpen = false;
+    this.trackCtxMenu = this.clampMenu(x, y, EditorComponent.TRACK_CTX_W, 3);
+    // The submenu flies out to the right unless the parent is already close enough to the edge
+    // that it would land off-screen.
+    this.trackCtxFlipLeft =
+      this.trackCtxMenu.x + EditorComponent.TRACK_CTX_W + EditorComponent.CTX_SUBMENU_W
+        > window.innerWidth;
+    this.cdr.detectChanges();
+  }
+
+  closeTrackCtxMenu(): void {
+    this.trackCtxMenu = null;
+    this.trackCtxAddOpen = false;
+    this.cdr.detectChanges();
+  }
+
+  /** Save as story, from the lane menu. Closes first so the menu cannot outlive the selection. */
+  saveSelectionAsStoryFromCtxMenu(): void {
+    this.closeTrackCtxMenu();
+    this.saveSelectionAsStory();
+  }
+
+  /** Add to story ▸ <story>, from the lane menu. Closes first, same reason. */
+  addSelectionToStoryFromCtxMenu(storyId: string): void {
+    this.closeTrackCtxMenu();
+    this.addSelectionToStory(storyId);
   }
 
   /**
-   * Merge the ticked stories into one. The analyzer sometimes splits a single story in two — this
+   * Join the ticked stories into one. The analyzer sometimes splits a single story in two — this
    * is the manual repair, and the direction that matters, since an over-split is fixable by hand
    * and a missed boundary is not.
    *
    * The FIRST ticked story in list order absorbs the others: it keeps its id, position and title,
-   * and takes the union of every region. Immediate and off the undo stack, matching deleteStory.
+   * and takes the union of every region. One undo step.
    */
-  mergeSelectedStories(): void {
-    const chosen = this.stories.filter(s => this.storyMergeIds.has(s.id));
+  joinSelectedStories(): void {
+    const chosen = this.stories.filter(s => this.storyPickIds.has(s.id));
     if (chosen.length < 2) return;
+    this.pushUndo();
+    this.redoStack = [];
     const target = chosen[0];
 
     target.regions = mergeRegions(chosen.flatMap(s => s.regions));
     // The absorbed stories' chapters are deliberately NOT concatenated onto the target any more.
-    // A merge redraws the boundary, so what comes out is a new unit: two lists that each chaptered
+    // A join redraws the boundary, so what comes out is a new unit: two lists that each chaptered
     // half of it do not chapter the whole, and a title conditioned on the concatenation describes
     // a story that no longer exists. The target keeps its own list, which now reads STALE against
     // the merged regions (its fingerprint cannot match a span it never covered), so it is
     // re-derived on the next demand instead of being trusted. Nothing is destroyed here — nothing
     // is promoted either. That falls out of the fingerprint; it is not an invalidation call.
-    // The split cache addresses the span of the OLD story; after a merge it describes neither the
+    // The split cache addresses the span of the OLD story; after a join it describes neither the
     // new regions nor the right children, so reopening Split must re-detect rather than restore a
     // layout that no longer fits.
     delete target.split;
 
     const absorbed = new Set(chosen.slice(1).map(s => s.id));
     this.stories = this.stories.filter(s => !absorbed.has(s.id));
-    if (this.activeStoryId && absorbed.has(this.activeStoryId)) this.activeStoryId = target.id;
     if (this.storySelection && absorbed.has(this.storySelection.storyId)) this.storySelection = null;
 
-    this.storyMergeIds.clear();
+    this.storyPickIds.clear();
     this.renumberStories();
     this.clearSelection();
     this.scheduleEditsSave();
@@ -2916,12 +3111,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.cdr.detectChanges();
   }
 
-  /** Delete a whole story (immediate, off the undo stack). Clears active/selection if it was this
-   *  one, then resequences the remaining story numbers. */
+  /** Delete a whole story. One undo step; clears the selection/pick if they named this story,
+   *  then resequences the remaining story numbers. */
   deleteStory(story: Story): void {
+    this.pushUndo();
+    this.redoStack = [];
     this.stories = this.stories.filter(s => s.id !== story.id);
-    this.storyMergeIds.delete(story.id);
-    if (this.activeStoryId === story.id) this.activeStoryId = null;
+    this.storyPickIds.delete(story.id);
     if (this.storySelection?.storyId === story.id) this.storySelection = null;
     this.renumberStories();
     this.clearSelection();
@@ -2963,7 +3159,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * cannot outlive the stories it names.
    */
   async sendStoryToMetadataFromCtxMenu(): Promise<void> {
-    const picked = this.stories.filter(s => this.storyMergeIds.has(s.id));
+    const picked = this.stories.filter(s => this.storyPickIds.has(s.id));
     this.closeStoryCtxMenu();
     if (!picked.length) return;
     await this.sendStoriesToTitles(picked);
@@ -3418,7 +3614,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const drag = this.draggingStoryEdge!;
     const story = this.stories.find(s => s.id === drag.storyId);
     const region = story?.regions[drag.regionIndex];
-    if (!story || !region) { this.draggingStoryEdge = null; return; }
+    // The story or the region vanished under the drag (nothing in the UI can do this). Drop the
+    // gesture AND its undo baseline: a baseline kept past the gesture it belongs to would be a
+    // snapshot of a state nothing is going to be compared against.
+    if (!story || !region) { this.draggingStoryEdge = null; this.storyGestureUndo = null; return; }
     const fs = this.manifest?.frameSeconds || (1001 / 30000);
     const durOrig = this.manifest?.timelineDuration || 0;
     const tEdited = this.snapEdited(this.canvasEventTime(ev), false, Infinity);
@@ -3432,11 +3631,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.requestRender();
   }
 
-  /** Freeze every story's regions EXCEPT `exceptStoryId`'s (merged, deep-copied) as the push
-   *  baseline for the story gesture that is starting. Merging here canonicalizes the neighbors
-   *  the same way the grab canonicalizes the dragged story, so the per-region push math below
-   *  works on disjoint spans. */
-  private captureStoryPushBaseline(exceptStoryId: string | null): void {
+  /** Freeze every story's regions EXCEPT the dragged one's (merged, deep-copied) as the push
+   *  baseline for the edge drag that is starting. Merging here canonicalizes the neighbors the
+   *  same way the grab canonicalizes the dragged story, so the per-region push math below works
+   *  on disjoint spans. */
+  private captureStoryPushBaseline(exceptStoryId: string): void {
     const baseline = new Map<string, { start: number; end: number }[]>();
     for (const s of this.stories) {
       if (s.id === exceptStoryId) continue;
@@ -3487,23 +3686,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
           ? { start: Math.min(Math.max(r.start, region.end), r.end - fs), end: r.end }
           : { start: r.start, end: Math.max(Math.min(r.end, region.start), r.start + fs) };
       });
-    }
-  }
-
-  /** The elastic claim for a Story-Mode paint: restore every baselined neighbor and subtract
-   *  the marquee's CURRENT span from it, so neighbors' boundaries retreat as the paint grows
-   *  and return as it shrinks. Painting clean through the middle of a story splits it around
-   *  the painted span; a story painted over entirely keeps an empty region list (same rule as
-   *  chunk-delete — it stays in the list until the user removes it with ×). */
-  private applyStoryPaintClaim(): void {
-    const baseline = this.storyPushBaseline;
-    if (!baseline) return;
-    const lo = this.editedToOriginal(Math.min(this.marqueeStartTime, this.marqueeEndTime));
-    const hi = this.editedToOriginal(Math.max(this.marqueeStartTime, this.marqueeEndTime));
-    for (const [id, regions] of baseline) {
-      const s = this.stories.find(st => st.id === id);
-      if (!s) continue;
-      s.regions = subtractRegion(regions, lo, hi);
     }
   }
 
@@ -3770,6 +3952,12 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.cdr.detectChanges();
     try {
       if (this.hasStories()) {
+        // ONE undo step for the whole run, not one per story: the user pressed one button, and a
+        // hundred steps of "story 7 got a title" would bury every real edit under the stack limit.
+        // Captured here and pushed after the loop, only if the run actually wrote something —
+        // a run where every story was already fresh, or was stopped before its first write, is
+        // not an edit.
+        const beforeRun = this.editSnapshot();
         // One pass per story that has transcript to work from (empties and scrap excluded).
         const workable = this.stories.filter(s => this.transcriptTextForRegions(mergeRegions(s.regions)));
         // The whole run, listed in the dock up front: story 1 running, the rest waiting. Each row
@@ -3852,6 +4040,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
           this.activityQueueAdvance();
           this.cdr.detectChanges();
         }
+        // Compared directly against bootstrapGeneration rather than through sessionChanged(): the
+        // loop above has already reported the switch, and this is a question ("may I write to
+        // THIS session's undo stack?"), not a second abandonment to announce. Pushing here after a
+        // switch would file the old session's step in the new session's history.
+        if (generation === this.bootstrapGeneration && !this.storiesEqual(beforeRun.stories, this.stories)) {
+          this.pushSnapshot(beforeRun);
+          this.redoStack = [];
+        }
         // Named, not counted — "2 stories failed" tells the user nothing they can act on, and the
         // stories that failed are exactly the ones still showing stale chapters.
         if (failures.length) {
@@ -3874,6 +4070,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         if (this.sessionChanged(generation)) return;
         const chapters = res.chapters || [];
         if (chapters.length === 0) throw new Error('No stories detected.');
+        // Before the ids are minted, not after: the snapshot has to carry the storyIdCounter as it
+        // stood, so undoing the auto-split hands those ids back rather than leaving the counter
+        // parked past them.
+        this.pushUndo();
+        this.redoStack = [];
         const created: Story[] = chapters.map((c, i) => {
           const story: Story = {
             id: `story-${++this.storyIdCounter}`,
@@ -4112,6 +4313,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   confirmSplit(): void {
     const story = this.splitStory;
     if (!story) { this.cancelSplit(); return; }
+    // One undo step for the whole Apply — it rewrites the parent's regions, its chapters and its
+    // title, and creates or replaces a child story per bucket, which is one action to the user.
+    // Pushed before the first write so the step describes the state they can go back to.
+    this.pushUndo();
+    this.redoStack = [];
     // Intersect against the ANALYZED span, not the story's current regions: on a rework the story
     // was already shrunk by a prior Apply, but the chapters still address the original span.
     const basis = this.splitAnalyzedRegions.length ? this.splitAnalyzedRegions : mergeRegions(story.regions);

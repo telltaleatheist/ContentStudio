@@ -46,7 +46,8 @@ export function mergeRegions(regions: { start: number; end: number }[]): { start
  * Subtract [lo,hi] from a region list: regions outside survive untouched, regions straddling
  * an edge are trimmed to it, a region containing [lo,hi] is split around it. Sub-EPS slivers
  * are dropped (via mergeRegions). Pure — never mutates the input. This is how one story CLAIMS
- * a span from the others: painting over a neighbor pushes its boundary back to the paint edge.
+ * a span from the others: saving a span that covers a neighbour pushes the neighbour's boundary
+ * back to the claimed edge.
  */
 export function subtractRegion(
   regions: { start: number; end: number }[], lo: number, hi: number
