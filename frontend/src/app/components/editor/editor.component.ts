@@ -48,6 +48,22 @@ import {
  * playback and shows the error).
  */
 
+/**
+ * Bridge the source-order gaps between consecutive original spans of ONE edited highlight.
+ * See EditorComponent.selectionAsRegions for why: a highlight across a cut is one region, not
+ * two, because the cut is subtracted at export anyway. A span starting before its predecessor
+ * ends is reordered footage and is never bridged.
+ */
+function bridgeCutGaps(spans: { start: number; end: number }[]): { start: number; end: number }[] {
+  const out: { start: number; end: number }[] = [];
+  for (const sp of spans) {
+    const last = out[out.length - 1];
+    if (last && sp.start >= last.end - EPS) last.end = sp.end;
+    else out.push({ start: sp.start, end: sp.end });
+  }
+  return out;
+}
+
 @Component({
   selector: 'app-editor',
   standalone: false,
@@ -2741,10 +2757,19 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * The current timeline highlight as ORIGINAL-second regions — the one mapping both story-making
    * gestures share.
    *
-   * Every selected EDITED range is mapped with originalSpansForEdited, never by mapping its two
-   * edges: once footage has been reordered, one contiguous highlight can come from several places
-   * in the original recording, and a two-edge map would hand the story everything lying between
-   * them — footage the user never highlighted.
+   * One highlight, one region. originalSpansForEdited returns a span PER KEPT PIECE, so a
+   * highlight that runs across a cut comes back as two spans with the removed footage between
+   * them — contiguous on the edited timeline, separate in original seconds. Left that way the
+   * story shows as "2 parts" with a seam on the ribbon for what the user drew as one block. A
+   * story region is exported minus the cuts anyway (see Story in editor-types), so bridging the
+   * gap changes nothing in the output and gives back the one region the old paint gesture made.
+   * Only source-order gaps are bridged: a next span that starts BEFORE the previous one ends is
+   * reordered footage, and a region spanning it would claim everything between the two in
+   * original time — footage the user never highlighted.
+   *
+   * That is also why the mapping goes through originalSpansForEdited and never the two edges of
+   * the highlight: once footage has been reordered, one contiguous highlight can come from several
+   * places in the original recording.
    *
    * Returns [] when nothing is highlighted (a normal state the callers treat as a no-op). A
    * highlight that maps to NO original footage is a wiring fault, not a normal state — the edited
@@ -2753,7 +2778,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private selectionAsRegions(what: string): { start: number; end: number }[] {
     const ranges = this.allSelectionRanges();
     if (ranges.length === 0) return [];
-    const regions = mergeRegions(ranges.flatMap(r => this.originalSpansForEdited(r.lo, r.hi)));
+    const regions = mergeRegions(ranges.flatMap(r => bridgeCutGaps(this.originalSpansForEdited(r.lo, r.hi))));
     if (regions.length === 0) {
       throw new Error(
         `Cannot ${what}: the highlighted ${ranges.length === 1 ? 'span' : 'spans'} of the edited ` +
