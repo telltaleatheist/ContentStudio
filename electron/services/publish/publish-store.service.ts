@@ -107,6 +107,16 @@ export interface GeneratedFallback {
    */
   sourcePath?: string | null;
   /**
+   * Whether the item's record SAYS anything about its source path at all.
+   *
+   * Two different facts hide behind a null sourcePath, and the operator needs to be told
+   * which one he has: a text subject or a compilation is written with `source_path: null`
+   * on purpose (there is no single video file, and never was), while an item written
+   * before source paths were recorded has no such key. true = the record declares it;
+   * false = the record predates the key. Read off the record, never inferred from age.
+   */
+  sourcePathDeclared?: boolean;
+  /**
    * The prompt set the RUN was generated with, as the job JSON recorded it, or null.
    *
    * Carried for ONE reason: it is the operator's channel choice, made before generation
