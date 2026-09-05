@@ -1348,6 +1348,18 @@ export class AIManagerService {
   }
 
   /**
+   * The loaded prompt set's description_links block, trimmed — the constant `addDescriptionLinks`
+   * appends beneath every generated description.
+   *
+   * Read by the SCRUB pass, which has to hold it back: it is a fixed block of URLs the prompt set
+   * authored, not text a model wrote, and sending fifteen links through a rewrite call to change
+   * nothing is how a link comes back mangled. Empty when the set declares none.
+   */
+  descriptionLinks(): string {
+    return (this.currentPromptSet?.description_links || '').trim();
+  }
+
+  /**
    * The loaded channel's promoted_items list — the creator's own plugs, read here for the
    * chapter pipeline's prompts (the field instructions get theirs through fieldSection's
    * {promoted_items} slot). Empty when the channel declares none.

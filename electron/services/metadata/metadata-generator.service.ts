@@ -36,6 +36,7 @@ import {
 import type { ModelRosterEntry } from './metadata-tasks';
 import { JobModelLifecycle } from './model-lifecycle';
 import { excludePromoChapters } from './promo-chapters';
+import { SCRUB_ROUTING_TASK, scrubGeneratedItem } from './scrub';
 import { DigestChapter, FieldContentDecision, digestChaptersOf, resolveFieldContent } from './chapter-digest';
 import { topEntities, transcriptCasing } from './entity-extraction';
 import { rankKeyPhrases } from './key-phrases';
@@ -710,6 +711,19 @@ export class MetadataGeneratorService {
           // ...and with which TRANSCRIPT of that source wrote its words, recorded on both
           // branches so the report can always say (spec §3.5).
           (metadata as any)._prompt_trace = aiManager.promptTrace.slice(promptTraceStart);
+
+          // THE SCRUB PASS (scrub.ts, ledger #183): the assembled description, hook, alternates
+          // and chapter titles go back through the model once so the video's subject matter is
+          // the subject of its own sentences rather than the person who made it. It runs HERE —
+          // after the trace slice, before the save — because the entries it appends to
+          // `_prompt_trace` are its own, and a cloud call records itself on the AI manager's
+          // running trace as it goes out, so slicing afterwards would count them twice. One
+          // line, one function: this pass is removed by deleting it. A shape that does not
+          // check out throws, and this item fails the way any other field call failing fails it.
+          await scrubGeneratedItem(metadata, {
+            option: routingOption(SCRUB_ROUTING_TASK, this.routing(params)[SCRUB_ROUTING_TASK]),
+            transport: { aiManager, ollamaHost: params.aiHost || 'http://localhost:11434' },
+          });
 
           const saveResult = await outputHandler.addItemToJob(
             jobInfo.jobId, metadata, this.itemSourceOf(item), this.itemProvenanceOf(item));

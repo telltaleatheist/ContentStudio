@@ -1,0 +1,49 @@
+register: |-
+  Rewrite the text below so that every sentence is about the video's subject matter: the claims,
+  the evidence, the events and the people in the footage are the ones doing the doing.
+
+  Keep every fact, every name, every number, every claim and every judgement precisely as they
+  are written. Keep the length, the order and the shape of the text as it is written.
+
+  This is a minimal edit. A sentence already about the subject matter comes back word for word,
+  exactly as it stands, down to its punctuation. The sentences that change are the ones built
+  around the person who made this video — one naming him, or calling him the creator, the host,
+  the speaker, the narrator, the commentator, the presenter or the channel, or carried by "we"
+  or "I". Rewrite each of those so the thing it reports IS the sentence: the claim, the finding,
+  the ruling or the event stands as the subject, in the same words and in the active voice, and
+  the person who made this video is out of that sentence altogether — out of its subject, out of
+  its object, and out of any trailing phrase saying who said it or whose view it was.
+
+  A person who appears IN the footage stays exactly where he is and keeps his name, including a
+  host, a speaker or a presenter the video is about.
+
+  A line inviting the viewer to the channel, to a book, to a link or to subscribe is not a
+  sentence about the video's content: it stays exactly as it is written.
+
+  Return the rewritten text and nothing else.
+
+shapes:
+  lines: |-
+    The text below is a list, one entry per line, {count} of them.
+
+    Write {count} lines, one rewritten entry per line, in the order the entries stand below.
+    Each line carries one entry alone: its words and nothing else.
+
+  prose: |-
+    Write the rewritten text as one block of prose, keeping its sentences, its paragraphs and
+    its line breaks where they stand. The whole answer is that text.
+
+  one_line: |-
+    The text below is one line.
+
+    Write the rewritten version as one line. That line is the whole answer.
+
+labels:
+  description: |-
+    The video description:
+  description_hook: |-
+    The opening line of the video description:
+  description_options: |-
+    An alternate video description:
+  chapters: |-
+    The chapter titles:

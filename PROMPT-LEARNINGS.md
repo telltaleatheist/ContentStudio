@@ -705,3 +705,71 @@ in them — independent validation, not coincidence); the titles-from-chapters i
 (already the 2026-08-24 measurement); q4 quantization (q8_0 measured no better for boundaries).
 The consensus sampling and the scaffold CALL are code, not prompt bodies —
 chapter-whole-transcript.service.ts carries their measurements.
+
+---
+
+## Part 10 — `shared/pipeline/scrub.yml` (added 2026-09-04)
+
+**What it is for.** A second call over the text a run has just finished, with one job: no sentence
+framed around the person who made the video. It runs inside generation on the description, the
+hook, each alternate description and the chapter titles, and it writes onto the item itself
+(LEDGER #183). Soften is the other pass built on the same machinery; the two files are siblings.
+
+**The measurement that bought it.** Every job record on disk — 180 jobs, 159 items — scanned for
+`owen( morgan)?`, `the host`, `the speaker`, `the creator`, `the narrator`, `the channel`, `the
+youtuber`, `the presenter`, `the commentator`: **46 of 1,124 chapter titles (4%), 13 of 159
+descriptions (8%), 7 of 1,578 titles (under 1%)**. The generation prompts already say what to do
+about attribution. This is the residue. The 1% on titles is why titles are not scrubbed.
+
+**Why it is a separate pass and not a fifth clause.** The same reason soften is (Part 8), arrived
+at from the other direction: a clause added to `description.yml` and `chapters.yml` would be read
+on every field of every run to serve the 4-8% of text that needs it, and it would be competing
+with four clauses already working. A pass whose whole brief is one thing can be given the whole
+brief.
+
+**The clauses that earned their place, each by a measured failure.** The prompt was run against
+the real corpus — all 13 flagged descriptions, all 26 flagged chapter-title lists and 20 clean
+controls — through `claude -p --model sonnet`, three times, changing one thing between runs.
+
+- **`This is a minimal edit. A sentence already about the subject matter comes back word for
+  word, exactly as it stands, down to its punctuation.`** v1 had only "where a sentence already
+  reads that way, carry it through unchanged", and it rewrote clean text anyway: control chapter
+  titles came back passivised ("Church membership rules … take shape", "Plans … emerge") and no
+  control was byte-identical. With the clause, five of 59 texts came back byte-identical and the
+  spurious rewrites stopped.
+- **`… out of that sentence altogether — out of its subject, out of its object, and out of any
+  trailing phrase saying who said it or whose view it was.`** v1 asked for the claim to be the
+  subject, and got the creator moved rather than removed: "Owen rates Rowling below Mark Twain"
+  became "Owen's rating of Rowling below Mark Twain", "Owen Morgan says Republicans are
+  completely fucked" became "Republicans are completely fucked according to Owen Morgan". Naming
+  every position is what closed it.
+- **`A person who appears IN the footage stays exactly where he is and keeps his name, including
+  a host, a speaker or a presenter the video is about.`** The flat words are ambiguous: "the
+  guest, not the host, controlled the room" is about the interview being reacted to, not about
+  the creator. Without this the pass has no way to tell the two hosts apart.
+- **`A line inviting the viewer to the channel, to a book, to a link or to subscribe is not a
+  sentence about the video's content: it stays exactly as it is written.`** Five of the thirteen
+  flagged descriptions were flagged only on their CTA ("this is the channel for that", "more
+  breakdowns like this from Telltale Atheist and Owen Morgan"). Those sentences are supposed to
+  name the channel.
+
+**One clause MEASURED WORSE and was reverted.** A line added to the `lines` shape block telling
+the model its entries were chapter titles, "a fragment rather than a full sentence", on the
+theory that a register written about sentences bites less on titles. Clean chapter lists went
+from 23 of 26 to 21 of 26 and byte-identical lists from 1 to 3: it made the model more
+conservative, not more precise. The shipped `lines` block is soften's, with `{count}` and nothing
+else. **What ships is what was measured** — the final corpus run and the file on disk assemble
+character-for-character identical prompts.
+
+**No DATA block, unlike soften.** Soften needs one because `raped -> taken advantage of` cannot
+be shown without naming both forms. A scrub has no vocabulary: the wrong form is a sentence's
+subject, not a word, and the register states the wanted subject in positive form. Naming the
+narrator words inside the instruction ("the creator, the host, the speaker…") is the same move
+soften's register makes when it names "graphic, sexual or violent" — the CLASS being edited is
+instruction, the SUBSTITUTIONS would be data, and there are none here.
+
+**What the pass does not fix, and is not asked to.** Three of the 26 flagged chapter lists keep
+their framing ("Owen Morgan defines communism, socialism and Umberto Eco's fascism against
+Crowder's claim"). There is no re-ask (law 3) and no second prompt; the operator curates. Facts
+were not touched in any of the 59 texts: zero numbers changed, zero URLs changed, and the only
+proper nouns lost were the creator's own.

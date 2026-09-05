@@ -42,26 +42,29 @@
  *
  * CHAPTER TIMESTAMPS NEVER GO TO A MODEL and are never parsed back from one (standing law).
  * The titles go out alone, one per line, and the timestamps are reattached here by position.
+ *
+ * THE MACHINERY BELOW THE FIELD LIST IS SHARED with the scrub pass (scrub.ts, ledger #183):
+ * prompt assembly, the shape reader and both transports live in rewrite-pass.ts. What stays
+ * here is what makes this pass this pass — which nine fields it reads, the vocabulary block
+ * beneath its instructions, and the new item it writes.
  */
 
-import axios from 'axios';
 import log from 'electron-log';
 
-import { AIManagerService } from './ai-manager.service';
 import { Chapter } from './chapter-generator.service';
-import { askOllamaPlain, parseLines } from './plain-call';
-import { estimateTokens } from './ollama-json';
-import {
-  LOCAL_FIELD_CTX_MAX,
-  LOCAL_FIELD_KEEP_ALIVE,
-  LOCAL_FIELD_NUM_PREDICT,
-  LOCAL_FIELD_TIMEOUT_MS,
-  normalizeTagLine,
-  runNumCtx,
-} from './metadata-tasks';
 import { MetadataRoutingOption, resolveOperatorOption } from './metadata-routing';
-import { promptAssets } from './prompt-assets';
-import { queueAITask } from '../queue-manager.service';
+import {
+  askToRewrite,
+  buildRewritePrompt,
+  readRewrittenAnswer,
+  rewriteSourceLabel,
+  stringsOf,
+  textOf,
+  type RewritePassIdentity,
+  type RewritePlan,
+  type RewriteShape,
+  type RewriteTransport,
+} from './rewrite-pass';
 import type { PromptTraceEntry } from './more-titles';
 
 /** The prompt asset this pass reads. Operator-editable on the Instructions page. */
@@ -88,38 +91,35 @@ export function resolveSoftenOption(optionId: unknown): MetadataRoutingOption {
 
 /**
  * The output shapes a softening call can be asked for. One prompt block each, in soften.yml.
- *
- *   lines       — N entries in, N lines out, same order. A mismatch throws.
- *   prose       — one block of text in, one block out. The whole answer is the text.
- *   comma_line  — one comma-separated line in, one out.
- *   space_line  — one space-separated hashtag line in, one out.
+ * The four this pass uses out of the five rewrite-pass.ts defines: `lines`, `prose`,
+ * `comma_line`, `space_line` — soften has no single-line field of its own.
  */
-export type SoftenShape = 'lines' | 'prose' | 'comma_line' | 'space_line';
+export type SoftenShape = Extract<RewriteShape, 'lines' | 'prose' | 'comma_line' | 'space_line'>;
 
 /** One field's call, planned before anything is sent. */
-export interface SoftenPlan {
-  /** Reported to the operator and written into the trace, e.g. `titles`, `chapter titles`. */
-  field: string;
-  /** Which `labels:` entry in soften.yml names this text to the model. */
-  labelKey: string;
-  shape: SoftenShape;
-  /** Exactly what goes in the data block. */
-  text: string;
-  /** Entries in, for the `lines` shape. null for every other shape. */
-  count: number | null;
-  /**
-   * Where the answer goes back on the softened item. Given the softened value and the item
-   * being built, it writes it — so the reattachment rules (chapter timestamps by position,
-   * one alternate description by index) live beside the plan that produced them.
-   */
-  apply: (softened: string[] | string, item: any) => void;
-}
+export type SoftenPlan = RewritePlan;
 
 /** A field that had nothing to soften. Reported, never silent. */
 export interface SoftenSkip {
   field: string;
   reason: string;
 }
+
+/**
+ * What this pass calls itself, everywhere the machinery has to say which pass is running.
+ *
+ * The vocabulary blocks are DATA, placed beneath the instructions and above the text — see the
+ * header for why naming a wrong form is safe there and nowhere else.
+ */
+const SOFTEN_PASS: RewritePassIdentity = {
+  promptFile: SOFTEN_PROMPT_FILE,
+  dataBlockKeys: ['vocabulary_intro', 'vocabulary'],
+  id: 'soften',
+  name: 'Soften',
+  callWhat: (field, sourceLabel) => `softening ${field} for ${sourceLabel} (operator request)`,
+  readWhat: (field, sourceLabel) => `softening ${field} for ${sourceLabel}`,
+  nameInError: (field, sourceLabel) => `Softening "${field}" for ${sourceLabel}`,
+};
 
 /** What one field's call actually produced. */
 export interface SoftenFieldResult {
@@ -141,63 +141,19 @@ export interface SoftenRunResult {
   metadata: any;
 }
 
-export interface SoftenTransport {
-  /** Built by the caller, which is where the API keys and the Ollama host live. */
-  aiManager: AIManagerService;
-  ollamaHost: string;
-}
+/** Where the calls go out. The shared shape; the name the reports-page caller uses. */
+export type SoftenTransport = RewriteTransport;
 
 // ---------------------------------------------------------------------------
 // Reading the item
 // ---------------------------------------------------------------------------
 
-/** A non-empty string, or null. Used to tell "the item has no such field" from "it has one". */
-function textOf(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.length === 0 ? null : trimmed;
-}
-
 /**
- * Every string in an array field, or a throw naming the entry that is not one.
- *
- * A non-string entry is NOT skipped past: the shape contract counts entries, and an array
- * that quietly lost one would come back with a count that no longer matches the array it has
- * to be written into.
- */
-function stringsOf(value: unknown, field: string, itemId: string): string[] | null {
-  if (!Array.isArray(value) || value.length === 0) return null;
-  return value.map((entry, index) => {
-    const text = textOf(entry);
-    if (text === null) {
-      throw new Error(
-        `Entry ${index + 1} of "${field}" on item ${itemId} is ${
-          typeof entry
-        }, not text, so this field cannot be softened as a list of ${value.length} entries.`
-      );
-    }
-    return text;
-  });
-}
-
-/**
- * How this item names itself, for the log lines and the trace entries.
- *
- * `_title` first because it is the name the operator sees, then the source file's basename,
- * then the item id. All three are the item stating its own name — none of them is a value
- * substituted for a missing one, which is why this reaches for the next when one is absent.
+ * How this item names itself, for the log lines and the trace entries. The shared rule; kept
+ * exported under this name because the reports-page IPC handler reaches for it.
  */
 export function softenSourceLabel(item: any): string {
-  const title = textOf(item?._title);
-  if (title) return title;
-  const sourcePath = textOf(item?.source_path);
-  if (sourcePath) return sourcePath.split(/[\\/]/).pop() || sourcePath;
-  const itemId = textOf(item?.item_id);
-  if (itemId) return itemId;
-  throw new Error(
-    'A softening pass needs the item to name itself for its log and trace entries, and this ' +
-      'one carries no _title, no source_path and no item_id.'
-  );
+  return rewriteSourceLabel(item);
 }
 
 /**
@@ -217,7 +173,7 @@ export function planSoftening(source: any, target: any): { plans: SoftenPlan[]; 
   const skipped: SoftenSkip[] = [];
 
   const listField = (field: string, labelKey: string, key: string): void => {
-    const entries = stringsOf(source?.[key], field, itemId);
+    const entries = stringsOf(source?.[key], field, itemId, 'softened');
     if (entries === null) {
       skipped.push({ field, reason: `the item carries no ${field}.` });
       return;
@@ -259,7 +215,7 @@ export function planSoftening(source: any, target: any): { plans: SoftenPlan[]; 
   proseField('the description', 'description', 'description');
 
   // The alternates, one call each. See the note on this function.
-  const options = stringsOf(source?.description_options, 'description_options', itemId);
+  const options = stringsOf(source?.description_options, 'description_options', itemId, 'softened');
   if (options === null) {
     skipped.push({ field: 'alternate descriptions', reason: 'the item carries no alternate descriptions.' });
   } else {
@@ -362,111 +318,23 @@ export function planSoftening(source: any, target: any): { plans: SoftenPlan[]; 
 }
 
 // ---------------------------------------------------------------------------
-// The prompt
+// The prompt and the call
 // ---------------------------------------------------------------------------
 
 /**
  * One field's prompt: the register instruction, the shape it must come back in, the operator's
- * vocabulary as DATA, and the text.
- *
- * Every string here comes out of soften.yml, so the operator changes what this asks for on the
- * Instructions page and nothing in this file is a second copy of it. A missing key throws out
- * of `promptAssets().pipeline` naming the file and the key — the loader's standing contract.
+ * vocabulary as DATA, and the text. Assembled by the shared builder out of soften.yml, so the
+ * operator changes what this asks for on the Instructions page and no code file is a second
+ * copy of it.
  */
 export function buildSoftenPrompt(plan: SoftenPlan): string {
-  const assets = promptAssets();
-  const register = assets.pipeline(SOFTEN_PROMPT_FILE, 'register');
-  const shapeKey = `shapes.${plan.shape}`;
-  let shape = assets.pipeline(SOFTEN_PROMPT_FILE, shapeKey);
-  if (shape.includes('{count}')) {
-    if (plan.count === null) {
-      throw new Error(
-        `Prompt asset "shared/pipeline/${SOFTEN_PROMPT_FILE}" key "${shapeKey}" carries a {count} ` +
-          `slot, and the "${plan.field}" call has no entry count to fill it with — only the ` +
-          `"lines" shape counts entries.`
-      );
-    }
-    shape = shape.replace(/\{count\}/g, () => String(plan.count));
-  }
-  const intro = assets.pipeline(SOFTEN_PROMPT_FILE, 'vocabulary_intro');
-  const vocabulary = assets.pipeline(SOFTEN_PROMPT_FILE, 'vocabulary');
-  const label = assets.pipeline(SOFTEN_PROMPT_FILE, `labels.${plan.labelKey}`);
-
-  return `${register}\n\n${shape}\n\n${intro}\n\n${vocabulary}\n\n${label}\n${plan.text}\n`;
-}
-
-// ---------------------------------------------------------------------------
-// The call
-// ---------------------------------------------------------------------------
-
-/**
- * Send one field's prompt on the operator's chosen model and read the answer.
- *
- * TWO TRANSPORTS, the same two every generation call has, reached the same way:
- *   cloud — AIManagerService.runPlainRequest
- *   local — askOllamaPlain over /api/generate
- * The local path deliberately does NOT go through AIManagerService's Ollama route: that one
- * middle-truncates a prompt bigger than its fixed window, and a softening call whose data
- * block lost its middle would come back a different length than it went out.
- */
-async function askToSoften(
-  plan: SoftenPlan,
-  option: MetadataRoutingOption,
-  transport: SoftenTransport,
-  sourceLabel: string,
-  prompt: string
-): Promise<string> {
-  const what = `softening ${plan.field} for ${sourceLabel} (operator request)`;
-
-  if (option.kind === 'cloud') {
-    const answer = await transport.aiManager.runPlainRequest(prompt, option.model, what);
-    if (!answer) {
-      throw new Error(`The request for ${what} on "${option.model}" came back empty.`);
-    }
-    return answer;
-  }
-
-  // One call on one model, so the window is sized for this prompt alone — there is no run to
-  // share a pinned num_ctx with.
-  const numCtx = runNumCtx({
-    model: option.model,
-    needs: [estimateTokens(prompt.length) + LOCAL_FIELD_NUM_PREDICT],
-    max: LOCAL_FIELD_CTX_MAX,
-    what,
-  });
-  const client = axios.create({ baseURL: transport.ollamaHost });
-  const result = await queueAITask(
-    `soften-${plan.field}-${option.model}-${sourceLabel}`,
-    `Soften: ${plan.field} on ${option.model}`,
-    async () =>
-      askOllamaPlain(client, {
-        model: option.model,
-        prompt,
-        numCtx,
-        numPredict: LOCAL_FIELD_NUM_PREDICT,
-        keepAlive: LOCAL_FIELD_KEEP_ALIVE,
-        timeoutMs: LOCAL_FIELD_TIMEOUT_MS,
-        what,
-        logPrefix: `[Soften] ${option.model}`,
-      }),
-    undefined,
-    LOCAL_FIELD_TIMEOUT_MS + 60_000
-  );
-  if (!result.ok) {
-    throw new Error(
-      `The request for ${what} on "${option.model}" produced no usable answer ` +
-        `(${result.reason}): ${result.detail}`
-    );
-  }
-  return result.text;
+  return buildRewritePrompt(SOFTEN_PASS, plan);
 }
 
 /**
- * The answer, read in exactly the shape its prompt asked for.
- *
- * A `lines` answer whose count does not match THROWS. There is no partial application and no
- * re-ask: N titles that come back as N-1 cannot be matched to the N they were read off, and
- * writing the N-1 that arrived would silently drop one and renumber the rest.
+ * The answer, read in exactly the shape its prompt asked for. A `lines` answer whose count does
+ * not match THROWS naming the field, the model and both counts; nothing is partially applied
+ * and nothing re-asks.
  */
 export function readSoftenedAnswer(
   plan: SoftenPlan,
@@ -474,66 +342,7 @@ export function readSoftenedAnswer(
   model: string,
   sourceLabel: string
 ): { value: string[] | string; warning: string | null } {
-  const what = `softening ${plan.field} for ${sourceLabel}`;
-
-  if (plan.shape === 'lines') {
-    const lines = parseLines(text, what);
-    if (lines.length !== plan.count) {
-      throw new Error(
-        `Softening "${plan.field}" for ${sourceLabel} on model "${model}" asked for ${plan.count} ` +
-          `line(s) and got ${lines.length}. Nothing was applied — a list that does not line up ` +
-          `cannot be matched back to the entries it was read from.`
-      );
-    }
-    return { value: lines, warning: null };
-  }
-
-  if (plan.shape === 'prose') {
-    const prose = text.trim();
-    if (prose.length === 0) {
-      throw new Error(
-        `Softening "${plan.field}" for ${sourceLabel} on model "${model}" came back with no text ` +
-          `at all.`
-      );
-    }
-    return { value: prose, warning: null };
-  }
-
-  if (plan.shape === 'comma_line') {
-    // The tags unit's own reader: newlines folded into commas, "#" stripped, an answer with no
-    // usable tags in it throws carrying what arrived.
-    const line = normalizeTagLine(text, `soften ${plan.field}`, model, sourceLabel);
-    const before = plan.text.split(',').filter((t) => t.trim().length > 0).length;
-    const after = line.split(',').length;
-    return {
-      value: line,
-      warning:
-        before === after
-          ? null
-          : `"${model}" returned ${after} tag(s) where ${before} went out; all ${after} are kept ` +
-            `exactly as written.`,
-    };
-  }
-
-  // space_line — one line of hashtags. One line is the contract; the count is a note.
-  const lines = parseLines(text, what);
-  if (lines.length !== 1) {
-    throw new Error(
-      `Softening "${plan.field}" for ${sourceLabel} on model "${model}" asked for one line and ` +
-        `got ${lines.length}.`
-    );
-  }
-  const line = lines[0];
-  const before = plan.text.split(/\s+/).filter(Boolean).length;
-  const after = line.split(/\s+/).filter(Boolean).length;
-  return {
-    value: line,
-    warning:
-      before === after
-        ? null
-        : `"${model}" returned ${after} hashtag(s) where ${before} went out; all ${after} are ` +
-          `kept exactly as written.`,
-  };
+  return readRewrittenAnswer(SOFTEN_PASS, plan, text, model, sourceLabel);
 }
 
 /**
@@ -567,12 +376,12 @@ export async function runSoftenPass(
   for (const plan of plans) {
     const prompt = buildSoftenPrompt(plan);
     const at = new Date().toISOString();
-    const text = await askToSoften(plan, option, transport, sourceLabel, prompt);
+    const text = await askToRewrite(SOFTEN_PASS, plan, option, transport, sourceLabel, prompt);
     const { value, warning } = readSoftenedAnswer(plan, text, option.model, sourceLabel);
     plan.apply(value, metadata);
     applied.push({ field: plan.field, warning });
     trace.push({
-      what: `softening ${plan.field} for ${sourceLabel} (operator request)`,
+      what: SOFTEN_PASS.callWhat(plan.field, sourceLabel),
       model: option.model,
       chars: prompt.length,
       at,
