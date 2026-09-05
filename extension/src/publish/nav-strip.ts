@@ -1,8 +1,9 @@
 // The video navigation strip.
 //
-// A rail down the right edge of a Studio edit page showing the channel's content list as
-// thumbnails, centred on the open video, so moving between videos is one click instead of
-// back-to-the-list-then-find-it-again. The column scrolls — the whole fetched list is in
+// A rail down the right edge of a Studio video page — Details or Earn — showing the
+// channel's content list as thumbnails, centred on the open video, so moving between videos
+// is one click instead of back-to-the-list-then-find-it-again. A click opens the next video
+// on the same page the operator is on. The column scrolls — the whole fetched list is in
 // it — while the arrows stay anchored to the video actually being edited, so browsing and
 // navigating never get confused with one another.
 //
@@ -25,6 +26,7 @@ import {
   saveNavStripPrefs,
   type NavStripPrefs,
 } from './nav-strip-prefs';
+import { stripSurface } from './page';
 import { STALE_CONTEXT_MESSAGE, extensionContextAlive } from './publish-messages';
 
 /**
@@ -626,7 +628,9 @@ function labelOf(video: NavVideo): string {
 }
 
 /**
- * Go to a video's edit page.
+ * Go to a video's page — the SAME page the operator is on now. From Details the next
+ * video opens on Details; from Earn it opens on Earn, so walking the channel's
+ * monetization settings is one click per video rather than a click and a tab change.
  *
  * A HARD navigation. Studio is an SPA and pushState would be faster, but its router is
  * not ours to drive: a pushed URL that Studio does not act on leaves the address bar
@@ -634,5 +638,12 @@ function labelOf(video: NavVideo): string {
  * ruling out when the next thing the operator does is type into that form.
  */
 function go(videoId: string): void {
-  location.href = `https://studio.youtube.com/video/${videoId}/edit`;
+  const here = stripSurface();
+  if (!here) {
+    // The strip is only ever mounted on a strip surface (syncNavStrip), so a click that
+    // finds none means the page changed under a still-mounted strip. Say so rather than
+    // guess a destination.
+    throw new Error(`The nav strip cannot tell which Studio page it is on (${location.pathname}).`);
+  }
+  location.href = `https://studio.youtube.com/video/${videoId}/${here.surface}`;
 }

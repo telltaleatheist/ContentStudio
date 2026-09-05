@@ -28,16 +28,33 @@ export function videoIdFromUrl(): string | null {
 }
 
 /**
- * The video id ONLY when Studio is on the standalone edit page /video/<id>/edit.
+ * The standalone per-video pages the nav strip runs on: Details (/video/<id>/edit) and
+ * Earn (/video/<id>/monetization — Studio's label for it is "Earn"; the url keeps the old
+ * word). Each is a full page for one video, so stepping to the next video's same page is
+ * a plain navigation with nothing to lose.
+ */
+export type StripSurface = 'edit' | 'monetization';
+
+/**
+ * Which strip surface Studio is on, with the video's id — or null anywhere else.
  *
  * Narrower than videoIdFromUrl() on purpose: the nav strip navigates BETWEEN videos, and
  * the upload wizard is a modal over the channel content list with its own unsaved state.
  * Throwing a hard navigation at it would drop whatever the operator had half-entered, so
- * the strip is simply not mounted there.
+ * the strip is simply not mounted there. Earn was added 2026-09-04 at the operator's ask:
+ * he walks the channel on that page as much as on Details.
  */
+export function stripSurface(): { videoId: string; surface: StripSurface } | null {
+  const match = location.pathname.match(/\/video\/([^/]+)\/(edit|monetization)(?:[/?#]|$)/);
+  const videoId = match?.[1];
+  const surface = match?.[2];
+  if (!videoId || (surface !== 'edit' && surface !== 'monetization')) return null;
+  return { videoId, surface };
+}
+
+/** The open video's id on a strip surface (Details or Earn), null anywhere else. */
 export function videoEditId(): string | null {
-  const match = location.pathname.match(/\/video\/([^/]+)\/edit/);
-  return match?.[1] ?? null;
+  return stripSurface()?.videoId ?? null;
 }
 
 /** True wherever the video metadata form is available — either entry point. */
