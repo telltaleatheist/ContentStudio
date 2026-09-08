@@ -185,6 +185,17 @@ export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Pro
 
   const sourcePath = generated.sourcePath ?? null;
   if (!sourcePath) {
+    // Two causes, two messages. A record that DECLARES a null source was generated from a
+    // text subject or as a compilation: there is no single video file and never was, and
+    // telling the operator the item is "old" sends him looking for a migration that does
+    // not apply. A record with no source key at all predates source paths being written.
+    if (generated.sourcePathDeclared) {
+      throw new Error(
+        `Item ${itemId} was generated from a text subject or as a compilation, not from a ` +
+        `video file, so there is no file to upload. Upload the video in the browser and ` +
+        `link it to this item, or regenerate the item from the video file.`
+      );
+    }
     throw new Error(
       `Item ${itemId}'s report records no source file path, so there is no video file to ` +
       `upload. Items generated before source paths were recorded need a browser upload.`

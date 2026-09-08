@@ -3557,6 +3557,10 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // can say which week's thumbnails/ folder to look in. Read off the item's own
         // record, never inferred.
         sourcePath: typeof item.source_path === 'string' ? item.source_path : null,
+        // Whether the record declares a source at all (a text subject or a compilation is
+        // written with an explicit null; a pre-schema-2 item has no key). The upload error
+        // reads this to say WHICH of the two the operator is looking at.
+        sourcePathDeclared: Object.prototype.hasOwnProperty.call(item, 'source_path'),
         // The prompt set the operator picked BEFORE generating, which is what automatic
         // channel routing reads (auto-config.ts). The item's own `_prompt_set` is
         // preferred over the job's `prompt_set` for one reason: they can differ. The job
