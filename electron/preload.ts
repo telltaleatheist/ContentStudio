@@ -109,6 +109,12 @@ const api = {
   // source_key — a sibling set, exactly like a regeneration. The original is not touched.
   softenItem: (jobId: string, itemId: string, optionId: string) =>
     ipcRenderer.invoke('metadata:soften-item', jobId, itemId, optionId),
+  // Send one already-generated item's description, hook, alternates and chapter titles back
+  // through the scrub pass, on a model the operator picks. Unlike softening this writes IN
+  // PLACE — the corrected text lands on the item itself, because a scrub is a correction of
+  // the same text rather than a second register to choose between. The .txt is left alone.
+  scrubItem: (jobId: string, itemId: string, optionId: string) =>
+    ipcRenderer.invoke('metadata:scrub-item', jobId, itemId, optionId),
   deleteReportItem: (jobId: string, itemId: string) =>
     ipcRenderer.invoke('reports-delete-item', jobId, itemId),
 
@@ -217,6 +223,12 @@ const api = {
   // reported as skipped and never touched.
   publishRescanThumbnail: (itemId: string) =>
     ipcRenderer.invoke('publish-rescan-thumbnail', itemId),
+  // Pair the exported thumbnail with every item that has none, using the same resolver the
+  // per-item rescan uses. Run when the reports page is opened and when the window regains
+  // focus while it is on screen — thumbnails are made after generation, so the automatic pass
+  // that ran during the run had nothing to find. It never REPLACES: replacing is the rescan.
+  publishPairMissingThumbnails: () =>
+    ipcRenderer.invoke('publish-pair-missing-thumbnails'),
   // The LIST form of publishReadThumbnail: one round trip for a whole page of rows instead
   // of one per row. Rows come back in the order asked for, and a row that cannot be shown
   // carries its own `fault` sentence rather than emptying the strip.

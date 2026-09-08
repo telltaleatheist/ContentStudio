@@ -723,6 +723,9 @@ export class MetadataGeneratorService {
           await scrubGeneratedItem(metadata, {
             option: routingOption(SCRUB_ROUTING_TASK, this.routing(params)[SCRUB_ROUTING_TASK]),
             transport: { aiManager, ollamaHost: params.aiHost || 'http://localhost:11434' },
+            // The run's own scrub. The reports page's button passes 'operator request' through
+            // the same function, and the trace entries say which of the two wrote them.
+            origin: 'post-generation',
           });
 
           const saveResult = await outputHandler.addItemToJob(

@@ -57,6 +57,8 @@ import {
   runSoftenPass,
   softenSourceLabel,
 } from '../services/metadata/soften';
+import { ScrubRecord, resolveScrubOption, scrubGeneratedItem } from '../services/metadata/scrub';
+import type { ScrubWrite } from '../services/metadata/output-handler.service';
 import {
   inspectSavedTranscript,
   resolveOutputDirectory,
@@ -959,6 +961,18 @@ interface PublishAutoAttachDeps {
   listGenerated: () => GeneratedIndex;
 }
 let publishAutoAttach: PublishAutoAttachDeps | null = null;
+
+/**
+ * Items with an operator-requested scrub out right now.
+ *
+ * The page disables its own button while a pass is running, but a button is not a lock: two
+ * windows, a double click that lands before the first render, or a page reloaded mid-pass all
+ * get past it. Both passes would read the same before-text and the second to finish would write
+ * the first one's corrections away, with a `scrubbed` receipt claiming a `before` that was never
+ * on disk. A second request for the same item is REFUSED by name rather than queued — the
+ * operator asked for one correction, and running it twice in a row is not what he asked for.
+ */
+const scrubsInFlight = new Set<string>();
 
 /**
  * Give EVERY item of a finished run its publish record, right when the report lands.
@@ -2717,6 +2731,183 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         const message = error instanceof Error ? error.message : String(error);
         log.error('[Soften] request failed:', error);
         return { success: false, error: message };
+      }
+    }
+  );
+
+  /**
+   * SCRUB NARRATION — the four fields the scrub pass reads, corrected IN PLACE on this item.
+   *
+   * The pass itself (scrub.ts, ledger #183) runs inside generation, so every report written
+   * since 2026-09-04 already has it. This channel is the operator's way of running the SAME
+   * function over a report that predates it — his words: "in case i want it to do it on
+   * existing reports that already processed without this second pass".
+   *
+   * IN PLACE, WHICH IS WHERE THIS PARTS COMPANY WITH SOFTEN, and the difference is the point.
+   * Softening produces a different REGISTER, so it writes a new set and the operator picks
+   * between the two. A scrub produces a CORRECTION of the same text — the same facts, the same
+   * names, the same numbers, the same shape, with the video's subject matter as the subject of
+   * its own sentences — so there is nothing to pick between and the item after the pass IS the
+   * item. `description`, `description_hook`, `description_options` and `chapters[].title` are
+   * written back onto the item in its job record, through OutputHandlerService's write queue so
+   * they cannot interleave with a generation run appending to the same file. The .txt is not
+   * touched (the run's artifact; the json is what the app reads), and neither is the publish
+   * selection — `descriptionOverride`, `chapterEdits` and every other operator edit are edits
+   * OF this text and stay exactly as he wrote them.
+   *
+   * CHAPTERS ARE ALWAYS IN IT when the item has any, on the operator's explicit instruction
+   * ("have the second pass always try to correct chapters as well"). There is no switch.
+   *
+   * THE PROMPT SET THE RUN RECORDED IS LOADED, and an item whose job records none is refused
+   * by name. That is not ceremony: the description on disk ends with the set's `description_links`
+   * block, and the pass holds that block back by matching it exactly rather than sending fifteen
+   * URLs to a rewrite call. Without the set there is no block to match, and the whole description
+   * — links and all — would go out.
+   *
+   * NOTHING IS LOST ON A SECOND PRESS. The pass writes a `scrubbed` receipt carrying the BEFORE
+   * text of every field it changed; a second run pushes the previous receipt onto
+   * `scrubbed_earlier` and takes its place. The trace entries say `scrub: <field> (operator
+   * request)`, which is what tells them from the generation-time `(post-generation)` ones.
+   *
+   * ONE AT A TIME PER ITEM. The page disables its own button while a pass is out, and this
+   * refuses a second concurrent request for the same item by name — two passes over one item
+   * would both read the same before-text and the second to finish would write the first one's
+   * work away.
+   *
+   * FAILURE WRITES NOTHING (laws 1 and 3). A line list that comes back with the wrong count
+   * throws out of the pass naming the field, the model and both counts, before a single byte
+   * of the job file has been touched, and the page shows that sentence. No re-ask.
+   */
+  ipcMain.handle(
+    'metadata:scrub-item',
+    async (_event, jobId: string, itemId: string, optionId: string) => {
+      let claimed: string | null = null;
+      try {
+        if (typeof jobId !== 'string' || !jobId.trim()) {
+          return { success: false, error: 'A job id is required to scrub an item.' };
+        }
+        if (!isItemId(itemId)) {
+          return { success: false, error: `"${String(itemId)}" is not an item id.` };
+        }
+        // Checked BEFORE anything is read, exactly as the titles and softening pickers are: an
+        // option the task does not offer is the caller being wrong about the dropdown, and it
+        // must not reach a transport.
+        const option = resolveScrubOption(optionId);
+
+        if (scrubsInFlight.has(itemId)) {
+          return {
+            success: false,
+            error:
+              `A scrub of item ${itemId} is already running. It rewrites the same four fields ` +
+              `this one would, so a second pass would read the same text and then write the ` +
+              `first one's work away. Wait for it to finish.`,
+          };
+        }
+
+        const outputDirectory = (store as any).store?.outputDirectory;
+        if (!outputDirectory) {
+          throw new Error('No output directory configured — cannot locate the report to scrub.');
+        }
+        const handler = OutputHandlerService.forOutputDir(outputDirectory);
+        const job = handler.getJobMetadata(jobId);
+        if (!job) {
+          return { success: false, error: `Job ${jobId} was not found in ${outputDirectory}.` };
+        }
+        const item = (job.items || []).find((entry: any) => entry && entry.item_id === itemId);
+        if (!item) {
+          return { success: false, error: `Item ${itemId} is not in job ${jobId}.` };
+        }
+        if (typeof job.prompt_set !== 'string' || !job.prompt_set.trim()) {
+          return {
+            success: false,
+            error:
+              `Job ${jobId} records no prompt set, and the scrub needs it: the description on ` +
+              `this item ends with that set's link block, and the pass holds the block back by ` +
+              `matching it exactly rather than sending fifteen URLs to a rewrite call. Without ` +
+              `the set there is nothing to match, so nothing was sent.`,
+          };
+        }
+
+        scrubsInFlight.add(itemId);
+        claimed = itemId;
+
+        // A COPY is what goes through the pass. The pass edits the item it is handed — which is
+        // right at generation time, where the item is not on disk yet — and here the item on
+        // disk is the one the operator is reading. Every call can take a minute; the corrected
+        // text is written back at the end, under the write queue, onto the record as it stands
+        // then.
+        const working: any = structuredClone(item);
+        // The pass appends its calls to `_prompt_trace` and requires an array to append to. On
+        // this path it starts EMPTY rather than as a copy of the run's, so what comes back is
+        // exactly the calls this button made — the write appends them to whatever the item
+        // already carries. A report generated before prompts were recorded has none, and that
+        // is not a reason to refuse: the scrub reads the item's text, not its trace.
+        working._prompt_trace = [];
+
+        // Built for THIS pass only, and `initialize()` is deliberately not run — same reason
+        // the titles and softening handlers give: every client is created on demand by
+        // ensureProviderReady, which names a missing key rather than substituting a provider
+        // that has one. `promptSet` IS passed here, unlike softening: the link block above is
+        // the channel's, and `descriptionLinks()` is empty without it.
+        const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
+        const apiKeys: any = fs.existsSync(apiKeysPath)
+          ? JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'))
+          : {};
+        const ollamaHost = (store as any).store?.ollamaHost || 'http://localhost:11434';
+        const aiConfig: AIConfig = {
+          provider: 'claude',
+          host: ollamaHost,
+          cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
+          promptSetsDir: getPromptSetsDirectory(),
+          promptSet: job.prompt_set,
+        };
+        const aiManager = new AIManagerService(aiConfig);
+
+        let pass;
+        try {
+          pass = await scrubGeneratedItem(working, {
+            option,
+            transport: { aiManager, ollamaHost },
+            origin: 'operator request',
+          });
+        } finally {
+          aiManager.cleanup();
+        }
+
+        // Everything below is disk work, and it happens only because every call above came back
+        // in the shape its prompt asked for. A pass that threw wrote nothing.
+        const record = working.scrubbed as ScrubRecord;
+        const write: ScrubWrite = { record, trace: working._prompt_trace };
+        if ('description' in record.fields) write.description = working.description;
+        if ('description_hook' in record.fields) write.description_hook = working.description_hook;
+        if ('description_options' in record.fields) {
+          write.description_options = working.description_options;
+        }
+        if ('chapters' in record.fields) {
+          write.chapterTitles = (working.chapters as any[]).map((c) => c.title as string);
+        }
+        const receipt = await handler.applyScrubToItem(jobId, itemId, write);
+
+        log.info(
+          `[Scrub] operator request on item ${itemId} in job ${jobId}: ` +
+            `${receipt.changed.length} field(s) rewritten on "${pass.model}", ` +
+            `${receipt.unchanged.length} unchanged, ${pass.skipped.length} not carried`
+        );
+
+        return {
+          success: true,
+          model: pass.model,
+          changed: receipt.changed,
+          unchanged: receipt.unchanged,
+          skipped: pass.skipped,
+          earlierScrubs: receipt.earlierScrubs,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log.error('[Scrub] operator request failed:', error);
+        return { success: false, error: message };
+      } finally {
+        if (claimed) scrubsInFlight.delete(claimed);
       }
     }
   );

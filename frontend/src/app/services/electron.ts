@@ -18,6 +18,7 @@ import type {
   SpreakerStatus,
   ThumbnailPreview,
   ThumbnailProposal,
+  ThumbnailPairingSweep,
   ThumbnailRescanOutcome,
   ThumbnailSetResult,
   ThumbStripEntry,
@@ -367,6 +368,30 @@ export interface SoftenResult {
 }
 
 /**
+ * What one operator-requested scrub did to the item it ran on.
+ *
+ * Unlike a softening pass this names no new job and no new item: the four fields are corrected
+ * ON the item, so the receipt is a list of which of them the model changed and which it returned
+ * word for word. `skipped` is the fields the item does not carry — not an error, and never
+ * silent. `earlierScrubs` is how many previous receipts `scrubbed_earlier` holds now, which is
+ * how the page can say a second press kept the first one's before-text.
+ */
+export interface ScrubResult {
+  success: boolean;
+  /** The provider-prefixed model every call in the pass went out on. */
+  model?: string;
+  /** Item keys the model rewrote: description, description_hook, description_options, chapters. */
+  changed?: string[];
+  /** Item keys the model returned unchanged. */
+  unchanged?: string[];
+  /** Fields the item carried nothing for, each with the reason. */
+  skipped?: Array<{ field: string; reason: string }>;
+  /** How many earlier scrub receipts the item keeps. 0 the first time. */
+  earlierScrubs?: number;
+  error?: string;
+}
+
+/**
  * What promoting a set actually did.
  *
  * `previousItemId` is null when this source had no recorded primary at all, which after
@@ -621,6 +646,7 @@ declare global {
       deleteReportItem: (jobId: string, itemId: string) => Promise<DeleteItemReceipt>;
       generateMoreTitles: (jobId: string, itemId: string, optionId: string) => Promise<MoreTitlesResult>;
       softenItem: (jobId: string, itemId: string, optionId: string) => Promise<SoftenResult>;
+      scrubItem: (jobId: string, itemId: string, optionId: string) => Promise<ScrubResult>;
 
       // Job history
       getJobHistory: () => Promise<any[]>;
@@ -686,6 +712,7 @@ declare global {
         absPath?: string | null
       ) => Promise<PublishResult<ThumbnailPreview | null>>;
       publishRescanThumbnail: (itemId: string) => Promise<PublishResult<ThumbnailRescanOutcome>>;
+      publishPairMissingThumbnails: () => Promise<PublishResult<ThumbnailPairingSweep>>;
       publishThumbStrip: (
         itemIds: string[],
         maxPx: number
@@ -1233,6 +1260,19 @@ export class ElectronService {
     return await this.ipcRenderer.softenItem(jobId, itemId, optionId);
   }
 
+  /**
+   * Run the scrub pass over one already-generated item, on the model named.
+   *
+   * IN PLACE: the corrected description, hook, alternates and chapter titles are written onto
+   * this item in its job record. There is no new set and no id to open afterwards — the caller
+   * re-reads the item it already has. A refusal arrives as `{ success: false, error }` and the
+   * page shows the sentence the main process wrote.
+   */
+  async scrubItem(jobId: string, itemId: string, optionId: string): Promise<ScrubResult> {
+    if (!this.ipcRenderer) throw new Error('Electron bridge unavailable — cannot scrub an item.');
+    return await this.ipcRenderer.scrubItem(jobId, itemId, optionId);
+  }
+
   // Job history
   async getJobHistory(): Promise<any[]> {
     if (!this.ipcRenderer) return [];
@@ -1494,6 +1534,19 @@ export class ElectronService {
   async publishRescanThumbnail(itemId: string): Promise<PublishResult<ThumbnailRescanOutcome>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.publishRescanThumbnail(itemId);
+  }
+
+  /**
+   * Pair the exported thumbnail with every item that has none — the same resolver the rescan
+   * above uses, aimed at the whole index instead of one item.
+   *
+   * The reports page fires this on arrival and on the window regaining focus, because that is
+   * when the operator has just come back from making the images. It NEVER replaces one: an item
+   * with any thumbnail, or one chosen or cleared by hand, is left exactly as it is.
+   */
+  async publishPairMissingThumbnails(): Promise<PublishResult<ThumbnailPairingSweep>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishPairMissingThumbnails();
   }
 
   /**

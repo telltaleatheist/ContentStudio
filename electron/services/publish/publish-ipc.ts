@@ -48,6 +48,9 @@ import { RoutableChannel, resolveChannelForPromptSet } from './channel-routing';
 // click instead of on a write. A second set of words for the same three outcomes would be
 // a second thing to read the log against.
 import { AutoDecision } from './auto-config';
+// Find, validate, attach — the one implementation, shared by this button and the sweep that
+// runs when the operator opens the reports page. See that module's header.
+import { findAndAttachThumbnail } from './thumbnail-attach';
 import { buildFieldPatch, describeValue } from './field-validators';
 import {
   CarriedRefResolution,
@@ -291,6 +294,33 @@ export interface ReportIndexResponse {
   orphanedSelections: string[];
 }
 
+/**
+ * One pairing sweep's receipt.
+ *
+ * Counts rather than sentences for everything except the attachments, and that is the point of
+ * the shape: a sweep looks at every generated item on the install and the overwhelming majority
+ * of them have nothing to do. The per-item reasons are logged on the main side, where they can
+ * be read when something looks wrong; what crosses the wire is what the page has to say out
+ * loud — which videos got a thumbnail, and how many were passed over.
+ */
+export interface ThumbnailPairingSweep {
+  /**
+   * True when a sweep was ALREADY RUNNING and this request was dropped rather than queued.
+   *
+   * Reported instead of hidden because a page that asked and got nothing back deserves to know
+   * which of the two happened. Nothing was attached by THIS call either way.
+   */
+  dropped: boolean;
+  /** The items that were given a thumbnail, in index order. */
+  attached: Array<{ itemId: string; label: string; path: string }>;
+  /** How many items the sweep looked at at all. */
+  considered: number;
+  /** Items left alone: already have one, chosen or cleared by hand, no record, no image. */
+  skipped: number;
+  /** Items whose exported image exists and will not validate. Named in the log. */
+  refused: number;
+}
+
 export interface PublishIpcDeps {
   store: PublishStoreService;
   /**
@@ -378,6 +408,14 @@ export interface PublishIpcDeps {
 
 /** Uniform envelope so the renderer can branch on success without try/catch everywhere. */
 type Result<T> = { success: true; data: T } | { success: false; error: string };
+
+/**
+ * Is a thumbnail pairing sweep out right now?
+ *
+ * Module scope rather than a closure variable, so it is one answer for the process rather than
+ * one per registration. A second request while this is true is dropped — see the handler.
+ */
+let pairingSweepRunning = false;
 
 function ok<T>(data: T): Result<T> {
   return { success: true, data };
@@ -1149,7 +1187,8 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
         });
       }
 
-      // A manual PICK is protected; a manual CLEAR is not.
+      // A manual PICK is protected; a manual CLEAR is not — and the shared attach below is
+      // where that rule lives, because it is the rule that must never be lost to a copy.
       //
       // Those are different statements. Choosing an image says "use this one", and a
       // rescan must not overrule it. Clearing says "not the one you found" — and pressing
@@ -1157,68 +1196,174 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       // that press can mean. Refusing left the button permanently inert on that item, with
       // the file picker as the sole way home; a stray second click could therefore cost a
       // thumbnail with no way to undo it.
-      if (record.thumbnailSource === 'manual' && record.thumbnailPath) {
-        skipped.push({
-          field: 'thumbnail',
-          detail:
-            `${record.thumbnailPath} was chosen by hand, and a rescan never replaces a ` +
-            `manually chosen thumbnail. Clear it in the panel first if you want the ` +
-            `exported image instead.`,
-        });
-        return ok({ applied, skipped, refused });
-      }
-
-      // THE SAME resolver the automatic pass uses. These were two implementations of
-      // "find and validate a thumbnail", and they drifted the moment one of them learned
-      // to shrink an oversized export: this button went on refusing files the automatic
-      // pass had started accepting, which from the outside was a button that did nothing.
-      const lookup = findUsableThumbnail(generated.sourcePath ?? null);
-      if (!lookup.ok) {
-        (lookup.bucket === 'refused' ? refused : skipped).push({
-          field: 'thumbnail',
-          detail: lookup.detail,
-        });
-        return ok({ applied, skipped, refused });
-      }
-      const found = { path: lookup.pick.path, match: lookup.pick.match };
-      const validation = { meta: lookup.pick.meta, warnings: lookup.pick.warnings };
-
-      if (record.thumbnailPath === found.path) {
-        skipped.push({
-          field: 'thumbnail',
-          detail:
-            `${found.path} is already attached to this item — the rescan found the same file ` +
-            `and left the record untouched.`,
-        });
-        return ok({ applied, skipped, refused });
-      }
-
-      const previous = record.thumbnailPath;
-      await store.update(id, generated, {
-        thumbnailPath: found.path,
-        thumbnailMeta: validation.meta,
-        thumbnailSource: 'auto',
-      });
-
-      const notes =
-        (validation.warnings.length ? ` ${validation.warnings.join(' ')}` : '') +
-        lookup.pick.note;
-      applied.push({
-        field: 'thumbnail',
-        detail:
-          `attached ${found.path} — the sibling export of ${generated.sourcePath}, ` +
-          `${validation.meta.width}x${validation.meta.height}, ${validation.meta.bytes} bytes` +
-          (previous ? `, replacing the automatically attached ${previous}` : '') +
-          (found.match === 'slot'
-            ? `. The match was on the SLOT NUMBER only (legacy naming) — check the image, ` +
-              `a renumbered slot can point at another video's thumbnail`
-            : '') +
-          `.${notes}`,
-      });
+      //
+      // Everything from here — the manual guard, the resolver, the same-file check, the
+      // write and the sentence that reports it — is thumbnail-attach.ts, which the page's
+      // pairing sweep calls too. One implementation of "find, validate, attach", for the
+      // reason the paragraph this comment replaced gave: the last time there were two, they
+      // drifted the moment one learned to shrink an oversized export, and this button went
+      // on refusing files the automatic pass had started accepting.
+      const outcome = await findAndAttachThumbnail({ store, itemId: id, generated, record });
+      if (outcome.bucket === 'applied') applied.push(outcome.decision);
+      else if (outcome.bucket === 'refused') refused.push(outcome.decision);
+      else skipped.push(outcome.decision);
 
       return ok({ applied, skipped, refused });
     } catch (err: any) {
       return fail(err?.message || String(err));
+    }
+  });
+
+  /**
+   * PAIR EVERY ITEM THAT HAS NO THUMBNAIL, on the operator opening the reports page.
+   *
+   * THE PROBLEM IS THE ORDER THE WORK HAPPENS IN. Thumbnails are made AFTER generation, because
+   * the operator needs the generated thumbnail text to make them; the automatic pass runs AT
+   * generation, when the image does not exist yet. So a run finishes, the images are exported an
+   * hour later beside the videos, and every one of those items sits with no thumbnail until the
+   * operator clicks "Look again" on each in turn. His words: "i just ran some videos through but
+   * i hadn't made thumbnails yet because i needed the thumbnail text."
+   *
+   * SO THE SWEEP RUNS WHEN HE ARRIVES AT THE PAGE THAT SHOWS THEM, and again when the window
+   * regains focus while he is on it — which is exactly the moment he comes back from making one.
+   * It is cheap enough to run on both: one index listing, one already-cached record read per
+   * item, and a `stat` per candidate path. Nothing is decoded for an item whose candidate file
+   * does not exist, which is every item that already has its image and every item that has none.
+   *
+   * IT NEVER REPLACES. An item with ANY thumbnail path on its record is left alone, and so is
+   * one whose source is 'manual' — including a manual CLEAR, which the per-item rescan is
+   * deliberately allowed to undo and this is deliberately not. A click names an item; arriving
+   * at a page names nothing, so a sweep that could bring back an image the operator deleted by
+   * hand would make "remove this thumbnail" a state that ends whenever he navigates. Replacing
+   * stays the explicit rescan's job, for the reasons its own comment gives.
+   *
+   * IT DOES NOT CREATE RECORDS. Every item of every finished run is given one the moment the run
+   * lands (attachPublishRecordsForJob), so an item with no record predates that pass; creating
+   * one here would mean routing a channel and deciding a destination for items the operator has
+   * never opened, on a call he did not make. Those are counted as skipped and named in the log,
+   * and their first save runs the identical automatic attach through the identical door.
+   *
+   * ITEMS WITH NO SOURCE PATH — text subjects, compilations, reports written before the source
+   * was recorded — are counted, not errors: there is no export folder to look in, and the
+   * resolver says so in its own words.
+   *
+   * ONE AT A TIME. A second request while one is running is DROPPED, not queued: the second
+   * would find whatever the first has already attached and do nothing, and a queue would just
+   * mean the page waits for a duplicate. The drop is reported rather than hidden.
+   *
+   * IT CANNOT INTERLEAVE WITH A GENERATION RUN. Every write here goes through
+   * PublishStoreService.update, which is one queue, and so does the automatic attach a finishing
+   * job performs; the job RECORD is not touched at all, by either. Ordering is by construction
+   * rather than by a lock this call would have to remember to take.
+   */
+  ipcMain.handle('publish-pair-missing-thumbnails', async () => {
+    if (pairingSweepRunning) {
+      log.info('[Publish] a thumbnail pairing sweep is already running; this request was dropped.');
+      return ok<ThumbnailPairingSweep>({
+        dropped: true,
+        attached: [],
+        considered: 0,
+        skipped: 0,
+        refused: 0,
+      });
+    }
+    pairingSweepRunning = true;
+    try {
+      const attached: ThumbnailPairingSweep['attached'] = [];
+      let considered = 0;
+      let skipped = 0;
+      let refused = 0;
+
+      for (const summary of listGenerated().items) {
+        considered++;
+        const itemId = summary.itemId;
+
+        const record = store.get(itemId);
+        if (!record) {
+          skipped++;
+          log.info(
+            `[Publish] pairing sweep skipped ${itemId} (${summary.label}): it has no publish ` +
+            `record. Records are created for every item of a finished run, so this one predates ` +
+            `that pass; its first save will run the same automatic attach.`
+          );
+          continue;
+        }
+        if (record.thumbnailSource === 'manual') {
+          skipped++;
+          log.info(
+            `[Publish] pairing sweep skipped ${itemId} (${summary.label}): its thumbnail was ` +
+            `${record.thumbnailPath ? `chosen by hand (${record.thumbnailPath})` : 'cleared by hand'}, ` +
+            `and a sweep nobody aimed at this item does not overrule that.`
+          );
+          continue;
+        }
+        if (record.thumbnailPath) {
+          skipped++;
+          log.info(
+            `[Publish] pairing sweep skipped ${itemId} (${summary.label}): ` +
+            `${record.thumbnailPath} is already attached. This sweep never replaces — that is ` +
+            `"Look again" on the item.`
+          );
+          continue;
+        }
+
+        const generated = readGenerated(itemId);
+        if (!generated) {
+          skipped++;
+          log.info(
+            `[Publish] pairing sweep skipped ${itemId} (${summary.label}): its generated report ` +
+            `could not be read, so there is no source path to derive a candidate from.`
+          );
+          continue;
+        }
+
+        // PER ITEM, CONTAINED, and for the reason attachPublishRecordsForJob contains its own:
+        // everything this sweep does is work the operator has not asked for on any particular
+        // item, so one contradiction — two channels claiming a prompt set, a store write that
+        // will not land — must not stop the other hundred items from being paired. The cause is
+        // not hidden: it is logged here by name, and the item's next manual write hits the same
+        // door and surfaces it there.
+        let outcome;
+        try {
+          outcome = await findAndAttachThumbnail({ store, itemId, generated, record });
+        } catch (err) {
+          refused++;
+          log.error(
+            `[Publish] pairing sweep could not pair ${itemId} (${summary.label}): ` +
+            `${err instanceof Error ? err.message : String(err)}`
+          );
+          continue;
+        }
+
+        if (outcome.bucket === 'applied' && outcome.attachedPath) {
+          attached.push({ itemId, label: summary.label, path: outcome.attachedPath });
+          log.info(`[Publish] pairing sweep ${itemId} (${summary.label}) thumbnail: ${outcome.decision.detail}`);
+        } else if (outcome.bucket === 'refused') {
+          refused++;
+          log.error(
+            `[Publish] pairing sweep REFUSED ${itemId} (${summary.label}) thumbnail: ${outcome.decision.detail}`
+          );
+        } else {
+          skipped++;
+          log.info(`[Publish] pairing sweep ${itemId} (${summary.label}) thumbnail not set: ${outcome.decision.detail}`);
+        }
+      }
+
+      log.info(
+        `[Publish] thumbnail pairing sweep: ${attached.length} attached, ${skipped} skipped, ` +
+        `${refused} refused, out of ${considered} generated item(s).`
+      );
+      return ok<ThumbnailPairingSweep>({
+        dropped: false,
+        attached,
+        considered,
+        skipped,
+        refused,
+      });
+    } catch (err: any) {
+      return fail(err?.message || String(err));
+    } finally {
+      pairingSweepRunning = false;
     }
   });
 

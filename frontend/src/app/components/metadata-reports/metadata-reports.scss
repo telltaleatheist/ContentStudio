@@ -1053,6 +1053,20 @@ select.control { flex: 1; }
   color: var(--rp-ink-3);
   font-size: var(--rp-fs-cap);
 }
+/* Scrub narration — the same row, under the softening one, so the two rewrite passes read as
+   a pair of controls rather than two unrelated buttons. Only the top rule differs: it is what
+   says the row below belongs to the same block and is a different action. */
+.scrub {
+  border-top: 1px solid var(--rp-line-soft);
+  padding-top: 10px;
+}
+.scrub-result {
+  margin: 0;
+  padding: 0 12px 12px 4px;
+  color: var(--rp-ink-2);
+  font-size: var(--rp-fs-cap);
+  line-height: 1.5;
+}
 
 .s {
   display: flex;

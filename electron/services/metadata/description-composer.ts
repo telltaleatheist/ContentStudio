@@ -160,7 +160,7 @@ export function composeDescriptionSections(item: ComposableItem): DescriptionSec
 
 /** Split generated description text at the link block. Pure; both halves trimmed. */
 export function splitLinkBlock(text: string): { body: string; links: string } {
-  const at = firstMarkerIndex(text);
+  const at = linkBlockIndex(text);
   if (at === -1) return { body: text.trim(), links: '' };
   return { body: text.substring(0, at).trimEnd(), links: text.substring(at).trim() };
 }
@@ -197,10 +197,19 @@ export function composeDescription(item: ComposableItem, options: { includeChapt
 }
 
 /**
- * Position of the highest-priority marker present, or -1 when there is no link block.
- * Priority is LINK_BLOCK_MARKERS order — see the comment there.
+ * Where the link block starts in a stored description, or -1 when there is none.
+ *
+ * EXPORTED because it is the app's one answer to that question and a second one would be a
+ * second answer. `splitLinkBlock` above is the usual caller — it is what decides what the
+ * operator publishes, on every item, every time the panel opens — and the scrub pass calls this
+ * directly when it has to hold the block back BYTE FOR BYTE rather than take the trimmed halves
+ * (scrub.ts: it reattaches the original suffix to rewritten prose, so a trim would eat the blank
+ * line between them).
+ *
+ * Position of the highest-priority marker present. Priority is LINK_BLOCK_MARKERS order — see
+ * the comment there.
  */
-function firstMarkerIndex(text: string): number {
+export function linkBlockIndex(text: string): number {
   for (const marker of LINK_BLOCK_MARKERS) {
     const pos = text.indexOf(marker);
     if (pos !== -1) return pos;

@@ -35,7 +35,18 @@
  * a stronger one: they are terms, not sentences, and have no narrator to frame.
  *
  * NO SETTING TURNS IT OFF (operator, 2026-09-04: always on). It is one function with one call
- * site so that deleting it is one line, which is the honest version of a toggle nobody wants.
+ * site IN GENERATION so that deleting it is one line, which is the honest version of a toggle
+ * nobody wants.
+ *
+ * THE SECOND CALLER IS A BUTTON, and it is deliberately not a second pass (ledger #184). Every
+ * report generated before 2026-09-04 was written without this, and the operator asked to be able
+ * to run it over one of them: "in case i want it to do it on existing reports that already
+ * processed without this second pass". That button runs THIS function over the item on disk and
+ * writes the corrected fields back ONTO IT — in place, not as a sibling set, because a scrub is a
+ * correction of the same text rather than a different register to choose between (which is what
+ * soften is, and why soften writes a new set instead). The only thing the origin changes is what
+ * the trace entry says: `(post-generation)` for the run's own, `(operator request)` for the
+ * button's. Nothing else about the pass differs, because nothing else about it should.
  *
  * FAILURE IS THE ITEM'S FAILURE (laws 1 and 3). A chapter list that comes back with the wrong
  * number of lines throws naming the field, the model and both counts, and the item fails the way
@@ -47,18 +58,27 @@
  * titles go out alone, one per line, and are reattached by position onto the item's own chapter
  * objects; every other key on a chapter is left exactly as the run wrote it.
  *
- * NEITHER DOES THE LINK BLOCK, for the same reason. Every one of the 159 descriptions on disk
- * ends with the prompt set's `description_links` — a fixed block of fifteen URLs the set
- * authored, appended in code by `addDescriptionLinks` moments before this runs. It is held back
- * here and reattached verbatim, so what the model reads is the prose a model wrote. Sending
- * URLs through a rewrite call that has no reason to touch them is how one comes back mangled.
- * The alternates carry no link block (measured: 0 of 96) and are sent whole.
+ * NEITHER DOES THE LINK BLOCK, for the same reason. Every description on disk ends with the
+ * prompt set's `description_links` — a fixed block of fifteen URLs the set authored, appended in
+ * code by `addDescriptionLinks` moments before the run finishes. It is held back here and
+ * reattached verbatim, so what the model reads is the prose a model wrote. Sending URLs through
+ * a rewrite call that has no reason to touch them is how one comes back mangled. The alternates
+ * carry no link block (measured: 0 of 96) and are sent whole.
+ *
+ * WHICH BLOCK, THOUGH, depends on which caller is running, and holdBackLinks below is where that
+ * is decided and why. The short version: at generation time the block was appended moments ago
+ * and is matched EXACTLY; on the operator's button the report can be weeks old and the channel
+ * file has been edited since (measured on this install: 49 of 168 descriptions end with the
+ * block their channel holds today, 119 with an older one), so the block is located in the
+ * description ITSELF by the same splitter the publish panel uses. Which of the two ran is
+ * recorded on the item, in `scrubbed.links_held_back`.
  */
 
 import log from 'electron-log';
 
 import { Chapter } from './chapter-generator.service';
-import { MetadataRoutingOption } from './metadata-routing';
+import { linkBlockIndex } from './description-composer';
+import { MetadataRoutingOption, resolveOperatorOption } from './metadata-routing';
 import {
   askToRewrite,
   buildRewritePrompt,
@@ -86,19 +106,126 @@ export const SCRUB_PROMPT_FILE = 'scrub.yml';
  */
 export const SCRUB_ROUTING_TASK = 'description' as const;
 
-/** What this pass calls itself, everywhere the shared machinery has to say which one is running. */
-const SCRUB_PASS: RewritePassIdentity = {
-  promptFile: SCRUB_PROMPT_FILE,
-  // No DATA block. Soften carries one because "raped -> taken advantage of" can only be shown by
-  // naming both forms; a scrub has no vocabulary — the wrong form is a sentence's subject, and
-  // the register block states the wanted one in positive form (law 4).
-  dataBlockKeys: [],
-  id: 'scrub',
-  name: 'Scrub',
-  callWhat: (field) => `scrub: ${field} (post-generation)`,
-  readWhat: (field, sourceLabel) => `scrubbing ${field} for ${sourceLabel}`,
-  nameInError: (field, sourceLabel) => `Scrubbing "${field}" for ${sourceLabel}`,
-};
+/**
+ * Who asked for this run, which is the ONLY thing that differs between the two callers.
+ *
+ * It reaches the operator in one place — the `what` on every `_prompt_trace` entry — and that
+ * is the point of carrying it: a trace holding eleven scrub calls has to say which of them the
+ * run made and which of them a later click made, or the record cannot answer when the text on
+ * disk was last corrected.
+ */
+export type ScrubOrigin = 'post-generation' | 'operator request';
+
+/**
+ * What this pass calls itself, everywhere the shared machinery has to say which one is running.
+ *
+ * Built per run rather than declared once, because `callWhat` names the origin. Everything else
+ * is the same object it always was.
+ */
+function scrubPass(origin: ScrubOrigin): RewritePassIdentity {
+  return {
+    promptFile: SCRUB_PROMPT_FILE,
+    // No DATA block. Soften carries one because "raped -> taken advantage of" can only be shown
+    // by naming both forms; a scrub has no vocabulary — the wrong form is a sentence's subject,
+    // and the register block states the wanted one in positive form (law 4).
+    dataBlockKeys: [],
+    id: 'scrub',
+    name: 'Scrub',
+    callWhat: (field) => `scrub: ${field} (${origin})`,
+    readWhat: (field, sourceLabel) => `scrubbing ${field} for ${sourceLabel}`,
+    nameInError: (field, sourceLabel) => `Scrubbing "${field}" for ${sourceLabel}`,
+  };
+}
+
+/**
+ * One option id the operator picked from the button's dropdown, checked against what the
+ * description task offers before anything is read. Soften's `resolveSoftenOption` with a
+ * different task constant — the shared validator is metadata-routing.ts's.
+ */
+export function resolveScrubOption(optionId: unknown): MetadataRoutingOption {
+  return resolveOperatorOption(SCRUB_ROUTING_TASK, optionId);
+}
+
+/**
+ * The link block held back from ONE description, and how it was found.
+ *
+ * TWO RULES, IN ORDER, AND THE ORDER IS THE POINT.
+ *
+ * THE EXACT ONE FIRST. `addDescriptionLinks` appends `'\n\n' + links` to the description the
+ * moment it is composed, so at generation time the block on the end IS the prompt set's, byte
+ * for byte, and matching it exactly is the strongest statement available. That is the rule
+ * ledger #183 shipped and the only rule the generation call site accepts.
+ *
+ * THE ITEM'S OWN SECOND, and only for the operator's button. The block is the CHANNEL FILE's
+ * text, and that file is edited: measured over the 168 items on this install, 49 descriptions
+ * end with the block their channel holds today and 119 end with an older one. Refusing those
+ * would refuse the button on exactly the reports it exists for — everything generated on or
+ * before 2026-08-25 — so on that path the block is located in the description ITSELF, by
+ * `linkBlockIndex`: the same splitter that decides where the link block starts on every item
+ * the publish panel opens and in every description this app composes for YouTube. It is not a
+ * second answer to the question; it is the app's existing one. If it were wrong about an item,
+ * the description the operator publishes would already be wrong in the same place.
+ *
+ * NEITHER RULE EVER TRIMS. The suffix is sliced out of the description whole, blank line
+ * included, and put back on the rewritten prose unchanged — the whole reason the pass holds it
+ * back is that no byte of it should move.
+ *
+ * A description with NO link block goes whole, which is what `splitLinkBlock` answers for it
+ * everywhere else in the app.
+ */
+interface HeldBackLinks {
+  /** The prose the model is given. */
+  prose: string;
+  /** Exactly what is re-appended, blank line and all. '' when there is no block. */
+  suffix: string;
+  /** Which rule found it, for the record and the log. Always a whole sentence. */
+  how: string;
+}
+
+function holdBackLinks(
+  description: string,
+  descriptionLinks: string,
+  origin: ScrubOrigin,
+  itemId: string
+): HeldBackLinks {
+  const exact = descriptionLinks === '' ? '' : `\n\n${descriptionLinks}`;
+  if (exact !== '' && description.endsWith(exact)) {
+    return {
+      prose: description.slice(0, description.length - exact.length).trimEnd(),
+      suffix: exact,
+      how: `the prompt set's own description_links block (${descriptionLinks.length} chars), matched exactly on the end of the description.`,
+    };
+  }
+
+  if (origin === 'post-generation') {
+    throw new Error(
+      `The description on item ${itemId} does not end with the prompt set's description_links ` +
+        `block — the block addDescriptionLinks appended to it moments before this pass. The ` +
+        `scrub holds that block back by matching it exactly, and it cannot say which part of ` +
+        `this description is the block.`
+    );
+  }
+
+  const at = linkBlockIndex(description);
+  if (at === -1) {
+    return {
+      prose: description,
+      suffix: '',
+      how: 'no link block: the description carries none of the markers that start one, so the whole of it was sent.',
+    };
+  }
+  const prose = description.slice(0, at).trimEnd();
+  return {
+    prose,
+    // From the end of the prose to the end of the description — the separator and the block
+    // together, exactly as they stand. Nothing here is trimmed or rebuilt.
+    suffix: description.slice(prose.length),
+    how:
+      `the item's OWN link block (${description.length - at} chars from the first marker), located ` +
+      `by the same splitter the publish panel uses — this report's block is not the one its ` +
+      `channel file holds today.`,
+  };
+}
 
 /** A field the item did not carry. Not an error; still reported. */
 export interface ScrubSkip {
@@ -124,6 +251,14 @@ export interface ScrubRecord {
   };
   /** Fields this item does not carry. */
   skipped: ScrubSkip[];
+  /**
+   * Which link block was held back out of the description, and how it was found (law 8).
+   *
+   * Recorded rather than only logged, because it is a decision this pass made about the
+   * operator's text: it says which bytes of the description never went to a model. Absent when
+   * the item carries no description.
+   */
+  links_held_back?: string;
 }
 
 /** What one pass produced, for the caller's log. The item itself carries the record. */
@@ -140,6 +275,12 @@ export interface ScrubOptions {
   /** The model, resolved from the description routing by the caller. */
   option: MetadataRoutingOption;
   transport: RewriteTransport;
+  /**
+   * Who asked. Required, and deliberately without a value of its own: the two callers are the
+   * generation loop and the reports page's button, and a pass that could not say which one it
+   * was would write a trace nobody can read back.
+   */
+  origin: ScrubOrigin;
 }
 
 /**
@@ -156,11 +297,14 @@ export interface ScrubOptions {
 export function planScrub(
   item: any,
   /** The prompt set's `description_links`, trimmed. '' when the set declares none. */
-  descriptionLinks: string
-): { plans: RewritePlan[]; skipped: ScrubSkip[] } {
+  descriptionLinks: string,
+  /** Which link-block rule applies — see holdBackLinks. */
+  origin: ScrubOrigin = 'post-generation'
+): { plans: RewritePlan[]; skipped: ScrubSkip[]; linksHeldBack: string | null } {
   const itemId = typeof item?.item_id === 'string' ? item.item_id : '(no item_id)';
   const plans: RewritePlan[] = [];
   const skipped: ScrubSkip[] = [];
+  let linksHeldBack: string | null = null;
 
   const hook = textOf(item?.description_hook);
   if (hook === null) {
@@ -182,20 +326,11 @@ export function planScrub(
   if (description === null) {
     skipped.push({ field: 'description', reason: 'the item carries no description.' });
   } else {
-    // The link block, split off by the exact string the composer appended — `'\n\n' + links`,
-    // see addDescriptionLinks. A set that declares links whose block is NOT on the end of the
-    // description it just wrote is an unexpected state and says so, rather than quietly sending
-    // fifteen URLs to a model.
-    const suffix = descriptionLinks === '' ? '' : `\n\n${descriptionLinks}`;
-    if (suffix !== '' && !description.endsWith(suffix)) {
-      throw new Error(
-        `The description on item ${itemId} does not end with the prompt set's description_links ` +
-          `block, which addDescriptionLinks appended to it moments before this pass. The scrub ` +
-          `holds that block back by matching it exactly, and it cannot say which part of this ` +
-          `description is the block.`
-      );
-    }
-    const prose = suffix === '' ? description : description.slice(0, description.length - suffix.length).trimEnd();
+    // The link block, held back whole — see holdBackLinks for the two rules and why the
+    // operator's button gets the second one.
+    const held = holdBackLinks(description, descriptionLinks, origin, itemId);
+    const { prose, suffix } = held;
+    linksHeldBack = held.how;
     plans.push({
       field: 'description',
       labelKey: 'description',
@@ -231,6 +366,12 @@ export function planScrub(
   }
 
   // CHAPTER TITLES ONLY — see the header. The timestamps do not go out and do not come back.
+  //
+  // ALWAYS PLANNED when the item has chapters, on either caller. That is not an implementation
+  // detail this function happens to have: chapter titles are where the measurement put most of
+  // the narrator framing (46 of 1,124 against 13 of 159 descriptions), and the operator said it
+  // in as many words when he asked for the button — "have the second pass always try to correct
+  // chapters as well". There is no switch here and nothing conditional on the origin.
   const chapters: Chapter[] = Array.isArray(item?.chapters) ? item.chapters : [];
   const chapterTitles = chapters.map((chapter, index) => {
     const title = textOf(chapter?.title);
@@ -261,12 +402,18 @@ export function planScrub(
     });
   }
 
-  return { plans, skipped };
+  return { plans, skipped, linksHeldBack };
 }
 
-/** One field's prompt, assembled by the shared builder out of scrub.yml. */
-export function buildScrubPrompt(plan: RewritePlan): string {
-  return buildRewritePrompt(SCRUB_PASS, plan);
+/**
+ * One field's prompt, assembled by the shared builder out of scrub.yml.
+ *
+ * The origin does not appear in the prompt — it names the CALLER, not the job, and a model told
+ * who pressed which button would be told something that cannot change its answer. It is passed
+ * only because the identity object carries both, and the identity is what the builder reads.
+ */
+export function buildScrubPrompt(plan: RewritePlan, origin: ScrubOrigin = 'post-generation'): string {
+  return buildRewritePrompt(scrubPass(origin), plan);
 }
 
 /**
@@ -317,11 +464,16 @@ function sameValue(a: string | string[], b: string | string[]): boolean {
  */
 export async function scrubGeneratedItem(
   item: any,
-  { option, transport }: ScrubOptions
+  { option, transport, origin }: ScrubOptions
 ): Promise<ScrubRunResult> {
+  const pass = scrubPass(origin);
   const sourceLabel = rewriteSourceLabel(item);
   const at = new Date().toISOString();
-  const { plans, skipped } = planScrub(item, transport.aiManager.descriptionLinks());
+  const { plans, skipped, linksHeldBack } = planScrub(
+    item,
+    transport.aiManager.descriptionLinks(),
+    origin
+  );
 
   if (!Array.isArray(item._prompt_trace)) {
     throw new Error(
@@ -340,13 +492,13 @@ export async function scrubGeneratedItem(
   }
 
   for (const plan of plans) {
-    const prompt = buildScrubPrompt(plan);
+    const prompt = buildScrubPrompt(plan, origin);
     const sentAt = new Date().toISOString();
-    const text = await askToRewrite(SCRUB_PASS, plan, option, transport, sourceLabel, prompt);
-    const { value } = readRewrittenAnswer(SCRUB_PASS, plan, text, option.model, sourceLabel);
+    const text = await askToRewrite(pass, plan, option, transport, sourceLabel, prompt);
+    const { value } = readRewrittenAnswer(pass, plan, text, option.model, sourceLabel);
     plan.apply(value, item);
     (item._prompt_trace as PromptTraceEntry[]).push({
-      what: SCRUB_PASS.callWhat(plan.field, sourceLabel),
+      what: pass.callWhat(plan.field, sourceLabel),
       model: option.model,
       chars: prompt.length,
       at: sentAt,
@@ -355,6 +507,7 @@ export async function scrubGeneratedItem(
   }
 
   const record: ScrubRecord = { model: option.model, at, fields: {}, skipped };
+  if (linksHeldBack !== null) record.links_held_back = linksHeldBack;
   const changed: string[] = [];
   const unchanged: string[] = [];
   for (const [key, was] of before) {
@@ -369,11 +522,12 @@ export async function scrubGeneratedItem(
   item.scrubbed = record;
 
   log.info(
-    `[Scrub] ${sourceLabel} on "${option.model}": ` +
+    `[Scrub] (${origin}) ${sourceLabel} on "${option.model}": ` +
       `${changed.length ? `rewrote ${changed.join(', ')}` : 'nothing rewritten'}; ` +
       `${unchanged.length ? `${unchanged.join(', ')} came back unchanged` : 'nothing unchanged'}` +
       (skipped.length ? `; not carried by this item: ${skipped.map((s) => s.field).join(', ')}` : '')
   );
+  if (linksHeldBack !== null) log.info(`[Scrub] ${sourceLabel} held back ${linksHeldBack}`);
 
   return { model: option.model, changed, unchanged, skipped };
 }

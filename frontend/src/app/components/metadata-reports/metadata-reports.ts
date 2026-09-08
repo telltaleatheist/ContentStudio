@@ -464,6 +464,29 @@ export class MetadataReports implements OnInit, OnDestroy {
   /** One pass at a time. */
   readonly softenBusy = signal(false);
 
+  // ------------------------------------------------------- scrub narration
+  //
+  // The same picker, from the same payload and the same task, for the same reason — the
+  // authority is services/metadata/scrub.ts (SCRUB_ROUTING_TASK), which reads description
+  // because that task offers every rung the build ships and a scrub is a prose rewrite any of
+  // them can perform. Its own signal rather than a shared one with softening: the two buttons
+  // are two decisions, and an operator who scrubbed on Sonnet has not thereby said which model
+  // should soften.
+  readonly scrubOptions = signal<MetadataRoutingOption[]>([]);
+  /** What the operator has the picker set to. */
+  readonly scrubOptionId = signal<string>('');
+  /** One pass at a time on one item — the main process refuses a second by name as well. */
+  readonly scrubBusy = signal(false);
+  /**
+   * The last pass's one-line result, or '' when none has run on the open item.
+   *
+   * Shown beside the button as well as raised as a notification, because the answer to "did
+   * anything actually change?" is the whole point of pressing it and a toast is gone in five
+   * seconds. Cleared whenever a different item is opened — it is a fact about the set that was
+   * scrubbed, not about the page.
+   */
+  readonly scrubResultLine = signal<string>('');
+
   // ----------------------------------------------------------- versions of one source
   //
   // A video can have more than one metadata set: re-running metadata mints a new item over
@@ -2342,6 +2365,10 @@ export class MetadataReports implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     if (this.clockTimer !== null) clearInterval(this.clockTimer);
+    if (this.windowFocusListener !== null) {
+      window.removeEventListener('focus', this.windowFocusListener);
+      this.windowFocusListener = null;
+    }
   }
 
   async ngOnInit() {
@@ -2357,8 +2384,9 @@ export class MetadataReports implements OnInit, OnDestroy {
     // are: it labels a control on an already-rendered page and the list does not wait on it.
     await this.loadTitlesModelOptions();
 
-    // The models the softening pass can run on. Same payload, same reason it comes last.
-    await this.loadSoftenModelOptions();
+    // The models the softening pass and the scrub can run on — one payload for both pickers.
+    // Same reason it comes last.
+    await this.loadRewriteModelOptions();
 
     // Deep link: /metadata-reports?item=<itemId>, which is what every chip on the publish
     // calendar navigates to. Read once, AFTER the list exists — the parameter names a row,
@@ -2370,6 +2398,100 @@ export class MetadataReports implements OnInit, OnDestroy {
     // navigation.
     const requestedItemId = this.route.snapshot.queryParamMap.get('item');
     if (requestedItemId) await this.selectByItemId(requestedItemId);
+
+    // Thumbnails, paired. Deliberately NOT awaited: it is work the operator did not ask for
+    // on this visit, and the page is already drawn by the time it answers. See the method.
+    void this.pairMissingThumbnails();
+
+    // AND AGAIN WHEN THE WINDOW COMES BACK, which is the moment that actually matters: the
+    // operator leaves for Photoshop, makes the images, exports them and returns. Arrival alone
+    // would only catch the ones made before he opened the page. The listener is cheap (one
+    // event, one guarded call, and the sweep does nothing when nothing is missing) and it is
+    // removed in ngOnDestroy, so it fires only while these reports are on screen.
+    this.windowFocusListener = () => { void this.pairMissingThumbnails(); };
+    window.addEventListener('focus', this.windowFocusListener);
+  }
+
+  /** The focus handler while this page is mounted, or null. Removed in ngOnDestroy. */
+  private windowFocusListener: (() => void) | null = null;
+
+  /** One sweep at a time from this page — the main process refuses a second as well. */
+  private pairingSweepInFlight = false;
+
+  /**
+   * PAIR THE THUMBNAILS NOBODY HAS ATTACHED YET.
+   *
+   * WHY THIS EXISTS AT ALL: thumbnails are made AFTER generation, because the operator needs
+   * the generated thumbnail text to make them. The pass that would find them runs DURING
+   * generation, when the image does not exist. So a run finishes, the images land beside the
+   * videos an hour later, and every one of those items sits with no thumbnail until he clicks
+   * "Look again" on each in turn. This is that click, made for him, at the moment he arrives
+   * at the page that shows them.
+   *
+   * IT NEVER REPLACES ANYTHING. An item that already has a thumbnail, or whose thumbnail was
+   * chosen or cleared by hand, is not opened at all — arriving at a page names no item, and a
+   * sweep that could undo a manual clear would make "remove this thumbnail" a state that ends
+   * whenever the operator navigates. Replacing stays the per-item rescan's job.
+   *
+   * SILENT WHEN NOTHING CHANGED, and only then (law 8). A run that attached something SAYS so,
+   * naming the videos — an image appearing on a row by itself, with nothing to say why, is
+   * exactly the silent automatic decision this app does not ship. A run that attached nothing
+   * changed nothing, and has nothing to report. The per-item reasons — skipped, refused, no
+   * record — are logged in the main process, where they can be read when a row that should
+   * have paired did not; putting a hundred of them on screen would bury the one line that
+   * matters.
+   *
+   * NOT AWAITED BY ITS CALLERS. The list is already on screen; this arrives when it arrives and
+   * re-reads the index, which is what puts the newly attached images in the rows' thumb column.
+   */
+  private async pairMissingThumbnails(): Promise<void> {
+    if (this.pairingSweepInFlight) return;
+    this.pairingSweepInFlight = true;
+    try {
+      const res = await this.electron.publishPairMissingThumbnails();
+      if (!res.success || !res.data) {
+        this.notificationService.warning(
+          'Thumbnails could not be paired',
+          `The automatic pairing pass did not run (${res.error ?? 'no reason given'}). ` +
+            'Every item still has "Look again" on its thumbnail row.',
+        );
+        return;
+      }
+
+      const sweep = res.data;
+      // A sweep was already running in the main process — another window, or a focus event
+      // that landed while the arrival sweep was still out. THAT run is doing this work and
+      // will report on it; this call did nothing and has nothing to say.
+      if (sweep.dropped) return;
+      if (sweep.attached.length === 0) return;
+
+      // The rows' cached images first, so nothing renders an old picture against a new path,
+      // then the index — which carries each row's `hasThumbnail` fact.
+      this.invalidateThumbStrip(sweep.attached.map((a) => a.itemId));
+      await this.loadReports();
+
+      // The open item's own panel reads the record, not the index, so it needs its own re-read
+      // when the sweep gave IT a thumbnail.
+      const open = this.selectedReport();
+      if (open?.itemId && sweep.attached.some((a) => a.itemId === open.itemId)) {
+        await this.publish.load(open.itemId, open.promptSet);
+      }
+
+      const names = sweep.attached.map((a) => a.label).join(', ');
+      this.notificationService.success(
+        `Paired ${sweep.attached.length} thumbnail${sweep.attached.length === 1 ? '' : 's'}`,
+        `${names}. Each was found beside its video in the export's own thumbnails folder and ` +
+          'attached automatically — open one to check the image is the right one.',
+      );
+    } catch (error) {
+      this.notificationService.warning(
+        'Thumbnails could not be paired',
+        `The automatic pairing pass failed (${(error as Error).message}). Every item still has ` +
+          '"Look again" on its thumbnail row.',
+      );
+    } finally {
+      this.pairingSweepInFlight = false;
+    }
   }
 
   /**
@@ -2513,14 +2635,19 @@ export class MetadataReports implements OnInit, OnDestroy {
   }
 
   /**
-   * The models the softening pass can run on.
+   * The models the two rewrite passes can run on: softening and the scrub.
    *
-   * Straight off `metadata-routing:get`, the routing dialog's own payload, so the picker
-   * offers exactly what the build offers. A failure is said and the picker stays empty, which
-   * disables the button — sending a rewrite of every field on an item to a model this page
-   * guessed at is worse than not sending one.
+   * Straight off `metadata-routing:get`, the routing dialog's own payload, so the pickers offer
+   * exactly what the build offers. ONE call fills BOTH, because both passes read the same
+   * `description` task for the same declared reason (soften.ts and scrub.ts each say so) — two
+   * calls would be two round trips to one answer, and a page that could show the two pickers
+   * disagreeing about what the build offers would be showing a bug.
+   *
+   * A failure is said and the pickers stay empty, which disables both buttons — sending a
+   * rewrite of an operator's finished text to a model this page guessed at is worse than not
+   * sending one.
    */
-  private async loadSoftenModelOptions(): Promise<void> {
+  private async loadRewriteModelOptions(): Promise<void> {
     try {
       const routing = await this.electron.getMetadataRouting();
       // See the note on `softenOptions` for why this is the description task.
@@ -2530,11 +2657,13 @@ export class MetadataReports implements OnInit, OnDestroy {
       }
       this.softenOptions.set(task.options);
       if (!this.softenOptionId()) this.softenOptionId.set(task.selectedOptionId);
+      this.scrubOptions.set(task.options);
+      if (!this.scrubOptionId()) this.scrubOptionId.set(task.selectedOptionId);
     } catch (error) {
       this.notificationService.warning(
-        'Softening models unavailable',
+        'Rewrite models unavailable',
         `The model list could not be read (${(error as Error).message}), so "Soften for ` +
-          'monetization" has nothing to send a call on.',
+          'monetization" and "Scrub narration" have nothing to send a call on.',
       );
     }
   }
@@ -2622,6 +2751,120 @@ export class MetadataReports implements OnInit, OnDestroy {
     } finally {
       this.softenBusy.set(false);
       this.softenBusyField.set('');
+    }
+  }
+
+  /** What the item calls each scrubbed field, in the words the page uses for them. */
+  private readonly SCRUB_FIELD_NAMES: Record<string, string> = {
+    description: 'the description',
+    description_hook: 'the hook',
+    description_options: 'the alternate descriptions',
+    chapters: 'the chapter titles',
+  };
+
+  private scrubFieldList(keys: string[]): string {
+    return keys.map((key) => this.SCRUB_FIELD_NAMES[key] ?? key).join(', ');
+  }
+
+  /**
+   * SCRUB NARRATION — this item's description, hook, alternates and chapter titles, corrected
+   * IN PLACE so the video's subject matter is the subject of its own sentences.
+   *
+   * It is the SAME pass every item generated since 2026-09-04 already went through on its way
+   * to disk (scrub.ts, ledger #183); this button is for the reports that predate it. Chapters
+   * are always included when the item has any — the operator asked for that in as many words.
+   *
+   * IN PLACE IS THE DIFFERENCE FROM SOFTENING, and it is deliberate. Softening produces a
+   * different register, so it writes a new set and the operator picks between the two; a scrub
+   * produces a correction of the same text, so the item after it IS the item. There is no new
+   * row, nothing to promote, and the publish record — the chosen titles, the description
+   * override, the chapter edits — is not touched.
+   *
+   * On success the open item is re-read from disk, which is what puts the corrected description,
+   * hook, alternates and chapter titles on screen: `selectReport` parses the job file, so a
+   * re-select shows exactly what was written rather than a patched copy of what was there.
+   *
+   * Every refusal is the main process's own sentence, shown as it was written.
+   */
+  async scrubItem(): Promise<void> {
+    const report = this.selectedReport();
+    if (!report) return;
+    if (!report.jobId || !report.itemId) {
+      this.notificationService.error(
+        'This report has no identity',
+        'It carries no job id or item id, so there is no item to scrub.',
+      );
+      return;
+    }
+    const optionId = this.scrubOptionId();
+    if (!optionId) {
+      this.notificationService.error(
+        'No model chosen',
+        'Pick a model beside the button — the calls have to go somewhere.',
+      );
+      return;
+    }
+    // Belt as well as braces: the button is disabled while a pass is out, and the main process
+    // refuses a second concurrent pass on the same item by name. This is the third guard, and
+    // it is the one that costs nothing.
+    if (this.scrubBusy()) return;
+
+    // A half-finished description or title edit is about the text this pass is about to
+    // rewrite, and saving it afterwards would write the pre-scrub words back.
+    this.cancelEditTitle();
+    this.cancelEditDescription();
+
+    this.scrubBusy.set(true);
+    this.scrubResultLine.set('');
+    const itemId = report.itemId;
+    try {
+      const result = await this.electron.scrubItem(report.jobId, itemId, optionId);
+      if (!result.success) {
+        this.notificationService.error(
+          'Nothing scrubbed',
+          result.error ?? 'The request gave no reason.',
+        );
+        return;
+      }
+
+      // Re-read from disk. The list first (the row's display title is unaffected, but the index
+      // is what `selectByItemId` looks the row up in), then the item — which is what re-parses
+      // the job file and puts the corrected fields on screen.
+      await this.loadReports();
+      await this.selectByItemId(itemId);
+
+      const changed = result.changed ?? [];
+      const unchanged = result.unchanged ?? [];
+      const skipped = result.skipped ?? [];
+      const parts: string[] = [];
+      parts.push(
+        changed.length > 0
+          ? `${result.model} rewrote ${this.scrubFieldList(changed)}.`
+          : `${result.model} returned every field word for word — nothing needed correcting.`,
+      );
+      if (unchanged.length > 0) {
+        parts.push(`Unchanged: ${this.scrubFieldList(unchanged)}.`);
+      }
+      if (skipped.length > 0) {
+        parts.push(`Not carried by this item: ${skipped.map((sk) => sk.field).join(', ')}.`);
+      }
+      if ((result.earlierScrubs ?? 0) > 0) {
+        parts.push(
+          `${result.earlierScrubs} earlier scrub(s) of this item are kept on the record, ` +
+            'with the text they replaced.',
+        );
+      }
+      const line = parts.join(' ');
+      this.scrubResultLine.set(line);
+      if (changed.length > 0) {
+        this.notificationService.success('Scrubbed in place', line);
+      } else {
+        this.notificationService.info('Nothing to correct', line);
+      }
+    } catch (error) {
+      this.notificationService.error('Nothing scrubbed', (error as Error).message);
+    } finally {
+      this.scrubBusy.set(false);
     }
   }
 
@@ -3060,6 +3303,10 @@ export class MetadataReports implements OnInit, OnDestroy {
       this.focusedTitleIndex.set(null);
       this.tagsExpanded.set(false);
       this.openAssets.set(new Set<string>(['chapters']));
+      // What the last scrub did is a fact about the set it ran on. A re-select of the SAME
+      // item after a pass re-runs this, so the line is written after the reload rather than
+      // before it — see scrubItem().
+      this.scrubResultLine.set('');
       // The setup accordion is about the item that was open: a Thumbnail row left
       // expanded belongs to that item.
       this.openFact.set(null);

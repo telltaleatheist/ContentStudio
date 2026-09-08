@@ -8,6 +8,7 @@ import * as path from 'path';
 import { MetadataResult } from './ai-manager.service';
 import { Chapter } from './chapter-generator.service';
 import { METADATA_FIELDS } from './metadata-fields';
+import type { ScrubRecord } from './scrub';
 import {
   ItemIdentity,
   ItemProvenance,
@@ -54,6 +55,37 @@ export interface JobMetadata {
 export interface SelectionRemoval {
   /** Whether a stored selection for this item existed and was removed. */
   removed: boolean;
+}
+
+/**
+ * The corrected text ONE operator-requested scrub produced, ready to be written back onto
+ * the item it was read off.
+ *
+ * A key that is ABSENT was not part of the pass — the item carries no such field, and the
+ * pass reported it as skipped. A key that is present is written, whether or not the model
+ * changed it: `scrubbed.fields` is what says which of the two happened, and writing the
+ * unchanged text back is a no-op on the same string.
+ */
+export interface ScrubWrite {
+  description?: string;
+  description_hook?: string;
+  description_options?: string[];
+  /** One title per chapter, in the item's own chapter order. Reattached by position. */
+  chapterTitles?: string[];
+  /** The pass's own receipt, which becomes the item's `scrubbed`. */
+  record: ScrubRecord;
+  /** The calls this pass made, appended to the item's `_prompt_trace`. */
+  trace: Array<{ what: string; model: string; chars: number; at: string; prompt: string }>;
+}
+
+/** What the write actually did, for the caller's log and the page's one-line result. */
+export interface ScrubWriteReceipt {
+  /** Item keys the model changed, read straight off the record. */
+  changed: string[];
+  /** Item keys the model returned word for word. */
+  unchanged: string[];
+  /** How many earlier scrubs `scrubbed_earlier` holds now. */
+  earlierScrubs: number;
 }
 
 export interface DeleteItemHooks {
@@ -319,6 +351,133 @@ export class OutputHandlerService {
     const run = this.writeQueue.then(() => this.runAppendGeneratedTitles(jobId, itemId, titles, trace));
     this.writeQueue = run.then(() => undefined, () => undefined);
     return run;
+  }
+
+  /**
+   * Write ONE operator-requested scrub back onto the item it was read off.
+   *
+   * IN PLACE, AND THAT IS THE DIFFERENCE THAT MATTERS (ledger #184). Soften writes a NEW SET
+   * because it produces a different register the operator chooses between; a scrub produces a
+   * correction of the same text, so the item after it IS the item. There is no new job, no new
+   * item id and nothing to pick between — which is also why the four fields are written onto
+   * the record rather than onto the publish selection's override surface: an override is the
+   * operator's edit of what the model wrote, and this is what the model wrote.
+   *
+   * On the same queue as every other item write, for the reason they all are: this is a
+   * read-modify-write of a job file a generation run may be appending items to, and the queue
+   * is the only thing that orders the two.
+   *
+   * THE .TXT IS NOT TOUCHED, by the same standing rule `appendGeneratedTitles` follows and
+   * scrub.ts's header states: the text file is the artifact of the run that produced it, and
+   * the json record is what the app reads.
+   *
+   * NOTHING IS LOST. An item that already carries a `scrubbed` key — one generated after the
+   * pass shipped, or one this button has already been pressed on — keeps that receipt: the new
+   * one becomes `scrubbed`, and the one it replaces is pushed onto `scrubbed_earlier`, oldest
+   * first. Each of those records carries the `before` text of every field it changed, so the
+   * whole chain back to what the run first wrote is on the item.
+   *
+   * THE POSITIONAL WRITES ARE CHECKED, not assumed. Chapter titles and alternate descriptions
+   * are reattached BY POSITION onto arrays that were read minutes ago, so an array whose length
+   * has moved since throws naming both counts rather than renumbering the operator's chapters.
+   */
+  applyScrubToItem(jobId: string, itemId: string, write: ScrubWrite): Promise<ScrubWriteReceipt> {
+    const run = this.writeQueue.then(() => this.runApplyScrubToItem(jobId, itemId, write));
+    this.writeQueue = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private runApplyScrubToItem(jobId: string, itemId: string, write: ScrubWrite): ScrubWriteReceipt {
+    if (typeof jobId !== 'string' || !jobId.trim()) {
+      throw new Error('applyScrubToItem requires a non-empty jobId');
+    }
+    if (!isItemId(itemId)) {
+      throw new Error(`applyScrubToItem requires a valid item id; got ${JSON.stringify(itemId)}`);
+    }
+    if (!write || typeof write !== 'object' || !write.record || !Array.isArray(write.trace)) {
+      throw new Error(
+        `applyScrubToItem requires the pass's record and its trace entries for item ${itemId}`
+      );
+    }
+
+    const job = this.getJobMetadata(jobId);
+    if (!job) {
+      throw new Error(`Job not found: ${jobId}`);
+    }
+    if (!Array.isArray(job.items)) {
+      throw new Error(`Job ${jobId} has no items array — the report file is corrupt.`);
+    }
+    const item = job.items.find((entry) => entry && (entry as StoredItem).item_id === itemId) as any;
+    if (!item) {
+      throw new Error(`Item ${itemId} is not in job ${jobId}`);
+    }
+
+    if (write.chapterTitles !== undefined) {
+      const chapters = item.chapters;
+      if (!Array.isArray(chapters) || chapters.length !== write.chapterTitles.length) {
+        throw new Error(
+          `The scrub read ${write.chapterTitles.length} chapter title(s) off item ${itemId} and ` +
+            `the item now has ${Array.isArray(chapters) ? chapters.length : 'no chapters array'}. ` +
+            `Titles are reattached by position, so nothing was written.`
+        );
+      }
+    }
+    if (write.description_options !== undefined) {
+      const options = item.description_options;
+      if (!Array.isArray(options) || options.length !== write.description_options.length) {
+        throw new Error(
+          `The scrub read ${write.description_options.length} alternate description(s) off item ` +
+            `${itemId} and the item now has ` +
+            `${Array.isArray(options) ? options.length : 'no description_options array'}. ` +
+            `Alternates are reattached by index, so nothing was written.`
+        );
+      }
+    }
+
+    // Nothing above wrote anything; everything below does. The order is deliberate — every
+    // refusal happens before the first assignment, so a refused write leaves the file byte
+    // for byte as it was.
+    if (write.description !== undefined) item.description = write.description;
+    if (write.description_hook !== undefined) item.description_hook = write.description_hook;
+    if (write.description_options !== undefined) {
+      item.description_options = write.description_options.slice();
+    }
+    if (write.chapterTitles !== undefined) {
+      const titles = write.chapterTitles;
+      item.chapters = (item.chapters as Chapter[]).map((chapter, index) => ({
+        ...chapter,
+        title: titles[index],
+      }));
+    }
+
+    const previous = item.scrubbed;
+    if (previous) {
+      const earlier = Array.isArray(item.scrubbed_earlier) ? item.scrubbed_earlier : [];
+      item.scrubbed_earlier = [...earlier, previous];
+    }
+    item.scrubbed = write.record;
+
+    const existingTrace = item._prompt_trace;
+    item._prompt_trace = Array.isArray(existingTrace)
+      ? [...existingTrace, ...write.trace]
+      : [...write.trace];
+
+    this.saveJson(job, path.join(this.metadataDir, `${jobId}.json`));
+
+    const changed: string[] = [];
+    const unchanged: string[] = [];
+    for (const [key, field] of Object.entries(write.record.fields)) {
+      (field.changed ? changed : unchanged).push(key);
+    }
+    const earlierScrubs = Array.isArray(item.scrubbed_earlier) ? item.scrubbed_earlier.length : 0;
+    console.log(
+      `[OutputHandler] Scrubbed item ${itemId} in job ${jobId} in place on ` +
+        `"${write.record.model}": ${changed.length ? `rewrote ${changed.join(', ')}` : 'nothing rewritten'}` +
+        `${unchanged.length ? `; ${unchanged.join(', ')} unchanged` : ''}` +
+        `${earlierScrubs ? `; ${earlierScrubs} earlier scrub(s) kept` : ''}`
+    );
+
+    return { changed, unchanged, earlierScrubs };
   }
 
   private runAppendGeneratedTitles(

@@ -1001,14 +1001,20 @@
             </section>
           }
 
-          <!-- ═════ SOFTEN FOR MONETIZATION ═════
-               Sits directly under the titles block, beside "10 more titles", because it is
-               the same kind of control: a model picker and one button that sends calls.
-               What it produces is a WHOLE NEW SET — every text field on this item rewritten
-               into a milder register and written as a sibling item under the same source_key.
-               This list already groups siblings (newest at the head, older runs collapsed
-               beneath it), so the two sets appear side by side with no switcher of its own.
-               The original set is never edited. -->
+          <!-- ═════ REWRITE PASSES ═════
+               Two buttons, one block, because they are the same kind of control: a model
+               picker and one button that sends calls over the finished text of this item.
+               They are NOT the same action, and the block says so in each row's note.
+
+               SOFTEN produces a WHOLE NEW SET — every text field rewritten into a milder
+               register and written as a sibling item under the same source_key. This list
+               already groups siblings, so the two sets appear side by side with no switcher
+               of its own, and the original set is never edited.
+
+               SCRUB corrects THIS item, in place. It is the pass every report generated since
+               2026-09-04 already went through on its way to disk; the button exists for the
+               ones that predate it. There is nothing to pick between afterwards, which is why
+               it writes onto the item instead of beside it. -->
           <section class="block">
             <div class="soften">
               <button class="ghost"
@@ -1037,6 +1043,41 @@
               </select>
               <span class="soften-note">writes a new set — this one is left as it is</span>
             </div>
+
+            <div class="soften scrub">
+              <button class="ghost"
+                      [disabled]="scrubBusy() || scrubOptions().length === 0"
+                      (click)="scrubItem()"
+                      title="Send this item's description, hook, alternate descriptions and chapter titles back through the model once, so the claims, the evidence and the people in the footage are the subjects of the sentences rather than the person who made the video. Same facts, same names, same numbers, same shape. The corrected text is written onto THIS item; nothing new is created.">
+                {{ scrubBusy() ? 'Scrubbing the narration…' : 'Scrub narration' }}
+              </button>
+              @if (scrubBusy()) {
+                <mat-spinner class="soften-spin" diameter="14"></mat-spinner>
+              }
+              <select class="quiet-select soften-model"
+                      [disabled]="scrubBusy()"
+                      [value]="scrubOptionId()"
+                      (change)="scrubOptionId.set($any($event.target).value)"
+                      title="Which model corrects them.">
+                @for (option of scrubOptions(); track option.id) {
+                  <!-- [selected] as well as the select's [value]: the options are created by this
+                       @for AFTER the select's own bindings run, so a value written to an
+                       option-less select is dropped, and the binding never rewrites it because
+                       the signal has not CHANGED. The browser then shows option 0 while the
+                       signal holds something else, and a click that never touched the dropdown
+                       sends the hidden value. This binding is applied as each option is made. -->
+                  <option [value]="option.id" [selected]="option.id === scrubOptionId()">{{ option.label }}</option>
+                }
+              </select>
+              <span class="soften-note">corrects this set in place — description, hook, alternates and chapter titles</span>
+            </div>
+
+            @if (scrubResultLine()) {
+              <!-- What the pass actually did, kept on screen. The toast that said the same
+                   thing is gone in seconds, and "did anything change?" is the whole question
+                   the button is pressed to answer. -->
+              <p class="scrub-result">{{ scrubResultLine() }}</p>
+            }
           </section>
 
           <!-- ═════ DESCRIPTION ═════

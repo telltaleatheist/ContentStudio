@@ -134,6 +134,25 @@ export interface ThumbnailRescanOutcome {
 }
 
 /**
+ * What one automatic thumbnail-pairing sweep did.
+ *
+ * The sweep runs when the reports page is opened, over every item with no thumbnail at all. It
+ * never replaces one, so a run that attaches nothing is the ordinary outcome and says nothing on
+ * screen; a run that ATTACHED something must say so, which is what `attached` is for.
+ *
+ * `dropped` means a sweep was already running and this request was not queued behind it — the
+ * page asked and this particular call did nothing, which is a different fact from "looked and
+ * found nothing".
+ */
+export interface ThumbnailPairingSweep {
+  dropped: boolean;
+  attached: Array<{ itemId: string; label: string; path: string }>;
+  considered: number;
+  skipped: number;
+  refused: number;
+}
+
+/**
  * One row's thumbnail in the reports list, as the batch strip call answers it.
  *
  * `dataUrl` and `fault` are both null for "nothing is attached", which is a fact rather
