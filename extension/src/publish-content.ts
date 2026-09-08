@@ -57,7 +57,8 @@ import { isMonetizationUrl, monetizationSurfaceReady } from './publish/monetizat
 import { waitFor } from './publish/dom';
 
 let shelf: PublishShelf | null = null;
-/** The right-edge video navigator. Mounted only on /video/<id>/edit — see syncNavStrip. */
+/** The right-edge video navigator. Mounted on /video/<id>/edit and /video/<id>/monetization
+ *  (Details and Earn) — see syncNavStrip. */
 let navStrip: NavStrip | null = null;
 /**
  * Studio's content list, as the strip draws it.
@@ -456,9 +457,10 @@ function dropNavList(): void {
 async function syncNavStrip(): Promise<void> {
   const videoId = videoEditId();
 
-  // Not a standalone edit page (channel lists, the upload wizard, analytics…). The strip
-  // navigates between videos, which is meaningless — and in the wizard destructive — off
-  // the edit page, so it comes down entirely and gives the shelf its lane back.
+  // Not a standalone Details or Earn page (channel lists, the upload wizard, analytics…).
+  // The strip navigates between videos, which is meaningless — and in the wizard
+  // destructive — off those pages, so it comes down entirely and gives the shelf its lane
+  // back.
   if (!videoId) {
     navStrip?.destroy();
     navStrip = null;
