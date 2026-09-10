@@ -52,6 +52,15 @@
           aria-label="Dismiss">✕</button>
 </div>
 
+<!-- A catch-up the pane held back because the folder is being written, or a manual sync that
+     is going ahead over one. The mirror of the line above: an upload that does NOT start on
+     its own is as much an automatic decision as one that does. -->
+<div class="pp-notice" *ngIf="processingNotice">
+  <span class="pp-notice-text">{{ processingNotice }}</span>
+  <button class="pp-notice-x" (click)="dismissProcessingNotice()" title="Dismiss"
+          aria-label="Dismiss">✕</button>
+</div>
+
 <div class="pp-list" [class.dragover]="dragOver"
      (dragover)="onDragOver($event)" (dragleave)="onDragLeave($event)" (drop)="onDrop($event)">
 

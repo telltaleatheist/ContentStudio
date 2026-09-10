@@ -104,10 +104,19 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
 
   /** The user dismissed the modal. The job (if any) keeps running. */
   @Output() closed = new EventEmitter<void>();
-  /** A job was started here — the host records which entry owns it. */
-  @Output() started = new EventEmitter<void>();
-  /** The run finished and produced a session. The host rescans, stamps and opens it. */
-  @Output() completed = new EventEmitter<{ zipPath: string }>();
+  /**
+   * A job was started here — the host records which entry owns it, and with it whether the
+   * run was asked to transcribe when it finishes. The flag rides the START event, not just
+   * the completion one, because this modal may well be gone by the time the run ends: the
+   * whole point of the option is that the user clicks once and walks away.
+   */
+  @Output() started = new EventEmitter<{ transcribe: boolean }>();
+  /**
+   * The run finished and produced a session. The host rescans, stamps and opens it. The
+   * transcribe answer is repeated here for completeness, but the host acts on the one it
+   * recorded at START — that is the copy that survives this modal being closed.
+   */
+  @Output() completed = new EventEmitter<{ zipPath: string; transcribe: boolean }>();
   /**
    * The Denoise row asked for the environment dialog — voice isolation is not installed, and
    * this is where the user found that out. The host opens it OVER this modal and tells this
@@ -158,6 +167,13 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
    * same mix, since the automixer cannot be applied to only half a session.
    */
   reuseProcessed = false;
+  /**
+   * Queue the existing transcription step behind the run, so processing and transcribing are
+   * one click. Default on: a session is transcribed sooner or later in every workflow this
+   * editor supports, and the twelve minutes of processing are exactly when nobody is watching.
+   * Read once, when the run starts — the host owns the request from then on.
+   */
+  transcribeAfter = true;
   /** Files in the project folder that are this pipeline's own derived audio. */
   private derivedFiles = new Set<string>();
   /** What clearing the previous session actually removed, once a run has started. */
@@ -672,7 +688,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
         return;
       }
       this.state = 'running';
-      this.started.emit();
+      this.started.emit({ transcribe: this.transcribeAfter });
 
       // A re-process starts over: the previous session's edits and transcript are written in
       // timeline coordinates, and this run rebuilds the timeline, so they cannot survive it.
@@ -726,7 +742,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
       if (typeof zipPath === 'string' && zipPath) {
         this.state = 'done';
         this.error = null;
-        this.completed.emit({ zipPath });
+        this.completed.emit({ zipPath, transcribe: this.transcribeAfter });
       } else {
         // Exit code 0 but no session to open — a contradiction, said plainly.
         this.state = 'error';
