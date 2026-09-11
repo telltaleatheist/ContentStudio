@@ -113,10 +113,21 @@ export class TimelineRenderer {
       ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, H); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(x1 + 0.5, 0); ctx.lineTo(x1 + 0.5, H); ctx.stroke();
-      // 6px handles in the ruler band.
-      ctx.fillStyle = '#f5c518';
-      ctx.fillRect(x0 - 3, 0, 6, RULER_H);
-      ctx.fillRect(x1 - 3, 0, 6, RULER_H);
+      // Grab tabs on both ends, in the ruler band AND mirrored along the bottom edge. Both ends
+      // are draggable anywhere down the full height of the band, so the bottom tab is what says
+      // so in the track area, where the ruler tab is a long way from the pointer. 8px wide
+      // against a 7px grab radius: the handle is never smaller than the thing that catches it.
+      // A band too thin to have two distinguishable ends gets no tabs — its ends are not
+      // grabbable either (selectionEdgeAtX caps each end's reach at half the band), and a tab
+      // wider than the band it belongs to is a promise the hit-test does not keep.
+      const tabW = Math.min(8, x1 - x0);
+      if (tabW >= 2) {
+        ctx.fillStyle = '#f5c518';
+        ctx.fillRect(x0 - tabW / 2, 0, tabW, RULER_H);
+        ctx.fillRect(x1 - tabW / 2, 0, tabW, RULER_H);
+        ctx.fillRect(x0 - tabW / 2, H - 5, tabW, 5);
+        ctx.fillRect(x1 - tabW / 2, H - 5, tabW, 5);
+      }
       ctx.restore();
     }
 

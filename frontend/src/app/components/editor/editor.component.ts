@@ -221,6 +221,19 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * inside a highlight still falls through to plain scrub + section select.
    */
   private moveDrag: MoveDrag | null = null;
+  /**
+   * In-flight drag of one END of the highlight, grabbed at its edge. The highlight is
+   * materialized into `selectedRanges` at grab time so the gesture has exactly ONE
+   * representation to mutate (`index` addresses that array directly), and `before` is what
+   * Escape puts back. Resizing a highlight moves no footage, so this is deliberately NOT an
+   * undo step — there is nothing in the edit model for Cmd+Z to undo.
+   */
+  private selEdgeDrag: {
+    index: number;
+    edge: 'lo' | 'hi';
+    before: { start: number; end: number }[];
+    beforeSingle: { start: number | null; end: number | null };
+  } | null = null;
 
   // ── Edit-state persistence (<session>_edits.json sidecar) ────────────────────
   // Everything the user builds in the editor — cuts, blades, stories, and the undo/redo
@@ -235,6 +248,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // ── Snapping (story edges + range highlighting stick to cut boundaries) ──────
   // Snap radius in CSS px (converted to seconds at the current zoom in snapEdited).
   private readonly SNAP_PX = 8;
+  // How close (CSS px) the pointer must come to grab a thing that is already on screen. The
+  // highlight's edge gets the looser one: it is the handle you reach for over and over while
+  // sizing a story, and it is wider than the tab drawn for it precisely so a near miss still
+  // lands. The playhead's is tight — it sits INSIDE the highlight most of the time, and every
+  // pixel it claims is a pixel the move-the-footage grab loses.
+  private readonly SEL_EDGE_PX = 7;
+  private readonly PLAYHEAD_GRAB_PX = 4;
   // Sorted, deduped snap targets in EDITED seconds: video-track clip edges (auto-editor
   // cuts; segments split at kept boundaries so user-cut seams are edges too), the kept
   // seams themselves (covers seams inside clip gaps), and the timeline ends. Rebuilt with
@@ -698,6 +718,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.draggingStoryEdge = null;
     this.storyGestureUndo = null;
     this.moveDrag = null;
+    this.selEdgeDrag = null;
     // A pending debounced save belongs to the PREVIOUS session — never let it fire
     // across a switch (it would snapshot post-reset state).
     if (this.editsSaveTimer !== null) { clearTimeout(this.editsSaveTimer); this.editsSaveTimer = null; }
@@ -1241,11 +1262,24 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    *  Leaves no selection behind. Story-edge drags and playhead scrubs are not "highlights" and
    *  are left to finish on mouseup. */
   private abortInFlightGesture(): boolean {
-    if (!this.marqueeActive && !this.draggingSelection && !this.moveDrag) return false;
+    if (!this.marqueeActive && !this.draggingSelection && !this.moveDrag && !this.selEdgeDrag) return false;
     // A move drag is abandoned WITHOUT clearing the selection: nothing was committed yet, and the
     // highlight the user is holding is what they'd have to re-make.
     if (this.moveDrag) {
       this.moveDrag = null;
+      document.body.style.userSelect = '';
+      window.removeEventListener('mousemove', this.onWindowMouseMove);
+      window.removeEventListener('mouseup', this.onWindowMouseUp);
+      return true;
+    }
+    // An edge drag abandoned mid-flight puts the highlight back exactly as it was grabbed —
+    // both halves of it, since the grab flattened a single range into selectedRanges.
+    if (this.selEdgeDrag) {
+      const d = this.selEdgeDrag;
+      this.selEdgeDrag = null;
+      this.selectedRanges = d.before;
+      this.selStart = d.beforeSingle.start;
+      this.selEnd = d.beforeSingle.end;
       document.body.style.userSelect = '';
       window.removeEventListener('mousemove', this.onWindowMouseMove);
       window.removeEventListener('mouseup', this.onWindowMouseUp);
@@ -1391,6 +1425,32 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       return;
     }
 
+    // Grab an END of the highlight and drag it out (or in), or grab the PLAYHEAD and go
+    // looking for where the story really ends. Both are checked before every other ruler and
+    // lane gesture, so a handle resizes instead of scrubbing or starting a fresh marquee that
+    // would have thrown the highlight away, and the playhead moves without a lane click
+    // replacing the highlight on the way.
+    //
+    // Tools: in the ruler either one may grab a handle — the ruler never cuts; in a track lane
+    // only the Select tool grabs anything, because a lane press with the Blade in hand is a cut
+    // and stays one (including a cut AT the playhead, which people mean to make).
+    const grab = this.grabbableAt(t, y, inRuler);
+    if (grab === 'playhead') {
+      this.draggingPlayhead = true;
+      this.setPlayhead(t);
+      window.addEventListener('mousemove', this.onWindowMouseMove);
+      window.addEventListener('mouseup', this.onWindowMouseUp);
+      this.requestRender();
+      return;
+    }
+    if (grab) {
+      this.startSelEdgeDrag(grab);
+      window.addEventListener('mousemove', this.onWindowMouseMove);
+      window.addEventListener('mouseup', this.onWindowMouseUp);
+      this.requestRender();
+      return;
+    }
+
     // A drag on the RULER always scrubs the playhead (either tool) — never a cut/marquee.
     if (inRuler) {
       this.draggingPlayhead = true;
@@ -1529,6 +1589,133 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       if (dedup.length === 0 || v - dedup[dedup.length - 1] > EPS) dedup.push(v);
     }
     return dedup;
+  }
+
+  // ── Resizing: drag an END of the highlight ──────────────────────────────────
+  /**
+   * What a press at edited time `t`, canvas row `y` takes hold of: a highlight end, the
+   * playhead, or nothing (the caller falls through to the ordinary gestures).
+   *
+   * Both can be in reach at once, and in the two situations that matter most they ALWAYS are:
+   * a section click leaves the playhead a few pixels inside the section's left edge, and
+   * pulling a handle out to the playhead leaves the two sitting on the SAME pixel. So the
+   * nearer wins — press on the handle and it resizes, press on the playhead and it scrubs, the
+   * way the pixels look — and the playhead must beat the handle by a clear pixel to take it.
+   * That bias is what settles the second case: an edge you have just parked on the playhead
+   * stays grabbable, which is what you reach for next, and the playhead can always be re-parked
+   * from the ruler. Both cases were measured in the running app, not reasoned about.
+   */
+  private grabbableAt(t: number, y: number, inRuler: boolean):
+      { index: number; edge: 'lo' | 'hi'; d: number } | 'playhead' | null {
+    const inLane = this.toolMode === 'select' && !!this.rowAt(y);
+    if (!inRuler && !inLane) return null;
+    const x = this.timeToX(t);
+    const edge = this.selectionEdgeAtX(x);
+    // Only in a lane: a press in the ruler already scrubs, so there is nothing for a playhead
+    // grab to add there, and claiming the press would only cost the ruler its own gesture.
+    const dPlayhead = inLane ? Math.abs(x - this.timeToX(this.playheadTime)) : Infinity;
+    const playhead = dPlayhead <= this.PLAYHEAD_GRAB_PX;
+    if (edge && !(playhead && dPlayhead + 1 < edge.d)) return edge;
+    return playhead ? 'playhead' : null;
+  }
+
+  /**
+   * Highlight-edge hit-test: the end of a highlighted range within ±SEL_EDGE_PX of canvas x,
+   * or null. Tested against the MERGED ranges, which is what is actually drawn — the edges of
+   * two ranges that have run together are interior seams nobody can see, and a handle you
+   * cannot see is a handle that moves something you did not mean to move.
+   *
+   * The nearer end wins when both are in reach, and an end wins over a start at the same
+   * distance: dragging the tail out to take in more is the direction this gesture exists for.
+   *
+   * A range's reach is capped at HALF ITS DRAWN WIDTH, so the two handles can never overlap each
+   * other or claim ground the band does not cover, and a range thinner than a couple of px has
+   * no handles at all. Measured in the running app: zoomed out over a three-hour session a
+   * section is ~3px wide, and a flat ±7px reach let one hairline highlight swallow every click
+   * and hover for 17px around it — including the playhead standing right there.
+   */
+  private selectionEdgeAtX(x: number): { index: number; edge: 'lo' | 'hi'; d: number } | null {
+    const ranges = this.allSelectionRanges();
+    let best: { index: number; edge: 'lo' | 'hi'; d: number } | null = null;
+    let bestD = this.SEL_EDGE_PX;
+    for (let i = 0; i < ranges.length; i++) {
+      const xLo = this.timeToX(ranges[i].lo);
+      const xHi = this.timeToX(ranges[i].hi);
+      if (xHi - xLo < 2) continue;                        // too thin to have two ends
+      const reach = Math.min(this.SEL_EDGE_PX, (xHi - xLo) / 2);
+      const dHi = Math.abs(x - xHi);
+      if (dHi <= reach && dHi <= bestD) { bestD = dHi; best = { index: i, edge: 'hi', d: dHi }; }
+      const dLo = Math.abs(x - xLo);
+      if (dLo <= reach && dLo < bestD) { bestD = dLo; best = { index: i, edge: 'lo', d: dLo }; }
+    }
+    return best;
+  }
+
+  /**
+   * Take hold of a highlight edge. The highlight is flattened into `selectedRanges` in its
+   * merged form so `index` keeps addressing the same range for the whole drag no matter what
+   * the edge runs through, and the pre-grab state is frozen for Escape. A resized highlight is
+   * no longer the transcript group it may have come from, so that link is dropped here — the
+   * same rule every other selection-changing action follows.
+   */
+  private startSelEdgeDrag(grabbed: { index: number; edge: 'lo' | 'hi' }): void {
+    this.selEdgeDrag = {
+      index: grabbed.index,
+      edge: grabbed.edge,
+      before: this.selectedRanges.map(r => ({ ...r })),
+      beforeSingle: { start: this.selStart, end: this.selEnd },
+    };
+    this.selectedRanges = this.allSelectionRanges().map(r => ({ start: r.lo, end: r.hi }));
+    this.selStart = null;
+    this.selEnd = null;
+    this.selectedGroupStart = null;
+    this.selectedGroupEnd = null;
+  }
+
+  /**
+   * Live update of a grabbed highlight edge: the pointer, soft-snapped (Option bypasses),
+   * clamped to the timeline and to one frame of minimum width. The edge STOPS at its partner
+   * rather than flipping past it — a highlight that turns inside out under the hand is the
+   * kind of surprise this gesture is meant to remove.
+   *
+   * Running through a neighbouring range is allowed and needs no special case: everything that
+   * reads the selection reads it merged, so the two simply become one band, and mouseup writes
+   * that merged form back.
+   */
+  private updateSelEdgeDrag(ev: MouseEvent): void {
+    const d = this.selEdgeDrag!;
+    const r = this.selectedRanges[d.index];
+    // The range vanished under the drag (nothing in the UI can do this while a gesture holds
+    // the pointer). Drop the gesture rather than resize whatever slid into its index.
+    if (!r) { this.selEdgeDrag = null; return; }
+    const fs = this.manifest?.frameSeconds || (1001 / 30000);
+    // The narrowest this drag may pinch the band: one frame, or the few pixels its own handles
+    // need to exist at this zoom — whichever is wider. A band squeezed down to a hairline has
+    // no handles at all (selectionEdgeAtX skips it), and a highlight you cannot grab back is a
+    // dead end reached by holding the mouse a moment too long.
+    const minWidth = Math.max(fs, 4 / this.pxPerSec);
+    const t = this.snapEditedOrPlayhead(this.canvasEventTime(ev), ev.altKey);
+    if (d.edge === 'lo') {
+      r.start = Math.max(0, Math.min(t, r.end - minWidth));
+    } else {
+      r.end = Math.min(this.editedDuration, Math.max(t, r.start + minWidth));
+    }
+    this.requestRender();
+  }
+
+  /**
+   * snapEdited, with the PLAYHEAD as one more target — and the one that wins whenever it is in
+   * reach at all. Parking the playhead on the spot you found by listening and then pulling the
+   * highlight out to meet it is the whole point of being able to scrub without losing the
+   * highlight, and landing a hair off would waste it. Cut boundaries are everywhere and one of
+   * them is usually a millisecond nearer; the playhead is the one the user put there on
+   * purpose, so it does not have to win on distance. (Measured: nearest-wins put an edge 3ms
+   * past the playhead it was dragged to, onto a clip edge nobody was aiming at.)
+   */
+  private snapEditedOrPlayhead(t: number, bypass: boolean): number {
+    if (bypass) return t;
+    if (Math.abs(this.playheadTime - t) <= this.SNAP_PX / this.pxPerSec) return this.playheadTime;
+    return this.snapEdited(t, false);
   }
 
   // ── Reordering: drag a selection to a new position ──────────────────────────
@@ -1701,6 +1888,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   private onWindowMouseMove = (ev: MouseEvent): void => {
     if (this.draggingStoryEdge) { this.updateStoryEdgeDrag(ev); }
+    else if (this.selEdgeDrag) { this.updateSelEdgeDrag(ev); }
     else if (this.moveDrag) { this.updateMoveDrag(ev); }
     else if (this.draggingSelection) { this.selEnd = this.snapEdited(this.canvasEventTime(ev), ev.altKey); this.requestRender(); }
     else if (this.marqueeActive) {
@@ -1722,7 +1910,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private onWindowMouseUp = (): void => {
     if (!this.draggingPlayhead && !this.draggingScrollbar && !this.draggingSplitV
         && !this.draggingSplitH && !this.draggingSplitP && !this.draggingSelection
-        && !this.marqueeActive && !this.draggingStoryEdge && !this.moveDrag) return;
+        && !this.marqueeActive && !this.draggingStoryEdge && !this.moveDrag
+        && !this.selEdgeDrag) return;
     // Persist split preferences once per drag (not per move frame).
     if (this.draggingSplitV) localStorage.setItem(this.SPLIT_V_KEY, String(this.splitV));
     if (this.draggingSplitH) localStorage.setItem(this.SPLIT_H_KEY, String(this.splitH));
@@ -1738,6 +1927,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       this.storyPushBaseline = null;
       this.commitStoryGestureUndo();
       this.scheduleEditsSave();
+    }
+    // Dropping a highlight-edge drag writes the ranges back in their merged form: the edge may
+    // have been dragged clean through a neighbouring range, and merged is what the whole app
+    // already reads (allSelectionRanges), so anything else would leave a private shape behind.
+    if (this.selEdgeDrag) {
+      this.selEdgeDrag = null;
+      this.selectedRanges = this.allSelectionRanges().map(r => ({ start: r.lo, end: r.hi }));
     }
     // A selection-move drag that actually moved relocates the footage; one that never passed the
     // threshold was a click inside the highlight, which must still scrub + select its section.
@@ -3793,8 +3989,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       }
     }
     if (over || this.draggingStoryEdge) { canvas.style.cursor = 'ew-resize'; return; }
-    // A highlight in a track lane is grabbable — the grab cursor IS the discoverability of the
-    // move gesture, which has no other affordance.
+    // The same three tests as mousedown, in the same order, so what the cursor promises is what
+    // the press delivers. A highlight EDGE resizes (ruler tab or lane), the playhead scrubs, and
+    // only then is the band itself a grab. The cursors are the whole discoverability of all
+    // three: nothing else on the canvas says these are handles.
+    if (this.selEdgeDrag) { canvas.style.cursor = 'ew-resize'; return; }
+    const hy = this.canvasEventY(ev);
+    const grab = this.grabbableAt(this.canvasEventTime(ev), hy, hy <= RULER_H);
+    if (grab) { canvas.style.cursor = grab === 'playhead' ? 'col-resize' : 'ew-resize'; return; }
     if (this.toolMode === 'select' && this.rowAt(this.canvasEventY(ev))) {
       const t = this.canvasEventTime(ev);
       if (this.allSelectionRanges().some(r => t > r.lo + EPS && t < r.hi - EPS)) {
