@@ -27,6 +27,15 @@ import type {
   UploadProgress,
 } from '../features/publish/publish.types';
 import type {
+  MasterFileTimes,
+  StreamMarkResult,
+  StreamMarkSession,
+  StreamMarkSessionSummary,
+  StreamMarkStartResult,
+  StreamMarksChange,
+  StreamMarksHotkeyStatus,
+} from './stream-marks.types';
+import type {
   CandidateScan,
   DriftProbe,
   RefResolution,
@@ -922,6 +931,45 @@ declare global {
       onArchiveDeleteProgress: (callback: (p: ArchiveDeleteProgress) => void) => void;
       onArchiveComplete: (callback: (r: ArchiveResult) => void) => void;
       removeArchiveListeners: () => void;
+
+      // ==================== STREAM MARKS ====================
+      //
+      // The live-stream story boundaries. Read by two windows, written by a global hotkey
+      // that fires while neither is focused — hence the push listener, which returns its own
+      // unsubscribe rather than a removeAll: the main window's tab and the editor's import
+      // dialog both listen, and one leaving must not deafen the other.
+      streamMarksList: () => Promise<StreamMarkSessionSummary[]>;
+      streamMarksGet: (id: string) => Promise<StreamMarkSession>;
+      streamMarksLive: () => Promise<StreamMarkSession | null>;
+      streamMarksStart: () => Promise<StreamMarkStartResult>;
+      streamMarksEnd: (id: string) => Promise<StreamMarkSession>;
+      streamMarksAddMark: (payload: {
+        sessionId?: string | null;
+        at?: number;
+        label?: string;
+      }) => Promise<StreamMarkResult>;
+      streamMarksInsertMark: (payload: {
+        sessionId: string;
+        at: number;
+        label: string;
+      }) => Promise<StreamMarkResult>;
+      streamMarksUpdateMark: (payload: {
+        sessionId: string;
+        markId: string;
+        at?: number;
+        label?: string;
+      }) => Promise<StreamMarkResult>;
+      streamMarksDeleteMark: (payload: { sessionId: string; markId: string }) => Promise<StreamMarkSession>;
+      streamMarksUpdateSession: (payload: {
+        sessionId: string;
+        startedAt?: string;
+      }) => Promise<StreamMarkSession>;
+      streamMarksDeleteSession: (id: string) => Promise<{ deleted: string }>;
+      streamMarksHotkeyStatus: () => Promise<StreamMarksHotkeyStatus>;
+      streamMarksSetHotkey: (accelerator: string) => Promise<StreamMarksHotkeyStatus>;
+      streamMarksMasterFileTimes: (payload: { zipPath: string }) => Promise<MasterFileTimes>;
+      onStreamMarksChanged: (callback: (change: StreamMarksChange) => void) => () => void;
+      onStreamMarksHotkeyStatus: (callback: (status: StreamMarksHotkeyStatus) => void) => () => void;
     };
   }
 }
@@ -2276,5 +2324,110 @@ export class ElectronService {
 
   removeArchiveListeners(): void {
     this.editorBridge.removeArchiveListeners();
+  }
+
+  // ── Stream marks ────────────────────────────────────────────────────────────
+  //
+  // Same doctrine as the editor group above, and for the same reason: these THROW outside
+  // Electron rather than resolving an empty list. A Stream marks tab that showed "no
+  // sessions" because the bridge was missing would look exactly like a tab whose sessions
+  // had been deleted, and the operator would go looking for a night's story boundaries that
+  // were never actually read.
+
+  private get streamMarksBridge(): NonNullable<typeof window.launchpad> {
+    if (!this.ipcRenderer) throw noBridge('Stream marks');
+    return this.ipcRenderer;
+  }
+
+  /** Every session, newest first. A corrupt session file REJECTS, naming the file. */
+  async streamMarksList(): Promise<StreamMarkSessionSummary[]> {
+    return this.streamMarksBridge.streamMarksList();
+  }
+
+  async streamMarksGet(id: string): Promise<StreamMarkSession> {
+    return this.streamMarksBridge.streamMarksGet(id);
+  }
+
+  /** The session with no end, or null. Null is a real answer: nothing is streaming. */
+  async streamMarksLive(): Promise<StreamMarkSession | null> {
+    return this.streamMarksBridge.streamMarksLive();
+  }
+
+  /** Start a stream. `alreadyLive` means it handed back the one that was already running. */
+  async streamMarksStart(): Promise<StreamMarkStartResult> {
+    return this.streamMarksBridge.streamMarksStart();
+  }
+
+  async streamMarksEnd(id: string): Promise<StreamMarkSession> {
+    return this.streamMarksBridge.streamMarksEnd(id);
+  }
+
+  /**
+   * Add a mark. No sessionId = the live session, STARTED if there is none — which is what
+   * makes the very first press of the night both the start and the first boundary.
+   */
+  async streamMarksAddMark(payload: {
+    sessionId?: string | null;
+    at?: number;
+    label?: string;
+  } = {}): Promise<StreamMarkResult> {
+    return this.streamMarksBridge.streamMarksAddMark(payload);
+  }
+
+  async streamMarksInsertMark(payload: {
+    sessionId: string;
+    at: number;
+    label: string;
+  }): Promise<StreamMarkResult> {
+    return this.streamMarksBridge.streamMarksInsertMark(payload);
+  }
+
+  async streamMarksUpdateMark(payload: {
+    sessionId: string;
+    markId: string;
+    at?: number;
+    label?: string;
+  }): Promise<StreamMarkResult> {
+    return this.streamMarksBridge.streamMarksUpdateMark(payload);
+  }
+
+  async streamMarksDeleteMark(payload: { sessionId: string; markId: string }): Promise<StreamMarkSession> {
+    return this.streamMarksBridge.streamMarksDeleteMark(payload);
+  }
+
+  /** Correct the wall-clock start. The marks' elapsed times deliberately do not move. */
+  async streamMarksUpdateSession(payload: { sessionId: string; startedAt?: string }): Promise<StreamMarkSession> {
+    return this.streamMarksBridge.streamMarksUpdateSession(payload);
+  }
+
+  async streamMarksDeleteSession(id: string): Promise<{ deleted: string }> {
+    return this.streamMarksBridge.streamMarksDeleteSession(id);
+  }
+
+  async streamMarksHotkeyStatus(): Promise<StreamMarksHotkeyStatus> {
+    return this.streamMarksBridge.streamMarksHotkeyStatus();
+  }
+
+  async streamMarksSetHotkey(accelerator: string): Promise<StreamMarksHotkeyStatus> {
+    return this.streamMarksBridge.streamMarksSetHotkey(accelerator);
+  }
+
+  /** The loaded editor session's master video and its file times (the offset proposal). */
+  async streamMarksMasterFileTimes(payload: { zipPath: string }): Promise<MasterFileTimes> {
+    return this.streamMarksBridge.streamMarksMasterFileTimes(payload);
+  }
+
+  /**
+   * Every mutation, pushed from the main process. Returns its own unsubscribe — the caller
+   * MUST call it on destroy, because a hotkey press would otherwise keep waking a dead
+   * component's change detection for the life of the window.
+   */
+  onStreamMarksChanged(callback: (change: StreamMarksChange) => void): () => void {
+    return this.streamMarksBridge.onStreamMarksChanged((c) => this.ngZone.run(() => callback(c)));
+  }
+
+  /** A hotkey press that FAILED after registration succeeded. Same unsubscribe contract. */
+  onStreamMarksHotkeyStatus(callback: (status: StreamMarksHotkeyStatus) => void): () => void {
+    return this.streamMarksBridge.onStreamMarksHotkeyStatus((st) => this.ngZone.run(() => callback(st)));
   }
 }

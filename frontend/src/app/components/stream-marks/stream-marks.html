@@ -1,0 +1,131 @@
+<div class="sm-container">
+
+  <div class="header">
+    <div class="header-left">
+      <h2>Stream marks</h2>
+      <span class="count">{{ sessions().length }} session{{ sessions().length === 1 ? '' : 's' }}</span>
+    </div>
+    <!-- The hotkey's registration state, in words. Green only when the OS actually took it;
+         a shortcut another app owns fails silently at the OS level, and silence here would
+         cost a whole night of boundaries. -->
+    <div class="header-actions hotkey" *ngIf="hotkey() as hk">
+      <span class="hotkey-label">Global hotkey</span>
+      <input class="hotkey-input" [value]="hotkeyField()"
+             (input)="hotkeyDraft.set($any($event.target).value)"
+             (keydown.enter)="setHotkey()"
+             matTooltip="An Electron accelerator, e.g. CommandOrControl+Shift+M. Enter to apply." />
+      <button mat-stroked-button (click)="setHotkey()">Set</button>
+      <span class="hotkey-state ok" *ngIf="hk.registered">ready</span>
+      <span class="hotkey-state bad" *ngIf="!hk.registered">{{ hk.error }}</span>
+    </div>
+  </div>
+
+  <div class="banner error" *ngIf="error() as e">{{ e }}</div>
+  <div class="banner notice" *ngIf="notice() as n">{{ n }}</div>
+
+  <!-- ── Live panel ───────────────────────────────────────────────────────── -->
+  <section class="live-panel" [class.running]="!!live()">
+    <ng-container *ngIf="live() as liveSession; else notLive">
+      <div class="clock">{{ elapsedLabel() }}</div>
+      <div class="live-actions">
+        <button mat-raised-button color="primary" class="mark-button" (click)="mark()">
+          <mat-icon>flag</mat-icon> Mark
+        </button>
+        <button mat-stroked-button (click)="endStream()">End stream</button>
+      </div>
+      <div class="started-at">
+        <label for="sm-started-at">Started at</label>
+        <input id="sm-started-at" class="time-input" [value]="startedAtField()"
+               (input)="onStartedAtInput($any($event.target).value)"
+               (keydown.enter)="commitStartedAt()"
+               (blur)="commitStartedAt()"
+               matTooltip="Wall clock, HH:MM. Correct it if Start was late — every mark moves with it." />
+        <span class="hint">{{ liveSession.marks.length }} mark{{ liveSession.marks.length === 1 ? '' : 's' }}</span>
+      </div>
+      <div class="field-error" *ngIf="startedAtError() as se">{{ se }}</div>
+    </ng-container>
+
+    <ng-template #notLive>
+      <div class="idle">
+        <button mat-raised-button color="primary" class="start-button" (click)="start()">
+          <mat-icon>play_arrow</mat-icon> Start stream
+        </button>
+        <span class="hint">
+          Or just press the hotkey — the first press starts the stream; every press after that is a mark.
+        </span>
+      </div>
+    </ng-template>
+  </section>
+
+  <!-- ── Marks ────────────────────────────────────────────────────────────── -->
+  <section class="marks" *ngIf="viewed() as session">
+    <div class="marks-head">
+      <h3>{{ isLiveViewed() ? 'This stream' : sessionLabel(session) }}</h3>
+      <span class="count">{{ session.marks.length }} mark{{ session.marks.length === 1 ? '' : 's' }}</span>
+      <!-- Past sessions get their own start-time field too: the offset the editor proposes
+           comes from it, so it is correctable long after the stream ended. -->
+      <ng-container *ngIf="!isLiveViewed()">
+        <label class="started-label" for="sm-past-started-at">Started at</label>
+        <input id="sm-past-started-at" class="time-input" [value]="startedAtField()"
+               (input)="onStartedAtInput($any($event.target).value)"
+               (keydown.enter)="commitStartedAt()"
+               (blur)="commitStartedAt()" />
+        <span class="field-error inline" *ngIf="startedAtError() as se">{{ se }}</span>
+      </ng-container>
+    </div>
+
+    <div class="empty" *ngIf="session.marks.length === 0">
+      No marks yet. A mark is the moment a story ENDS — the story before it takes the name you type.
+    </div>
+
+    <!-- Most recent at the top; the number is the story's place in the stream, so 1 is at the
+         bottom where the night started. -->
+    <div class="mark-row" *ngFor="let row of rows(); trackBy: trackRow">
+      <span class="num">{{ row.number }}</span>
+      <input class="time-input" [value]="timeField(row.mark)"
+             (input)="onTimeInput(row.mark, $any($event.target).value)"
+             (keydown.enter)="commitTime(row.mark)"
+             (blur)="commitTime(row.mark)"
+             matTooltip="Elapsed since the stream started, hh:mm:ss" />
+      <input class="label-input" id="sm-label-{{ row.mark.id }}" [value]="row.mark.label"
+             placeholder="what just ended"
+             (input)="onLabelInput(row.mark, $any($event.target).value)"
+             (blur)="commitLabel(row.mark, $any($event.target).value)"
+             (keydown.enter)="onLabelEnter($event, row.mark, $any($event.target).value)"
+             (keydown.escape)="onLabelEscape($event)" />
+      <span class="nudges">
+        <button class="nudge" (click)="nudge(row.mark, -60)" matTooltip="One minute earlier">−1m</button>
+        <button class="nudge" (click)="nudge(row.mark, -30)" matTooltip="Thirty seconds earlier">−30s</button>
+        <button class="nudge" (click)="nudge(row.mark, 30)" matTooltip="Thirty seconds later">+30s</button>
+      </span>
+      <button class="row-action" (click)="insertBefore(row)"
+              matTooltip="Insert a boundary before this one, halfway into the story it ends">↑+</button>
+      <button class="row-action danger" (click)="deleteMark(row.mark)" matTooltip="Delete this mark">✕</button>
+      <div class="field-error row" *ngIf="timeError(row.mark.id) as te">{{ te }}</div>
+    </div>
+  </section>
+
+  <!-- ── Past sessions ────────────────────────────────────────────────────── -->
+  <section class="past">
+    <h3>Past streams</h3>
+    <div class="empty" *ngIf="sessions().length === 0">Nothing recorded yet.</div>
+    <div class="past-row" *ngFor="let s of sessions(); trackBy: trackSession"
+         [class.selected]="viewed()?.id === s.id">
+      <button class="past-open" (click)="openSession(s)">
+        <span class="past-when">{{ sessionLabel(s) }}</span>
+        <span class="past-count">{{ s.markCount }} mark{{ s.markCount === 1 ? '' : 's' }}</span>
+        <span class="past-live" *ngIf="s.endedAt === null">live</span>
+      </button>
+      <!-- Two clicks, never window.confirm: a modal dialog would freeze the window the
+           hotkey is still writing into. -->
+      <ng-container *ngIf="pendingDeleteId() === s.id; else deleteIdle">
+        <button class="row-action danger" (click)="deleteSession(s)">Delete for good</button>
+        <button class="row-action" (click)="cancelDelete()">Keep</button>
+      </ng-container>
+      <ng-template #deleteIdle>
+        <button class="row-action" (click)="deleteSession(s)" matTooltip="Delete this stream's marks">✕</button>
+      </ng-template>
+    </div>
+  </section>
+
+</div>

@@ -3,6 +3,7 @@ import {
 } from '@angular/core';
 import { Subscription } from 'rxjs';
 import { EDITOR_HOST, EditorHost, ProcessingJob } from './editor-host';
+import type { StreamMarkImportSpan } from './stream-marks-import-modal/stream-marks-import-modal.component';
 import { ProjectsService, ProjectEntry } from './services/projects.service';
 import { ProjectSidebarComponent } from './project-sidebar/project-sidebar.component';
 import { ProjectSetupModalComponent } from './project-setup-modal/project-setup-modal.component';
@@ -3031,6 +3032,78 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.claimRegionsFromOtherStories(story.id, regions);
     this.renumberStories();
     this.selectWholeStory(story);
+    this.scheduleEditsSave();
+    this.requestRender();
+    this.cdr.detectChanges();
+  }
+
+  // ── Stream marks ▸ stories ──────────────────────────────────────────────────
+
+  /** Open state of the "Stream marks…" dialog. */
+  streamMarksImportOpen = false;
+
+  /**
+   * Whether the host has a stream-marks store at all.
+   *
+   * The port's stream-marks group is optional (a host without one implements none of it), so
+   * the button exists only where the calls do. Checked on `listStreamMarkSessions` alone —
+   * the group is all-or-nothing, and a host that shipped one member of three has broken its
+   * own contract, which the dialog then says out loud rather than working around.
+   */
+  hasStreamMarksHost(): boolean {
+    return typeof this.host.listStreamMarkSessions === 'function';
+  }
+
+  /**
+   * The playhead in ORIGINAL seconds — the frame story regions and the stream-marks import
+   * both live in. `playheadTime` is EDITED seconds, and handing that to the dialog would put
+   * every imported story wrong by the length of the cuts above it.
+   */
+  playheadOriginalSeconds(): number {
+    return this.editedToOriginal(this.playheadTime);
+  }
+
+  openStreamMarksImport(): void {
+    this.streamMarksImportOpen = true;
+  }
+
+  closeStreamMarksImport(): void {
+    this.streamMarksImportOpen = false;
+  }
+
+  /**
+   * Create one story per checked row of the stream-marks dialog.
+   *
+   * Deliberately the same six steps as saveSelectionAsStory — pushUndo, mint, append, claim,
+   * renumber, save — with ONE pushUndo for the whole batch: importing twenty stories is one
+   * decision the operator made once, and twenty undo steps would make taking it back a
+   * twenty-press job.
+   *
+   * The spans arrive in stream order and are appended in that order, so the numbers
+   * renumberStories assigns follow the night. Existing stories are not touched beyond the
+   * ordinary claim rule, which is what keeps stories non-overlapping however they were made.
+   */
+  onStreamMarksImported(spans: StreamMarkImportSpan[]): void {
+    this.streamMarksImportOpen = false;
+    if (spans.length === 0) return;
+    this.pushUndo();
+    this.redoStack = [];
+    for (const span of spans) {
+      const regions = [{ start: span.start, end: span.end }];
+      const story: Story = {
+        id: `story-${++this.storyIdCounter}`,
+        number: this.stories.length + 1,
+        title: span.title,
+        // A label typed during the stream or a title edited in the dialog is a human's name
+        // for the story, and auto-titling must never overwrite it — same rule as an inline
+        // edit. A "Story N" placeholder is not, and stays replaceable like an unnamed ⌘S story.
+        titleTouched: span.titled,
+        regions,
+      };
+      this.stories = [...this.stories, story];
+      this.claimRegionsFromOtherStories(story.id, regions);
+    }
+    this.renumberStories();
     this.scheduleEditsSave();
     this.requestRender();
     this.cdr.detectChanges();

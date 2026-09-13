@@ -585,8 +585,55 @@ const api = {
     ipcRenderer.removeAllListeners('archive:complete');
     ipcRenderer.removeAllListeners('archive:queue');
     ipcRenderer.removeAllListeners('archive:delete-progress');
-  }
+  },
   // ==================== END EDITOR ====================
+
+  // ==================== STREAM MARKS ====================
+  //
+  // The live-stream story boundaries (electron/services/stream-marks/). Two windows read
+  // them — the Stream marks tab and the editor's import dialog — and a GLOBAL HOTKEY writes
+  // them while neither is focused, which is why `onStreamMarksChanged` exists: the main
+  // process pushes the whole session after every mutation and no window ever polls.
+  //
+  // Nothing here returns an envelope. A bad id or a corrupt session file rejects with the
+  // sentence naming the file, and the UI prints it.
+  streamMarksList: () => ipcRenderer.invoke('stream-marks:list'),
+  streamMarksGet: (id: string) => ipcRenderer.invoke('stream-marks:get', id),
+  streamMarksLive: () => ipcRenderer.invoke('stream-marks:live'),
+  streamMarksStart: () => ipcRenderer.invoke('stream-marks:start'),
+  streamMarksEnd: (id: string) => ipcRenderer.invoke('stream-marks:end', id),
+  // sessionId omitted (or null) = the live session, started if there is none — the first
+  // press of the night IS the start. `at` omitted = now minus the session's startedAt.
+  streamMarksAddMark: (payload: { sessionId?: string | null; at?: number; label?: string }) =>
+    ipcRenderer.invoke('stream-marks:add-mark', payload),
+  streamMarksInsertMark: (payload: { sessionId: string; at: number; label: string }) =>
+    ipcRenderer.invoke('stream-marks:insert-mark', payload),
+  streamMarksUpdateMark: (payload: { sessionId: string; markId: string; at?: number; label?: string }) =>
+    ipcRenderer.invoke('stream-marks:update-mark', payload),
+  streamMarksDeleteMark: (payload: { sessionId: string; markId: string }) =>
+    ipcRenderer.invoke('stream-marks:delete-mark', payload),
+  // startedAt moves WITHOUT touching the marks' elapsed times — see the service's comment.
+  streamMarksUpdateSession: (payload: { sessionId: string; startedAt?: string }) =>
+    ipcRenderer.invoke('stream-marks:update-session', payload),
+  streamMarksDeleteSession: (id: string) => ipcRenderer.invoke('stream-marks:delete-session', id),
+  streamMarksHotkeyStatus: () => ipcRenderer.invoke('stream-marks:hotkey-status'),
+  streamMarksSetHotkey: (accelerator: string) => ipcRenderer.invoke('stream-marks:set-hotkey', accelerator),
+  // The loaded editor session's master video and its two file times, for the offset proposal.
+  streamMarksMasterFileTimes: (payload: { zipPath: string }) =>
+    ipcRenderer.invoke('stream-marks:master-file-times', payload),
+  onStreamMarksChanged: (callback: (change: any) => void) => {
+    const listener = (_event: any, change: any) => callback(change);
+    ipcRenderer.on('stream-marks:changed', listener);
+    return () => ipcRenderer.removeListener('stream-marks:changed', listener);
+  },
+  // Pushed only when a hotkey PRESS fails after registration succeeded — the status the tab
+  // is showing has gone stale and green would now be a lie.
+  onStreamMarksHotkeyStatus: (callback: (status: any) => void) => {
+    const listener = (_event: any, status: any) => callback(status);
+    ipcRenderer.on('stream-marks:hotkey-status', listener);
+    return () => ipcRenderer.removeListener('stream-marks:hotkey-status', listener);
+  }
+  // ==================== END STREAM MARKS ====================
 };
 
 // Expose the API to the renderer process

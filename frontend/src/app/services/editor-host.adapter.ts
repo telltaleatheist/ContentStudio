@@ -23,8 +23,9 @@ import type {
   ArchiveCheck, ArchiveDeleteProgress, ArchiveProgress, ArchiveQueue, ArchiveResult, ArchiveStatus,
   ArchiveSyncedEntry,
   AssetComponentStatus, AssetInstallProgress, AssetInstallResult, AssetPaths,
-  DeleteLocalWeekResult, DeleteRemoteWeekResult, EditorHost, ProcessingJob,
-  ProjectScanResult, ProjectsRegistry, RemoteWeekListing, TitleHandoff
+  DeleteLocalWeekResult, DeleteRemoteWeekResult, EditorHost, MasterFileTimes, ProcessingJob,
+  ProjectScanResult, ProjectsRegistry, RemoteWeekListing, StreamMarkSession,
+  StreamMarkSessionSummary, TitleHandoff
 } from '../components/editor/editor-host';
 
 @Injectable()
@@ -356,5 +357,24 @@ export class EditorHostAdapter implements EditorHost {
 
   removeArchiveListeners(): void {
     this.electron.removeArchiveListeners();
+  }
+
+  // ── Stream marks ────────────────────────────────────────────────────────────
+  //
+  // The optional group is implemented because ContentStudio has the store the editor's
+  // import dialog reads — the same three calls the Stream marks tab makes, straight through.
+  // Pass-throughs, like everything else here: the marks-to-stories arithmetic lives in the
+  // editor's own pure module, and the file times come from the main process.
+
+  listStreamMarkSessions(): Promise<StreamMarkSessionSummary[]> {
+    return this.electron.streamMarksList();
+  }
+
+  getStreamMarkSession(id: string): Promise<StreamMarkSession> {
+    return this.electron.streamMarksGet(id);
+  }
+
+  masterFileTimes(payload: { zipPath: string }): Promise<MasterFileTimes> {
+    return this.electron.streamMarksMasterFileTimes(payload);
   }
 }

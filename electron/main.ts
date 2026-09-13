@@ -13,6 +13,8 @@ import { PublishStoreService } from './services/publish/publish-store.service';
 import { autoConfigure } from './services/publish/auto-config';
 import { SpreakerConfigService } from './services/spreaker/spreaker-config.service';
 import { stopArchiveSyncOnQuit } from './services/editor/editor-ipc';
+import { StreamMarksService } from './services/stream-marks/stream-marks.service';
+import { setupStreamMarksIpc } from './services/stream-marks/stream-marks-ipc';
 
 /**
  * ContentStudio - Main Electron Process
@@ -233,6 +235,14 @@ app.whenReady().then(async () => {
     // read from disk yet — the file may not exist, and "not configured" is an answer the
     // status call gives, not a startup failure.
     const spreakerConfig = new SpreakerConfigService(userDataPath);
+
+    // Stream marks: the live-stream story boundaries Owen used to keep in Notepad, one JSON
+    // file per session under userData. Constructed here with its directory for the same
+    // reason YouTubeAuthService takes userDataPath — it makes the store runnable against a
+    // temp folder — and set up BEFORE the windows exist, because registering its global
+    // hotkey is what makes the first press of the night work without the app being focused.
+    const streamMarks = new StreamMarksService(path.join(userDataPath, 'stream-marks'));
+    setupStreamMarksIpc(store, streamMarks);
 
     // Set up IPC handlers
     setupIpcHandlers(store, {

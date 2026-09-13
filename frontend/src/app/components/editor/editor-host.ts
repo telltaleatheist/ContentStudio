@@ -308,6 +308,49 @@ export interface TitleHandoff {
   chapters?: { timestamp: string; title: string }[];
 }
 
+/**
+ * Stream marks — the live-stream story boundaries the host records while Owen streams.
+ *
+ * DECLARED HERE, not imported from the host, exactly as this file's header requires: a port
+ * that reaches into the application it abstracts is not a port. These three shapes mirror
+ * the host's own (ContentStudio: frontend/src/app/services/stream-marks.types.ts, itself a
+ * mirror of the main process's store), and the whole group is OPTIONAL below — a host with
+ * no stream-marks store simply does not implement them and the editor hides the button.
+ */
+export interface StreamMark {
+  id: string;
+  /** ELAPSED seconds since the session started. Not a wall-clock instant. */
+  at: number;
+  label: string;
+}
+
+export interface StreamMarkSession {
+  id: string;
+  /** ISO wall clock of the stream's start — what the master's file date is compared with. */
+  startedAt: string;
+  endedAt: string | null;
+  /** Sorted by `at`. Each mark is the END of a story, not its beginning. */
+  marks: StreamMark[];
+}
+
+export interface StreamMarkSessionSummary {
+  id: string;
+  startedAt: string;
+  endedAt: string | null;
+  markCount: number;
+}
+
+/**
+ * The loaded session's master video and the two file times that can date it. `birthtimeIso`
+ * is null when the filesystem keeps no creation time; the caller then says on screen that it
+ * is dating the master by its modification time instead of quietly swapping one for the other.
+ */
+export interface MasterFileTimes {
+  masterPath: string;
+  birthtimeIso: string | null;
+  mtimeIso: string;
+}
+
 // ── The port ──────────────────────────────────────────────────────────────────
 
 export interface EditorHost {
@@ -698,6 +741,27 @@ export interface EditorHost {
 
   /** Detach both archive listeners. Called from ngOnDestroy. */
   removeArchiveListeners?(): void;
+
+  // ── Stream marks (optional group) ───────────────────────────────────────────
+  //
+  // The import dialog that turns a stream's marks into stories. OPTIONAL as a group: a host
+  // without a stream-marks store implements none of them, and the Stories tab hides the
+  // button rather than offering one that rejects. The editor checks for
+  // `listStreamMarkSessions` and treats its presence as the group's presence — a host that
+  // implements one of the three and not the others is a host that broke its own contract,
+  // and the missing call rejects by name rather than being papered over.
+
+  /** Every recorded stream, newest first. */
+  listStreamMarkSessions?(): Promise<StreamMarkSessionSummary[]>;
+
+  /** One stream in full, marks included. REJECTS on an unknown id — never resolves null. */
+  getStreamMarkSession?(id: string): Promise<StreamMarkSession>;
+
+  /**
+   * The master video of the session in `zipPath`, with its creation and modification times.
+   * This is what proposes the offset between the stream's clock and the timeline's.
+   */
+  masterFileTimes?(payload: { zipPath: string }): Promise<MasterFileTimes>;
 }
 
 /**

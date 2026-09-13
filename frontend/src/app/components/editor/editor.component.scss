@@ -434,8 +434,9 @@
       border: 1px solid #3a3a40;
       &:hover:not(:disabled) { background: #34343a; color: #fff; }
     }
-    /* Hand-off to the main window's Titles tab — same quiet weight as Join. */
-    .story-titles {
+    /* Hand-off to the main window's Titles tab, and the stream-marks import — both quiet,
+       like Join: they are occasional actions, not the tab's primary one. */
+    .story-titles, .story-marks {
       flex: 0 0 auto;
       font-size: 11px;
       font-weight: 600;

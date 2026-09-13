@@ -56,6 +56,18 @@ import { getMainWindow } from '../../main';
  *   ACS 'cancel-job'             → 'editor:cancel-job'             (CS owns 'cancel-job'
  *                                                                   for metadata jobs)
  */
+/**
+ * How a session's master video is recognised: a file named `<session> master.<ext>`.
+ *
+ * MODULE SCOPE AND EXPORTED because the project scan is no longer the only reader. The
+ * stream-marks import resolves the master of the session the editor has open, to read its
+ * file times and propose an offset, and a second copy of this rule in that file would be a
+ * pair that agrees today (LEDGER law 10 — a contract between two files is a type or a
+ * shared constant, never a duplicated literal).
+ */
+export const MASTER_EXTENSIONS = ['.mp4', '.mov', '.avi', '.mkv'];
+export const MASTER_PATTERN = /^(.+?)\s+master$/i;
+
 const EDITOR_CHANNEL_RENAMES = Object.freeze({
   'select-file': 'editor:select-file',
   'select-directory': 'editor:select-directory',
@@ -1650,9 +1662,6 @@ function setupProjectHandlers(): void {
   // writer and the path itself live at module scope because 'editor:delete-local-week' —
   // which is registered with the archive handlers, since it needs the ArchiveSync instance
   // to re-verify before it removes anything — rewrites this same file.
-  const MASTER_EXTENSIONS = ['.mp4', '.mov', '.avi', '.mkv'];
-  const MASTER_PATTERN = /^(.+?)\s+master$/i;
-
   /**
    * The mount point a path lives on: `/Volumes/<name>` on macOS, the drive root on Windows,
    * `/` otherwise. Used to tell "this folder was deleted" from "its disk is not attached",

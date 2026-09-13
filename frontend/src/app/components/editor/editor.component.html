@@ -129,6 +129,15 @@
     (openEnvironment)="onEnvironmentFromSetup()"
     (completed)="onProjectSetupCompleted($event)"></app-project-setup-modal>
 
+  <!-- Stream marks ▸ stories. Created only on Apply; the dialog shows every span it would
+       make, and what it would trim, before anything exists. -->
+  <app-stream-marks-import-modal *ngIf="streamMarksImportOpen"
+    [zipPath]="currentZipPath"
+    [timelineDuration]="manifest?.timelineDuration || 0"
+    [playheadOriginal]="playheadOriginalSeconds()"
+    (closed)="closeStreamMarksImport()"
+    (applied)="onStreamMarksImported($event)"></app-stream-marks-import-modal>
+
   <!-- File ▸ Relink…: repoint the overlay PNGs the compound generators composite with. Host
        state, not session state — it is reachable with no project open. -->
   <app-editor-relink-modal *ngIf="relinkOpen"
@@ -354,6 +363,13 @@
           <button class="story-titles" *ngIf="hasStories()" (click)="sendAllStoriesToTitles()"
                   title="Send every story to the Metadata queue — each becomes its own item carrying its own chapter list. Chapters are derived first where missing or stale.">
             → Metadata
+          </button>
+          <!-- The night's marks, turned into stories. Lives with the story controls because
+               that is what it makes; only shown where the host actually has a marks store. -->
+          <button class="story-marks" *ngIf="hasStreamMarksHost()" (click)="openStreamMarksImport()"
+                  [disabled]="!currentZipPath"
+                  title="Turn the marks you made while streaming into stories — each mark ends a story, and one offset lines the whole night up with this recording.">
+            Stream marks…
           </button>
         </div>
         <div class="stories-hint" *ngIf="storyPickIds.size >= 2">
