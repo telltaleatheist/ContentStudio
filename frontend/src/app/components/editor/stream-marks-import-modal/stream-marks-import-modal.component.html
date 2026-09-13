@@ -1,0 +1,121 @@
+<!-- A night's stream marks become this session's stories. Nothing is created until Apply. -->
+<div class="smi-backdrop" (click)="onBackdropClick()">
+  <div class="smi" (click)="$event.stopPropagation()">
+
+    <header class="smi-header">
+      <div class="smi-heading">
+        <div class="smi-title">Stream marks</div>
+        <div class="smi-sub">Each mark ended a story. The story before it takes its name.</div>
+      </div>
+      <button class="smi-close" (click)="onClose()" aria-label="Close">✕</button>
+    </header>
+
+    <div class="smi-body">
+
+      <div class="smi-error" *ngIf="error">{{ error }}</div>
+      <div class="smi-note" *ngIf="notice">{{ notice }}</div>
+      <div class="smi-loading" *ngIf="loading">Reading the recorded streams…</div>
+
+      <ng-container *ngIf="!loading && !error">
+
+        <!-- Session picker -->
+        <div class="smi-field">
+          <div class="smi-label">Stream</div>
+          <select class="smi-select" [value]="selectedId || ''"
+                  (change)="onSessionChange($any($event.target).value)">
+            <option value="" disabled>Pick the stream this recording came from</option>
+            <!-- [selected] as well as the select's [value]: the option elements are created
+                 after the parent's binding is applied, so the value alone can land on a list
+                 that is not there yet and leave the picker showing the placeholder. -->
+            <option *ngFor="let s of sessions" [value]="s.id" [selected]="s.id === selectedId">{{ sessionLabel(s) }}</option>
+          </select>
+          <div class="smi-hint" *ngIf="master">
+            Master <span class="smi-mono">{{ master.masterPath }}</span>,
+            <ng-container *ngIf="masterTimeSource === 'created'">created {{ masterDateLabel() }}</ng-container>
+            <!-- Said, never assumed: this filesystem keeps no creation time for the master, so
+                 the date below is when it was last WRITTEN — for a recording, when it ended. -->
+            <ng-container *ngIf="masterTimeSource === 'modified'">
+              last modified {{ masterDateLabel() }} (this drive keeps no creation time, so the
+              offset below is proposed from the modification time)
+            </ng-container>.
+          </div>
+        </div>
+
+        <!-- Offset -->
+        <div class="smi-field" *ngIf="session">
+          <div class="smi-label">Offset</div>
+          <div class="smi-offset-row">
+            <input class="smi-time" [value]="offsetField()"
+                   (input)="onOffsetInput($any($event.target).value)"
+                   (keydown.enter)="commitOffset()" (blur)="commitOffset()" />
+            <button class="smi-button" (click)="anchorToPlayhead()" [disabled]="!anchorMarkId"
+                    [title]="anchorMarkId
+                        ? 'Move every story so the selected mark sits exactly on the playhead'
+                        : 'Click a row first — its end is what lands on the playhead'">
+              Selected mark = playhead
+            </button>
+            <span class="smi-hint">playhead at {{ timecode(playheadOriginal) }}</span>
+          </div>
+          <div class="smi-hint">
+            Where the stream's clock sits on this timeline: a mark at hh:mm:ss into the stream
+            lands at hh:mm:ss + this offset. Proposed from the stream's start minus the master's
+            file time; correct it here and every story moves together.
+          </div>
+          <div class="smi-error inline" *ngIf="offsetError">{{ offsetError }}</div>
+        </div>
+
+        <!-- Rows -->
+        <div class="smi-rows" *ngIf="session">
+          <div class="smi-rows-head">
+            <span class="c-check"></span>
+            <span class="c-num">#</span>
+            <span class="c-title">Story</span>
+            <span class="c-time">Start</span>
+            <span class="c-time">End</span>
+            <span class="c-mark">Mark</span>
+          </div>
+
+          <div class="smi-empty" *ngIf="rows.length === 0">
+            This stream has no marks, so there are no stories in it.
+          </div>
+
+          <div class="smi-row" *ngFor="let row of rows"
+               [class.disabled]="!canCreate(row)"
+               [class.warn]="row.state === 'clamped'"
+               [class.anchored]="anchorMarkId === row.markId"
+               (click)="setAnchor(row.markId)">
+            <span class="c-check">
+              <input type="checkbox" [checked]="row.checked" [disabled]="!canCreate(row)"
+                     (change)="toggle(row)" (click)="$event.stopPropagation()" />
+            </span>
+            <span class="c-num">{{ row.number }}</span>
+            <span class="c-title">
+              <input class="smi-title-input" [value]="row.editedTitle"
+                     [disabled]="!canCreate(row)"
+                     (input)="onTitleInput(row, $any($event.target).value)"
+                     (click)="$event.stopPropagation()" />
+            </span>
+            <span class="c-time smi-mono">{{ timecode(row.start) }}</span>
+            <span class="c-time smi-mono">{{ timecode(row.end) }}</span>
+            <span class="c-mark smi-mono">{{ markElapsed(row.markId) }}</span>
+            <span class="smi-row-reason" *ngIf="row.reason">{{ row.reason }}</span>
+          </div>
+        </div>
+
+      </ng-container>
+    </div>
+
+    <footer class="smi-footer">
+      <span class="smi-hint" *ngIf="session">
+        {{ checkedCount }} of {{ rows.length }} will be created as new stories. Anything they
+        overlap yields the span, exactly as ⌘S does.
+      </span>
+      <span class="smi-spacer"></span>
+      <button class="smi-button" (click)="onClose()">Cancel</button>
+      <button class="smi-button primary" (click)="apply()" [disabled]="checkedCount === 0">
+        Create {{ checkedCount }} stor{{ checkedCount === 1 ? 'y' : 'ies' }}
+      </button>
+    </footer>
+
+  </div>
+</div>

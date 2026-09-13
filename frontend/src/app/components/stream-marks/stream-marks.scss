@@ -1,0 +1,301 @@
+/* Theme tokens only — this page follows the app's light/dark themes like every other tab
+   (styles.scss + styles-creamsicle.scss). 11px is the type floor, per LEDGER #163: the
+   legibility pass measured what small dim text on white actually costs. */
+:host {
+  display: flex;
+  flex: 1;
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+}
+
+.sm-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 1.5rem;
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 0.8125rem;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 2px solid var(--border-color);
+
+  .header-left {
+    display: flex;
+    align-items: baseline;
+    gap: 1rem;
+
+    h2 {
+      margin: 0;
+      color: var(--text-primary);
+      font-size: 1.5rem;
+      font-weight: 600;
+    }
+  }
+
+  .count {
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+  }
+}
+
+.hotkey {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+
+  .hotkey-label {
+    color: var(--text-muted);
+  }
+
+  .hotkey-input {
+    width: 15rem;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    padding: 0.25rem 0.4rem;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+  }
+
+  .hotkey-state {
+    font-weight: 600;
+
+    &.ok { color: var(--success-text); }
+    &.bad { color: var(--danger-text); max-width: 28rem; font-weight: 500; }
+  }
+}
+
+.banner {
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.8125rem;
+
+  &.error {
+    background: var(--danger-bg);
+    color: var(--danger-text);
+  }
+
+  &.notice {
+    background: var(--warning-bg);
+    color: var(--warning-text);
+  }
+}
+
+/* ── Live panel ─────────────────────────────────────────────────────────── */
+.live-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+
+  &.running {
+    border-color: var(--success-text);
+  }
+
+  .clock {
+    font-family: var(--font-mono);
+    font-size: 2.75rem;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
+  }
+
+  .live-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+  }
+
+  .mark-button mat-icon,
+  .start-button mat-icon {
+    margin-right: 0.25rem;
+  }
+
+  .started-at {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+
+    label {
+      color: var(--text-muted);
+      font-size: 0.75rem;
+    }
+  }
+
+  .idle {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .hint {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+  }
+}
+
+.field-error {
+  color: var(--danger-text);
+  font-size: 0.75rem;
+
+  &.inline { margin-left: 0.5rem; }
+  &.row { grid-column: 2 / -1; }
+}
+
+/* ── Marks ──────────────────────────────────────────────────────────────── */
+.marks,
+.past {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+
+  h3 {
+    margin: 0;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+}
+
+.marks-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding-bottom: 0.4rem;
+
+  .started-label {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    margin-left: auto;
+  }
+}
+
+.empty {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  padding: 0.5rem 0;
+}
+
+.mark-row {
+  display: grid;
+  grid-template-columns: 2.25rem 7rem minmax(10rem, 1fr) auto auto auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 5px;
+
+  &:hover { background: var(--bg-hover); }
+
+  .num {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-align: right;
+  }
+}
+
+.time-input {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  width: 6.5rem;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.label-input {
+  font-size: 0.8125rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.nudges {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.nudge,
+.row-action {
+  font-family: inherit;
+  font-size: 0.6875rem;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+
+  &:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+  }
+
+  &.danger:hover {
+    color: var(--danger-text);
+    border-color: var(--danger-text);
+  }
+}
+
+/* ── Past sessions ──────────────────────────────────────────────────────── */
+.past-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 5px;
+
+  &:hover { background: var(--bg-hover); }
+  &.selected { background: var(--bg-tertiary); }
+
+  .past-open {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    flex: 1 1 auto;
+    text-align: left;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 0.25rem 0;
+    font-family: inherit;
+    font-size: 0.8125rem;
+    color: var(--text-primary);
+  }
+
+  .past-count {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+  }
+
+  .past-live {
+    color: var(--success-text);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+}
