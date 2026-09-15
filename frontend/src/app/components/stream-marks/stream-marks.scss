@@ -219,7 +219,7 @@
 
 .mark-row {
   display: grid;
-  grid-template-columns: 2.25rem 7rem minmax(10rem, 1fr) auto auto auto;
+  grid-template-columns: 2.25rem 7rem 5.5rem minmax(10rem, 1fr) auto auto auto;
   align-items: center;
   gap: 0.5rem;
   padding: 0.3rem 0.4rem;
@@ -232,6 +232,34 @@
     font-size: 0.75rem;
     color: var(--text-muted);
     text-align: right;
+  }
+}
+
+.mark-head {
+  display: grid;
+  grid-template-columns: 2.25rem 7rem 5.5rem minmax(10rem, 1fr);
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.4rem 0.25rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+
+  .head-duration { text-align: right; padding-right: 0.25rem; }
+}
+
+.row-duration {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  text-align: right;
+  padding-right: 0.25rem;
+
+  // Two marks out of order while a time is being typed. Shown, never hidden.
+  &.negative {
+    color: var(--danger-text);
   }
 }
 

@@ -87,6 +87,15 @@
       No marks yet. A mark is the moment a story ENDS — the story before it takes the name you type.
     </div>
 
+    <!-- Two times per row and they answer different questions, so they are labelled: the
+         first is what the editor maps, the second is what the stream is read for. -->
+    <div class="mark-head" *ngIf="session.marks.length > 0">
+      <span class="num">#</span>
+      <span>Ended at</span>
+      <span class="head-duration">Ran for</span>
+      <span>Story</span>
+    </div>
+
     <!-- Most recent at the top; the number is the story's place in the stream, so 1 is at the
          bottom where the night started. -->
     <div class="mark-row" *ngFor="let row of rows(); trackBy: trackRow">
@@ -95,7 +104,13 @@
              (input)="onTimeInput(row.mark, $any($event.target).value)"
              (keydown.enter)="commitTime(row.mark)"
              (blur)="commitTime(row.mark)"
-             matTooltip="Elapsed since the stream started, hh:mm:ss" />
+             matTooltip="Where this story ENDED, elapsed since the stream started (hh:mm:ss). This is the number the editor maps onto the recording." />
+      <!-- What the page is actually read for mid-stream: how long the story ran. The ended-at
+           time above it is what the editor needs; this is what Owen needs. -->
+      <span class="row-duration" [class.negative]="row.duration < 0"
+            matTooltip="How long this story ran — from {{ startedLabel(row) }} to {{ timeField(row.mark) }}">
+        {{ durationLabel(row) }}
+      </span>
       <input class="label-input" id="sm-label-{{ row.mark.id }}" [value]="row.mark.label"
              placeholder="what just ended"
              (input)="onLabelInput(row.mark, $any($event.target).value)"
