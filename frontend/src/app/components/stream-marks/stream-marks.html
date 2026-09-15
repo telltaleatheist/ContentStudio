@@ -48,7 +48,7 @@
                (input)="onStartedAtInput($any($event.target).value)"
                (keydown.enter)="commitStartedAt()"
                (blur)="commitStartedAt()"
-               matTooltip="Wall clock, HH:MM. Correct it if Start was late — every mark moves with it." />
+               matTooltip="Wall clock, HH:MM — when the stream really began. Correct it if you pressed Start late: every mark keeps the moment it happened, so the elapsed times shift and story 1 grows." />
         <span class="hint">{{ liveSession.marks.length }} mark{{ liveSession.marks.length === 1 ? '' : 's' }}</span>
       </div>
       <div class="field-error" *ngIf="startedAtError() as se">{{ se }}</div>

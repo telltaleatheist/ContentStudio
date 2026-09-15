@@ -287,6 +287,30 @@ export class StreamMarksImportModalComponent implements OnInit {
     return 'start';
   }
 
+  /**
+   * Shift every story by a fixed amount.
+   *
+   * THE PROPOSAL IS AN ESTIMATE AND WILL BE MINUTES OUT. Under the "ended" reading the
+   * recording's start is the file time minus the timeline's length, and both halves of that
+   * carry error: a file is stamped when the write FINISHED (a render, a download or a copy
+   * lands minutes after the recording stopped), and the timeline is as long as the compound
+   * the editor was given, not necessarily as long as the camera ran. Owen's second import was
+   * ~3 minutes late on every story, which is that error and nothing else — the marks were
+   * right and the anchor was late.
+   *
+   * So the offset is a dial, not an answer: nudge it, watch the rows move, and the whole
+   * night moves together because one number carries all of them. Negative = every story
+   * earlier on the timeline, which is the direction that fixes stories starting late.
+   */
+  nudgeOffset(seconds: number): void {
+    if (!this.session) return;
+    this.offset += seconds;
+    this.offsetDraft = null;
+    this.offsetError = null;
+    this.anchorReason = 'Offset adjusted by hand.';
+    this.rebuildRows(false);
+  }
+
   /** The toggle. Re-proposes the offset under the other reading; titles and ticks survive. */
   setMasterAnchor(anchor: 'start' | 'end'): void {
     const session = this.session;

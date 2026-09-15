@@ -259,3 +259,23 @@
   display: inline-flex;
   gap: 0.25rem;
 }
+
+/* Offset nudges: a dial for the minutes the file time cannot know. */
+.smi-nudges {
+  display: inline-flex;
+  gap: 0.2rem;
+}
+
+.smi-nudge {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  padding: 0.3rem 0.45rem;
+  border-radius: 4px;
+  border: 1px solid #4a4a52;
+  background: #2c2c33;
+  color: #d8d8de;
+  cursor: pointer;
+
+  &:hover { background: #3a3a43; }
+}

@@ -64,6 +64,17 @@
             <input class="smi-time" [value]="offsetField()"
                    (input)="onOffsetInput($any($event.target).value)"
                    (keydown.enter)="commitOffset()" (blur)="commitOffset()" />
+            <!-- The dial. Earlier on the left, because "every story starts late" is the
+                 common direction: the file time that anchors them lands after the recording
+                 really stopped. -->
+            <span class="smi-nudges">
+              <button class="smi-nudge" (click)="nudgeOffset(-300)" title="Five minutes earlier">−5m</button>
+              <button class="smi-nudge" (click)="nudgeOffset(-60)" title="One minute earlier">−1m</button>
+              <button class="smi-nudge" (click)="nudgeOffset(-10)" title="Ten seconds earlier">−10s</button>
+              <button class="smi-nudge" (click)="nudgeOffset(10)" title="Ten seconds later">+10s</button>
+              <button class="smi-nudge" (click)="nudgeOffset(60)" title="One minute later">+1m</button>
+              <button class="smi-nudge" (click)="nudgeOffset(300)" title="Five minutes later">+5m</button>
+            </span>
             <button class="smi-button" (click)="anchorToPlayhead()" [disabled]="!anchorMarkId"
                     [title]="anchorMarkId
                         ? 'Move every story so the selected mark sits exactly on the playhead'
@@ -74,9 +85,11 @@
           </div>
           <div class="smi-hint">
             Where the stream's clock sits on this timeline: a mark at hh:mm:ss into the stream
-            lands at hh:mm:ss + this offset. Proposed from the stream's start minus the
-            recording's start above; correct it here, or park the playhead where a story ends
-            and click a row, and every story moves together.
+            lands at hh:mm:ss + this offset. The proposal is an estimate — a file is stamped
+            when its write finished, which is after the recording stopped — so expect to be a
+            few minutes out. Stories starting late means the offset is too big: nudge it down,
+            or park the playhead where a story really ends, click that row and press the
+            button. Every story moves together.
           </div>
           <div class="smi-error inline" *ngIf="offsetError">{{ offsetError }}</div>
         </div>
