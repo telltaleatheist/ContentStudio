@@ -1,5 +1,11 @@
-<!-- A night's stream marks become this session's stories. Nothing is created until Apply. -->
-<div class="smi-backdrop" (click)="onBackdropClick()">
+<!-- A night's stream marks become this session's stories. Nothing is created until Apply.
+
+     TWO SHAPES, ONE STATE. Expanded, this is the list: what would be created, what would be
+     trimmed, what would land off the ends. Collapsed, it is the bar at the foot of the window and
+     NOTHING ELSE — no backdrop, no panel, not one pixel over the canvas — because the gesture it
+     exists for is a press on the timeline it would otherwise be covering. Both read the same
+     rows; neither owns a second copy of anything. -->
+<div class="smi-backdrop" *ngIf="!collapsed" (click)="onBackdropClick()">
   <div class="smi" (click)="$event.stopPropagation()">
 
     <header class="smi-header">
@@ -36,7 +42,7 @@
                  the date below is when it was last WRITTEN — for a recording, when it ended. -->
             <ng-container *ngIf="masterTimeSource === 'modified'">
               last modified {{ masterDateLabel() }} (this drive keeps no creation time, so the
-              offset below is proposed from the modification time)
+              stream's place in it below is proposed from the modification time)
             </ng-container>.
           </div>
         </div>
@@ -52,29 +58,22 @@
               <button class="smi-button" [class.primary]="masterAnchor === 'end'"
                       (click)="setMasterAnchor('end')">ended</button>
             </span>
-            <span class="smi-hint">so the recording began {{ recordingStartLabel() }}</span>
+            <span class="smi-hint">so the recording began {{ recordingStartLabel() }}<ng-container
+              *ngIf="masterAnchor === 'end'"> (the file time less the recording's own
+              {{ masterDurationLabel() }})</ng-container></span>
           </div>
           <div class="smi-hint">{{ anchorReason }}</div>
         </div>
 
-        <!-- Offset -->
+        <!-- Where the stream's clock zero sits in the RECORDING. Not a timeline offset: the
+             timeline is the recording with its dead air dropped, so the marks travel through the
+             manifest's segment table from here, not by addition. -->
         <div class="smi-field" *ngIf="session">
-          <div class="smi-label">Offset</div>
+          <div class="smi-label">The stream started this far into the recording</div>
           <div class="smi-offset-row">
-            <input class="smi-time" [value]="offsetField()"
-                   (input)="onOffsetInput($any($event.target).value)"
-                   (keydown.enter)="commitOffset()" (blur)="commitOffset()" />
-            <!-- The dial. Earlier on the left, because "every story starts late" is the
-                 common direction: the file time that anchors them lands after the recording
-                 really stopped. -->
-            <span class="smi-nudges">
-              <button class="smi-nudge" (click)="nudgeOffset(-300)" title="Five minutes earlier">−5m</button>
-              <button class="smi-nudge" (click)="nudgeOffset(-60)" title="One minute earlier">−1m</button>
-              <button class="smi-nudge" (click)="nudgeOffset(-10)" title="Ten seconds earlier">−10s</button>
-              <button class="smi-nudge" (click)="nudgeOffset(10)" title="Ten seconds later">+10s</button>
-              <button class="smi-nudge" (click)="nudgeOffset(60)" title="One minute later">+1m</button>
-              <button class="smi-nudge" (click)="nudgeOffset(300)" title="Five minutes later">+5m</button>
-            </span>
+            <input class="smi-time" [value]="streamStartField()"
+                   (input)="onStreamStartInput($any($event.target).value)"
+                   (keydown.enter)="commitStreamStart()" (blur)="commitStreamStart()" />
             <button class="smi-button" (click)="anchorToPlayhead()" [disabled]="!anchorMarkId"
                     [title]="anchorMarkId
                         ? 'Move every story so the selected mark sits exactly on the playhead'
@@ -84,14 +83,16 @@
             <span class="smi-hint">playhead at {{ timecode(playheadOriginal) }}</span>
           </div>
           <div class="smi-hint">
-            Where the stream's clock sits on this timeline: a mark at hh:mm:ss into the stream
-            lands at hh:mm:ss + this offset. The proposal is an estimate — a file is stamped
-            when its write finished, which is after the recording stopped — so expect to be a
-            few minutes out. Stories starting late means the offset is too big: nudge it down,
-            or park the playhead where a story really ends, click that row and press the
-            button. Every story moves together.
+            A mark at hh:mm:ss into the stream was recorded at hh:mm:ss + this, and the editor's
+            timeline is this recording with its dead air removed — so each mark is placed through
+            the timeline's own segment table, not by adding a number to it. The proposal is an
+            estimate: a file is stamped when its write finished, which is after the recording
+            stopped, so expect to be a few minutes out. Two ways to fix it, both exact: park the
+            playhead where a story really ends, click that row and press the button above; or drag
+            a boundary onto its moment on the timeline. The rest follow the recording, each to
+            wherever its own content sits.
           </div>
-          <div class="smi-error inline" *ngIf="offsetError">{{ offsetError }}</div>
+          <div class="smi-error inline" *ngIf="streamStartError">{{ streamStartError }}</div>
         </div>
 
         <!-- Rows -->
@@ -129,6 +130,9 @@
             <span class="c-time smi-mono">{{ timecode(row.end) }}</span>
             <span class="c-mark smi-mono">{{ markElapsed(row.markId) }}</span>
             <span class="smi-row-reason" *ngIf="row.reason">{{ row.reason }}</span>
+            <!-- A boundary that fell in removed material moved to get onto the timeline, and
+                 silence about that is how a story ends up starting somewhere nobody chose. -->
+            <span class="smi-row-gap" *ngIf="row.gapNote">{{ row.gapNote }}</span>
           </div>
         </div>
 
@@ -141,6 +145,13 @@
         overlap yields the span, exactly as ⌘S does.
       </span>
       <span class="smi-spacer"></span>
+      <!-- The coarse correction, and the one Owen asked for: get out of the way and let him drag
+           the boundaries onto the content. Cyan because that is the colour the preview draws in —
+           the button says which marks on the timeline belong to it. -->
+      <button class="smi-button lineup" [disabled]="!session" (click)="collapse()"
+              title="Shrink to a bar and drag the whole set along the timeline">
+        Line up on the timeline
+      </button>
       <button class="smi-button" (click)="onClose()">Cancel</button>
       <button class="smi-button primary" (click)="apply()" [disabled]="checkedCount === 0">
         Create {{ checkedCount }} stor{{ checkedCount === 1 ? 'y' : 'ies' }}
@@ -148,4 +159,25 @@
     </footer>
 
   </div>
+</div>
+
+<!-- Collapsed: the bar, and nothing else in the document. "pointer-events: none on everything
+     except the bar" is achieved by there BEING nothing else — an invisible full-screen layer left
+     behind would still swallow the first press of every drag, and the cheapest way to be certain
+     it does not is not to render one. -->
+<div class="smi-bar" *ngIf="collapsed">
+  <span class="smi-bar-offset smi-mono" title="Where the stream's clock zero sits in the recording">
+    stream 00:00:00 = {{ streamStartField() }} into the recording
+  </span>
+  <span class="smi-bar-count">{{ onTimelineCount }} of {{ rows.length }} stories on this timeline</span>
+  <span class="smi-hint smi-bar-hint">
+    Drag the boundary nearest the pointer onto its moment; the others follow the recording. The
+    ruler still scrubs.
+  </span>
+  <span class="smi-spacer"></span>
+  <button class="smi-button" (click)="expand()">Back to list</button>
+  <button class="smi-button" (click)="onClose()">Cancel</button>
+  <button class="smi-button primary" (click)="apply()" [disabled]="checkedCount === 0">
+    Create {{ checkedCount }} stor{{ checkedCount === 1 ? 'y' : 'ies' }}
+  </button>
 </div>

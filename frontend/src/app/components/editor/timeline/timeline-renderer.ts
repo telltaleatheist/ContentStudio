@@ -90,6 +90,11 @@ export class TimelineRenderer {
     // Where an in-flight move would land — above the selection tint, under the playhead.
     this.drawMoveInsertion(ctx, scene, W, H);
 
+    // The stream-marks import, if that dialog is open: over the clips and the ribbon, because it
+    // is the thing being aimed, and UNDER the playhead, because the playhead is the reference you
+    // aim AT and a preview that hid it would take away the target.
+    this.drawStreamMarksPreview(ctx, scene, W, H);
+
     // Playhead over everything (ruler + tracks).
     this.drawPlayhead(ctx, scene, W, H);
   }
@@ -483,6 +488,82 @@ export class TimelineRenderer {
         ctx.restore();
       }
     }
+  }
+
+  /**
+   * The stream-marks import as it would land: a dividing line at every boundary, a translucent
+   * band per story, each story's title inside its band. Nothing here exists yet — Apply is still
+   * the only thing that creates a story — so every mark this makes has to read as a PROPOSAL.
+   *
+   * CYAN, and cyan on purpose. The timeline already spends amber on the stories ribbon, yellow on
+   * the highlight, blue on a move's landing ghost and white on the playhead; reusing any of them
+   * would let a preview be mistaken for the committed thing it is a proposal to become — and the
+   * whole gesture this serves is dragging the preview ONTO the real stories and cuts, where the
+   * two are a pixel apart and have to stay tellable. Cyan is the one accent this editor does not
+   * already spend, and it sits opposite amber on the wheel, so the ribbon underneath keeps reading
+   * as the ribbon.
+   *
+   * The bands alternate two strengths of the same cyan rather than taking a colour each: what the
+   * operator needs to see while sliding the set is WHERE ONE STORY ENDS AND THE NEXT BEGINS, and
+   * consecutive bands of one colour would merge into a single wash the moment two stories touch —
+   * which, marks being boundaries, they always do.
+   */
+  private drawStreamMarksPreview(ctx: CanvasRenderingContext2D, scene: TimelineScene,
+                                 W: number, H: number): void {
+    const preview = scene.streamMarks;
+    if (!preview) return;
+    const top = RULER_H + scene.ribbonHeight;
+
+    // Bands first, lines over them, so a boundary line is never half-swallowed by the fill of the
+    // band that starts on it.
+    for (let i = 0; i < preview.spans.length; i++) {
+      const span = preview.spans[i];
+      const x0 = this.timeToX(scene, span.lo);
+      const x1 = this.timeToX(scene, span.hi);
+      // hi before lo is reordered footage, not a bug: originalToEdited is single-valued, so a span
+      // whose two ends now live on opposite sides of a move maps to a backwards pair. Drawing it
+      // would claim ground it does not cover, so it is skipped and its boundary lines say the rest.
+      if (x1 <= x0) continue;
+      if (x1 < 0 || x0 > W) continue;                 // off-screen
+      const bx0 = Math.max(0, x0);
+      const bx1 = Math.min(W, x1);
+      const bw = bx1 - bx0;
+      if (bw <= 0.5) continue;                        // collapsed at this zoom
+      ctx.save();
+      ctx.fillStyle = span.dim
+        ? 'rgba(70,214,220,0.05)'
+        : (i % 2 === 0 ? 'rgba(70,214,220,0.20)' : 'rgba(70,214,220,0.10)');
+      ctx.fillRect(bx0, top, bw, H - top);
+      // A title needs room to be a title. Below this the band is a stripe, and half a word in it
+      // is worse than none — the boundary lines are what the operator is reading at that zoom.
+      if (bw > 26 && span.title) {
+        ctx.beginPath();
+        ctx.rect(bx0, top, bw, H - top);
+        ctx.clip();
+        ctx.fillStyle = span.dim ? 'rgba(160,226,229,0.45)' : '#bff2f5';
+        ctx.font = '11px -apple-system, "Segoe UI", sans-serif';
+        ctx.textBaseline = 'top';
+        ctx.fillText(span.title, bx0 + 5, top + 4);
+      }
+      ctx.restore();
+    }
+
+    // Every dividing line, full height — including up through the ruler, because the ruler is
+    // where the playhead's own reading is, and a line that stopped at the tracks would leave the
+    // one comparison this gesture is made of (boundary against playhead) to be eyeballed across a
+    // gap.
+    ctx.save();
+    ctx.strokeStyle = '#46d6dc';
+    ctx.lineWidth = 1;
+    for (const b of preview.boundaries) {
+      const x = this.timeToX(scene, b);
+      if (x < -1 || x > W + 1) continue;
+      ctx.beginPath();
+      ctx.moveTo(Math.round(x) + 0.5, 0);
+      ctx.lineTo(Math.round(x) + 0.5, H);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   private drawPlayhead(ctx: CanvasRenderingContext2D, scene: TimelineScene, W: number, H: number): void {

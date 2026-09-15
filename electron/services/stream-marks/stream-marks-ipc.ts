@@ -18,6 +18,7 @@
  */
 
 import { app, BrowserWindow, Notification, globalShortcut, ipcMain } from 'electron';
+import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as log from 'electron-log';
 import * as path from 'path';
@@ -29,6 +30,7 @@ import {
   StreamMarksService,
 } from './stream-marks.service';
 import { MASTER_EXTENSIONS, MASTER_PATTERN } from '../editor/editor-ipc';
+import { getRuntimePaths } from '../../lib/bridges/runtime-paths';
 
 /**
  * The shipped hotkey. An unset `streamMarksHotkey` is not a missing value — it is this
@@ -61,6 +63,17 @@ export interface MasterFileTimes {
   masterPath: string;
   birthtimeIso: string | null;
   mtimeIso: string;
+  /**
+   * The master's own length in seconds, from ffprobe.
+   *
+   * THE RECORDING'S LENGTH, NOT THE TIMELINE'S, and the difference is the whole point: the
+   * processing step drops dead air, so the editor's timeline is minutes SHORTER than the file
+   * it was cut from (measured 2026-09-14: 11785 s of master, 9869 s of timeline, 1916 s
+   * dropped). Reading the file time as the moment the recording ENDED means subtracting the
+   * recording's length to find its start, and subtracting the timeline's length instead puts
+   * that start half an hour wrong — which is exactly what the import used to do.
+   */
+  durationSeconds: number;
 }
 
 /** Every window, because the tab and the editor's import dialog are two of them. */
@@ -69,6 +82,53 @@ function broadcast(change: StreamMarksChange): void {
     if (win.isDestroyed()) continue;
     win.webContents.send('stream-marks:changed', change);
   }
+}
+
+/**
+ * The master's duration, straight from ffprobe. Rejects rather than guessing.
+ *
+ * The binary comes from lib/bridges/runtime-paths (the one place that knows where ffmpeg's
+ * tools live, packaged or not). `-v error` is deliberate: it leaves stderr empty on success and
+ * carrying the reason on failure, and the reason is what goes into the throw — a duration that
+ * quietly came back 0 would propose a stream start half a night out with nothing on screen to
+ * say why (LEDGER law 1).
+ */
+function probeDurationSeconds(file: string): Promise<number> {
+  const ffprobe = getRuntimePaths().ffprobe;
+  return new Promise<number>((resolve, reject) => {
+    const proc = spawn(ffprobe, [
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      file,
+    ]);
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (d) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+    proc.on('error', (err) => {
+      reject(new Error(
+        `Could not run ffprobe at ${ffprobe} to measure ${file}: ${err.message}`
+      ));
+    });
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(
+          `ffprobe exited with code ${code} measuring ${file}: ${stderr.trim() || '(no stderr)'}`
+        ));
+        return;
+      }
+      const seconds = Number(stdout.trim());
+      if (!Number.isFinite(seconds) || seconds <= 0) {
+        reject(new Error(
+          `ffprobe reported no usable duration for ${file} (read "${stdout.trim()}"): ` +
+          (stderr.trim() || 'no error text')
+        ));
+        return;
+      }
+      resolve(seconds);
+    });
+  });
 }
 
 /** hh:mm:ss for the desktop notification — the same shape the tab's rows are edited in. */
@@ -208,6 +268,9 @@ export function setupStreamMarksIpc(store: Store<any>, service: StreamMarksServi
     }
     const masterPath = path.join(folder, masters[0]);
     const stat = fs.statSync(masterPath);
+    // Awaited here rather than in the renderer so one call answers the dialog's whole question:
+    // which file, when it was written, and how long it runs.
+    const durationSeconds = await probeDurationSeconds(masterPath);
     // Epoch zero is how a filesystem without a creation time answers birthtime. Treated as
     // "no answer" and reported as null — see MasterFileTimes.
     const birthMs = stat.birthtime.getTime();
@@ -215,6 +278,7 @@ export function setupStreamMarksIpc(store: Store<any>, service: StreamMarksServi
       masterPath,
       birthtimeIso: Number.isFinite(birthMs) && birthMs > 0 ? stat.birthtime.toISOString() : null,
       mtimeIso: stat.mtime.toISOString(),
+      durationSeconds,
     };
   });
 
