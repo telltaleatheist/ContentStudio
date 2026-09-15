@@ -390,6 +390,26 @@ export class StreamMarksService {
    * is exactly one correction for one mistake. Rewriting the `at` values instead would hold
    * the stories still and change nothing on screen.
    */
+  /**
+   * Correct when the stream BEGAN. Every mark keeps the moment it actually happened.
+   *
+   * THIS IS THE OPPOSITE OF WHAT THIS METHOD DID AT FIRST, and the first real import is what
+   * settled it. Owen pressed Start at 19:59:39, marked six stories against that clock, then
+   * corrected the start to 19:57 — the moment the recording had really begun. Holding the
+   * elapsed times still (the original rule) moved every mark 2m39s earlier in the world,
+   * because an elapsed time only means something next to the instant it counts from. The
+   * stories imported 2m39s away from their content and nothing on screen could show why.
+   *
+   * A mark is a KEY PRESS AT A WALL-CLOCK INSTANT. That instant is the fact; the elapsed
+   * number is a rendering of it. So moving the start moves the elapsed values by the same
+   * delta in the other direction, every mark stays where it happened, and the gaps between
+   * marks — the story lengths — do not change. Moving the start EARLIER lengthens story 1,
+   * which is right: the stream really was running before the first press.
+   *
+   * A correction that would push a mark before the new start is refused by name rather than
+   * clamped: that is a start time later than a boundary that already happened, which is a
+   * typo, and a clamped mark is a story boundary silently parked at zero.
+   */
   updateSession(id: string, patch: { startedAt?: string }): StreamMarkSession {
     const session = this.getSession(id);
     if (patch.startedAt !== undefined) {
@@ -399,7 +419,24 @@ export class StreamMarksService {
           'it is not a date this runtime can read.'
         );
       }
-      session.startedAt = new Date(patch.startedAt).toISOString();
+      const nextIso = new Date(patch.startedAt).toISOString();
+      // Seconds the start moved LATER. Marks counted from the old start must lose exactly
+      // this much to stay at the same instant.
+      const deltaSeconds = Math.round((Date.parse(nextIso) - Date.parse(session.startedAt)) / 1000);
+      if (deltaSeconds !== 0) {
+        for (const mark of session.marks) {
+          const shifted = mark.at - deltaSeconds;
+          if (shifted < 0) {
+            throw new Error(
+              `Moving this stream's start to ${new Date(nextIso).toLocaleString()} would put the mark ` +
+              `"${mark.label || '(unnamed)'}" ${Math.abs(shifted)}s before the stream began. A mark is the ` +
+              'moment a key was pressed, so the start cannot be later than one.'
+            );
+          }
+        }
+        for (const mark of session.marks) mark.at -= deltaSeconds;
+      }
+      session.startedAt = nextIso;
     }
     this.writeFile(session);
     return session;
