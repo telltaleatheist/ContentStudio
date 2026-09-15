@@ -109,12 +109,36 @@
     border-color: var(--success-text);
   }
 
+  .clocks {
+    display: flex;
+    gap: 1.5rem;
+    align-items: flex-end;
+  }
+
+  .clock-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
   .clock {
     font-family: var(--font-mono);
     font-size: 2.75rem;
     line-height: 1;
     font-variant-numeric: tabular-nums;
     color: var(--text-primary);
+
+    // The story clock is the one being read mid-stream; the stream clock is context.
+    &.segment {
+      color: var(--success-text);
+    }
+  }
+
+  .clock-caption {
+    font-size: 0.7rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
   }
 
   .live-actions {
