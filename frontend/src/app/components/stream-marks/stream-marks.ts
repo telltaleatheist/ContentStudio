@@ -46,6 +46,21 @@ import {
  * read as a different number is a story that starts in the wrong place, and it would not be
  * noticed until the video was cut.
  */
+/**
+ * One row of the marks list: the mark itself, its place in the night, and the STORY it ended
+ * — where that story began and how long it ran. The durations live here rather than in the
+ * template because a row's length is the gap to the PREVIOUS mark, which a template cannot
+ * reach once the list has been reversed for display.
+ */
+interface MarkRow {
+  mark: StreamMark;
+  number: number;
+  /** Elapsed seconds at which this story began (the previous mark, or 0 for the first). */
+  startedAt: number;
+  /** Seconds the story ran. Negative only while a time edit has marks briefly out of order. */
+  duration: number;
+}
+
 @Component({
   selector: 'app-stream-marks',
   imports: [CommonModule, MatIconModule, MatButtonModule, MatTooltipModule],
@@ -345,15 +360,36 @@ export class StreamMarks implements OnInit, OnDestroy {
    */
   rows = computed(() => {
     const viewed = this.viewed();
-    if (!viewed) return [] as Array<{ mark: StreamMark; number: number }>;
+    if (!viewed) return [] as MarkRow[];
+    // Marks are stored sorted by time, so the previous one is the story's start. Story 1
+    // starts at 0 — the stream's own beginning — which is the same rule the editor's import
+    // uses, and the two must not disagree about how long a story was.
     return viewed.marks
-      .map((mark, i) => ({ mark, number: i + 1 }))
+      .map((mark, i) => ({
+        mark,
+        number: i + 1,
+        startedAt: i === 0 ? 0 : viewed.marks[i - 1].at,
+        duration: mark.at - (i === 0 ? 0 : viewed.marks[i - 1].at),
+      }))
       .reverse();
   });
 
   /** Identity is the mark id: rows re-render from a push event on every keystroke elsewhere. */
-  trackRow(_index: number, row: { mark: StreamMark }): string {
+  trackRow(_index: number, row: MarkRow): string {
     return row.mark.id;
+  }
+
+  /**
+   * How long the story was, hh:mm:ss. A NEGATIVE duration is possible while a time is being
+   * corrected — two marks briefly out of order — and it is shown as such rather than as zero,
+   * because a story that ends before it starts is a typo the operator needs to see.
+   */
+  durationLabel(row: MarkRow): string {
+    return row.duration < 0 ? `-${formatElapsed(-row.duration)}` : formatElapsed(row.duration);
+  }
+
+  startedLabel(row: MarkRow): string {
+    return formatElapsed(row.startedAt);
   }
 
   trackSession(_index: number, summary: StreamMarkSessionSummary): string {
