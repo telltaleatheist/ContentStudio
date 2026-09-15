@@ -239,6 +239,15 @@
   color: #f0a0a0;
 }
 
+/* Said on the row, not in a tooltip: a boundary that fell in removed material landed somewhere
+   nobody chose, and the operator has to see that while the row is still a proposal. Cooler than
+   the reason colour — it is information about a row that may still be perfectly good. */
+.smi-row-gap {
+  grid-column: 3 / -1;
+  font-size: 11px;
+  color: #9ec9d6;
+}
+
 .smi-empty {
   padding: 10px;
   color: #9a9aa2;
@@ -260,22 +269,67 @@
   gap: 0.25rem;
 }
 
-/* Offset nudges: a dial for the minutes the file time cannot know. */
-.smi-nudges {
-  display: inline-flex;
-  gap: 0.2rem;
+/* "Line up on the timeline" wears the PREVIEW's cyan, not the dialog's amber: pressing it hands
+   the job to marks drawn in that colour on the canvas, and the two should be recognisably the
+   same feature before the dialog disappears. */
+.smi-button.lineup {
+  border-color: #46d6dc;
+  color: #bff2f5;
+
+  &:hover:not(:disabled) {
+    background: #2a4a4d;
+    border-color: #6fe4ea;
+    color: #e6fbfc;
+  }
+
+  &:disabled {
+    border-color: #2f4749;
+    color: #5d7375;
+  }
 }
 
-.smi-nudge {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  font-variant-numeric: tabular-nums;
-  padding: 0.3rem 0.45rem;
-  border-radius: 4px;
-  border: 1px solid #4a4a52;
-  background: #2c2c33;
-  color: #d8d8de;
-  cursor: pointer;
+/* ── Collapsed: the line-up bar ────────────────────────────────────────────────
+   Docked to the foot of the window, over the timeline footer. The editor window has no status
+   bar, so the bottom edge is free — and the bottom is where a bar belongs when the thing it is
+   talking about is the timeline just above it. Nothing here is a backdrop: the canvas keeps every
+   press that does not land on the bar itself. */
+.smi-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  background: #1f1f23;
+  border-top: 1px solid #46d6dc;
+  box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.45);
+  color: #c4c4ca;
+  font-size: 12px;
 
-  &:hover { background: #3a3a43; }
+  .smi-spacer { flex: 1 1 auto; }
+}
+
+/* Where the stream's zero sits in the recording, live, in the one place the eye is already
+   resting while dragging. Big enough to read without looking away from the boundary being aimed,
+   and it names what it is — this number is a position in the RECORDING, not on the timeline. */
+.smi-bar-offset {
+  font-size: 13px;
+  font-weight: 600;
+  color: #bff2f5;
+  white-space: nowrap;
+}
+
+.smi-bar-count {
+  color: #e4e4e8;
+  white-space: nowrap;
+}
+
+.smi-bar-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

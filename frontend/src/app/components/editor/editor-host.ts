@@ -349,6 +349,14 @@ export interface MasterFileTimes {
   masterPath: string;
   birthtimeIso: string | null;
   mtimeIso: string;
+  /**
+   * The master's own length in seconds, measured with ffprobe — the RECORDING's length, which
+   * is not the timeline's. The editor's timeline is the master with its dead air dropped and
+   * runs minutes shorter (measured 2026-09-14: 11785 s of recording, 9869 s of timeline), so
+   * this is the only number that can turn "the file time is when the recording ENDED" into the
+   * moment it started.
+   */
+  durationSeconds: number;
 }
 
 // ── The port ──────────────────────────────────────────────────────────────────

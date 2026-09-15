@@ -6,13 +6,33 @@ import {
   formatElapsed,
   formatSignedOffset,
   marksToStorySpans,
-  offsetForMarkAtPlayhead,
+  masterToTimeline,
+  orderSegmentsBySource,
   parseElapsed,
   parseSignedOffset,
+  streamStartForMarkAtMaster,
   StreamMarkInput,
+  TimelineSegment,
+  timelineToMaster,
 } from './stream-marks-import';
 
 const mark = (id: string, at: number, label = ''): StreamMarkInput => ({ id, at, label });
+
+/**
+ * A three-piece timeline cut from a master, with the same shape as a real one: material
+ * dropped before the first piece, between the pieces, and after the last.
+ *
+ *   master   10─30      50────80        100─110
+ *   timeline  0─20      20────50         50─60
+ *
+ * So master 0-10, 30-50, 80-100 and everything past 110 is NOT on this timeline.
+ */
+const TABLE: TimelineSegment[] = [
+  { sourceStart: 10, timelineStart: 0, duration: 20 },
+  { sourceStart: 50, timelineStart: 20, duration: 30 },
+  { sourceStart: 100, timelineStart: 50, duration: 10 },
+];
+const TABLE_DURATION = 60;
 
 describe('parseElapsed', () => {
   it('reads hh:mm:ss', () => {
@@ -81,60 +101,188 @@ describe('marksToStorySpans', () => {
   });
 });
 
-describe('buildImportRows', () => {
-  const marks = [mark('a', 600, 'fox news'), mark('b', 1500, 'intelligent design')];
+describe('orderSegmentsBySource', () => {
+  it('sorts by sourceStart and keeps only the three numbers the map needs', () => {
+    const ordered = orderSegmentsBySource([TABLE[2], TABLE[0], TABLE[1]]);
+    expect(ordered.map((s) => s.sourceStart)).toEqual([10, 50, 100]);
+    expect(ordered[0]).toEqual({ sourceStart: 10, timelineStart: 0, duration: 20 });
+  });
 
-  it('shifts every span by the offset', () => {
-    const rows = buildImportRows(marks, 120, 3600);
-    expect(rows[0].start).toBe(120);
-    expect(rows[0].end).toBe(720);
-    expect(rows[1].start).toBe(720);
-    expect(rows[1].end).toBe(1620);
+  it('refuses a table with no segments, rather than mapping onto nothing', () => {
+    expect(() => orderSegmentsBySource([])).toThrowError(/segment table/);
+  });
+
+  it('refuses a segment with no length', () => {
+    expect(() => orderSegmentsBySource([{ sourceStart: 0, timelineStart: 0, duration: 0 }]))
+      .toThrowError(/mappable piece/);
+  });
+
+  it('refuses a table whose pieces overlap in the master — one second, two places', () => {
+    expect(() => orderSegmentsBySource([
+      { sourceStart: 0, timelineStart: 0, duration: 20 },
+      { sourceStart: 10, timelineStart: 20, duration: 20 },
+    ])).toThrowError(/overlap/);
+  });
+
+  it('refuses a timeline that plays the master out of order', () => {
+    expect(() => orderSegmentsBySource([
+      { sourceStart: 0, timelineStart: 50, duration: 20 },
+      { sourceStart: 100, timelineStart: 0, duration: 20 },
+    ])).toThrowError(/out of order/);
+  });
+});
+
+describe('masterToTimeline', () => {
+  it('maps a second inside a kept piece exactly', () => {
+    expect(masterToTimeline(TABLE, 10)).toEqual({ seconds: 0, inGap: false });
+    expect(masterToTimeline(TABLE, 15)).toEqual({ seconds: 5, inGap: false });
+    expect(masterToTimeline(TABLE, 60)).toEqual({ seconds: 30, inGap: false });
+    expect(masterToTimeline(TABLE, 105)).toEqual({ seconds: 55, inGap: false });
+  });
+
+  it('puts a second from REMOVED material where the content resumes, and says so', () => {
+    // The first frame the edit dropped is the moment the next kept piece begins.
+    expect(masterToTimeline(TABLE, 30)).toEqual({ seconds: 20, inGap: true });
+    expect(masterToTimeline(TABLE, 40)).toEqual({ seconds: 20, inGap: true });
+    expect(masterToTimeline(TABLE, 90)).toEqual({ seconds: 50, inGap: true });
+  });
+
+  it('answers before the first kept frame with the start, and past the last with the end', () => {
+    expect(masterToTimeline(TABLE, 0)).toEqual({ seconds: 0, inGap: true });
+    expect(masterToTimeline(TABLE, 9.9)).toEqual({ seconds: 0, inGap: true });
+    expect(masterToTimeline(TABLE, 110)).toEqual({ seconds: 60, inGap: true });
+    expect(masterToTimeline(TABLE, 5000)).toEqual({ seconds: 60, inGap: true });
+  });
+
+  it('is not an offset: the same distance in the master is a different one on the timeline', () => {
+    // 20 master seconds either side of a 20-second cut: 10→30 is 20 s of timeline, 30→50 is none.
+    expect(masterToTimeline(TABLE, 30).seconds - masterToTimeline(TABLE, 10).seconds).toBe(20);
+    expect(masterToTimeline(TABLE, 50).seconds - masterToTimeline(TABLE, 30).seconds).toBe(0);
+  });
+
+  it('refuses a table it cannot search, or a second it cannot map', () => {
+    expect(() => masterToTimeline([], 5)).toThrowError(/segment table/);
+    expect(() => masterToTimeline(TABLE, Number.NaN)).toThrowError(/finite/);
+  });
+});
+
+describe('timelineToMaster', () => {
+  it('is the exact inverse for every second that is ON the timeline', () => {
+    for (let t = 0; t <= TABLE_DURATION; t += 0.25) {
+      expect(masterToTimeline(TABLE, timelineToMaster(TABLE, t)).seconds).toBe(t);
+    }
+  });
+
+  it('maps the pieces back to where they came from', () => {
+    expect(timelineToMaster(TABLE, 0)).toBe(10);
+    expect(timelineToMaster(TABLE, 5)).toBe(15);
+    expect(timelineToMaster(TABLE, 20)).toBe(50);
+    expect(timelineToMaster(TABLE, 50)).toBe(100);
+  });
+
+  it('answers past the end with the last kept frame, and before the start with the first', () => {
+    expect(timelineToMaster(TABLE, 60)).toBe(110);
+    expect(timelineToMaster(TABLE, 1000)).toBe(110);
+    expect(timelineToMaster(TABLE, -5)).toBe(10);
+  });
+});
+
+describe('buildImportRows', () => {
+  const marks = [mark('a', 20, 'fox news'), mark('b', 70, 'intelligent design')];
+
+  it('maps each boundary through the table instead of adding a constant to the timeline', () => {
+    // The stream's zero sits 10 s into the master, so the marks are master 30 and master 80 —
+    // both of them the first frame of a cut, which is why both land where content resumes.
+    const rows = buildImportRows(marks, 10, TABLE, TABLE_DURATION);
+    expect(rows[0].masterStart).toBe(10);
+    expect(rows[0].masterEnd).toBe(30);
+    expect(rows[0].start).toBe(0);
+    expect(rows[0].end).toBe(20);
+    expect(rows[1].start).toBe(20);
+    expect(rows[1].end).toBe(50);
+    // 50 stream seconds became 30 timeline seconds: the 20 s the edit removed in between.
+    expect(rows[1].end - rows[1].start).toBe(30);
     expect(rows.every((r) => r.state === 'inside')).toBe(true);
   });
 
-  it('clamps a span that starts before the timeline and says so', () => {
-    const rows = buildImportRows(marks, -300, 3600);
+  it('keeps the stream\'s own times on the row, for the drag to grab a boundary by', () => {
+    const rows = buildImportRows(marks, 10, TABLE, TABLE_DURATION);
+    expect(rows[0].startAt).toBe(0);
+    expect(rows[0].endAt).toBe(20);
+    expect(rows[1].startAt).toBe(20);
+    expect(rows[1].endAt).toBe(70);
+  });
+
+  it('says when a boundary landed in material the edit removed', () => {
+    const rows = buildImportRows(marks, 10, TABLE, TABLE_DURATION);
+    expect(rows[0].startInGap).toBe(false);
+    expect(rows[0].endInGap).toBe(true);
+    expect(rows[0].gapNote).toContain('removed');
+    expect(rows[1].gapNote).toContain('Both boundaries');
+    // A row with both ends in kept material says nothing — silence has to mean something.
+    const clean = buildImportRows([mark('a', 5, 'x')], 10, TABLE, TABLE_DURATION);
+    expect(clean[0].gapNote).toBeNull();
+  });
+
+  it('refuses a story that lives entirely inside removed material, and says why', () => {
+    // Master 35→45 is wholly inside the 30-50 the edit dropped.
+    const rows = buildImportRows([mark('a', 35), mark('b', 45)], 0, TABLE, TABLE_DURATION);
+    expect(rows[1].state).toBe('empty');
+    expect(rows[1].start).toBe(20);
+    expect(rows[1].end).toBe(20);
+    expect(rows[1].reason).toContain('removed');
+  });
+
+  it('clamps a story that began before the recording\'s first kept frame', () => {
+    const rows = buildImportRows([mark('a', 15)], 0, TABLE, TABLE_DURATION);
     expect(rows[0].state).toBe('clamped');
-    expect(rows[0].rawStart).toBe(-300);
     expect(rows[0].start).toBe(0);
-    expect(rows[0].end).toBe(300);
-    expect(rows[0].reason).toContain('00:00:00');
+    expect(rows[0].end).toBe(5);
+    expect(rows[0].reason).toContain('first kept frame');
   });
 
-  it('clamps a span that runs past the end', () => {
-    const rows = buildImportRows(marks, 0, 1000);
+  it('clamps a story that ran past the last kept frame', () => {
+    const rows = buildImportRows([mark('a', 20), mark('b', 120)], 0, TABLE, TABLE_DURATION);
     expect(rows[1].state).toBe('clamped');
-    expect(rows[1].end).toBe(1000);
+    expect(rows[1].end).toBe(60);
+    expect(rows[1].reason).toContain('last kept frame');
   });
 
-  it('disables a span that is wholly off the timeline, with the reason', () => {
-    const early = buildImportRows(marks, -5000, 3600);
+  it('disables a story that is wholly off the recording, with the reason', () => {
+    const early = buildImportRows([mark('a', 5)], 0, TABLE, TABLE_DURATION);
     expect(early[0].state).toBe('outside');
     expect(early[0].reason).toContain('before');
 
-    const late = buildImportRows(marks, 5000, 3600);
+    const late = buildImportRows([mark('a', 5)], 200, TABLE, TABLE_DURATION);
     expect(late[0].state).toBe('outside');
-    expect(late[0].reason).toContain('past');
+    expect(late[0].reason).toContain('after');
   });
 
   it('disables a zero-length story from two marks at the same second', () => {
-    const rows = buildImportRows([mark('a', 600), mark('b', 600)], 0, 3600);
+    const rows = buildImportRows([mark('a', 20), mark('b', 20)], 10, TABLE, TABLE_DURATION);
     expect(rows[1].state).toBe('empty');
     expect(rows[1].reason).toContain('no length');
   });
 
-  it('refuses a timeline duration it cannot judge against', () => {
-    expect(() => buildImportRows(marks, 0, 0)).toThrowError(/duration/);
-    expect(() => buildImportRows(marks, Number.NaN, 3600)).toThrowError(/offset/);
+  it('refuses inputs it cannot judge against', () => {
+    expect(() => buildImportRows(marks, 0, TABLE, 0)).toThrowError(/duration/);
+    expect(() => buildImportRows(marks, Number.NaN, TABLE, TABLE_DURATION))
+      .toThrowError(/streamStartInMaster/);
+    expect(() => buildImportRows(marks, 0, [], TABLE_DURATION)).toThrowError(/segment table/);
+    // A table that runs past the timeline it claims to describe is not this timeline's.
+    expect(() => buildImportRows(marks, 0, TABLE, 30)).toThrowError(/not this timeline/);
   });
 });
 
-describe('offsetForMarkAtPlayhead', () => {
-  it('puts the chosen mark under the playhead', () => {
-    const offset = offsetForMarkAtPlayhead(600, 930);
-    expect(offset).toBe(330);
-    const rows = buildImportRows([mark('a', 600, 'fox news')], offset, 3600);
-    expect(rows[0].end).toBe(930);
+describe('streamStartForMarkAtMaster', () => {
+  it('puts the chosen mark on the master second the playhead is over', () => {
+    // The playhead sits at timeline 25, which is master 55; the mark it names is 20 s into the
+    // stream, so the stream started at master 35.
+    const masterAtPlayhead = timelineToMaster(TABLE, 25);
+    expect(masterAtPlayhead).toBe(55);
+    const streamStart = streamStartForMarkAtMaster(20, masterAtPlayhead);
+    expect(streamStart).toBe(35);
+    const rows = buildImportRows([mark('a', 20, 'fox news')], streamStart, TABLE, TABLE_DURATION);
+    expect(rows[0].end).toBe(25);
   });
 });
