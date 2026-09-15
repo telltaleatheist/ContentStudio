@@ -26,7 +26,16 @@
   <!-- ── Live panel ───────────────────────────────────────────────────────── -->
   <section class="live-panel" [class.running]="!!live()">
     <ng-container *ngIf="live() as liveSession; else notLive">
-      <div class="clock">{{ elapsedLabel() }}</div>
+      <div class="clocks">
+        <div class="clock-block">
+          <div class="clock">{{ elapsedLabel() }}</div>
+          <div class="clock-caption">stream</div>
+        </div>
+        <div class="clock-block">
+          <div class="clock segment">{{ segmentLabel() }}</div>
+          <div class="clock-caption">this story</div>
+        </div>
+      </div>
       <div class="live-actions">
         <button mat-raised-button color="primary" class="mark-button" (click)="mark()">
           <mat-icon>flag</mat-icon> Mark

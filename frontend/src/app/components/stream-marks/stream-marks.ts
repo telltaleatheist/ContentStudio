@@ -211,6 +211,21 @@ export class StreamMarks implements OnInit, OnDestroy {
     return formatElapsed(Math.max(0, (this.now() - Date.parse(live.startedAt)) / 1000));
   });
 
+  /**
+   * hh:mm:ss the CURRENT story has been running: since the last mark, or since the start
+   * when nothing has been marked yet. Measured against the latest mark by time, not by
+   * insertion — a mark nudged or inserted behind the newest one does not restart it. It is
+   * the number Owen actually wants mid-stream ("how long have I been on this?"), which the
+   * stream clock only answers with arithmetic.
+   */
+  segmentLabel = computed(() => {
+    const live = this.live();
+    if (!live) return '00:00:00';
+    const streamElapsed = (this.now() - Date.parse(live.startedAt)) / 1000;
+    const lastMarkAt = live.marks.reduce((max, m) => Math.max(max, m.at), 0);
+    return formatElapsed(Math.max(0, streamElapsed - lastMarkAt));
+  });
+
   async start(): Promise<void> {
     try {
       const result = await this.electron.streamMarksStart();
