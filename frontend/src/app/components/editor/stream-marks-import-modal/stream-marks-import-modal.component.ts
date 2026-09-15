@@ -86,6 +86,26 @@ export class StreamMarksImportModalComponent implements OnInit {
   session: StreamMarkSession | null = null;
   master: MasterFileTimes | null = null;
 
+  /**
+   * What the master's file time MEANS — the moment the recording started, or the moment it
+   * finished.
+   *
+   * This is the whole difference between an offset that works and one that puts the entire
+   * night before 00:00:00, and it cannot be read off the file. A recorder that opens its file
+   * and writes into it leaves a creation time at the START; a file that was rendered,
+   * downloaded, copied or moved carries a time at (or after) the END, and macOS gives a copy
+   * the copy's own creation time. Measured on Owen's first real import: a 3h16m master whose
+   * creation time was 23:13 for a stream that began at 19:57 — file time = end, exactly.
+   *
+   * So both readings are offered, the one that actually lands the stories is preselected, and
+   * which was picked is SAID (`anchorReason`). Deriving it silently is what produced a dialog
+   * with six disabled rows and no explanation.
+   */
+  masterAnchor: 'start' | 'end' = 'start';
+
+  /** Why `masterAnchor` is what it is, in words, shown under the toggle. */
+  anchorReason = '';
+
   /** The offset in seconds, and the text being typed into the field (null = show the number). */
   offset = 0;
   offsetDraft: string | null = null;
@@ -200,7 +220,8 @@ export class StreamMarksImportModalComponent implements OnInit {
       this.selectedId = id;
       this.anchorMarkId = null;
       this.notice = null;
-      this.offset = this.proposeOffset(this.session);
+      this.masterAnchor = this.chooseAnchor(this.session);
+      this.offset = this.proposeOffset(this.session, this.masterAnchor);
       this.offsetDraft = null;
       this.offsetError = null;
       this.rebuildRows(true);
@@ -217,11 +238,77 @@ export class StreamMarksImportModalComponent implements OnInit {
    * rolls first); negative means the recording started later, which happens when a stream is
    * recovered from a part-way restart. Both are legitimate, so the sign is carried, not
    * swallowed.
+   *
+   * When the file time marks the END of the recording, the recording's own start is that time
+   * minus the timeline's length — which is why the dialog needs the duration to propose
+   * anything at all under that reading.
    */
-  private proposeOffset(session: StreamMarkSession): number {
+  private proposeOffset(session: StreamMarkSession, anchor: 'start' | 'end'): number {
     const masterIso = this.masterTimeIso;
-    if (!masterIso) return 0;
-    return Math.round((Date.parse(session.startedAt) - Date.parse(masterIso)) / 1000);
+    if (!masterIso) {
+      throw new Error('The master video\'s file times were never loaded, so no offset can be proposed.');
+    }
+    const fileMs = Date.parse(masterIso);
+    const recordingStartMs = anchor === 'start' ? fileMs : fileMs - this.timelineDuration * 1000;
+    return Math.round((Date.parse(session.startedAt) - recordingStartMs) / 1000);
+  }
+
+  /**
+   * Which reading of the file time to open with: the one that puts more stories ON the
+   * timeline. Ties go to 'start', the simpler claim, and the choice is stated either way.
+   *
+   * This is a proposal being ranked, not a failure being papered over — both candidates are
+   * offered in the UI and the operator can take the other in one click.
+   */
+  private chooseAnchor(session: StreamMarkSession): 'start' | 'end' {
+    const fit = (anchor: 'start' | 'end') => {
+      const rows = buildImportRows(session.marks, this.proposeOffset(session, anchor), this.timelineDuration);
+      return rows.filter((r) => r.state === 'inside' || r.state === 'clamped').length;
+    };
+    const atStart = fit('start');
+    const atEnd = fit('end');
+    const total = session.marks.length;
+    if (atEnd > atStart) {
+      this.anchorReason =
+        `Reading it as the moment the recording ENDED, because reading it as the start leaves ` +
+        `${total - atStart} of ${total} stories off this timeline.`;
+      return 'end';
+    }
+    if (atStart > atEnd) {
+      this.anchorReason =
+        `Reading it as the moment the recording STARTED — that lands ${atStart} of ${total} ` +
+        `stories on this timeline.`;
+      return 'start';
+    }
+    this.anchorReason = atStart === 0
+      ? `Neither reading lands these stories on this timeline — check the stream, or set the ` +
+        `offset by parking the playhead where a story ends.`
+      : `Both readings land the same stories; showing the recording's start.`;
+    return 'start';
+  }
+
+  /** The toggle. Re-proposes the offset under the other reading; titles and ticks survive. */
+  setMasterAnchor(anchor: 'start' | 'end'): void {
+    const session = this.session;
+    if (!session || this.masterAnchor === anchor) return;
+    this.masterAnchor = anchor;
+    this.anchorReason = anchor === 'end'
+      ? 'Reading the master\'s file time as the moment the recording ended.'
+      : 'Reading the master\'s file time as the moment the recording started.';
+    this.offset = this.proposeOffset(session, anchor);
+    this.offsetDraft = null;
+    this.offsetError = null;
+    this.rebuildRows(false);
+  }
+
+  /** The recording's start under the current reading, for the hint line. */
+  recordingStartLabel(): string {
+    const masterIso = this.masterTimeIso;
+    if (!masterIso) return '';
+    const ms = this.masterAnchor === 'start'
+      ? Date.parse(masterIso)
+      : Date.parse(masterIso) - this.timelineDuration * 1000;
+    return new Date(ms).toLocaleString();
   }
 
   offsetField(): string {

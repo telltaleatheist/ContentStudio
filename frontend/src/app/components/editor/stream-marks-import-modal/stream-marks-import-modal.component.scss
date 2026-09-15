@@ -253,3 +253,9 @@
 
   .smi-spacer { flex: 1 1 auto; }
 }
+
+/* The two readings of the master's file time, side by side. */
+.smi-toggle {
+  display: inline-flex;
+  gap: 0.25rem;
+}

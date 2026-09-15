@@ -41,6 +41,22 @@
           </div>
         </div>
 
+        <!-- Which end of the recording the master's file time marks. Not derivable from the
+             file: a recorder stamps the start, a render/download/copy stamps the end. -->
+        <div class="smi-field" *ngIf="session">
+          <div class="smi-label">The master's file time is when the recording</div>
+          <div class="smi-offset-row">
+            <span class="smi-toggle">
+              <button class="smi-button" [class.primary]="masterAnchor === 'start'"
+                      (click)="setMasterAnchor('start')">started</button>
+              <button class="smi-button" [class.primary]="masterAnchor === 'end'"
+                      (click)="setMasterAnchor('end')">ended</button>
+            </span>
+            <span class="smi-hint">so the recording began {{ recordingStartLabel() }}</span>
+          </div>
+          <div class="smi-hint">{{ anchorReason }}</div>
+        </div>
+
         <!-- Offset -->
         <div class="smi-field" *ngIf="session">
           <div class="smi-label">Offset</div>
@@ -58,8 +74,9 @@
           </div>
           <div class="smi-hint">
             Where the stream's clock sits on this timeline: a mark at hh:mm:ss into the stream
-            lands at hh:mm:ss + this offset. Proposed from the stream's start minus the master's
-            file time; correct it here and every story moves together.
+            lands at hh:mm:ss + this offset. Proposed from the stream's start minus the
+            recording's start above; correct it here, or park the playhead where a story ends
+            and click a row, and every story moves together.
           </div>
           <div class="smi-error inline" *ngIf="offsetError">{{ offsetError }}</div>
         </div>
