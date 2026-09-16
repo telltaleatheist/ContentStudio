@@ -1,11 +1,11 @@
 <!-- A night's stream marks become this session's stories. Nothing is created until Apply.
 
-     TWO SHAPES, ONE STATE. Expanded, this is the list: what would be created, what would be
-     trimmed, what would land off the ends. Collapsed, it is the bar at the foot of the window and
-     NOTHING ELSE — no backdrop, no panel, not one pixel over the canvas — because the gesture it
-     exists for is a press on the timeline it would otherwise be covering. Both read the same
-     rows; neither owns a second copy of anything. -->
-<div class="smi-backdrop" *ngIf="!collapsed" (click)="onBackdropClick()">
+     THE LIST IS THE WHOLE DIALOG: what would be created, what would be trimmed, what would land
+     off the ends. It no longer has a second shape. Correcting WHERE the night sits used to be a
+     mode here (a bar at the foot of the window, dragging a preview nobody had created yet); it is
+     now four gestures on the stories ribbon, applied to the real stories after Apply, which is a
+     handle the operator already knows how to grab. -->
+<div class="smi-backdrop" (click)="onBackdropClick()">
   <div class="smi" (click)="$event.stopPropagation()">
 
     <header class="smi-header">
@@ -87,10 +87,11 @@
             timeline is this recording with its dead air removed — so each mark is placed through
             the timeline's own segment table, not by adding a number to it. The proposal is an
             estimate: a file is stamped when its write finished, which is after the recording
-            stopped, so expect to be a few minutes out. Two ways to fix it, both exact: park the
-            playhead where a story really ends, click that row and press the button above; or drag
-            a boundary onto its moment on the timeline. The rest follow the recording, each to
-            wherever its own content sits.
+            stopped, so expect to be a few minutes out. Two ways to fix it: park the playhead where
+            a story really ends, click that row and press the button above — that one is exact to
+            the frame; or create the stories and then correct them on the ribbon, where dragging
+            one story moves it alone and shift-dragging one moves the whole night by a single
+            amount of RECORDING time.
           </div>
           <div class="smi-error inline" *ngIf="streamStartError">{{ streamStartError }}</div>
         </div>
@@ -145,13 +146,6 @@
         overlap yields the span, exactly as ⌘S does.
       </span>
       <span class="smi-spacer"></span>
-      <!-- The coarse correction, and the one Owen asked for: get out of the way and let him drag
-           the boundaries onto the content. Cyan because that is the colour the preview draws in —
-           the button says which marks on the timeline belong to it. -->
-      <button class="smi-button lineup" [disabled]="!session" (click)="collapse()"
-              title="Shrink to a bar and drag the whole set along the timeline">
-        Line up on the timeline
-      </button>
       <button class="smi-button" (click)="onClose()">Cancel</button>
       <button class="smi-button primary" (click)="apply()" [disabled]="checkedCount === 0">
         Create {{ checkedCount }} stor{{ checkedCount === 1 ? 'y' : 'ies' }}
@@ -159,25 +153,4 @@
     </footer>
 
   </div>
-</div>
-
-<!-- Collapsed: the bar, and nothing else in the document. "pointer-events: none on everything
-     except the bar" is achieved by there BEING nothing else — an invisible full-screen layer left
-     behind would still swallow the first press of every drag, and the cheapest way to be certain
-     it does not is not to render one. -->
-<div class="smi-bar" *ngIf="collapsed">
-  <span class="smi-bar-offset smi-mono" title="Where the stream's clock zero sits in the recording">
-    stream 00:00:00 = {{ streamStartField() }} into the recording
-  </span>
-  <span class="smi-bar-count">{{ onTimelineCount }} of {{ rows.length }} stories on this timeline</span>
-  <span class="smi-hint smi-bar-hint">
-    Drag the boundary nearest the pointer onto its moment; the others follow the recording. The
-    ruler still scrubs.
-  </span>
-  <span class="smi-spacer"></span>
-  <button class="smi-button" (click)="expand()">Back to list</button>
-  <button class="smi-button" (click)="onClose()">Cancel</button>
-  <button class="smi-button primary" (click)="apply()" [disabled]="checkedCount === 0">
-    Create {{ checkedCount }} stor{{ checkedCount === 1 ? 'y' : 'ies' }}
-  </button>
 </div>

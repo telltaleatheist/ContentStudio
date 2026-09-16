@@ -1,5 +1,5 @@
 import {
-  Component, EventEmitter, Inject, Input, OnDestroy, OnInit, Output, ChangeDetectorRef
+  Component, EventEmitter, Inject, Input, OnInit, Output, ChangeDetectorRef
 } from '@angular/core';
 
 import {
@@ -15,14 +15,14 @@ import {
   formatElapsed,
   formatSignedOffset,
   ImportRow,
-  ImportRowState,
-  masterToTimeline,
-  orderSegmentsBySource,
   parseSignedOffset,
   streamStartForMarkAtMaster,
+} from '../model/stream-marks-import';
+import {
+  orderSegmentsBySource,
   TimelineSegment,
   timelineToMaster,
-} from '../model/stream-marks-import';
+} from '../model/master-timeline-map';
 
 /**
  * "Stream marks…" — a night's marks become this session's stories.
@@ -39,7 +39,7 @@ import {
  * sits in the master FILE. An earlier version added a single offset straight onto the timeline
  * and could only ever be right at one point on it: Owen tuned it until his last story landed
  * and every earlier one was up to twenty minutes out. The measurement is in the mapping's own
- * comment (model/stream-marks-import.ts) — read it before touching any of this arithmetic.
+ * comment (model/master-timeline-map.ts) — read it before touching any of this arithmetic.
  *
  * The constant is PROPOSED from the master video's own file date and its own ffprobed length
  * (the stream's start minus the recording's) and is then editable, because file dates can be
@@ -66,58 +66,6 @@ export interface ImportRowView extends ImportRow {
   editedTitle: string;
 }
 
-/** One span of the live preview the editor's canvas draws. Timeline (ORIGINAL) seconds. */
-export interface StreamMarksPreviewSpan {
-  title: string;
-  /** Clamped to the timeline, i.e. exactly the story Apply would create. */
-  start: number;
-  end: number;
-  checked: boolean;
-  state: ImportRowState;
-}
-
-/**
- * What the dialog publishes for the editor to DRAW, recomputed on every change that moves a
- * boundary or changes what a band says.
- *
- * This is a view, not a second copy of the import: the dialog stays the only thing that owns the
- * constant, a tick or a title, and the editor holds this object only until the next one arrives.
- * `boundaries` is here rather than derived from `spans` because a span is what will be CREATED
- * (clamped, and gone entirely when it lands in removed material) while a boundary is what the
- * hand takes hold of — a drag that did its arithmetic on the created spans would lose the line
- * it was dragging the moment that story slid off an end.
- */
-export interface StreamMarksPreview {
-  /** Where the stream's clock zero sits in the MASTER FILE, in master seconds. */
-  streamStartInMaster: number;
-  /**
-   * True while the dialog is the bar at the foot of the window. The editor needs it to reserve
-   * the bar's height, and it rides in the preview rather than being read off the child component
-   * so the parent's class binding cannot depend on a value that changed mid-change-detection.
-   */
-  collapsed: boolean;
-  spans: StreamMarksPreviewSpan[];
-  /** Every dividing line the set has, ascending by where it currently sits. See the type. */
-  boundaries: StreamMarksBoundary[];
-}
-
-/**
- * One dividing line, in both frames at once — which is what a drag needs and why this replaced
- * the old list of plain timeline seconds.
- *
- * `elapsed` is the line's identity: the second of the STREAM it marks, fixed for the night.
- * `timeline` is where that second currently lands, and it moves — non-linearly — every time the
- * constant changes. A drag grabs the line nearest the pointer (by `timeline`, in pixels) and
- * then asks for a constant that puts THAT line's `elapsed` under the pointer; every other line
- * re-maps to wherever its own content is, which is the truth a rigid set could not tell.
- */
-export interface StreamMarksBoundary {
-  /** Stream elapsed seconds. */
-  elapsed: number;
-  /** Where it sits now, in ORIGINAL timeline seconds. */
-  timeline: number;
-}
-
 /** What Apply hands back: timeline seconds, already clamped, in stream order. */
 export interface StreamMarkImportSpan {
   title: string;
@@ -137,7 +85,7 @@ export interface StreamMarkImportSpan {
   styleUrls: ['./stream-marks-import-modal.component.scss'],
   standalone: false
 })
-export class StreamMarksImportModalComponent implements OnInit, OnDestroy {
+export class StreamMarksImportModalComponent implements OnInit {
   /** The loaded session's compounds zip — how the host finds the master video beside it. */
   @Input() zipPath: string | null = null;
   /** The timeline's length in ORIGINAL seconds, which is the frame story regions live in. */
@@ -154,17 +102,6 @@ export class StreamMarksImportModalComponent implements OnInit, OnDestroy {
 
   @Output() closed = new EventEmitter<void>();
   @Output() applied = new EventEmitter<StreamMarkImportSpan[]>();
-  /**
-   * The rows, for the editor's canvas to draw over the footage. Null once this dialog is gone.
-   *
-   * Owen's whole complaint about the constant was that it is a number standing in for a picture:
-   * you type minus four minutes and then read six rows of timecode to work out whether that was
-   * right. This output is the picture — and it is an output rather than shared state because the
-   * ANSWER still lives here. The editor draws it and can push a new constant back through
-   * setStreamStartFromDrag; it never owns a boundary.
-   */
-  @Output() previewChange = new EventEmitter<StreamMarksPreview | null>();
-
   sessions: StreamMarkSessionSummary[] = [];
   selectedId: string | null = null;
   session: StreamMarkSession | null = null;
@@ -213,17 +150,6 @@ export class StreamMarksImportModalComponent implements OnInit, OnDestroy {
   rows: ImportRowView[] = [];
   /** The row "Selected mark = playhead" anchors on. Null until a row is clicked. */
   anchorMarkId: string | null = null;
-
-  /**
-   * Collapsed to a bar at the foot of the window, so the timeline underneath can be reached.
-   *
-   * A dialog that covers the thing you are aiming at cannot be used to aim. The list is the right
-   * shape for checking WHAT will be created and the timeline is the only place to see WHERE, so
-   * the two swap places on one button rather than trying to coexist: collapsed, this component
-   * renders nothing but the bar — no backdrop, no panel, nothing over the canvas to intercept the
-   * press that starts a drag.
-   */
-  collapsed = false;
 
   loading = true;
   /** Any failure, verbatim. The dialog stays open on one — it is the only place to fix it. */
@@ -453,68 +379,6 @@ export class StreamMarksImportModalComponent implements OnInit, OnDestroy {
     return 'start';
   }
 
-  /**
-   * Put the night where the hand has dragged it to. Called by the editor, once per mouse move,
-   * with the ABSOLUTE constant the drag has reached (see streamStartInMaster).
-   *
-   * THE PROPOSAL IS AN ESTIMATE AND WILL BE MINUTES OUT. Under the "ended" reading the
-   * recording's start is the file time minus the recording's length, and the file time carries
-   * error: a file is stamped when the write FINISHED, and a render, a download or a copy lands
-   * after the recording stopped. Six nudge buttons used to stand here for that correction and
-   * were the wrong instrument for it ("shift buttons arent useful"): they ask you to guess the
-   * size of an error you can SEE, in units nobody measured it in.
-   *
-   * ABSOLUTE, not a delta, and that is the contract. The editor computes it afresh on every
-   * mouse move from where the pointer is and which boundary the hand took hold of, so a hundred
-   * mousemoves cannot drift and Escape only has to put one number back.
-   *
-   * WHAT THE OTHER BOUNDARIES DO IS NOT "MOVE BY THE SAME AMOUNT". They re-map through the
-   * segment table, so a set dragged across twenty minutes of removed material stretches and
-   * squeezes — that is where their content actually is, and the rigid set this replaced was the
-   * bug, not the feature.
-   *
-   * NOT rounded to whole seconds, unlike every other way this constant is set. The drag snaps
-   * the grabbed boundary onto cuts and onto the playhead, and neither of those lands on a second
-   * — rounding would slide it straight back off the thing it was aimed at. The field above still
-   * READS ±hh:mm:ss (formatSignedOffset rounds for display), which is the resolution a human
-   * types in and no less exact than what he typed.
-   */
-  setStreamStartFromDrag(streamStartInMaster: number): void {
-    if (!this.session) {
-      throw new Error(
-        'setStreamStartFromDrag was called with no stream selected, so there is nothing to ' +
-        'place. The editor only starts a set drag while a preview is on screen, and a preview ' +
-        'only exists once a session is picked.'
-      );
-    }
-    if (!Number.isFinite(streamStartInMaster)) {
-      throw new Error(
-        `setStreamStartFromDrag needs a finite number of master seconds, got ` +
-        `${JSON.stringify(streamStartInMaster)}.`
-      );
-    }
-    this.streamStartInMaster = streamStartInMaster;
-    this.streamStartDraft = null;
-    this.streamStartError = null;
-    this.anchorReason = 'Set by dragging a boundary onto the timeline.';
-    this.rebuildRows(false);
-    // The editor drives this from a window mousemove, outside Angular's ordinary flow for a
-    // template-bound event, so the bar's live readout and the row timecodes need telling.
-    this.cdr.detectChanges();
-  }
-
-  /** Get out of the timeline's way. The whole dialog becomes the bar at the foot of the window. */
-  collapse(): void {
-    this.collapsed = true;
-    this.emitPreview();     // the editor reserves the bar's height off this
-  }
-
-  /** Back to the list, to check WHAT is about to be created rather than where it sits. */
-  expand(): void {
-    this.collapsed = false;
-    this.emitPreview();
-  }
-
   /** The toggle. Re-proposes the stream's zero under the other reading; titles and ticks survive. */
   setMasterAnchor(anchor: 'start' | 'end'): void {
     const session = this.session;
@@ -610,7 +474,6 @@ export class StreamMarksImportModalComponent implements OnInit, OnDestroy {
     const session = this.session;
     if (!session) {
       this.rows = [];
-      this.emitPreview();
       return;
     }
     const previous = new Map(this.rows.map((r) => [r.markId, r]));
@@ -628,71 +491,15 @@ export class StreamMarksImportModalComponent implements OnInit, OnDestroy {
         editedTitle: prior ? prior.editedTitle : row.title,
       };
     });
-    this.emitPreview();
-  }
-
-  /**
-   * Publish what the editor should draw.
-   *
-   * Every path that can move a boundary or change what a band says comes through here, which is
-   * why it hangs off rebuildRows (session, constant, anchor, drag) plus the two edits that change a
-   * row without moving it (a tick, a title). One emitter means the overlay cannot fall behind the
-   * list — and a drawing that disagreed with the list about which stories are being created is
-   * exactly the confusion this preview exists to end.
-   *
-   * A band shows the title apply() would actually give the story — the typed one, or the row's
-   * own "Story N" placeholder once the field has been emptied — because the operator reads these
-   * bands to decide whether the night has landed on the right content, and a band labelled with a
-   * name no story is going to get is the one thing that could mislead him about it.
-   */
-  private emitPreview(): void {
-    if (!this.session) {
-      this.previewChange.emit(null);
-      return;
-    }
-    const collapsed = this.collapsed;
-    const spans: StreamMarksPreviewSpan[] = this.rows.map((row) => {
-      const edited = row.editedTitle.trim();
-      return {
-        title: edited === '' ? row.title : edited,
-        start: row.start,
-        end: row.end,
-        checked: row.checked,
-        state: row.state,
-      };
-    });
-    // Ascending by where they SIT and deduped by the stream second they ARE: two marks a second
-    // apart are the same pixel at a three-hour zoom, and two boundaries that mapped into the same
-    // gap sit on the same timeline second while still being different moments of the night. The
-    // drag walks this list on mousedown to find the line under the hand.
-    const boundaries: StreamMarksBoundary[] = [];
-    for (const row of this.rows) {
-      boundaries.push({ elapsed: row.startAt, timeline: row.start });
-      boundaries.push({ elapsed: row.endAt, timeline: row.end });
-    }
-    boundaries.sort((a, b) => a.timeline - b.timeline || a.elapsed - b.elapsed);
-    const deduped: StreamMarksBoundary[] = [];
-    for (const b of boundaries) {
-      const last = deduped[deduped.length - 1];
-      if (!last || Math.abs(b.elapsed - last.elapsed) > 1e-6) deduped.push(b);
-    }
-    this.previewChange.emit({
-      streamStartInMaster: this.streamStartInMaster,
-      collapsed,
-      spans,
-      boundaries: deduped,
-    });
   }
 
   onTitleInput(row: ImportRowView, value: string): void {
     row.editedTitle = value;
-    this.emitPreview();
   }
 
   toggle(row: ImportRowView): void {
     if (!this.canCreate(row)) return;
     row.checked = !row.checked;
-    this.emitPreview();
   }
 
   canCreate(row: ImportRowView): boolean {
@@ -701,16 +508,6 @@ export class StreamMarksImportModalComponent implements OnInit, OnDestroy {
 
   get checkedCount(): number {
     return this.rows.filter((r) => r.checked).length;
-  }
-
-  /**
-   * How many of the night's stories currently LAND on this timeline — the one number that moves
-   * while the set is being dragged, and the reason the collapsed bar has room for it. The tick
-   * count answers "what did I choose"; this answers "did I aim it right", which is the question
-   * the drag is asking.
-   */
-  get onTimelineCount(): number {
-    return this.rows.filter((r) => this.canCreate(r)).length;
   }
 
   timecode(seconds: number): string {
@@ -759,20 +556,6 @@ export class StreamMarksImportModalComponent implements OnInit, OnDestroy {
 
   onBackdropClick(): void {
     this.closed.emit();
-  }
-
-  /**
-   * The overlay dies with the dialog, and this is the ONE place that says so.
-   *
-   * There are five ways out of here — ✕, Cancel, the backdrop, Cancel on the collapsed bar, and
-   * Apply — and every one of them ends with the editor tearing this component down. Clearing the
-   * preview from each exit would be five chances to add a sixth and forget; clearing it from
-   * destruction is a fact about the component rather than a list of cases. (Angular runs
-   * ngOnDestroy before it unsubscribes the template's output bindings, so this emission is
-   * delivered.)
-   */
-  ngOnDestroy(): void {
-    this.previewChange.emit(null);
   }
 
   private messageOf(err: any): string {
