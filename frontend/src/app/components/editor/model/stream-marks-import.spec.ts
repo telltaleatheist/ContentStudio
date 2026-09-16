@@ -6,15 +6,14 @@ import {
   formatElapsed,
   formatSignedOffset,
   marksToStorySpans,
-  masterToTimeline,
-  orderSegmentsBySource,
   parseElapsed,
   parseSignedOffset,
   streamStartForMarkAtMaster,
   StreamMarkInput,
-  TimelineSegment,
-  timelineToMaster,
 } from './stream-marks-import';
+// The map moved to its own module (it is a property of the timeline, not of stream marks); the
+// import rows still ride on it, so these tests still exercise the pair together.
+import { TimelineSegment, timelineToMaster } from './master-timeline-map';
 
 const mark = (id: string, at: number, label = ''): StreamMarkInput => ({ id, at, label });
 
@@ -98,92 +97,6 @@ describe('marksToStorySpans', () => {
     const spans = marksToStorySpans([mark('b', 200, 'second'), mark('a', 100, 'first')]);
     expect(spans.map((s) => s.title)).toEqual(['first', 'second']);
     expect(spans[1].startAt).toBe(100);
-  });
-});
-
-describe('orderSegmentsBySource', () => {
-  it('sorts by sourceStart and keeps only the three numbers the map needs', () => {
-    const ordered = orderSegmentsBySource([TABLE[2], TABLE[0], TABLE[1]]);
-    expect(ordered.map((s) => s.sourceStart)).toEqual([10, 50, 100]);
-    expect(ordered[0]).toEqual({ sourceStart: 10, timelineStart: 0, duration: 20 });
-  });
-
-  it('refuses a table with no segments, rather than mapping onto nothing', () => {
-    expect(() => orderSegmentsBySource([])).toThrowError(/segment table/);
-  });
-
-  it('refuses a segment with no length', () => {
-    expect(() => orderSegmentsBySource([{ sourceStart: 0, timelineStart: 0, duration: 0 }]))
-      .toThrowError(/mappable piece/);
-  });
-
-  it('refuses a table whose pieces overlap in the master — one second, two places', () => {
-    expect(() => orderSegmentsBySource([
-      { sourceStart: 0, timelineStart: 0, duration: 20 },
-      { sourceStart: 10, timelineStart: 20, duration: 20 },
-    ])).toThrowError(/overlap/);
-  });
-
-  it('refuses a timeline that plays the master out of order', () => {
-    expect(() => orderSegmentsBySource([
-      { sourceStart: 0, timelineStart: 50, duration: 20 },
-      { sourceStart: 100, timelineStart: 0, duration: 20 },
-    ])).toThrowError(/out of order/);
-  });
-});
-
-describe('masterToTimeline', () => {
-  it('maps a second inside a kept piece exactly', () => {
-    expect(masterToTimeline(TABLE, 10)).toEqual({ seconds: 0, inGap: false });
-    expect(masterToTimeline(TABLE, 15)).toEqual({ seconds: 5, inGap: false });
-    expect(masterToTimeline(TABLE, 60)).toEqual({ seconds: 30, inGap: false });
-    expect(masterToTimeline(TABLE, 105)).toEqual({ seconds: 55, inGap: false });
-  });
-
-  it('puts a second from REMOVED material where the content resumes, and says so', () => {
-    // The first frame the edit dropped is the moment the next kept piece begins.
-    expect(masterToTimeline(TABLE, 30)).toEqual({ seconds: 20, inGap: true });
-    expect(masterToTimeline(TABLE, 40)).toEqual({ seconds: 20, inGap: true });
-    expect(masterToTimeline(TABLE, 90)).toEqual({ seconds: 50, inGap: true });
-  });
-
-  it('answers before the first kept frame with the start, and past the last with the end', () => {
-    expect(masterToTimeline(TABLE, 0)).toEqual({ seconds: 0, inGap: true });
-    expect(masterToTimeline(TABLE, 9.9)).toEqual({ seconds: 0, inGap: true });
-    expect(masterToTimeline(TABLE, 110)).toEqual({ seconds: 60, inGap: true });
-    expect(masterToTimeline(TABLE, 5000)).toEqual({ seconds: 60, inGap: true });
-  });
-
-  it('is not an offset: the same distance in the master is a different one on the timeline', () => {
-    // 20 master seconds either side of a 20-second cut: 10→30 is 20 s of timeline, 30→50 is none.
-    expect(masterToTimeline(TABLE, 30).seconds - masterToTimeline(TABLE, 10).seconds).toBe(20);
-    expect(masterToTimeline(TABLE, 50).seconds - masterToTimeline(TABLE, 30).seconds).toBe(0);
-  });
-
-  it('refuses a table it cannot search, or a second it cannot map', () => {
-    expect(() => masterToTimeline([], 5)).toThrowError(/segment table/);
-    expect(() => masterToTimeline(TABLE, Number.NaN)).toThrowError(/finite/);
-  });
-});
-
-describe('timelineToMaster', () => {
-  it('is the exact inverse for every second that is ON the timeline', () => {
-    for (let t = 0; t <= TABLE_DURATION; t += 0.25) {
-      expect(masterToTimeline(TABLE, timelineToMaster(TABLE, t)).seconds).toBe(t);
-    }
-  });
-
-  it('maps the pieces back to where they came from', () => {
-    expect(timelineToMaster(TABLE, 0)).toBe(10);
-    expect(timelineToMaster(TABLE, 5)).toBe(15);
-    expect(timelineToMaster(TABLE, 20)).toBe(50);
-    expect(timelineToMaster(TABLE, 50)).toBe(100);
-  });
-
-  it('answers past the end with the last kept frame, and before the start with the first', () => {
-    expect(timelineToMaster(TABLE, 60)).toBe(110);
-    expect(timelineToMaster(TABLE, 1000)).toBe(110);
-    expect(timelineToMaster(TABLE, -5)).toBe(10);
   });
 });
 

@@ -132,14 +132,6 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-
-  // While the stream-marks bar is docked to the bottom of the window, the editor gives up its
-  // last 38px rather than being covered by it. Lining a night up is exactly when the zoom
-  // slider and the scrollbar thumb are wanted — you zoom in to see whether a boundary really
-  // landed on the cut — and a bar parked over them would take away the tools the gesture needs.
-  &.lining-up {
-    padding-bottom: 38px;
-  }
 }
 
 .topbar {
@@ -926,16 +918,6 @@
       cursor:
         url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M8 2 h6 v11 l-3 8 -3 -8 z' fill='%23e8e8ea' stroke='%23141414' stroke-width='1.4' stroke-linejoin='round'/%3E%3C/svg%3E") 11 21,
         crosshair;
-    }
-
-    /* Stream-marks preview up → the whole canvas is the handle for sliding the set east-west.
-       A CLASS rather than an inline style so the cursor is right the moment the preview appears,
-       before any mouse move; onCanvasHover overrides it inline over the RULER, which goes on
-       scrubbing. Declared AFTER the blade so it wins on equal specificity: with a preview on
-       screen every press below the ruler slides the set, blade in hand or not, and the cursor
-       must not offer a cut it will not make. */
-    &.stream-marks-lineup {
-      cursor: ew-resize;
     }
   }
 }

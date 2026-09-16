@@ -9,31 +9,6 @@
 import { EditorSegment } from '../host-data/editor-manifest';
 import { MoveDrag, TrackRow } from '../model/editor-types';
 
-/**
- * One story the stream-marks dialog WOULD create, already in EDITED seconds.
- *
- * `dim` is pre-computed by the shell rather than carried as an ImportRowState: the renderer's
- * only question is "will this one be created?", and three of the four states answer it the same
- * way. Keeping the judgement on the shell's side also keeps this file free of the import model.
- */
-export interface StreamMarksSpanScene {
-  title: string;
-  /** EDITED seconds. `hi` can land BEFORE `lo` once footage has been reordered — see the shell. */
-  lo: number;
-  hi: number;
-  dim: boolean;
-}
-
-/**
- * The stream-marks import, drawn before it exists. Null whenever that dialog is shut: this is an
- * overlay on a preview, never a record of anything the edit model holds.
- */
-export interface StreamMarksPreviewScene {
-  spans: StreamMarksSpanScene[];
-  /** Every dividing line — each span's start plus the last span's end — in EDITED seconds. */
-  boundaries: number[];
-}
-
 export interface TimelineScene {
   rows: TrackRow[];
   segsByTrack: ReadonlyMap<string, EditorSegment[]>;
@@ -56,6 +31,4 @@ export interface TimelineScene {
   /** Stories ticked for Join, outlined blue — the pending action. */
   pickedStoryIds: ReadonlySet<string>;
   hasStories: boolean;
-  /** The stream-marks import as it would land, or null when that dialog is shut. */
-  streamMarks: StreamMarksPreviewScene | null;
 }

@@ -1,7 +1,7 @@
 <!-- The editor shell is ALWAYS mounted. Loading, a failed load, and the no-session
      state are all WORKSPACE states (see .top-region below): switching projects must not
      tear down the topbar or the projects pane — only the session panes reload. -->
-<div class="editor" [class.lining-up]="liningUpStreamMarks()">
+<div class="editor">
   <!-- Top bar. -->
   <header class="topbar">
     <div class="menu-wrap">
@@ -129,16 +129,16 @@
     (openEnvironment)="onEnvironmentFromSetup()"
     (completed)="onProjectSetupCompleted($event)"></app-project-setup-modal>
 
-  <!-- Stream marks ▸ stories. Created only on Apply; the dialog shows every span it would
-       make, and what it would trim, before anything exists — and (previewChange) puts that same
-       set of spans on the timeline canvas, where the whole night can be dragged onto the content
-       instead of being aimed by typing a number. -->
+  <!-- Stream marks ▸ stories. Created only on Apply; the dialog shows every span it would make,
+       and what it would trim, before anything exists. WHERE the night sits is corrected AFTER
+       Apply, on the stories ribbon (drag a story, shift-drag to move the whole night, drag an
+       edge, shift-drag an edge to close up against its neighbour) — real stories are a better
+       handle than a preview of stories that do not exist yet. -->
   <app-stream-marks-import-modal *ngIf="streamMarksImportOpen"
     [zipPath]="currentZipPath"
     [timelineDuration]="manifest?.timelineDuration || 0"
     [playheadOriginal]="playheadOriginalSeconds()"
     [masterSegments]="masterVideoSegments"
-    (previewChange)="onStreamMarksPreview($event)"
     (closed)="closeStreamMarksImport()"
     (applied)="onStreamMarksImported($event)"></app-stream-marks-import-modal>
 

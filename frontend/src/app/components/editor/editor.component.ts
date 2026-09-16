@@ -4,12 +4,12 @@ import {
 import { Subscription } from 'rxjs';
 import { EDITOR_HOST, EditorHost, ProcessingJob } from './editor-host';
 import {
-  StreamMarksImportModalComponent,
-  type StreamMarkImportSpan, type StreamMarksBoundary, type StreamMarksPreview,
+  StreamMarksImportModalComponent, type StreamMarkImportSpan,
 } from './stream-marks-import-modal/stream-marks-import-modal.component';
 import {
-  masterToTimeline, orderSegmentsBySource, timelineToMaster, type TimelineSegment,
-} from './model/stream-marks-import';
+  masterKeptRange, masterToTimeline, orderSegmentsBySource, timelineToMaster,
+  type TimelineSegment,
+} from './model/master-timeline-map';
 import { ProjectsService, ProjectEntry } from './services/projects.service';
 import { ProjectSidebarComponent } from './project-sidebar/project-sidebar.component';
 import { ProjectSetupModalComponent } from './project-setup-modal/project-setup-modal.component';
@@ -35,7 +35,7 @@ import {
 import { TranscriptPaneComponent } from './transcript-pane/transcript-pane.component';
 import { WaveformCache } from './timeline/waveform-cache';
 import { TimelineRenderer } from './timeline/timeline-renderer';
-import { TimelineScene, StreamMarksPreviewScene } from './timeline/timeline-scene';
+import { TimelineScene } from './timeline/timeline-scene';
 import {
   GUTTER_W, RULER_H, RIBBON_H, VIDEO_TRACK_H, AUDIO_TRACK_H, ZOOM_MAX
 } from './timeline/timeline-metrics';
@@ -89,13 +89,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   @ViewChild('timelineCanvas') canvasRef!: ElementRef<HTMLCanvasElement>;
   @ViewChild('viewerVideo') viewerVideoRef!: ElementRef<HTMLVideoElement>;
   @ViewChild('topRegion') topRegionRef?: ElementRef<HTMLElement>;
-  /**
-   * The stream-marks dialog, while it is open. The boundary drag reaches back into it because
-   * the dialog OWNS the stream's zero — the editor supplies the gesture and the pixels, and would
-   * be keeping a second, divergent copy of the night the moment it started storing one itself.
-   * Optional and re-read every time: it exists only behind its *ngIf.
-   */
-  @ViewChild(StreamMarksImportModalComponent) streamMarksModal?: StreamMarksImportModalComponent;
   /**
    * The transcript body, when it is rendered (Edit tab, session loaded). Optional and always
    * reached with `?.` — the karaoke scroll fires from the rAF tick, which runs while the pane
@@ -213,7 +206,19 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private marqueeEndTime = 0;            // EDITED seconds
   // In-flight story-region edge drag (grabbed an edge in the ribbon). The story's regions are
   // canonicalized (merged) at grab time so regionIndex addresses story.regions directly.
-  private draggingStoryEdge: { storyId: string; regionIndex: number; edge: 'start' | 'end' } | null = null;
+  //
+  // `snapToNeighbour` is the SHIFT variant, frozen at grab time: the edge ignores cut boundaries
+  // and lands on `neighbourEdge` — the facing edge of the story next door — so two consecutive
+  // stories close up exactly, with no gap and no overlap. `neighbourEdge` is null when there is
+  // no story on that side, and the drag then simply tracks the pointer with no cut snapping;
+  // that absence is deliberate (see updateStoryEdgeDrag), not a case nobody thought about.
+  private draggingStoryEdge: {
+    storyId: string;
+    regionIndex: number;
+    edge: 'start' | 'end';
+    snapToNeighbour: boolean;
+    neighbourEdge: number | null;
+  } | null = null;
   // The edit state as it stood when the in-flight story-edge drag began. A drag is ONE undo step
   // or none: pushing at mousedown would leave a step behind for a grab that never moved, and
   // pushing per mousemove would bury every real step under a hundred frames of the same drag. So
@@ -249,37 +254,53 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     beforeSingle: { start: number | null; end: number | null };
   } | null = null;
   /**
-   * What the stream-marks dialog would create, published by it on every change. Null whenever
-   * that dialog is shut, which is also what makes the boundary drag unreachable the rest of the
-   * time.
-   * READ-ONLY here — the dialog owns every number in it.
-   */
-  private streamMarksPreview: StreamMarksPreview | null = null;
-  /**
-   * In-flight "put this boundary here" drag: WHICH boundary the hand took hold of (its second of
-   * the stream, which is the only thing about it that does not move) and the constant the dialog
-   * held when it did.
+   * In-flight "move this story" drag: a press that landed on a ribbon BLOCK rather than on one of
+   * its edges.
    *
-   * A BOUNDARY, NOT THE SET. The timeline is a non-linear remap of the recording — 1954 pieces,
-   * 32 minutes of it dropped (see model/stream-marks-import.ts) — so a set of boundaries cannot
-   * move rigidly along it and stay over its own content. The grabbed line follows the pointer
-   * exactly; every other line re-maps to wherever ITS content sits, which is further or nearer
-   * by however much material the edit removed between them.
+   * TWO GESTURES, ONE DRAG, chosen by the shift key at grab time and never re-read mid-drag (the
+   * hand should not be able to change what a drag means halfway through it):
    *
-   * Both frozen, because the constant is recomputed ABSOLUTELY from them on every mouse move
-   * rather than nudged by a per-frame delta — a hundred frames of accumulated deltas drift, and
-   * Escape would then have nothing exact to put back. Deliberately NOT an undo step: no story
-   * exists yet, Apply is still the one mutation, and it pushes its own single step.
+   *   'story' — move the grabbed story alone, rigidly, in TIMELINE seconds. It is a block you can
+   *             see; it keeps the width it has on screen because both edges take the same delta.
+   *   'all'   — move EVERY story by one shared RECORDING-time delta. See updateStoryMoveDrag for
+   *             why that is a different number from a timeline delta, and why using a timeline
+   *             delta here would re-introduce the bug LEDGER #189 fixed for the import.
+   *
+   * `baseline` holds EVERY story's merged regions as they stood at grab time, and every mouse move
+   * recomputes from it ABSOLUTELY rather than nudging the live regions by a per-frame delta: a
+   * hundred frames of accumulated deltas drift, and the elastic claim (slide over a neighbour, it
+   * yields; slide back, it returns) is only possible against a baseline that never moved.
+   *
+   * `moved` gates everything on the same 3 px promotion threshold the marquee uses — a press in
+   * the ribbon that never travels is a click, and a click still selects the chunk.
    */
-  private streamMarksDrag:
-    { elapsed: number; grabTimeline: number; boundaryTimeline: number; startStreamStart: number } | null = null;
+  private storyMoveDrag: {
+    storyId: string;
+    /** The chunk under the pointer at grab time — the CLICK outcome, applied on a release that never moved. */
+    regionIndex: number;
+    scope: 'story' | 'all';
+    /** The pointer at grab time, in ORIGINAL seconds, and in CSS px for the threshold. */
+    grabOriginal: number;
+    grabX: number;
+    moved: boolean;
+    /** The grabbed story's first region start at grab time: what the pointer's travel is measured against. */
+    anchorOriginal: number;
+    /** Every story's regions, merged and deep-copied, as they stood at grab time. */
+    baseline: Map<string, { start: number; end: number }[]>;
+    /**
+     * How far the SET may travel in MASTER seconds before an edge of it would leave the recording's
+     * kept material. Null for a single-story move, which is clamped on the timeline instead.
+     */
+    masterDeltaMin: number | null;
+    masterDeltaMax: number | null;
+  } | null = null;
   /**
    * The master→timeline map: the primary video track's ORIGINAL segments, ordered by sourceStart.
    *
    * Built on demand (the ordering walks ~2000 segments and validates them) and thrown away with
-   * the session. Null until something asks — and the only things that ask are the stream-marks
-   * drag and the import dialog, which is why a timeline this map cannot describe costs nothing
-   * until that dialog is opened, and then says so on screen rather than at load time.
+   * the session. Null until something asks — and the only things that ask are the ribbon's
+   * shift-drag and the import dialog, which is why a timeline this map cannot describe costs
+   * nothing until one of those happens, and then says so on screen rather than at load time.
    */
   private masterTimelineMap: TimelineSegment[] | null = null;
   /**
@@ -309,10 +330,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // pixel it claims is a pixel the move-the-footage grab loses.
   private readonly SEL_EDGE_PX = 7;
   private readonly PLAYHEAD_GRAB_PX = 4;
-  // How close (CSS px) the GRABBED stream-mark boundary has to come to a cut or the playhead to
-  // land exactly on it. The same reach as a highlight handle, for the same reason: it is the
-  // distance a hand aiming at a line actually gets to on the first try.
-  private readonly STREAM_MARKS_SNAP_PX = 7;
   // Sorted, deduped snap targets in EDITED seconds: video-track clip edges (auto-editor
   // cuts; segments split at kept boundaries so user-cut seams are edges too), the kept
   // seams themselves (covers seams inside clip gaps), and the timeline ends. Rebuilt with
@@ -777,7 +794,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.storyGestureUndo = null;
     this.moveDrag = null;
     this.selEdgeDrag = null;
-    this.streamMarksDrag = null;
+    this.storyMoveDrag = null;
     this.masterTimelineMap = null;
     this.masterVideoSegments = [];
     // A pending debounced save belongs to the PREVIOUS session — never let it fire
@@ -1302,42 +1319,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       selectedStoryId: this.storySelection?.storyId ?? null,
       pickedStoryIds: this.storyPickIds,
       hasStories: this.hasStories(),
-      streamMarks: this.streamMarksScene(),
     };
-  }
-
-  /**
-   * The stream-marks preview in the frame the canvas draws in, or null when that dialog is shut.
-   *
-   * Boundaries go through originalToEdited exactly as `bladeEdited` does, and for the same
-   * reason: the marks are ORIGINAL seconds (the recording's own clock, which is what a mark
-   * means) and the timeline shows EDITED seconds, so a preview drawn without this map would sit
-   * further wrong the more footage has been cut — and the whole point of drawing it is to see it
-   * land on the content.
-   *
-   * A span's two ends are mapped as POINTS, which is right for a chain of boundaries and is the
-   * one place this differs from the stories ribbon: a story is a region and must be projected
-   * with editedRangesForOriginal because a reorder can scatter it. A mark is a line, it has no
-   * inside to scatter, and after a reorder the pair (lo, hi) can come back backwards — the
-   * renderer skips those bands and draws their lines, which is exactly as much as is true.
-   */
-  private streamMarksScene(): StreamMarksPreviewScene | null {
-    const preview = this.streamMarksPreview;
-    if (!preview) return null;
-    const spans = preview.spans.map(sp => ({
-      title: sp.title,
-      lo: this.originalToEdited(sp.start),
-      hi: this.originalToEdited(sp.end),
-      // Three of the four states mean "this one is not going to be created", and so does an
-      // unticked row. The band says so by going faint rather than disappearing: a story that has
-      // slid off the end of the timeline is the single most useful thing to be able to SEE while
-      // dragging the set back onto it.
-      dim: !sp.checked || sp.state === 'outside' || sp.state === 'empty',
-    }));
-    const boundaries: number[] = [];
-    for (const span of spans) boundaries.push(span.lo);
-    if (spans.length > 0) boundaries.push(spans[spans.length - 1].hi);
-    return { spans, boundaries };
   }
 
   /**
@@ -1369,28 +1351,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
 
   /** Cancel an in-flight HIGHLIGHT gesture (a marquee or shift-drag range) without committing it —
    *  Escape mid-drag throws away an accidental highlight. Returns true if something was aborted.
-   *  Leaves no selection behind. Story-edge drags and playhead scrubs are not "highlights" and
-   *  are left to finish on mouseup. */
+   *  Leaves no selection behind. The ribbon's gestures (a story-edge drag, a story move) and the
+   *  playhead scrub are not "highlights" and are left to finish on mouseup — each of them IS an
+   *  edit, so the way back from one is the undo step it pushes, not an Escape that would have to
+   *  reproduce that undo a second way. */
   private abortInFlightGesture(): boolean {
-    if (!this.marqueeActive && !this.draggingSelection && !this.moveDrag && !this.selEdgeDrag
-        && !this.streamMarksDrag) return false;
-    // A drag abandoned mid-flight puts the stream's zero back to the one the grab started from.
-    // That is the whole undo for this gesture and it is exact by construction: the drag never
-    // nudged that number, it recomputed it from this one every frame, so this one is still true.
-    if (this.streamMarksDrag) {
-      const drag = this.streamMarksDrag;
-      this.streamMarksDrag = null;
-      const modal = this.streamMarksModal;
-      if (!modal) {
-        throw new Error(
-          'A stream-marks drag was cancelled with no dialog behind it to put the stream\'s ' +
-          'zero back into. The drag only starts while that dialog is open, so this is broken wiring.'
-        );
-      }
-      modal.setStreamStartFromDrag(drag.startStreamStart);
-      window.removeEventListener('mousemove', this.onWindowMouseMove);
-      window.removeEventListener('mouseup', this.onWindowMouseUp);
-      return true;
+    if (!this.marqueeActive && !this.draggingSelection && !this.moveDrag && !this.selEdgeDrag) {
+      return false;
     }
     // A move drag is abandoned WITHOUT clearing the selection: nothing was committed yet, and the
     // highlight the user is holding is what they'd have to re-make.
@@ -1496,60 +1463,30 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     const inRuler = y <= RULER_H;
     const inRibbon = this.hasStories() && y > RULER_H && y <= RULER_H + this.ribbonHeight;
 
-    // LINING THE NIGHT UP. With the stream-marks preview on screen, a press anywhere below the
-    // ruler takes hold of the boundary NEAREST THE POINTER and drags it onto its moment — the
-    // gesture Owen asked for ("grab the stream marks and drag") with the one correction the
-    // measurement forces: the set cannot travel rigidly, because the timeline is a non-linear
-    // remap of the recording the marks live in. The grabbed line goes exactly where the hand puts
-    // it; the others go where their own content is.
-    //
-    // It is checked before every other branch on purpose, and the cost is understood: while that
-    // dialog is open the ribbon, the highlight handles, the marquee and the section click are all
-    // unreachable in the track area. That is the right trade for the minute the preview is up —
-    // the operator is doing exactly one thing, the whole canvas is the handle for it, and there is
-    // no smaller target to find. THE RULER IS DELIBERATELY LEFT ALONE: the playhead is the
-    // reference he lines the marks up against, parked on the frame where a story really ends, and
-    // taking scrubbing away would remove the only way to put it there.
-    //
-    // Nothing is created by any of this. The dialog's constant is the only thing that moves, and
-    // Apply is still the one mutation — so no undo step is pushed here.
-    if (this.streamMarksPreview && y > RULER_H) {
-      const grabbed = this.nearestStreamMarksBoundary(this.streamMarksPreview.boundaries, this.timeToX(t));
-      // A stream with no marks has no boundaries to grab. The canvas stays the one handle it is
-      // while the preview is up, so this press does nothing rather than falling through to the
-      // ribbon and selecting something behind the preview.
-      if (grabbed) {
-        // THE GRAB IS RELATIVE, AND THE GRABBED LINE TRACKS THE CURSOR ONE FOR ONE. Two
-        // behaviours are being ruled out here, and both of them feel broken in the hand:
-        //
-        //   - Pressing 100 px from the nearest line and having that line LEAP under the cursor.
-        //     The set jumps before it moves and the operator spends the drag undoing the jump.
-        //   - Measuring the travel in the RECORDING's seconds. The constant lives there, but a
-        //     second of recording is not a pixel of timeline: the density of removed dead air
-        //     differs between where the cursor is and where the line is, so the line would
-        //     drift behind or ahead of the hand by a few percent over a long drag.
-        //
-        // So the line's TIMELINE position is what follows the pointer's timeline travel, and the
-        // constant is whatever puts it there (inverted through the map on each move). The other
-        // boundaries then land wherever their own content sits, which is the whole point.
-        this.streamMarksDrag = {
-          elapsed: grabbed.elapsed,
-          grabTimeline: this.editedToOriginal(t),
-          boundaryTimeline: grabbed.timeline,
-          startStreamStart: this.streamMarksPreview.streamStartInMaster,
-        };
-        window.addEventListener('mousemove', this.onWindowMouseMove);
-        window.addEventListener('mouseup', this.onWindowMouseUp);
-      }
-      return;
-    }
-
     // Any fresh canvas gesture drops a prior story selection; the ribbon branch below re-sets it.
     this.storySelection = null;
 
-    // A mousedown in the stories ribbon: grabbing a region EDGE starts an edge drag that
-    // redefines that boundary; otherwise a click on a ribbon block SELECTS that story chunk (the
-    // delete target). Both work with whichever tool is in hand — the ribbon is not the tracks.
+    /*
+     * THE STORIES RIBBON IS WHERE A NIGHT GETS CORRECTED, and it has four gestures.
+     *
+     *   drag a block                move THAT story, rigidly, in TIMELINE seconds
+     *   SHIFT-drag a block          move EVERY story by one shared RECORDING-time delta
+     *   drag near a region edge     move that edge (cut snapping + the elastic neighbour push)
+     *   SHIFT-drag near an edge     that edge jumps to the facing edge of the neighbouring story
+     *
+     * plus the two presses that are not drags at all: a plain click selects the chunk (the
+     * delete target) and ⌘-click toggles the Join pick.
+     *
+     * HIT ORDER, and it is deliberate: ⌘-pick first, then the edge, then the block. Shift does
+     * not change WHAT was hit — it chooses the variant of whichever was — so a shift-press near a
+     * boundary is still an edge gesture, not a whole-set move. Every one of them works with
+     * whichever tool is in hand; the ribbon is not the tracks.
+     *
+     * This replaced the "line up on the timeline" mode, which did the same job by dragging a
+     * PREVIEW of stories that did not exist yet, in a dialog collapsed to a bar. Real stories are
+     * a better handle: they are already on screen, they are what the operator is judging, and the
+     * correction is undoable because it is an edit rather than a pending proposal.
+     */
     if (inRibbon) {
       // ⌘-click on a story block picks it for Join instead of selecting a chunk — the same
       // gesture as in the story list, so a run of mis-split stories can be picked off the ribbon
@@ -1570,19 +1507,36 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
           this.captureStoryPushBaseline(story.id);
           // One undo step per drag, and only if it moves something — see storyGestureUndo.
           this.storyGestureUndo = this.editSnapshot();
-          this.draggingStoryEdge = edgeHit;
+          // Shift is read ONCE, here: an edge drag means one thing for its whole life. The
+          // neighbour it will close up against is resolved now too, off the region as it stands
+          // at grab time, so the target cannot wander as the edge travels over other stories.
+          this.draggingStoryEdge = {
+            ...edgeHit,
+            snapToNeighbour: ev.shiftKey,
+            neighbourEdge: ev.shiftKey
+              ? this.facingStoryEdge(story.id, story.regions[edgeHit.regionIndex], edgeHit.edge)
+              : null,
+          };
           window.addEventListener('mousemove', this.onWindowMouseMove);
           window.addEventListener('mouseup', this.onWindowMouseUp);
           this.requestRender();
           return;
         }
       }
-      // A click on a ribbon block SELECTS that story chunk (region) — the target of a
-      // chunk-delete — highlighting just that region. Clicking a GAP in the ribbon selects
-      // nothing (storySelection was already cleared above), so the ribbon can undo its own
-      // selection.
       const chunk = this.storyRegionAtEdited(t);
-      if (chunk) this.selectStoryChunk(chunk.storyId, chunk.regionIndex);
+      if (chunk) {
+        // A press on a block is a MOVE that has not proved itself yet. Nothing is selected here
+        // and nothing is moved here: the 3 px promotion threshold decides on the first mouse
+        // move which of the two this press was, and mouseup applies the answer — the chunk
+        // select for a click, the moved stories for a drag. (Selecting on mousedown instead
+        // would leave the highlight sitting on the footage the story just left.)
+        this.startStoryMoveDrag(chunk, ev.shiftKey, t, this.timeToX(t));
+        window.addEventListener('mousemove', this.onWindowMouseMove);
+        window.addEventListener('mouseup', this.onWindowMouseUp);
+        return;
+      }
+      // A press in a GAP of the ribbon selects nothing — storySelection was cleared above, so the
+      // ribbon can undo its own selection.
       this.requestRender();
       return;
     }
@@ -1896,145 +1850,23 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return this.snapEdited(t, false);
   }
 
-  // ── Stream marks: drag a boundary onto its moment ───────────────────────────
+  // ── The master↔timeline map, as this session's copy ─────────────────────────
   /**
    * The master→timeline map for this session, built once and kept.
    *
-   * Lazy because ordering and validating ~2000 segments is work no session that never opens the
-   * import dialog should do, and because a timeline this map cannot describe (one that plays its
-   * master out of order) must not be a timeline the editor refuses to load.
+   * Lazy because ordering and validating ~2000 segments is work no session that never needs the
+   * recording's own clock should do, and because a timeline this map cannot describe (one that
+   * plays its master out of order) must not be a timeline the editor refuses to load. Two things
+   * ask for it: the stream-marks import dialog, and the ribbon's shift-drag of the whole set.
+   *
+   * Throws (orderSegmentsBySource) when the table cannot be a map. Callers say so on screen —
+   * there is no second code path that adds a constant instead (LEDGER #189, law 1).
    */
-  private streamMarksMap(): TimelineSegment[] {
+  private masterMap(): TimelineSegment[] {
     if (!this.masterTimelineMap) {
       this.masterTimelineMap = orderSegmentsBySource(this.masterVideoSegments);
     }
     return this.masterTimelineMap;
-  }
-
-  /**
-   * The boundary nearest `x` (CSS px), or null when the set has none.
-   *
-   * Nearest in PIXELS, not in seconds: the hand is aiming at a line on a screen, and at a
-   * three-hour zoom two lines a minute apart are three pixels apart. Ties go to the earlier
-   * boundary — with two lines on the same pixel the set is going to move as one anyway.
-   */
-  private nearestStreamMarksBoundary(
-    boundaries: readonly StreamMarksBoundary[],
-    x: number
-  ): StreamMarksBoundary | null {
-    let best: StreamMarksBoundary | null = null;
-    let bestD = Number.POSITIVE_INFINITY;
-    for (const b of boundaries) {
-      const d = Math.abs(this.timeToX(this.originalToEdited(b.timeline)) - x);
-      if (d < bestD) { bestD = d; best = b; }
-    }
-    return best;
-  }
-
-  /**
-   * Live update of a boundary drag: work out where the night's clock has to sit for the grabbed
-   * line to be under the pointer, and tell the dialog.
-   *
-   * THREE FRAMES MEET IN THESE FOUR LINES, and each conversion is load-bearing. The pointer is in
-   * EDITED seconds (the timeline as the cuts made here have left it); editedToOriginal takes it to
-   * the timeline the manifest describes; timelineToMaster takes THAT to a second of the recording,
-   * through the segment table, because the timeline is the recording with 32 minutes of dead air
-   * removed and the two clocks drift apart all night. Only then is the answer a subtraction: the
-   * grabbed boundary is `elapsed` seconds into the stream, it is to sit at this master second, so
-   * the stream's zero is the difference.
-   *
-   * The constant handed over is ABSOLUTE, never a nudge: see streamMarksDrag.
-   */
-  private updateStreamMarksDrag(ev: MouseEvent): void {
-    const drag = this.streamMarksDrag!;
-    const preview = this.streamMarksPreview;
-    const modal = this.streamMarksModal;
-    // A drag can only have started with both of these in place, and nothing can remove them while
-    // the pointer is held. If one is gone the two halves of this feature have come apart, and a
-    // gesture that silently did nothing would leave the operator dragging a picture that no longer
-    // moves — say it instead (LEDGER law 1).
-    if (!preview || !modal) {
-      throw new Error(
-        'A stream-marks drag is in flight with no ' +
-        (!preview ? 'preview' : 'dialog') + ' behind it. The drag starts only while the ' +
-        'dialog is open and publishing a preview, so this is a broken wiring, not a state.'
-      );
-    }
-    const segments = this.streamMarksMap();
-    // Where the grabbed line should now BE on the timeline: where it was, plus the distance the
-    // pointer has travelled. Inverting that through the map gives the moment of the recording it
-    // would then be sitting on, and the constant is that moment less the mark's own elapsed time.
-    const travelled = this.editedToOriginal(this.canvasEventTime(ev)) - drag.grabTimeline;
-    const target = drag.boundaryTimeline + travelled;
-    const unsnapped = timelineToMaster(segments, target) - drag.elapsed;
-    // Option bypasses the snap, the same key that bypasses it everywhere else on this canvas.
-    const streamStart = ev.altKey
-      ? unsnapped
-      : this.streamMarksSnapped(segments, drag.elapsed, unsnapped);
-    modal.setStreamStartFromDrag(streamStart);
-    this.requestRender();
-  }
-
-  /**
-   * The candidate constant, corrected so the GRABBED boundary lands exactly on a cut or the
-   * playhead when it comes within reach. The candidate unchanged when nothing is in reach.
-   *
-   * WHY SNAP AT ALL. The boundary the operator is aiming at is almost never an arbitrary frame —
-   * it is a cut he already made at the moment the story ended, or the playhead he parked on that
-   * moment by listening. Landing three pixels off is landing wrong, and at a three-hour zoom three
-   * pixels is twenty seconds of video on the wrong side of the line. Snapping is what makes an
-   * eyeballed drag as exact as a typed number.
-   *
-   * ONLY THE GRABBED BOUNDARY SNAPS. It is the one under the hand, the one the operator is looking
-   * at, and the only one whose landing he is choosing; the others are wherever the recording says
-   * their content is. (It also fixes what testing the whole set for magnets used to do: with
-   * twenty boundaries, something was always within seven pixels of something, and the set jittered
-   * from magnet to magnet instead of following the hand.)
-   *
-   * THE TARGETS ARE BLADES AND THE PLAYHEAD, and deliberately not the full snap-point set the
-   * highlight gestures use: clip edges run to the hundreds on an auto-edited session, while a
-   * blade is a line a human put there on purpose and there are a handful of them.
-   *
-   * ARBITRATION: nearest wins, and the playhead wins a tie — the same bias grabbableAt uses, for
-   * the same reason. The playhead is where the operator deliberately put it; a cut that happens to
-   * sit on the same pixel is a coincidence.
-   */
-  private streamMarksSnapped(
-    segments: TimelineSegment[],
-    elapsed: number,
-    candidate: number
-  ): number {
-    // Where the grabbed boundary would land, in ORIGINAL seconds and then on screen. Mapped, not
-    // added: the boundary's content is wherever the segment table says it is.
-    const landed = masterToTimeline(segments, elapsed + candidate).seconds;
-    const x = this.timeToX(this.originalToEdited(landed));
-    // Each target twice over: where it is on screen (to measure against) and what it is in
-    // ORIGINAL seconds (to correct to). Correcting through the original time rather than through
-    // the pixel distance keeps the landing exact — a px→seconds conversion at the current zoom
-    // would put the boundary a rounding error away from the line it is supposed to be on.
-    const targets: { x: number; original: number; isPlayhead: boolean }[] = [
-      {
-        x: this.timeToX(this.playheadTime),
-        original: this.editedToOriginal(this.playheadTime),
-        isPlayhead: true,
-      },
-    ];
-    for (const b of this.bladeBoundaries) {
-      targets.push({ x: this.timeToX(this.originalToEdited(b)), original: b, isPlayhead: false });
-    }
-    let best: { original: number } | null = null;
-    let bestD = this.STREAM_MARKS_SNAP_PX;
-    for (const target of targets) {
-      const d = Math.abs(target.x - x);
-      if (d > this.STREAM_MARKS_SNAP_PX) continue;
-      if (best && (target.isPlayhead ? d > bestD : d >= bestD)) continue;
-      bestD = d;
-      best = { original: target.original };
-    }
-    // The landing is a place on the TIMELINE and the answer is a place in the RECORDING, so the
-    // chosen target goes back through the map before the subtraction — the same round trip the
-    // pointer took, for the same reason.
-    return best === null ? candidate : timelineToMaster(segments, best.original) - elapsed;
   }
 
   // ── Reordering: drag a selection to a new position ──────────────────────────
@@ -2206,9 +2038,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private onWindowMouseMove = (ev: MouseEvent): void => {
-    // First, mirroring mousedown: a set drag claims the whole canvas below the ruler, so nothing
-    // else can be in flight alongside it.
-    if (this.streamMarksDrag) { this.updateStreamMarksDrag(ev); }
+    // Ribbon gestures first, mirroring the order mousedown resolves them in.
+    if (this.storyMoveDrag) { this.updateStoryMoveDrag(ev); }
     else if (this.draggingStoryEdge) { this.updateStoryEdgeDrag(ev); }
     else if (this.selEdgeDrag) { this.updateSelEdgeDrag(ev); }
     else if (this.moveDrag) { this.updateMoveDrag(ev); }
@@ -2233,11 +2064,23 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!this.draggingPlayhead && !this.draggingScrollbar && !this.draggingSplitV
         && !this.draggingSplitH && !this.draggingSplitP && !this.draggingSelection
         && !this.marqueeActive && !this.draggingStoryEdge && !this.moveDrag
-        && !this.selEdgeDrag && !this.streamMarksDrag) return;
-    // Dropping a set drag commits by doing nothing: the dialog already holds the offset every
-    // mouse move put there, and a release is simply the last of them standing. There is no edit
-    // model to write back and no undo step to push — nothing has been created.
-    if (this.streamMarksDrag) this.streamMarksDrag = null;
+        && !this.selEdgeDrag && !this.storyMoveDrag) return;
+    // Dropping a story-move drag: a drag that MOVED commits where it stands (one undo step, one
+    // save), a press that never passed the 3 px threshold was a click and still selects the chunk
+    // it landed on — the outcome it has always had. Regions are re-merged for the same reason the
+    // edge drag re-merges them: a move can slide one region of a story onto another.
+    if (this.storyMoveDrag) {
+      const d = this.storyMoveDrag;
+      this.storyMoveDrag = null;
+      if (d.moved) {
+        for (const story of this.stories) story.regions = mergeRegions(story.regions);
+        this.commitStoryGestureUndo();
+        this.scheduleEditsSave();
+      } else {
+        this.storyGestureUndo = null;
+        this.selectStoryChunk(d.storyId, d.regionIndex);
+      }
+    }
     // Persist split preferences once per drag (not per move frame).
     if (this.draggingSplitV) localStorage.setItem(this.SPLIT_V_KEY, String(this.splitV));
     if (this.draggingSplitH) localStorage.setItem(this.SPLIT_H_KEY, String(this.splitH));
@@ -3392,40 +3235,6 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.streamMarksImportOpen = true;
   }
 
-  /**
-   * Take the dialog's latest picture of the night, or null when it has gone.
-   *
-   * Held, never edited. The offset, the ticks and the titles all live in the dialog; this is a
-   * frame to draw and the arithmetic a drag needs, and the editor's copy is replaced wholesale on
-   * every change rather than patched — two owners of one offset is how a preview and a list start
-   * disagreeing about which stories are about to be created.
-   *
-   * The cursor class goes on the canvas ELEMENT rather than through a template binding: this
-   * arrives from the dialog's own ngOnInit and from window mouse moves, both outside the checking
-   * pass that would have to see a bound class, and a bound class set from there is Angular's
-   * expression-changed error rather than a cursor. The canvas already takes its cursor this way
-   * for every other handle it has (onCanvasHover).
-   */
-  /**
-   * True while the collapsed stream-marks bar is docked at the bottom of the window. The root
-   * reserves its height (see .lining-up) so the bar never covers the timeline footer.
-   */
-  liningUpStreamMarks(): boolean {
-    return this.streamMarksPreview?.collapsed === true;
-  }
-
-  onStreamMarksPreview(preview: StreamMarksPreview | null): void {
-    this.streamMarksPreview = preview;
-    const canvas = this.canvasRef?.nativeElement;
-    if (canvas) {
-      canvas.classList.toggle('stream-marks-lineup', preview !== null);
-      // The inline cursor the last hover wrote outlives the preview otherwise, leaving the canvas
-      // promising an east-west handle that is no longer there.
-      if (preview === null) canvas.style.cursor = '';
-    }
-    this.requestRender();
-  }
-
   closeStreamMarksImport(): void {
     this.streamMarksImportOpen = false;
   }
@@ -4323,11 +4132,29 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     return null;
   }
 
-  /** Live update of a grabbed story-region edge: pointer time HARD-quantized to the nearest
-   *  cut boundary (whole sections only), mapped to ORIGINAL seconds, clamped to the timeline
-   *  and to one frame of minimum region width. Sliding into another story's region pushes that
-   *  region's near edge along (down to one frame of it left — the drag stops there rather than
-   *  swallowing a story whole); sliding back out restores it (see storyPushBaseline). */
+  /**
+   * Live update of a grabbed story-region edge: pointer time HARD-quantized to the nearest cut
+   * boundary (whole sections only), mapped to ORIGINAL seconds, clamped to the timeline and to
+   * one frame of minimum region width. Sliding into another story's region pushes that region's
+   * near edge along (down to one frame of it left — the drag stops there rather than swallowing
+   * a story whole); sliding back out restores it (see storyPushBaseline).
+   *
+   * WITH SHIFT HELD AT GRAB TIME the edge does something else entirely: it ignores cut boundaries
+   * and goes to the FACING EDGE of the story next door (the previous story's end for a `start`
+   * edge, the next story's start for an `end` edge), so the two close up exactly. That is a jump,
+   * not a track — the whole gesture is "there is a gap here, take it out", and there is exactly
+   * one place the edge can be for that to be true, so tracking the pointer toward it would only
+   * ask the operator to aim at a number he has already named by holding shift.
+   *
+   * WITH NO NEIGHBOUR ON THAT SIDE (the first story's start, the last story's end, or an edge
+   * with only empty ribbon beyond it) shift does nothing special: the edge tracks the pointer
+   * without cut snapping. That is a DELIBERATE ABSENCE, not a forgotten case — there is no facing
+   * edge to close up against, and inventing one (the timeline's end, say) would move a boundary
+   * to a place nobody chose.
+   *
+   * The elastic push runs either way: landing exactly ON the neighbour's edge is not an overlap,
+   * so it pushes nothing, and it is still there for the ordinary drag that goes past it.
+   */
   private updateStoryEdgeDrag(ev: MouseEvent): void {
     const drag = this.draggingStoryEdge!;
     const story = this.stories.find(s => s.id === drag.storyId);
@@ -4338,8 +4165,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!story || !region) { this.draggingStoryEdge = null; this.storyGestureUndo = null; return; }
     const fs = this.manifest?.frameSeconds || (1001 / 30000);
     const durOrig = this.manifest?.timelineDuration || 0;
-    const tEdited = this.snapEdited(this.canvasEventTime(ev), false, Infinity);
-    const t = Math.min(durOrig, Math.max(0, this.editedToOriginal(tEdited)));
+    const tEdited = drag.snapToNeighbour
+      ? this.canvasEventTime(ev)
+      : this.snapEdited(this.canvasEventTime(ev), false, Infinity);
+    const pointer = Math.min(durOrig, Math.max(0, this.editedToOriginal(tEdited)));
+    const t = drag.snapToNeighbour && drag.neighbourEdge !== null ? drag.neighbourEdge : pointer;
     if (drag.edge === 'start') {
       region.start = Math.max(0, Math.min(t, region.end - fs));
     } else {
@@ -4361,6 +4191,220 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       baseline.set(s.id, s.regions.map(r => ({ ...r })));
     }
     this.storyPushBaseline = baseline;
+  }
+
+  /**
+   * The facing edge of the story next door, in ORIGINAL seconds, or null when there is none.
+   *
+   * "Next door" is measured from `region` as it stands AT GRAB TIME and against every OTHER
+   * story's regions: for a `start` edge it is the largest region end at or before this region's
+   * start, for an `end` edge the smallest region start at or after this region's end. Sibling
+   * regions of the SAME story are not neighbours — a story is one story however many pieces it
+   * is in, and closing a gap inside it would merge two of its own chunks rather than butt two
+   * stories together.
+   *
+   * Frozen by the caller for the life of the drag. Recomputing it per mouse move would let the
+   * target change as the edge travelled past other stories, which is a boundary moving to a place
+   * nobody aimed at.
+   */
+  private facingStoryEdge(
+    exceptStoryId: string,
+    region: { start: number; end: number },
+    edge: 'start' | 'end'
+  ): number | null {
+    let best: number | null = null;
+    for (const s of this.stories) {
+      if (s.id === exceptStoryId) continue;
+      for (const r of mergeRegions(s.regions)) {
+        if (edge === 'start') {
+          if (r.end <= region.start + EPS && (best === null || r.end > best)) best = r.end;
+        } else {
+          if (r.start >= region.end - EPS && (best === null || r.start < best)) best = r.start;
+        }
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Take hold of a story by one of its blocks. Nothing moves yet — see storyMoveDrag.
+   *
+   * `wholeSet` (shift at grab time) picks between the two gestures, and the difference is not
+   * cosmetic: a single story travels in TIMELINE seconds and the whole set travels in RECORDING
+   * seconds. The set's limits are worked out HERE, once, in master seconds, because the clamp is
+   * on the DELTA and not on the members — see updateStoryMoveDrag.
+   *
+   * A set move needs the master→timeline map, and a timeline the map cannot describe (one that
+   * plays its master out of order) has no answer to "where in the recording is this". That is
+   * said, in the transport, and the gesture does not start: there is no fallback that shifts the
+   * set by a timeline delta instead, because a timeline delta is precisely the arithmetic
+   * LEDGER #189 proved cannot be right at more than one point (law 1).
+   */
+  private startStoryMoveDrag(
+    chunk: { storyId: string; regionIndex: number },
+    wholeSet: boolean,
+    grabEdited: number,
+    grabX: number
+  ): void {
+    const story = this.stories.find(s => s.id === chunk.storyId);
+    if (!story) return;
+    // Canonicalize the grabbed story the same way the edge grab does, so regionIndex addresses
+    // story.regions directly and the click outcome (selectStoryChunk) means the same region.
+    story.regions = mergeRegions(story.regions);
+    const anchorRegion = story.regions[chunk.regionIndex];
+    if (!anchorRegion) return;
+
+    let masterDeltaMin: number | null = null;
+    let masterDeltaMax: number | null = null;
+    if (wholeSet) {
+      let segments: TimelineSegment[];
+      try {
+        segments = this.masterMap();
+      } catch (err: any) {
+        this.transportError =
+          'Cannot move the whole night: ' + (err?.message || String(err)) +
+          ' Drag one story at a time instead — a single story moves on the timeline and needs no ' +
+          'map of the recording.';
+        this.cdr.detectChanges();
+        return;
+      }
+      // The SET's extent in the recording's own seconds, and the room it has either side of it.
+      // Clamping the delta (rather than each edge as it is computed) is what keeps the stories'
+      // relative positions intact at the ends: clamp the members and they all pile onto the same
+      // frame and the night collapses into a point.
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (const s of this.stories) {
+        for (const r of s.regions) {
+          lo = Math.min(lo, timelineToMaster(segments, r.start));
+          hi = Math.max(hi, timelineToMaster(segments, r.end));
+        }
+      }
+      if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;   // no regions anywhere: nothing to move
+      const kept = masterKeptRange(segments);
+      masterDeltaMin = kept.from - lo;
+      masterDeltaMax = kept.to - hi;
+    }
+
+    const baseline = new Map<string, { start: number; end: number }[]>();
+    for (const s of this.stories) {
+      s.regions = mergeRegions(s.regions);
+      baseline.set(s.id, s.regions.map(r => ({ ...r })));
+    }
+    // One undo step per gesture, and only if it moves something — the same storyGestureUndo
+    // contract the edge drag uses, closed out by commitStoryGestureUndo on mouseup.
+    this.storyGestureUndo = this.editSnapshot();
+    this.storyMoveDrag = {
+      storyId: story.id,
+      regionIndex: chunk.regionIndex,
+      scope: wholeSet ? 'all' : 'story',
+      grabOriginal: this.editedToOriginal(grabEdited),
+      grabX,
+      moved: false,
+      anchorOriginal: anchorRegion.start,
+      baseline,
+      masterDeltaMin,
+      masterDeltaMax,
+    };
+  }
+
+  /**
+   * Live update of a story-move drag. Everything is recomputed from the frozen baseline, so a
+   * drag back to where it started puts every story back exactly where it started.
+   *
+   * THE ONE THING NOT TO GET WRONG: a single story moves in TIMELINE seconds, the whole set moves
+   * in RECORDING seconds.
+   *
+   * Dragging ONE story is placing a block you can see. It keeps its on-screen width because both
+   * edges take the same timeline delta — anything else would resize a story while claiming to
+   * move it.
+   *
+   * Shift-dragging is CORRECTING THE STREAM CLOCK AGAINST THE RECORDING, and the editor's
+   * timeline is a non-linear remap of the master: the processing step drops dead air (measured on
+   * the real session — an 11785 s master becomes a 9869 s timeline of 1954 segments, 32 minutes
+   * removed). A uniform timeline shift would leave later stories minutes out; that is exactly the
+   * bug LEDGER #189 fixed for the import, and doing it here would undo it. So the pointer's travel
+   * is converted to a delta in the RECORDING's seconds at the grabbed story, and every edge of
+   * every story is re-mapped through the segment table with that one delta applied in master time.
+   * The stories therefore move by DIFFERENT on-screen amounts. That is not drift — it is the
+   * recording being honest about where their content actually sits.
+   */
+  private updateStoryMoveDrag(ev: MouseEvent): void {
+    const drag = this.storyMoveDrag!;
+    // Same 3 px promotion threshold the marquee and the footage-move use: a jittery click in the
+    // ribbon must stay a chunk select.
+    const x = this.timeToX(this.canvasEventTime(ev));
+    if (!drag.moved && Math.abs(x - drag.grabX) <= 3) return;
+    drag.moved = true;
+
+    const fs = this.manifest?.frameSeconds || (1001 / 30000);
+    const durOrig = this.manifest?.timelineDuration || 0;
+    const travel = this.editedToOriginal(this.canvasEventTime(ev)) - drag.grabOriginal;
+
+    if (drag.scope === 'story') {
+      const base = drag.baseline.get(drag.storyId);
+      const story = this.stories.find(s => s.id === drag.storyId);
+      if (!base || !story || base.length === 0) return;
+      // Soft-snap the story's LEADING edge onto a cut boundary, exactly as a highlight edge snaps,
+      // with Option bypassing it. SOFT and not the hard quantization the edge drag uses, because a
+      // rigid move can only put ONE of the two edges on an edit — forcing the leading one onto the
+      // nearest boundary every frame would make the whole story jump between cuts instead of
+      // following the hand. The leading edge is the one chosen because it is the one the operator
+      // is watching land.
+      const headEdited = this.originalToEdited(base[0].start + travel);
+      const snappedHead = this.editedToOriginal(this.snapEdited(headEdited, ev.altKey));
+      let delta = snappedHead - base[0].start;
+      // Clamp the STORY, not its regions: the whole block stops at 0 and at the timeline's end so
+      // its shape survives the wall. Its own span is the first region's start to the last's end.
+      const spanLo = base[0].start;
+      const spanHi = base[base.length - 1].end;
+      delta = Math.max(-spanLo, Math.min(durOrig - spanHi, delta));
+      story.regions = base.map(r => ({ start: r.start + delta, end: r.end + delta }));
+      // Every other story is restored from the baseline and then yields whatever the moved story
+      // now covers — the existing claim rule, run against a frozen baseline so it is elastic:
+      // slide over a neighbour and it gives way, slide back and it returns to exactly where it was.
+      this.restoreStoriesFromMoveBaseline(drag, drag.storyId);
+      this.claimRegionsFromOtherStories(story.id, story.regions);
+    } else {
+      const segments = this.masterMap();
+      // The grabbed story's anchor edge, where it was and where the pointer has taken it, both in
+      // the RECORDING's seconds. Their difference is the one delta the whole night moves by.
+      const deltaMaster =
+        timelineToMaster(segments, drag.anchorOriginal + travel) -
+        timelineToMaster(segments, drag.anchorOriginal);
+      const clamped = Math.max(drag.masterDeltaMin!, Math.min(drag.masterDeltaMax!, deltaMaster));
+      for (const story of this.stories) {
+        const base = drag.baseline.get(story.id);
+        if (!base) continue;
+        story.regions = base.map(r => {
+          const start = masterToTimeline(segments, timelineToMaster(segments, r.start) + clamped).seconds;
+          const end = masterToTimeline(segments, timelineToMaster(segments, r.end) + clamped).seconds;
+          // A story whose whole span lands inside material the edit removed maps to a single
+          // timeline second — both ends at the point content resumes. It survives as a one-frame
+          // marker sitting there, VISIBLY, rather than being merged away to nothing: a story is
+          // never silently dropped, and a marker the operator can see and drag back out is the
+          // only honest thing to leave behind.
+          return { start, end: Math.max(end, start + fs) };
+        });
+      }
+      // No claim here: every story moved by the same delta through a monotone map, so they cannot
+      // have crossed each other. There is nobody left standing still to take a span from.
+    }
+    this.requestRender();
+  }
+
+  /** Put every story EXCEPT `exceptId` back exactly as the move drag found it. The claim then
+   *  re-applies against the moved story's current position — that is what makes it elastic. */
+  private restoreStoriesFromMoveBaseline(
+    drag: { baseline: Map<string, { start: number; end: number }[]> },
+    exceptId: string
+  ): void {
+    for (const [id, regions] of drag.baseline) {
+      if (id === exceptId) continue;
+      const s = this.stories.find(st => st.id === id);
+      if (!s) continue;
+      s.regions = regions.map(r => ({ ...r }));
+    }
   }
 
   /**
@@ -4412,26 +4456,24 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   onCanvasHover(ev: MouseEvent): void {
     const canvas = this.canvasRef?.nativeElement;
     if (!canvas) return;
-    // With the stream-marks preview up, the track area is one big east-west handle and nothing
-    // else, so it says so everywhere below the ruler — and says nothing above it, where the ruler
-    // still scrubs. The inline cursor has to be cleared explicitly rather than left to the
-    // .stream-marks-lineup class: that class covers the whole element, ruler included, and every
-    // branch below this one writes an inline cursor that would otherwise outlive the preview.
-    if (this.streamMarksPreview) {
-      // '' hands the cursor back to the .stream-marks-lineup class, which is what makes the
-      // handle visible the instant the preview appears rather than on the first mouse move.
-      canvas.style.cursor = this.canvasEventY(ev) > RULER_H ? '' : 'default';
-      return;
-    }
     if (this.moveDrag) { canvas.style.cursor = 'grabbing'; return; }
-    let over = false;
+    if (this.storyMoveDrag) { canvas.style.cursor = 'grabbing'; return; }
+    // The ribbon has two handles now, and the cursor is the whole discoverability of the second
+    // one: an EDGE resizes (ew-resize, as it always has), and the BLOCK between the edges is a
+    // grab — dragging it moves the story. Shift changes what each of those two does, which a
+    // cursor cannot show; the edge/block distinction is what it can, so that is what it shows.
+    let overEdge = false;
+    let overBlock = false;
     if (this.hasStories() && !this.draggingStoryEdge) {
       const y = this.canvasEventY(ev);
       if (y > RULER_H && y <= RULER_H + this.ribbonHeight) {
-        over = !!this.storyEdgeAtX(this.timeToX(this.canvasEventTime(ev)));
+        const t = this.canvasEventTime(ev);
+        overEdge = !!this.storyEdgeAtX(this.timeToX(t));
+        overBlock = !overEdge && !!this.storyRegionAtEdited(t);
       }
     }
-    if (over || this.draggingStoryEdge) { canvas.style.cursor = 'ew-resize'; return; }
+    if (overEdge || this.draggingStoryEdge) { canvas.style.cursor = 'ew-resize'; return; }
+    if (overBlock) { canvas.style.cursor = 'grab'; return; }
     // The same three tests as mousedown, in the same order, so what the cursor promises is what
     // the press delivers. A highlight EDGE resizes (ruler tab or lane), the playhead scrubs, and
     // only then is the band itself a grab. The cursors are the whole discoverability of all
