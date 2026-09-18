@@ -1544,14 +1544,23 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
        * read by a cloud provider on a run whose every visible field is local; and as of
        * 2026-08-23 it runs for COMPILATION ONLY.
        *
-       * What is left is COMPILATION packaging, which is a declared mode the operator selects,
-       * and the provider clients this service constructs. That is why `fullModel` is still
-       * resolved and still passed — and why the log line now says which of the two it is for.
+       * COMPILATION PACKAGING WENT TOO, on 2026-09-13, and it was the last generation call this
+       * field governed. It fell here for no better reason than that nothing had moved it: an
+       * operator who had routed every field to `claude -p` still watched a compilation go out
+       * over the metered API to whatever Settings remembered. It now follows the routing
+       * table's `titles` selection like the summarizer follows `chapters`
+       * (resolveCompilationPackagingOption).
+       *
+       * What is left is the PROVIDER CLIENTS this service constructs — `fullModel` and its key
+       * are how AIManagerService knows which SDK client to build — plus the API key itself. No
+       * generation call reads it for its model any more, and the log line says so, because a
+       * stale sentence here is how a forgotten setting keeps governing things.
        */
       log.info(
-        `[IPC] Settings AI model ${fullModel} (provider: ${aiProvider}, model: ${aiModel}) is used for COMPILATION ` +
-          `packaging only; per-field metadata follows the routing table, and summarization — now ` +
-          `compilation's alone — runs on ${SUMMARIZATION_MODEL}`
+        `[IPC] Settings AI model ${fullModel} (provider: ${aiProvider}, model: ${aiModel}) no longer selects any ` +
+          `generation call's model — it only names the provider client to construct. Per-field metadata and ` +
+          `compilation packaging both follow the routing table, and summarization — now compilation's alone — ` +
+          `runs on ${SUMMARIZATION_MODEL}`
       );
 
       // Performance-feedback loop: when the active prompt set maps to a
