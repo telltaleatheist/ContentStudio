@@ -39,7 +39,7 @@
  * with nothing to show.
  */
 
-import { Component, ElementRef, OnDestroy, OnInit, computed, inject, signal, viewChild } from '@angular/core';
+import { Component, ElementRef, OnDestroy, OnInit, computed, effect, inject, signal, viewChild } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
 import { MatIconModule } from '@angular/material/icon';
@@ -47,6 +47,11 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { AnalyticsChannel, ElectronService } from '../../services/electron';
 import { PublishState } from '../../features/publish/publish-state';
+import { PublishRunsService } from '../../features/publish/publish-runs.service';
+// The run's own shapes are DEFINED BY THE SERVICE THAT DRIVES IT, and re-exported here
+// only so that importers of this file are not moved by where the runs happen to live.
+import type { UploadRun } from '../../features/publish/publish-runs.service';
+export type { UploadResult, UploadRun } from '../../features/publish/publish-runs.service';
 import { NotificationService } from '../../services/notification';
 import type {
   LinkedVideo,
@@ -354,22 +359,6 @@ export interface DayRow {
   otherEpisodes: EpisodeMirrorChip[];
 }
 
-/** One item's outcome in a bulk run. Every attempt gets one, pass or fail. */
-export interface UploadResult {
-  itemId: string;
-  title: string;
-  /** For a Spreaker row this is the destination's name — the show is where it went. */
-  channelName: string;
-  ok: boolean;
-  /** The main process's refusal, verbatim. Null on success. */
-  error: string | null;
-  /**
-   * The id the destination now holds this item under: a YouTube video id, or a Spreaker
-   * episode id. Null when there is none to name — a failed attempt creates nothing.
-   */
-  remoteId: string | null;
-}
-
 /**
  * One episode the Spreaker lane could send, dated or not.
  *
@@ -389,21 +378,6 @@ export interface SpreakerCandidate {
   readiness: Readiness;
   /** What is still missing, when readiness is `incomplete`. Named, never just counted. */
   missing: string[];
-}
-
-/** The live state of a bulk run. Null when nothing is uploading. */
-export interface UploadRun {
-  /** Items still to attempt, including the one in flight. */
-  queue: string[];
-  total: number;
-  /** 1-based position of the item in flight. */
-  index: number;
-  currentItemId: string | null;
-  currentTitle: string;
-  sentBytes: number;
-  totalBytes: number;
-  /** Set when the operator asks to stop; the in-flight item is aborted and the rest skipped. */
-  cancelling: boolean;
 }
 
 /** One instant, two spellings — offsets differ, the moment may not. Both lanes' rule. */
@@ -441,6 +415,8 @@ export class PublishCalendar implements OnInit, OnDestroy {
    * exists.
    */
   readonly publish = inject(PublishState);
+  /** The dispatch runs. Root-scoped, so they outlive this page — see PublishRunsService. */
+  private readonly runs = inject(PublishRunsService);
 
   /** The column headings, in the order every day row renders them. */
   readonly slotHeads = SLOTS.map((slot) => ({ label: slot.label, destination: slot.destination }));
@@ -477,7 +453,6 @@ export class PublishCalendar implements OnInit, OnDestroy {
   private readonly now = signal(new Date());
   private clock: ReturnType<typeof setInterval> | null = null;
   /** Unsubscribe for the main process's byte-progress ticks. */
-  private stopProgress: (() => void) | null = null;
 
   // ---------------------------------------------------------------- view state
 
@@ -548,9 +523,19 @@ export class PublishCalendar implements OnInit, OnDestroy {
    * be authorized against, and the operator reads that list before anything is sent.
    */
   readonly uploadConfirm = signal<CalendarChip[] | null>(null);
-  readonly uploadRun = signal<UploadRun | null>(null);
+
+  /**
+   * THE RUNS THEMSELVES LIVE IN A ROOT SERVICE, not here — see PublishRunsService.
+   *
+   * The loop always survived leaving the page (destroying a component does not cancel its
+   * async method), but every signal describing it did not: coming back mounted a fresh
+   * component that read idle over a live run and offered to start a second one. These are
+   * re-exposed under their old names so the template still reads them unchanged; the
+   * state they point at now outlives this component.
+   */
+  readonly uploadRun = this.runs.uploadRun;
   /** Results of the last run, kept until dismissed. Failures are the point of it. */
-  readonly uploadResults = signal<UploadResult[]>([]);
+  readonly uploadResults = this.runs.uploadResults;
 
   // ------------------------------------------------------------ the Spreaker run
 
@@ -568,12 +553,12 @@ export class PublishCalendar implements OnInit, OnDestroy {
    * `publish-upload-youtube` reports progress, so a bar here would be a bar that never
    * moves.
    */
-  readonly spreakerRun = signal<{ index: number; total: number; title: string } | null>(null);
-  readonly spreakerResults = signal<UploadResult[]>([]);
+  readonly spreakerRun = this.runs.spreakerRun;
+  readonly spreakerResults = this.runs.spreakerResults;
 
   /** The schedule push in flight, or null. Simpler than an upload: no bytes to report. */
-  readonly pushRun = signal<{ index: number; total: number; title: string } | null>(null);
-  readonly pushResults = signal<UploadResult[]>([]);
+  readonly pushRun = this.runs.pushRun;
+  readonly pushResults = this.runs.pushResults;
 
   // ---------------------------------------------------------------- derivations
 
@@ -897,7 +882,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
     return [...groups.values()];
   });
 
-  readonly uploadFailures = computed(() => this.uploadResults().filter((r) => !r.ok));
+  readonly uploadFailures = this.runs.uploadFailures;
 
   /**
    * Linked, still-private videos whose YouTube schedule is not the one on the board.
@@ -1127,7 +1112,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
     ).length;
   });
 
-  readonly spreakerFailures = computed(() => this.spreakerResults().filter((r) => !r.ok));
+  readonly spreakerFailures = this.runs.spreakerFailures;
 
   /** Chips by local day, which is how the day rows ask for them. */
   private readonly chipsByDay = computed(() => {
@@ -1474,14 +1459,10 @@ export class PublishCalendar implements OnInit, OnDestroy {
 
   async ngOnInit(): Promise<void> {
     this.clock = setInterval(() => this.now.set(new Date()), 60_000);
-    // The same ~4 Hz tick the report panel's single upload draws, read here for whichever
-    // item the run currently has in flight. Ticks for any other item are ignored rather
-    // than assumed to be ours: a single upload can be running on the reports page.
-    this.stopProgress = this.electron.onPublishUploadProgress((p) => {
-      const run = this.uploadRun();
-      if (!run || run.currentItemId !== p.itemId) return;
-      this.uploadRun.set({ ...run, sentBytes: p.sentBytes, totalBytes: p.totalBytes });
-    });
+    // The upload progress tick is NOT subscribed here any more. It belongs to the run,
+    // and the run outlives this page — a listener torn down in ngOnDestroy would stop the
+    // byte counter the moment the operator looked at another tab, which is exactly the
+    // thing this page was asked to stop doing. PublishRunsService binds it once.
     await this.reload();
     // Not awaited: the board is already correct about this app's own records, and the
     // mirror is a live API sweep of three channels. Making the page wait for the network
@@ -1494,8 +1475,30 @@ export class PublishCalendar implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     if (this.clock) clearInterval(this.clock);
-    if (this.stopProgress) this.stopProgress();
   }
+
+  /**
+   * Re-read the board whenever a run finishes, whoever started it.
+   *
+   * A run that ends while this page is open has just changed every record it touched —
+   * video ids, episode ids, schedules YouTube now holds — so the board and the mirror are
+   * both stale. The service ANNOUNCES the finish rather than calling back into whichever
+   * component started the run, because that component may have been destroyed pages ago;
+   * this effect is whatever view happens to be on screen answering for itself. A page
+   * mounted after the run ended needs nothing — ngOnInit reloads anyway.
+   *
+   * The first emission is skipped: `finished` starts at 0 and the effect runs once on
+   * creation, which is not a finished run and would only duplicate ngOnInit's own read.
+   */
+  private lastFinished = this.runs.finished().seq;
+  private readonly finishWatcher = effect(() => {
+    const done = this.runs.finished();
+    if (done.seq === this.lastFinished) return;
+    this.lastFinished = done.seq;
+    // The mirror only when the run touched YouTube. A Spreaker run reloads the board and
+    // stops there, which is the rule that run has always had.
+    void this.reload().then(() => (done.sweep ? this.refreshSweep() : undefined));
+  });
 
   /**
    * Read the index and the channel registry.
@@ -1882,7 +1885,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
   askUploadAll(): void {
     const chips = this.uploadable();
     if (chips.length === 0) return;
-    this.uploadResults.set([]);
+    this.runs.dismissUploadResults();
     this.uploadConfirm.set(chips);
   }
 
@@ -1891,7 +1894,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
   }
 
   dismissUploadResults(): void {
-    this.uploadResults.set([]);
+    this.runs.dismissUploadResults();
   }
 
   /**
@@ -1911,137 +1914,13 @@ export class PublishCalendar implements OnInit, OnDestroy {
     const chips = this.uploadConfirm();
     if (!chips || chips.length === 0) return;
     this.uploadConfirm.set(null);
-
-    const results: UploadResult[] = [];
-    this.uploadRun.set({
-      queue: chips.map((c) => c.itemId),
-      total: chips.length,
-      index: 0,
-      currentItemId: null,
-      currentTitle: '',
-      sentBytes: 0,
-      totalBytes: 0,
-      cancelling: false,
-    });
-
-    // Re-read the index ONCE, before anything is sent. The panel is a snapshot and the
-    // board can have changed while it sat open — and `scheduledChips` only moves when
-    // `entries` does, so without this read the per-item check below would be comparing
-    // the snapshot with itself.
-    await this.reload();
-
-    for (let i = 0; i < chips.length; i++) {
-      const chip = chips[i];
-      const run = this.uploadRun();
-      if (!run || run.cancelling) break;
-
-      // An item that is no longer ready (or no longer on this lane) is skipped BY NAME
-      // rather than sent on stale consent — the Spreaker run's rule.
-      const current = this.scheduledChips().find((c) => c.itemId === chip.itemId);
-      if (!current || current.readiness !== 'ready' || current.destination !== 'youtube') {
-        results.push({
-          itemId: chip.itemId,
-          title: chip.title,
-          channelName: chip.channelName,
-          ok: false,
-          error:
-            'not sent — this item changed while the confirm panel was open ' +
-            (current
-              ? `(it now reads ${current.readiness === 'done' ? 'already uploaded' : `as needing ${current.missing.join(', ')}`})`
-              : '(it is no longer on the board)') +
-            '. Nothing was uploaded for it.',
-          remoteId: null,
-        });
-        this.uploadResults.set([...results]);
-        continue;
-      }
-
-      this.uploadRun.set({
-        ...run,
-        index: i + 1,
-        currentItemId: chip.itemId,
-        currentTitle: chip.title,
-        sentBytes: 0,
-        totalBytes: 0,
-      });
-
-      try {
-        const res = await this.electron.publishUploadYouTube(chip.itemId);
-        if (!res.success || !res.data) {
-          results.push({
-            itemId: chip.itemId,
-            title: chip.title,
-            channelName: chip.channelName,
-            ok: false,
-            error: res.error ?? 'The upload failed and gave no reason.',
-            remoteId: null,
-          });
-        } else {
-          results.push({
-            itemId: chip.itemId,
-            title: chip.title,
-            channelName: chip.channelName,
-            ok: true,
-            error: null,
-            remoteId: res.data.receipt.videoId,
-          });
-        }
-      } catch (err: any) {
-        results.push({
-          itemId: chip.itemId,
-          title: chip.title,
-          channelName: chip.channelName,
-          ok: false,
-          error: err?.message || String(err),
-          remoteId: null,
-        });
-      }
-      // Published as the run goes rather than at the end: a long run should show its
-      // failures while it is still running, not only once everything has been attempted.
-      this.uploadResults.set([...results]);
-    }
-
-    const endedByStop = this.uploadRun()?.cancelling ?? false;
-    this.uploadRun.set(null);
-
-    const failed = results.filter((r) => !r.ok).length;
-    const sent = results.length - failed;
-    const skippedByStop = endedByStop ? chips.length - results.length : 0;
-    if (endedByStop) {
-      // A stop is not a failure and not a finish: the in-flight transfer was aborted (it
-      // lands in the failed count with its own reason) and the rest were never attempted.
-      this.notify.warning(
-        'Uploads stopped',
-        `${sent} uploaded before the stop; ` +
-          `${failed > 0 ? `the one in flight was abandoned; ` : ''}` +
-          `${skippedByStop} never started.`
-      );
-    } else if (failed === 0) {
-      // Created private is a FACT; released-on-schedule is not one this app can promise —
-      // API uploads are policy-locked private pending Google's audit, and the one live
-      // observation contradicts the policy, so the claim stays hedged the same way the
-      // metadata page hedges it.
-      this.notify.success(
-        'Uploads finished',
-        `${sent} video${sent === 1 ? '' : 's'} created on YouTube, private, each carrying ` +
-        `its schedule. Whether the schedule releases them depends on this API project's ` +
-        `audit standing — verify the first one on YouTube rather than assuming.`
-      );
-    } else {
-      // The per-item reasons stay in the results panel; this only says how it ended, so
-      // an operator who walked away is told rather than left to find out.
-      this.notify.error(
-        'Uploads finished with failures',
-        `${sent} uploaded, ${failed} failed. The reasons are listed on the calendar.`
-      );
-    }
-
-    // The records now carry video ids, so the board must re-read them — and YouTube now
-    // holds videos it did not a minute ago, so the mirror must too. AWAITED, unlike the
-    // sweep on page load: the uploaded chips have just left the board, and until the
-    // mirror answers their slots read as empty when they are in fact spoken for.
-    await this.reload();
-    await this.refreshSweep();
+    await this.runs.runYouTubeUpload(
+      chips.map((chip) => ({
+        itemId: chip.itemId,
+        title: chip.title,
+        channelName: chip.channelName,
+      }))
+    );
   }
 
   /**
@@ -2053,13 +1932,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
    * which ones got through.
    */
   async cancelUploadRun(): Promise<void> {
-    const run = this.uploadRun();
-    if (!run) return;
-    this.uploadRun.set({ ...run, cancelling: true });
-    if (run.currentItemId) {
-      const res = await this.electron.publishUploadCancel(run.currentItemId);
-      if (!res.success) this.report(res.error ?? 'The upload could not be cancelled.');
-    }
+    await this.runs.cancelUploadRun();
   }
 
   /** `1.4 GB of 3.1 GB` for the item in flight. */
@@ -2087,7 +1960,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
   askSpreakerRun(): void {
     const items = this.spreakerUploadable();
     if (items.length === 0) return;
-    this.spreakerResults.set([]);
+    this.runs.dismissSpreakerResults();
     this.spreakerConfirm.set(items);
   }
 
@@ -2096,7 +1969,7 @@ export class PublishCalendar implements OnInit, OnDestroy {
   }
 
   dismissSpreakerResults(): void {
-    this.spreakerResults.set([]);
+    this.runs.dismissSpreakerResults();
   }
 
   /**
@@ -2116,106 +1989,14 @@ export class PublishCalendar implements OnInit, OnDestroy {
     const items = this.spreakerConfirm();
     if (!items || items.length === 0) return;
     this.spreakerConfirm.set(null);
-
-    const results: UploadResult[] = [];
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-
-      // Re-checked HERE, not only when the list was built. Everything else in this run is
-      // recoverable — a refusal is one line in the results — but a Spreaker push with no
-      // date is a live release, and there is no unpublish. The panel can sit open while
-      // the board changes underneath it, so the last thing before the call re-asks the
-      // question the panel was opened to answer.
-      if (item.publishAt === null) {
-        results.push({
-          itemId: item.itemId,
-          title: item.title,
-          channelName: SPREAKER_DESTINATION_LABEL,
-          ok: false,
-          error:
-            'Not sent: this episode has no publish date any more, and Spreaker has no draft ' +
-            'state — uploading it would have published it immediately.',
-          remoteId: null,
-        });
-        this.spreakerResults.set([...results]);
-        continue;
-      }
-
-      // The same question, asked of the clock: the count already excludes lapsed dates,
-      // but the panel can sit open across the scheduled minute — confirmed at 4:59 for a
-      // 5:00 episode, pressed at 5:01. The push would refuse it anyway; refusing here
-      // keeps the refusal in this run's own results instead of a main-process error.
-      if (new Date(item.publishAt).getTime() <= Date.now()) {
-        results.push({
-          itemId: item.itemId,
-          title: item.title,
-          channelName: SPREAKER_DESTINATION_LABEL,
-          ok: false,
-          error:
-            `Not sent: its date (${item.when}) passed while this panel was open, and ` +
-            'Spreaker refuses a schedule in the past. Drop it on a future 5 AM slot.',
-          remoteId: null,
-        });
-        this.spreakerResults.set([...results]);
-        continue;
-      }
-
-      this.spreakerRun.set({ index: i + 1, total: items.length, title: item.title });
-      try {
-        const res = await this.electron.publishPushSpreaker(item.itemId);
-        if (!res.success || !res.data) {
-          results.push({
-            itemId: item.itemId,
-            title: item.title,
-            channelName: SPREAKER_DESTINATION_LABEL,
-            ok: false,
-            error: res.error ?? 'The episode upload failed and gave no reason.',
-            remoteId: null,
-          });
-        } else {
-          results.push({
-            itemId: item.itemId,
-            title: item.title,
-            channelName: SPREAKER_DESTINATION_LABEL,
-            ok: true,
-            error: null,
-            remoteId: String(res.data.receipt.episodeId),
-          });
-        }
-      } catch (err: any) {
-        results.push({
-          itemId: item.itemId,
-          title: item.title,
-          channelName: SPREAKER_DESTINATION_LABEL,
-          ok: false,
-          error: err?.message || String(err),
-          remoteId: null,
-        });
-      }
-      this.spreakerResults.set([...results]);
-    }
-
-    this.spreakerRun.set(null);
-
-    const failed = results.filter((r) => !r.ok).length;
-    const sent = results.length - failed;
-    if (failed === 0) {
-      this.notify.success(
-        'Spreaker uploads finished',
-        `${sent} episode${sent === 1 ? '' : 's'} uploaded, each carrying its scheduled date.`
-      );
-    } else {
-      this.notify.error(
-        'Spreaker uploads finished with failures',
-        `${sent} uploaded, ${failed} failed. The reasons are listed on the calendar.`
-      );
-    }
-
-    // The records now carry episode ids, and an episode id is what turns a chip's
-    // readiness to done. Awaited for the same reason the YouTube run awaits its reload:
-    // until it lands, the board is still offering to send what has just been sent. No
-    // sweep follows — that reads YouTube, which knows nothing about any of this.
-    await this.reload();
+    await this.runs.runSpreakerUpload(
+      items.map((item) => ({
+        itemId: item.itemId,
+        title: item.title,
+        publishAt: item.publishAt,
+        when: item.when,
+      }))
+    );
   }
 
   // ---------------------------------------------------------------- schedule push
@@ -2231,49 +2012,21 @@ export class PublishCalendar implements OnInit, OnDestroy {
    * verbatim, and the rest still go.
    */
   async pushSchedules(): Promise<void> {
-    const chips = this.needsSchedulePush();
-    if (chips.length === 0 || this.pushRun() !== null) return;
-
-    this.pushResults.set([]);
-    const results: UploadResult[] = [];
-
-    for (let i = 0; i < chips.length; i++) {
-      const chip = chips[i];
-      this.pushRun.set({ index: i + 1, total: chips.length, title: chip.title });
-      try {
-        const res = await this.electron.publishPushSchedule(chip.itemId);
-        results.push({
-          itemId: chip.itemId,
-          title: chip.title,
-          channelName: chip.channelName,
-          ok: res.success,
-          error: res.success ? null : res.error ?? 'The schedule was refused with no reason given.',
-          remoteId: chip.videoId,
-        });
-      } catch (err: any) {
-        results.push({
-          itemId: chip.itemId,
-          title: chip.title,
-          channelName: chip.channelName,
-          ok: false,
-          error: err?.message || String(err),
-          remoteId: chip.videoId,
-        });
-      }
-      this.pushResults.set([...results]);
-    }
-
-    this.pushRun.set(null);
-    // Re-read YouTube: the whole point is that the board now agrees with it, and the only
-    // way to show that honestly is to ask again rather than assume the writes landed.
-    await this.refreshSweep();
+    await this.runs.runSchedulePush(
+      this.needsSchedulePush().map((chip) => ({
+        itemId: chip.itemId,
+        title: chip.title,
+        channelName: chip.channelName,
+        videoId: chip.videoId,
+      }))
+    );
   }
 
   dismissPushResults(): void {
-    this.pushResults.set([]);
+    this.runs.dismissPushResults();
   }
 
-  readonly pushFailures = computed(() => this.pushResults().filter((r) => !r.ok));
+  readonly pushFailures = this.runs.pushFailures;
 
   // ---------------------------------------------------------------- helpers
 
