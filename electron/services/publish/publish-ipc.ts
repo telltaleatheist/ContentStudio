@@ -63,6 +63,7 @@ import {
   findUsableThumbnail,
   validateThumbnailFile } from './thumbnail-validate';
 import {
+  EpisodeAudioSource,
   ThumbnailSource,
   TranscriptRef,
   MAX_AB_VARIANTS,
@@ -121,6 +122,15 @@ export interface PublishFacts {
    * worth a glance in a way a hand-picked one is not.
    */
   thumbnailSource: ThumbnailSource | null;
+  /**
+   * The same question for the episode audio — 'auto', 'manual', or null.
+   *
+   * 'auto' here means something narrower than it does for a thumbnail: not "found beside
+   * the export" but "this item's own source file IS the audio", which is a lookup rather
+   * than a match. Projected for the same reason as its neighbour — the row can say who
+   * chose the file, not just that one is attached.
+   */
+  spreakerAudioSource: EpisodeAudioSource | null;
   /**
    * Monetization. Always true — see MONETIZATION_ALWAYS_ON.
    *
@@ -727,6 +737,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
                 hasThumbnail: record.thumbnailPath !== null,
                 hasEpisodeAudio: record.spreakerAudioPath !== null,
                 thumbnailSource: record.thumbnailSource,
+                spreakerAudioSource: record.spreakerAudioSource,
                 monetize: MONETIZATION_ALWAYS_ON,
                 spreakerEpisodeId: record.spreakerEpisodeId,
                 abCount: record.chosenTitles.length,
@@ -1674,12 +1685,18 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
 
   // ------------------------------------------------------------------ Spreaker
   //
-  // The podcast half. An item marked `isPodcast` gets an audio file (proposed from the
-  // export's sibling, confirmed by the operator) and then one upload, which CREATES a
-  // public episode. The shape mirrors the thumbnail channels above deliberately: propose,
-  // inspect, set — because it is the same problem (a file on an external volume that this
-  // app must never pick on the operator's behalf) and a second idiom for it would be a
-  // second set of rules to keep in agreement.
+  // The podcast half. An item marked `isPodcast` gets an audio file and then one upload,
+  // which CREATES a public episode. The shape mirrors the thumbnail channels above
+  // deliberately: propose, inspect, set — because it is the same problem (a file on an
+  // external volume) and a second idiom for it would be a second set of rules to keep in
+  // agreement.
+  //
+  // WHERE THE FILE COMES FROM depends on what the source is. An item generated FROM an
+  // audio file already has its audio attached by auto-config before this channel is ever
+  // called — the source is the episode, and there is nothing to propose. These channels
+  // serve the other case: a video source whose audio is a sibling export, which is a guess
+  // about which episode this is and so is proposed and confirmed, never picked on the
+  // operator's behalf.
 
   /**
    * Where this item's episode audio would be, by the naming convention. READ-ONLY: it
@@ -1688,9 +1705,12 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
    * `null` is a FACT, not a failure — most items are videos with no exported audio beside
    * them. A file that IS there and is not usable still throws, naming it.
    *
-   * Never applied automatically, for the same reason the thumbnail proposal is not: the
-   * convention (`podcast 1.mp3` beside `podcast 1.mov`) is a good guess about the file
-   * and no guess at all about whether this item is that episode.
+   * A SIBLING is never applied automatically, for the same reason the thumbnail proposal
+   * is not: the convention (`podcast 1.mp3` beside `podcast 1.mov`) is a good guess about
+   * the file and no guess at all about whether this item is that episode. The case where
+   * the source IS the audio does not reach this handler at all — auto-config attached it
+   * when the record was born, so `spreakerAudioPath` is already set and the panel inspects
+   * rather than proposes.
    */
   ipcMain.handle('publish-propose-audio', async (_e, itemId: string) => {
     try {
@@ -1748,12 +1768,21 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       const generated = requireGenerated(id);
 
       if (absPath === null) {
-        const cleared = await store.update(id, generated, { spreakerAudioPath: null });
+        // 'manual' WITH a null path — the combination that makes the field worth having.
+        // Without it, clearing the audio off an item whose own source is an .mp3 and then
+        // saving anything else would have automatic attachment put it straight back.
+        const cleared = await store.update(id, generated, {
+          spreakerAudioPath: null,
+          spreakerAudioSource: 'manual',
+        });
         return ok({ selection: cleared, meta: null, warnings: [] as string[] });
       }
 
       const { meta, warnings } = await validateAudioFile(absPath, probeAudio);
-      const selection = await store.update(id, generated, { spreakerAudioPath: absPath });
+      const selection = await store.update(id, generated, {
+        spreakerAudioPath: absPath,
+        spreakerAudioSource: 'manual',
+      });
       return ok({ selection, meta, warnings });
     } catch (err: any) {
       return fail(err?.message || String(err));

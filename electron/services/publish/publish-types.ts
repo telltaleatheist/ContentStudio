@@ -136,6 +136,21 @@ export interface ThumbnailMeta {
 export type ThumbnailSource = 'auto' | 'manual';
 
 /**
+ * Who set `spreakerAudioPath`. The audio counterpart of ThumbnailSource, same three
+ * states and the same reason for each of them.
+ *
+ *   'auto'   -> attached by auto-config because the item's OWN SOURCE FILE is the audio.
+ *               Not a guess about which file the episode is: it is the file the operator
+ *               handed the pipeline.
+ *   'manual' -> the operator chose a file — OR deliberately cleared the field, which is
+ *               why 'manual' sits beside a null path. Clearing the audio off a podcast
+ *               whose source is an .mp3 and having the next save put it straight back is
+ *               the exact bug this field exists to stop.
+ *   null     -> nobody has decided. The only state automatic attachment acts on.
+ */
+export type EpisodeAudioSource = 'auto' | 'manual';
+
+/**
  * Monetization is ON, for every video, always.
  *
  * DECIDED 2026-08-23, and it retires a per-item choice rather than defaulting one. The
@@ -471,16 +486,27 @@ export interface ChosenMetadata {
    * Absolute path to the episode audio this item would be uploaded to Spreaker as, or
    * null for none chosen.
    *
-   * PROPOSED, never assumed. The workflow exports `podcast 1.mp3` beside `podcast 1.mov`,
-   * so a sibling with an audio extension is a good guess — and a guess is all it is, which
-   * is why it is offered and confirmed exactly the way an exported thumbnail is. Nothing
-   * writes this field except the operator accepting a file.
+   * TWO WAYS IN, and they answer different questions. When the item's own source file IS
+   * the audio — an .mp3 sent through the pipeline — this is attached automatically, because
+   * there is nothing to guess: that is the file the operator handed over, and asking him to
+   * confirm it was asking him to re-state what he had just done. When the audio is merely a
+   * SIBLING of a video source (`podcast 1.mp3` beside `podcast 1.mov`), the convention is a
+   * good guess about the file and no guess at all about whether this item is that episode,
+   * so it stays a proposal he confirms. `spreakerAudioSource` records which happened.
    *
    * Validated when set (exists, regular file, audio extension, ≤300 MB, and ffprobe finds
    * a real audio stream) and RE-VALIDATED at push time — it points at Callisto, and a
-   * 132 MB file that was there when it was picked is not a claim about now.
+   * 132 MB file that was there when it was picked is not a claim about now. The automatic
+   * attach runs inside a synchronous pass and checks everything but the probe; the push
+   * runs the whole validator, so an unprobeable file is still refused before it is sent.
    */
   spreakerAudioPath: string | null;
+
+  /**
+   * Who set the path above. See EpisodeAudioSource — null is "nobody yet", and it is the
+   * only value automatic attachment is allowed to write over.
+   */
+  spreakerAudioSource: EpisodeAudioSource | null;
 
   /**
    * Spreaker's episode id once this item has been uploaded, or null for never.
@@ -878,10 +904,12 @@ export function emptyChosenMetadata(itemId: string, jobId: string): ChosenMetada
     // deliberate clear is NOT. See ThumbnailSource.
     thumbnailSource: null,
     isPodcast: false,
-    // The four Spreaker fields, written out like every other one. The three that describe
+    // The five Spreaker fields, written out like every other one. The three that describe
     // an upload are null TOGETHER and stay that way until a push succeeds — there is no
     // state in which an item has an episode id but no receipt.
     spreakerAudioPath: null,
+    // null, not 'manual' — see the thumbnailSource note above, which this mirrors exactly.
+    spreakerAudioSource: null,
     spreakerEpisodeId: null,
     spreakerPushedAt: null,
     spreakerReceipt: null,
@@ -953,10 +981,15 @@ export function upgradeStoredMetadata(record: ChosenMetadata): ChosenMetadata {
   // description, because that was the only behaviour there was. Reading absence as `false`
   // would silently strip the chapter block off every existing item on its next push.
   if (!('chaptersInDescription' in stored)) upgraded.chaptersInDescription = true;
-  // Every record written before the Spreaker upload shipped gets null on all four —
+  // Every record written before the Spreaker upload shipped gets null on all of them —
   // no audio chosen, and no episode uploaded. Neither is an inference: a record that
   // predates the feature cannot have uploaded anything through it.
   if (!('spreakerAudioPath' in stored)) upgraded.spreakerAudioPath = null;
+  // Same reading as thumbnailSource: a path already on an old record was put there by the
+  // operator accepting a proposal, because that was the only way a path could get there.
+  if (!('spreakerAudioSource' in stored)) {
+    upgraded.spreakerAudioSource = upgraded.spreakerAudioPath ? 'manual' : null;
+  }
   if (!('spreakerEpisodeId' in stored)) upgraded.spreakerEpisodeId = null;
   if (!('spreakerPushedAt' in stored)) upgraded.spreakerPushedAt = null;
   if (!('spreakerReceipt' in stored)) upgraded.spreakerReceipt = null;

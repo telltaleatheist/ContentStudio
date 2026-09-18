@@ -8,8 +8,10 @@
  *                     routed through channels.json.
  *   thumbnailPath  <- the image he exported beside the video, found by the export
  *                     layout's own naming convention.
+ *   isPodcast /       the source file's own extension: an audio source IS a podcast
+ *   spreakerAudioPath episode, and IS that episode's audio.
  *
- * Neither of these is a guess. Both are LOOKUPS IN A DECLARED TABLE — the channel
+ * None of these is a guess. Both are LOOKUPS IN A DECLARED TABLE — the channel
  * registry and the export layout — and that is the line this module is built along. A
  * fallback is an unexpected code path; a documented convention applied deliberately and
  * announced out loud is a feature. So every decision here, including every decision NOT
@@ -53,7 +55,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { isAudioOnlyExtension } from './audio-validate';
+import { checkAudioFileOnDisk, isAudioOnlyExtension } from './audio-validate';
 import { RoutableChannel, resolveChannelForPromptSet } from './channel-routing';
 import { FieldPatch } from './field-validators';
 import { ChosenMetadata } from './publish-types';
@@ -80,7 +82,7 @@ export interface AutoConfigInput {
 
 /** One decision, in the operator's terms. `detail` is a whole sentence. */
 export interface AutoDecision {
-  field: 'channelId' | 'thumbnail' | 'isPodcast';
+  field: 'channelId' | 'thumbnail' | 'isPodcast' | 'episodeAudio';
   detail: string;
 }
 
@@ -110,6 +112,17 @@ export function autoConfigure(input: AutoConfigInput): AutoConfigResult {
   const destination = autoDestination(input);
   if (destination.patch) patch = { ...patch, ...destination.patch };
   pushInto(destination.decision, destination.bucket, applied, skipped, refused);
+
+  // The audio reads the record as it stands AFTER the destination decision, not before.
+  // The write that flips `isPodcast` on an .mp3 source is the SAME write that should
+  // attach its audio — an item that had to wait for a second save to get the file it was
+  // created from would be the bug this is fixing, one save later.
+  const audio = autoEpisodeAudio({
+    ...input,
+    record: { ...input.record, ...(destination.patch ?? {}) } as ChosenMetadata,
+  });
+  if (audio.patch) patch = { ...patch, ...audio.patch };
+  pushInto(audio.decision, audio.bucket, applied, skipped, refused);
 
   const channel = autoChannel(input);
   if (channel.patch) patch = { ...patch, ...channel.patch };
@@ -198,6 +211,121 @@ function autoDestination(input: AutoConfigInput): FieldOutcome {
         `and it is routed to Spreaker.`,
     },
   };
+}
+
+/**
+ * The episode audio, when the item's own source file IS the audio.
+ *
+ * THE ONE CASE WITH NOTHING TO GUESS. An .mp3 sent through the pipeline is a podcast
+ * episode (that is what autoDestination just decided from the same extension) and it is
+ * that episode's audio — the same file, the one the operator handed over. The sibling
+ * proposal used to be the only way it got attached, which meant the app processed the
+ * file he chose and then asked him to go and choose it again; operator, 2026-09-18: "it
+ * should retain the link to the file I sent through automatically."
+ *
+ * THE SIBLING CASE IS DELIBERATELY NOT DONE HERE. `podcast 1.mp3` beside `podcast 1.mov`
+ * is a good guess about the file and no guess at all about whether this item is that
+ * episode, so it stays a proposal the operator confirms in the panel. The line is
+ * between "the file this item was made from" and "a file that looks related to it", and
+ * only the first side of it is a lookup rather than an inference.
+ *
+ * `spreakerAudioSource === null` — nobody has decided — is the only state this acts on,
+ * exactly as with the thumbnail, and for the sharper half of the same reason: a 'manual'
+ * source with a NULL path is how "I took that audio off" is recorded, and re-attaching
+ * the source file on the next save would be the app overruling him every time he saved a
+ * title.
+ *
+ * A file that is there and unusable is REFUSED with the validator's own message, not
+ * thrown — the write that triggered this pass is almost always about something else, and
+ * an oversized export is no reason to refuse to save a description. Everything but the
+ * ffprobe is checked here (this pass is synchronous by design, see the module note); the
+ * push runs the full validator again, so a silent or unreadable file is still caught
+ * before anything is uploaded.
+ */
+function autoEpisodeAudio(input: AutoConfigInput): FieldOutcome {
+  const { record, sourcePath } = input;
+
+  if (record.spreakerAudioSource !== null) {
+    const detail =
+      record.spreakerAudioSource === 'manual'
+        ? record.spreakerAudioPath
+          ? `${record.spreakerAudioPath} was chosen by hand; automatic attachment does not overwrite it.`
+          : `the episode audio was cleared by hand, so this item deliberately has none.`
+        : `already attached automatically (${record.spreakerAudioPath}).`;
+    return { patch: null, bucket: 'skipped', decision: { field: 'episodeAudio', detail } };
+  }
+
+  if (!record.isPodcast) {
+    return {
+      patch: null,
+      bucket: 'skipped',
+      decision: {
+        field: 'episodeAudio',
+        detail: 'This is not a podcast episode, so it has no episode audio to attach.',
+      },
+    };
+  }
+
+  if (sourcePath === null) {
+    return {
+      patch: null,
+      bucket: 'skipped',
+      decision: {
+        field: 'episodeAudio',
+        detail: 'This item has no source file, so there is nothing that could be its audio.',
+      },
+    };
+  }
+
+  const extension = path.extname(sourcePath).toLowerCase();
+  if (!isAudioOnlyExtension(extension)) {
+    return {
+      patch: null,
+      bucket: 'skipped',
+      decision: {
+        field: 'episodeAudio',
+        detail:
+          `The source is a ${extension || 'file with no extension'}, not audio, so the ` +
+          `episode audio is a sibling export rather than this file — which is a guess, and ` +
+          `guesses are confirmed in the panel rather than applied here.`,
+      },
+    };
+  }
+
+  if (!fs.existsSync(sourcePath)) {
+    return {
+      patch: null,
+      bucket: 'skipped',
+      decision: {
+        field: 'episodeAudio',
+        detail:
+          `${sourcePath} is this item's source and an audio file, but it is not there now ` +
+          `— most likely the volume is unmounted. Nothing is attached, and saving again ` +
+          `once it is back will pick it up.`,
+      },
+    };
+  }
+
+  try {
+    const facts = checkAudioFileOnDisk(sourcePath);
+    return {
+      patch: { spreakerAudioPath: sourcePath, spreakerAudioSource: 'auto' },
+      bucket: 'applied',
+      decision: {
+        field: 'episodeAudio',
+        detail:
+          `attached ${sourcePath} automatically — it is this item's own source, a ` +
+          `${facts.extension} of ${facts.bytes} bytes, so it is the episode. Choose another ` +
+          `file or clear it in the panel to override.`,
+      },
+    };
+  } catch (err: any) {
+    return {
+      patch: null,
+      bucket: 'refused',
+      decision: { field: 'episodeAudio', detail: err?.message || String(err) },
+    };
+  }
 }
 
 /** One field's answer: the patch it decided (or none), and which bucket to say it in. */

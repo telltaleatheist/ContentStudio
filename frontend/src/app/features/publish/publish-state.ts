@@ -33,6 +33,7 @@ import {
   ThumbnailMeta,
   ThumbnailPreview,
   ThumbnailProposal,
+  EpisodeAudioSource,
   ThumbnailSource,
   UploadReceipt,
 } from './publish.types';
@@ -319,6 +320,11 @@ export class PublishState {
    */
   readonly thumbnailSource = computed<ThumbnailSource | null>(
     () => this._selection()?.thumbnailSource ?? null
+  );
+
+  /** Who attached the episode audio — 'auto' (it is the source), 'manual', or nobody. */
+  readonly spreakerAudioSource = computed<EpisodeAudioSource | null>(
+    () => this._selection()?.spreakerAudioSource ?? null
   );
 
   /** Podcast episode rather than a YouTube-first video. False until set otherwise. */

@@ -1453,6 +1453,11 @@ export class MetadataReports implements OnInit, OnDestroy {
     if (toSpreaker) {
       const episodeId = this.publish.spreakerEpisodeId();
       const audio = this.publish.spreakerAudioPath();
+      // WHO attached it is in the hint, not the state — the same call the thumbnail tick
+      // above makes. An .mp3 that came through the pipeline is its own episode audio and
+      // is as usable as one picked by hand, so it is not a warning; it is just worth being
+      // able to read off the row that nobody chose it.
+      const audioSource = this.publish.spreakerAudioSource();
       ticks.push({
         key: 'link',
         label: 'Link',
@@ -1463,7 +1468,10 @@ export class MetadataReports implements OnInit, OnDestroy {
           episodeId !== null
             ? `Already uploaded as episode ${episodeId}. A second upload is a second episode.`
             : audio
-              ? 'The episode audio this upload would send.'
+              ? audioSource === 'auto'
+                ? 'This item\'s own source file, attached automatically — it is the episode. ' +
+                  'Choose another file or clear it to override.'
+                : 'The episode audio this upload would send.'
               : 'No episode audio is chosen, and an episode is the audio.',
       });
     } else {

@@ -149,17 +149,28 @@ export function formatDuration(seconds: number): string {
     : `${mm}:${String(s).padStart(2, '0')}`;
 }
 
+/** What the filesystem alone says about a candidate episode audio file. */
+export interface AudioFileFacts {
+  bytes: number;
+  /** Lower-cased, with the dot, as `path.extname` returns. */
+  extension: string;
+  /** True for `.m4a` — accepted, but not on Spreaker's documented list. */
+  undocumented: boolean;
+}
+
 /**
- * Validate one audio file, or throw naming the file, the value and the rule.
+ * The filesystem half of `validateAudioFile` — every rule decidable without ffprobe.
  *
- * ORDER IS DELIBERATE: the cheap filesystem facts are checked before ffprobe is spawned,
- * so a path that is a directory, or a 4 GB .mov somebody picked by mistake, is refused
- * without a subprocess and without reading a byte.
+ * Split out rather than duplicated because automatic attachment (auto-config.ts) runs
+ * inside a SYNCHRONOUS pass over every record write and cannot spawn a probe, yet must
+ * refuse a directory, an empty file or a 4 GB .mov by the same rules and in the same
+ * words. Two copies of these messages would be two rulebooks to keep in agreement, which
+ * is the thing this codebase refuses.
+ *
+ * Throws exactly as the full validator does, in the same order, and returns the cheap
+ * facts the probe half then adds to.
  */
-export async function validateAudioFile(
-  absPath: string,
-  probe: (file: string) => Promise<AudioProbe>
-): Promise<AudioValidation> {
+export function checkAudioFileOnDisk(absPath: string): AudioFileFacts {
   if (typeof absPath !== 'string' || !absPath.trim()) {
     throw new Error(`An audio file path is required; got ${JSON.stringify(absPath)}.`);
   }
@@ -205,6 +216,22 @@ export async function validateAudioFile(
     );
   }
 
+  return { bytes: st.size, extension, undocumented };
+}
+
+/**
+ * Validate one audio file, or throw naming the file, the value and the rule.
+ *
+ * ORDER IS DELIBERATE: the cheap filesystem facts are checked before ffprobe is spawned,
+ * so a path that is a directory, or a 4 GB .mov somebody picked by mistake, is refused
+ * without a subprocess and without reading a byte.
+ */
+export async function validateAudioFile(
+  absPath: string,
+  probe: (file: string) => Promise<AudioProbe>
+): Promise<AudioValidation> {
+  const { bytes, extension, undocumented } = checkAudioFileOnDisk(absPath);
+
   const probed = await probe(absPath);
   if (!probed || typeof probed !== 'object') {
     throw new Error(`Probing ${absPath} returned ${JSON.stringify(probed)}, which says nothing about it.`);
@@ -233,14 +260,14 @@ export async function validateAudioFile(
   if (probed.hasVideo) {
     warnings.push(
       `This file also carries a video stream, so the whole of it is uploaded and only the ` +
-      `audio is ever heard. If that is the ${mb(st.size)} .mov rather than the exported ` +
+      `audio is ever heard. If that is the ${mb(bytes)} .mov rather than the exported ` +
       `audio, choose the audio instead.`
     );
   }
 
   return {
     meta: {
-      bytes: st.size,
+      bytes,
       durationSec: probed.durationSec,
       extension,
       audioCodec: probed.audioCodec ?? 'unknown',

@@ -60,6 +60,16 @@ export interface ThumbnailMeta {
 export type ThumbnailSource = 'auto' | 'manual';
 
 /**
+ * Who put the current episode-audio state there. Mirror of
+ * publish-types.EpisodeAudioSource.
+ *
+ * 'auto' means the item's own source file IS the audio — an .mp3 sent through the
+ * pipeline — and was attached when the record was born. 'manual' is the operator's
+ * choice, INCLUDING a deliberate clear, which is why it sits beside a null path.
+ */
+export type EpisodeAudioSource = 'auto' | 'manual';
+
+/**
  * The extensions the thumbnail picker and the drop zone accept.
  *
  * Exactly what the main process's validateThumbnailFile accepts, and the reason this list
@@ -489,11 +499,16 @@ export interface ChosenMetadata {
   /** Strictly boolean and never absent — see the _is_compilation lesson. */
   isPodcast: boolean;
   /**
-   * Absolute path to the episode audio, or null. Proposed from the export's sibling
-   * (`podcast 1.mp3` beside `podcast 1.mov`), never applied without confirmation, and
-   * re-validated at upload time.
+   * Absolute path to the episode audio, or null. Re-validated at upload time.
+   *
+   * Attached automatically when the item's own source file is the audio, and PROPOSED
+   * (`podcast 1.mp3` beside `podcast 1.mov`) when it is a sibling of a video source —
+   * the first is the file the operator handed over, the second is a guess about which
+   * episode this is. `spreakerAudioSource` says which happened.
    */
   spreakerAudioPath: string | null;
+  /** Who attached it — see EpisodeAudioSource. null is "nobody has decided". */
+  spreakerAudioSource: EpisodeAudioSource | null;
   /**
    * Spreaker's episode id once uploaded, or null for never — AND the duplicate guard.
    * A Spreaker push is a CREATE, so pushing twice publishes a second episode rather than
@@ -598,6 +613,8 @@ export interface PublishFacts {
   hasEpisodeAudio: boolean;
   /** Who attached it — 'auto', 'manual', or null when nobody has decided. */
   thumbnailSource: ThumbnailSource | null;
+  /** The same question for the episode audio. See EpisodeAudioSource. */
+  spreakerAudioSource: EpisodeAudioSource | null;
   /** Always true. Kept in the projection so the fact row can ANSWER rather than assume. */
   monetize: true;
   /** Spreaker's episode id once uploaded, or null for never — the podcast half of "sent". */
