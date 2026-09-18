@@ -230,6 +230,30 @@ check('chapter resolution reads the chapters entry, and the view carries the mod
 });
 
 /**
+ * COMPILATION PACKAGING IS ROUTED (2026-09-13).
+ *
+ * It used to read the Settings page's legacy "AI Model" field, so a routing table set
+ * entirely to `claude -p` still sent the one call a compilation makes to whatever Settings
+ * remembered — on 2026-09-13, the metered Sonnet API. This is the check that the selection
+ * an operator can actually see is the selection that runs, including through the
+ * bare-Ollama-name conversion that tripped the first draft of the fix.
+ */
+check('compilation packaging follows the titles selection, provider-prefixed', () => {
+  const cli = routing.resolveMetadataRouting({ titles: 'claude-cli' });
+  eq(routing.resolveCompilationPackagingOption(cli).model, 'claude-cli:opus');
+  eq(routing.routedModelString(routing.resolveCompilationPackagingOption(cli)), 'claude-cli:opus',
+    'a cloud option is already the string makeRequest routes on');
+
+  // The default titles rung is LOCAL, and its stored model is the bare Ollama name.
+  // makeRequest throws on an unprefixed model, so the default compilation would have died
+  // at "Invalid model format" had the conversion been left out.
+  const stock = routing.resolveMetadataRouting(undefined);
+  eq(routing.resolveCompilationPackagingOption(stock).model, 'qwen3.8:27b');
+  eq(routing.routedModelString(routing.resolveCompilationPackagingOption(stock)), 'ollama:qwen3.8:27b',
+    'a local option is prefixed for the transport, never renamed');
+});
+
+/**
  * THE ADAPTERS ARE GONE (2026-08-25), AND A STORE THAT STILL NAMES ONE MUST SAY SO.
  *
  * `headline-titles-32b` was a real, working, selectable option the day before this build: its

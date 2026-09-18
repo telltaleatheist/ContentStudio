@@ -30,7 +30,9 @@ import {
   METADATA_ROUTING_OPTIONS,
   ResolvedMetadataRouting,
   resolveChapterModelOption,
+  resolveCompilationPackagingOption,
   resolveMetadataRouting,
+  routedModelString,
   routingOption,
 } from './metadata-routing';
 import type { ModelRosterEntry } from './metadata-tasks';
@@ -578,13 +580,21 @@ export class MetadataGeneratorService {
 
         // Generate single metadata for compilation with hardcoded compilation instructions
         params.progressCallback?.('generating', 'Generating metadata for compilation...', 50);
+        // The packaging call is ROUTED, on the `titles` selection — see
+        // resolveCompilationPackagingOption for why that row and not another. Resolved here
+        // rather than inside AIManagerService for the same reason every other model is: the
+        // manager routes on a model string, it does not read the routing table.
+        const packagingOption = resolveCompilationPackagingOption(
+          resolveMetadataRouting(params.metadataRouting)
+        );
         const metadata = await aiManager.generateCompilationMetadata(
           summary,
           jobName,
           {
             sourceCount: contentItems.length,
             contentTypes: uniqueContentTypes
-          }
+          },
+          routedModelString(packagingOption)
         );
 
         // Add compilation info

@@ -808,9 +808,14 @@ export class AIManagerService {
    * Run the request + parse + links loop against an ALREADY-assembled prompt.
    * Split out of generateMetadata so the "Show prompt" flow can assemble the prompt
    * up front and later send this exact prompt when the user confirms.
+   *
+   * `model` is REQUIRED and has no default (2026-09-13). Its one caller today is
+   * compilation packaging, and the absent argument was exactly how that call ended up on
+   * `metadataModel` — a model nobody in the routing table had chosen. Anything that sends an
+   * assembled prompt names what sends it.
    */
-  async generateMetadataFromAssembledPrompt(prompt: string): Promise<MetadataResult> {
-    const { metadata } = await this.runMetadataRequest(prompt);
+  async generateMetadataFromAssembledPrompt(prompt: string, model: string): Promise<MetadataResult> {
+    const { metadata } = await this.runMetadataRequest(prompt, model);
 
     console.log(`[AIManager] === METADATA GENERATION COMPLETE ===`);
     console.log(`[AIManager]     Generated ${Object.keys(metadata).length} fields`);
@@ -838,11 +843,19 @@ export class AIManagerService {
    * that already has one. So this call stays, gated on `compilationInfo` being present in the
    * signature rather than at runtime, named for what it is, and logged as a declared mode every
    * time it runs.
+   *
+   * WHAT IT NO LONGER SHARES WITH THE LEGACY PATH IS THE MODEL (2026-09-13). `model` is
+   * REQUIRED, for the same reason `compilationInfo` is: until this parameter existed the call
+   * fell through to `metadataModel` — the very Settings field described above — so a
+   * compilation was the one run in this app that ignored the routing table outright. It now
+   * comes in resolved (resolveCompilationPackagingOption: the `titles` selection) and is named
+   * in the log line below, so a compilation is routed like everything else and says so.
    */
   async generateCompilationMetadata(
     content: string,
     sourceName: string | undefined,
-    compilationInfo: { sourceCount: number; contentTypes: string[] }
+    compilationInfo: { sourceCount: number; contentTypes: string[] },
+    model: string
   ): Promise<MetadataResult> {
     if (!this.currentPromptSet) {
       throw new Error('No prompt set loaded');
@@ -850,13 +863,14 @@ export class AIManagerService {
 
     log.info(
       `[AIManager] DECLARED MODE: compilation packaging for ${sourceName || 'unknown'} — one whole-metadata call ` +
-        `covering ${compilationInfo.sourceCount} item(s) on ${this.metadataModel}, because a compilation's umbrella ` +
-        `title and bulleted description are a different request shape from the routed per-field units`
+        `covering ${compilationInfo.sourceCount} item(s) on ${model} (the routing table's "titles" selection, ` +
+        `resolveCompilationPackagingOption), because a compilation's umbrella title and bulleted description are ` +
+        `a different request shape from the routed per-field units`
     );
     console.log(`[AIManager]     Content length: ${content.length} chars`);
 
     const prompt = this.createCompilationPrompt(content, sourceName, compilationInfo);
-    return this.generateMetadataFromAssembledPrompt(prompt);
+    return this.generateMetadataFromAssembledPrompt(prompt, model);
   }
 
   /**
@@ -1705,7 +1719,11 @@ export class AIManagerService {
       );
 
       // Warn if the response was cut off at num_predict — the JSON is likely
-      // incomplete and will fail parsing (mirror the Claude max_tokens check).
+      // incomplete and will fail parsing. This DETECTS the same thing the Claude
+      // max_tokens check does but still only warns, where that one now throws
+      // (2026-09-13): a truncated Ollama answer has always reached the caller and
+      // failed at the parse, and changing that is a separate decision about a
+      // separate transport, not a side effect of fixing the Claude ceiling.
       if (response.data.done_reason === 'length') {
         log.warn(`[AIManager] Ollama response was truncated (done_reason=length, hit num_predict=${AIManagerService.OLLAMA_NUM_PREDICT} limit)!`);
       }
@@ -1997,15 +2015,30 @@ export class AIManagerService {
         // legitimate answer stays under ~2500 tokens, and a hard stage-1 thinks ~6000 on
         // top of it (measured 2026-08-24 03:49: 5871 output tokens around a 325-char
         // boundary list).
-        max_tokens: plain && supportsAdaptive ? 16000 : 8000,
+        //
+        // THE CEILING IS NOT CONDITIONED ON `plain` ANY MORE (2026-09-13). It used to be —
+        // 16000 for the plain path, 8000 for the JSON path — on the assumption that a call
+        // which does not ASK for thinking does not get any. That assumption is false: a
+        // 5-family model runs adaptive thinking when the `thinking` parameter is absent,
+        // and returns it with `display: "omitted"`, so the JSON path was thinking into an
+        // 8000-token ceiling it was never sized for. It cost a whole compilation run
+        // (2026-09-13 17:30 and again 17:31): stop_reason max_tokens, output=8000, and NO
+        // text block at all, because the budget went entirely on reasoning that never
+        // reached an answer. The same call squeaked in at output=7336 on 2026-09-06. One
+        // ceiling, sized for thinking, on every call to a model that thinks.
+        max_tokens: supportsAdaptive ? 16000 : 8000,
         messages: [{ role: 'user', content: prompt }],
       };
+      // Asked for EXPLICITLY on both paths as of 2026-09-13, where this used to sit inside
+      // the `plain` branch — same reason the ceiling is now shared: it is the mode these
+      // models run anyway, and a request that receives adaptive thinking without naming it
+      // is a request nobody sized.
+      if (supportsAdaptive) params.thinking = { type: 'adaptive' };
       if (plain) {
         // The plain contract, in the channel built for it: answer in the requested shape,
         // reasoning stays internal (with adaptive thinking there is a real internal for it
         // to stay in). Same asset the field prompts carry inline.
         params.system = SYSTEM_PROMPTS.PLAIN_SYSTEM;
-        if (supportsAdaptive) params.thinking = { type: 'adaptive' };
       } else {
         // The JSON nudge, for the two JSON callers left: the compilation package and the
         // episode splitter. Every routed field call goes through runPlainRequest instead.
@@ -2024,13 +2057,35 @@ export class AIManagerService {
       log.info(`[AIManager] Claude stop_reason: ${response.stop_reason}`);
       log.info(`[AIManager] Claude usage: input=${response.usage.input_tokens}, output=${response.usage.output_tokens}`);
 
-      // Warn if response was truncated
+      const textBlock = response.content.find((block) => block.type === 'text');
+      const text = textBlock?.type === 'text' ? textBlock.text : null;
+
+      // A TRUNCATED ANSWER IS A FAILED REQUEST, and it throws (2026-09-13).
+      //
+      // This used to log a warning and hand the caller whatever it had — which was either a
+      // JSON fragment that failed to parse, a description cut off mid-sentence that would
+      // have been published as written, or, when the whole budget went on thinking, NO text
+      // block and therefore `null`. That last shape is what the operator actually saw: null
+      // travels up to runMetadataRequest, which reports it as "No response from AI", retries
+      // the identical request, burns the identical ceiling, and fails the run with a message
+      // describing something that did not happen. The model answered; the request was too
+      // small to hold the answer.
+      //
+      // So it is named here, once, as itself. The empty-answer contract is UNCHANGED for a
+      // call that ran to completion: `end_turn` with no text still returns null, and
+      // runPlainRequest still treats that as this field's decision rather than the run's.
       if (response.stop_reason === 'max_tokens') {
-        log.warn('[AIManager] Response was truncated due to max_tokens limit!');
+        const got = text
+          ? `${text.length} chars of text, cut off mid-answer`
+          : 'no text block at all — the whole budget went on thinking';
+        throw new Error(
+          `the answer from "${actualModel}" was cut off at the ${params.max_tokens}-token ceiling ` +
+            `(${response.usage.output_tokens} output tokens, ${got}). A truncated answer must not be ` +
+            `published, so nothing is returned. Route this call to a model with more room, or shorten its input.`
+        );
       }
 
-      const textBlock = response.content.find((block) => block.type === 'text');
-      return textBlock?.type === 'text' ? textBlock.text : null;
+      return text;
     } catch (error: any) {
       if (isAbortError(error)) {
         throw new JobCancelledError(`the Claude request to "${model}" was aborted mid-flight`);

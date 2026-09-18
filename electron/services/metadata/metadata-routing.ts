@@ -394,6 +394,37 @@ export function resolveChapterModelOption(resolved: ResolvedMetadataRouting): Me
 }
 
 /**
+ * Which model writes a COMPILATION's package: the `titles` task's own selection.
+ *
+ * A compilation is the one surviving whole-metadata call (ai-manager's
+ * generateCompilationMetadata) — N unrelated items, one umbrella title, a bulleted
+ * description — so it is not a routed task and it writes several routed fields at once.
+ * That left it, until 2026-09-13, reading `metadataModel`: the Settings page's legacy "AI
+ * Model" picker, the same forgotten field the per-item legacy path was killed for. The
+ * result was exactly the divergence this module exists to remove — an operator who had
+ * routed every field to `claude -p` watched the run go out over the metered API to whatever
+ * Settings still said, and the run's only clue was one log line naming a model nobody had
+ * chosen. (It then failed, but that was a second bug; being unroutable was this one.)
+ *
+ * IT FOLLOWS `titles`, and that is a choice with a reason rather than an arbitrary pick of
+ * one row among five. The umbrella title is the field a compilation exists to produce and
+ * the hardest judgement in the call; titles is a modal row, so the selection is one the
+ * operator can actually see and change; and it is offered every rung this call could want.
+ * The alternative — a `compilation` row of its own — would put a task in the modal that most
+ * runs never touch, and would have to be answered by operators who never make compilations.
+ *
+ * Same shape as the compilation SUMMARIZER following `chapters` (ipc-handlers): a fixed,
+ * stated part of the compilation pipeline, declared in this module, resolved from the
+ * routing table, and logged by name at the call site. Not a fallback — there is no absent
+ * setting here, because `titles` always resolves.
+ */
+export function resolveCompilationPackagingOption(
+  resolved: ResolvedMetadataRouting
+): MetadataRoutingOption {
+  return routingOption('titles', resolved.titles);
+}
+
+/**
  * Ids this build used to offer, and why they went. Read by `migrateStoredRouting` ONLY.
  *
  * An existing store holds whatever the user last chose, and on 2026-08-22 a whole task and
@@ -629,6 +660,25 @@ export function migrateStoredRouting(stored: unknown): MetadataRoutingMigration 
 export function routingOption(taskId: MetadataRoutingTaskId, optionId: string): MetadataRoutingOption {
   validateRoutingSelection(taskId, optionId);
   return METADATA_ROUTING_OPTIONS[optionId];
+}
+
+/**
+ * One option as the PROVIDER-PREFIXED string AIManagerService.makeRequest routes on.
+ *
+ * A cloud option already is one. A local option is stored as the bare Ollama name (as
+ * `ollama list` prints it) because that is what the local field units and the residency
+ * budget want, and `makeRequest` rejects a model with no provider prefix — correctly, since
+ * an unprefixed name is exactly the shape that used to get sent wherever the last client
+ * happened to point.
+ *
+ * This exists for the callers that hand an option to `makeRequest` rather than to the local
+ * transport: compilation packaging is the one today. It is a MECHANICAL conversion of the
+ * operator's own selection — it never picks a different model — and every local option in
+ * this table is an Ollama model on the one configured host, which is the fact that makes one
+ * prefix correct rather than a guess.
+ */
+export function routedModelString(option: MetadataRoutingOption): string {
+  return option.kind === 'cloud' ? option.model : `ollama:${option.model}`;
 }
 
 /**
