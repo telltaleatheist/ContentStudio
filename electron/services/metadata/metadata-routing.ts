@@ -345,9 +345,12 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     label: 'Tags',
     options: ['qwen35-9b', 'qwen35-4b', 'qwen38-27b', 'sonnet5', 'opus5', 'claude-cli', 'claude-cli-sonnet'],
     defaultOptionId: 'qwen35-9b',
-    // NOT a modal row — the operator's "if we use 9b for something then leave it". The
-    // 9b/4b A/B stays a stored per-task entry set outside the modal, as it always was.
-    modal: false,
+    // A modal row since 2026-09-24. It used to be hidden (the 9b/4b A/B lived as a stored
+    // entry set outside the modal), which meant a routing dialog showing every row on
+    // claude -p still ran the local 9B for tags on chapterless items. Owen: "it should not be
+    // using anything but claude -p for any ai calls ever if all routing is set to claude -p".
+    // Every model a run can call is a row the operator can see.
+    modal: true,
   },
   {
     id: 'thumbnail_text',

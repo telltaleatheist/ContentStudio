@@ -72,6 +72,7 @@ import {
   probeOllamaInventory,
   resolveChapterModelOption,
   resolveMetadataRouting,
+  routedModelString,
   validateRoutingSelections,
 } from '../services/metadata/metadata-routing';
 import { PROMPTS_SUBDIR, initPromptAssets, promptAssets, reloadPromptAssets } from '../services/metadata/prompt-assets';
@@ -3294,23 +3295,27 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       const srtSegments = wordsToSegments(parsed.data.words, parsed.data.meta.speakers);
       const totalDurationSeconds = parsed.data.summary.durationSeconds;
 
-      // Resolve AI provider/model/key from settings — identical to generate-metadata.
+      // The model is the CHAPTERS field's routing — episodes are chaptering at the coarsest
+      // granularity (Owen, 2026-09-23), and the routing table is the only thing that picks a
+      // model (Owen, 2026-09-24: "it should never call something i didnt expect it to call").
+      // This used to read the legacy Settings model (metadataModel/aiModel), which sent the
+      // split to the paid Anthropic API even when every routed field was on claude -p.
       const settings = (store as any).store;
       const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
       let apiKeys: any = {};
       if (fs.existsSync(apiKeysPath)) apiKeys = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
-      const aiModel = settings.metadataModel || settings.aiModel || settings.ollamaModel;
-      const aiProvider = (settings.metadataProvider || settings.aiProvider || 'ollama') as 'ollama' | 'openai' | 'claude';
-      const fullModel = aiModel ? `${aiProvider}:${aiModel}` : undefined;
-      let apiKey: string | undefined;
-      if (aiProvider === 'openai') apiKey = apiKeys.openaiApiKey;
-      else if (aiProvider === 'claude') apiKey = apiKeys.claudeApiKey;
+      const chapterOption = resolveChapterModelOption(
+        resolveMetadataRouting(migrateStoredRouting(settings.metadataRouting).selections)
+      );
+      const fullModel = routedModelString(chapterOption);
+      const aiProvider = (chapterOption.kind === 'local' ? 'ollama' : 'claude') as 'ollama' | 'openai' | 'claude';
+      log.info(`[TranscriptSplit] Routed to the chapters selection: ${fullModel}`);
 
       const aiConfig: AIConfig = {
         provider: aiProvider,
         metadataModel: fullModel,
         summarizationModel: fullModel,
-        apiKey,
+        cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
         host: settings.ollamaHost || 'http://localhost:11434',
         // Where the prompt assets live. Every prompt is an asset now, including the
         // episode-split one, so a service built without this has nowhere to read them from.

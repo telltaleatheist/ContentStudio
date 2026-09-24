@@ -450,52 +450,29 @@ export class AIManagerService {
       // Load prompts
       this.loadPrompts();
 
-      // Helper to check if a model belongs to a specific provider
-      const isClaudeModel = (model: string) =>
-        model.startsWith('claude-') || model.startsWith('claude:');
-      const isOpenAIModel = (model: string) =>
-        model.startsWith('gpt-') || model.startsWith('openai:');
-      const isOllamaModel = (model: string) =>
-        !isClaudeModel(model) && !isOpenAIModel(model);
+      // Only Ollama is prepared here. Cloud providers are NOT probed at startup (operator,
+      // 2026-09-24): the old probe spent a paid Anthropic/OpenAI call on the LEGACY
+      // Settings model (metadataModel, e.g. claude:claude-sonnet-5) before every run, even
+      // when per-field routing sends every field to `claude -p` on the subscription —
+      // so an empty API balance failed runs that never touch the API ("credit balance is
+      // too low"). A cloud client is created by ensureProviderReady() the first time a
+      // routed call actually needs it, and a missing key or refused call fails THAT call,
+      // loudly, naming the provider and model.
+      const isCloudModel = (model: string) =>
+        model.startsWith('claude') || model.startsWith('openai:') || model.startsWith('gpt-');
+      const needsOllama = !isCloudModel(this.summaryModel) || !isCloudModel(this.metadataModel);
 
-      // Detect which providers are needed based on models
-      const needsOllama = isOllamaModel(this.summaryModel) || isOllamaModel(this.metadataModel);
-      const needsOpenAI = isOpenAIModel(this.summaryModel) || isOpenAIModel(this.metadataModel);
-      const needsClaude = isClaudeModel(this.summaryModel) || isClaudeModel(this.metadataModel);
-
-      log.info(`[AIManager] Provider detection: needsOllama=${needsOllama}, needsOpenAI=${needsOpenAI}, needsClaude=${needsClaude}`);
+      log.info(`[AIManager] Provider detection: needsOllama=${needsOllama} (cloud providers prepare on first routed call)`);
       log.info(`[AIManager] Models: summary=${this.summaryModel}, metadata=${this.metadataModel}`);
-
-      // Initialize all needed providers
-      let anySuccess = false;
 
       if (needsOllama) {
         log.info('[AIManager] Initializing Ollama...');
         const success = await this.initializeOllama();
         log.info(`[AIManager] Ollama initialization: ${success ? 'SUCCESS' : 'FAILED'}`);
-        if (success) anySuccess = true;
+        return success;
       }
 
-      if (needsOpenAI) {
-        log.info('[AIManager] Initializing OpenAI...');
-        const success = await this.initializeOpenAI();
-        log.info(`[AIManager] OpenAI initialization: ${success ? 'SUCCESS' : 'FAILED'}`);
-        if (success) anySuccess = true;
-      }
-
-      if (needsClaude) {
-        log.info('[AIManager] Initializing Claude...');
-        const success = await this.initializeClaude();
-        log.info(`[AIManager] Claude initialization: ${success ? 'SUCCESS' : 'FAILED'}`);
-        if (success) anySuccess = true;
-      }
-
-      if (!anySuccess) {
-        log.error('[AIManager] No AI providers initialized successfully');
-        this.lastInitError = this.lastInitError || 'No AI providers initialized successfully';
-      }
-
-      return anySuccess;
+      return true;
     } catch (error) {
       log.error('[AIManager] Initialization failed:', error);
       console.error('[AIManager] Initialization failed:', error);
@@ -526,89 +503,6 @@ export class AIManagerService {
     } catch (error: any) {
       log.error('[AIManager] Cannot connect to Ollama:', error?.message || error);
       this.lastInitError = `Cannot connect to Ollama at ${this.config.host || 'http://localhost:11434'}: ${error?.message || error}`;
-      return false;
-    }
-  }
-
-  /**
-   * Initialize OpenAI provider
-   */
-  private async initializeOpenAI(): Promise<boolean> {
-    try {
-      if (!this.config.apiKey) {
-        log.error('[AIManager] OpenAI API key required');
-        this.lastInitError = 'OpenAI API key required';
-        return false;
-      }
-
-      this.openaiClient = new OpenAI({
-        apiKey: this.config.apiKey,
-      });
-
-      // Pick whichever configured model is actually an OpenAI model — either
-      // summaryModel or metadataModel may belong to a different provider. Strip
-      // the "openai:" prefix before sending to the API.
-      const isOpenAIModel = (m: string) => m.startsWith('openai:') || m.startsWith('gpt-');
-      const openaiModel = isOpenAIModel(this.summaryModel) ? this.summaryModel : this.metadataModel;
-      const testModel = openaiModel.replace('openai:', '');
-
-      // Test with a simple request
-      log.info(`[AIManager] Testing OpenAI connection with model: ${testModel}`);
-      await this.openaiClient.chat.completions.create({
-        model: testModel,
-        messages: [{ role: 'user', content: 'Test' }],
-        max_tokens: 5,
-      });
-
-      log.info('[AIManager] OpenAI connected successfully');
-      return true;
-    } catch (error: any) {
-      log.error('[AIManager] Cannot connect to OpenAI:', error?.message || error);
-      this.lastInitError = `Cannot connect to OpenAI: ${error?.message || error}`;
-      return false;
-    }
-  }
-
-  /**
-   * Initialize Claude (Anthropic) provider
-   */
-  private async initializeClaude(): Promise<boolean> {
-    // Pick whichever configured model is actually a Claude model — either
-    // summaryModel or metadataModel may belong to a different provider. Strip
-    // the "claude:" prefix if present.
-    const isClaudeModel = (m: string) => m.startsWith('claude:') || m.startsWith('claude-');
-    const claudeModel = isClaudeModel(this.metadataModel) ? this.metadataModel : this.summaryModel;
-    const testModel = claudeModel.replace('claude:', '');
-
-    try {
-      if (!this.config.apiKey) {
-        log.error('[AIManager] Anthropic API key required');
-        this.lastInitError = 'Anthropic API key required';
-        return false;
-      }
-
-      this.anthropicClient = new Anthropic({
-        apiKey: this.config.apiKey,
-      });
-
-      // Test with a simple request
-      log.info(`[AIManager] Testing Claude connection with model: ${testModel}`);
-      await this.anthropicClient.messages.create({
-        model: testModel,
-        max_tokens: 5,
-        messages: [{ role: 'user', content: 'Test' }],
-      });
-
-      log.info('[AIManager] Claude (Anthropic) connected successfully');
-      return true;
-    } catch (error: any) {
-      log.error('[AIManager] Cannot connect to Claude:', error?.message || error);
-      if (error?.status === 404) {
-        log.error(`[AIManager] Model '${testModel}' not found - check model name`);
-      }
-      this.lastInitError = error?.status === 404
-        ? `Claude model '${testModel}' not found - check model name`
-        : `Cannot connect to Claude: ${error?.message || error}`;
       return false;
     }
   }
@@ -1261,14 +1155,19 @@ export class AIManagerService {
    * result: the description they attach to and the hashtags they are normalized
    * alongside come back from two different calls.
    *
-   * `model` overrides the configured metadata model — that is how one run sends its
-   * titles group to one model and its thumbnail group to another.
+   * `model` is REQUIRED (2026-09-24): it is the routing table's selection for the group
+   * being asked for. It used to default to the legacy Settings `metadataModel`, a model the
+   * routing table never chose — Owen: "it should never call something i didnt expect it to
+   * call".
    */
   async runMetadataRequest(
     prompt: string,
-    model?: string
+    model: string
   ): Promise<{ metadata: MetadataResult; presentKeys: Set<string> }> {
-    const requestModel = model || this.metadataModel;
+    if (!model) {
+      throw new Error('runMetadataRequest needs the routed model for this call; there is no default model.');
+    }
+    const requestModel = model;
     await this.ensureProviderReady(requestModel);
 
     const maxAttempts = 2;
@@ -1716,6 +1615,10 @@ export class AIManagerService {
           if (this.config.abortSignal?.aborted) {
             throw new JobCancelledError(`before the "${model}" request left the AI queue`);
           }
+
+          // Every transport prepares here, on the model this request names — initialize()
+          // no longer probes cloud providers, so no call path may assume a client exists.
+          await this.ensureProviderReady(model);
 
           // Detect provider from model name - EXPLICIT routing, no fallbacks
           // Model format must be "provider:model" (e.g., "ollama:cogito:14b", "openai:gpt-4o", "claude:claude-3-5-sonnet")

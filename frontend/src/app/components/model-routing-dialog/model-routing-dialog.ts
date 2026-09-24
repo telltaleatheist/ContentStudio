@@ -290,8 +290,9 @@ export class ModelRoutingDialog implements OnInit {
   readonly saving = signal(false);
   /**
    * Every routed task with its stored selection, loaded whole and saved whole: the modal
-   * renders only the `modal: true` tasks as rows, and the rest — tags, including a
-   * hand-set 9b/4b A/B entry — pass through Save untouched rather than being reset.
+   * renders only the `modal: true` tasks as rows, and any other task passes through Save
+   * untouched rather than being reset. Every task is a row today (tags became one
+   * 2026-09-24), so nothing a run can call is hidden from this dialog.
    */
   readonly tasks = signal<MetadataRoutingTask[]>([]);
 
