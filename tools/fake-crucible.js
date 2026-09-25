@@ -46,7 +46,10 @@
  *  - `GET /v1/setup` (the addresses another machine dials; `setupUrls`, where
  *    `[]` plays a loopback bind), for "this machine's connect code";
  *  - `port`, and the standalone mode above, so the app itself can be pointed
- *    at a fake.
+ *    at a fake;
+ *  - P7: a `denoise` job (`postDenoise` below) with the two separators'
+ *    catalog rows, `options.denoise` / `setDenoise()` for its script, and
+ *    `denoise` in the stocked job types.
  *
  * Not a keeper itself: `tools/check-crucible.js` runs the `test-crucible-*` files.
  */
@@ -270,13 +273,17 @@ function defaultFakeCatalog() {
         // ContentStudio: the transcriber and the capable model its module names (LEDGER #203, plan 6.2).
         { kind: 'model', id: 'qwen3-asr-1.7b', name: 'Qwen3-ASR 1.7B', jobType: 'asr', installed: false, expectedBytes: null },
         { kind: 'model', id: 'qwen3.8-27b-4bit', name: 'Qwen3.8 27B 4-bit', jobType: 'llm', installed: false, expectedBytes: null },
+        // ContentStudio P7: the two separators a 1.0.24+ server ships under `denoise` (LEDGER #200).
+        { kind: 'denoise', id: 'denoise-roformer', name: 'Mel-Band Roformer Denoise', jobType: 'denoise', installed: false, expectedBytes: null },
+        { kind: 'denoise', id: 'vocals-roformer', name: 'Mel-Band Roformer Vocals (Kimberley Jensen)', jobType: 'denoise', installed: false, expectedBytes: null },
     ];
 }
 /** ContentStudio: every job type and subject its module names, installed, as a stocked mlx-darwin engine has them. */
 function stockedForContentStudio() {
-    const named = new Set(['qwen3.5-9b', 'qwen3-asr-1.7b', 'qwen3-aligner', 'qwen3.8-27b-4bit']);
+    const named = new Set(['qwen3.5-9b', 'qwen3-asr-1.7b', 'qwen3-aligner', 'qwen3.8-27b-4bit', 'vocals-roformer']);
     return {
-        installedJobTypes: ['echo', 'llm', 'asr', 'align'],
+        // `denoise` is what `rvc`'s install turns on (P7): the module names rvc, the server lists denoise.
+        installedJobTypes: ['echo', 'llm', 'asr', 'align', 'denoise'],
         catalog: defaultFakeCatalog().map((row) => ({ ...row, installed: named.has(row.id) })),
     };
 }
@@ -433,6 +440,11 @@ async function startFakeCrucible(options = {}) {
             id, revision: 'f'.repeat(40), source: `hf:fake/${id}`, installed: installed.has(id), resident: false, vram_bytes: 1_000_000_000,
         }));
     };
+    // ContentStudio P7: the denoise job's script, and its rows as `/v1/info` lists them.
+    let denoiseScript = { ...(options.denoise ?? {}) };
+    const denoiseRows = () => catalog.filter((row) => row.jobType === 'denoise').map((row) => ({
+        id: row.id, revision: '9'.repeat(40), source: `hf:fake/${row.id}`, installed: row.installed === true, resident: resident === row.id, vram_bytes: 2_523_719_636,
+    }));
     const alignerInstalled = () => catalog.some((row) => row.id === 'qwen3-aligner' && row.installed);
     const alignRows = () => [
         { id: 'qwen3-aligner', revision: 'a'.repeat(40), source: 'hf:fake/qwen3-aligner', installed: alignerInstalled(), resident: false, vram_bytes: 500_000_000 },
@@ -461,7 +473,7 @@ async function startFakeCrucible(options = {}) {
             gpu: { vendor: 'apple', name: 'Fake M1 Ultra', vram_bytes: 68719476736 },
         },
         job_types: role === 'orchestrator' ? [] : [...installedJobTypes, 'load-model', 'unload-model'],
-        capabilities: role === 'orchestrator' ? [] : installedJobTypes.map((jobType) => ({ job_type: jobType, models: jobType === 'asr' ? asrRows() : jobType === 'align' ? alignRows() : [] })),
+        capabilities: role === 'orchestrator' ? [] : installedJobTypes.map((jobType) => ({ job_type: jobType, models: jobType === 'asr' ? asrRows() : jobType === 'align' ? alignRows() : jobType === 'denoise' ? denoiseRows() : [] })),
     });
     const activityDoc = () => {
         const busy = named.serverBusy;
@@ -863,6 +875,10 @@ async function startFakeCrucible(options = {}) {
             postAsr(req, res, body);
             return;
         }
+        if (type === 'denoise') {
+            postDenoise(req, res, body);
+            return;
+        }
         if (type !== 'load-model' && type !== 'unload-model') {
             refusal(res, 400, 'unknown_job_type', `this fake runs load-model, unload-model and asr jobs, not ${type}`);
             return;
@@ -1086,6 +1102,148 @@ async function startFakeCrucible(options = {}) {
                 return;
             if (outcome === 'hold')
                 return; // running, held mid-file, until a DELETE cancels it
+            setTimeout(tick, stepMs).unref?.();
+        };
+        setTimeout(tick, stepMs).unref?.();
+    }
+    // ── denoise (ContentStudio P7) ───────────────────────────────────────
+    //
+    // Validated in the real server's order (crucible/jobs/denoise/__init__.py
+    // `preflight`, v1.0.34): the type, the model, `params` (`extra="forbid"`:
+    // anything but `{}` is `invalid_params`), the env (`409 env_missing`, rvc's),
+    // the two model files (`409 denoise_model_missing` naming the pull command),
+    // a lease on something else (`409 leased`), then exactly one input blob. The
+    // job warms, reports `progress 0.0 separating`, refuses a non-44.1 kHz input
+    // AFTER the upload as the worker does (`failed worker_failed`), and otherwise
+    // publishes ONE stem, `(vocals)` in its name, the same length as the input
+    // (here, the input's own bytes), with `primary_stem` and `load_seconds` on
+    // `done`. The card then holds the separator, so a lease can name it.
+    // `denoise` script: {stepMs, failWith, holdAfterWarming, envMissing}.
+    function wavRateOf(bytes) {
+        if (bytes.length < 12 || bytes.toString('ascii', 8, 12) !== 'WAVE')
+            return null;
+        let at = 12;
+        while (at + 8 <= bytes.length) {
+            const id = bytes.toString('ascii', at, at + 4);
+            const length = bytes.readUInt32LE(at + 4);
+            if (id === 'fmt ')
+                return { rate: bytes.readUInt32LE(at + 12), channels: bytes.readUInt16LE(at + 10) };
+            at += 8 + length + (length % 2);
+        }
+        return null;
+    }
+    function postDenoise(req, res, body) {
+        if (!installedJobTypes.includes('denoise')) {
+            refusal(res, 400, 'job_type_disabled', 'denoise is not enabled on this server');
+            return;
+        }
+        const model = typeof body['model'] === 'string' ? body['model'] : null;
+        if (model === null) {
+            refusal(res, 400, 'model_required', 'denoise needs a model');
+            return;
+        }
+        const row = denoiseRows().find((r) => r.id === model);
+        if (row === undefined) {
+            refusal(res, 400, 'unknown_model', `no denoise manifest for '${model}'; this build ships ${JSON.stringify(denoiseRows().map((r) => r.id))}`);
+            return;
+        }
+        const params = body['params'] ?? {};
+        if (typeof params !== 'object' || params === null || Object.keys(params).length > 0) {
+            refusal(res, 400, 'invalid_params', `denoise takes no params — every separation knob is an engine default this server does not put on the wire (PHASE4-AUDIO.md section 4.2): ${Object.keys(params ?? {}).join(', ')}: Extra inputs are not permitted`);
+            return;
+        }
+        if (denoiseScript.envMissing) {
+            refusal(res, 409, 'env_missing', `cannot run '${model}': the rvc env is not installed (denoise shares the rvc env)`, { model, env: '/fake/.crucible/envs/rvc' });
+            return;
+        }
+        if (!row.installed) {
+            refusal(res, 409, 'denoise_model_missing', `audio-separator needs the model files for '${model}' and they are not there. \`crucible denoise pull ${model}\` places them`);
+            return;
+        }
+        if (openLease !== null && openLease.model !== model) {
+            refusal(res, 409, 'leased', `'${openLease.model}' is leased by '${openLease.client}' for '${openLease.act}'`, {
+                lease_id: openLease.leaseId, kind: 'llm', client: openLease.client, act: openLease.act,
+                since: '2026-09-23T01:00:00+00:00', expires_at: '2026-09-23T01:02:00+00:00',
+            });
+            return;
+        }
+        const inputs = (body['inputs'] ?? {});
+        const names = Object.keys(inputs);
+        if (names.length !== 1 || typeof inputs[names[0]]?.blob_id !== 'string') {
+            refusal(res, 400, 'invalid_inputs', 'denoise takes exactly one audio file');
+            return;
+        }
+        const blobId = inputs[names[0]].blob_id;
+        const takenBy = consumedBlobs.get(blobId);
+        if (takenBy !== undefined) {
+            refusal(res, 409, 'blob_consumed', `blob '${blobId}' was consumed by job ${takenBy}. Upload them again for this job`, { blob_id: blobId, job_id: takenBy });
+            return;
+        }
+        const file = blobs.get(blobId);
+        if (file === undefined) {
+            refusal(res, 400, 'unknown_blob', `input '${names[0]}' names blob '${blobId}', which this server does not hold`);
+            return;
+        }
+        const client = req.headers['x-crucible-client'] ?? null;
+        const job = {
+            jobId: `job-${nextJob++}`, type: 'denoise', model, params, status: 'queued', leaseId: null, events: [], client,
+            inputs: { [names[0]]: blobId },
+            clientRef: typeof body['client_ref'] === 'string' ? body['client_ref'] : null,
+        };
+        blobs.delete(blobId);
+        consumedBlobs.set(blobId, job.jobId);
+        jobs.push(job);
+        send(res, 202, { job_id: job.jobId });
+        pushJobEvent(job, 'queued', { position: 0 });
+        runDenoise(job, names[0], file.data, { ...denoiseScript });
+    }
+    function runDenoise(job, name, bytes, script) {
+        const stepMs = script.stepMs ?? 5;
+        const wav = wavRateOf(bytes);
+        const base = name.replace(/\.[^.]+$/, '');
+        const stem = `${base}_(vocals)_vocals_mel_band_roformer.wav`;
+        const steps = [
+            () => {
+                job.status = 'running';
+                pushJobEvent(job, 'warming', { message: `${name}: ${wav === null ? '?' : wav.channels}-channel audio at ${wav === null ? '?' : wav.rate} Hz, through Mel-Band Roformer Vocals (Kimberley Jensen)` });
+                if (script.holdAfterWarming)
+                    return 'hold';
+            },
+            () => pushJobEvent(job, 'progress', { fraction: 0, message: `separating ${name} through vocals_mel_band_roformer.ckpt`, stage: 'separating' }),
+            () => {
+                const failure = wav === null || wav.rate !== 44100
+                    ? { code: 'worker_failed', message: `this input is ${wav === null ? 'unreadable' : `${wav.rate} Hz`} and vocals_mel_band_roformer.ckpt is 44100 Hz native. Nothing was resampled` }
+                    : script.failWith;
+                if (failure !== undefined) {
+                    job.status = 'failed';
+                    pushJobEvent(job, 'failed', { error: { ...failure } });
+                    return true;
+                }
+                const loaded = resident === job.model ? 0.0 : 1.5;
+                resident = job.model;
+                residentCtx = null;
+                job.artifacts = { [stem]: Buffer.from(bytes) };
+                pushJobEvent(job, 'artifact', { name: stem });
+                pushJobEvent(job, 'progress', { fraction: 1, message: `2 stem(s) from ${name}`, stage: 'separating' });
+                job.status = 'done';
+                pushJobEvent(job, 'done', {
+                    artifacts: [stem], primary_stem: stem, stems: [stem, `${base}_(other)_vocals_mel_band_roformer.wav`],
+                    sample_rate: 44100, frames: null, separate_seconds: 0.01, load_seconds: loaded, resident: job.model,
+                });
+                return true;
+            },
+        ];
+        let at = 0;
+        const tick = () => {
+            if (job.status === 'cancelled')
+                return;
+            const step = steps[at];
+            at += 1;
+            if (step === undefined)
+                return;
+            const outcome = step();
+            if (outcome === true || outcome === 'hold')
+                return;
             setTimeout(tick, stepMs).unref?.();
         };
         setTimeout(tick, stepMs).unref?.();
@@ -1819,6 +1977,10 @@ async function startFakeCrucible(options = {}) {
         },
         setAsr(script) {
             asrScript = { ...script };
+        },
+        /** ContentStudio P7: the next denoise jobs' script ({stepMs, failWith, holdAfterWarming, envMissing}). */
+        setDenoise(script) {
+            denoiseScript = { ...script };
         },
         setDecideProbs(fn) {
             decideProbs = fn;
