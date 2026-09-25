@@ -433,7 +433,7 @@ async function runLevel(ctx: LevelContext, units: SentenceUnit[], offset: number
     const chunk = chunks[k];
     const t = Date.now();
     const seconds = units[chunk.end - 1].end - units[chunk.start].start;
-    const items = await writeOutline(options.chat, spec.outlinePrompt(texts.slice(chunk.start, chunk.end).join('\n'), seconds), `outline of ${where(k)}`, signal);
+    const items = await writeOutline(options.chat, spec.outlinePrompt(texts.slice(chunk.start, chunk.end).join('\n'), seconds), `outline of ${where(k)}`, signal, ctx.warn);
     stats.chatCalls++;
     stats.outlineMs += Date.now() - t;
     own.push(items);
@@ -457,6 +457,7 @@ async function runLevel(ctx: LevelContext, units: SentenceUnit[], offset: number
       SNAP_PROMPTS.streamMerge(spec.mergeKey!, stretches, MAX_ITEMS, runtimeWords(whole)),
       `stream outline over ${chunks.length} chunk outlines (level ${spec.level})`,
       signal,
+      ctx.warn,
     );
     stats.chatCalls++;
     stats.outlineMs += Date.now() - t;

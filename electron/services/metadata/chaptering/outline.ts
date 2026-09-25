@@ -91,10 +91,23 @@ export function parseOutline(content: string, maxItems: number = MAX_ITEMS, what
  * 0, and the answer parsed. A truncated answer (`length`) is refused: an outline cut off
  * mid-list would silently drop the sections at the end of the video.
  */
-export async function writeOutline(chat: ChatFn, prompt: string, what: string, signal?: AbortSignal): Promise<string[]> {
+export async function writeOutline(
+  chat: ChatFn,
+  prompt: string,
+  what: string,
+  signal?: AbortSignal,
+  warn?: (message: string) => void,
+): Promise<string[]> {
   const result = await chat(prompt, { role: 'outline', maxTokens: OUTLINE_MAX_TOKENS, thinking: false, temperature: 0, what, signal });
   if (result.finishReason === 'length') {
     throw new ChapteringError('truncated', `${what}: the outline hit its ${OUTLINE_MAX_TOKENS}-token cap, so the list is cut off`);
   }
-  return parseOutline(result.text, MAX_ITEMS, what);
+  // segment.py's cap, kept, and SAID (Law 8): the items past it are the END of the stretch, so a
+  // list that overflows loses its last sections (P8b measured a merged stream outline of 37 lines
+  // whose last twelve were the second half of the stream).
+  const all = parseOutline(result.text, Number.MAX_SAFE_INTEGER, what);
+  if (all.length > MAX_ITEMS) {
+    warn?.(`${what} listed ${all.length} items; the first ${MAX_ITEMS} were kept (the letters A..Z hold ${MAX_ITEMS} and the ad item), and its last ${all.length - MAX_ITEMS} were dropped: ${all.slice(MAX_ITEMS).map((x) => JSON.stringify(x)).join(', ')}`);
+  }
+  return all.slice(0, MAX_ITEMS);
 }

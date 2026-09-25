@@ -463,6 +463,13 @@ granularity's switch cost (`electron/services/metadata/chaptering/granularity.ts
   against it. It says that a story running across two stretches is listed in both, because the
   model otherwise keeps both copies as two stories. It is a plain-lines outline like the others
   and is refused as prose the same way (outline.ts `proseLine`).
+  **Measured on the 9B (2026-09-25, the 2026-09-23 stream's five chunk outlines, 45 items):** a
+  body that asked to "list the separate stories of the whole stream" copied the items back, 37
+  lines, and the 25-item cap then silently dropped the second half of the stream (now warned).
+  The body that asks to GROUP the items ("most of their items are turns inside a larger story …
+  every turn, claim, clip and aside about that subject belongs to its one story; one label per
+  story") answered 5 lines, twice. Stating a count ("usually three to eight") coarsened it to 3
+  and was not kept: the handful is said in words, the model picks the number (Law 6).
 - **`_promoted` variants** name the channel's own `promoted_items` in the ad item and in its
   yes/no. A channel that declares none gets the measured text, not a sentence saying so.
 - **`summarize_chapter_parts`** titles a chapter too long for one title call (an hour-long
