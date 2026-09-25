@@ -28,7 +28,7 @@ import {
 } from './metadata-tasks';
 import { ChannelData, PROMPTS_SUBDIR, initPromptAssets, promptAssets } from './prompt-assets';
 import { Chapter } from './chapter-generator.service';
-import { queueAITask } from '../queue-manager.service';
+import { queueAITask, routeOfModelId } from '../queue-manager.service';
 import { JobCancelledError, isAbortError } from './cancellation';
 import { stripThinking } from './plain-call';
 
@@ -1619,10 +1619,12 @@ export class AIManagerService {
     console.log(`[AIManager]   Prompt length: ${prompt.length} chars`);
 
     try {
-      // Route every provider call through the single-slot AI queue (Ollama OOM
-      // protection). Callers must NOT wrap makeRequest in queueAITask — nesting
-      // would deadlock the 1-slot pool.
+      // Route every provider call through its lane (electron/crucible/lanes.ts): a local
+      // model takes its server's one GPU slot (OOM protection), a cloud one takes none
+      // (plan section 13.1). Callers must NOT wrap makeRequest in queueAITask — nesting
+      // would deadlock the slot.
       const result = await queueAITask<string | null>(
+        routeOfModelId(model),
         `ai-${requestId}`,
         `AI Request: ${model}`,
         async () => {

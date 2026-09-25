@@ -46,7 +46,7 @@ import {
 } from './metadata-tasks';
 import { MetadataRoutingOption } from './metadata-routing';
 import { promptAssets } from './prompt-assets';
-import { queueAITask } from '../queue-manager.service';
+import { gpuCall, queueAITask } from '../queue-manager.service';
 
 /**
  * The output shapes a rewrite call can be asked for. One prompt block each, under `shapes:` in
@@ -248,6 +248,7 @@ export async function askToRewrite(
   });
   const client = axios.create({ baseURL: transport.ollamaHost });
   const result = await queueAITask(
+    gpuCall(option.model),
     `${pass.id}-${plan.field}-${option.model}-${sourceLabel}`,
     `${pass.name}: ${plan.field} on ${option.model}`,
     async () =>
@@ -260,9 +261,7 @@ export async function askToRewrite(
         timeoutMs: LOCAL_FIELD_TIMEOUT_MS,
         what,
         logPrefix: `[${pass.name}] ${option.model}`,
-      }),
-    undefined,
-    LOCAL_FIELD_TIMEOUT_MS + 60_000
+      })
   );
   if (!result.ok) {
     throw new Error(

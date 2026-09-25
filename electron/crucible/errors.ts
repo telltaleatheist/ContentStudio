@@ -29,6 +29,8 @@ export type CrucibleRoutingErrorCode =
   | 'unknown_server'
   | 'no_selected_server'
   | 'no_fast_server'
+  /** An immediate call on a server the user paused: it would have to wait, and nothing is queued to wait. */
+  | 'server_paused'
   /** A choice that is not one: Running/Paused given something other than a yes or no. */
   | 'invalid_choice';
 
