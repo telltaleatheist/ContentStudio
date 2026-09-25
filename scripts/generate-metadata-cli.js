@@ -84,6 +84,9 @@ const yaml = require(path.join(REPO_ROOT, 'node_modules', 'js-yaml'));
 // process.cwd(), so the CLI works from any directory.
 process.env.CONTENTSTUDIO_PROJECT_ROOT = REPO_ROOT;
 
+/** This process's lanes (electron/crucible/cli-lanes.ts), opened at the top of main(). */
+let cli = null;
+
 function fail(msg) {
   console.error(`\n✖ ${msg}\n`);
   process.exit(1);
@@ -341,6 +344,13 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!fs.existsSync(args.input)) fail(`Input not found: ${args.input}`);
   if (!fs.existsSync(args.assets)) fail(`Prompt assets not found: ${args.assets}`);
+
+  // The lanes every local model call runs on (electron/crucible/lanes.ts), over the app's own
+  // registry and routing record, with this process's own in-flight ledger. Ctrl-C (SIGINT) and
+  // SIGTERM cancel this run's Crucible jobs and release its leases, then exit 130/143
+  // (CRUCIBLE-MIGRATION-PLAN.md sections 0a, 13.4).
+  const { openCliLanes } = require(path.join(DIST, 'crucible/cli-lanes.js'));
+  cli = openCliLanes({ stateDir: USER_DATA, tool: 'generate-metadata-cli' });
 
   // ---- the app's real settings, read the way the app reads them ------------------------
   const Store = require('electron-store');
@@ -686,6 +696,9 @@ async function main() {
     insights: insights || undefined,
     preTranscribedContent: contentItems,
     progressCallback,
+    // Aborted by Ctrl-C/SIGTERM, so the call in flight stops rather than finishing unwatched.
+    cancelSignal: cli.signal,
+    cancelCallback: () => cli.signal.aborted,
   };
 
   // ---- STAGE 2: the chapters --------------------------------------------------------------
@@ -792,11 +805,13 @@ async function main() {
     console.error(`${bar}\nSHOW PROMPTS (--show-prompts): ${written.length} prompt(s) written, NO model was called.\n`);
     for (const f of written) console.error(`  ${f}`);
     console.error(`${bar}\n`);
+    await cli.close();
     process.exit(0);
   }
 
   if (chaptersOnly) {
     console.error(`${bar}\nCHAPTERS ONLY (--chapters with no field flag): nothing was generated and no report was written.\n${bar}\n`);
+    await cli.close();
     process.exit(0);
   }
 
@@ -856,7 +871,9 @@ async function main() {
     console.error(`  written: ${args.out}\n`);
   }
 
-  // The compiled services keep handles open (queue-manager timers); force a clean exit.
+  // Nothing should be held by now; close() gives back anything that is and removes this
+  // process's ledger file. Then force a clean exit (the compiled services keep handles open).
+  await cli.close();
   process.exit(0);
 }
 
@@ -890,4 +907,8 @@ function granularityNotes(selected) {
   return notes;
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch(async (e) => {
+  console.error(e);
+  if (cli) await cli.close();
+  process.exit(1);
+});
