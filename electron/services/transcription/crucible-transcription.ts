@@ -199,6 +199,8 @@ export async function transcribeOnCrucible(request: CrucibleTranscribeRequest): 
       filename: safeUploadName(request.audioFile),
       clientRef: `contentstudio:${request.clientRefStem}:${crypto.randomBytes(4).toString('hex')}`,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
+      // The venue's in-flight ledger (P3), so a kill mid-transcription leaves the sweep a job to cancel.
+      ...(venue.ledger === undefined ? {} : { ledger: venue.ledger }),
       onLog: say,
       onProgress: report,
     });

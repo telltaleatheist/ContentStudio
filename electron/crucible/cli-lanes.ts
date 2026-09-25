@@ -28,6 +28,7 @@ import { InFlightLedger } from './in-flight-ledger';
 import { JOB_SWEEP_DEADLINE_MS, STARTUP_SWEEP_DEADLINE_MS, sweepCrucibleInFlight } from './in-flight-sweep';
 import { installLanes, type CrucibleLanes } from './lanes';
 import { installCrucibleTransport } from './transport';
+import { setAsrVenueResolver } from '../services/transcription/crucible-transcription';
 
 export interface CliLanes {
   context: CrucibleContext;
@@ -86,8 +87,10 @@ export function openCliLanes(options: {
   }));
   context.lanes.setAdmissionGate(swept);
   installLanes(context.lanes);
-  // The one door, over the same registry, the same choice and the same lanes (P2).
+  // The one door, over the same registry, the same choice and the same lanes (P2), and the
+  // transcription venue on the same choice and ledger (P5's seam).
   installCrucibleTransport(context.transport);
+  setAsrVenueResolver(context.asrVenue);
 
   const controller = new AbortController();
   const giveBack = async (reason: string): Promise<void> => {

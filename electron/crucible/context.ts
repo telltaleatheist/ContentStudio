@@ -40,6 +40,8 @@ import { CrucibleSettingsBridge } from './settings-bridge';
 import { CrucibleRoutingError } from './errors';
 import { migrateLegacyKeys } from './key-migration';
 import { CrucibleTransport, type TransportHost } from './transport';
+import { crucibleAsrVenue } from './asr-venue';
+import type { AsrVenue } from './asr';
 import type { LeaseTimings } from './lease';
 import type { CrucibleInstallProgress, CrucibleLanesView, CrucibleReadinessView, CrucibleServersChangedPayload, KeyMigrationOutcome } from './wire';
 
@@ -88,6 +90,8 @@ export interface CrucibleContext {
   readiness: CrucibleReadiness;
   /** The one door every model call takes (plan 6.1). main.ts installs it process-wide. */
   transport: CrucibleTransport;
+  /** Where transcription runs (P5's `setAsrVenueResolver`): the job's venue or the selected server. */
+  asrVenue: () => AsrVenue;
   /** The api-keys.json move (plan 6.6): run it, answer its question, read what it last said. */
   keys: {
     migrate(resolve?: 'replace' | 'keep'): Promise<KeyMigrationOutcome>;
@@ -241,6 +245,7 @@ export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContex
     local,
     readiness,
     transport,
+    asrVenue: crucibleAsrVenue({ servers: choice, factory, ledger }),
     keys: { migrate: migrateKeys, last: () => lastKeys },
     pairingHost,
     ledger,

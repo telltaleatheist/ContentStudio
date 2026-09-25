@@ -177,6 +177,15 @@ export function beatJob(): void {
   runStore.getStore()?.beat();
 }
 
+/**
+ * The current job's venue and id, or null outside a job. For a door that is not a lane step
+ * (transcription, P5): its work goes where the job's model calls go, never elsewhere (#205).
+ */
+export function currentJobVenue(): { server: string; jobId: string } | null {
+  const run = runStore.getStore();
+  return run === undefined ? null : { server: run.server, jobId: run.jobId };
+}
+
 /** How `runJob` ended. */
 export type RunJobOutcome<T> =
   | { kind: 'done'; server: string; value: T }

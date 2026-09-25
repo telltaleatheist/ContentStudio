@@ -17,6 +17,7 @@ import { stopArchiveSyncOnQuit } from './services/editor/editor-ipc';
 import { createCrucibleContext, type CrucibleContext } from './crucible/context';
 import { installCrucibleTransport } from './crucible/transport';
 import { installLanes } from './crucible/lanes';
+import { setAsrVenueResolver } from './services/transcription/crucible-transcription';
 
 /**
  * ContentStudio - Main Electron Process
@@ -302,6 +303,10 @@ app.whenReady().then(async () => {
     // callers are constructed per run all over the main process (IPC handlers, the metadata
     // generator, the editor's Stories), and each would otherwise need the context threaded in.
     installCrucibleTransport(crucible.transport);
+    // Where transcription runs (P5, LEDGER #206): the job's venue or the selected server, the
+    // SDK client for its engine, and the in-flight ledger. Until this runs every transcription
+    // is refused `crucible_not_connected`.
+    setAsrVenueResolver(crucible.asrVenue);
 
     // Set up IPC handlers
     setupIpcHandlers(store, {

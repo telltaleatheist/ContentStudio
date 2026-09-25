@@ -370,11 +370,7 @@ async function main() {
   const store = new Store({});
   const settings = store.store;
 
-  // Transcription is Crucible's asr job (P5, LEDGER #206). Until P1's registry is merged the CLI
-  // reaches this Mac's own server through the raw-fetch client under tools/ (the app itself has
-  // no server wired until P1, and refuses by name). P1 swaps this for its registry's client.
-  const { setAsrVenueResolver } = require(path.join(DIST, 'services/transcription/crucible-transcription.js'));
-  const { pairedVenue } = require(path.join(REPO_ROOT, 'tools', 'crucible-raw-client.js'));
+  // Transcription is Crucible's asr job (P5, LEDGER #206), on the venue openCliLanes wired.
   const routing = require(path.join(DIST, 'services/metadata/metadata-routing.js'));
   const { AnalyticsStoreService } = require(path.join(DIST, 'services/analytics/analytics-store.service.js'));
   const { MetadataGeneratorService } = require(path.join(DIST, 'services/metadata/metadata-generator.service.js'));
@@ -461,9 +457,9 @@ async function main() {
   }
 
   // The whisperModel setting no longer chooses anything (P5): every transcription is
-  // qwen3-asr-1.7b on Crucible. The venue is this Mac's paired server.
-  const asrVenue = pairedVenue();
-  setAsrVenueResolver(() => asrVenue);
+  // qwen3-asr-1.7b on Crucible, on the server this run's model calls go to. openCliLanes wired
+  // that venue (the registry's client and the in-flight ledger, P2); this is its server.
+  const asrVenue = { server: runServer };
 
   const channel = args.channel || settings.promptSet;
   if (!channel) fail('No channel: pass --channel, or set one in the app settings (promptSet).');
