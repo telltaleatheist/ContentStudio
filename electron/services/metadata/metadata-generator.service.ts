@@ -39,6 +39,8 @@ import type { ModelRosterEntry } from './metadata-tasks';
 import { JobModelLifecycle } from './model-lifecycle';
 import { excludePromoChapters } from './promo-chapters';
 import { SCRUB_ROUTING_TASK, scrubGeneratedItem } from './scrub';
+import { rerollGateItem } from './reroll/reroll.service';
+import { RerollGateSettings, resolveRerollGateSettings } from './reroll/settings';
 import { DigestChapter, FieldContentDecision, digestChaptersOf, resolveFieldContent } from './chapter-digest';
 import { topEntities, transcriptCasing } from './entity-extraction';
 import { chapterPools } from './tags-hashtags';
@@ -145,6 +147,13 @@ export interface GenerationParams {
    */
   chapterTitleThinking?: boolean;
   /**
+   * The re-roll gate's settings for this run (reroll/settings.ts; LEDGER #201), resolved by the
+   * IPC layer from the `rerollGate` and `rerollGateTuning` settings AT JOB TIME. Absent (a caller
+   * that predates the gate, or the test CLI) means the declared defaults, resolved once at the top
+   * of the run and logged: the registry's default at the read site, as `metadataRouting` does it.
+   */
+  rerollGate?: RerollGateSettings;
+  /**
    * Chapters already produced for these sources (keyed by source label), so a run
    * doesn't repeat the pipeline. This is what makes "Show prompt" honest: that flow
    * has to run the chapters to assemble the real prompt, and "Send to AI" then reuses
@@ -247,6 +256,14 @@ export class MetadataGeneratorService {
      * windows independently.
      */
     const lifecycle = new JobModelLifecycle(`the metadata job ${params.jobId}`);
+
+    // The re-roll gate's settings, once for the whole run (so every item is judged by one bar).
+    const rerollGate = params.rerollGate ?? resolveRerollGateSettings({});
+    log.info(
+      `[MetadataGenerator] re-roll gate ${rerollGate.mode}` +
+        (params.rerollGate === undefined ? ' (the declared defaults: this caller passed no settings)' : '') +
+        (rerollGate.mode === 'on' ? `, at most ${rerollGate.maxRerolls} re-roll(s) per field` : '')
+    );
 
     console.log('[MetadataGenerator] Starting generation...');
     console.log('[MetadataGenerator] Inputs:', params.inputs.length);
@@ -749,6 +766,24 @@ export class MetadataGeneratorService {
             // The run's own scrub. The reports page's button passes 'operator request' through
             // the same function, and the trace entries say which of the two wrote them.
             origin: 'post-generation',
+          });
+
+          // THE RE-ROLL GATE (reroll/, LEDGER #201, Law 3's one declared exception): every title,
+          // chapter title, description sentence, thumbnail text and pinned comment is checked
+          // against its field's rules by snap on the scorer; what fails goes back to its field's
+          // routed model with the failed rule named, at most three times, and the best-scoring
+          // attempt ships, flagged when it still fails. After the scrub, so it judges the text
+          // that would ship; before the save, so what lands on disk is what it judged. Its calls
+          // append to `_prompt_trace` after the slice, for the scrub's reason. With the gate off
+          // the item records that it was off.
+          await rerollGateItem(metadata, {
+            settings: rerollGate,
+            aiManager,
+            routing: this.routing(params),
+            lifecycle,
+            warnings,
+            sourceLabel,
+            signal: params.cancelSignal,
           });
 
           const saveResult = await outputHandler.addItemToJob(

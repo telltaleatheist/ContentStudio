@@ -264,8 +264,11 @@ def isolate_voice(input_path, output_path, *, ffmpeg="ffmpeg", ffprobe="ffprobe"
         # With no real stem there is nothing to match, and 16-bit silence is
         # silence at any depth.
         codec = ffprobe_codec(ffprobe, real[0]) if real else "pcm_s16le"
+        # The server's container too (1.0.38 publishes FLAC): a FLAC stream in a
+        # file named .wav is refused by ffmpeg's WAV muxer.
+        suffix = real[0].suffix if real else ".wav"
         for at, cw in silent:
-            stem = tmp / f"sil_{at:04d}.wav"
+            stem = tmp / f"sil_{at:04d}{suffix}"
             to_silence_like(ffmpeg, cw, stem, codec)
             stems[at] = stem
             cw.unlink(missing_ok=True)

@@ -23,6 +23,7 @@
     "check:crucible": "node tools/check-crucible.js",
     "check:asr": "node tools/asr-checks.js",
     "check:chaptering": "node tools/chaptering-checks.js",
+    "check:reroll": "node tools/reroll-checks.js",
     "start:angular": "cd frontend && npm start",
     "start:electron": "npm run build:electron && npm run build:preload && wait-on http://localhost:4200 && cross-env NODE_ENV=development electron .",
     "electron:dev": "concurrently --kill-others \"npm run start:angular\" \"npm run start:electron\"",

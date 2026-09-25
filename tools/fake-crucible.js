@@ -1126,7 +1126,7 @@ async function startFakeCrucible(options = {}) {
     // publishes ONE stem, `(vocals)` in its name, the same length as the input
     // (here, the input's own bytes), with `primary_stem` and `load_seconds` on
     // `done`. The card then holds the separator, so a lease can name it.
-    // `denoise` script: {stepMs, failWith, holdAfterWarming, envMissing}.
+    // `denoise` script: {stepMs, failWith, holdAfterWarming, envMissing, stemAs}.
     function wavRateOf(bytes) {
         if (bytes.length < 12 || bytes.toString('ascii', 8, 12) !== 'WAVE')
             return null;
@@ -1209,7 +1209,9 @@ async function startFakeCrucible(options = {}) {
         const stepMs = script.stepMs ?? 5;
         const wav = wavRateOf(bytes);
         const base = name.replace(/\.[^.]+$/, '');
-        const stem = `${base}_(vocals)_vocals_mel_band_roformer.wav`;
+        // `stemAs: {ext, bytes}` plays a server that publishes another container:
+        // the Mac's 1.0.38 publishes FLAC where 1.0.34 published WAV.
+        const stem = `${base}_(vocals)_vocals_mel_band_roformer${script.stemAs?.ext ?? '.wav'}`;
         const steps = [
             () => {
                 job.status = 'running';
@@ -1230,7 +1232,20 @@ async function startFakeCrucible(options = {}) {
                 const loaded = resident === job.model ? 0.0 : 1.5;
                 resident = job.model;
                 residentCtx = null;
-                job.artifacts = { [stem]: Buffer.from(bytes) };
+                // `stemAs.transcode`: the input re-encoded as `ext` with ffmpeg, so a
+                // multi-chunk run gets a stem of the right length per chunk.
+                // Through a file, as the server writes one: FLAC written to a pipe
+                // cannot seek back to state its length.
+                const transcoded = script.stemAs?.transcode ? (() => {
+                    const fs = require('fs'), os = require('os'), p = require('path');
+                    const dir = fs.mkdtempSync(p.join(os.tmpdir(), 'fake-stem-'));
+                    const into = p.join(dir, `stem${script.stemAs.ext}`);
+                    require('child_process').spawnSync('ffmpeg', ['-nostdin', '-v', 'error', '-f', 'wav', '-i', 'pipe:0', '-y', into], { input: bytes });
+                    const out = fs.readFileSync(into);
+                    fs.rmSync(dir, { recursive: true, force: true });
+                    return out;
+                })() : null;
+                job.artifacts = { [stem]: Buffer.from(transcoded ?? script.stemAs?.bytes ?? bytes) };
                 pushJobEvent(job, 'artifact', { name: stem });
                 pushJobEvent(job, 'progress', { fraction: 1, message: `2 stem(s) from ${name}`, stage: 'separating' });
                 job.status = 'done';

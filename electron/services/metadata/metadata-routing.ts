@@ -102,6 +102,19 @@ export interface MetadataRoutingOption {
  */
 export const SUMMARIZATION_MODEL = 'qwen3.8-27b-4bit';
 
+/**
+ * The model the re-roll gate reads its decisions from (P9; LEDGER #201): the rule checks and the
+ * title ranking, snap `decide` questions, never writing.
+ *
+ * A FIXED, DECLARED ROLE, like SUMMARIZATION_MODEL above and not a dialog row, for the reason the
+ * snap chaptering's scorer is one (#199: "9b -> outline, outline -> snap"): a decision is read off
+ * one forward pass's letter probabilities, the thresholds that act on them were MEASURED on this
+ * model (docs/crucible/P9.md), and a different model would need its own. A cloud model cannot
+ * answer one at all (`decide_needs_logprobs`). So there is nothing for an operator to pick; the
+ * re-roll CALLS that follow a failure run on each field's own routed row.
+ */
+export const REROLL_SCORER_MODEL = 'qwen3.5-9b';
+
 export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
   // Crucible upstream ids (plan 6.2): the server that runs the call forwards them to Anthropic
   // on ITS key (LEDGER #194). Offered in the dialog only when that server has one configured.

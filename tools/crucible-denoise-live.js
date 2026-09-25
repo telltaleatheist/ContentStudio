@@ -137,10 +137,10 @@ async function main() {
       const extract = spawnSync('ffmpeg', ['-nostdin', '-v', 'error', '-ss', String(at), '-t', String(seconds),
         '-i', input, '-ac', '2', '-ar', '44100', '-c:a', 'pcm_s24le', '-y', chunk]);
       if (extract.status !== 0) throw new Error(`ffmpeg could not extract ${at}s: ${extract.stderr}`);
-      const stem = path.join(out, `crucible_${at}.wav`);
+      const asked = path.join(out, `crucible_${at}.wav`);
       const t0 = Date.now();
       let lastLine = '';
-      const done = await isolator.separate(chunk, stem, {
+      const done = await isolator.separate(chunk, asked, {
         signal: controller.signal,
         onProgress: (p) => {
           const line = p.kind === 'parked' ? `parked: ${p.holderLine}` : p.kind === 'uploading' ? 'uploading' : `${p.kind}: ${p.message}`;
@@ -154,7 +154,8 @@ async function main() {
         at, jobId: done.jobId, wallSeconds: wall, loadSeconds: done.loadSeconds, separateSeconds: done.separateSeconds,
         residentAfter: a.resident ? `${a.resident.kind}:${a.resident.id}` : null,
         leaseAfter: a.lease ? `${a.lease.client}:${a.lease.act}:${a.lease.kind}` : null,
-        stemFormat: denoise.readWavFormat(stem),
+        stem: path.basename(done.stem),
+        stemFormat: denoise.readAudioFormat(done.stem),
       };
       result.chunks.push(row);
       console.log(`  chunk ${at}s: ${wall.toFixed(1)} s wall, load ${done.loadSeconds} s, separate ${done.separateSeconds} s, resident ${row.residentAfter}`);
