@@ -7,13 +7,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as log from 'electron-log';
-import * as crypto from 'crypto';
 
 import { WhisperService, SRTSegment } from './whisper.service';
 import { AIManagerService, AIConfig } from './ai-manager.service';
 import { buildSparseTimestampTranscript, sampleSegmentsToBudget, findPhraseTimestamp, TimeUtils } from './chapter-generator.service';
 import { SYSTEM_PROMPTS } from './system-prompts';
-import { queueTranscription } from '../queue-manager.service';
 import { getRuntimePaths, FfprobeBridge } from '../../lib/bridges';
 
 /**
@@ -212,7 +210,6 @@ export class EpisodeSplitterService {
 
       for (let fileIndex = 0; fileIndex < audioPaths.length; fileIndex++) {
         const audioPath = audioPaths[fileIndex];
-        const fileName = path.basename(audioPath, path.extname(audioPath));
 
         sendProgress(
           'transcribing',
@@ -224,7 +221,6 @@ export class EpisodeSplitterService {
           return { success: false, error: 'Cancelled by user' };
         }
 
-        const transcriptionTaskId = `transcribe-ep-${crypto.randomBytes(4).toString('hex')}`;
         const whisperService = new WhisperService();
 
         // Forward transcription progress
@@ -234,15 +230,11 @@ export class EpisodeSplitterService {
           sendProgress('transcribing', `File ${fileIndex + 1}/${audioPaths.length}: ${progress.message}`, scaledPercent);
         });
 
-        const transcriptionResult = await queueTranscription<{ jobId: string; srtPath: string; segments: SRTSegment[] }>(
-          transcriptionTaskId,
-          `Transcribe: ${fileName}`,
-          () => whisperService.transcribeVideo(audioPath),
-          (percent, message) => {
-            const filePercent = (fileIndex + percent / 100) / audioPaths.length;
-            sendProgress('transcribing', `File ${fileIndex + 1}/${audioPaths.length}: ${message}`, Math.round(2 + filePercent * 45));
-          }
-        );
+        // Called directly: the 5-slot "main" pool it went through served nothing else and
+        // was removed with the lanes (CRUCIBLE-MIGRATION-PLAN.md P3). Its progress callback was
+        // never invoked by that pool; the 'progress' listener above is what reports.
+        const transcriptionResult: { jobId: string; srtPath: string; segments: SRTSegment[] } =
+          await whisperService.transcribeVideo(audioPath);
 
         const { segments: srtSegments } = transcriptionResult;
 

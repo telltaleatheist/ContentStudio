@@ -38,6 +38,8 @@ import {
 import { InputsStateService, InputItem } from '../../services/inputs-state';
 import { JobQueueService, QueuedJob } from '../../services/job-queue';
 import { NotificationService } from '../../services/notification';
+import { CrucibleRefusal, CrucibleService } from '../../services/crucible';
+import type { CrucibleLanesView, LaneChip, ParkedJobResult } from '../../features/crucible/crucible.types';
 
 interface PromptSetOption {
   id: string;
@@ -95,12 +97,24 @@ export class Inputs implements OnInit, OnDestroy {
   // Available prompt sets
   availablePromptSets = signal<PromptSetOption[]>([]);
 
+  /**
+   * The lanes strip: one chip per Crucible server — its state, resident model and
+   * Running/Paused — pushed by main (electron/crucible/lanes.ts). Empty until main answers.
+   */
+  lanes = signal<LaneChip[]>([]);
+  private offLanes: (() => void) | null = null;
+  /** A plan is being asked for: the 1 s tick never overlaps one. */
+  private planning = false;
+  /** The last refusal the queue plan answered, said once rather than every second. */
+  private lastPlanRefusal = '';
+
   constructor(
     private dialog: MatDialog,
     private electron: ElectronService,
     public inputsState: InputsStateService,
     public jobQueue: JobQueueService,
-    private notificationService: NotificationService
+    private notificationService: NotificationService,
+    private crucible: CrucibleService
   ) {
     // Auto-expand single job in queue
     effect(() => {
@@ -134,6 +148,8 @@ export class Inputs implements OnInit, OnDestroy {
   }
 
   ngOnDestroy() {
+    this.offLanes?.();
+    this.offLanes = null;
     this.stopElapsedTimer();
     if (this.processingInterval) {
       clearInterval(this.processingInterval);
@@ -141,6 +157,14 @@ export class Inputs implements OnInit, OnDestroy {
   }
 
   async ngOnInit() {
+    // The lanes strip: main pushes every change; the first paint asks once.
+    this.offLanes = this.crucible.onLanes((view: CrucibleLanesView) => this.lanes.set(view.lanes));
+    this.crucible.lanes().then(
+      (view) => this.lanes.set(view.lanes),
+      // No bridge (a plain browser) or no Crucible layer: the strip simply has no chips.
+      (err) => console.warn('[Inputs] Lanes unavailable:', (err as Error).message),
+    );
+
     // Load available prompt sets
     await this.loadPromptSets();
 
@@ -1040,11 +1064,11 @@ export class Inputs implements OnInit, OnDestroy {
         jobName = `${truncatedName} + ${items.length - 1} more (compilation)`;
       }
 
-      this.jobQueue.addJob(jobName, items, promptSet, 'compilation', this.inputsState.chapterGrain());
+      this.jobQueue.addJob(jobName, items, promptSet, 'compilation', this.inputsState.chapterGrain(), this.inputsState.fast());
     } else {
       // Individual mode - each item becomes its own job (like creamsicle)
       this.selectedItems.forEach(item => {
-        this.jobQueue.addJob(item.displayName, [item], item.promptSet, 'individual', this.inputsState.chapterGrain());
+        this.jobQueue.addJob(item.displayName, [item], item.promptSet, 'individual', this.inputsState.chapterGrain(), this.inputsState.fast());
       });
     }
 
@@ -1164,7 +1188,7 @@ export class Inputs implements OnInit, OnDestroy {
     // Lock this run's target: if any pending jobs exist we transcribe them
     // (Stage 1 when "Transcribe only" is on; full run when off). Only once there
     // are no pending jobs does a Start Queue press send the held jobs (Stage 2).
-    this.queueRunTarget = this.jobQueue.getPendingJobs().length > 0 ? 'pending' : 'held';
+    this.queueRunTarget = this.jobQueue.getPendingJobs().length > 0 || this.jobQueue.getHeldJobs().length === 0 ? 'pending' : 'held';
 
     console.log('[StartQueue] Starting queue processor... target:', this.queueRunTarget);
     this.jobQueue.isProcessing.set(true);
@@ -1185,37 +1209,131 @@ export class Inputs implements OnInit, OnDestroy {
     }, 1000);
   }
 
+  /**
+   * Start whatever may start now. MAIN decides (`crucible:queue-plan`, electron/crucible/
+   * lanes.ts): at most one job per Crucible server, each on the fast pin's server or the
+   * selected one and never another (LEDGER #205), so the Mac's job and the PC's run side by
+   * side. A row main says waits on its server is shown PARKED with the reason, in grey; it
+   * starts again by itself when main's preflight says the holder has gone. This page runs
+   * what it is told and decides nothing about where.
+   */
   private async processNextJob() {
-    // Don't start a new job if one is already processing
-    if (this.jobQueue.hasProcessingJob()) {
-      return;
-    }
+    if (this.planning) return;
+    this.planning = true;
+    try {
+      // A run processes only jobs matching the target locked at Start Queue time, so a
+      // "transcribe" run never sweeps up the 'held' jobs it just created. Parked rows are
+      // always candidates: they wait on a server, not on a run.
+      const candidates = this.jobQueue.getStartableJobs(this.queueRunTarget);
 
-    // A run processes only jobs matching the target locked at Start Queue time,
-    // so a "transcribe" run never sweeps up the 'held' jobs it just created.
-    const nextJob = this.queueRunTarget === 'held'
-      ? this.jobQueue.getNextHeldJob()
-      : this.jobQueue.getNextPendingJob();
+      if (candidates.length === 0) {
+        // Nothing left to start. Stop ticking once nothing is running either.
+        if (this.queueStarted() && !this.jobQueue.hasProcessingJob()) {
+          this.queueStarted.set(false);
+          this.jobQueue.isProcessing.set(false);
+          if (this.processingInterval) {
+            clearInterval(this.processingInterval);
+            this.processingInterval = null;
+          }
+        }
+        return;
+      }
 
-    if (!nextJob) {
-      // No more jobs of this run's target - stop processing
-      if (this.queueStarted()) {
-        this.queueStarted.set(false);
-        this.jobQueue.isProcessing.set(false);
-        if (this.processingInterval) {
-          clearInterval(this.processingInterval);
-          this.processingInterval = null;
+      let plan;
+      try {
+        plan = await this.crucible.queuePlan(candidates.map(job => ({ jobId: job.id, fast: job.fast })));
+        this.lastPlanRefusal = '';
+      } catch (error) {
+        const said = error instanceof CrucibleRefusal ? `${error.message} (${error.code})` : (error as Error).message;
+        if (said !== this.lastPlanRefusal) {
+          this.lastPlanRefusal = said;
+          this.notificationService.error('Queue Waiting', `The queue could not ask which jobs may start: ${said}`);
+        }
+        return;
+      }
+
+      for (const failed of plan.failed) {
+        this.jobQueue.updateJob(failed.jobId, {
+          status: 'failed', progress: 0, currentlyProcessing: 'Failed', completedAt: new Date(), error: failed.reason
+        });
+        this.notificationService.error('Job Failed', failed.reason);
+      }
+      for (const waiting of plan.waiting) {
+        this.jobQueue.updateJob(waiting.jobId, waiting.parked
+          ? { status: 'parked', parkedLine: waiting.line, venue: waiting.server }
+          : { currentlyProcessing: waiting.line, venue: waiting.server });
+      }
+      for (const start of plan.start) {
+        const job = this.jobQueue.getJob(start.jobId);
+        if (!job) continue;
+        this.jobQueue.updateJob(job.id, { venue: start.server, parkedLine: undefined });
+        // Not awaited: one job per server runs at once, and each finishes on its own.
+        if (job.resumeHeld || job.status === 'held') {
+          void this.sendHeldJob(job, { advanceQueue: true });
+        } else {
+          void this.runJob(job, { showPrompt: job.resumeShowPrompt ?? this.transcribeOnly(), advanceQueue: true });
         }
       }
-      return;
+    } finally {
+      this.planning = false;
     }
+  }
 
-    if (this.queueRunTarget === 'held') {
-      // Stage 2: send an already-transcribed job to the AI, reusing its transcript.
-      await this.sendHeldJob(nextJob, { advanceQueue: true });
-    } else {
-      // Stage 1 (transcribeOnly) transcribes + holds; a normal run transcribes + sends.
-      await this.runJob(nextJob, { showPrompt: this.transcribeOnly(), advanceQueue: true });
+  /**
+   * A job main answered `parked` for: it waits on its server with the holder's sentence, and
+   * resumes from the stage it reached (the saved transcript lets it skip transcription).
+   */
+  private parkJob(job: QueuedJob, parked: ParkedJobResult, via: { held: boolean; showPrompt?: boolean }) {
+    this.jobQueue.updateJob(job.id, {
+      status: 'parked',
+      venue: parked.server,
+      parkedLine: parked.holderLine,
+      resumeFrom: parked.stage,
+      resumeHeld: via.held,
+      resumeShowPrompt: via.held ? undefined : via.showPrompt,
+      currentlyProcessing: '',
+    });
+  }
+
+  /**
+   * The saved transcripts a resumed job reads instead of transcribing again. Every video
+   * row that was transcribed (not linked to an editor story) wrote one before the job
+   * reached chapters (saved-transcript.service.ts), so a job parked past transcription
+   * asks for all of them.
+   */
+  private resumeTranscripts(job: QueuedJob): { [path: string]: boolean } {
+    const saved: { [path: string]: boolean } = {};
+    if (!job.resumeFrom || job.resumeFrom === 'transcribe') return saved;
+    for (const item of job.inputs) {
+      if (item.type === 'video' && item.transcriptChoice?.mode !== 'linked') saved[item.path] = true;
+    }
+    return saved;
+  }
+
+  /** The row's Fast pin: while it has not started, it can move between the servers the user chose. */
+  toggleFast(job: QueuedJob) {
+    if (job.status === 'processing' || job.status === 'completed' || job.status === 'failed') return;
+    this.jobQueue.updateJob(job.id, { fast: !job.fast });
+  }
+
+  /** The chip's words: what the server is doing, as main last read it. */
+  laneStateText(lane: LaneChip): string {
+    if (lane.paused) return lane.runningJobId ? 'Paused (finishing a job)' : 'Paused, work waits';
+    switch (lane.state) {
+      case 'running': return 'Running a job';
+      case 'busy': return lane.busyLine ?? 'Busy';
+      case 'idle': return 'Idle';
+      case 'unreachable': return 'Not answering';
+      default: return 'Not read yet';
+    }
+  }
+
+  /** The Running/Paused switch on a chip (Settings › Crucible Servers has the same switch). */
+  async toggleLanePaused(lane: LaneChip) {
+    try {
+      await this.crucible.setPaused(lane.server, !lane.paused);
+    } catch (error) {
+      this.notificationService.error('Server', (error as Error).message);
     }
   }
 
@@ -1298,6 +1416,8 @@ export class Inputs implements OnInit, OnDestroy {
 
       // Listen for progress updates from Python
       unsubscribe = this.electron.onProgress((progress: any) => {
+        // Several jobs run at once now (one per Crucible server): read only this one's events.
+        if (progress.jobId !== nextJob.id) return;
         const job = this.jobQueue.getJob(nextJob.id);
         if (!job) return;
 
@@ -1518,7 +1638,7 @@ export class Inputs implements OnInit, OnDestroy {
       // this input did before the box existed. The main process refuses any value other
       // than `true`, and a ticked box whose record has since gone missing FAILS that item
       // rather than quietly re-transcribing.
-      const useSavedTranscripts: { [path: string]: boolean } = {};
+      const useSavedTranscripts: { [path: string]: boolean } = this.resumeTranscripts(nextJob);
       nextJob.inputs.forEach(item => {
         if (item.type === 'video' && item.useSavedTranscript) {
           useSavedTranscripts[item.path] = true;
@@ -1534,8 +1654,18 @@ export class Inputs implements OnInit, OnDestroy {
         jobName: nextJob.name,
         inputTranscripts,
         useSavedTranscripts,
-        showPrompt: opts.showPrompt
+        showPrompt: opts.showPrompt,
+        fast: nextJob.fast,
+        resumeFrom: nextJob.resumeFrom
       });
+
+      // PARKED: its server is busy, paused or not there. It waits there with the reason and
+      // starts again by itself (LEDGER #205); nothing about it failed.
+      if (result?.status === 'parked') {
+        settled = true;
+        this.parkJob(nextJob, result as ParkedJobResult, { held: false, showPrompt: opts.showPrompt });
+        return;
+      }
 
       // Show-prompt path: the backend transcribed + assembled the prompt, is
       // holding the transcript, and skipped the AI call (no terminal 'complete'
@@ -1707,6 +1837,7 @@ export class Inputs implements OnInit, OnDestroy {
 
     try {
       unsubscribe = this.electron.onProgress((progress: any) => {
+        if (progress.jobId !== job.id) return;
         const cur = this.jobQueue.getJob(job.id);
         if (!cur) return;
         // Animate only; finalization happens from the resolved value below.
@@ -1720,8 +1851,14 @@ export class Inputs implements OnInit, OnDestroy {
         }
       });
 
-      const result = await this.electron.sendHeldPrompt(job.id);
+      const result = await this.electron.sendHeldPrompt(job.id, job.fast);
       const processingTime = ((Date.now() - startTime) / 1000);
+
+      // Parked while sending: main keeps the held transcript, and the row resumes by sending it.
+      if (result?.status === 'parked') {
+        this.parkJob(job, result as ParkedJobResult, { held: true });
+        return;
+      }
 
       if (result.warnings?.length) {
         result.warnings.forEach((warning: string) => {
@@ -1843,8 +1980,12 @@ export class Inputs implements OnInit, OnDestroy {
   removeJob(jobId: string) {
     // Free any held transcript the backend is keeping for this job so it can't leak.
     const job = this.jobQueue.getJob(jobId);
-    if (job?.status === 'held') {
+    if (job?.status === 'held' || job?.resumeHeld) {
       void this.electron.discardHeldPrompt(jobId);
+    }
+    // A parked or waiting row: main forgets its park and any lane it reserved for it.
+    if (job?.status === 'parked' || job?.status === 'pending') {
+      void this.electron.cancelJob(jobId);
     }
     this.jobQueue.removeJob(jobId);
   }
@@ -1892,6 +2033,7 @@ export class Inputs implements OnInit, OnDestroy {
       case 'pending': return 'schedule';
       case 'processing': return 'hourglass_empty';
       case 'held': return 'pause_circle';
+      case 'parked': return 'local_parking';
       case 'completed': return 'check_circle';
       case 'failed': return 'error';
       default: return 'help';
@@ -1903,6 +2045,7 @@ export class Inputs implements OnInit, OnDestroy {
       case 'pending': return 'accent';
       case 'processing': return 'primary';
       case 'held': return 'accent';
+      case 'parked': return '';
       case 'completed': return 'primary';
       case 'failed': return 'warn';
       default: return '';

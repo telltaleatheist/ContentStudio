@@ -15,6 +15,7 @@ import { autoConfigure } from './services/publish/auto-config';
 import { SpreakerConfigService } from './services/spreaker/spreaker-config.service';
 import { stopArchiveSyncOnQuit } from './services/editor/editor-ipc';
 import { createCrucibleContext, type CrucibleContext } from './crucible/context';
+import { installLanes } from './crucible/lanes';
 
 /**
  * ContentStudio - Main Electron Process
@@ -273,8 +274,24 @@ app.whenReady().then(async () => {
         serversChanged: (change) => pushToAllWindows('crucible:servers-changed', change),
         readiness: (view) => pushToAllWindows('crucible:readiness', view),
         installProgress: (event) => pushToAllWindows('crucible:install-progress', event),
+        lanes: (view) => pushToAllWindows('crucible:lanes', view),
       },
     });
+
+    // Give back what the last run left on a Crucible's card (a kill, a crash, a force-quit):
+    // the in-flight ledger names every job and lease this app held, and nothing else is
+    // touched (plan section 13.4). GPU admission — `generate-metadata`, `send-held-prompt`,
+    // the queue plan and every standalone local model call — waits for this to settle, so
+    // no new job can meet the old one's lease. It is NOT awaited here: a ledger row whose
+    // server is asleep would otherwise hold the window for the whole 15 s deadline on every
+    // launch, and nothing non-AI should wait for a Crucible (plan section 0a).
+    void crucible.sweepAtStartup().then((report) => {
+      if (report.rows.length > 0 || report.timedOut) {
+        log.info(`[crucible] Startup sweep: ${report.rows.length} hold(s) handled, ${report.kept.length} kept for the next start${report.timedOut ? ' (deadline hit)' : ''}`);
+      }
+    });
+    // The one set of lanes every model call in this process goes through (queueAITask).
+    installLanes(crucible.lanes);
 
     // Set up IPC handlers
     setupIpcHandlers(store, {
@@ -326,8 +343,29 @@ app.on('window-all-closed', () => {
   }
 });
 
-// Cleanup before quitting
-app.on('before-quit', () => {
+// Cleanup before quitting.
+//
+// The Crucible half is asynchronous and must finish before the process goes: the running
+// jobs are aborted, given ~2 s to release their own leases (a lease granted after quit began
+// is in no ledger row), and then the ledger is swept, all under a 30 s deadline (plan sections
+// 0a, 13.4). So the first before-quit is held with preventDefault, and the app quits for real
+// once that settles; the second pass through here finds `crucibleQuitDone` and lets it go.
+let crucibleQuitDone = false;
+let crucibleQuitting = false;
+app.on('before-quit', (event) => {
+  if (crucible !== null && !crucibleQuitDone) {
+    event.preventDefault();
+    if (crucibleQuitting) return;
+    crucibleQuitting = true;
+    log.info('Application is quitting: giving back what ContentStudio holds on Crucible first...');
+    void crucible.quit().then((report) => {
+      log.info(`[crucible] Quit sweep: ${report.rows.length} hold(s) handled, ${report.kept.length} kept for the next start${report.timedOut ? ' (deadline hit)' : ''}`);
+    }).finally(() => {
+      crucibleQuitDone = true;
+      app.quit();
+    });
+    return;
+  }
   log.info('Application is quitting...');
   // An rsync spawned by the archive sync is NOT killed when this process exits — on POSIX
   // it survives and is reparented to PID 1, and with --inplace a second rsync started on

@@ -67,7 +67,7 @@
 import axios, { AxiosInstance } from 'axios';
 import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
-import { queueAITask } from '../queue-manager.service';
+import { gpuCall, queueAITask } from '../queue-manager.service';
 import { JobCancelledError, isAbortError } from './cancellation';
 import { bucketNumCtx, estimateTokens } from './ollama-json';
 import { askOllamaPlain, parseLines } from './plain-call';
@@ -785,6 +785,7 @@ export class LocalFieldUnit implements MetadataUnit {
     }
 
     const result = await queueAITask(
+      gpuCall(this.option.model),
       `metadata-local-${this.option.model}-${this.spec.field}-${ctx.sourceLabel}`,
       `Metadata: ${this.label}`,
       async () => {
@@ -811,9 +812,7 @@ export class LocalFieldUnit implements MetadataUnit {
         });
         this.lifecycle.holdOllamaModel(this.host, this.option.model, `the ${this.spec.field} call`);
         return answer;
-      },
-      undefined,
-      LOCAL_FIELD_TIMEOUT_MS + 60_000
+      }
     );
 
     // A field's unusable answer is FATAL for that field, which is the opposite of the chapter

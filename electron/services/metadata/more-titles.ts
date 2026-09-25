@@ -38,7 +38,7 @@ import {
   runNumCtx,
 } from './metadata-tasks';
 import { MetadataRoutingOption, resolveOperatorOption, taskOptionIds } from './metadata-routing';
-import { queueAITask } from '../queue-manager.service';
+import { gpuCall, queueAITask } from '../queue-manager.service';
 
 /** How many titles one operator request asks for. Stated once; it is in the prompt too. */
 export const MORE_TITLES_COUNT = 10;
@@ -184,6 +184,7 @@ export async function askForMoreTitles(
     });
     const client = axios.create({ baseURL: transport.ollamaHost });
     const result = await queueAITask(
+      gpuCall(option.model),
       `more-titles-${option.model}-${stored.sourceLabel}`,
       `Titles: ${MORE_TITLES_COUNT} more on ${option.model}`,
       async () =>
@@ -196,9 +197,7 @@ export async function askForMoreTitles(
           timeoutMs: LOCAL_FIELD_TIMEOUT_MS,
           what,
           logPrefix: `[MoreTitles] ${option.model}`,
-        }),
-      undefined,
-      LOCAL_FIELD_TIMEOUT_MS + 60_000
+        })
     );
     if (!result.ok) {
       throw new Error(

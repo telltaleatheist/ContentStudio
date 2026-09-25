@@ -126,7 +126,7 @@ import { estimateTokens } from './ollama-json';
 import { askOllamaPlain, parseLeadBody } from './plain-call';
 import { JobModelLifecycle } from './model-lifecycle';
 import { MetadataRoutingOption } from './metadata-routing';
-import { queueAITask } from '../queue-manager.service';
+import { gpuCall, queueAITask } from '../queue-manager.service';
 import { JobCancelledError } from './cancellation';
 import { describerClauses } from './chapter-title-quality';
 import { promptAssets, ChannelData } from './prompt-assets';
@@ -589,6 +589,7 @@ export class DescriptionUnit implements MetadataUnit {
     const numCtx = this.budget!.resolve(ctx);
 
     const result = await queueAITask(
+      gpuCall(this.option.model),
       `description-${this.option.model}-${ctx.sourceLabel}-${what}`,
       `Metadata: ${this.label} — ${what}`,
       async () => {
@@ -609,9 +610,7 @@ export class DescriptionUnit implements MetadataUnit {
         });
         this.lifecycle.holdOllamaModel(this.host!, this.option.model, 'the description calls');
         return answer;
-      },
-      undefined,
-      CALL_TIMEOUT_MS + 60_000
+      }
     );
 
     if (!result.ok) {
