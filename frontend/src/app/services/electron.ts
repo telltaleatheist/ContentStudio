@@ -433,19 +433,14 @@ export interface MetadataRoutingHost {
 }
 
 /**
- * The two models nobody picks, which still have to be reported.
+ * The chapters row's model and whether it is installed, as the main process reports it.
  *
- * Chapters run on every item that has a timestamped transcript, on `generationModel`.
- * Key-phrase ranking runs on every item, on `keyPhraseModel`. The modal shows both because
- * the warning is the part that was worth keeping when the picker went: a missing chapter
- * model means no chapters at all, and a missing embedding model means measurably worse tags
- * on a run that declares it.
+ * `keyPhraseModel` / `keyPhraseAvailability` sat here for nomic-embed-text until key-phrase
+ * ranking was removed (LEDGER #205); the dialog's "not installed" note went with them.
  */
 export interface MetadataRoutingChapters {
   generationModel: string;
-  keyPhraseModel: string;
   generationAvailability: MetadataRoutingAvailability;
-  keyPhraseAvailability: MetadataRoutingAvailability;
 }
 
 /**
