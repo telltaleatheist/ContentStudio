@@ -1027,6 +1027,15 @@ Still off the table, pending Owen:
 - **The editor Stories analyzer** keeps its own picker until P8 replaces it.
 - **Key-phrase ranking** keeps calling `nomic-embed-text` through Ollama until P6 moves it in-process.
 
+**205. The migration build starts (Owen, 2026-09-25).** Rulings taken at the start, on branch `crucible` off main (with #204's fix cherry-picked):
+- **The inputs page UI is unfrozen** for this work. §14's queue rows (Fast toggle, the grey parked line, the lanes strip) go where the plan puts them.
+- **The Mac's Crucible is open to agents** for acceptance runs; nothing on the Mac GPU needs asking. **The PC still needs Owen's go, every time** (Law 7 stands for the PC).
+- **The editor Stories analyzer follows the chapters routing now**, before P8 replaces it. Its own Ollama picker goes; `story:suggest-title` follows the same selection.
+- **`nomic-embed-text` is removed, not moved.** Owen: "we're getting rid of the nomic embed model and using the new chapters logic". P6 is deleted; key-phrase ranking goes with it. Tag pools come from the chapter list; an item with no chapter list gets its tags written by the tags routing.
+- **No automatic hand-off between servers** (§21 Q14, Owen's Briefcase ruling applied): a busy server makes work wait with the reason. The **fast pin** is the only way work reaches the PC; `newJobsWaitFor: 'any'` is not built.
+- **The official `qwen3-asr-1.7b` id, never `-mlx`** (§21 Q15): ContentStudio keeps ums and uhs to cut on, and the port drops them.
+- Subagents build one phase each in their own worktree; every phase merges into `crucible` after review, and `crucible` merges to main when Owen accepts.
+
 ### Doc hygiene (staleness is itself a recorded state — see Part I §4 for the worklist)
 
 **97.** `PROJECT_OVERVIEW.md` / `README.md` / `QUICKSTART.md` / `SETUP_STATUS.md`: unmodified since 2025-10-30, describe the pre-Angular "LaunchPad" app; declared non-authoritative; the rewrite is an unfinished Phase 0b task.
