@@ -1,32 +1,27 @@
 /**
- * A WINDOW ONTO ONE SERVER'S OWN SETTINGS: upstream keys, and the one-time
- * "copy my key to <server>".
+ * A WINDOW ONTO ONE SERVER'S OWN SETTINGS: upstream keys.
  *
- * Ported from Briefcase's settings-bridge.service.ts and the key-copy half of
- * its crucible-ai.service.ts. Keys and upstreams live on whichever Crucible
- * serves the call, configured through that server's settings (LEDGER #194:
- * keys live in Crucible, not the app). This proxies `GET /v1/settings`,
- * `PUT /v1/settings` and `POST /v1/settings/upstreams/:name/test` for the
- * pane, and nothing more.
+ * Ported from Briefcase's settings-bridge.service.ts. Keys and upstreams live
+ * on whichever Crucible serves the call, configured through that server's
+ * settings (LEDGER #194: keys live in Crucible, not the app). This proxies
+ * `GET /v1/settings`, `PUT /v1/settings` and
+ * `POST /v1/settings/upstreams/:name/test` for the pane's per-server key entry
+ * (Test, then Save), and nothing more. It is BookForge's engine-settings.ts
+ * projection in Briefcase's shape: the renderer sees `keyHint`, never a key.
  *
  * NO BODY IS EVER LOGGED: a PUT carries a key on its way in. What comes back
  * carries only `keyHint`, which is the server's own `…abcd`.
  *
- * THE KEY COPY. Until P2 migrates api-keys.json into the local server's
- * settings and deletes it, the app still holds its own Claude key for the
- * cloud calls it makes itself. "Copy my key to <server>" writes that key to
- * the named server, confirms it by the server's read-back hint, and leaves
- * the file alone: deleting it is the migration's job (plan section 6.6), and
- * a key is never pushed to a remote server without this explicit press
- * (LEDGER #194, plan section 0 #20). A differing key already on the server is
- * left as it is and said so, never overwritten.
+ * THE APP HOLDS NO KEY ANY MORE (P2). P1's "copy my key to <server>" copied the
+ * app's own key out of api-keys.json; P2 moves that file into the Crucible on
+ * this computer once (key-migration.ts) and deletes it, and a server never
+ * hands a key back (only its hint), so there is nothing left to copy. A key for
+ * another server is typed into that server's row (P1's open question 2).
  */
-import * as log from 'electron-log';
 import type { SettingsDocument, SettingsPatch } from '@crucible/client';
 import type { CrucibleClientFactory } from './client-factory';
 import { CrucibleSettingsError } from './errors';
-import type { CrucibleServers } from './servers';
-import type { CrucibleSettingsPatch, CrucibleSettingsView, KeyCopyOutcome, UpstreamName, UpstreamTestAnswer } from './wire';
+import type { CrucibleSettingsPatch, CrucibleSettingsView, UpstreamName, UpstreamTestAnswer } from './wire';
 
 export const UPSTREAM_NAMES: readonly UpstreamName[] = ['anthropic', 'openai', 'ollama'];
 
@@ -85,15 +80,8 @@ export function patchOf(body: unknown): SettingsPatch {
   return patch as SettingsPatch;
 }
 
-/** The app's own Claude key, read fresh each time; undefined when there is none. Never handed to the renderer. */
-export type LegacyClaudeKey = () => string | undefined;
-
 export class CrucibleSettingsBridge {
-  constructor(
-    private readonly factory: CrucibleClientFactory,
-    private readonly servers: CrucibleServers,
-    private readonly legacyClaudeKey: LegacyClaudeKey,
-  ) {}
+  constructor(private readonly factory: CrucibleClientFactory) {}
 
   async get(server: string): Promise<CrucibleSettingsView> {
     const client = await this.factory.clientFor(server);
@@ -115,42 +103,5 @@ export class CrucibleSettingsBridge {
     const client = await this.factory.clientFor(server);
     const result = await client.testUpstream(upstream, Object.keys(probe).length === 0 ? undefined : probe);
     return result.ok ? { ok: true, models: [...result.models] } : { ok: false, code: result.code, message: result.message };
-  }
-
-  /** Copy the app's own Claude key onto the named server. Explicit, one server, never the file's deletion (P2's). */
-  async copyClaudeKeyTo(server: string): Promise<KeyCopyOutcome> {
-    if (!this.servers.names().includes(server)) {
-      throw new CrucibleSettingsError('unknown_server', `"${server}" is not one of this computer's Crucible servers.`);
-    }
-    const key = this.legacyClaudeKey();
-    if (key === undefined || key.trim() === '') {
-      throw new CrucibleSettingsError('nothing_to_copy', 'ContentStudio has no Claude key of its own to copy. Paste one on the server instead.');
-    }
-    const before = await this.get(server);
-    const current = before.upstreams.anthropic;
-    if (current === null) {
-      return { server, copied: false, alreadyThere: false, skipped: `"${server}" does not offer Claude via Crucible, so the key was not copied there.` };
-    }
-    if (current.configured && hintMatches(current.keyHint, key)) {
-      return { server, copied: false, alreadyThere: true, skipped: null };
-    }
-    if (current.configured) {
-      return {
-        server,
-        copied: false,
-        alreadyThere: false,
-        skipped: `"${server}" already has a different Claude key (${current.keyHint ?? 'set'}), so it was left as it is. Remove it there first if you want this one.`,
-      };
-    }
-    // NEVER LOGGED: the patch carries the key.
-    await this.put(server, { upstreams: { anthropic: { key } } });
-    // Read back: the key counts as copied only when the server shows its hint.
-    const after = await this.get(server);
-    const card = after.upstreams.anthropic;
-    const confirmed = card !== null && card.configured && hintMatches(card.keyHint, key);
-    log.info(`[crucible] Claude key copy to "${server}": ${confirmed ? 'confirmed by the server' : 'NOT confirmed by the server'}`);
-    return confirmed
-      ? { server, copied: true, alreadyThere: false, skipped: null }
-      : { server, copied: false, alreadyThere: false, skipped: `"${server}" did not confirm the Claude key after saving it.` };
   }
 }

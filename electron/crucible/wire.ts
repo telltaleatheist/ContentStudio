@@ -196,18 +196,24 @@ export type UpstreamTestAnswer =
   | { ok: false; code: string; message: string };
 
 /**
- * What "copy my key to <server>" came to. The app's own Claude key (api-keys.json,
- * until P2 migrates it) is written to that server's settings and confirmed by
- * the server's own hint. Nothing is ever pushed without this call (LEDGER #194).
+ * What moving api-keys.json into the Crucible on this computer came to (plan
+ * 6.6). The key itself never crosses: only the server's own `keyHint`.
+ *
+ *   nothing        there is no api-keys.json (the normal state after the move)
+ *   waiting        the file is kept until this computer's Crucible is registered
+ *   migrated       the key is on the server, confirmed by its hint; the file is gone
+ *   differing_key  the server already holds a different key: stop and ask
+ *   failed         the file is kept and the move is tried again at the next start
  */
-export interface KeyCopyOutcome {
-  server: string;
-  /** The key was written and the server's hint confirms it. */
-  copied: boolean;
-  /** The server already held this same key: nothing written. */
-  alreadyThere: boolean;
-  /** Why it was not copied, when it was not. */
-  skipped: string | null;
+export interface KeyMigrationOutcome {
+  status: 'nothing' | 'waiting' | 'migrated' | 'differing_key' | 'failed';
+  server: string | null;
+  /** The server's `…abcd` for the key it holds, when it stated one. */
+  keyHint: string | null;
+  /** The old file carried an OpenAI key, which is not moved (`openai:` is removed, LEDGER #194). */
+  openaiDropped: boolean;
+  /** One sentence for the pane, carrying the fix. */
+  message: string;
 }
 
 // ── adding a server ─────────────────────────────────────────────────────────

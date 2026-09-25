@@ -2,7 +2,7 @@ import { Component, effect, inject, input, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { CrucibleRefusal, CrucibleService } from '../../services/crucible';
-import type { CrucibleSettingsView, UpstreamTestAnswer } from '../../features/crucible/crucible.types';
+import type { CrucibleSettingsView, KeyMigrationOutcome, UpstreamTestAnswer } from '../../features/crucible/crucible.types';
 
 /**
  * ONE SERVER'S CLAUDE KEY (LEDGER #194: keys live in Crucible, not the app).
@@ -10,10 +10,11 @@ import type { CrucibleSettingsView, UpstreamTestAnswer } from '../../features/cr
  * Ported from Briefcase's crucible-upstreams.component, cut to the one upstream
  * ContentStudio routes to (the Anthropic key; `openai:` is being removed, #194). Paste,
  * Test, then Save: the key crosses once, on its way in, the box is emptied, and from then on
- * only the server's own `keyHint` is shown. "Copy my key" writes the app's own Claude key
- * (api-keys.json, until P2 migrates it) to THIS server, confirmed by the server's hint; it is
- * the only way a key reaches a server that was not typed there, and a different key already
- * on the server is left alone and said so (plan section 0 #20).
+ * only the server's own `keyHint` is shown. The app holds no key (P2): P1's "copy my key"
+ * button went when api-keys.json was moved, once, into the Crucible on this computer
+ * (plan 6.6), since a server never hands a key back. A key for any other server is typed
+ * here. When that one move found a DIFFERENT key already on this computer's server, it stopped
+ * and asks here: keep the server's, or replace it with the one ContentStudio had.
  *
  * A server whose settings do not offer Anthropic (its card comes back null) shows a sentence,
  * not an input.
@@ -49,10 +50,18 @@ import type { CrucibleSettingsView, UpstreamTestAnswer } from '../../features/cr
             <button mat-button [disabled]="busy()" (click)="removeKey()">Remove</button>
           }
         </div>
-        <div class="keys-row">
-          <button mat-button [disabled]="busy()" (click)="copyMine()">Copy my key to {{ server() }}</button>
-          <span class="keys-hint">ContentStudio's own Claude key, sent to this server only when you press this.</span>
-        </div>
+        @if (migration(); as moved) {
+          <div class="keys-row">
+            <span class="keys-hint" [class.keys-warn]="moved.status !== 'migrated'">{{ moved.message }}</span>
+            @if (moved.status === 'differing_key') {
+              <button mat-button [disabled]="busy()" (click)="resolveMigration('keep')">Keep the server's key</button>
+              <button mat-button [disabled]="busy()" (click)="resolveMigration('replace')">Replace it with ContentStudio's</button>
+            }
+          </div>
+          @if (moved.openaiDropped) {
+            <p class="keys-hint">The OpenAI key in api-keys.json was not moved: OpenAI is no longer a provider.</p>
+          }
+        }
       } @else {
         <p class="keys-hint">{{ server() }} does not offer Claude via Crucible.</p>
       }
@@ -90,6 +99,8 @@ export class CrucibleServerKeys {
   readonly draft = signal('');
   readonly busy = signal(false);
   readonly result = signal<{ ok: boolean; text: string } | null>(null);
+  /** What the api-keys.json move last said about THIS server, when it said anything. */
+  readonly migration = signal<KeyMigrationOutcome | null>(null);
 
   constructor() {
     effect(() => {
@@ -105,6 +116,8 @@ export class CrucibleServerKeys {
     try {
       this.settings.set(await this.crucible.settings(name));
       this.loadError.set(null);
+      const moved = await this.crucible.keyMigration();
+      this.migration.set(moved !== null && moved.server === name && moved.status !== 'nothing' ? moved : null);
     } catch (err) {
       this.loadError.set(err instanceof CrucibleRefusal ? err.message : `Could not read ${name}'s keys.`);
     }
@@ -157,12 +170,14 @@ export class CrucibleServerKeys {
     });
   }
 
-  copyMine(): Promise<void> {
+  /** The answer to the move's one question (plan 6.6: stop and ask on a differing key). */
+  resolveMigration(choice: 'keep' | 'replace'): Promise<void> {
+    if (choice === 'replace' && !confirm(`Replace the Claude key on ${this.server()}? Every app that uses that server sends to Claude with the new one.`)) {
+      return Promise.resolve();
+    }
     return this.run(async () => {
-      const outcome = await this.crucible.copyMyKey(this.server());
-      if (outcome.copied) this.result.set({ ok: true, text: `Your Claude key is on ${this.server()} now; the server confirmed it.` });
-      else if (outcome.alreadyThere) this.result.set({ ok: true, text: `${this.server()} already has your Claude key.` });
-      else this.result.set({ ok: false, text: outcome.skipped ?? 'The key was not copied.' });
+      const outcome = await this.crucible.resolveKeyMigration(choice);
+      this.result.set({ ok: outcome.status === 'migrated', text: outcome.message });
       await this.load(this.server());
     });
   }

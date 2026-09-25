@@ -16,7 +16,7 @@ import type {
   CrucibleServersView,
   CrucibleSettingsView,
   CrucibleSetupView,
-  KeyCopyOutcome,
+  KeyMigrationOutcome,
   LocalConnectCodes,
   RoutingView,
   UpstreamName,
@@ -150,8 +150,14 @@ export class CrucibleService {
     return this.unwrap(() => this.bridge.crucibleUpstreamTest(name, upstream, probe));
   }
 
-  copyMyKey(name: string): Promise<KeyCopyOutcome> {
-    return this.unwrap(() => this.bridge.crucibleCopyMyKey(name));
+  /** What the api-keys.json move into this computer's Crucible last said (null: it has not run yet). */
+  keyMigration(): Promise<KeyMigrationOutcome | null> {
+    return this.unwrap(() => this.bridge.crucibleKeyMigration());
+  }
+
+  /** The answer when the move found a different key on the server (plan 6.6). */
+  resolveKeyMigration(choice: 'replace' | 'keep'): Promise<KeyMigrationOutcome> {
+    return this.unwrap(() => this.bridge.crucibleKeyMigrationResolve(choice));
   }
 
   // ── this computer: the doors ───────────────────────────────────────────

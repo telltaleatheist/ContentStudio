@@ -156,8 +156,18 @@ export function setupCrucibleIpc(context: CrucibleContext): void {
   ipcMain.handle('crucible:upstream-test', (_event, name: unknown, upstream: unknown, probe: unknown) => guard('upstream-test', () =>
     settings.testUpstream(requireName(name), typeof upstream === 'string' ? upstream : '', probe)));
 
-  /** The explicit, one-server copy of the app's own Claude key (LEDGER #194). */
-  ipcMain.handle('crucible:copy-my-key', (_event, name: unknown) => guard('copy-my-key', () => settings.copyClaudeKeyTo(requireName(name))));
+  /**
+   * The api-keys.json move (plan 6.6): what it last said, and the pane's answer
+   * when the server already held a different key ("stop and ask"). The key never
+   * crosses; only the server's hint does.
+   */
+  ipcMain.handle('crucible:key-migration', () => guard('key-migration', () => context.keys.last()));
+  ipcMain.handle('crucible:key-migration-resolve', (_event, choice: unknown) => guard('key-migration-resolve', () => {
+    if (choice !== 'replace' && choice !== 'keep') {
+      throw new CrucibleSettingsError('invalid_settings', 'Say whether to replace the server\'s Claude key with ContentStudio\'s ("replace") or keep the server\'s ("keep").');
+    }
+    return context.keys.migrate(choice);
+  }));
 
   // ── the local engine and the doors ──────────────────────────────────────
 

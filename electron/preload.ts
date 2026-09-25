@@ -129,13 +129,6 @@ const api = {
   // Log export
   saveLogs: (frontendLogs: string) => ipcRenderer.invoke('save-logs', frontendLogs),
 
-  // AI Setup
-  checkOllama: () => ipcRenderer.invoke('check-ollama'),
-  getApiKeys: () => ipcRenderer.invoke('get-api-keys'),
-  saveApiKey: (provider: string, apiKey: string) => ipcRenderer.invoke('save-api-key', provider, apiKey),
-  getAvailableModels: (provider: 'ollama' | 'openai' | 'claude', apiKey?: string, host?: string) =>
-    ipcRenderer.invoke('get-available-models', provider, apiKey, host),
-
   // External URLs
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
 
@@ -165,7 +158,10 @@ const api = {
   crucibleSettingsPut: (name: string, patch: any) => ipcRenderer.invoke('crucible:settings-put', name, patch),
   crucibleUpstreamTest: (name: string, upstream: string, probe: { key?: string; url?: string }) =>
     ipcRenderer.invoke('crucible:upstream-test', name, upstream, probe),
-  crucibleCopyMyKey: (name: string) => ipcRenderer.invoke('crucible:copy-my-key', name),
+  // The api-keys.json move into this computer's Crucible (P2, plan 6.6): what it last said,
+  // and the pane's answer when the server already held a different key. No key crosses.
+  crucibleKeyMigration: () => ipcRenderer.invoke('crucible:key-migration'),
+  crucibleKeyMigrationResolve: (choice: 'replace' | 'keep') => ipcRenderer.invoke('crucible:key-migration-resolve', choice),
   crucibleSetup: () => ipcRenderer.invoke('crucible:setup'),
   crucibleInstallStatus: () => ipcRenderer.invoke('crucible:install-status'),
   crucibleInstallStart: () => ipcRenderer.invoke('crucible:install-start'),
