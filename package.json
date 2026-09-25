@@ -89,6 +89,7 @@
       "dist/**/*",
       "frontend/dist/**/*",
       "electron/assets/**/*",
+      "shared/crucible/*.module.json",
       "!**/._*",
       "!**/*.map",
       "node_modules/**/*",

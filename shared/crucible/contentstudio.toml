@@ -1,0 +1,75 @@
+# What ContentStudio needs from a Crucible. PHASE13-OPERATOR.md section 5.4.
+#
+# DRAFT FOR THE CRUCIBLE REPO. This file belongs at `modules/contentstudio.toml`
+# in github.com/telltaleatheist/crucible, beside bookforge.toml and foundry.toml
+# (CRUCIBLE-MIGRATION-PLAN.md section 3.4, section 19 N10). It lives here only
+# until that PR lands, as Briefcase's does.
+#
+# How the vendored JSON beside it was made, and how it must be made from now on:
+#
+#   1. Land this file as `modules/contentstudio.toml` in the crucible repo.
+#   2. There: `python scripts/gen-modules.py` writes `modules/contentstudio.module.json`;
+#      `--check` and tests/test_modules.py then guard it in CI.
+#   3. Here: after the next Crucible cut, `node tools/adopt-crucible-release.mjs <ver>`,
+#      then copy `modules/contentstudio.module.json` over `contentstudio.module.json`
+#      in this directory, byte for byte. Never edit the JSON by hand: its `version` is
+#      a hash of its own content, and tools/test-crucible-module-file.js checks it.
+#
+# Until then, the copy here is produced by the crucible repo's OWN generator at the
+# tag the SDK is pinned to (v1.0.34), run from an extract of that tag (the GitHub
+# source archive of refs/tags/v1.0.34, which is `git archive v1.0.34`) against this
+# file in a scratch directory: `python scripts/gen-modules.py --directory <scratch>`,
+# then `--check` (plan section 0a, "Mechanics"). A module naming a retired id is
+# refused `unknown_subject`, which is why it is never generated from a working
+# checkout.
+
+[module]
+name = "contentstudio"
+
+[[job_types]]
+type = "llm"
+
+# The transcriber (LEDGER #203: Qwen3-ASR-1.7B, fully).
+[[job_types]]
+type = "asr"
+
+# Qwen's word timestamps run its forced aligner in the `align` worker env; the
+# weights alone are not enough, and a missing env is refused `env_missing` at
+# the submit (plan section 0a).
+[[job_types]]
+type = "align"
+
+# Snap chaptering (LEDGER #199) reads its answers off `POST /v1/decide`. The
+# SERVER resolves the class per machine (PHASE15-HOST.md 5.3a), so no id is
+# typed for it. Generation is not a need: `generate` is client-sized, and the
+# routing table, not the server, picks each field's model (LEDGER #204), so
+# those models are named below as subjects.
+[[needs]]
+class = "decide"
+
+# The transcriber and its aligner: ONE id on every backend (the 1.0.29 lineup),
+# and the official `qwen3-asr-1.7b`, never the `-mlx` port. ContentStudio keeps
+# the ums and uhs to cut on, and the port drops them (LEDGER #205, plan
+# section 21 Q15).
+[[subjects]]
+kind = "model"
+id = "qwen3-asr-1.7b"
+
+[[subjects]]
+kind = "model"
+id = "qwen3-aligner"
+
+# The routing table's shipped local models (plan section 6.2): the 27B the
+# capable fields and the summarizer run on, and the 9B.
+[[subjects]]
+kind = "model"
+id = "qwen3.8-27b-4bit"
+
+[[subjects]]
+kind = "model"
+id = "qwen3.5-9b"
+
+# NOT YET: voice isolation (LEDGER #200) will add `rvc` as a job type (it is
+# what installs the env `denoise` runs in; naming `denoise` is refused) and the
+# `vocals-roformer` denoise subject. That is P7's to add, so that coordinating a
+# server before then never pulls the rvc env for a feature that is not built.

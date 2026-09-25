@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain } from 'electron';
+import * as fs from 'fs';
 import * as path from 'path';
 import * as log from 'electron-log';
 import Store from 'electron-store';
@@ -13,6 +14,7 @@ import { PublishStoreService } from './services/publish/publish-store.service';
 import { autoConfigure } from './services/publish/auto-config';
 import { SpreakerConfigService } from './services/spreaker/spreaker-config.service';
 import { stopArchiveSyncOnQuit } from './services/editor/editor-ipc';
+import { createCrucibleContext, type CrucibleContext } from './crucible/context';
 
 /**
  * ContentStudio - Main Electron Process
@@ -87,6 +89,20 @@ export function getMainWindow(): BrowserWindow | null {
 
 // Held so the scheduled collector loop can be stopped on quit.
 let apiCollector: ApiCollectorService | null = null;
+
+// Held so the Crucible background loops (auto-connect, readiness) can be stopped on quit.
+let crucible: CrucibleContext | null = null;
+
+/**
+ * Push one Crucible event to EVERY window: the Settings pane in the main window and the
+ * editor's own window both draw readiness, and a push aimed at getMainWindow() alone would
+ * leave the editor showing yesterday's answer.
+ */
+function pushToAllWindows(channel: string, payload: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(channel, payload);
+  }
+}
 
 // Note: Single instance lock would go here but causes issues with app.requestSingleInstanceLock
 // being called before app is ready. Skipping for now.
@@ -234,6 +250,32 @@ app.whenReady().then(async () => {
     // status call gives, not a startup failure.
     const spreakerConfig = new SpreakerConfigService(userDataPath);
 
+    // The Crucible servers this machine knows (CRUCIBLE-MIGRATION-PLAN.md P1, LEDGER #193).
+    // Constructed here, over userData, for the reason every other service in this block is.
+    // Nothing in it touches the network yet: the registry is a file, and the two background
+    // loops start after the window is up and are never awaited, so a missing, stopped or
+    // asleep Crucible cannot slow this boot (plan section 0a: everything non-AI works with
+    // no server at all). The token never leaves main; every push below carries masked rows
+    // or a readiness sentence, never a credential.
+    crucible = createCrucibleContext({
+      stateDir: userDataPath,
+      clipboard: (text) => clipboard.writeText(text),
+      // The app's own Claude key, for the explicit "copy my key to <server>" press (LEDGER
+      // #194). Read fresh from api-keys.json each time; P2's migration is what retires the
+      // file. A file that is not JSON throws here, and the press answers with that, by name.
+      legacyClaudeKey: () => {
+        const apiKeysPath = path.join(userDataPath, 'api-keys.json');
+        if (!fs.existsSync(apiKeysPath)) return undefined;
+        const keys = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8')) as { claudeApiKey?: unknown };
+        return typeof keys.claudeApiKey === 'string' ? keys.claudeApiKey : undefined;
+      },
+      push: {
+        serversChanged: (change) => pushToAllWindows('crucible:servers-changed', change),
+        readiness: (view) => pushToAllWindows('crucible:readiness', view),
+        installProgress: (event) => pushToAllWindows('crucible:install-progress', event),
+      },
+    });
+
     // Set up IPC handlers
     setupIpcHandlers(store, {
       analyticsStore,
@@ -243,6 +285,7 @@ app.whenReady().then(async () => {
       apiCollector,
       publishStore,
       spreakerConfig,
+      crucible,
     });
 
     // Collection is manual (user clicks "Refresh data" on the Analytics page).
@@ -258,6 +301,10 @@ app.whenReady().then(async () => {
 
     // Create main window
     createMainWindow();
+
+    // Auto-connect the Crucible on this computer (only into an EMPTY registry, after its
+    // info() answers as itself) and begin deriving readiness. Fire-and-forget by design.
+    crucible.start();
 
     // macOS-specific behavior
     app.on('activate', () => {
@@ -287,6 +334,11 @@ app.on('before-quit', () => {
   // the next launch would interleave its writes into the same destination files. Stopping
   // it here is what keeps "one at a time" true across a restart.
   stopArchiveSyncOnQuit();
+  // The Crucible loops hold unref'd timers only, so quitting does not wait on them; stopping
+  // them here is what keeps a retry from probing a server after the windows are gone. Nothing
+  // here stops the local Crucible itself: it is an OS service shared with BookForge, Foundry
+  // and Briefcase, and another app may be mid-run (plan section 5).
+  crucible?.stop();
 });
 
 // Handle uncaught exceptions

@@ -88,6 +88,8 @@ import { resolveRef } from '../services/metadata/editor-transcript-link';
 import type { TranscriptRef } from '../services/publish/publish-types';
 import type { TranscriptLink } from '../services/metadata/editor-transcript-link';
 import { getMainWindow } from '../main';
+import { setupCrucibleIpc } from '../crucible/crucible-ipc';
+import type { CrucibleContext } from '../crucible/context';
 
 /**
  * Analytics services created in main.ts at startup and shared with the IPC layer.
@@ -107,6 +109,12 @@ export interface AnalyticsServices {
    * only thing in the app that reads the token, and it hands publish/ a show WITHOUT it.
    */
   spreakerConfig: SpreakerConfigService;
+  /**
+   * The Crucible servers this machine knows, and everything that reaches them (registry,
+   * probe, pairing, the local engine, readiness). Built in main.ts over userData, like the
+   * rest of this struct, so the same wiring runs under a keeper over a temp directory.
+   */
+  crucible: CrucibleContext;
 }
 
 /**
@@ -3942,6 +3950,14 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   // operator confirms every link on the Inputs page.
   setupTranscriptLinkIpc();
   // ==================== END TRANSCRIPT LINK ====================
+
+  // ==================== CRUCIBLE ====================
+  // The inference servers every model call will go through (LEDGER #193): the registry,
+  // probes, pairing and connect codes, each server's keys, the local engine's doors and
+  // readiness. Registered as one seam like publish/ and editor/. P1 adds the servers only;
+  // the calls themselves move in P2.
+  setupCrucibleIpc(analytics.crucible);
+  // ==================== END CRUCIBLE ====================
 
   log.info('IPC handlers registered');
 }
