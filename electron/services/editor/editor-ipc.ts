@@ -13,6 +13,8 @@ import { BinaryResolver } from './binary-resolver';
 import { AlignmentAudioService } from './alignment-audio-service';
 import * as assetManager from './asset-manager';
 import { setupStoryAnalysisHandlers, StoryIpcDeps } from './story-ipc';
+import { buildAsrContext } from '../transcription/asr-context';
+import { asrContextTemplate, editorTrackFacts } from '../transcription/asr-facts';
 import { ArchiveBusyError,
   ArchiveSync, comparablePath, destinationFor, DEFAULT_ARCHIVE_ROOT, DEFAULT_ARCHIVE_MOUNT_URL
 } from './archive-sync';
@@ -481,7 +483,7 @@ export type EditorIpcDeps = StoryIpcDeps;
  * setupPublishIpc precedent.
  */
 export function setupEditorIpc(store: Store<any>, deps: EditorIpcDeps): void {
-  setupEditorSessionHandlers();
+  setupEditorSessionHandlers(store);
   setupStoryAnalysisHandlers(store, deps);
   setupTitleHandoffHandlers();
   setupMediaHandlers();
@@ -512,7 +514,7 @@ export function setupEditorIpc(store: Store<any>, deps: EditorIpcDeps): void {
  * timeline manifest; a Python failure rejects with the Python message VERBATIM —
  * a manifest is never fabricated.
  */
-function setupEditorSessionHandlers(): void {
+function setupEditorSessionHandlers(store: Store<any>): void {
   // Editor-scoped seed payload.
   let pendingEditorPayload: { zipPath: string } | null = null;
 
@@ -793,12 +795,12 @@ function setupEditorSessionHandlers(): void {
     return { removed };
   });
 
-  // Whisper-transcribe the session's source audio tracks. Returns { jobId }
-  // IMMEDIATELY; progress and completion are pushed to the WINDOW THAT INVOKED
+  // Transcribe the session's source audio tracks on Crucible (P5, LEDGER #206). Returns
+  // { jobId } IMMEDIATELY; progress and completion are pushed to the WINDOW THAT INVOKED
   // this (event.sender), matching execute-workflow. On completion the renderer
   // receives 'transcribe-complete' with result on success, or result:null +
   // errorMessage carrying the loud message on any failure (including a pre-spawn
-  // resolver failure — missing whisper-cli/model — surfaced via .catch).
+  // failure — no ffmpeg, an unreadable context template — surfaced via .catch).
   ipcMain.handle('editor:transcribe', async (event, payload: { zipPath: string }) => {
     const zipPath = payload?.zipPath;
     if (typeof zipPath !== 'string' || zipPath.trim() === '') {
@@ -811,7 +813,29 @@ function setupEditorSessionHandlers(): void {
     const jobId = `transcribe_${Date.now()}`;
     const sender = event.sender;
 
-    pythonService().transcribe(jobId, zipPath, {
+    // The session's asr context (LEDGER #206): the verbatim instruction, the session's
+    // story titles from its edits sidecar, and the ACTIVE channel's brand terms and promoted
+    // items (Settings' channel: the editor has no run of its own to name one). The session
+    // name follows the CLIs' rule: zip stem less a trailing `_compounds`.
+    let asrContext: string;
+    try {
+      let session = path.basename(zipPath, path.extname(zipPath));
+      if (session.endsWith('_compounds')) session = session.slice(0, -'_compounds'.length);
+      const promptSet = ((store as any).get('promptSet') as string | undefined) || null;
+      asrContext = buildAsrContext(
+        editorTrackFacts({ session, editsPath: path.join(path.dirname(zipPath), `${session}_edits.json`), promptSet }),
+        asrContextTemplate());
+      log.info(`[${jobId}] asr context (channel ${promptSet ?? 'none selected'}): ${JSON.stringify(asrContext)}`);
+    } catch (err: any) {
+      const message = `The transcription context could not be built: ${err?.message || String(err)}`;
+      log.error(`[${jobId}] ${message}`);
+      if (!sender.isDestroyed()) {
+        sender.send('transcribe-complete', { jobId, exitCode: -1, result: null, errorMessage: message });
+      }
+      return { jobId };
+    }
+
+    pythonService().transcribe(jobId, zipPath, asrContext, {
       onProgress: (progress, message, etaSeconds) => {
         if (sender.isDestroyed()) return;
         sender.send('transcribe-progress', { jobId, progress, message, etaSeconds });
@@ -826,7 +850,7 @@ function setupEditorSessionHandlers(): void {
         });
       },
     }).catch((err: any) => {
-      // Pre-spawn resolution failure (whisper-cli/model not found). Fail loud to
+      // Pre-spawn resolution failure (ffmpeg or the Python runtime not found). Fail loud to
       // the renderer via the same completion channel so the UI never spins.
       const message = err?.message || String(err);
       log.error(`[${jobId}] transcribe failed before spawn: ${message}`);
@@ -843,8 +867,8 @@ function setupEditorSessionHandlers(): void {
     return { jobId };
   });
 
-  // Cancel a running transcription. killProcess sends SIGTERM (its default
-  // signal), which transcribe.py handles as a clean cancel.
+  // Cancel a running transcription. killProcess DELETEs the Crucible job in flight and
+  // sends SIGTERM (its default signal), which transcribe.py handles as a clean cancel.
   ipcMain.handle('editor:transcribe-cancel', async (_event, payload: { jobId: string }) => {
     const jobId = payload?.jobId;
     if (typeof jobId !== 'string' || jobId.trim() === '') {

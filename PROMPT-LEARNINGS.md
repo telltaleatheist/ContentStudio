@@ -775,3 +775,32 @@ their framing ("Owen Morgan defines communism, socialism and Umberto Eco's fasci
 Crowder's claim"). There is no re-ask (law 3) and no second prompt; the operator curates. Facts
 were not touched in any of the 59 texts: zero numbers changed, zero URLs changed, and the only
 proper nouns lost were the creator's own.
+
+---
+
+## Part 11 — `shared/pipeline/transcription.yml` (added 2026-09-25, P5)
+
+Qwen3-ASR's `context`, the text it reads in its system turn before it hears the audio. It is
+sent on every Crucible `asr` job, from the pipeline and from the editor (LEDGER #206). Code
+assembles it (`services/transcription/asr-context.ts`): the `instruction`, then one
+`<label>: <facts>` line per known fact, most specific first. Over the 700-token estimate, the
+least specific field is cut first.
+
+- **`instruction`, first sentence and the disfluency list.** This is #203's measured prompt:
+  "Transcribe every disfluency exactly as spoken, including filler sounds: um, uh, ah, er, hmm,
+  and false starts and repeated words." Owen cuts on the fillers. On the 2026-09-23 stream's
+  1:00:00–1:10:00 window it took Qwen from 9 fillers to 19 in the package run the Crucible
+  manifest cites. "Verbatim transcript." replaces #203's "Verbatim transcript of a livestream.",
+  because most of what the pipeline transcribes is an edited export, not a livestream. On
+  Crucible the two gave the same 9 fillers on that window (docs/crucible/P5.md §4a).
+- **`instruction`, the last sentence** ("use it only for the spelling of names, places and
+  terms, and write only what is actually said"). This comes from Briefcase's context. Metadata
+  names people who may never speak, and a name in the context must never be written into the
+  transcript. Measured on `3 - hank kunneman.mov`: all 6 "Hank Kunneman" came out right with the
+  context, against 4 of 6 without it, and "an ammo dealer" became "an Amoco dealer" (the
+  father's hat the description names). The earlier report's misspelled tags ("Hank Cunhamon",
+  "Hank Kahneman") were in the context and were not copied. Side effects on that run: "ICE
+  Gestapo" became "ICE stopper", "graft" became "craft", and "going to" became "gonna" three
+  times. These are open for Owen's ear.
+- **`labels`.** These are plain field names, so the facts read as data under the instruction.
+  "Names and topics" carries an earlier run's tags, which are dense with names.

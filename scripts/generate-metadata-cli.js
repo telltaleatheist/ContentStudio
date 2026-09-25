@@ -357,7 +357,11 @@ async function main() {
   const store = new Store({});
   const settings = store.store;
 
-  const { setSelectedWhisperModel } = require(path.join(DIST, 'lib/bridges/runtime-paths.js'));
+  // Transcription is Crucible's asr job (P5, LEDGER #206). Until P1's registry is merged the CLI
+  // reaches this Mac's own server through the raw-fetch client under tools/ (the app itself has
+  // no server wired until P1, and refuses by name). P1 swaps this for its registry's client.
+  const { setAsrVenueResolver } = require(path.join(DIST, 'services/transcription/crucible-transcription.js'));
+  const { pairedVenue } = require(path.join(REPO_ROOT, 'tools', 'crucible-raw-client.js'));
   const routing = require(path.join(DIST, 'services/metadata/metadata-routing.js'));
   const { AnalyticsStoreService } = require(path.join(DIST, 'services/analytics/analytics-store.service.js'));
   const { MetadataGeneratorService } = require(path.join(DIST, 'services/metadata/metadata-generator.service.js'));
@@ -436,12 +440,10 @@ async function main() {
     };
   }
 
-  // ipc-handlers.ts:760 — the selected Whisper model comes from the store.
-  if (!settings.whisperModel) {
-    fail(`The app's settings name no whisperModel; the app would transcribe with a model this ` +
-         `CLI cannot guess. Set it in Settings → Transcription.`);
-  }
-  setSelectedWhisperModel(settings.whisperModel);
+  // The whisperModel setting no longer chooses anything (P5): every transcription is
+  // qwen3-asr-1.7b on Crucible. The venue is this Mac's paired server.
+  const asrVenue = pairedVenue();
+  setAsrVenueResolver(() => asrVenue);
 
   const channel = args.channel || settings.promptSet;
   if (!channel) fail('No channel: pass --channel, or set one in the app settings (promptSet).');
@@ -566,7 +568,7 @@ async function main() {
     for (const note of granularityNotes(filter.selected)) console.error(`     - ${note}`);
     console.error('');
   }
-  console.error(`  whisper:     ${settings.whisperModel}`);
+  console.error(`  transcriber: crucible:${asrVenue.server}:qwen3-asr-1.7b`);
   console.error(`  routing:     ${Object.entries(resolvedRouting).map(([k, v]) => `${k}=${v}`).join(', ')}`);
   // Chapters route per-field since 2026-08-24 (the `chapters` entry above); the summarizer
   // follows the chapters selection, falling to SUMMARIZATION_MODEL only when chapters are local.
@@ -607,7 +609,7 @@ async function main() {
     contentItems = cachedTranscript.contentItems;
     transcriptSource =
       `CACHE HIT — ${caches.transcript}\n` +
-      `                 cached ${cachedTranscript.cachedAt} from whisper "${cachedTranscript.whisperModel}", ` +
+      `                 cached ${cachedTranscript.cachedAt} from "${cachedTranscript.whisperModel}", ` +
       `${(contentItems[0].srtSegments || []).length} caption segment(s), ${contentItems[0].content.length} chars`;
     console.error(`  TRANSCRIPT: ${transcriptSource}`);
     console.error('              Whisper was NOT run. Pass --transcribe to force a fresh transcription.\n');
@@ -632,7 +634,7 @@ async function main() {
     const speakerTagger = speakerMode.enabled ? new SpeakerTagger(speakerMode) : undefined;
 
     const inputHandler = new InputHandlerService(
-      whisperService, outputDir, progressCallback, speakerTagger);
+      whisperService, outputDir, { jobName: path.basename(args.input), promptSet: channel }, progressCallback, speakerTagger);
     const inputFailures = [];
     contentItems = await inputHandler.processMultipleInputs([args.input], new Map(), inputFailures, new Map());
     if (contentItems.length === 0) {
@@ -650,10 +652,10 @@ async function main() {
       version: 2,
       video: videoStamp(args.input),
       cachedAt: new Date().toISOString(),
-      whisperModel: settings.whisperModel,
+      whisperModel: `crucible:${asrVenue.server}:qwen3-asr-1.7b`,
       contentItems,
     });
-    transcriptSource = `FRESH Whisper run ("${settings.whisperModel}"), cached to ${caches.transcript}`;
+    transcriptSource = `FRESH Crucible transcription (crucible:${asrVenue.server}:qwen3-asr-1.7b), cached to ${caches.transcript}`;
     console.error(`\n  TRANSCRIPT: ${transcriptSource}\n`);
     // A fresh transcript invalidates chapters measured against the old one.
     if (fs.existsSync(caches.chapters)) {

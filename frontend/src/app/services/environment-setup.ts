@@ -66,7 +66,9 @@ export class EnvironmentSetupService {
       this.enqueue(tool.id, tool.name, true);
     }
 
-    if (!readiness.ai.ready || !readiness.transcription.selectedModelInstalled) {
+    // A missing Whisper model no longer opens the dialog: transcription is Crucible's since P5
+    // (LEDGER #206), and nothing runs a local Whisper model.
+    if (!readiness.ai.ready) {
       this.optionalDialogOpen.set(true);
     }
   }

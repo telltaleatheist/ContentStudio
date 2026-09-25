@@ -83,7 +83,11 @@ export interface SavedTranscriptRecord {
   /** The path the transcript was taken from, for the operator to read in an error. */
   source_path: string;
   video: SavedTranscriptVideoStamp;
-  /** The Whisper model that produced these segments, as the run resolved it. */
+  /**
+   * The model that produced these segments, as the run resolved it. Since P5 (LEDGER #206)
+   * `crucible:<server>:qwen3-asr-1.7b`; older records name a whisper.cpp model (`base`,
+   * `large-v3-turbo`) and stay reusable. The key keeps its old name so they do.
+   */
   whisper_model: string;
   /** ISO. When this record was written. */
   saved_at: string;
@@ -92,6 +96,12 @@ export interface SavedTranscriptRecord {
   /** null when the transcribing run was in the untagged mode — see SavedTranscriptSpeakerTagging. */
   speaker_tagging: SavedTranscriptSpeakerTagging | null;
   segments: SRTSegment[];
+  /**
+   * The aligner's words beside the captions, in seconds of the video: what cut-by-word reads.
+   * ADDITIVE, so no schema bump: a record without it (every whisper.cpp record) has no word
+   * timings, which is what it always had, and nothing that reads segments reads this.
+   */
+  words?: { start: number; end: number; word: string }[];
 }
 
 /**
@@ -160,10 +170,12 @@ export function saveTranscript(args: {
   segments: SRTSegment[];
   durationSec: number | null;
   whisperModel: string;
+  /** The words beside the captions; null when the transcriber gave none. */
+  words: { start: number; end: number; word: string }[] | null;
   /** What the speaker tagger did to these segments; null when the run was in the untagged mode. */
   speakerTagging: SavedTranscriptSpeakerTagging | null;
 }): SavedTranscriptReuse {
-  const { outputDir, videoPath, segments, durationSec, whisperModel, speakerTagging } = args;
+  const { outputDir, videoPath, segments, durationSec, whisperModel, words, speakerTagging } = args;
 
   if (!Array.isArray(segments) || segments.length === 0) {
     throw new Error(
@@ -173,7 +185,7 @@ export function saveTranscript(args: {
   }
   if (typeof whisperModel !== 'string' || !whisperModel.trim()) {
     throw new Error(
-      `Refusing to save the transcript for ${path.basename(videoPath)} without the Whisper ` +
+      `Refusing to save the transcript for ${path.basename(videoPath)} without the ` +
       `model that produced it — the record could not say what it is a transcript by.`
     );
   }
@@ -191,6 +203,7 @@ export function saveTranscript(args: {
     duration_sec: durationSec,
     speaker_tagging: speakerTagging,
     segments,
+    ...(words ? { words } : {}),
   };
 
   try {
