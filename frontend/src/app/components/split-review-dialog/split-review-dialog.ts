@@ -14,6 +14,7 @@ import {
   ElectronService,
   TranscriptChapter,
   TranscriptSplitCut,
+  TranscriptSplitProgress,
 } from '../../services/electron';
 
 export interface SplitReviewDialogData {
@@ -72,8 +73,13 @@ interface Story {
 
       @if (phase() === 'analyzing') {
         <div class="analyzing">
-          <mat-progress-bar mode="indeterminate"></mat-progress-bar>
-          <span>Scanning the transcript for chapters… this can take a minute.</span>
+          @if (progress(); as p) {
+            <mat-progress-bar mode="determinate" [value]="p.fraction * 100"></mat-progress-bar>
+            <span>Finding the stories ({{ p.phase }} {{ p.done }}/{{ p.total }}, {{ (p.fraction * 100).toFixed(0) }}%)… a long stream takes a while.</span>
+          } @else {
+            <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+            <span>Finding the stories in the transcript… a long stream takes a while.</span>
+          }
         </div>
       }
 
@@ -203,6 +209,7 @@ interface Story {
 export class SplitReviewDialog {
   phase = signal<Phase>('idle');
   error = signal<string>('');
+  progress = signal<TranscriptSplitProgress | null>(null);
   displayTitle = signal<string>('');
   duration = signal<number>(0);
   chapters = signal<TranscriptChapter[]>([]);
@@ -224,6 +231,8 @@ export class SplitReviewDialog {
   async runAnalysis() {
     this.phase.set('analyzing');
     this.error.set('');
+    this.progress.set(null);
+    this.electron.onTranscriptSplitProgress((p) => this.progress.set(p));
     try {
       const result = await this.electron.analyzeTranscriptSplit(this.data.filePath);
       if (result.success && result.chapters && result.chapters.length > 0) {
@@ -239,6 +248,8 @@ export class SplitReviewDialog {
     } catch (err) {
       this.error.set(err instanceof Error ? err.message : String(err));
       this.phase.set('error');
+    } finally {
+      this.electron.removeTranscriptSplitProgressListener();
     }
   }
 

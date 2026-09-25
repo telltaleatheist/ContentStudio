@@ -179,7 +179,8 @@ export interface TranscriptSplitBounds {
   maxSeconds: number;
 }
 
-// One AI-detected chapter (contiguous subject segment tiling the transcript).
+// One candidate piece of the stream: a story at snap's `stories` grain (LEDGER #208), tiling the
+// transcript in order. `label` is the stream outline's item; `isAd` is the ad check's verdict.
 export interface TranscriptChapter {
   index: number;
   startSeconds: number;
@@ -187,6 +188,7 @@ export interface TranscriptChapter {
   timestamp: string;
   label: string;
   verbalCue: boolean;
+  isAd?: boolean;
 }
 
 export interface AnalyzeTranscriptSplitResult {
@@ -194,8 +196,12 @@ export interface AnalyzeTranscriptSplitResult {
   title?: string;
   durationSeconds?: number;
   chapters?: TranscriptChapter[];
+  warnings?: string[];
   error?: string;
 }
+
+/** The split's progress: the phase with its own done/total, and the whole run's fraction by work. */
+export interface TranscriptSplitProgress { phase: string; done: number; total: number; fraction: number }
 
 export interface TranscriptSplitCut {
   startSeconds: number;
@@ -650,6 +656,8 @@ declare global {
       // Transcript import (AutoCutStudio)
       importTranscript: () => Promise<ImportTranscriptResult>;
       analyzeTranscriptSplit: (filePath: string) => Promise<AnalyzeTranscriptSplitResult>;
+      onTranscriptSplitProgress: (callback: (p: TranscriptSplitProgress) => void) => void;
+      removeTranscriptSplitProgressListener: () => void;
       commitTranscriptSplit: (filePath: string, cuts: TranscriptSplitCut[]) => Promise<CommitTranscriptSplitResult>;
 
       // Metadata generation
@@ -887,12 +895,12 @@ declare global {
       storyRoutedModel: () => Promise<StoryRoutedModel>;
       analyzeStoryChapters: (payload: {
         segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
-        consolidate?: boolean;
-      }) => Promise<{ chapters: any[] }>;
-      suggestStoryTitle: (payload: { text: string | string[] }) => Promise<{ title: string }>;
+        grain: 'stories' | 'chapters';
+      }) => Promise<{ chapters: any[]; warnings?: string[] }>;
+      suggestStoryTitle: (payload: { name?: string; chapters: Array<{ label: string; detail?: string; startSeconds: number; endSeconds: number }> }) => Promise<{ title: string }>;
       cancelStoryAnalysis: () => Promise<{ stopped: boolean }>;
       unloadStoryModel: () => Promise<{ ok: boolean; released: string | null }>;
-      onStoryAnalyzeProgress: (callback: (p: { phase: string; done: number; total: number }) => void) => void;
+      onStoryAnalyzeProgress: (callback: (p: { phase: string; done: number; total: number; fraction?: number }) => void) => void;
       removeStoryAnalyzeProgressListener: () => void;
 
       // Media
@@ -1127,6 +1135,14 @@ export class ElectronService {
   async analyzeTranscriptSplit(filePath: string): Promise<AnalyzeTranscriptSplitResult> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.analyzeTranscriptSplit(filePath);
+  }
+
+  onTranscriptSplitProgress(callback: (p: TranscriptSplitProgress) => void): void {
+    this.ipcRenderer?.onTranscriptSplitProgress((p) => this.ngZone.run(() => callback(p)));
+  }
+
+  removeTranscriptSplitProgressListener(): void {
+    this.ipcRenderer?.removeTranscriptSplitProgressListener();
   }
 
   async commitTranscriptSplit(filePath: string, cuts: TranscriptSplitCut[]): Promise<CommitTranscriptSplitResult> {
@@ -2031,12 +2047,12 @@ export class ElectronService {
 
   async analyzeStoryChapters(payload: {
     segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
-    consolidate?: boolean;
-  }): Promise<{ chapters: any[] }> {
+    grain: 'stories' | 'chapters';
+  }): Promise<{ chapters: any[]; warnings?: string[] }> {
     return this.editorBridge.analyzeStoryChapters(payload);
   }
 
-  async suggestStoryTitle(payload: { text: string | string[] }): Promise<{ title: string }> {
+  async suggestStoryTitle(payload: { name?: string; chapters: Array<{ label: string; detail?: string; startSeconds: number; endSeconds: number }> }): Promise<{ title: string }> {
     return this.editorBridge.suggestStoryTitle(payload);
   }
 
@@ -2048,7 +2064,7 @@ export class ElectronService {
     return this.editorBridge.unloadStoryModel();
   }
 
-  onStoryAnalyzeProgress(callback: (p: { phase: string; done: number; total: number }) => void): void {
+  onStoryAnalyzeProgress(callback: (p: { phase: string; done: number; total: number; fraction?: number }) => void): void {
     this.editorBridge.onStoryAnalyzeProgress((p) => this.ngZone.run(() => callback(p)));
   }
 

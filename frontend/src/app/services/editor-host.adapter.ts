@@ -145,7 +145,7 @@ export class EditorHostAdapter implements EditorHost {
     return this.electron.analyzeStoryChapters(payload);
   }
 
-  suggestStoryTitle(payload: { text: string | string[] }): Promise<{ title: string }> {
+  suggestStoryTitle(payload: { name?: string; chapters: Array<{ label: string; detail?: string; startSeconds: number; endSeconds: number }> }): Promise<{ title: string }> {
     return this.electron.suggestStoryTitle(payload);
   }
 
@@ -157,7 +157,7 @@ export class EditorHostAdapter implements EditorHost {
     return this.electron.unloadStoryModel();
   }
 
-  onStoryAnalyzeProgress(callback: (p: { phase: string; done: number; total: number }) => void): void {
+  onStoryAnalyzeProgress(callback: (p: { phase: string; done: number; total: number; fraction?: number }) => void): void {
     this.electron.onStoryAnalyzeProgress(callback);
   }
 

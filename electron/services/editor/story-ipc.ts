@@ -3,12 +3,18 @@ import { ipcMain } from 'electron';
 import Store from 'electron-store';
 import * as log from 'electron-log';
 
-import { AnalysisCancelledError, analyzeChapters, suggestTitle, Segment } from './chapter-splitter';
 import { StoryModel, resolveStoryModel } from './story-routing';
 import { AIManagerService, AIConfig } from '../metadata/ai-manager.service';
 import { crucibleTransport } from '../../crucible/transport';
-import { isCrucibleCallError } from '../../crucible/errors';
+import { installedLanes } from '../../crucible/lanes';
 import type { JobLeases } from '../../crucible/lease';
+import { migrateStoredRouting, resolveMetadataRouting, resolveSnapChapterModels } from '../metadata/metadata-routing';
+import { chapter } from '../metadata/chaptering/chaptering.service';
+import { TITLE_MAX_TOKENS, titleFromParts } from '../metadata/chaptering/summarize';
+import { ChapteringError } from '../metadata/chaptering/types';
+import type { ChapteringProgress, Granularity } from '../metadata/chaptering/types';
+import { CloudPlain, snapTransports, titleChat } from '../metadata/snap-chapters';
+import { formatClock } from '../metadata/chaptering/chaptering.service';
 
 /**
  * The editor's Story-analysis channels, in a module of their own rather than inside
@@ -16,81 +22,87 @@ import type { JobLeases } from '../../crucible/lease';
  * window), so nothing in it can be loaded by the plain-Node pure checks; and these handlers
  * are the one part of the editor that decides which model runs, which is exactly what those
  * checks exist to assert (LEDGER #204, #205).
+ *
+ * STORIES ARE CHAPTERING (LEDGER #199, #208, plan §10.1). Owen: "it's just chapters for a
+ * livestream". `story:analyze-chapters` is the snap chaptering service over the editor's
+ * segments, at the grain the renderer names:
+ *
+ *   'stories'   the whole timeline split into stories (run 1), and a story split into several
+ *               (the Split modal): stream-level splits into completely different subjects, one
+ *               stream outline merged from the chunk outlines, one pass over the whole span;
+ *   'chapters'  a story's own chapter list (run 2), the subject changes that go to YouTube.
+ *
+ * `story:suggest-title` titles a story from the chapters the editor already derived inside it,
+ * with the same service's `summarize_chapter_parts` (a story is a `stories` chapter; its parts
+ * are its chapters). The chapter-splitter analyzer, its five stages and its inline prompts are
+ * gone (plan §10.4; Law 2), and so is its "consolidate" switch: the grain says what is detected.
+ *
+ * THE MODELS: the outline and every decide question on the fixed scorer (CHAPTER_SCORER_MODEL,
+ * the 9B, on the selected Crucible server), the titles on the CHAPTERS row of the routing table,
+ * resolved per call exactly as a generation run resolves it (story-routing.ts), so a selection
+ * changed in Settings takes effect on the next run. A stored selection this build cannot honour
+ * throws, naming the entry, before anything runs; so does a snap run with no Crucible server to
+ * put its scorer on, whatever the chapters row is (resolveSnapChapterModels).
+ *
+ * THE RUN: one job's leases (released when it ends, finished, failed or stopped: the server
+ * settles its own card, plan 6.5); every local call on its lane, call by call; progress events
+ * weighted by work on 'story:analyze-progress'; Stop aborts the in-flight call (and kills a
+ * claude -p child) and the run ends as the renderer's stop, never as an error.
+ *
+ * Exported for tools/routing-publish-checks.js, which registers it against a recording ipcMain
+ * and asserts which models each handler resolves; the app registers it through setupEditorIpc.
  */
 
-/**
- * What the story handlers need from the host that is not the store: where the prompt assets
- * live. AIManagerService's constructor loads them whatever the caller intends to ask for, and
- * ipc-handlers.ts is the one place that knows the directory — passed in rather than recomputed
- * here, so the two cannot drift (Law 10).
- */
 export interface StoryIpcDeps {
+  /**
+   * Where the prompt assets live. AIManagerService's constructor loads them whatever the caller
+   * intends to ask for, and ipc-handlers.ts is the one place that knows the directory, passed in
+   * rather than recomputed here so the two cannot drift (Law 10).
+   */
   promptSetsDir: string;
+  /** Where a GPU step would run now (lanes.ts `gpuVenue`). A keeper passes its own. */
+  venue?: () => { server: string } | { server: null; reason: string };
 }
 
-/**
- * A story prompt the routed LOCAL model cannot read whole. The Crucible door refuses a prompt
- * over the loaded context BEFORE sending (`over_context`, plan 6.1), which is chapter-splitter's
- * own contract too: refuse rather than summarize a truncated chapter. Carried out as the abort
- * signal's REASON, because the splitter's askJson turns any other thrown error into
- * "unparseable, try again, then use the opening words" (Law 1). Read by its typed code, never
- * its sentence (Law 10).
- */
-export class StoryPromptTooLongError extends Error {
-  constructor(refusal: string, what: string) {
-    super(
-      `The ${what} prompt does not fit the routed model whole (${refusal}). Refusing rather than ` +
-        `analyzing a truncated chapter: split the story into shorter stories, or route chapters to claude -p.`
-    );
-    this.name = 'StoryPromptTooLongError';
+/** The editor's transcript, as the renderer hands it over: timeline seconds, the side each line is. */
+export interface Segment {
+  text: string;
+  startSeconds: number;
+  endSeconds: number;
+  /** The host's own mic, or the footage he reacts to: the titles read HOST:/CLIP: lines from it. */
+  speaker: 'host' | 'clip';
+}
+
+/** One chapter (a story at 'stories') in the shape the editor has always read. */
+export interface StoryChapter {
+  index: number;
+  startSeconds: number;
+  endSeconds: number;
+  /** The model's title; the outline label when the title call had no answer (warned). */
+  label: string;
+  /** The model's summary: the titling input and the description's chapter prose. */
+  detail: string;
+  /** Kept for the renderer's shape: snap reads no verbal cue, so it is always false. */
+  verbalCue: boolean;
+  /** Snap's ad check confirmed this stretch as a plug (a typed signal, Law 10). */
+  isAd: boolean;
+  /** The finer tier the editor keeps as provisional markers. Snap draws one grain per run: the chapter itself. */
+  subChapters: Array<{ startSeconds: number; endSeconds: number; label: string; detail: string }>;
+}
+
+/** Thrown when the user stops a run. Distinct from a failure so the UI never shows an error for something the user asked for. */
+export class AnalysisCancelledError extends Error {
+  constructor() {
+    super('Analysis stopped.');
+    this.name = 'AnalysisCancelledError';
   }
 }
 
-/**
- * The shape of every story call (plan 6.3's story-title row): thinking OFF, a 2048-token answer.
- * These are short one-question JSON calls; a thinking pass at this budget returns no answer.
- * The local window is the 32768 tokens makeOllamaRequest loaded at, which is the splitter's own
- * ceiling (CHAPTER_CTX_MAX), so no call it sized smaller gets less.
- */
-const STORY_MAX_TOKENS = 2048;
-const STORY_LOAD_CONTEXT = 32768;
+const STORY_GRAINS: readonly Granularity[] = ['stories', 'chapters'];
 
-/**
- * Story-analysis handlers: chapter splitting + title suggestions for Story Mode. All
- * synchronous request/response — the renderer holds the transcript and passes the relevant
- * segments in; the main process only runs the model calls + phrase→timestamp mapping.
- * Failures reject with the real error (model unreachable, empty response, unparseable) —
- * never a fabricated result.
- *
- * THE MODEL IS THE CHAPTERS ROW OF THE METADATA ROUTING TABLE (LEDGER #204, #205). The
- * analyzer used to run on a picker of its own — whatever Ollama had pulled, chosen in the
- * editor window — which made it the one model call in the app the routing table did not
- * choose. Owen: "it should never call something i didnt expect it to call". It is resolved
- * per call through story-routing.ts, with the same three functions the transcript episode
- * splitter uses, and every call goes through AIManagerService.runPlainRequest, the door every
- * routed field call uses: a `claude-cli:` selection goes to `claude -p`, anything else to the
- * Crucible door (P2), through the same single-slot AI queue and the same cancel path as a
- * generation run.
- *
- * WHAT THAT COSTS, KNOWINGLY. chapter-splitter.ts is many small single-question calls: about
- * 40 for a 12-minute video, about 390 for a 2-hour stream. On claude -p each one is a separate
- * process launch. Owen chose this with the count in front of him (#205), until P8 replaces
- * the analyzer with snap chaptering at broad grain. The splitter's per-call hints —
- * temperature 0, `format: "json"`, num_predict, num_ctx — do not travel through this door:
- * every story call states the one shape above (STORY_MAX_TOKENS, thinking off), no sampling
- * parameter crosses (the 2026-08-24 ruling every other call runs under), and the splitter's
- * parser reads the first JSON object out of a plain answer either way. A local route is held
- * under a lease for the run (the analysis) or for the titling loop, and released where the old
- * code unloaded the model: the server settles its own card (plan 6.5).
- *
- * Exported for tools/routing-publish-checks.js, which registers it against a recording ipcMain
- * and asserts which model each handler resolves; the app registers it through setupEditorIpc.
- */
 export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps): void {
-  // The single in-flight analysis (chapter split OR title suggestion). Only one runs at a time —
-  // the renderer gates on `analyzing`/`splitRunning` — so one controller is enough. 'story:cancel'
-  // aborts it: AIManagerService hands the signal to every transport (the HTTP request is
-  // dropped, the claude -p child is killed), and chapter-splitter unwinds on its next check.
+  // The single in-flight analysis (a split OR a title). Only one runs at a time (the renderer
+  // gates on `analyzing`/`splitRunning`), so one controller is enough. 'story:cancel' aborts it.
   let activeRun: AbortController | null = null;
 
   // The titling loop's lease on its local model, for 'story:unload-model'. Taken by the first
@@ -98,74 +110,30 @@ export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps
   // reload the model every time); a cloud selection has nothing to hold.
   let titleJob: { job: JobLeases; model: string } | null = null;
 
-  // Resolved on EVERY call, not once at registration: a selection changed in Settings →
-  // Routing takes effect on the next run, exactly as it does for a generation job. A stored
-  // selection this build cannot honour throws here, naming the entry, before anything runs.
   const routedModel = (): StoryModel => resolveStoryModel((store as any).get('metadataRouting'));
+  const venue = deps.venue ?? (() => installedLanes().gpuVenue());
 
   /**
-   * Built for ONE analysis, the way `titles:generate-more` builds its manager: without
-   * initialize() — there is no prompt set to load and nothing to probe; the door prepares the
-   * call on the model this run names and refuses by name what it cannot run. `promptSetsDir` is
-   * still required because the constructor loads the prompt assets whatever the caller asks for.
+   * A manager for the cloud title door only (runPlainRequest: the plain system turn, <think>
+   * stripped, claude -p outside Crucible), built without initialize() as `titles:generate-more`
+   * builds it: the door prepares the call on the model this run names.
    */
-  const storyManager = (signal: AbortSignal, jobLeases?: JobLeases): AIManagerService => {
-    const aiConfig: AIConfig = {
-      promptSetsDir: deps.promptSetsDir,
-      abortSignal: signal,
-      ...(jobLeases === undefined ? {} : { jobLeases }),
-    };
-    return new AIManagerService(aiConfig);
+  const cloudDoor = (signal: AbortSignal): { door: CloudPlain; cleanup: () => void } => {
+    const aiConfig: AIConfig = { promptSetsDir: deps.promptSetsDir, abortSignal: signal };
+    const manager = new AIManagerService(aiConfig);
+    return { door: (prompt, model, what, shape) => manager.runPlainRequest(prompt, model, what, shape), cleanup: () => manager.cleanup() };
   };
 
-  /**
-   * chapter-splitter's `generate` callback over runPlainRequest. The splitter's per-call
-   * options are accepted and not forwarded (see the header). A cancelled request's error is
-   * not what says it was a stop; the signal is, and it is rethrown as the splitter's own cancel
-   * type so both handlers surface "Analysis stopped." to the renderer rather than a transport
-   * message. A local prompt the door refuses as over the loaded context aborts the run with a
-   * StoryPromptTooLongError as the reason, which `refusalOr` surfaces.
-   */
-  const generateOn = (aiManager: AIManagerService, routed: StoryModel, controller: AbortController, what: string) =>
-    async (prompt: string): Promise<string> => {
-      let text: string | null;
-      try {
-        text = await aiManager.runPlainRequest(
-          prompt,
-          routed.model,
-          what,
-          routed.kind === 'local'
-            ? { thinking: false, maxTokens: STORY_MAX_TOKENS, loadContext: STORY_LOAD_CONTEXT }
-            : { thinking: false }
-        );
-      } catch (err) {
-        if (isCrucibleCallError(err, 'over_context')) {
-          const refusal = new StoryPromptTooLongError(err.message, what);
-          controller.abort(refusal);
-          throw refusal;
-        }
-        if (controller.signal.aborted) throw new AnalysisCancelledError();
-        throw err;
-      }
-      if (controller.signal.aborted) throw new AnalysisCancelledError();
-      if (text === null) throw new Error(`"${routed.model}" answered ${what} with nothing`);
-      return text;
-    };
+  // A stop surfaces as the renderer's stop, whatever layer noticed it first.
+  const stopOr = (controller: AbortController, err: unknown): unknown =>
+    controller.signal.aborted || (err instanceof ChapteringError && err.code === 'cancelled') ? new AnalysisCancelledError() : err;
 
-  // A run aborted by a refusal ends as the splitter's cancel; the refusal is the real reason.
-  const refusalOr = (controller: AbortController, err: unknown): unknown =>
-    controller.signal.reason instanceof StoryPromptTooLongError ? controller.signal.reason : err;
-
-  // What the routing table currently names, for the editor's read-only line ("Stories run on
-  // <label>"). Throws when the stored routing cannot be resolved — the same refusal the
-  // analysis itself would make, shown before the operator presses anything.
+  // What the routing table currently names for the titles, for the editor's read-only line.
   ipcMain.handle('story:routed-model', async () => {
     const routed = routedModel();
     return { model: routed.model, label: routed.label, kind: routed.kind };
   });
 
-  // Stop whatever analysis is running. Safe to call when nothing is — returns `stopped: false`
-  // rather than throwing, so a stale click from a closed dialog is harmless.
   ipcMain.handle('story:cancel', async () => {
     if (!activeRun) return { stopped: false };
     log.info('[Story] cancel requested — aborting the in-flight analysis');
@@ -173,63 +141,79 @@ export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps
     return { stopped: true };
   });
 
-  // Split a span of transcript into consecutive subject chapters. The pipeline is many small
-  // single-question calls (~40 for a 12-minute video, ~390 for a 2-hour livestream), so step
-  // progress is streamed back to the calling renderer on 'story:analyze-progress'. A local
-  // model is held under one lease for the run and released afterwards — a 27B pinned after a
-  // 25-minute run is memory nobody asked for.
+  // Chapter a span of the editor's transcript at the grain the renderer names.
   ipcMain.handle(
     'story:analyze-chapters',
-    async (event, payload: { segments: Segment[]; consolidate?: boolean }) => {
-      const { segments, consolidate } = payload || ({} as any);
+    async (event, payload: { segments: Segment[]; grain: Granularity }) => {
+      const { segments, grain } = payload || ({} as any);
       if (!Array.isArray(segments) || segments.length === 0) {
         throw new Error('No transcript segments provided for chapter analysis.');
       }
-      const routed = routedModel();
-      log.info(`[Story] chapter analysis runs on the chapters routing: ${routed.model} (${routed.label})`);
+      // Typed, never defaulted (Law 10): the grain is what the run detects.
+      if (!STORY_GRAINS.includes(grain)) {
+        throw new Error(`story:analyze-chapters needs a grain, 'stories' or 'chapters' (got ${JSON.stringify(grain)}).`);
+      }
+      const models = resolveSnapChapterModels(
+        resolveMetadataRouting(migrateStoredRouting((store as any).get('metadataRouting')).selections),
+        venue(),
+      );
+      log.info(
+        `[Story] ${grain} analysis on snap: outline and decide on ${models.scorer.model} on "${models.scorer.server}", ` +
+          `titles on the chapters routing, ${models.titles.model} (${models.titles.label})`,
+      );
       const controller = new AbortController();
       activeRun = controller;
-      const job = routed.kind === 'local' ? crucibleTransport().job('story chapter analysis') : undefined;
-      const aiManager = storyManager(controller.signal, job);
-      const generate = generateOn(aiManager, routed, controller, 'story chapter analysis');
-      const onProgress = (p: { phase: string; done: number; total: number }) => {
-        if (!event.sender.isDestroyed()) event.sender.send('story:analyze-progress', p);
-      };
+      const job = crucibleTransport().job(`story ${grain} analysis`);
+      const cloud = models.titles.kind === 'cloud' ? cloudDoor(controller.signal) : null;
       try {
-        // `consolidate` is forwarded, NOT defaulted here — chapter-splitter owns the default (true).
-        // The renderer sends false when the span is a story it has already defined, where stage 5
-        // can only produce false merges. Defaulting in two places is how the two drift apart.
-        const chapters = await analyzeChapters(
-          segments, routed.model, generate, onProgress, controller.signal, { consolidate }
-        );
-        return { chapters };
+        const transports = snapTransports({
+          models,
+          job,
+          trace: null,
+          ...(cloud ? { cloudPlain: cloud.door } : {}),
+          signal: controller.signal,
+          laneName: `story ${grain} analysis`,
+        });
+        // The service starts its first chapter at 0 (YouTube's rule); a span starts where its
+        // first line does, so the times are rebased onto it and back.
+        const t0 = segments[0].startSeconds;
+        const captions = segments.map((s) => ({ start: s.startSeconds - t0, end: s.endSeconds - t0, text: s.text, speaker: s.speaker }));
+        const onProgress = (p: ChapteringProgress) => {
+          if (!event.sender.isDestroyed()) event.sender.send('story:analyze-progress', { phase: p.phase, done: p.done, total: p.total, fraction: p.fraction });
+        };
+        const result = await chapter(captions, {
+          granularity: grain,
+          chat: transports.chat,
+          decide: transports.decide,
+          totalSeconds: segments[segments.length - 1].endSeconds - t0,
+          signal: controller.signal,
+          onProgress,
+        });
+        const chapters: StoryChapter[] = result.chapters.map((c, i) => {
+          const one = { startSeconds: c.startSec + t0, endSeconds: c.endSec + t0, label: c.title || c.label, detail: c.summary };
+          return { index: i, ...one, verbalCue: false, isAd: c.isAd, subChapters: [one] };
+        });
+        return { chapters, warnings: result.stats.warnings };
       } catch (err) {
-        throw refusalOr(controller, err);
+        throw stopOr(controller, err);
       } finally {
         if (activeRun === controller) activeRun = null;
-        aiManager.cleanup();
-        // Released on a stop too — a stopped run has no more claim on the card than a finished
-        // one, and stopping is usually how a user reacts to the machine being busy. Only a local
-        // selection holds a lease; claude -p and Anthropic hold nothing. The release goes through
-        // the same object a generation job releases its leases with (the unload it replaces).
-        if (job !== undefined) {
-          const lost = await job.releaseAll();
-          for (const line of lost) log.error(`[Story] the analysis lost its lease on ${line} before it ended`);
-        }
+        cloud?.cleanup();
+        // Released on a stop too: a stopped run has no more claim on the card than a finished one.
+        const lost = await job.releaseAll();
+        for (const line of lost) log.error(`[Story] the analysis lost its lease on ${line} before it ended`);
       }
     }
   );
 
-  // Suggest a single title for a story's transcript text. NOT unloaded afterwards — titling runs
-  // once per story in a tight loop, and evicting between them would reload the model every time.
-  // The renderer unloads once when its loop ends (or is stopped) via 'story:unload-model'.
+  // Title one story from the chapters derived inside it: `summarize_chapter_parts` on the
+  // chapters row, thinking ON (LEDGER #208). NOT released afterwards: titling runs once per story
+  // in a tight loop; the renderer releases once when its loop ends via 'story:unload-model'.
   ipcMain.handle(
     'story:suggest-title',
-    // `text` is either transcript text or a story's chapter labels. A subject list is the better
-    // input — no truncation, and it is the shape the eventual titling adapter conditions on — so
-    // the type must admit it rather than let an array cross a `string` boundary unremarked.
-    async (_event, payload: { text: string | string[] }) => {
-      const { text } = payload || ({} as any);
+    async (_event, payload: { name?: string; chapters: Array<{ label: string; detail?: string; startSeconds: number; endSeconds: number }> }) => {
+      const parts = (payload?.chapters || []).filter((c) => c && typeof c.label === 'string' && c.label.trim().length > 0);
+      if (parts.length === 0) throw new Error('This story has nothing to title — no chapters with a label.');
       const routed = routedModel();
       const controller = new AbortController();
       activeRun = controller;
@@ -238,26 +222,42 @@ export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps
         if (titleJob !== null) await titleJob.job.releaseAll();
         titleJob = { job: crucibleTransport().job('story title suggestions'), model: routed.model };
       }
-      const aiManager = storyManager(controller.signal, routed.kind === 'local' ? titleJob!.job : undefined);
-      const generate = generateOn(aiManager, routed, controller, 'story title suggestion');
+      const cloud = routed.kind === 'cloud' ? cloudDoor(controller.signal) : null;
+      const warnings: string[] = [];
       try {
-        const title = await suggestTitle(text, generate);
-        return { title };
+        const chat = titleChat({
+          titles: routed.option,
+          ...(routed.kind === 'local' ? { job: titleJob!.job } : {}),
+          trace: null,
+          ...(cloud ? { cloudPlain: cloud.door } : {}),
+          signal: controller.signal,
+          laneName: 'story title',
+        });
+        const name = (payload.name || '').trim() || 'this story';
+        const answer = await titleFromParts(
+          chat,
+          { number: 1, videoTitle: name, previousDetail: '', previousTitles: [], what: `the title of ${name}` },
+          parts.map((c) => ({ clock: `${formatClock(c.startSeconds)}-${formatClock(c.endSeconds)}`, title: c.label.trim(), summary: (c.detail || '').trim() })),
+          (w) => warnings.push(w),
+          { thinking: true, maxTokens: TITLE_MAX_TOKENS },
+          [],
+          controller.signal,
+        );
+        for (const w of warnings) log.warn(`[Story] ${w}`);
+        if (!answer.title) throw new Error(`The model did not name ${name}${warnings.length ? `: ${warnings.join('; ')}` : ''}`);
+        return { title: answer.title };
       } catch (err) {
-        throw refusalOr(controller, err);
+        throw stopOr(controller, err);
       } finally {
         if (activeRun === controller) activeRun = null;
-        aiManager.cleanup();
-        // Held however the call ended: a failed or stopped titling call has still taken the
-        // lease, and the renderer's unload at the end of its loop is what releases it.
+        cloud?.cleanup();
+        // Held however the call ended: the renderer's unload at the end of its loop releases it.
       }
     }
   );
 
-  // Release the lease the titling loop held (end of the loop, or a stop): the old unload,
-  // now a lease release (plan 6.5), and the server settles its own card. Nothing to do after a
-  // cloud run, or when no titling call has run. Never throws — releaseAll warns and carries on,
-  // because a failure to release is housekeeping (the lease expires on its own).
+  // Release the lease the titling loop held (end of the loop, or a stop): the server settles its
+  // own card. Never throws: a failure to release is housekeeping (the lease expires on its own).
   ipcMain.handle('story:unload-model', async () => {
     const held = titleJob;
     titleJob = null;

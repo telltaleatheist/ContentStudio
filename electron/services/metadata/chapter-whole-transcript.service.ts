@@ -474,6 +474,7 @@ export class WholeTranscriptChapterService {
       subjectDetails: working.map((c) => ({ about: c.title, detail: c.detail })),
       warnings: [...this.warnings],
       stats: {
+        engine: 'whole-transcript',
         durationSeconds,
         band,
         chaptersClaimed: claimed,

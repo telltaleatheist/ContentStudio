@@ -88,6 +88,9 @@ function normalizeForContainment(text: string): string {
 }
 
 function promoMatch(chapter: Chapter, phrases: string[]): string | undefined {
+  // The snap engine's ad check already confirmed it (a yes/no over the passage, P8b): a typed
+  // signal, read as one (Law 10), so a plug whose title never says "promotion" still leaves.
+  if (chapter.isPromo === true) return 'the ad check';
   const hit = chapter.title.match(PROMO_PATTERN);
   if (hit) return hit[0];
   // "Promotion of the book God's People..." (2026-08-30). The generic promotion words are

@@ -441,21 +441,34 @@ an outline, snap assigns every sentence to one of its items, Viterbi keeps the s
 granularity's switch cost (`electron/services/metadata/chaptering/granularity.ts`), and
 `summarize_chapter` on the 27B titles each finished chapter. What each key is:
 
-- **`snap_outline_detailed`, `snap_assign`, `snap_assign_start`, `snap_plug_item`,
+- **`snap_outline_chapters`, `snap_assign`, `snap_assign_start`, `snap_plug_item`,
   `snap_plug_confirm` are segment.py's text verbatim** (`docs/crucible/reference/segment.py`).
   They are part of the measured result (YTSeg F1@±1 0.72 at switch cost 20), so a rewording
   has to be re-benchmarked, and `tools/chaptering-checks.js` pins them. The assign question
   QUOTES the sentence and the one before it; it never names a sentence by number (Owen: "we
   give it the thing it's judging"). The option names the model sees are `section 1`..`section n`,
   segment.py's own, because Crucible shows each option as `A. section 1: <label>`.
-- **`snap_outline_broad`, `_stories`, `_episodes` are unmeasured** grains of the same body: the
-  same frame, a different definition of a section. `_episodes` is told the stretch's runtime,
-  because one chunk of a four-hour stream is still under an hour. Their switch costs (30, 30,
-  45) are defaults until P8's measurement (plan §0 #19).
+- **Two grains (LEDGER #208, Owen 2026-09-25).** `snap_outline_chapters` (segment.py's body,
+  above) draws the subject changes that go to YouTube; `snap_outline_stories` draws stream-level
+  splits into completely different subjects ("stories are stream-level splits that are completely
+  different subjects, not just small changes within the same subjects"). The stories body is told
+  the stretch's runtime and that a stream has only a handful of stories, and it names what stays
+  INSIDE a story (the turns, claims and clips of one subject) in positive form. `_broad` and
+  `_episodes` were retired with their grains; "episodes" is not a name any more.
+- **`snap_outline_stories_merge` writes the stream-level outline.** A long stream is outlined
+  chunk by chunk (each ~40 minutes under the ~12k-token state), and P8a measured each chunk writing
+  7-13 items whatever its body said, so a 3.4 h stream came out as 27 "episodes" where Owen made 5
+  (docs/crucible/P8a.md). The merge body reads every chunk's own outline, in order, each headed
+  `Stretch k (clock-clock):`, and writes ONE list for the whole stream; every chunk is then assigned
+  against it. It says that a story running across two stretches is listed in both, because the
+  model otherwise keeps both copies as two stories. It is a plain-lines outline like the others
+  and is refused as prose the same way (outline.ts `proseLine`).
 - **`_promoted` variants** name the channel's own `promoted_items` in the ad item and in its
   yes/no. A channel that declares none gets the measured text, not a sentence saying so.
 - **`summarize_chapter_parts`** titles a chapter too long for one title call (an hour-long
-  episode of a stream is ~15k tokens; LEDGER #196 keeps a call under ~16k). The chapter is read
+  story of a stream is ~15k tokens; LEDGER #196 keeps a call under ~16k). It also titles an
+  editor story from the chapters already derived inside it (`story:suggest-title`): a story is a
+  `stories` chapter, and its parts are its chapters' titles and summaries. The chapter is read
   in equal windows by `summarize_chapter` itself, and this body titles the whole from the parts'
   titles and summaries. It is the one place a title is written from intermediate text rather
   than the raw transcript, and it is declared in the run's warnings when it happens.

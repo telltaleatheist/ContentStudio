@@ -580,6 +580,22 @@ export class CrucibleLanes {
     });
   }
 
+  /**
+   * The server a GPU step started now would run on: the current job's venue, else the selected
+   * server; or null with the registry's own sentence when nothing is selected. Read by a caller
+   * that must refuse by name BEFORE it starts work needing a GPU model its routing row does not
+   * name (snap's 9B scorer under a claude -p chapters row, snap-chapters.ts). It chooses nothing.
+   */
+  gpuVenue(): { server: string } | { server: null; reason: string } {
+    const run = runStore.getStore();
+    if (run !== undefined) return { server: run.server };
+    try {
+      return { server: this.deps.servers.selected() };
+    } catch (err) {
+      return { server: null, reason: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   private standaloneServer(name: string): string {
     // Throws routing's own sentence when nothing is selected.
     const server = this.deps.servers.selected();

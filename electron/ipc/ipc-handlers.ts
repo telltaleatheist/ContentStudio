@@ -9,7 +9,9 @@ import * as yaml from 'js-yaml';
 import { AIManagerService, AIConfig } from '../services/metadata/ai-manager.service';
 import type { ContentItem } from '../services/metadata/input-handler.service';
 import { parseTranscriptImport, wordsToSegments, buildTranscriptSlices, TranscriptSliceCut } from '../services/metadata/transcript-import.service';
-import { EpisodeSplitterService } from '../services/metadata/episode-splitter.service';
+import { splitCandidates } from '../services/metadata/transcript-split';
+import { snapTransports } from '../services/metadata/snap-chapters';
+import { crucibleTransport } from '../crucible/transport';
 import { AnalyticsStoreService } from '../services/analytics/analytics-store.service';
 import { IngestServerService } from '../services/analytics/ingest-server.service';
 import { DistillationService } from '../services/analytics/distillation.service';
@@ -71,6 +73,7 @@ import {
   migrateStoredRouting,
   resolveChapterModelOption,
   resolveMetadataRouting,
+  resolveSnapChapterModels,
   routedModelString,
   validateRoutingSelections,
 } from '../services/metadata/metadata-routing';
@@ -1533,6 +1536,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // by the renderer (LEDGER #170). Absent (older renderer) means the declared
         // default, applied at the construction site in metadata-generator.
         chapterGrain: params.chapterGrain,
+        // Which engine draws the chapters (P8b): 'snap' or 'whole-transcript', read from the store
+        // AT JOB TIME with no store default, like the routing: absent means the declared default
+        // (snap), stated at one site in metadata-generator, and a value this build does not know
+        // fails the job by name there. Same for the titles' thinking (LEDGER #208: on unless the
+        // store says false).
+        chapterEngine: settings.chapterEngine,
+        chapterTitleThinking: settings.chapterTitleThinking,
         // Per-task model routing, read from the store AT JOB TIME. The registry supplies
         // the defaults at the read site (metadata-routing.ts), never the store's
         // `defaults` block: a seeded default freezes the shipped routing into every
@@ -3068,9 +3078,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     }
   });
 
-  // Analyze an imported transcript for logical subject-change boundaries.
-  // Returns a chronological CANDIDATE menu; the user picks which become cuts.
-  ipcMain.handle('analyze-transcript-split', async (_event, params: { filePath: string }) => {
+  // The in-queue split of a stream: the `stories` grain of snap chaptering (LEDGER #199, #208;
+  // transcript-split.ts). Returns a chronological CANDIDATE menu; the user picks which become
+  // cuts. The outline and every decide question run on the fixed scorer (the 9B) on the selected
+  // Crucible server; with none, it is refused by name before anything is sent. No title is written
+  // (boundaries only, declared in transcript-split.ts), so the chapters row is not called at all.
+  // Progress goes to the dialog on 'transcript-split-progress', weighted by work.
+  ipcMain.handle('analyze-transcript-split', async (event, params: { filePath: string }) => {
     try {
       const { filePath } = params || ({} as any);
       if (!filePath) return { success: false, error: 'No transcript file provided.' };
@@ -3082,51 +3096,35 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       const srtSegments = wordsToSegments(parsed.data.words, parsed.data.meta.speakers);
       const totalDurationSeconds = parsed.data.summary.durationSeconds;
 
-      // The model is the CHAPTERS field's routing — episodes are chaptering at the coarsest
-      // granularity (Owen, 2026-09-23), and the routing table is the only thing that picks a
-      // model (Owen, 2026-09-24: "it should never call something i didnt expect it to call").
-      // This used to read the legacy Settings model (metadataModel/aiModel), which sent the
-      // split to the paid Anthropic API even when every routed field was on claude -p.
       const settings = (store as any).store;
-      const chapterOption = resolveChapterModelOption(
-        resolveMetadataRouting(migrateStoredRouting(settings.metadataRouting).selections)
+      const models = resolveSnapChapterModels(
+        resolveMetadataRouting(migrateStoredRouting(settings.metadataRouting).selections),
+        analytics.crucible.lanes.gpuVenue()
       );
-      const fullModel = routedModelString(chapterOption);
-      log.info(`[TranscriptSplit] Routed to the chapters selection: ${fullModel}`);
-
-      const aiConfig: AIConfig = {
-        metadataModel: fullModel,
-        summarizationModel: fullModel,
-        // Where the prompt assets live. Every prompt is an asset now, including the
-        // episode-split one, so a service built without this has nowhere to read them from.
-        promptSetsDir: getPromptSetsDirectory(),
-      };
-      const aiService = new AIManagerService(aiConfig);
-      const initialized = await aiService.initialize();
-      if (!initialized) {
-        return {
-          success: false,
-          error: aiService.lastInitError
-            ? `Failed to initialize AI service: ${aiService.lastInitError}`
-            : 'Failed to initialize AI service',
-        };
-      }
-
+      log.info(`[TranscriptSplit] stories on snap: outline and decide on ${models.scorer.model} on "${models.scorer.server}"`);
+      const job = crucibleTransport().job('transcript split');
       try {
-        const chapters = await EpisodeSplitterService.detectChapters({
-          srtSegments,
-          totalDurationSeconds,
-          aiService,
-          transport: chapterOption.kind === 'local' ? 'local' : 'cloud',
+        const transports = snapTransports({ models, job, trace: null, laneName: 'transcript split' });
+        const { candidates, warnings } = await splitCandidates(srtSegments, totalDurationSeconds, {
+          chat: transports.chat,
+          decide: transports.decide,
+          onProgress: (p) => {
+            if (!event.sender.isDestroyed()) {
+              event.sender.send('transcript-split-progress', { phase: p.phase, done: p.done, total: p.total, fraction: p.fraction });
+            }
+          },
         });
+        for (const w of warnings) log.warn(`[TranscriptSplit] ${w}`);
         return {
           success: true,
           title: parsed.data.meta.story.title,
           durationSeconds: totalDurationSeconds,
-          chapters,
+          chapters: candidates,
+          warnings,
         };
       } finally {
-        aiService.cleanup();
+        const lost = await job.releaseAll();
+        for (const line of lost) log.error(`[TranscriptSplit] the split lost its lease on ${line} before it ended`);
       }
     } catch (error) {
       log.error('Error analyzing transcript split:', error);
