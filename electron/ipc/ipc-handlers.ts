@@ -689,8 +689,12 @@ async function runPipeline(job: PipelineJob): Promise<any> {
     announceSpeakerTagging(speakerMode);
     const speakerTagger = speakerMode.enabled ? new SpeakerTagger(speakerMode) : undefined;
 
+    // The run's facts for every video's asr context (LEDGER #206): the job's name and its
+    // channel, whose brand terms and promoted items can spell what the audio alone guesses at.
     const inputHandler = new InputHandlerService(
-      whisperService, outputDir, job.progressCallback, speakerTagger);
+      whisperService, outputDir,
+      { jobName: job.metadataParams.jobName ?? null, promptSet: job.metadataParams.promptSet ?? null },
+      job.progressCallback, speakerTagger);
 
     // Normalize inputs
     const normalizedInputs = job.metadataParams.inputs.map((input: any) => {
@@ -1069,8 +1073,12 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     const provider = 'crucible';
     const model = crucibleReadiness.server ?? '';
 
+    // Transcription is Crucible's asr job since P5 (LEDGER #206: "no more local whisper"), so
+    // the local tool it needs is ffmpeg alone. whisper-engine and the whisper models are no
+    // longer required, and startup no longer downloads or asks for them; the catalog entries
+    // stay until P10 removes them. Whether Crucible can transcribe is P1's readiness to say.
     const whisperModel = settings.whisperModel || 'small';
-    const requiredToolIds = ['ffmpeg', 'whisper-engine'];
+    const requiredToolIds = ['ffmpeg'];
     const selectedModelId = `whisper-${whisperModel}`;
     const componentStatuses = componentManager.listStatus();
     const missingRequiredTools = requiredToolIds.flatMap((id: string) => {
@@ -1081,10 +1089,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       .filter((status: any) => status.component.category === 'whisper' && status.state === 'installed')
       .map((status: any) => ({ id: status.component.id, name: status.component.name }));
     const selectedModelInstalled = installedWhisperModels.some((item: any) => item.id === selectedModelId);
-    const missingComponents = [
-      ...missingRequiredTools.map((item: any) => item.name),
-      ...(selectedModelInstalled ? [] : [componentStatuses.find((item: any) => item.component.id === selectedModelId)?.component.name || selectedModelId]),
-    ];
+    const missingComponents = missingRequiredTools.map((item: any) => item.name);
 
     return {
       ready: aiReady && missingComponents.length === 0,

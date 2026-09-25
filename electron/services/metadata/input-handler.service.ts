@@ -7,6 +7,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as log from 'electron-log';
 import { WhisperService, SRTSegment } from './whisper.service';
+
+/** What a run knows about all of its videos, for the asr context (LEDGER #206). null = the run has none. */
+export interface TranscriptionRunFacts {
+  jobName: string | null;
+  promptSet: string | null;
+}
 import type { TranscriptImportMeta } from './transcript-import.service';
 import {
   parseTranscriptImport,
@@ -296,20 +302,33 @@ export class InputHandlerService {
    */
   private speakerTagger?: SpeakerTagger;
   private progressCallback?: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => void;
+  /**
+   * What the RUN knows that could spell a proper noun in every one of its videos: the job's
+   * name and its channel (whose brand terms and promoted items go into the asr context,
+   * LEDGER #206). REQUIRED, third in the list for the same reason `outputDir` is second: a
+   * handler built without it would transcribe every video with a thinner seed and nothing
+   * would say so. `{ jobName: null, promptSet: null }` is the stated "none".
+   */
+  private runFacts: TranscriptionRunFacts;
   public currentFilename: string = '';
   public currentItemIndex: number = -1;
 
   constructor(
     whisperService: WhisperService,
     outputDir: string,
+    runFacts: TranscriptionRunFacts,
     progressCallback?: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => void,
     speakerTagger?: SpeakerTagger
   ) {
     if (typeof outputDir !== 'string' || !outputDir.trim()) {
       throw new Error('InputHandlerService requires the run output directory (saved transcripts live under it)');
     }
+    if (!runFacts || typeof runFacts !== 'object' || !('jobName' in runFacts) || !('promptSet' in runFacts)) {
+      throw new Error('InputHandlerService requires the run facts { jobName, promptSet } (null where the run has none) for the transcription context');
+    }
     this.whisperService = whisperService;
     this.outputDir = outputDir;
+    this.runFacts = runFacts;
     this.progressCallback = progressCallback;
     this.speakerTagger = speakerTagger;
   }
@@ -394,7 +413,7 @@ export class InputHandlerService {
     // so a reused transcript cannot generate a differently-shaped item than a fresh one.
     const transcript: VideoTranscript = useSavedTranscript
       ? this.reuseSavedTranscript(videoPath, itemIndex)
-      : await this.transcribeAndSave(videoPath, itemIndex);
+      : await this.transcribeAndSave(videoPath, itemIndex, customNotes, transcriptRef?.storyTitle ?? null);
 
     // Convert segments to text.
     //
@@ -451,7 +470,12 @@ export class InputHandlerService {
    * instead — outside the catch below, so a store that cannot be written is not reported
    * as a transcription that failed.
    */
-  private async transcribeAndSave(videoPath: string, itemIndex?: number): Promise<VideoTranscript> {
+  private async transcribeAndSave(
+    videoPath: string,
+    itemIndex: number | undefined,
+    customNotes: string | undefined,
+    storyTitle: string | null
+  ): Promise<VideoTranscript> {
     let result: Awaited<ReturnType<WhisperService['transcribeVideo']>>;
     try {
       // Send 'preparing' event before transcription starts. The item index is
@@ -467,8 +491,19 @@ export class InputHandlerService {
       // Transcribe video (returns jobId along with result)
       log.info(`[InputHandler] Calling whisperService.transcribeVideo...`);
       // The tagger goes IN, rather than tagging out here, because the audio it scores is the WAV
-      // whisper.cpp just read and transcribeVideo deletes it on the way out.
-      result = await this.whisperService.transcribeVideo(videoPath, undefined, this.speakerTagger);
+      // transcribeVideo extracted and deletes on the way out. The facts go in for the asr
+      // context (LEDGER #206): the run's job name and channel, where earlier reports live, the
+      // operator's notes on this input, and a linked story's title.
+      result = await this.whisperService.transcribeVideo(videoPath, {
+        speakerTagger: this.speakerTagger,
+        facts: {
+          jobName: this.runFacts.jobName,
+          promptSet: this.runFacts.promptSet,
+          outputDir: this.outputDir,
+          notes: customNotes?.trim() || null,
+          storyTitle,
+        },
+      });
 
       log.info(`[InputHandler] [${result.jobId}] Video transcribed: ${result.segments.length} segments`);
     } catch (error) {
@@ -492,6 +527,7 @@ export class InputHandlerService {
       // re-read from the setting: the setting can have moved on by now, and the record
       // has to name the model these words came out of.
       whisperModel: result.model,
+      words: result.words,
       // The tags are ON the segments above, so this is the record's statement of where they came
       // from. null says the run was in the untagged mode — which a later reuse can then see,
       // rather than reading absent tags as "tagged, and nobody was recognised".
@@ -569,7 +605,7 @@ export class InputHandlerService {
 
     log.info(
       `[InputHandler] Reused the saved transcript for ${filename}: ${record.segments.length} ` +
-      `segments, transcribed ${record.saved_at} by Whisper ${record.whisper_model}` +
+      `segments, transcribed ${record.saved_at} by ${record.whisper_model}` +
       `${record.speaker_tagging
         ? `, speaker-tagged ${record.speaker_tagging.host} HOST / ${record.speaker_tagging.clip} CLIP / ${record.speaker_tagging.unsure} UNSURE`
         : ', untagged'}`

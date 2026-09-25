@@ -220,7 +220,7 @@ export function describeProvenance(p: ItemProvenance | null | undefined): string
   const reused = p.saved_transcripts || [];
   const reuse = reused.length === 1
     ? ` The transcript was not made on this run: it was reused from the saved record for ` +
-      `${reused[0].source_key}, transcribed ${reused[0].saved_at} by Whisper ${reused[0].whisper_model}.`
+      `${reused[0].source_key}, transcribed ${reused[0].saved_at} by ${reused[0].whisper_model}.`
     : reused.length > 1
       ? ` ${reused.length} of this item’s inputs reused saved transcripts rather than being ` +
         `transcribed on this run.`

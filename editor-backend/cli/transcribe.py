@@ -1,10 +1,27 @@
 #!/usr/bin/env python3
 # cli/transcribe.py
 #
-# Transcription phase (editor v3, phase 1 of the transcript stack). Runs local
-# Whisper (whisper.cpp / whisper-cli) on each PER-SOURCE audio track of a processed
-# session and writes a transcript sidecar whose words are mapped onto the EDITOR
-# TIMELINE — the same original-timeline coordinate base the editor's cut list uses.
+# Transcription phase (editor v3, phase 1 of the transcript stack). Transcribes each
+# PER-SOURCE audio track of a processed session and writes a transcript sidecar whose
+# words are mapped onto the EDITOR TIMELINE — the same original-timeline coordinate base
+# the editor's cut list uses.
+#
+# THE DECODE IS CRUCIBLE'S (P5, LEDGER #206: "no more local whisper ... That covers the
+# pipeline and the editor"). Every bit of AUDIO logic stays here — extraction, the VAD
+# compaction, the loop-region re-decode, map_words, the atomic sidecar write — and only the
+# decode moves: for each compact WAV (and each loop region) this script asks the Electron
+# main process on stdout, and main runs a Crucible `asr` job on `qwen3-asr-1.7b` and answers
+# on stdin with the path of a words file (CRUCIBLE-MIGRATION-PLAN.md §8.2):
+#
+#     -> {"type":"asr_request","id":N,"wav":"/abs/x.wav","trackId":"t0","region":[s,e]|null}
+#     <- {"type":"asr_progress","id":N,"percent":0-100}          (zero or more)
+#     <- {"type":"asr_response","id":N,"wordsPath":"/abs/x.words.json","model":"crucible:mac:qwen3-asr-1.7b"}
+#     <- {"type":"asr_error","id":N,"message":"..."}              (the run fails with it)
+#
+# The words file is Crucible's word shape, already given its punctuation by main
+# (crucible-transcript.ts segmentTokens): {"words":[{"word","start","end","probability"}]},
+# seconds of the WAV that was sent. `probability` is null on Qwen (the aligner places words,
+# it does not score them); the reader omits it rather than inventing one.
 #
 # KEY INSIGHT (drives the whole design): the master hybrid fcpxml's compounds encode,
 # for every kept cut, each per-source audio leaf as {timelineStart, duration, file,
@@ -16,11 +33,10 @@
 # MIDPOINT (and still dropped if that midpoint lands in a cut). No alignment sidecar,
 # no offset/drift math — the fcpxml already encodes placement per cut.
 #
-# Invocation (all tool paths injected by Electron; every one validated, loud error
-# naming the missing piece):
-#     python cli/transcribe.py --zip /abs/<name>_compounds.zip \
-#         --whisper-bin /abs/whisper-cli --whisper-model /abs/ggml-base.bin \
-#         --ffmpeg /abs/ffmpeg [--language en] [--max-seconds N]
+# Invocation (ffmpeg injected by Electron and validated, loud error naming the missing
+# piece; stdin stays open for the asr answers):
+#     python cli/transcribe.py --zip /abs/<name>_compounds.zip --ffmpeg /abs/ffmpeg \
+#         [--max-seconds N]
 #
 # Progress protocol on stdout (one JSON object per line, flushed; mirrors
 # cli/electron_workflow.py):
@@ -36,7 +52,6 @@
 import argparse
 import json
 import os
-import re
 import signal
 import string
 import subprocess
@@ -69,8 +84,9 @@ class TranscribeError(Exception):
 
 # ---------------------------------------------------------------------------
 # Silence-gated VAD constants (drive compute_activity / build_compact_wav).
-# Whisper.cpp hallucinates on silence, so each track is transcribed on a COMPACT
-# wav made of only its active speech spans. All named, all module-level.
+# ASR hallucinates on silence (whisper.cpp did; Qwen is sent `vad_filter:false` because it
+# has no VAD of its own), so each track is transcribed on a COMPACT wav made of only its
+# active speech spans. All named, all module-level.
 # ---------------------------------------------------------------------------
 BIN_SEC = 0.1                 # RMS bin width for the activity map
 ACTIVITY_RATIO = 0.06         # active if bin RMS > ratio * p95(RMS)
@@ -87,7 +103,8 @@ _FULL_SCALE = 32768.0         # 16-bit signed PCM full scale
 # ---------------------------------------------------------------------------
 # Process/temp tracking for cancellation (SIGTERM) and cleanup.
 # ---------------------------------------------------------------------------
-_current_proc = None      # the child (ffmpeg or whisper) currently running
+_current_proc = None      # the child (ffmpeg) currently running
+_asr_seq = 0              # the id of the last asr_request sent
 _temp_dir = None          # the run's temp dir, removed on exit/cancel
 
 
@@ -151,13 +168,6 @@ def _validate_tool(path, what, need_exec):
 # ---------------------------------------------------------------------------
 # Track discovery: flatten the master hybrid, collect distinct NON-master audio files.
 # ---------------------------------------------------------------------------
-def _model_name(model_path):
-    stem = Path(model_path).stem      # ggml-base -> base
-    if stem.startswith('ggml-'):
-        stem = stem[len('ggml-'):]
-    return stem
-
-
 def discover_tracks(zip_path):
     """Return (session, frame_seconds, tracks) where tracks is an ordered list of dicts:
        {id, label, file, segments}. segments is that file's audio leaf segments sorted
@@ -285,9 +295,8 @@ def _master_only_tracks(zip_path, builder, master_file, frame_seconds):
 
 
 # ---------------------------------------------------------------------------
-# Word extraction from whisper's JSON + noise filtering.
+# Word extraction (Crucible's words, or whisper.cpp's JSON) + noise filtering.
 # ---------------------------------------------------------------------------
-_PROGRESS_RE = re.compile(r'progress\s*=\s*(\d+)\s*%')
 
 
 def _is_punct_noise(text):
@@ -300,7 +309,15 @@ def _is_punct_noise(text):
 
 
 def parse_whisper_json(json_path):
-    """Parse whisper-cli's full JSON (-ojf) into a list of raw words:
+    """Read a words file into a list of raw words: [{text, file_start, file_end, prob?}].
+
+       TWO SHAPES, told apart by their top-level key, never guessed:
+         - {"words": [...]}         Crucible's (P5): read by _parse_crucible_words below.
+         - {"transcription": [...]} whisper-cli's full JSON (-ojf), read here. No code path
+                                    produces one since P5; the reader goes in P10.
+       Anything else fails naming the file.
+
+       whisper-cli's shape, as it was read:
        [{text, file_start(s), file_end(s), prob(optional)}]. Offsets are MILLISECONDS.
        NOTE: whisper now runs on the per-track COMPACT wav, so file_start/file_end here
        are COMPACT-wav seconds; map_words shifts them back to real file/timeline time.
@@ -316,9 +333,13 @@ def parse_whisper_json(json_path):
        never carry literal ()[] so this cannot swallow genuine speech."""
     with open(json_path, 'r') as fh:
         data = json.load(fh)
-    transcription = data.get('transcription')
+    if isinstance(data, dict) and 'words' in data:
+        return _parse_crucible_words(data, json_path)
+    transcription = data.get('transcription') if isinstance(data, dict) else None
     if transcription is None:
-        raise TranscribeError(f"whisper JSON {json_path} has no 'transcription' array")
+        raise TranscribeError(
+            f"words file {json_path} has neither a 'words' list (Crucible) nor a "
+            f"'transcription' array (whisper-cli)")
 
     words = []
     bracket_depth = 0
@@ -346,6 +367,47 @@ def parse_whisper_json(json_path):
             ps = [t['p'] for t in tokens if 'p' in t]
             if ps:
                 word['prob'] = sum(ps) / len(ps)
+        words.append(word)
+    return words
+
+
+def _parse_crucible_words(data, json_path):
+    """Crucible's words: {"words":[{"word","start","end","probability"}]} in seconds of the
+       WAV that was sent (compact-wav seconds, like whisper's offsets; map_words shifts them).
+
+       `probability` is read TOLERANTLY: null (every Qwen word — the aligner places words, it
+       does not score them) means the word carries no 'prob', exactly as a whisper word with no
+       tokens did; a number is kept. Nothing downstream needs it: editor_export copies it as
+       'confidence' only when present. start/end are LOAD-BEARING and read strictly.
+
+       The same noise rules as whisper's: bracketed annotations and pure punctuation drop."""
+    raw = data.get('words')
+    if not isinstance(raw, list):
+        raise TranscribeError(f"Crucible words file {json_path}: 'words' is not a list")
+    words = []
+    bracket_depth = 0
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise TranscribeError(f"Crucible words file {json_path}: words[{i}] is not an object")
+        text = str(entry.get('word') or '').strip()
+        opens = text.count('(') + text.count('[')
+        closes = text.count(')') + text.count(']')
+        was_inside = bracket_depth > 0
+        bracket_depth = max(0, bracket_depth + opens - closes)
+        if was_inside or opens > 0:
+            continue
+        if _is_punct_noise(text):
+            continue
+        start = entry.get('start')
+        end = entry.get('end')
+        if isinstance(start, bool) or isinstance(end, bool) or \
+                not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+            raise TranscribeError(
+                f"Crucible words file {json_path}: words[{i}] has no numeric start/end: {entry!r}")
+        word = {'text': text, 'file_start': float(start), 'file_end': float(end)}
+        prob = entry.get('probability')
+        if isinstance(prob, (int, float)) and not isinstance(prob, bool):
+            word['prob'] = float(prob)
         words.append(word)
     return words
 
@@ -547,7 +609,7 @@ def map_words(track, raw_words, time_map):
 
 
 # ---------------------------------------------------------------------------
-# ffmpeg extraction + whisper run (per track).
+# ffmpeg extraction (per track).
 # ---------------------------------------------------------------------------
 def _run_child(cmd, what):
     """Run a child process, tracking it for SIGTERM cancellation, streaming nothing.
@@ -612,11 +674,14 @@ def _warn_repetition_loops(track_id, label, words, min_reps=10):
               f"possible whisper hallucination loop; review this region", file=sys.stderr)
 
 
-def _retry_loop_regions(raw, compact_wav, whisper_bin, model, language, temp_dir,
+def _retry_loop_regions(raw, compact_wav, request_asr, temp_dir,
                         track_id, label, min_reps=10, pad_sec=3.0, max_regions=12):
-    """Loop recovery: when the raw whisper output contains repetition runs, re-decode JUST
-    those regions with a FRESH decoder (the measured fix: the same audio decodes clean in
-    isolation — loops need accumulated state) and splice the results back in.
+    """Loop recovery: when the raw ASR output contains repetition runs, re-decode JUST
+    those regions as a FRESH job (the measured fix on whisper.cpp: the same audio decodes clean
+    in isolation — loops need accumulated state) and splice the results back in. Crucible's
+    own loop guard re-cuts a looping piece before it answers (and fails `asr_decode_loop` past
+    its ladder), so on Qwen this is a second net, not the first: each region is one
+    asr_request with `region` set, and its words come back in the slice's own seconds.
 
     Regions are the runs' compact-time spans padded by pad_sec, merged when overlapping,
     capped at max_regions (a pathological blowup re-warns via the final tripwire instead
@@ -661,9 +726,7 @@ def _retry_loop_regions(raw, compact_wav, whisper_bin, model, language, temp_dir
                 dst.setframerate(rate)
                 dst.writeframes(frames)
         try:
-            out_prefix = os.path.join(temp_dir, f"retry_{track_id}_{k}")
-            json_path = run_whisper(whisper_bin, model, slice_wav, out_prefix,
-                                    language, lambda pct: None)
+            json_path = request_asr(slice_wav, track_id, (s, e), lambda pct: None)
             for w in parse_whisper_json(json_path):
                 w['file_start'] += s
                 w['file_end'] += s
@@ -682,60 +745,77 @@ def _retry_loop_regions(raw, compact_wav, whisper_bin, model, language, temp_dir
     return out
 
 
-def run_whisper(whisper_bin, model, wav, out_prefix, language, on_progress):
-    """Run whisper-cli producing <out_prefix>.json. Streams stderr, calling
-    on_progress(pct) as whisper reports 'progress = NN%'. Returns the JSON path."""
-    global _current_proc
-    # -ojf (full JSON) INSTEAD of -oj: same <out_prefix>.json output plus per-word token
-    # 'p' probabilities. Exact Metal-binary arg string, probed once (see module header).
-    # -mc 0 (--max-context 0): do NOT condition each 30s window on the previous window's
-    # text. Conditioning is whisper's repetition-loop vector: one real utterance ("and
-    # we're seeing the same thing in the UK") seeded a self-reinforcing loop that repeated
-    # 600+ times across ~25 minutes of the screen track, steamrolling real speech.
-    # Verified on the exact production compact wav: 678 loop phrases -> 2 (the real
-    # utterance), while NET real words INCREASED (the loop had been replacing dialogue).
-    cmd = [whisper_bin, '-m', model, '-f', wav, '-ml', '1', '-sow',
-           '-ojf', '-of', out_prefix, '-np', '-l', language, '-pp', '-mc', '0']
-    tail = deque(maxlen=60)
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-        text=True, bufsize=1)
-    _current_proc = proc
-    try:
-        for line in proc.stderr:
-            line = line.rstrip('\n')
-            tail.append(line)
-            m = _PROGRESS_RE.search(line)
-            if m:
-                on_progress(int(m.group(1)))
-        proc.wait()
-    finally:
-        _current_proc = None
-    if proc.returncode != 0:
-        raise TranscribeError(
-            f"whisper-cli failed on {wav} (exit {proc.returncode}):\n"
-            f"{chr(10).join(tail)[-2000:]}")
-    json_path = out_prefix + '.json'
-    if not os.path.isfile(json_path):
-        raise TranscribeError(
-            f"whisper-cli produced no JSON output at {json_path}")
-    return json_path
+class AsrChannel:
+    """The asr_request / asr_response exchange with the Electron main process (header).
+
+    One request at a time: this script is sequential, and main runs one Crucible job per
+    request. Every answer names the request id it answers; a mismatch is a protocol bug and
+    fails loudly. The model main reports is kept for the sidecar, and must not change within
+    a run (one sidecar, one model)."""
+
+    def __init__(self, stdin=None):
+        self._stdin = stdin if stdin is not None else sys.stdin
+        self.model = None
+
+    def request(self, wav, track_id, region, on_progress):
+        global _asr_seq
+        _asr_seq += 1
+        rid = _asr_seq
+        _emit({'type': 'asr_request', 'id': rid, 'wav': wav, 'trackId': track_id,
+               'region': [float(region[0]), float(region[1])] if region is not None else None})
+        while True:
+            line = self._stdin.readline()
+            if line == '':
+                raise TranscribeError(
+                    f"the Electron main process closed the asr channel before answering "
+                    f"request {rid} ({wav})")
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                raise TranscribeError(f"asr channel: a line that is not JSON: {line[:200]!r}")
+            if msg.get('id') != rid:
+                raise TranscribeError(
+                    f"asr channel: an answer for request {msg.get('id')!r} while waiting for {rid}")
+            kind = msg.get('type')
+            if kind == 'asr_progress':
+                pct = msg.get('percent')
+                if isinstance(pct, (int, float)):
+                    on_progress(max(0, min(100, int(pct))))
+                continue
+            if kind == 'asr_error':
+                raise TranscribeError(str(msg.get('message') or f"asr request {rid} failed with no message"))
+            if kind == 'asr_response':
+                path = msg.get('wordsPath')
+                model = msg.get('model')
+                if not isinstance(path, str) or not os.path.isfile(path):
+                    raise TranscribeError(f"asr channel: request {rid} answered with no words file ({path!r})")
+                if not isinstance(model, str) or not model:
+                    raise TranscribeError(f"asr channel: request {rid} answered without naming its model")
+                if self.model is not None and self.model != model:
+                    raise TranscribeError(
+                        f"asr channel: the model changed mid-run ({self.model} -> {model}); one "
+                        f"sidecar records one model")
+                self.model = model
+                return path
+            raise TranscribeError(f"asr channel: unknown answer type {kind!r} for request {rid}")
 
 
 # ---------------------------------------------------------------------------
 # Orchestration.
 # ---------------------------------------------------------------------------
-def transcribe(zip_path, whisper_bin, whisper_model, ffmpeg, language, max_seconds):
+def transcribe(zip_path, ffmpeg, max_seconds, channel=None):
     global _temp_dir
 
-    _validate_tool(whisper_bin, 'whisper binary', need_exec=True)
-    _validate_tool(whisper_model, 'whisper model', need_exec=False)
     _validate_tool(ffmpeg, 'ffmpeg binary', need_exec=True)
+    asr = channel if channel is not None else AsrChannel()
 
     session, frame_seconds, tracks = discover_tracks(zip_path)
     n = len(tracks)
 
-    # ETA is MEASURED, not guessed: whisper throughput is ~constant, so the remaining
+    # ETA is MEASURED, not guessed: ASR throughput is ~constant, so the remaining
     # time is (elapsed) * (work left / work done) using the real overall progress
     # fraction. Withheld until progress >= 2% (before that the ratio is too noisy to be
     # honest — the UI shows "estimating" instead). The tracks are equal-duration and the
@@ -786,12 +866,10 @@ def transcribe(zip_path, whisper_bin, whisper_model, ffmpeg, language, max_secon
                     overall = _lo + (pct / 100.0) * (0.90 * _w)
                     emit_progress(overall, f"Transcribing {_label} ({_i + 1}/{n})...")
 
-                out_prefix = os.path.join(_temp_dir, f"track{i}")
-                json_path = run_whisper(whisper_bin, whisper_model, compact, out_prefix,
-                                        language, on_progress)
+                json_path = asr.request(compact, track['id'], None, on_progress)
                 raw = parse_whisper_json(json_path)
-                raw = _retry_loop_regions(raw, compact, whisper_bin, whisper_model,
-                                          language, _temp_dir, track['id'], label)
+                raw = _retry_loop_regions(raw, compact, asr.request, _temp_dir,
+                                          track['id'], label)
                 mapped = map_words(track, raw, time_map)
                 if not mapped:
                     print(f"[transcribe] track {track['id']} ({label}) contributed 0 words",
@@ -810,7 +888,9 @@ def transcribe(zip_path, whisper_bin, whisper_model, ffmpeg, language, max_secon
         sidecar = {
             'schemaVersion': 1,
             'session': session,
-            'model': _model_name(whisper_model),
+            # The model main's asr answers named (`crucible:<server>:qwen3-asr-1.7b`), or
+            # null when every track was silent and nothing was asked.
+            'model': asr.model,
             'calibration': 'none',
             'frameSeconds': frame_seconds,
             'tracks': [{'id': t['id'], 'label': t['label'], 'file': t['file']}
@@ -852,14 +932,8 @@ def main(argv=None):
                     "timeline-mapped transcript sidecar next to the compounds zip.")
     parser.add_argument('--zip', dest='zip_path', required=True,
                         help='Absolute path to the <name>_compounds.zip')
-    parser.add_argument('--whisper-bin', required=True,
-                        help='Absolute path to the whisper-cli binary (Metal build)')
-    parser.add_argument('--whisper-model', required=True,
-                        help='Absolute path to the ggml whisper model')
     parser.add_argument('--ffmpeg', required=True,
                         help='Absolute path to the ffmpeg binary')
-    parser.add_argument('--language', default='en',
-                        help="Spoken language passed to whisper (default 'en')")
     parser.add_argument('--max-seconds', type=float, default=None,
                         help='Optional: transcribe only the first N seconds of each '
                              'track (ffmpeg -t). For fast smoke tests; default is the '
@@ -869,8 +943,7 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, _handle_sigterm)
 
     try:
-        return transcribe(args.zip_path, args.whisper_bin, args.whisper_model,
-                          args.ffmpeg, args.language, args.max_seconds)
+        return transcribe(args.zip_path, args.ffmpeg, args.max_seconds)
     except (TranscribeError, ManifestError) as e:
         _cleanup_temp()
         _emit({'type': 'error', 'message': str(e)})
