@@ -293,6 +293,14 @@ async function runRank(args, log) {
         for (const t of slice) {
           if (done.has(t.video_id)) continue;
           const titles = t.variants.map((v) => v.title);
+          // A test whose variants share a title cannot be ranked (the ranker refuses a list with a
+          // title twice); it is recorded as skipped, with why, and counted out of the rate.
+          if (new Set(titles.map((x) => x.replace(/\s+/g, ' ').trim())).size !== titles.length) {
+            done.add(t.video_id);
+            fs.appendFileSync(outFile, JSON.stringify({ video_id: t.video_id, channel: t.channel, skipped: 'two variants carry the same title', variants: t.variants }) + '\n');
+            log(`rank: ${t.video_id} skipped, two variants carry the same title`);
+            continue;
+          }
           const { facts } = factsFor(t.channel);
           const r = await ranking.rankTitles(titles, facts.channel, decide, `calibration rank ${t.video_id}`);
           done.add(t.video_id);
@@ -402,7 +410,9 @@ function report(args) {
   // Ranking.
   const rankFile = path.join(args.out, 'rank.jsonl');
   if (fs.existsSync(rankFile)) {
-    const recs = readJsonl(rankFile);
+    const all = readJsonl(rankFile);
+    const recs = all.filter((r) => !r.skipped);
+    if (all.length > recs.length) say(`  (${all.length - recs.length} test(s) skipped: ${all.filter((r) => r.skipped).map((r) => `${r.video_id} ${r.skipped}`).join('; ')})`);
     let pairs = 0;
     let won = 0;
     let top1 = 0;
