@@ -62,7 +62,17 @@ export function normalizeWords(text: string): string[] {
 export type SpeakerRole = 'host' | 'clip' | 'unsure';
 
 function speakerRoleOf(segment: SRTSegment): SpeakerRole | null {
-  const id = `${segment.speaker || ''} ${segment.speakerLabel || ''}`.toLowerCase().trim();
+  return speakerRoleOfId(`${segment.speaker || ''} ${segment.speakerLabel || ''}`);
+}
+
+/**
+ * The same rule over a bare speaker or track name. Exported for the snap chaptering service
+ * (chaptering/units.ts `speakerRolesOf`), which reads the editor's word-level file, where a
+ * track's LABEL ("mic audio_processed", "screen audio_processed") says which side it is: one
+ * rule for every transcript shape, so the two engines can never tag the same stream differently.
+ */
+export function speakerRoleOfId(name: string): SpeakerRole | null {
+  const id = name.toLowerCase().trim();
   if (id.length === 0) return null;
   const host = /mic|host/.test(id);
   const clip = /screen|clip|footage/.test(id);

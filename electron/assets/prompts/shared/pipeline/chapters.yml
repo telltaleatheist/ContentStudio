@@ -90,33 +90,26 @@ summarize_chapter_tagged: |-
   TRANSCRIPT:
   {transcript}
 
-snap_outline_detailed: |-
+snap_outline_chapters: |-
   Here is a transcript of a video.
 
   {transcript}
 
   List the sections of this video in the order they happen. A new section starts wherever the video moves to a different subject, story, clip, ad or aside. Write one short, specific label per line (at most {max_items} lines), with no numbering and nothing else.
 
-snap_outline_broad: |-
-  Here is a transcript of a video.
-
-  {transcript}
-
-  List the main sections of this video in the order they happen. A section is a stretch of several minutes about one piece of the subject — one person taken up, one document or clip set, one line of argument, one ad — and the claims inside that piece stay together in it. Write one short, specific label per line (at most {max_items} lines), with no numbering and nothing else.
-
 snap_outline_stories: |-
-  Here is a transcript of a video.
+  Here is a transcript of a stream or a long recording. This stretch of it runs {duration}.
 
   {transcript}
 
-  The video is a run of separate stories. List the stories in the order they happen: a new story starts where the video turns to a different story, claim, clip or ad, and the discussion of one story stays inside it. Write one short, specific label per line (at most {max_items} lines), with no numbering and nothing else.
+  List the separate stories in this stretch in the order they happen. A story is a stretch about a completely different subject from the one before it, one that could be published as a video of its own: one subject, one guest, one set of clips, one story followed to its end. The turns, claims and clips inside one subject belong to its story, and a stream has only a handful of stories. Write one short, specific label per line (at most {max_items} lines), with no numbering and nothing else.
 
-snap_outline_episodes: |-
-  Here is a transcript of a livestream. This stretch of it runs {duration}.
+snap_outline_stories_merge: |-
+  Here are the outlines of consecutive stretches of one stream, in order, each written from its own stretch. A story that runs across two stretches is listed in both. The whole stream runs {duration}.
 
-  {transcript}
+  {outlines}
 
-  List the separate episodes of this stream in the order they happen. An episode is a self-contained stretch that could be published as its own video — one subject, one guest, one set of clips, one story followed to its end — and a stream has only a handful of them. Write one short, specific label per line (at most {max_items} lines), with no numbering and nothing else.
+  List the separate stories of the whole stream in the order they happen. A story is a stretch about a completely different subject from the one before it, one that could be published as a video of its own; the turns, claims and clips inside one subject belong to its story, and a stream has only a handful of stories. Write one short, specific label per line (at most {max_items} lines), with no numbering and nothing else.
 
 snap_assign: |-
   Sentence from the transcript above: "{sentence}"

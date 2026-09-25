@@ -25,7 +25,8 @@
  * this port keeps the reference's rule because it is the one the measurement ran on.
  */
 
-import { SentenceUnit } from './types';
+import { SentenceUnit, SpeakerRole } from './types';
+import { speakerRoleOfId } from '../chapter-transcript';
 
 /** What a caption needs to have: a time pair (SRT "HH:MM:SS,mmm" strings, or seconds) and text. */
 export interface CaptionLike {
@@ -82,7 +83,13 @@ export type TranscriptInput =
   | CaptionLike[]
   | { segments: CaptionLike[] }
   | { contentItems: Array<{ srtSegments?: CaptionLike[] }> }
-  | { words: WordLike[] };
+  | { words: WordLike[]; tracks?: TrackLike[] };
+
+/** A track of the editor's word-level file: its id is what each word carries, its label says what it recorded. */
+export interface TrackLike {
+  id: string;
+  label?: string;
+}
 
 export interface WordLike {
   text: string;
@@ -126,6 +133,46 @@ export function captionsOf(transcript: TranscriptInput): CaptionLike[] {
     return words;
   }
   throw new Error(`not a transcript this service reads: expected captions, segments, contentItems[0].srtSegments or words (got keys ${Object.keys(t).join(', ')})`);
+}
+
+/**
+ * Which side of the commentary each speaker id of the transcript is (P8b; the brief's decision 5),
+ * for the tagged title prompt. The rule is chapter-transcript.ts `speakerRoleOfId`, the one the
+ * whole-transcript engine tags by, read off:
+ *
+ *   - the editor's word-level file: each word's track id, through the track's LABEL in `tracks`
+ *     (the 2026-09-23 stream: t0 "mic audio_processed" = HOST, t1 "screen audio_processed" = CLIP);
+ *     a word's own `speaker`, when it carries one, by its own name;
+ *   - captions / segments / srtSegments: the caption's speaker by its own name ("mic", "host",
+ *     "clip", "unsure" from the voice tagger).
+ *
+ * An id that resolves to no side is left out of the map; the service tags a run only when EVERY
+ * unit's speaker resolves (all-or-nothing, as the whole-transcript engine decides it: a prompt that
+ * announces HOST:/CLIP: over lines half of which carry neither is a prompt that lies).
+ */
+export function speakerRolesOf(transcript: TranscriptInput): Map<string, SpeakerRole> {
+  const roles = new Map<string, SpeakerRole>();
+  const t = transcript as Record<string, unknown>;
+  if (!Array.isArray(transcript) && Array.isArray(t.words)) {
+    const labels = new Map<string, string>();
+    for (const track of (Array.isArray(t.tracks) ? t.tracks : []) as TrackLike[]) {
+      if (track && typeof track.id === 'string') labels.set(track.id, String(track.label ?? track.id));
+    }
+    for (const w of t.words as WordLike[]) {
+      const id = w.speaker ?? w.track;
+      if (id === undefined || roles.has(String(id))) continue;
+      const name = w.speaker !== undefined ? String(w.speaker) : labels.get(String(w.track)) ?? String(w.track);
+      const role = speakerRoleOfId(name);
+      if (role !== null) roles.set(String(id), role);
+    }
+    return roles;
+  }
+  for (const c of captionsOf(transcript)) {
+    if (c.speaker === undefined || roles.has(c.speaker)) continue;
+    const role = speakerRoleOfId(c.speaker);
+    if (role !== null) roles.set(c.speaker, role);
+  }
+  return roles;
 }
 
 /** SRT "HH:MM:SS,mmm" (or "HH:MM:SS.mmm") to seconds; a number passes through. */
