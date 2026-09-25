@@ -678,7 +678,7 @@ check('a chapter over the title budget is read in equal parts and titled from th
   const warnings = [];
   const r = await summarize.summarizeChapter(
     chat,
-    { number: 3, total: 5, videoTitle: 'V', previousDetail: '', previousTitles: [], units: long.map((text, i) => ({ text, start: i, end: i + 1 })), entityScaffold: '', clock: '0:00-15:00' },
+    { number: 3, total: 5, videoTitle: 'V', previousDetail: '', previousTitles: [], units: long.map((text, i) => ({ text, start: i, end: i + 1 })), entityScaffold: '', clock: '0:00-15:00', thinking: true },
     (w) => warnings.push(w),
   );
   assert.deepStrictEqual(r, { title: 'Whole title', summary: 'Whole summary.', parts: windows.length });

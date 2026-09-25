@@ -237,6 +237,26 @@ export interface ChapteringResult {
   chapters: Chapter[];
   plugVerdicts: PlugVerdict[];
   stats: ChapteringStats;
+  /** Per chunk, what the model answered; only when `diagnostics` was asked for (measurement runs). */
+  diagnostics?: ChunkDiagnostic[];
+}
+
+/** One chunk's reading, for measuring the method (P8b's acceptance), never read by the pipeline. */
+export interface ChunkDiagnostic {
+  level: number;
+  /** Global unit range [start, end) of the chunk's state. */
+  start: number;
+  end: number;
+  /** The options in letter order, the ad item last when ads were on. */
+  items: string[];
+  /** Index of the ad item in `items`, or -1. */
+  plug: number;
+  /** Per unit of the chunk: the most probable option, its probability, and the ad item's. */
+  top: number[];
+  topP: number[];
+  plugP: number[];
+  /** Per unit of the chunk: the final Viterbi item (after ad confirmation). */
+  path: number[];
 }
 
 export type ChapteringPhase = 'units' | 'outline' | 'assign' | 'plugs' | 'refine' | 'summarize' | 'done';

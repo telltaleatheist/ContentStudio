@@ -52,6 +52,7 @@ import {
   ChapteringProgress,
   ChapteringResult,
   ChapteringStats,
+  ChunkDiagnostic,
   ChatFn,
   DecideFn,
   DecideRequest,
@@ -76,6 +77,13 @@ export interface ChapterOptions {
   /** Write titles and summaries on the capable model. Default true; off for a boundaries-only measurement run. */
   summarize?: boolean;
   /**
+   * Thinking on the title calls. Default true: the whole-transcript service's measured setting
+   * (summarize.ts). Measured 2026-09-25 on the Mac's 27B-4bit (docs/crucible/P8a.md): a title
+   * with thinking took 37-412 s and one ran out its 8192 tokens without answering, so a long
+   * run may turn it off. Declared: logged, and stated in the run's warnings (Law 8).
+   */
+  titleThinking?: boolean;
+  /**
    * Override the granularity's switch cost for a measurement run. A declared override: it is
    * logged and reported in the result, and the production dial stays granularity.ts's.
    */
@@ -86,6 +94,8 @@ export interface ChapterOptions {
   unitOptions?: UnitOptions;
   signal?: AbortSignal;
   onProgress?: (p: ChapteringProgress) => void;
+  /** Return each chunk's per-sentence reading in `result.diagnostics` (tools/chaptering-run.js). */
+  diagnostics?: boolean;
 }
 
 /** Share of the progress bar per phase, weighted by work rather than by stage (plan §0a). */
@@ -139,6 +149,8 @@ export async function chapterUnits(units: SentenceUnit[], options: ChapterOption
 
   const refine = setting.refine;
   const summarize = options.summarize ?? true;
+  const titleThinking = options.titleThinking ?? true;
+  if (summarize && !titleThinking) warn('titles were written with thinking OFF on the title model (a declared setting of this run)');
   const wLevel1 = refine ? W_LEVEL1 : W_LEVEL1 + W_REFINE;
   const wSummarize = summarize ? W_SUMMARIZE : 0;
   const scale = wLevel1 + (refine ? W_REFINE : 0) + wSummarize;
@@ -146,7 +158,8 @@ export async function chapterUnits(units: SentenceUnit[], options: ChapterOption
   const progress = (phase: ChapteringProgress['phase'], done: number, total: number, share: number, within: number) =>
     options.onProgress?.({ phase, done, total, fraction: Math.min(1, (base + share * within) / scale) });
 
-  const ctx: LevelContext = { options, stats, warn, signal, detectAds };
+  const diagnostics: ChunkDiagnostic[] = [];
+  const ctx: LevelContext = { options, stats, warn, signal, detectAds, diagnostics: options.diagnostics ? diagnostics : null };
   const texts = units.map((u) => u.text);
 
   // Level 1: the whole video at the granularity's outline and switch cost.
@@ -225,6 +238,7 @@ export async function chapterUnits(units: SentenceUnit[], options: ChapterOption
           previousTitles: chapters.slice(-3).map((c) => c.title).filter((t) => t.length > 0),
           units: units.slice(s.unitRange[0], s.unitRange[1]),
           entityScaffold: '',
+          thinking: titleThinking,
           clock: `${formatClock(s.startSec)}-${formatClock(s.endSec)}`,
         },
         warn,
@@ -268,7 +282,16 @@ export async function chapterUnits(units: SentenceUnit[], options: ChapterOption
   }
   stats.totalMs = Date.now() - t0;
   options.onProgress?.({ phase: 'done', done: chapters.length, total: chapters.length, fraction: 1 });
-  return { granularity: options.granularity, switchCost, units, outline: level1.outline, chapters, plugVerdicts: level1.verdicts, stats };
+  return {
+    granularity: options.granularity,
+    switchCost,
+    units,
+    outline: level1.outline,
+    chapters,
+    plugVerdicts: level1.verdicts,
+    stats,
+    ...(options.diagnostics ? { diagnostics } : {}),
+  };
 }
 
 // --------------------------------------------------------------------------- one level
@@ -279,6 +302,8 @@ interface LevelContext {
   warn: (message: string) => void;
   signal?: AbortSignal;
   detectAds: boolean;
+  /** Collected only on a measurement run. */
+  diagnostics: ChunkDiagnostic[] | null;
 }
 
 interface LevelSpec {
@@ -426,6 +451,20 @@ async function runLevel(ctx: LevelContext, units: SentenceUnit[], offset: number
     stats.plugMs += Date.now() - t;
     doneWeight += w;
     paths.push({ chunk: shift(chunk, offset), path, items, plug });
+    if (ctx.diagnostics) {
+      const top = L.map((row) => row.reduce((best, x, j) => (x > row[best] ? j : best), 0));
+      ctx.diagnostics.push({
+        level: spec.level,
+        start: offset + chunk.start,
+        end: offset + chunk.end,
+        items,
+        plug,
+        top,
+        topP: L.map((row, i) => Math.exp(row[top[i]])),
+        plugP: plug >= 0 ? L.map((row) => Math.exp(row[plug])) : [],
+        path,
+      });
+    }
   }
 
   const { pieces } = stitchChunks(paths);

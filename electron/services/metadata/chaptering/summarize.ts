@@ -61,6 +61,11 @@ export interface SummarizeInput {
   /** Rendered by the caller, may be empty (the whole-video name scaffold is P4's; empty here). */
   entityScaffold: string;
   clock: string;
+  /**
+   * Thinking on the title call. The service's default is ON (the header says why); a run may
+   * turn it off as a declared setting (chaptering.service.ts `titleThinking`), never silently.
+   */
+  thinking: boolean;
 }
 
 export interface SummarizeResult {
@@ -127,9 +132,10 @@ async function titleCall(
   prompt: string,
   what: string,
   warn: (message: string) => void,
+  thinking: boolean,
   signal?: AbortSignal,
 ): Promise<{ title: string; summary: string }> {
-  const result = await chat(prompt, { role: 'summarize', maxTokens: SUMMARIZE_MAX_TOKENS, thinking: true, what, signal });
+  const result = await chat(prompt, { role: 'summarize', maxTokens: SUMMARIZE_MAX_TOKENS, thinking, what, signal });
   if (result.finishReason === 'length') {
     warn(`${what} hit its ${SUMMARIZE_MAX_TOKENS}-token cap, so it carries no title or summary from the model`);
     return { title: '', summary: '' };
@@ -155,7 +161,7 @@ export async function summarizeChapter(
   const texts = input.units.map((u) => u.text);
   const windows = summaryWindows(texts);
   if (windows.length === 1) {
-    const answer = await titleCall(chat, summarizePrompt({ ...input, transcript: texts.join(' ') }), what, warn, signal);
+    const answer = await titleCall(chat, summarizePrompt({ ...input, transcript: texts.join(' ') }), what, warn, input.thinking, signal);
     return { ...answer, parts: 1 };
   }
 
@@ -173,6 +179,7 @@ export async function summarizeChapter(
       summarizePrompt({ ...input, number: `${input.number} (part ${k + 1} of ${windows.length})`, previousDetail, transcript: texts.slice(a, b).join(' ') }),
       `${what} part ${k + 1}/${windows.length} (${clock})`,
       warn,
+      input.thinking,
       signal,
     );
     parts.push(`Part ${k + 1} (${clock}): ${part.title || '(untitled)'}\n${part.summary}`.trim());
@@ -189,6 +196,7 @@ export async function summarizeChapter(
     }),
     `${what} from its ${windows.length} parts`,
     warn,
+    input.thinking,
     signal,
   );
   return { ...answer, parts: windows.length };
