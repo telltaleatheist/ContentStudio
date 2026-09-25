@@ -1040,6 +1040,8 @@ Still off the table, pending Owen:
 - **The official `qwen3-asr-1.7b` id, never `-mlx`** (§21 Q15): ContentStudio keeps ums and uhs to cut on, and the port drops them.
 - Subagents build one phase each in their own worktree; every phase merges into `crucible` after review, and `crucible` merges to main when Owen accepts.
 
+**206. No local whisper: every transcription is Crucible's `asr` job on `qwen3-asr-1.7b`, seeded with the item's metadata (Owen, 2026-09-25).** "no more local whisper. we're going with crucible for transcription too, and we'll be using qwen asr ... probably the big model, 1.7b, since we want accuracy." That covers the pipeline and the editor. The official id, never `-mlx` (#205). Every request states `language`, `word_timestamps:true`, `vad_filter:false` and a `context` (≤1,024 tokens) that carries the verbatim-disfluency instruction (#203) AND whatever the item already knows that could spell a proper noun right: the filename title, the job name, the channel's brand terms and promoted items from the prompt set, known speaker or guest names, and any existing description or title the item carries. Owen: "we should make sure to pass in any useful metadata with the prompt, too, in case it might have proper nouns spelled out correctly and it can act as a seed for proper nouns." whisper.cpp and its models leave the app in P10; until then nothing may call them.
+
 ### Doc hygiene (staleness is itself a recorded state — see Part I §4 for the worklist)
 
 **97.** `PROJECT_OVERVIEW.md` / `README.md` / `QUICKSTART.md` / `SETUP_STATUS.md`: unmodified since 2025-10-30, describe the pre-Angular "LaunchPad" app; declared non-authoritative; the rewrite is an unfinished Phase 0b task.
