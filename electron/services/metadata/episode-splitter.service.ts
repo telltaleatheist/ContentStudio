@@ -235,8 +235,7 @@ export class EpisodeSplitterService {
         // never invoked by that pool; the 'progress' listener above is what reports. No channel
         // and no run facts here: the splitter works on raw source audio before any item exists,
         // so the asr context carries the file's own title and nothing else (#206).
-        const transcriptionResult: { jobId: string; srtPath: string; segments: SRTSegment[] } =
-          await whisperService.transcribeVideo(audioPath, { facts: {} });
+        const transcriptionResult = await whisperService.transcribeVideo(audioPath, { facts: {} });
 
         const { segments: srtSegments } = transcriptionResult;
 
