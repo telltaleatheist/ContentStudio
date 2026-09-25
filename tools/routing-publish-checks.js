@@ -911,12 +911,77 @@ check('the shipped defaults stay inside the two-model budget, chapters included'
   }
 });
 
-check('the embedding model does not count against the budget', () => {
-  const roster = tasks.buildModelRoster([
-    { model: 'qwen3.8:27b', what: 'titles' },
-    { model: 'nomic-embed-text', what: 'key phrases' },
-  ], [routing.KEY_PHRASE_EMBEDDING_MODEL]);
-  eq(roster.models.length, 1, '274MB of embeddings was counted as a resident LLM');
+// ---------------------------------------------------------------- tags from the chapter list (#205)
+//
+// nomic-embed-text and key-phrase ranking are removed, not moved (LEDGER #205). A chaptered
+// item's tag pools are read off its chapter list, in the order the list carries, and kept only
+// where the transcript says them; a chapterless item has no phrase pool and its tags are the
+// Tags row's to write. `extractPools` is the generator's own entry point (private in TS only).
+const generatorModule = require(path.join(ROOT, 'services/metadata/metadata-generator.service.js'));
+const extractPools = (...args) => generatorModule.MetadataGeneratorService.extractPools(...args);
+
+const TAG_CONTENT =
+  'HOST Tonight we go to Jackson Parish, where the sheriff signs a prison labor contract. ' +
+  'HOST The prisoner exception in the Thirteenth Amendment is why this is legal. ' +
+  'CLIP Fox News said the prison labor contract saves money. ' +
+  'HOST The prisoner exception has to go.';
+const TAG_SUBJECTS = [
+  'Jackson Parish rents out its prisoners through prison labor',
+  'Fox News defends the prisoner exception on air',
+];
+const TAG_DETAILS = [
+  'The sheriff of Jackson Parish signs a prison labor contract for profit.',
+  'A Fox News segment praises the Thirteenth Amendment prisoner exception.',
+];
+
+check('a chaptered item\'s pools come off its chapter list, in chapter order, grounded', () => {
+  const warnings = [];
+  const pools = extractPools(TAG_CONTENT, TAG_SUBJECTS, TAG_DETAILS, 'fixture', warnings);
+  eq(pools.entities, ['Jackson Parish', 'Fox News', 'Thirteenth Amendment'], 'names, chapter 1 before chapter 2:');
+  // "prison labor" (the title) folds into "prison labor contract" (the detail) in its place.
+  eq(pools.phrases, ['jackson parish', 'prison labor contract', 'fox news', 'prisoner exception', 'thirteenth amendment'],
+    'phrases, folded to the longer form, chapter 1 before chapter 2:');
+  // "rents out" / "on air" are the chapter model's words, not the video's: never a pool entry.
+  for (const p of [...pools.entities, ...pools.phrases]) {
+    if (!entities.occursIn(TAG_CONTENT, p)) throw new Error(`"${p}" is not in the transcript`);
+  }
+  eq(warnings, [], 'a grounded pool declares nothing:');
+});
+
+check('tags on a chaptered item are exactly the chapter-derived pools, in that order', () => {
+  const pools = extractPools(TAG_CONTENT, TAG_SUBJECTS, TAG_DETAILS, 'fixture', []);
+  const assembled = tagsHashtags.assembleTags({
+    primaryPhrase: pools.phrases[0] || pools.entities[0] || '',
+    entities: pools.entities,
+    phrases: pools.phrases,
+    contentText: TAG_CONTENT.replace(/\b(HOST|CLIP) /g, ''),
+  });
+  const nonMisspelt = assembled.tags.filter((t) => entities.occursIn(TAG_CONTENT, t));
+  // The primary phrase is the chapter list's first phrase; the names follow; then the phrases
+  // not already taken, in chapter order.
+  eq(nonMisspelt, ['jackson parish', 'Fox News', 'Thirteenth Amendment', 'prison labor contract', 'prisoner exception'],
+    'the tags a chaptered item publishes:');
+  eq(assembled.notInContent, [], 'nothing ungrounded was even offered:');
+});
+
+check('a chapter list that shares nothing with the transcript is DECLARED, not filled from elsewhere', () => {
+  const warnings = [];
+  const pools = extractPools(TAG_CONTENT, ['An unrelated chapter about gardening'], [''], 'fixture', warnings);
+  eq(pools, { entities: [], phrases: [] }, 'no substitute pool:');
+  eq(warnings.length, 1, 'the empty pool is declared once:');
+});
+
+// That the Tags row writes a chapterless item's tags is asserted above ("an item WITHOUT
+// chapters plans the same routed units"); this is the pool half of the same item.
+check('a chapterless item has no phrase pool: no transcript n-grams stand in for a chapter list', () => {
+  const pools = extractPools(TAG_CONTENT, [], [], 'fixture', []);
+  eq(pools.phrases, [], 'the phrase pool:');
+});
+
+check('nomic-embed-text is gone from the routing module and the routing view', () => {
+  if ('KEY_PHRASE_EMBEDDING_MODEL' in routing) throw new Error('KEY_PHRASE_EMBEDDING_MODEL is still exported');
+  const view = routing.buildRoutingView(undefined, { host: 'http://localhost:11434', reachable: true, models: [] });
+  eq(Object.keys(view.chapters).sort(), ['generationAvailability', 'generationModel'], 'the chapters view:');
 });
 
 check('a third model is a DECLARED warning naming the fields, and never a refusal', () => {

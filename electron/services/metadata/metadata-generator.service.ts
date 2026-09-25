@@ -24,7 +24,6 @@ import {
   runMetadataTasks,
 } from './metadata-tasks';
 import {
-  KEY_PHRASE_EMBEDDING_MODEL,
   MetadataRoutingSelections,
   MetadataRoutingTaskId,
   METADATA_ROUTING_OPTIONS,
@@ -41,7 +40,7 @@ import { excludePromoChapters } from './promo-chapters';
 import { SCRUB_ROUTING_TASK, scrubGeneratedItem } from './scrub';
 import { DigestChapter, FieldContentDecision, digestChaptersOf, resolveFieldContent } from './chapter-digest';
 import { topEntities, transcriptCasing } from './entity-extraction';
-import { rankKeyPhrases } from './key-phrases';
+import { chapterPools } from './tags-hashtags';
 import { askOllamaPlain } from './plain-call';
 import { bucketNumCtx, estimateTokens } from './ollama-json';
 import { SYSTEM_PROMPTS } from './system-prompts';
@@ -58,7 +57,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * How many proper nouns and key phrases the description, tags and hashtags get to draw on.
+ * How many proper nouns and phrases the description, tags and hashtags get to draw on.
  *
  * Not a cap on what the video contains — a cap on what any one call is asked to hold in its
  * head. Twelve names is more than a 300-word body can name; forty phrases is more than a
@@ -66,7 +65,7 @@ import * as path from 'path';
  * downstream have something to choose from, and both are far short of "everything".
  */
 const ENTITY_POOL_SIZE = 12;
-const KEY_PHRASE_POOL_SIZE = 40;
+const PHRASE_POOL_SIZE = 40;
 
 export interface GenerationParams {
   inputs: string[];
@@ -1007,7 +1006,7 @@ export class MetadataGeneratorService {
         ` — ${plan.units.length} unit(s): ${plan.summary}`
     );
 
-    const pools = await this.extractPools(contentText, params, sourceLabel, warnings);
+    const pools = this.extractPools(contentText, subjects, chapterDetails || [], sourceLabel, warnings);
 
     return {
       plan,
@@ -1021,7 +1020,7 @@ export class MetadataGeneratorService {
         videoTitle: this.getCleanTitle(item),
         promptSetName: params.promptSet || 'unknown',
         entities: pools.entities,
-        keyPhrases: pools.keyPhrases,
+        phrases: pools.phrases,
         contentText,
         // Whether the two content slots above are screenplay-labelled. On the ordinary
         // direct-passed item `content` IS `contentText` and this describes both exactly. On an
@@ -1045,60 +1044,78 @@ export class MetadataGeneratorService {
   }
 
   /**
-   * The entity and key-phrase pools for one item.
+   * The entity and phrase pools for one item. Pure code, no model, cannot fail.
    *
-   * Entities are pure code (entity-extraction.ts) and cannot fail. Key phrases want ONE batched
-   * embedding call on nomic-embed-text (KEY_PHRASE_EMBEDDING_MODEL); when that model is
-   * absent or the host does not answer, the ranking falls to frequency and the run RECORDS it
-   * as a declared mode, exactly as the chapter pipeline declares a dropped chapter. The tags
-   * and hashtags that come out of a frequency ranking are worse, not wrong, and the report says
-   * which ranking produced them.
+   * A CHAPTERED ITEM reads both pools off its chapter list (tags-hashtags.ts chapterPools;
+   * LEDGER #205): the names and phrases the chapters carry, kept where the content text says
+   * them, in chapter order. This is where nomic-embed-text used to rank the transcript's
+   * candidate n-grams by similarity, with a frequency ranking when the model was missing.
+   * Both rankings are gone and nothing stands in for them.
    *
-   * A transcript that cannot be read for proper nouns at all is also declared: an uncased
-   * transcript makes the entity half of every pool empty, and "no names in this video" and "no
-   * capital letters in this transcript" must not look the same in the report.
+   * A CHAPTERLESS ITEM has no chapter list to read, so its names are measured out of the
+   * content text as before, and its phrase pool is EMPTY: a frequency-sorted list of transcript
+   * n-grams is exactly the fallback the ruling refused, and that item's tags are written by the
+   * Tags routing row rather than assembled (planMetadataUnits `hasChapters`). A transcript that
+   * cannot be read for proper nouns at all is declared on that path: an uncased transcript
+   * makes its entity pool empty, and "no names in this video" and "no capital letters in this
+   * transcript" must not look the same in the report. The chaptered path needs no such notice:
+   * its names come off the chapter list and are only TESTED against the transcript, and that
+   * test reads case-insensitively.
    *
-   * BOTH MEASUREMENTS READ THE WORDS WITHOUT THEIR SPEAKER LABELS. The labels are a fact about
-   * the transcript rather than part of it, and both of these read the text as one flat stream:
+   * EVERY MEASUREMENT READS THE WORDS WITHOUT THEIR SPEAKER LABELS. The labels are a fact about
+   * the transcript rather than part of it, and the code here reads the text as one flat stream:
    * measured on the calibration transcript, leaving them in put "CLIP Debbie Wasserman Schultz"
    * and "UNSURE Refugee Center" at the top of the entity pool that writes the tags. The model
-   * still sees the labels — the prompts explain them — but nothing that counts words does.
+   * still sees the labels — the prompts explain them — but nothing that measures words does.
    */
-  private static async extractPools(
+  private static extractPools(
     taggedContentText: string,
-    params: GenerationParams,
+    chapterSubjects: string[],
+    chapterDetails: string[],
     sourceLabel: string,
     warnings: string[]
-  ): Promise<{ entities: string[]; keyPhrases: string[] }> {
+  ): { entities: string[]; phrases: string[] } {
     const contentText = stripSpeakerPrefixes(taggedContentText);
+
+    if (chapterSubjects.length > 0) {
+      const pools = chapterPools({
+        subjects: chapterSubjects,
+        details: chapterDetails,
+        contentText,
+        entityLimit: ENTITY_POOL_SIZE,
+        phraseLimit: PHRASE_POOL_SIZE,
+      });
+      log.info(
+        `[MetadataGenerator] ${sourceLabel}: ${pools.entities.length} name(s) and ${pools.phrases.length} ` +
+          `phrase(s) read off the ${chapterSubjects.length}-chapter list, grounded in the content text, ` +
+          `feed the description, tags and hashtags`
+      );
+      // Declared, not just logged (Law 8): chapter titles are the model's paraphrase, so a list
+      // that shares nothing with the transcript is a real outcome, and it means no tags at all.
+      if (pools.entities.length === 0 && pools.phrases.length === 0) {
+        warnings.push(
+          `${sourceLabel}: none of the ${chapterSubjects.length} chapters names a person, place or phrase ` +
+            `the transcript also says, so the assembled tags and hashtags are empty`
+        );
+      }
+      return pools;
+    }
+
     const casing = transcriptCasing(contentText);
     if (!casing.usable) {
       const msg =
         `${sourceLabel}: the content transcript cannot be read for proper nouns — ${casing.reason} — so the ` +
-        `description, tags and hashtags were written with no entity list`;
+        `description and hashtags were written with no entity list`;
       console.warn(`[MetadataGenerator] ${msg}`);
       warnings.push(msg);
     }
-
     const entities = casing.usable ? topEntities(contentText, ENTITY_POOL_SIZE) : [];
-
-    const host = params.aiHost || 'http://localhost:11434';
-    const ranked = await rankKeyPhrases(contentText, {
-      client: axios.create({ baseURL: host }),
-      model: KEY_PHRASE_EMBEDDING_MODEL,
-      limit: KEY_PHRASE_POOL_SIZE,
-      signal: params.cancelSignal,
-      logPrefix: `[MetadataGenerator] ${sourceLabel}:`,
-    });
-    if (ranked.notice) {
-      warnings.push(`${sourceLabel}: ${ranked.notice}`);
-    }
-
     log.info(
-      `[MetadataGenerator] ${sourceLabel}: ${entities.length} entit(ies) and ${ranked.phrases.length} ` +
-        `key phrase(s) (${ranked.mode} ranking) feed the description, tags and hashtags`
+      `[MetadataGenerator] ${sourceLabel}: no chapter list, so ${entities.length} entit(ies) measured out of ` +
+        `the content text feed the description and hashtags; there is no phrase pool, and the tags are ` +
+        `written by the Tags routing row`
     );
-    return { entities, keyPhrases: ranked.phrases };
+    return { entities, phrases: [] };
   }
 
   /**
