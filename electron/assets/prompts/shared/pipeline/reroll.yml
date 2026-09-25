@@ -1,0 +1,73 @@
+state: |-
+  Below is {label} written for a video on the YouTube channel "{channel}". The video was made by the channel's creator, known as {creator}. He speaks throughout the video as its commentator. The people, the claims and the events the video covers are its subject.
+
+  {label_heading}
+  {text}
+
+labels:
+  titles:
+    what: the candidate titles
+    heading: "The candidate titles, one per line:"
+    unit: The title
+  chapters:
+    what: the chapter titles
+    heading: "The chapter titles, in order, one per line:"
+    unit: The chapter title
+  description:
+    what: the video description
+    heading: "The video description:"
+    unit: The sentence
+  description_hook:
+    what: the opening line of the video description
+    heading: "The opening line of the video description:"
+    unit: The sentence
+  thumbnail_text:
+    what: the thumbnail text options
+    heading: "The thumbnail text options, one per line:"
+    unit: The thumbnail text
+  pinned_comment:
+    what: the pinned comment options, written by the creator himself
+    heading: "The pinned comment options, one per line:"
+    unit: The pinned comment
+
+rules:
+  creator: |-
+    {unit} "{text}" refers to the video's creator ({creator}), by his name or as the creator, the host, the speaker, the narrator, the commentator or the channel.
+  creator_third_person: |-
+    {unit} "{text}" talks about the video's creator ({creator}) from the outside, by his name or as the creator, the host, the speaker or the channel, instead of speaking as him.
+  first_person: |-
+    {unit} "{text}" speaks as the video's maker, in the first person (I, me, my, we, our).
+  narrates: |-
+    {unit} "{text}" reports what the video or its commentator does (says, argues, explains, reacts to, turns to, mocks, breaks down) instead of stating the subject matter itself.
+  sentence: |-
+    {unit} "{text}" is written as a complete sentence, with a subject and a main verb, rather than as a topic label.
+  nonsense: |-
+    {unit} "{text}" is garbled, stops before it is finished, or does not make sense.
+
+rank:
+  state: |-
+    These are candidate titles for one video on the YouTube channel "{channel}". One of them will be the video's title.
+  question: |-
+    Which one of these titles would make the most of this channel's viewers click the video and keep watching?
+
+reroll:
+  intro: |-
+    Below are {what} written for a video on the YouTube channel "{channel}", made by the channel's creator, {creator}.
+  rules:
+    creator: |-
+      Rewrite each entry so its subject is what the video covers: the people, the claims and the events in the footage. The creator who made the video is out of the entry altogether.
+    creator_third_person: |-
+      Rewrite each entry in the creator's own voice, in the first person, as he would post it himself.
+    first_person: |-
+      Rewrite each entry so its subject is what the video covers: the people, the claims and the events in the footage, stated in the third person.
+    narrates: |-
+      Rewrite each entry so it states the subject matter itself: the claim, the finding, the ruling or the event stands as the subject, in the active voice.
+    sentence: |-
+      Rewrite each entry as a short topic label that names the specific people and claims it covers, the way a chapter list reads.
+    nonsense: |-
+      Rewrite each entry as a complete, clear statement of the same subject, finished and readable on its own.
+  keep: |-
+    Keep every fact, every name and every number as it stands. Keep each entry's field: a title stays a title, a chapter title a chapter title.
+  shapes:
+    lines: |-
+      The entries are listed below, one per line, {count} of them. Write {count} lines, one rewritten entry per line, in the same order, each line carrying one entry alone and nothing else.
