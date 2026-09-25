@@ -7,8 +7,8 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatSelectModule } from '@angular/material/select';
 import {
   ElectronService,
-  MetadataRoutingHost,
   MetadataRoutingOption,
+  MetadataRoutingServer,
   MetadataRoutingTask,
 } from '../../services/electron';
 
@@ -53,15 +53,20 @@ export type ModelRoutingDialogResult = boolean | undefined;
       }
 
       @if (phase() === 'ready') {
-        @if (localModels(); as host) {
+        <!-- The models listed are the ones the SELECTED Crucible server offers (P2): its
+             catalog, plus Claude only when that server has an Anthropic key. A stored choice
+             it cannot run is still shown on its row, with the server's own sentence. -->
+        @if (server(); as host) {
           @if (!host.reachable) {
             <div class="host-banner">
               <mat-icon>help_outline</mat-icon>
               <span>
-                {{ host.error || 'Ollama at ' + host.host + ' could not be reached.' }}
-                Which local models are installed is unknown, so none are marked below.
+                {{ host.error || 'The Crucible server could not be read.' }}
+                What it offers is unknown, so only claude -p and the current choices are listed.
               </span>
             </div>
+          } @else {
+            <p class="dialog-hint">Models {{ host.name }} offers{{ host.anthropicConfigured ? ', and Claude on its key' : '' }}.</p>
           }
         }
 
@@ -82,8 +87,11 @@ export type ModelRoutingDialogResult = boolean | undefined;
               @for (option of universalOptions(); track option.id) {
                 <mat-option [value]="option.id">
                   {{ option.label }}
-                  @if (option.availability === 'not-installed') {
-                    <span class="option-flag missing">— not installed</span>
+                  @if (option.availability === 'pullable') {
+                    <span class="option-flag unknown">— not downloaded on {{ server().name }}</span>
+                  }
+                  @if (option.availability === 'not-here') {
+                    <span class="option-flag missing">— not on {{ server().name }}</span>
                   }
                   @if (option.availability === 'unknown') {
                     <span class="option-flag unknown">— unknown</span>
@@ -110,8 +118,11 @@ export type ModelRoutingDialogResult = boolean | undefined;
                 @for (option of task.options; track option.id) {
                   <mat-option [value]="option.id">
                     {{ option.label }}
-                    @if (option.availability === 'not-installed') {
-                      <span class="option-flag missing">— not installed</span>
+                    @if (option.availability === 'pullable') {
+                      <span class="option-flag unknown">— not downloaded on {{ server().name }}</span>
+                    }
+                    @if (option.availability === 'not-here') {
+                      <span class="option-flag missing">— not on {{ server().name }}</span>
                     }
                     @if (option.availability === 'unknown') {
                       <span class="option-flag unknown">— unknown</span>
@@ -122,10 +133,11 @@ export type ModelRoutingDialogResult = boolean | undefined;
             </mat-form-field>
           </div>
           @if (chosenOption(task); as chosen) {
-            @if (chosen.availability === 'not-installed') {
+            @if (chosen.availability === 'not-here' || chosen.availability === 'pullable') {
               <p class="row-note missing">
-                {{ chosen.model }} is not installed on {{ localModels().host }}. {{ task.label }} will
-                fail when it runs — pull it, or pick a model that is installed.
+                {{ chosen.availabilityNote || (chosen.model + ' cannot run on ' + server().name + '.') }}
+                {{ task.label }} is refused by name when it runs — nothing is substituted. Pick a
+                model this server offers{{ chosen.availability === 'pullable' ? ', or pull it there' : '' }}.
               </p>
             }
           }
@@ -285,11 +297,11 @@ export class ModelRoutingDialog implements OnInit {
   readonly modalTasks = computed(() => this.tasks().filter(task => task.modal));
   readonly selections = signal<Record<string, string>>({});
   /**
-   * The Ollama host the payload was judged against. The placeholder is never rendered —
-   * load() sets the real one before phase becomes 'ready', and nothing here draws before
-   * that — but it starts unreachable so nothing could be read as installed if it were.
+   * The Crucible server the payload was judged against. The placeholder is never rendered —
+   * load() sets the real one before phase becomes 'ready' — but it starts unreachable so
+   * nothing could be read as offered if it were.
    */
-  readonly localModels = signal<MetadataRoutingHost>({ host: '', reachable: false, installedCount: 0 });
+  readonly server = signal<MetadataRoutingServer>({ name: null, reachable: false, anthropicConfigured: null });
 
   /** Selections as they were when the payload loaded — Save stays off until this differs. */
   private initialSelections: Record<string, string> = {};
@@ -333,7 +345,7 @@ export class ModelRoutingDialog implements OnInit {
 
       // Baseline first: hasChanges() must never see new selections against a stale baseline.
       this.initialSelections = { ...selections };
-      this.localModels.set(routing.localModels);
+      this.server.set(routing.server);
       this.tasks.set(routing.tasks);
       this.selections.set(selections);
       this.phase.set('ready');
