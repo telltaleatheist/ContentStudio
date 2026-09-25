@@ -6,6 +6,7 @@ import type {
   CrucibleEnginePresence,
   CrucibleInstallProgress,
   CrucibleIpcResult,
+  CrucibleLanesView,
   CruciblePairingDecision,
   CruciblePairingPrompt,
   CrucibleProbeAnswer,
@@ -18,6 +19,8 @@ import type {
   CrucibleSetupView,
   KeyCopyOutcome,
   LocalConnectCodes,
+  QueuePlan,
+  QueuePlanCandidate,
   RoutingView,
   UpstreamName,
   UpstreamTestAnswer,
@@ -191,6 +194,18 @@ export class CrucibleService {
     return this.unwrap(() => this.bridge.crucibleReadinessStart());
   }
 
+  // ── the queue's lanes (P3) ─────────────────────────────────────────────
+
+  /** The lanes strip: one chip per server. */
+  lanes(): Promise<CrucibleLanesView> {
+    return this.unwrap(() => this.bridge.crucibleLanes());
+  }
+
+  /** Which of these rows start now (one per server at most), which wait and why. Main decides. */
+  queuePlan(candidates: QueuePlanCandidate[]): Promise<QueuePlan> {
+    return this.unwrap(() => this.bridge.crucibleQueuePlan(candidates));
+  }
+
   // ── pushes ─────────────────────────────────────────────────────────────
 
   onServersChanged(callback: (change: CrucibleServersChangedPayload) => void): () => void {
@@ -206,5 +221,10 @@ export class CrucibleService {
   onInstallProgress(callback: (event: CrucibleInstallProgress) => void): () => void {
     if (typeof window === 'undefined' || !window.launchpad) return () => {};
     return window.launchpad.onCrucibleInstallProgress((event) => this.zone.run(() => callback(event)));
+  }
+
+  onLanes(callback: (view: CrucibleLanesView) => void): () => void {
+    if (typeof window === 'undefined' || !window.launchpad) return () => {};
+    return window.launchpad.onCrucibleLanes((view) => this.zone.run(() => callback(view)));
   }
 }

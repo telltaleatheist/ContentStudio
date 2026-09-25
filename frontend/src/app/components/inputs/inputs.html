@@ -113,6 +113,18 @@
             Compilation Mode
           </mat-checkbox>
 
+          <!-- The fast pin, stamped on each job at queue time (LEDGER #195): a fast job runs on
+               the fast server (Settings › Crucible Servers) and only there. Each row keeps its
+               own toggle afterwards. -->
+          <mat-checkbox
+            [checked]="inputsState.fast()"
+            (change)="inputsState.fast.set($event.checked)"
+            color="primary"
+            class="compilation-checkbox"
+            matTooltip="Queue these jobs on the fast Crucible server (Settings › Crucible Servers). A fast job waits for that server and never runs anywhere else.">
+            Fast
+          </mat-checkbox>
+
           <!-- Clear Inputs Button -->
           <button
             mat-button
@@ -362,6 +374,33 @@
           [value]="getGlobalQueueProgress()"
           class="global-progress">
         </mat-progress-bar>
+
+        <!-- The lanes: one chip per Crucible server, as main last read it (every 15 s). Each
+             server runs one job at a time; the Mac's and the fast server's run side by side. -->
+        @if (lanes().length > 0) {
+          <div class="lanes-strip">
+            @for (lane of lanes(); track lane.server) {
+              <div class="lane-chip" [class]="'lane-' + lane.state" [class.paused]="lane.paused"
+                [matTooltip]="lane.state === 'unreachable' && lane.unreadReason ? lane.unreadReason : ''">
+                <span class="lane-dot"></span>
+                <span class="lane-name">{{ lane.server }}</span>
+                @if (lane.selected) { <span class="lane-tag">selected</span> }
+                @if (lane.fast) { <span class="lane-tag"><mat-icon>bolt</mat-icon>fast</span> }
+                <span class="lane-state">{{ laneStateText(lane) }}</span>
+                @if (lane.resident) {
+                  <span class="lane-resident" matTooltip="The model on this server's GPU">{{ lane.resident }}</span>
+                }
+                @if (lane.parked > 0) {
+                  <span class="lane-parked">{{ lane.parked }} parked</span>
+                }
+                <button mat-button class="lane-switch" (click)="toggleLanePaused(lane)"
+                  [matTooltip]="lane.paused ? 'Set to Running: its waiting work starts' : 'Pause: new work waits here (it never moves to another server)'">
+                  {{ lane.paused ? 'Paused' : 'Running' }}
+                </button>
+              </div>
+            }
+          </div>
+        }
       </div>
 
       <div class="section-header">
@@ -397,10 +436,17 @@
                     <div class="item-subtitle">
                       <mat-icon class="job-prompt-icon">{{ getPromptSetIcon(job.promptSet) }}</mat-icon>
                       {{ getPromptSetName(job.promptSet) }} · {{ job.mode }}
+                      @if (job.venue && (job.status === 'processing' || job.status === 'parked')) {
+                        · on {{ job.venue }}
+                      }
                       @if (job.completedAt) {
                         · {{ job.processingTime?.toFixed(1) }}s
                       }
                     </div>
+                    <!-- Waiting on its server, not failed: grey, with the holder's own sentence. -->
+                    @if (job.status === 'parked') {
+                      <div class="job-parked-line">parked — {{ job.parkedLine }}</div>
+                    }
                   </div>
                 </div>
 
@@ -421,6 +467,21 @@
                 <mat-icon class="expand-icon">
                   {{ isJobExpanded(job.id) ? 'expand_less' : 'expand_more' }}
                 </mat-icon>
+
+                <!-- The row's fast pin, while it has not started (LEDGER #195). -->
+                @if (job.status === 'pending' || job.status === 'parked' || job.status === 'held') {
+                  <button
+                    mat-stroked-button
+                    class="box-toggle fast-toggle"
+                    [class.active]="job.fast"
+                    (click)="toggleFast(job); $event.stopPropagation()"
+                    [matTooltip]="job.fast ? 'Pinned fast: runs on the fast server only. Click to unpin.' : 'Pin fast: run on the fast server only'">
+                    <mat-icon>bolt</mat-icon>
+                    Fast
+                  </button>
+                } @else if (job.fast) {
+                  <mat-icon class="fast-mark" matTooltip="Pinned fast">bolt</mat-icon>
+                }
 
                 <!-- View the assembled prompt for a transcribed/waiting job -->
                 @if (job.status === 'held') {
@@ -518,9 +579,9 @@
             mat-raised-button
             color="primary"
             class="start-button start-queue-button"
-            [disabled]="jobQueue.getPendingJobs().length === 0 && jobQueue.getHeldJobs().length === 0"
+            [disabled]="jobQueue.getPendingJobs().length === 0 && jobQueue.getHeldJobs().length === 0 && !jobQueue.hasParkedJob()"
             (click)="startQueue()">
-            @if (jobQueue.getPendingJobs().length > 0) {
+            @if (jobQueue.getPendingJobs().length > 0 || jobQueue.getHeldJobs().length === 0) {
               <mat-icon>play_arrow</mat-icon>
               Start Queue ({{ jobQueue.getPendingJobs().length }} job(s))
             } @else {

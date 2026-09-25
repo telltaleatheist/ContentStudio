@@ -43,6 +43,7 @@ import type {
   CrucibleInstallProgress,
   CrucibleInstallStatus,
   CrucibleIpcResult,
+  CrucibleLanesView,
   CruciblePairingDecision,
   CruciblePairingPrompt,
   CrucibleProbeAnswer,
@@ -54,6 +55,9 @@ import type {
   CrucibleSettingsPatch,
   CrucibleSettingsView,
   CrucibleSetupView,
+  QueuePlan,
+  QueuePlanCandidate,
+  ResumeStage,
   KeyCopyOutcome,
   LocalConnectCodes,
   RoutingView,
@@ -651,7 +655,7 @@ declare global {
 
       // Metadata generation
       generateMetadata: (params: any) => Promise<any>;
-      sendHeldPrompt: (jobId: string) => Promise<any>;
+      sendHeldPrompt: (request: { jobId: string; fast: boolean }) => Promise<any>;
       discardHeldPrompt: (jobId: string) => Promise<any>;
       cancelJob: (jobId: string) => Promise<{ success: boolean; error?: string }>;
 
@@ -729,9 +733,12 @@ declare global {
       crucibleReadinessRefresh: () => Promise<CrucibleIpcResult<CrucibleReadinessView>>;
       crucibleReadinessDecline: () => Promise<CrucibleIpcResult<CrucibleReadinessView>>;
       crucibleReadinessStart: () => Promise<CrucibleIpcResult<CrucibleReadinessView>>;
+      crucibleLanes: () => Promise<CrucibleIpcResult<CrucibleLanesView>>;
+      crucibleQueuePlan: (candidates: QueuePlanCandidate[]) => Promise<CrucibleIpcResult<QueuePlan>>;
       onCrucibleServersChanged: (callback: (change: CrucibleServersChangedPayload) => void) => () => void;
       onCrucibleReadiness: (callback: (view: CrucibleReadinessView) => void) => () => void;
       onCrucibleInstallProgress: (callback: (event: CrucibleInstallProgress) => void) => () => void;
+      onCrucibleLanes: (callback: (view: CrucibleLanesView) => void) => () => void;
 
       // Analytics (performance feedback loop)
       analyticsListChannels: () => Promise<{ success: boolean; channels?: AnalyticsChannel[]; error?: string }>;
@@ -1199,6 +1206,10 @@ export class ElectronService {
      */
     useSavedTranscripts?: { [path: string]: boolean };
     showPrompt?: boolean;
+    /** Required: whether the row is pinned "fast" (to the fast server; LEDGER #195). */
+    fast: boolean;
+    /** Where a parked or interrupted job picks up (plan section 13.2); absent on a first run. */
+    resumeFrom?: ResumeStage;
   }): Promise<any> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.generateMetadata(params);
@@ -1220,9 +1231,9 @@ export class ElectronService {
 
   // Run full generation reusing a transcript the backend is holding from a
   // prior showPrompt:true call (no re-transcription).
-  async sendHeldPrompt(jobId: string): Promise<any> {
+  async sendHeldPrompt(jobId: string, fast: boolean): Promise<any> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.sendHeldPrompt(jobId);
+    return await this.ipcRenderer.sendHeldPrompt({ jobId, fast });
   }
 
   // Free a held transcript when the user closes the prompt preview without sending.

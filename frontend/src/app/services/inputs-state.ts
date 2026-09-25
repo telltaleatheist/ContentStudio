@@ -79,6 +79,12 @@ export class InputsStateService {
    * the operator's last pick carries to the next batch.
    */
   chapterGrain = signal<'detailed' | 'broad' | 'stories'>('broad');
+  /**
+   * Pin the jobs queued from here "fast": they run on the fast server (Settings › Crucible
+   * Servers) and only there (LEDGER #195: the pin is the only way work reaches the PC).
+   * Off unless the operator turns it on; each row keeps its own toggle after queueing.
+   */
+  fast = signal(false);
 
   // Generation state
   generationState = signal<GenerationState>({
@@ -102,7 +108,8 @@ export class InputsStateService {
         inputItems: this.inputItems(),
         compilationMode: this.compilationMode(),
         masterPromptSet: this.masterPromptSet(),
-        chapterGrain: this.chapterGrain()
+        chapterGrain: this.chapterGrain(),
+        fast: this.fast()
       };
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     });
@@ -119,6 +126,7 @@ export class InputsStateService {
         if (state.chapterGrain === 'detailed' || state.chapterGrain === 'broad' || state.chapterGrain === 'stories') {
           this.chapterGrain.set(state.chapterGrain);
         }
+        if (state.fast === true) this.fast.set(true);
       }
     } catch (error) {
       console.error('Failed to load inputs state from storage:', error);
