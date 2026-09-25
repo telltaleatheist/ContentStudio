@@ -53,7 +53,7 @@ import { BATCH, MAX_ITEMS, SNAP_PROMPTS } from './prompts';
 import { writeOutline } from './outline';
 import { assignQuestions, optionNames, questionName, readChoiceDistribution, readYesNo, wireOptions } from './assign';
 import { viterbi } from './viterbi';
-import { adBaseline, baselineRow, confirmPlugs, confirmThreshold, isOutlineItemCandidate } from './plugs';
+import { CONFIRM_THRESHOLD, adBaseline, baselineRow, confirmPlugs, confirmThreshold, isOutlineItemCandidate } from './plugs';
 import { Chunk, ChunkPath, ChunkPlanOptions, Piece, pathPieces, planChunks, stitchChunks, unitTokens } from './chunks';
 import { Span, childrenOf, piecesToSpans } from './chapters';
 import { TITLE_MAX_TOKENS, summarizeChapter } from './summarize';
@@ -116,10 +116,16 @@ export interface ChapterOptions {
   diagnostics?: boolean;
 }
 
-/** Share of the progress bar per phase, weighted by work rather than by stage (plan §0a). */
+/**
+ * Share of the progress bar per phase, weighted by work rather than by stage (plan §0a). Assign is
+ * most of a run's wall time with titles thinking off (P8a: 2,683 s of assign against 525 s of
+ * titles on the stream); a thinking title costs minutes where a plain one costs ~12 s (P8a, P8b),
+ * so with thinking on the titles take the larger share.
+ */
 const W_LEVEL1 = 0.45;
 const W_REFINE = 0.4;
 const W_SUMMARIZE = 0.15;
+const W_SUMMARIZE_THINKING = 0.5;
 
 /**
  * A transcript -> its chapters at the chosen granularity. The one entry point (plan §10.1):
@@ -192,7 +198,7 @@ export async function chapterUnits(units: SentenceUnit[], options: ChapterOption
   const roleOf = (u: SentenceUnit): SpeakerRole | undefined => (stats.speakerTagged ? roles!.get(u.speaker!) : undefined);
 
   const wLevel1 = refine ? W_LEVEL1 : W_LEVEL1 + W_REFINE;
-  const wSummarize = summarize ? W_SUMMARIZE : 0;
+  const wSummarize = summarize ? (titleThinking ? W_SUMMARIZE_THINKING : W_SUMMARIZE) : 0;
   const scale = wLevel1 + (refine ? W_REFINE : 0) + wSummarize;
   let base = 0;
   const progress = (phase: ChapteringProgress['phase'], done: number, total: number, share: number, within: number) =>
@@ -643,7 +649,9 @@ async function runLevel(ctx: LevelContext, units: SentenceUnit[], offset: number
       if (!isOutlineItemCandidate(rows)) continue;
       const k = ownerOf(Math.floor((a + b - 1) / 2));
       const answer = await askPlug(k, a, b, 'outline-item');
-      const need = threshold(a, b);
+      // segment.py's 0.5, never the prior's lower bar: the outline named this stretch as content,
+      // and on Duffy the prior's 0.25 flagged a parenting critique near 10:00 (P8b.md).
+      const need = CONFIRM_THRESHOLD;
       verdicts.push({ start: piece.start, end: piece.end, p: answer.p, threshold: need, read: answer.read, source: 'outline-item' });
       if (answer.p >= need) {
         piece.isAd = true;

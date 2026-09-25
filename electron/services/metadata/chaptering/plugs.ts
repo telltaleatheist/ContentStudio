@@ -18,7 +18,9 @@
  *      that overlaps one of the usual marks is confirmed at a lower P(yes): prior odds of 3 to 1
  *      in favour of an ad there, so the answer's odds need only reach 1:3 (P(yes) >= 0.25).
  *      Everywhere else the threshold is segment.py's 0.5. The prior never places an ad: only a
- *      stretch snap already assigned to the ad item, or an outline-item candidate (3), is asked.
+ *      stretch snap already assigned to the ad item is asked under it. An outline-item candidate
+ *      (3) is content by the outline's own word and keeps the 0.5 (on Duffy the prior's 0.25
+ *      flagged a parenting critique near 10:00 at p 0.35).
  *   3. OUTLINE-ITEM PLUGS (`isOutlineItemCandidate`). On Duffy the book promo came out under the
  *      outline's own "Promotion of the book" item and was never flagged (P8a). A run the outline
  *      named as an ordinary item, on which the ad option (after the baseline) ranks first or

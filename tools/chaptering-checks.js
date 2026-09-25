@@ -720,6 +720,13 @@ check('the ad prior (Owen: ads at about 5:00 and 10:00) lowers the bar near thos
   const far = fakeVideo(100, sections, { ads: [70, 85], adVerdict: 0.3 });
   const r3 = await service.chapter(far.captions, { granularity: 'chapters', chat: far.chat, decide: far.decide, summarize: false });
   assert.ok(!r3.chapters.some((c) => c.isAd) && r3.plugVerdicts[0].threshold === 0.5);
+  // A stretch the OUTLINE named near 5:00 keeps the plain 0.5: the prior is for the ad item's own runs.
+  const named = [[0, 28, 'One', null], [28, 40, 'Promotion of the book', null], [40, 100, 'Two', null]];
+  const lean = (i) => (i >= 28 && i < 40 ? { chosenP: 0.6, adP: 0.3 } : { chosenP: 0.97, adP: 0.004 });
+  const out = fakeVideo(100, named, { perUnit: lean, adVerdict: 0.35 });
+  const r5 = await service.chapter(out.captions, { granularity: 'chapters', chat: out.chat, decide: out.decide, summarize: false });
+  assert.deepStrictEqual(r5.plugVerdicts.map((p) => [p.start, p.p, p.threshold, p.source]), [[28, 0.35, 0.5, 'outline-item']]);
+  assert.ok(!r5.chapters.some((c) => c.isAd));
   // With no stretch assigned to the ad item, the prior asks nothing.
   const none = fakeVideo(100, sections);
   const r4 = await service.chapter(none.captions, { granularity: 'chapters', chat: none.chat, decide: none.decide, summarize: false });
