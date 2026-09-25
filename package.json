@@ -3,6 +3,8 @@
   "version": "1.1.0",
   "description": "AI-powered metadata generation for YouTube and Podcasts",
   "asar": true,
+  "//crucible-bootstrap": "Exact @crucible/bootstrap 1.0.34 LIBRARY tarball, vendored so a build is reproducible. It is the code that PERFORMS an install and never the release that GETS installed: which Crucible a machine should have is the release channel's answer, read at install time (crucible docs/INSTALL-UNINSTALL.md 6.5). Never replace with a directory dependency or repack these bytes.",
+  "//crucible-client": "CUT RELEASE 1.0.34: @crucible/client and @crucible/bootstrap are the vendored tarballs from crucible's v1.0.34 GitHub release (node tools/adopt-crucible-release.mjs <ver>, run from the repo root, fetches, repins and relinks). It is the LIBRARY this app is built against, NOT a statement about which server it needs: compatibility is the API version on X-Crucible-Api, and the SDK reads a field a server left out as null. Repin with the same tool, naming the version, never by hand (CRUCIBLE-MIGRATION-PLAN.md 3.1).",
   "main": "./dist/main/main.js",
   "scripts": {
     "clean": "rm -rf dist *.dmg *.dmg.blockmap",
@@ -65,6 +67,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.1",
+    "@crucible/bootstrap": "file:vendor/crucible-bootstrap-1.0.34.tgz",
+    "@crucible/client": "file:vendor/crucible-client-1.0.34.tgz",
     "axios": "^1.13.2",
     "electron-log": "^5.3.3",
     "electron-store": "^8.2.0",
