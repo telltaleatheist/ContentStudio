@@ -38,6 +38,7 @@ const ROOT = path.join(__dirname, '..', 'dist', 'main');
 const digest = require(path.join(ROOT, 'services/metadata/chapter-digest.js'));
 const aiManagerModule = require(path.join(ROOT, 'services/metadata/ai-manager.service.js'));
 const descriptionUnit = require(path.join(ROOT, 'services/metadata/description-unit.js'));
+const lifecycle = require(path.join(ROOT, 'services/metadata/model-lifecycle.js'));
 const promptAssetsModule = require(path.join(ROOT, 'services/metadata/prompt-assets.js'));
 
 // The repo's OWN prompts, not the installed copy: this asserts what THIS COMMIT ships.
@@ -248,18 +249,17 @@ const rawDecision = digest.resolveFieldContent({
   transcript: transcriptOf(50000), sourceLabel: 'six-hour-stream.mov', ceiling: 'local', chapters: CHAPTERS,
 });
 
-// Constructed, never initialized: `loadPrompts` is all the prompt assembly needs, and
-// `initialize()` is what would build a provider client and touch the network.
+// Constructed, never initialized: `loadPrompts` is all the prompt assembly needs. No model
+// call is made here, so no Crucible transport is installed.
 const manager = new aiManagerModule.AIManagerService({
-  provider: 'ollama',
   transcriptCeiling: 'local',
   promptSet: 'youtube-telltale',
   promptSetsDir: ASSETS_DIR,
 });
 manager.loadPrompts();
 
-const TITLES_SPEC = { field: 'titles', model: 'claude:sonnet', insights: false, inputFields: [] };
-const PINNED_SPEC = { field: 'pinned_comment', model: 'claude:sonnet', insights: false, inputFields: [] };
+const TITLES_SPEC = { field: 'titles', model: 'anthropic/claude-sonnet-5', insights: false, inputFields: [] };
+const PINNED_SPEC = { field: 'pinned_comment', model: 'anthropic/claude-sonnet-5', insights: false, inputFields: [] };
 
 check('the field prompt states what the video covers ONCE, not twice', () => {
   const digestPrompt = manager.buildMetadataFieldPrompt(TITLES_SPEC, ctxFor(overDecision));
@@ -291,8 +291,8 @@ check('the field prompt states what the video covers ONCE, not twice', () => {
 
 check("the description's transcript slot is EMPTY on the digest path", () => {
   const unit = new descriptionUnit.DescriptionUnit(
-    manager, { kind: 'cloud', id: 'sonnet5', label: 'Sonnet', model: 'claude:sonnet' }, 'http://localhost:11434',
-    undefined, { holdOllamaModel: () => {} });
+    manager, { kind: 'cloud', id: 'sonnet5', label: 'Sonnet', model: 'anthropic/claude-sonnet-5', crucibleModel: 'anthropic/claude-sonnet-5' },
+    undefined, new lifecycle.JobModelLifecycle('the digest smoke'));
 
   const digestPrompt = unit.describePrompt(ctxFor(overDecision));
   hasNot(digestPrompt, 'The transcript of the video, in full', 'no condensation is labelled as the transcript');

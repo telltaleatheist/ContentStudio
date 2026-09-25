@@ -46,7 +46,10 @@
  *  - `GET /v1/setup` (the addresses another machine dials; `setupUrls`, where
  *    `[]` plays a loopback bind), for "this machine's connect code";
  *  - `port`, and the standalone mode above, so the app itself can be pointed
- *    at a fake.
+ *    at a fake;
+ *  - (P2) the chat door refuses an `X-Crucible-Act` it does not know (and, on a
+ *    `legacyActs` server, `generate`/`decide`), and a canned reply with
+ *    `finishReason: null` leaves `finish_reason` out of the answer.
  *
  * Not a keeper itself: `tools/check-crucible.js` runs the `test-crucible-*` files.
  */
@@ -1117,6 +1120,14 @@ async function startFakeCrucible(options = {}) {
     }
     // ── chat ─────────────────────────────────────────────────────────────
     async function chat(req, res, body) {
+        // ContentStudio: the chat door checks `X-Crucible-Act` against the server's own class
+        // list BEFORE the completion runs (crucible/inflight.py `require_act_name`), and a server
+        // from before 1.0.24 (`legacyActs`) has no `generate` or `decide` class to name.
+        const chatAct = req.headers['x-crucible-act'];
+        if (typeof chatAct === 'string' && (!ACTS.has(chatAct) || (options.legacyActs === true && (chatAct === 'generate' || chatAct === 'decide')))) {
+            refusal(res, 400, 'unknown_act', `'${chatAct}' is not a capability class`, { known: [...ACTS].filter((a) => options.legacyActs !== true || (a !== 'generate' && a !== 'decide')) });
+            return;
+        }
         const model = String(body['model'] ?? '');
         const upstreamMatch = /^(anthropic|openai|ollama)\/(.+)$/.exec(model);
         if (upstreamMatch) {
@@ -1165,7 +1176,9 @@ async function startFakeCrucible(options = {}) {
             id: `chatcmpl-${(0, crypto_1.randomBytes)(4).toString('hex')}`,
             object: 'chat.completion',
             model,
-            choices: [{ index: 0, message, finish_reason: shaped.finishReason ?? 'stop' }],
+            // ContentStudio: `finishReason: null` in a canned reply plays an engine that left
+            // `finish_reason` out, which the client must refuse rather than read as `stop` (plan 0a).
+            choices: [shaped.finishReason === null ? { index: 0, message } : { index: 0, message, finish_reason: shaped.finishReason ?? 'stop' }],
             usage: { prompt_tokens: promptTokensOf(body), completion_tokens: 7, total_tokens: promptTokensOf(body) + 7 },
         }, { 'X-Crucible-Sampling': JSON.stringify(sources), ...extraHeaders });
     }

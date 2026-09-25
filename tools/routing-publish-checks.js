@@ -177,8 +177,8 @@ check('an empty / absent store is not a migration', () => {
 check('the shipped defaults are all local, and the big fields share one model', () => {
   const resolved = routing.resolveMetadataRouting(undefined);
   eq(routing.describeRouting(resolved),
-    'titles=qwen3.8:27b, description=qwen3.8:27b, chapters=qwen3.8:27b, tags=qwen3.5:9b, ' +
-    'thumbnail_text=qwen3.8:27b, pinned_comment=qwen3.8:27b');
+    'titles=qwen3.8-27b-4bit, description=qwen3.8-27b-4bit, chapters=qwen3.8-27b-4bit, tags=qwen3.5-9b, ' +
+    'thumbnail_text=qwen3.8-27b-4bit, pinned_comment=qwen3.8-27b-4bit');
   for (const task of Object.keys(resolved)) {
     const option = routing.METADATA_ROUTING_OPTIONS[resolved[task]];
     if (option.kind !== 'local') throw new Error(task + ' defaults to a ' + option.kind + ' model');
@@ -224,11 +224,12 @@ check('chapter resolution reads the chapters entry, and the view carries the mod
   // The four call sites (both chapter runs, the two-model budget, the compilation
   // summarizer) all go through resolveChapterModelOption; it is now a plain table read.
   const cloud = routing.resolveMetadataRouting({ chapters: 'haiku45' });
-  eq(routing.resolveChapterModelOption(cloud).model, 'claude:claude-haiku-4-5');
+  // The dated id the old mapClaudeModelName sent, as a Crucible upstream id (plan 6.2).
+  eq(routing.resolveChapterModelOption(cloud).model, 'anthropic/claude-haiku-4-5-20251001');
   const stock = routing.resolveMetadataRouting(undefined);
-  eq(routing.resolveChapterModelOption(stock).model, 'qwen3.8:27b');
+  eq(routing.resolveChapterModelOption(stock).model, 'qwen3.8-27b-4bit');
 
-  const inventory = { host: 'http://localhost:11434', reachable: false, models: [] };
+  const inventory = { server: 'mac', reachable: false, error: 'not answering', models: {}, anthropicConfigured: null };
   const view = routing.buildRoutingView({ titles: 'opus5' }, inventory);
   eq(view.slots, undefined, 'the slot payload is gone');
   eq(view.tasks.find((t) => t.id === 'titles').selectedOptionId, 'opus5',
@@ -246,19 +247,20 @@ check('chapter resolution reads the chapters entry, and the view carries the mod
  * an operator can actually see is the selection that runs, including through the
  * bare-Ollama-name conversion that tripped the first draft of the fix.
  */
-check('compilation packaging follows the titles selection, provider-prefixed', () => {
+check('compilation packaging follows the titles selection, on the Crucible id', () => {
   const cli = routing.resolveMetadataRouting({ titles: 'claude-cli' });
   eq(routing.resolveCompilationPackagingOption(cli).model, 'claude-cli:opus');
   eq(routing.routedModelString(routing.resolveCompilationPackagingOption(cli)), 'claude-cli:opus',
     'a cloud option is already the string makeRequest routes on');
 
-  // The default titles rung is LOCAL, and its stored model is the bare Ollama name.
-  // makeRequest throws on an unprefixed model, so the default compilation would have died
-  // at "Invalid model format" had the conversion been left out.
+  // The default titles rung is LOCAL, and since P2 its model IS the Crucible id the door
+  // sends (plan 6.2): no prefix to add, and never renamed.
   const stock = routing.resolveMetadataRouting(undefined);
-  eq(routing.resolveCompilationPackagingOption(stock).model, 'qwen3.8:27b');
-  eq(routing.routedModelString(routing.resolveCompilationPackagingOption(stock)), 'ollama:qwen3.8:27b',
-    'a local option is prefixed for the transport, never renamed');
+  eq(routing.resolveCompilationPackagingOption(stock).model, 'qwen3.8-27b-4bit');
+  eq(routing.routedModelString(routing.resolveCompilationPackagingOption(stock)), 'qwen3.8-27b-4bit',
+    'a local option is the Crucible id, never renamed');
+  eq(routing.resolveCompilationPackagingOption(stock).crucibleModel, 'qwen3.8-27b-4bit');
+  eq(routing.resolveCompilationPackagingOption(cli).crucibleModel, null, 'claude -p is outside Crucible (#193)');
 });
 
 /**
@@ -547,7 +549,6 @@ function plan(channelId, options) {
   const o = options || {};
   return tasks.planMetadataUnits({
     routing: routing.resolveMetadataRouting(o.routing),
-    defaultHost: 'http://localhost:11434',
     aiManager: stubManager(channelId),
     hasInsights: Boolean(o.hasInsights),
     hasChapters: Boolean(o.hasChapters),
@@ -769,7 +770,7 @@ check('calls on the same model run consecutively, so each model loads once', () 
  * throws rather than sending a call that silently lost half its brief.
  */
 check('the titles reach the thumbnail call as input data, or the call refuses', () => {
-  const spec = { field: 'thumbnail_text', model: 'qwen3.8:27b', insights: false, inputFields: ['titles'] };
+  const spec = { field: 'thumbnail_text', model: 'qwen3.8-27b-4bit', insights: false, inputFields: ['titles'] };
   const ctx = { sourceLabel: 'x.mp4', generated: { titles: ['Alpha One', 'Beta Two'] } };
 
   const block = tasks.buildInputDataBlock(spec, ctx);
@@ -804,7 +805,7 @@ check('the titles reach the thumbnail call as input data, or the call refuses', 
  * prompt wins and everybody shares it.
  */
 check('two calls on one model share ONE num_ctx, sized by the larger', () => {
-  const budget = new tasks.ModelRunContextBudget('qwen3.8:27b', new lifecycleModule.JobModelLifecycle());
+  const budget = new tasks.ModelRunContextBudget('qwen3.8-27b-4bit', new lifecycleModule.JobModelLifecycle());
   budget.register('titles', () => 9000);
   budget.register('pinned_comment', () => 4000);
 
@@ -814,7 +815,7 @@ check('two calls on one model share ONE num_ctx, sized by the larger', () => {
   eq(first, second, 'the second call re-sized the window and would have reloaded the model');
 
   const expected = tasks.runNumCtx({
-    model: 'qwen3.8:27b', needs: [9000, 4000], max: tasks.LOCAL_FIELD_CTX_MAX, what: 'the check',
+    model: 'qwen3.8-27b-4bit', needs: [9000, 4000], max: tasks.LOCAL_FIELD_CTX_MAX, what: 'the check',
   });
   eq(first, expected, 'the shared window is not the one the largest prompt needs');
   if (first < 9000) throw new Error('the shared window is smaller than the largest prompt: ' + first);
@@ -831,38 +832,38 @@ check('two calls on one model share ONE num_ctx, sized by the larger', () => {
  */
 check('a stage never sizes below a window this job already made resident', () => {
   const life = new lifecycleModule.JobModelLifecycle();
-  eq(life.contextFloor('qwen3.8:27b', 40960), 0, 'a model nothing has loaded is claimed to have a floor');
+  eq(life.contextFloor('qwen3.8-27b-4bit', 40960), 0, 'a model nothing has loaded is claimed to have a floor');
 
-  life.recordContext('qwen3.8:27b', 24576);
-  eq(life.contextFloor('qwen3.8:27b', 40960), 24576, 'the resident window is not the floor for the next call');
-  eq(life.contextFloor('qwen3.5:9b', 40960), 0, 'one model\'s window became another model\'s floor');
+  life.recordContext('qwen3.8-27b-4bit', 24576);
+  eq(life.contextFloor('qwen3.8-27b-4bit', 40960), 24576, 'the resident window is not the floor for the next call');
+  eq(life.contextFloor('qwen3.5-9b', 40960), 0, 'one model\'s window became another model\'s floor');
 
   // Growth is a legitimate reload; the floor keeps the larger value from then on.
-  life.recordContext('qwen3.8:27b', 32768);
-  eq(life.contextFloor('qwen3.8:27b', 40960), 32768, 'a grown window did not raise the floor');
-  life.recordContext('qwen3.8:27b', 8192);
-  eq(life.contextFloor('qwen3.8:27b', 40960), 32768, 'a smaller later call lowered the floor');
+  life.recordContext('qwen3.8-27b-4bit', 32768);
+  eq(life.contextFloor('qwen3.8-27b-4bit', 40960), 32768, 'a grown window did not raise the floor');
+  life.recordContext('qwen3.8-27b-4bit', 8192);
+  eq(life.contextFloor('qwen3.8-27b-4bit', 40960), 32768, 'a smaller later call lowered the floor');
 });
 
 check('the ratchet never pushes a call past its own stage ceiling', () => {
   const life = new lifecycleModule.JobModelLifecycle();
-  life.recordContext('qwen3.8:27b', 40960);
+  life.recordContext('qwen3.8-27b-4bit', 40960);
   // The chapter pipeline refuses above 32768; a floor it cannot ask for would turn into that
   // refusal, so it is clamped and that stage reloads the model instead.
-  eq(life.contextFloor('qwen3.8:27b', 32768), 32768, 'the floor was allowed past the caller\'s ceiling');
+  eq(life.contextFloor('qwen3.8-27b-4bit', 32768), 32768, 'the floor was allowed past the caller\'s ceiling');
   eq(lifecycleModule.contextFloor(undefined, 32768), 0);
   eq(lifecycleModule.contextFloor(4096, 32768), 4096);
 });
 
 check('a second item sizes to the window the first one left resident', () => {
   const life = new lifecycleModule.JobModelLifecycle();
-  const first = new tasks.ModelRunContextBudget('qwen3.8:27b', life);
+  const first = new tasks.ModelRunContextBudget('qwen3.8-27b-4bit', life);
   first.register('titles', () => 9000);
   const firstCtx = first.resolve({ sourceLabel: 'long.mp4' });
 
   // A shorter transcript: its own sizing is smaller, and pinning it would reload the model to
   // make the window smaller than the one already loaded.
-  const second = new tasks.ModelRunContextBudget('qwen3.8:27b', life);
+  const second = new tasks.ModelRunContextBudget('qwen3.8-27b-4bit', life);
   second.register('titles', () => 2000);
   eq(second.resolve({ sourceLabel: 'short.mp4' }), firstCtx, 'item 2 shrank the window and reloaded the model');
 });
@@ -879,7 +880,7 @@ check('no metadata unit can release a model — the job does that, once', () => 
 check('a prompt too big for any window this app will ask for is REFUSED, not truncated', () => {
   let message = '';
   try {
-    tasks.runNumCtx({ model: 'qwen3.8:27b', needs: [200000], max: tasks.LOCAL_FIELD_CTX_MAX, what: 'a huge call' });
+    tasks.runNumCtx({ model: 'qwen3.8-27b-4bit', needs: [200000], max: tasks.LOCAL_FIELD_CTX_MAX, what: 'a huge call' });
   } catch (e) {
     message = e.message;
   }
@@ -901,12 +902,12 @@ check('a prompt too big for any window this app will ask for is REFUSED, not tru
 check('the shipped defaults stay inside the two-model budget, chapters included', () => {
   const p = plan('youtube-telltale', {
     hasChapters: true,
-    alsoLoads: [{ model: routing.CHAPTER_PIPELINE_MODELS.generation, what: 'chapters' }],
+    alsoLoads: [{ model: routing.resolveChapterModelOption(routing.resolveMetadataRouting(undefined)).model, what: 'chapters' }],
   });
   if (p.roster.models.length > 2) throw new Error('the shipped run loads ' + p.roster.summary);
   eq(p.roster.overBudget, false, 'the shipped defaults are over their own budget');
   eq(p.warnings.length, 0, 'the shipped defaults declared a warning: ' + p.warnings.join('; '));
-  if (!p.roster.byModel['qwen3.8:27b'].includes('chapters')) {
+  if (!p.roster.byModel['qwen3.8-27b-4bit'].includes('chapters')) {
     throw new Error('the chapter pipeline is not counted against the budget it spends');
   }
 });
@@ -980,7 +981,7 @@ check('a chapterless item has no phrase pool: no transcript n-grams stand in for
 
 check('nomic-embed-text is gone from the routing module and the routing view', () => {
   if ('KEY_PHRASE_EMBEDDING_MODEL' in routing) throw new Error('KEY_PHRASE_EMBEDDING_MODEL is still exported');
-  const view = routing.buildRoutingView(undefined, { host: 'http://localhost:11434', reachable: true, models: [] });
+  const view = routing.buildRoutingView(undefined, { server: 'mac', reachable: true, models: {}, anthropicConfigured: false });
   eq(Object.keys(view.chapters).sort(), ['generationAvailability', 'generationModel'], 'the chapters view:');
 });
 
@@ -991,12 +992,12 @@ check('a third model is a DECLARED warning naming the fields, and never a refusa
   const p = plan('youtube-telltale', {
     hasChapters: true,
     routing: { description: 'qwen35-4b', pinned_comment: 'qwen35-9b' },
-    alsoLoads: [{ model: routing.CHAPTER_PIPELINE_MODELS.generation, what: 'chapters' }],
+    alsoLoads: [{ model: routing.resolveChapterModelOption(routing.resolveMetadataRouting(undefined)).model, what: 'chapters' }],
   });
   eq(p.roster.models.length, 3, 'expected three models, got ' + p.roster.summary);
   eq(p.roster.overBudget, true, 'three models did not register as over budget');
   eq(p.warnings.length, 1, 'the run did not declare exactly one warning');
-  if (!/qwen3\.5:4b \(description\)/.test(p.warnings[0])) {
+  if (!/qwen3\.5-4b \(description\)/.test(p.warnings[0])) {
     throw new Error('the warning does not name the field responsible:\n' + p.warnings[0]);
   }
   // Not blocked: the plan still runs, with every field it was asked for.
@@ -1455,13 +1456,25 @@ function storyHandlersFor(settings) {
 const storyCalls = [];
 let storyAnswer = () => '{"title": "The Working Title"}';
 const realRunPlain = aiManager.AIManagerService.prototype.runPlainRequest;
-aiManager.AIManagerService.prototype.runPlainRequest = async function (prompt, model, what) {
-  storyCalls.push({ model, what, chars: prompt.length });
+aiManager.AIManagerService.prototype.runPlainRequest = async function (prompt, model, what, shape) {
+  storyCalls.push({ model, what, chars: prompt.length, shape });
   return storyAnswer(prompt, model, what);
 };
 
-// Port 9 (discard) refuses at once, so the local unload's POST fails fast and is only warned
-// about — the unload is housekeeping — without reaching a real Ollama.
+// The Crucible door, as the story handlers reach it: only `job()`, for the lease a local run
+// holds and releases (the unload it replaces, plan 6.5). Recorded, never sent anywhere.
+const transportModule = require(path.join(ROOT, 'crucible/transport.js'));
+const crucibleErrors = require(path.join(ROOT, 'crucible/errors.js'));
+const storyJobs = [];
+transportModule.installCrucibleTransport({
+  job: (what) => {
+    const job = { what, released: 0, releaseAll: async () => { job.released++; return []; } };
+    storyJobs.push(job);
+    return job;
+  },
+});
+// A store key nothing reads any more (P2): kept in the fixtures so a handler that still read
+// it would be caught reaching for it.
 const NO_OLLAMA = 'http://127.0.0.1:9';
 const fakeEvent = { sender: { isDestroyed: () => false, send: () => {} } };
 const storySegments = [
@@ -1497,13 +1510,19 @@ async function rejects(promise) {
     eq(storyCalls.map((c) => c.model), ['claude-cli:sonnet'], 'the one call made before the stop:');
   });
 
-  await checkAsync('Stories on a local chapters selection go to Ollama, and that model is what gets released', async () => {
+  await checkAsync('Stories on a local chapters selection go to Crucible under a lease, and that lease is what gets released', async () => {
     storyCalls.length = 0;
+    storyJobs.length = 0;
     const ch = storyHandlersFor({ metadataRouting: { chapters: 'qwen38-27b' }, ollamaHost: NO_OLLAMA });
-    eq((await ch['story:routed-model']()).model, 'ollama:qwen3.8:27b', 'the read-only line:');
+    eq((await ch['story:routed-model']()).model, 'qwen3.8-27b-4bit', 'the read-only line:');
     await ch['story:suggest-title'](null, { text: ['budget vote'] });
-    eq(storyCalls.map((c) => c.model), ['ollama:qwen3.8:27b'], 'the model the title call was sent on:');
-    eq(await ch['story:unload-model'](), { ok: true, released: 'qwen3.8:27b' }, 'the bare Ollama name is unloaded:');
+    await ch['story:suggest-title'](null, { text: ['mayor walks out'] });
+    eq(storyCalls.map((c) => c.model), ['qwen3.8-27b-4bit', 'qwen3.8-27b-4bit'], 'the model the title calls were sent on:');
+    // Every story call states its shape (plan 6.3's story-title row): thinking off, 2048.
+    eq(storyCalls[0].shape, { thinking: false, maxTokens: 2048, loadContext: 32768 }, 'the call shape:');
+    eq(storyJobs.length, 1, 'ONE lease across the titling loop, not one per title:');
+    eq(await ch['story:unload-model'](), { ok: true, released: 'qwen3.8-27b-4bit' }, 'the lease is what is released:');
+    eq(storyJobs[0].released, 1, 'released once:');
     eq(await ch['story:unload-model'](), { ok: true, released: null }, 'and only once:');
   });
 
@@ -1527,17 +1546,27 @@ async function rejects(promise) {
 
   await checkAsync('a local story prompt too long to send whole is refused, not middle-truncated', async () => {
     storyCalls.length = 0;
-    const huge = ['word '.repeat(Math.ceil(aiManager.AIManagerService.OLLAMA_MAX_PROMPT_CHARS / 5) + 10)]; // a subject list is sent whole; raw text is capped by the prompt builder
+    const huge = ['word '.repeat(30000)]; // a subject list is sent whole; raw text is capped by the prompt builder
+    // The door's own refusal, before sending (plan 6.1), arriving TYPED through the manager.
+    storyAnswer = (prompt, model) => {
+      if (!model.startsWith('claude-cli:') && prompt.length > 100000) {
+        throw new crucibleErrors.CrucibleCallError('over_context', 'needs ~40000 tokens and the model is loaded with 32768', 'mac');
+      }
+      return '{"title": "The Working Title"}';
+    };
     const local = storyHandlersFor({ metadataRouting: { chapters: 'qwen38-27b' }, ollamaHost: NO_OLLAMA });
     const err = await rejects(local['story:suggest-title'](null, { text: huge }));
     eq(err.name, 'StoryPromptTooLongError', 'the refusal:');
-    eq(storyCalls.length, 0, 'calls sent:');
+    storyCalls.length = 0;
     const cli = storyHandlersFor({ metadataRouting: { chapters: 'claude-cli' }, ollamaHost: NO_OLLAMA });
     await cli['story:suggest-title'](null, { text: huge });
     eq(storyCalls.map((c) => c.model), ['claude-cli:opus'], 'claude -p reads it whole:');
+    storyAnswer = () => '{"title": "The Working Title"}';
+    await local['story:unload-model']();
   });
 
   aiManager.AIManagerService.prototype.runPlainRequest = realRunPlain;
+  transportModule.installCrucibleTransport(null);
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
   process.exit(failures === 0 ? 0 : 1);
 })();
