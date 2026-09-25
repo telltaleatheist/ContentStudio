@@ -90,6 +90,47 @@ summarize_chapter_tagged: |-
   TRANSCRIPT:
   {transcript}
 
+snap_outline_detailed: |-
+  Here is a transcript of a video.
+
+  {transcript}
+
+  List the sections of this video in the order they happen. A new section starts wherever the video moves to a different subject, story, clip, ad or aside. Write one short, specific label per line (at most {max_items} lines), with no numbering and nothing else.
+
+snap_outline_broad: |-
+  Here is a transcript of a video.
+
+  {transcript}
+
+  List the main sections of this video in the order they happen. A section is a stretch of several minutes about one piece of the subject — one person taken up, one document or clip set, one line of argument, one ad — and the claims inside that piece stay together in it. Write one short, specific label per line (at most {max_items} lines), with no numbering and nothing else.
+
+snap_outline_stories: |-
+  Here is a transcript of a video.
+
+  {transcript}
+
+  The video is a run of separate stories. List the stories in the order they happen: a new story starts where the video turns to a different story, claim, clip or ad, and the discussion of one story stays inside it. Write one short, specific label per line (at most {max_items} lines), with no numbering and nothing else.
+
+snap_outline_episodes: |-
+  Here is a transcript of a livestream. This stretch of it runs {duration}.
+
+  {transcript}
+
+  List the separate episodes of this stream in the order they happen. An episode is a self-contained stretch that could be published as its own video — one subject, one guest, one set of clips, one story followed to its end — and a stream has only a handful of them. Write one short, specific label per line (at most {max_items} lines), with no numbering and nothing else.
+
+snap_assign: |-
+  Sentence from the transcript above: "{sentence}"
+  (The sentence just before it: "{previous}")
+  Which section of the video is this sentence part of?
+
+snap_assign_start: (start of the video)
+
+snap_plug_item: An ad, sponsor read or self-promotion — the channel's own promotions are {promoted_items} — or asking viewers to subscribe, follow or support
+
+snap_plug_confirm: |-
+  Passage from the transcript above: "{passage}"
+  In this passage the speaker is advertising or promoting something: a sponsor, one of the channel's own promotions ({promoted_items}), or asking viewers to subscribe, follow or support them.
+
 name_scaffold: |-
   Below is the transcript of one YouTube video, transcribed by speech recognition that often garbles proper names. List the people and organisations that actually figure in this video, one per line, using the standard public spelling of each name: fix an obvious transcription garble by writing that SAME person's standard spelling, and never add anyone the transcript does not mention. The video's own creator and his channels are not part of the list. Output nothing but the list: no numbering, no commentary, no JSON.
 
