@@ -39,10 +39,24 @@ export function clip(s: string, n: number): string {
   return cps.length <= n ? s : cps.slice(0, n - 1).join('') + '…';
 }
 
-/** The {promoted_items} slot's text; a channel that declares none gets a truthful sentence, not a brace. */
+/**
+ * The {promoted_items} slot's text for summarize_chapter; a channel that declares none gets a
+ * truthful sentence, not a brace (chapter-whole-transcript.service.ts's rule, kept so a chapter
+ * titled here reads as one titled there).
+ */
 export function promotedItemsLine(items: readonly string[] | undefined): string {
+  return declaredPromotions(items) ?? 'none are declared for this channel';
+}
+
+/**
+ * The channel's promoted items as one slot's text, or null when it declares none. Null selects
+ * the MEASURED ad item and statement (segment.py's verbatim text); a list selects the
+ * `_promoted` bodies, which name this channel's own plugs (plan §10.2 step 2). Nothing is
+ * invented for a channel with none.
+ */
+export function declaredPromotions(items: readonly string[] | undefined): string | null {
   const list = (items || []).map((t) => t.trim()).filter((t) => t.length > 0);
-  return list.length > 0 ? list.join('; ') : 'none are declared for this channel';
+  return list.length > 0 ? list.join('; ') : null;
 }
 
 export const SNAP_PROMPTS = {
@@ -74,15 +88,34 @@ export const SNAP_PROMPTS = {
     return promptAssets().pipeline(CHAPTERS_FILE, 'snap_assign_start');
   },
 
-  /** The fixed ad / self-promotion outline item. Placeholder: {promoted_items}. */
+  /**
+   * The fixed ad / self-promotion outline item: segment.py:23 verbatim for a channel that
+   * declares no promoted items, the `_promoted` body naming them otherwise.
+   */
   plugItem(promotedItems: readonly string[] | undefined): string {
-    const body = promptAssets().pipeline(CHAPTERS_FILE, 'snap_plug_item');
-    return formatPrompt(body, { promoted_items: promotedItemsLine(promotedItems) });
+    const line = declaredPromotions(promotedItems);
+    if (line === null) return promptAssets().pipeline(CHAPTERS_FILE, 'snap_plug_item');
+    return formatPrompt(promptAssets().pipeline(CHAPTERS_FILE, 'snap_plug_item_promoted'), { promoted_items: line });
   },
 
-  /** segment.py:94-96 — the yes/no that confirms a stretch assigned to the ad item. Placeholders: {passage}, {promoted_items}. */
+  /**
+   * segment.py:94-96 — the yes/no that confirms a stretch assigned to the ad item, QUOTING the
+   * passage (clipped at 700 characters, as measured). Verbatim without promoted items, the
+   * `_promoted` body with them. Placeholders: {passage}, {promoted_items}.
+   */
   plugConfirm(sentences: readonly string[], promotedItems: readonly string[] | undefined): string {
-    const body = promptAssets().pipeline(CHAPTERS_FILE, 'snap_plug_confirm');
-    return formatPrompt(body, { passage: clip(sentences.join(' '), 700), promoted_items: promotedItemsLine(promotedItems) });
+    const line = declaredPromotions(promotedItems);
+    const passage = clip(sentences.join(' '), 700);
+    if (line === null) return formatPrompt(promptAssets().pipeline(CHAPTERS_FILE, 'snap_plug_confirm'), { passage });
+    // The passage is filled LAST, for the reason outline() gives.
+    return formatPrompt(promptAssets().pipeline(CHAPTERS_FILE, 'snap_plug_confirm_promoted'), { promoted_items: line, passage });
+  },
+
+  /**
+   * The title call for a chapter too long to read in one window (summarize.ts): its parts'
+   * titles and summaries, in order. Placeholders as summarize_chapter's, plus {parts}.
+   */
+  summarizeParts(fill: { number: number; video: string; promoted_items: string; context_lines: string; parts: string }): string {
+    return formatPrompt(promptAssets().pipeline(CHAPTERS_FILE, 'summarize_chapter_parts'), fill);
   },
 };

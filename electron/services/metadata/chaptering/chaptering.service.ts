@@ -36,7 +36,7 @@
  */
 
 import * as log from 'electron-log';
-import { CaptionLike, UnitOptions, sentenceUnits } from './units';
+import { TranscriptInput, UnitOptions, captionsOf, sentenceUnits } from './units';
 import { GRANULARITY, granularitySetting, isLongSection } from './granularity';
 import { BATCH, MAX_ITEMS, SNAP_PROMPTS } from './prompts';
 import { writeOutline } from './outline';
@@ -93,9 +93,12 @@ const W_LEVEL1 = 0.45;
 const W_REFINE = 0.4;
 const W_SUMMARIZE = 0.15;
 
-/** The captions -> the chapters. The one entry point (plan §10.1). */
-export async function chapter(captions: CaptionLike[], options: ChapterOptions): Promise<ChapteringResult> {
-  const units = sentenceUnits(captions, options.unitOptions);
+/**
+ * A transcript -> its chapters at the chosen granularity. The one entry point (plan §10.1):
+ * captions, or any transcript file ContentStudio holds (units.ts TranscriptInput).
+ */
+export async function chapter(transcript: TranscriptInput, options: ChapterOptions): Promise<ChapteringResult> {
+  const units = sentenceUnits(captionsOf(transcript), options.unitOptions);
   return chapterUnits(units, options);
 }
 
@@ -117,8 +120,9 @@ export async function chapterUnits(units: SentenceUnit[], options: ChapterOption
     totalMs: 0,
     chatCalls: 0,
     decideCalls: 0,
-    missingLabelUnits: 0,
+    flooredUnits: [],
     skippedUnits: [],
+    titledFromParts: [],
     warnings: [],
   };
   const warn = (message: string) => {
@@ -219,14 +223,16 @@ export async function chapterUnits(units: SentenceUnit[], options: ChapterOption
           promotedItems: options.promotedItems,
           previousDetail,
           previousTitles: chapters.slice(-3).map((c) => c.title).filter((t) => t.length > 0),
-          transcript: texts.slice(s.unitRange[0], s.unitRange[1]).join(' '),
+          units: units.slice(s.unitRange[0], s.unitRange[1]),
           entityScaffold: '',
           clock: `${formatClock(s.startSec)}-${formatClock(s.endSec)}`,
         },
         warn,
         signal,
+        formatClock,
       );
-      stats.chatCalls++;
+      stats.chatCalls += answered.parts === 1 ? 1 : answered.parts + 1;
+      if (answered.parts > 1) stats.titledFromParts.push(i + 1);
       title = answered.title;
       summary = answered.summary;
       if (!title) warn(`the chapter at ${formatClock(s.startSec)} was not named by the model; it carries its outline label "${s.label}"`);
@@ -245,6 +251,21 @@ export async function chapterUnits(units: SentenceUnit[], options: ChapterOption
     });
   }
   stats.summarizeMs = Date.now() - tSum;
+  // Law 8: what was read under a declared rule is counted AND said, once per run.
+  stats.flooredUnits = [...new Set(stats.flooredUnits)].sort((a, b) => a - b);
+  stats.skippedUnits = [...new Set(stats.skippedUnits)].sort((a, b) => a - b);
+  if (stats.flooredUnits.length) {
+    warn(
+      `${stats.flooredUnits.length} of ${units.length} sentences had an option outside the engine's top letters; ` +
+        `each was read with that option at the declared floor (first: sentence ${stats.flooredUnits[0]})`,
+    );
+  }
+  if (stats.skippedUnits.length) {
+    warn(
+      `${stats.skippedUnits.length} of ${units.length} sentences got an answer with almost no weight on any letter; ` +
+        `they carry no evidence and the switch cost placed them (first: sentence ${stats.skippedUnits[0]})`,
+    );
+  }
   stats.totalMs = Date.now() - t0;
   options.onProgress?.({ phase: 'done', done: chapters.length, total: chapters.length, fraction: 1 });
   return { granularity: options.granularity, switchCost, units, outline: level1.outline, chapters, plugVerdicts: level1.verdicts, stats };
@@ -351,7 +372,7 @@ async function runLevel(ctx: LevelContext, units: SentenceUnit[], offset: number
       for (let i = b; i < end; i++) {
         const unit = offset + chunk.start + i;
         const dist = readChoiceDistribution(response.answers[questionName(i)], names, `sentence ${unit} (${questionName(i)})`);
-        if (dist.missing.length) stats.missingLabelUnits++;
+        if (dist.missing.length) stats.flooredUnits.push(unit);
         if (dist.skipped) stats.skippedUnits.push(unit);
         L.push(dist.logProbs);
       }
@@ -366,6 +387,7 @@ async function runLevel(ctx: LevelContext, units: SentenceUnit[], offset: number
     let path: number[];
     if (plug >= 0) {
       report('plugs', 1);
+      const reads = new Map<string, PlugVerdict['read']>();
       const ask = async (a: number, b: number): Promise<number> => {
         throwIfAborted(signal);
         const request: DecideRequest = {
@@ -373,14 +395,28 @@ async function runLevel(ctx: LevelContext, units: SentenceUnit[], offset: number
           questions: { q: { type: 'yesno', instructions: SNAP_PROMPTS.plugConfirm(sents.slice(a, b), options.promotedItems) } },
           missing: 'report',
         };
+        const span = `sentences ${offset + chunk.start + a}-${offset + chunk.start + b}`;
         const response = await decideOrRefuse(ctx, request, `ad confirm ${where}, sentences ${a}-${b}`);
-        const read = readYesNo(response.answers.q, `ad confirm sentences ${offset + chunk.start + a}-${offset + chunk.start + b}`);
-        if (read.skipped) ctx.warn(`the ad check at sentences ${offset + chunk.start + a}-${offset + chunk.start + b} gave no readable answer; read as undecided (0.5)`);
+        const read = readYesNo(response.answers.q, `ad confirm ${span}`);
+        if (read.p === null) {
+          // An ad nobody confirmed is not an ad: the span is re-segmented without the ad item.
+          reads.set(`${a}:${b}`, 'no-evidence');
+          ctx.warn(
+            `the ad check at ${span} got an answer with almost no weight on Yes or No (label mass ${read.labelMass.toFixed(4)}); ` +
+              `the stretch is not confirmed as an ad and was chaptered without the ad item`,
+          );
+          return 0;
+        }
+        reads.set(`${a}:${b}`, read.floored ? 'floored' : 'answered');
         return read.p;
       };
       const confirmed = await confirmPlugs(L, plug, spec.switchCost, ask);
       path = confirmed.path;
-      for (const v of confirmed.verdicts) verdicts.push({ start: offset + chunk.start + v.start, end: offset + chunk.start + v.end, p: v.p });
+      for (const v of confirmed.verdicts) {
+        const read = reads.get(`${v.start}:${v.end}`);
+        if (read === undefined) throw new Error(`ad verdict ${v.start}-${v.end} has no reading recorded`);
+        verdicts.push({ start: offset + chunk.start + v.start, end: offset + chunk.start + v.end, p: v.p, read });
+      }
       if (confirmed.verdicts.length) {
         log.info(`[Chaptering] ${where}: ad verdicts ${confirmed.verdicts.map((v) => `${v.start}-${v.end}:${v.p.toFixed(2)}`).join(' ')}`);
       }

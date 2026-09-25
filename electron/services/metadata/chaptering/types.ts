@@ -166,8 +166,18 @@ export interface PlugVerdict {
   /** Unit range [start, end) over the whole video's units. */
   start: number;
   end: number;
-  /** P(yes: this stretch is a promotion). Under 0.5 the stretch was re-segmented without the ad item. */
+  /**
+   * P(yes: this stretch is a promotion), as used. Under 0.5 the stretch was re-segmented
+   * without the ad item. 0 for an answer with no evidence (see `read`).
+   */
   p: number;
+  /**
+   * How the answer was read (Law 8): 'answered' as the engine gave it; 'floored' when Yes or
+   * No was outside the top-K and took the declared floor; 'no-evidence' when the answer fell
+   * under the label-mass gate — an ad nobody confirmed is not an ad, so it counts as a
+   * rejection and is warned about.
+   */
+  read: 'answered' | 'floored' | 'no-evidence';
 }
 
 export interface Chapter {
@@ -202,8 +212,13 @@ export interface ChapteringStats {
   totalMs: number;
   chatCalls: number;
   decideCalls: number;
-  /** Units whose answer had at least one label outside the engine's top-K, floored under the declared rule. */
-  missingLabelUnits: number;
+  /**
+   * Units (global indices, ascending) whose answer had at least one label outside the engine's
+   * top-K, floored under the declared rule (assign.ts). Reported, and summarised in `warnings`.
+   */
+  flooredUnits: number[];
+  /** Chapters whose transcript was over the title call's budget and were titled from their parts (summarize.ts). */
+  titledFromParts: number[];
   /**
    * Units whose answer fell under the label-mass gate: the model put almost none of its mass on
    * any letter, so the unit carries no evidence and Viterbi's switch cost decides it. Recorded

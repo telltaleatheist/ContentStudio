@@ -139,18 +139,7 @@ export function readChoiceDistribution(answer: DecideAnswer | undefined, names: 
     return p > 0 ? Math.log(p) + lnMass : -Infinity;
   });
   const missing = names.filter((_, i) => raw[i] === null);
-  if (raw.every((x) => x === null || x === -Infinity)) {
-    throw new ChapteringError('answer_shape', `${what}: the engine returned no option with any probability`);
-  }
-  let floor = -Infinity;
-  if (missing.length) {
-    const returned = raw.filter((x): x is number => x !== null && Number.isFinite(x));
-    const smallest = returned.length ? Math.min(...returned) : -Infinity;
-    const rest = 1 - mass;
-    const shared = rest > 0 ? Math.log(rest / (missing.length + DECIDE_TOP_K_MARGIN)) : -Infinity;
-    floor = Math.max(LOG_FLOOR, Math.min(smallest, shared));
-  }
-  const rawLogProbs = raw.map((x) => (x === null ? floor : Math.max(x, LOG_FLOOR)));
+  const rawLogProbs = floorRaw(raw, mass, `${what}: the engine returned no option with any probability`);
 
   if (mass < LABEL_MASS_GATE) {
     const flat = -Math.log(names.length);
@@ -160,13 +149,55 @@ export function readChoiceDistribution(answer: DecideAnswer | undefined, names: 
   return { logProbs: rawLogProbs.map((lp) => lp - logZ), missing, skipped: false, labelMass: mass };
 }
 
-/** P(yes) of a yes/no answer, gated the same way: under the gate the answer is no evidence and reads as 0.5. */
-export function readYesNo(answer: DecideAnswer | undefined, what: string): { p: number; skipped: boolean } {
+/**
+ * The declared floor over one answer's raw log-probabilities (null = the label was outside the
+ * top-K). See readChoiceDistribution for the two bounds. Every label with no probability at all
+ * is refused: there is no answer to read.
+ */
+function floorRaw(raw: Array<number | null>, mass: number, refusal: string): number[] {
+  if (raw.every((x) => x === null || x === -Infinity)) throw new ChapteringError('answer_shape', refusal);
+  const missingCount = raw.filter((x) => x === null).length;
+  let floor = -Infinity;
+  if (missingCount) {
+    const returned = raw.filter((x): x is number => x !== null && Number.isFinite(x));
+    const smallest = returned.length ? Math.min(...returned) : -Infinity;
+    const rest = 1 - mass;
+    const shared = rest > 0 ? Math.log(rest / (missingCount + DECIDE_TOP_K_MARGIN)) : -Infinity;
+    floor = Math.max(LOG_FLOOR, Math.min(smallest, shared));
+  }
+  return raw.map((x) => (x === null ? floor : Math.max(x, LOG_FLOOR)));
+}
+
+export interface YesNoReading {
+  /** P(yes) under the declared rule; null when the answer carried no evidence (under the gate). */
+  p: number | null;
+  /** Yes or No was outside the top-K and took the floor. */
+  floored: boolean;
+  labelMass: number;
+}
+
+/**
+ * P(yes) of a yes/no answer under the SAME declared rule as a choice. In report mode a one-sided
+ * answer comes back renormalised alone (`p` = 1.0 with No missing, 0.0 with Yes missing;
+ * PHASE22 §2.2 calls that "honest and useless"), so `p` is rebuilt from the raw mass: the
+ * returned letter at ln(labelMass), the missing one at the floor. Under the label-mass gate the
+ * answer says nothing and `p` is null — the CALLER declares what an unanswered check means
+ * (chaptering.service.ts: an ad span nobody confirmed is not an ad).
+ */
+export function readYesNo(answer: DecideAnswer | undefined, what: string): YesNoReading {
   if (!answer) throw new ChapteringError('no_answer', `decide returned no answer for ${what}`);
   if (answer.type !== 'yesno') throw new ChapteringError('answer_shape', `${what} was a yes/no and came back a ${answer.type}`);
+  const mass = answer.labelMass;
+  if (typeof mass !== 'number' || !Number.isFinite(mass)) throw new ChapteringError('answer_shape', `${what}: labelMass is not a number`);
   if (typeof answer.p !== 'number' || !Number.isFinite(answer.p)) throw new ChapteringError('answer_shape', `${what}: p is not a number`);
-  if (answer.labelMass < LABEL_MASS_GATE || (answer.missingLabels?.length ?? 0) > 0) return { p: 0.5, skipped: true };
-  return { p: answer.p, skipped: false };
+  const missing = new Set(answer.missingLabels ?? []);
+  if (mass < LABEL_MASS_GATE) return { p: null, floored: missing.size > 0, labelMass: mass };
+  if (missing.size === 0) return { p: answer.p, floored: false, labelMass: mass };
+  const lnMass = Math.log(mass);
+  const yes = missing.has('Yes') ? null : answer.p > 0 ? Math.log(answer.p) + lnMass : -Infinity;
+  const no = missing.has('No') ? null : answer.p < 1 ? Math.log1p(-answer.p) + lnMass : -Infinity;
+  const [y, n] = floorRaw([yes, no], mass, `${what}: the engine returned neither Yes nor No`);
+  return { p: Math.exp(y - logSumExp([y, n])), floored: true, labelMass: mass };
 }
 
 /** Narrow a DecideAnswer for callers that already checked the type. */

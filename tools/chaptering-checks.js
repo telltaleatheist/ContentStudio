@@ -245,12 +245,21 @@ check('the detailed outline body, the assign question and the plug statement are
   assert.ok(q.includes(`"${'a'.repeat(299)}…"`) && q.includes(`"${'b'.repeat(199)}…"`));
   assert.strictEqual(prompts.clip('😀'.repeat(5), 3), '😀😀…');
   assert.strictEqual(prompts.SNAP_PROMPTS.START_OF_VIDEO, '(start of the video)');
+  // With no promoted items, the ad item and its statement are segment.py:23 and :94-96 verbatim.
+  assert.strictEqual(prompts.SNAP_PROMPTS.plugItem([]), 'An ad, sponsor read or self-promotion (Patreon, merch, a book, asking viewers to subscribe or support)');
+  assert.strictEqual(
+    prompts.SNAP_PROMPTS.plugConfirm(['Use code X.', 'Thanks to our sponsor.'], undefined),
+    'Passage from the transcript above: "Use code X. Thanks to our sponsor."\nIn this passage the speaker is advertising or promoting something: ' +
+      'a sponsor, their own Patreon, merch, a book, or asking viewers to subscribe, follow or support them.',
+  );
+  // With them, the channel's own plugs are named.
   const stmt = prompts.SNAP_PROMPTS.plugConfirm(['Use code X.', 'Thanks to our sponsor.'], ['the Patreon']);
   assert.ok(stmt.startsWith('Passage from the transcript above: "Use code X. Thanks to our sponsor."\nIn this passage the speaker is advertising or promoting something'));
   assert.ok(stmt.includes('(the Patreon)'));
   assert.ok(prompts.SNAP_PROMPTS.plugConfirm(['z'.repeat(800)], []).includes(`"${'z'.repeat(699)}…"`));
+  assert.ok(prompts.SNAP_PROMPTS.plugConfirm(['{promoted_items} $&'], ['the Patreon']).includes('"{promoted_items} $&"'));
   assert.ok(prompts.SNAP_PROMPTS.plugItem(['the Patreon', 'the merch shop']).includes('the Patreon; the merch shop'));
-  assert.ok(prompts.SNAP_PROMPTS.plugItem([]).includes('none are declared for this channel'));
+  assert.ok(prompts.SNAP_PROMPTS.plugItem(['the Patreon']).startsWith('An ad, sponsor read or self-promotion'));
   // A transcript holding a $-pattern or a brace survives the fill.
   assert.ok(prompts.SNAP_PROMPTS.outline('broad', 'costs $& and {max_items}', 25, '').includes('costs $& and {max_items}'));
 });
@@ -300,8 +309,18 @@ check('an answer with every label missing, the wrong type, or absent is refused 
   assert.throws(() => assign.readChoiceDistribution(choiceAnswer(names, 'section 1', { missing: names }), names, 'q'), /no option with any probability/);
   assert.throws(() => assign.readChoiceDistribution(yesno(0.5), names, 'q'), (e) => e.code === 'answer_shape');
   assert.throws(() => assign.readChoiceDistribution(undefined, names, 'q'), (e) => e.code === 'no_answer');
-  assert.deepStrictEqual(assign.readYesNo(yesno(0.8), 'q'), { p: 0.8, skipped: false });
-  assert.deepStrictEqual(assign.readYesNo({ type: 'yesno', p: 1, labelMass: 0.3, missingLabels: ['No'] }, 'q'), { p: 0.5, skipped: true });
+  assert.throws(() => assign.readYesNo(choiceAnswer(names, 'section 1'), 'q'), (e) => e.code === 'answer_shape');
+});
+
+check('a yes/no is read under the same declared floor: a one-sided answer is rebuilt from the raw mass, a gated one is no evidence', () => {
+  assert.deepStrictEqual(assign.readYesNo(yesno(0.8), 'q'), { p: 0.8, floored: false, labelMass: 0.97 });
+  // Report mode, No outside the top-K: the wire says p = 1.0 ("honest and useless", PHASE22 §2.2).
+  // Yes holds 0.3 of the raw mass; No is floored at min(ln 0.3, ln(0.7 / (1 + 4))) = ln 0.14.
+  const one = assign.readYesNo({ type: 'yesno', p: 1, labelMass: 0.3, missingLabels: ['No'] }, 'q');
+  assert.ok(one.floored && Math.abs(one.p - 0.3 / (0.3 + 0.14)) < 1e-9, JSON.stringify(one));
+  const noSide = assign.readYesNo({ type: 'yesno', p: 0, labelMass: 0.9, missingLabels: ['Yes'] }, 'q');
+  assert.ok(noSide.floored && noSide.p < 0.03, JSON.stringify(noSide));
+  assert.deepStrictEqual(assign.readYesNo({ type: 'yesno', p: 0.9, labelMass: 0.001, missingLabels: [] }, 'q'), { p: null, floored: false, labelMass: 0.001 });
 });
 
 // ------------------------------------------------------------------- plugs
@@ -504,7 +523,7 @@ check('ad confirm: a confirmed stretch is an isAd chapter with its verdict; a re
   const ad = r1.chapters.find((c) => c.isAd);
   assert.ok(ad, 'an ad chapter');
   assert.deepStrictEqual(ad.unitRange, [100, 120]);
-  assert.deepStrictEqual(r1.plugVerdicts, [{ start: 100, end: 120, p: 0.9 }]);
+  assert.deepStrictEqual(r1.plugVerdicts, [{ start: 100, end: 120, p: 0.9, read: 'answered' }]);
   assert.ok(yes.calls.decide.some((d) => d.req.questions.q && d.req.questions.q.type === 'yesno' && d.req.questions.q.instructions.includes('(the Patreon)')));
   assert.ok(yes.calls.decide[0].req.questions.s0.options['section 3'].includes('the Patreon'));
   const no = fakeVideo(300, SECTIONS, { ads: [100, 120], adVerdict: 0.2 });
@@ -534,9 +553,26 @@ check('a missing label is counted and a gated answer is a skipped unit, both rep
     perUnit: (i) => (i === 10 ? { missing: ['section 2'] } : i === 20 || i === 21 ? { mass: 0.001 } : {}),
   });
   const r = await service.chapter(v.captions, { granularity: 'broad', chat: v.chat, decide: v.decide, summarize: false });
-  assert.strictEqual(r.stats.missingLabelUnits, 1);
+  assert.deepStrictEqual(r.stats.flooredUnits, [10]);
   assert.deepStrictEqual(r.stats.skippedUnits, [20, 21]);
   assert.deepStrictEqual(r.chapters.map((c) => c.label), ['One', 'Two']);
+  // Law 8: each is said in the run's warnings, not only counted.
+  assert.ok(r.stats.warnings.some((w) => w.startsWith('1 of 100 sentences had an option outside') && w.includes('sentence 10')));
+  assert.ok(r.stats.warnings.some((w) => w.startsWith('2 of 100 sentences got an answer with almost no weight') && w.includes('sentence 20')));
+});
+
+check('an ad check with no evidence is not a confirmation: the stretch is chaptered without the ad item, and warned', async () => {
+  const v = fakeVideo(300, SECTIONS, { ads: [100, 120] });
+  const decide = v.decide;
+  const gated = async (req, o) => {
+    const res = await decide(req, o);
+    if (res.answers.q) res.answers.q = { type: 'yesno', p: 0.99, labelMass: 0.002, missingLabels: [] };
+    return res;
+  };
+  const r = await service.chapter(v.captions, { granularity: 'stories', chat: v.chat, decide: gated, summarize: false });
+  assert.ok(!r.chapters.some((c) => c.isAd));
+  assert.deepStrictEqual(r.plugVerdicts, [{ start: 100, end: 120, p: 0, read: 'no-evidence' }]);
+  assert.ok(r.stats.warnings.some((w) => w.includes('sentences 100-120') && w.includes('not confirmed as an ad')));
 });
 
 check('an empty transcript and a cancelled run are refused by name; a switch-cost override is carried in the result', async () => {
@@ -547,6 +583,112 @@ check('an empty transcript and a cancelled run are refused by name; a switch-cos
   await assert.rejects(service.chapter(v.captions, { granularity: 'broad', chat: v.chat, decide: v.decide, signal: ac.signal }), (e) => e.code === 'cancelled');
   const r = await service.chapter(v.captions, { granularity: 'broad', chat: v.chat, decide: v.decide, summarize: false, switchCost: 5 });
   assert.strictEqual(r.switchCost, 5);
+});
+
+// ------------------------------------------------------------------- parity with the reference
+//
+// tools/fixtures/chaptering/*.json are written by docs/crucible/reference/make_fixtures.py,
+// which runs segment.py's and submap.py's OWN functions (lifted by their source) over seeded
+// inputs. So these compare the port with what the measured code did, not with a reading of it.
+
+const FIX = (name) => require(path.join(__dirname, 'fixtures', 'chaptering', name + '.json'));
+
+check('parity: viterbi() and boundaries() reproduce segment.py on 43 matrices (random, tied, floored, rejected columns)', () => {
+  const cases = FIX('viterbi');
+  assert.ok(cases.length >= 40);
+  cases.forEach((c, k) => {
+    const got = viterbi.viterbi(c.L, c.cost);
+    assert.deepStrictEqual(got, c.path, `case ${k} (${c.L.length}x${c.L[0].length}, cost ${c.cost})`);
+    assert.deepStrictEqual(viterbi.boundaries(got), c.boundaries, `case ${k} boundaries`);
+  });
+});
+
+check('parity: confirmPlugs() asks about the same stretches in the same order and ends on segment.py\'s path', async () => {
+  let asked = 0;
+  for (const [k, c] of FIX('plugs').entries()) {
+    const table = new Map(c.asked.map(([a, b, p]) => [`${a}:${b}`, p]));
+    const seq = [];
+    const r = await plugs.confirmPlugs(c.L, c.plug, c.cost, async (a, b) => {
+      seq.push([a, b]);
+      assert.ok(table.has(`${a}:${b}`), `case ${k}: asked about ${a}-${b}, which segment.py never asked about`);
+      return table.get(`${a}:${b}`);
+    });
+    assert.deepStrictEqual(seq, c.asked.map(([a, b]) => [a, b]), `case ${k} ask order`);
+    assert.deepStrictEqual(r.path, c.path, `case ${k} path`);
+    asked += seq.length;
+  }
+  assert.ok(asked >= 8, `the fixtures exercise the loop (${asked} asks)`);
+});
+
+check('parity: sentenceUnits() splits and times exactly as submap.py sentences() (run-on cap off, as measured)', () => {
+  for (const [k, c] of FIX('sentences').entries()) {
+    const got = units.sentenceUnits(c.captions, { maxWords: 0, maxSeconds: 0 });
+    assert.deepStrictEqual(got.map((u) => u.text), c.sentences.map((s) => s.text), `case ${k} texts`);
+    got.forEach((u, i) => assert.ok(Math.abs(Math.round(u.start * 100) / 100 - c.sentences[i].t) < 0.011, `case ${k} unit ${i}: ${u.start} vs ${c.sentences[i].t}`));
+  }
+});
+
+// ------------------------------------------------------------------- transcripts
+
+check('captionsOf reads the three ContentStudio shapes and refuses anything else by name', () => {
+  const caps = [{ start: '00:00:00,000', end: '00:00:02,000', text: 'Hello there, friends.' }];
+  assert.strictEqual(units.captionsOf(caps), caps);
+  assert.strictEqual(units.captionsOf({ segments: caps }), caps);
+  assert.strictEqual(units.captionsOf({ contentItems: [{ srtSegments: caps }] }), caps);
+  assert.throws(() => units.captionsOf({ contentItems: [{}] }), /no srtSegments/);
+  assert.throws(() => units.captionsOf({ transcript: 'x' }), /not a transcript this service reads.*got keys transcript/);
+  // Word level: every word is a caption, interleaved tracks are put in time order, and the
+  // track is the speaker, so a unit's times are its own words' and a track change splits it.
+  const words = [
+    { track: 't1', text: 'played', timelineStart: 3.0, timelineEnd: 3.4 },
+    { track: 't0', text: 'Welcome', timelineStart: 1.0, timelineEnd: 1.3 },
+    { track: 't0', text: 'back', timelineStart: 1.3, timelineEnd: 1.5 },
+    { track: 't0', text: 'to', timelineStart: 1.5, timelineEnd: 1.6 },
+    { track: 't0', text: 'the stream.', timelineStart: 1.6, timelineEnd: 2.2 },
+    { track: 't1', text: 'This clip is', timelineStart: 2.5, timelineEnd: 3.0 },
+    { track: 't1', text: '', timelineStart: 3.4, timelineEnd: 3.5 },
+  ];
+  const got = units.sentenceUnits(units.captionsOf({ words }), { minWords: 0 });
+  assert.deepStrictEqual(got.map((u) => [u.text, u.start, u.end, u.speaker]), [
+    ['Welcome back to the stream.', 1.0, 2.2, 't0'],
+    ['This clip is played', 2.5, 3.4, 't1'],
+  ]);
+  assert.throws(() => units.captionsOf({ words: [{ text: 'x' }] }), /has no start\/end time/);
+});
+
+// ------------------------------------------------------------------- titles
+
+check('a chapter over the title budget is read in equal parts and titled from them, declared; a short one is one call', async () => {
+  const summarize = C('summarize');
+  const long = Array.from({ length: 900 }, (_, i) => `Sentence ${i} is here and it says a fair few words about the story at hand today.`);
+  const windows = summarize.summaryWindows(long);
+  assert.ok(windows.length >= 2);
+  assert.strictEqual(windows[0][0], 0);
+  assert.strictEqual(windows[windows.length - 1][1], long.length);
+  for (let k = 1; k < windows.length; k++) assert.strictEqual(windows[k][0], windows[k - 1][1]);
+  for (const [a, b] of windows) assert.ok(long.slice(a, b).join(' ').length <= summarize.SUMMARIZE_TRANSCRIPT_TOKENS * chunks.CHARS_PER_TOKEN + 200);
+  assert.deepStrictEqual(summarize.summaryWindows(['short one', 'short two']), [[0, 2]]);
+
+  const prompts_ = [];
+  const chat = async (prompt, o) => {
+    prompts_.push({ prompt, o });
+    const part = /part (\d+) of/.exec(prompt);
+    return { text: part ? `Part title ${part[1]}\nPart summary ${part[1]}.` : 'Whole title\nWhole summary.', finishReason: 'stop' };
+  };
+  const warnings = [];
+  const r = await summarize.summarizeChapter(
+    chat,
+    { number: 3, total: 5, videoTitle: 'V', previousDetail: '', previousTitles: [], units: long.map((text, i) => ({ text, start: i, end: i + 1 })), entityScaffold: '', clock: '0:00-15:00' },
+    (w) => warnings.push(w),
+  );
+  assert.deepStrictEqual(r, { title: 'Whole title', summary: 'Whole summary.', parts: windows.length });
+  assert.strictEqual(prompts_.length, windows.length + 1);
+  assert.ok(prompts_.every((p) => p.o.role === 'summarize' && p.o.thinking === true));
+  const last = prompts_[prompts_.length - 1].prompt;
+  assert.ok(last.includes('PARTS:') && last.includes('Part 1 (') && last.includes('Part title 2'));
+  // Every sentence is read by some call: nothing is truncated.
+  for (let i = 0; i < long.length; i += 97) assert.ok(prompts_.some((p) => p.prompt.includes(`Sentence ${i} is here`)), `sentence ${i}`);
+  assert.ok(warnings.some((w) => w.includes(`read in ${windows.length} parts`)));
 });
 
 check('progress is monotone, weighted by work, and ends at 1', async () => {

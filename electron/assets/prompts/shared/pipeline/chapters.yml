@@ -125,11 +125,32 @@ snap_assign: |-
 
 snap_assign_start: (start of the video)
 
-snap_plug_item: An ad, sponsor read or self-promotion — the channel's own promotions are {promoted_items} — or asking viewers to subscribe, follow or support
+snap_plug_item: An ad, sponsor read or self-promotion (Patreon, merch, a book, asking viewers to subscribe or support)
+
+snap_plug_item_promoted: An ad, sponsor read or self-promotion (the channel's own promotions are {promoted_items}; or asking viewers to subscribe or support)
 
 snap_plug_confirm: |-
   Passage from the transcript above: "{passage}"
+  In this passage the speaker is advertising or promoting something: a sponsor, their own Patreon, merch, a book, or asking viewers to subscribe, follow or support them.
+
+snap_plug_confirm_promoted: |-
+  Passage from the transcript above: "{passage}"
   In this passage the speaker is advertising or promoting something: a sponsor, one of the channel's own promotions ({promoted_items}), or asking viewers to subscribe, follow or support them.
+
+summarize_chapter_parts: |-
+  Title chapter {number} of a video.
+  Video: {video}
+  {context_lines}
+  This chapter is long, so it comes to you as its parts, in order: each part is a title and a summary written from that part's own transcript.
+  Produce:
+  - a title: one line, up to 15 words — the one or two most important people or claims of the whole chapter, concrete enough that it could only be this video: a chapter name, not an inventory of the parts.
+  - a summary: 2-3 sentences on what the whole chapter covers.
+
+  Every name in your answer comes from the parts below. A chapter that IS one of the creator's own promotions — {promoted_items} — simply says that is what it is.
+  Output the title on the FIRST line, then the summary on the lines after it — plain text, nothing else: no labels, no numbering, no JSON.
+
+  PARTS:
+  {parts}
 
 name_scaffold: |-
   Below is the transcript of one YouTube video, transcribed by speech recognition that often garbles proper names. List the people and organisations that actually figure in this video, one per line, using the standard public spelling of each name: fix an obvious transcription garble by writing that SAME person's standard spelling, and never add anyone the transcript does not mention. The video's own creator and his channels are not part of the list. Output nothing but the list: no numbering, no commentary, no JSON.

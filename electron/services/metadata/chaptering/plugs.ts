@@ -12,8 +12,11 @@
  * are a sentence or two too wide") can be measured rather than guessed at.
  */
 
-import { PlugVerdict } from './types';
+import { PlugVerdict as RunVerdict } from './types';
 import { runsOf, viterbi } from './viterbi';
+
+/** A verdict on a run of the chunk's own units; the service adds how the answer was read. */
+type PlugVerdict = Omit<RunVerdict, 'read'>;
 
 /** segment.py:103 — the ad column of a rejected stretch. */
 export const REJECTED = -1e9;

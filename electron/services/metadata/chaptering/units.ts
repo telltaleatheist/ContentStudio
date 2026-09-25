@@ -65,6 +65,69 @@ interface Located {
   text: string;
 }
 
+/**
+ * What `chapter()` accepts as a transcript: captions already in hand, or one of the three
+ * transcript files ContentStudio holds —
+ *
+ *   - `{ segments: [...] }`                    a whisper-style file (submap.py load_segments);
+ *   - `{ contentItems: [{ srtSegments }] }`    the pipeline's cached transcript (the other shape
+ *                                              load_segments reads);
+ *   - `{ words: [...] }`                       the editor's word-level transcript
+ *                                              (TRANSCRIPT-IMPORT-FORMAT.md): every word is a
+ *                                              caption of its own, so a unit's times are its
+ *                                              first and last WORD's, not an interpolation, and
+ *                                              the track (mic / screen) is the speaker.
+ */
+export type TranscriptInput =
+  | CaptionLike[]
+  | { segments: CaptionLike[] }
+  | { contentItems: Array<{ srtSegments?: CaptionLike[] }> }
+  | { words: WordLike[] };
+
+export interface WordLike {
+  text: string;
+  start?: number;
+  end?: number;
+  timelineStart?: number;
+  timelineEnd?: number;
+  track?: string;
+  speaker?: string;
+}
+
+/**
+ * The captions of a transcript, in time order. A shape that is none of the above is refused by
+ * name: guessing at a transcript's fields would chapter the wrong words (Law 1).
+ */
+export function captionsOf(transcript: TranscriptInput): CaptionLike[] {
+  if (Array.isArray(transcript)) return transcript;
+  const t = transcript as Record<string, unknown>;
+  if (Array.isArray(t.segments)) return t.segments as CaptionLike[];
+  if (Array.isArray(t.contentItems)) {
+    const first = (t.contentItems as Array<{ srtSegments?: CaptionLike[] }>)[0];
+    if (!first || !Array.isArray(first.srtSegments)) {
+      throw new Error('the transcript has contentItems but its first item carries no srtSegments');
+    }
+    return first.srtSegments;
+  }
+  if (Array.isArray(t.words)) {
+    const words = (t.words as WordLike[])
+      .map((w) => {
+        const start = w.timelineStart ?? w.start;
+        const end = w.timelineEnd ?? w.end ?? start;
+        if (typeof start !== 'number' || typeof end !== 'number') {
+          throw new Error(`a word of the transcript ("${String(w.text).slice(0, 40)}") has no start/end time`);
+        }
+        const speaker = w.speaker ?? w.track;
+        return { start, end, text: String(w.text ?? ''), ...(speaker !== undefined ? { speaker: String(speaker) } : {}) };
+      })
+      .filter((w) => w.text.trim().length > 0);
+    // Two tracks interleave in time: order by start, then by track so a tie is stable.
+    words.sort((a, b) => a.start - b.start || (a.speaker ?? '').localeCompare(b.speaker ?? ''));
+    return words;
+  }
+  throw new Error(`not a transcript this service reads: expected captions, segments, contentItems[0].srtSegments or words (got keys ${Object.keys(t).join(', ')})`);
+}
+
 /** SRT "HH:MM:SS,mmm" (or "HH:MM:SS.mmm") to seconds; a number passes through. */
 export function srtSeconds(value: string | number): number {
   if (typeof value === 'number') return value;
@@ -139,21 +202,24 @@ export function sentenceUnits(captions: CaptionLike[], options: UnitOptions = {}
   if (pend) folded.push(pend);
 
   // 3. cap run-ons at caption boundaries.
+  // submap.py time_at: the first caption not yet ended at `ci` holds it (interpolated) or
+  // follows it (its start). Spans are in character order, so a binary search finds it: a
+  // word-level transcript is ~30k captions and a linear scan per unit was quadratic.
   const timeAt = (ci: number): number => {
-    for (const sp of spans) {
-      if (ci < sp.lo) return sp.start;
-      if (ci < sp.hi) return sp.start + ((sp.end - sp.start) * (ci - sp.lo)) / Math.max(1, sp.hi - sp.lo);
-    }
-    return spans[spans.length - 1].end;
+    const k = firstSpan(spans, (sp) => ci < sp.hi);
+    if (k === spans.length) return spans[spans.length - 1].end;
+    const sp = spans[k];
+    if (ci < sp.lo) return sp.start;
+    return sp.start + ((sp.end - sp.start) * (ci - sp.lo)) / Math.max(1, sp.hi - sp.lo);
   };
   const endAt = (ci: number): number => {
-    for (const sp of spans) {
-      if (ci <= sp.lo) return sp.start;
-      if (ci <= sp.hi) return sp.start + ((sp.end - sp.start) * (ci - sp.lo)) / Math.max(1, sp.hi - sp.lo);
-    }
-    return spans[spans.length - 1].end;
+    const k = firstSpan(spans, (sp) => ci <= sp.hi);
+    if (k === spans.length) return spans[spans.length - 1].end;
+    const sp = spans[k];
+    if (ci <= sp.lo) return sp.start;
+    return sp.start + ((sp.end - sp.start) * (ci - sp.lo)) / Math.max(1, sp.hi - sp.lo);
   };
-  const speakerAt = (ci: number): string | undefined => spans.find((sp) => ci < sp.hi)?.speaker;
+  const speakerAt = (ci: number): string | undefined => spans[firstSpan(spans, (sp) => ci < sp.hi)]?.speaker;
 
   const out: SentenceUnit[] = [];
   const push = (u: Located) => {
@@ -176,9 +242,22 @@ export function sentenceUnits(captions: CaptionLike[], options: UnitOptions = {}
   return out;
 }
 
+/** The first span for which `pred` holds, given `pred` is false then true along the list; `spans.length` when none. */
+function firstSpan(spans: readonly Span[], pred: (sp: Span) => boolean): number {
+  let lo = 0;
+  let hi = spans.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (pred(spans[mid])) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+
 /** Cut a run-on unit at caption boundaries into pieces of about `pieceWords` words. */
 function cutAtCaptions(u: Located, full: string, spans: Span[], pieceWords: number): Located[] {
-  const hits = spans.filter((sp) => sp.lo < u.hi && sp.hi > u.lo);
+  const hits: Span[] = [];
+  for (let k = firstSpan(spans, (sp) => sp.hi > u.lo); k < spans.length && spans[k].lo < u.hi; k++) hits.push(spans[k]);
   if (hits.length < 2) return [u];
   const pieces: Located[] = [];
   let group: Span[] = [];
