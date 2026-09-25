@@ -142,8 +142,11 @@ export function statementFor(field: GateField, rule: RuleId, unit: string, facts
   }
   const quoted = unit.replace(/\s+/g, ' ').trim();
   if (quoted.length === 0) throw new GateError('bad_request', `an empty ${field} unit cannot be quoted in a question`);
+  const label = asset(`labels.${field}.unit`);
   return formatPrompt(asset(`rules.${rule}`), {
-    unit: asset(`labels.${field}.unit`),
+    unit: label,
+    // For a statement that names the unit mid-sentence ("In the chapter title "…", …").
+    unit_lower: label.charAt(0).toLowerCase() + label.slice(1),
     creator: facts.creator,
     text: quoted,
   });

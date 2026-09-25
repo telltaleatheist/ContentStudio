@@ -74,6 +74,8 @@ function parseArgs(argv) {
     else if (k === '--limit') a.limit = Number(val());
     else if (k === '--out') a.out = val();
     else if (k === '--fake') a.fake = true;
+    else if (k === '--only-labelled') a.onlyLabelled = true;
+    else if (k === '--rules') a.rules = val().split(',');
     else if (k === '--server') a.server = val();
     else throw new Error(`unknown flag ${k}`);
   }
@@ -152,6 +154,20 @@ function groupsFor(set) {
   return groups;
 }
 
+/**
+ * The order groups are asked in: every group holding a hand-labelled item first (so a --limit run
+ * always covers the labels), then the rest in a fixed-seed shuffle (so a --limit run is a random
+ * sample, and the same one every time).
+ */
+function sampleOrder(groups) {
+  const labelled = new Set(readJsonl(path.join(FIX, 'labels.jsonl')).map((l) => l.text));
+  let seed = 20260925;
+  const rand = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
+  const keyed = groups.map((g) => ({ g, first: (g.units.some((u) => labelled.has(u)) || g.rows.some((r) => r.text !== undefined && labelled.has(r.text)) || (g.text !== undefined && labelled.has(g.text))) ? 0 : 1, r: rand() }));
+  keyed.sort((a, b) => a.first - b.first || a.r - b.r);
+  return keyed.map((k) => k.g);
+}
+
 // ------------------------------------------------------------------------- the transport
 
 function readToken() {
@@ -199,9 +215,15 @@ async function liveLanes(serverUrl, log) {
         );
       } catch (err) {
         const code = err && err.code;
-        const busy = code === 'busy' || code === 'leased' || code === 'server_busy' || code === 'engine_in_use' || (err && err.cause && ['leased', 'server_busy', 'engine_in_use'].includes(err.cause.code));
+        // The card is shared: a busy card, or a model another client swapped out from under a
+        // lease we were running under (engine_unreachable, model_not_resident, lease_lost), waits
+        // its turn. The batch is re-run from its first unanswered group (runRules skips the rest).
+        const WAIT = ['busy', 'leased', 'server_busy', 'engine_in_use', 'unreachable', 'engine_unreachable', 'model_not_resident', 'lease_lost'];
+        // Node's fetch gives up on a response whose headers take over 300 s (undici's
+        // headersTimeout): on a card other agents are queueing work on, a decide can wait that long.
+        const busy = (err && err.name === 'TimeoutError') || WAIT.includes(code) || (err && err.cause && WAIT.includes(err.cause.code)) || (err && WAIT.includes(err.serverCode));
         if (!busy || Date.now() - started > 3_600_000) throw err;
-        log(`the card is taken (${err.message.slice(0, 160)}); this batch waits a minute and asks again`);
+        log(`the card is taken or its model went away (${err.message.slice(0, 160)}); this batch waits a minute and asks again`);
         await new Promise((r) => setTimeout(r, 60_000));
       }
     }
@@ -212,10 +234,21 @@ async function liveLanes(serverUrl, log) {
 // ------------------------------------------------------------------------- rules
 
 async function runRules(args, log) {
+  // --rules a,b: ask only these rules (for iterating on one statement's wording). The compiled
+  // table is narrowed in THIS process only; the app's is untouched.
+  if (args.rules) for (const f of Object.keys(rules.FIELD_RULES)) rules.FIELD_RULES[f] = rules.FIELD_RULES[f].filter((r) => args.rules.includes(r));
   const outFile = path.join(args.out, `${args.set}.jsonl`);
   fs.mkdirSync(args.out, { recursive: true });
   const done = new Set(fs.existsSync(outFile) ? readJsonl(outFile).map((r) => r.key) : []);
-  let groups = groupsFor(args.set).filter((g) => !done.has(g.key));
+  let groups = sampleOrder(groupsFor(args.set)).filter((g) => !done.has(g.key));
+  // --only-labelled: just the groups holding a hand-labelled item, and in a list only the labelled
+  // units are asked (the state still shows the whole list, as in production). For iterating on a
+  // statement's wording against the labels without paying for the whole corpus.
+  const labelled = new Set(readJsonl(path.join(FIX, 'labels.jsonl')).map((l) => l.text));
+  if (args.onlyLabelled) {
+    groups = groups.filter((g) => g.units.some((u) => labelled.has(u)) || (g.text !== undefined && labelled.has(g.text)));
+    for (const g of groups) if (g.field !== 'description') g.which = g.units.map((u, i) => (labelled.has(u) ? i : -1)).filter((i) => i >= 0);
+  }
   if (args.limit) groups = groups.slice(0, args.limit);
   log(`${args.set}: ${groups.length} group(s) to ask (${done.size} already in ${outFile})`);
   const lanes = args.fake ? { batch: async (_w, work) => work(fakeDecide()), close: async () => undefined } : await liveLanes(args.server, log);
@@ -226,10 +259,12 @@ async function runRules(args, log) {
       const slice = groups.slice(b, b + GROUPS_PER_BATCH);
       await lanes.batch(`re-roll calibration: ${args.set} ${b + 1}-${b + slice.length} of ${groups.length}`, async (decide) => {
         for (const g of slice) {
+          if (done.has(g.key)) continue;
           const { id, facts } = factsFor(g.channel, g.promptSet);
-          const asked = await checks.askRules(g.field, g.stateText(g.units), g.units, facts, decide, { what: `calibration ${g.key}` });
-          const units = g.units.map((text, i) => ({ text, readings: asked.raw.get(i) }));
+          const asked = await checks.askRules(g.field, g.stateText(g.units), g.units, facts, decide, { what: `calibration ${g.key}`, ...(g.which ? { which: g.which } : {}) });
+          const units = g.units.map((text, i) => ({ text, readings: asked.raw.get(i) })).filter((u) => u.readings);
           questions += asked.calls.reduce((n, c) => n + Object.keys(c.request.questions).length, 0);
+          done.add(g.key);
           fs.appendFileSync(outFile, JSON.stringify({ key: g.key, field: g.field, promptSet: id, rows: g.rows.map((r) => ({ ...r, text: undefined })), units, ms: asked.calls.reduce((n, c) => n + c.ms, 0) }) + '\n');
         }
       });
@@ -256,9 +291,11 @@ async function runRank(args, log) {
       const slice = tests.slice(b, b + 25);
       await lanes.batch(`re-roll calibration: ranking ${b + 1}-${b + slice.length}`, async (decide) => {
         for (const t of slice) {
+          if (done.has(t.video_id)) continue;
           const titles = t.variants.map((v) => v.title);
           const { facts } = factsFor(t.channel);
           const r = await ranking.rankTitles(titles, facts.channel, decide, `calibration rank ${t.video_id}`);
+          done.add(t.video_id);
           fs.appendFileSync(outFile, JSON.stringify({ video_id: t.video_id, channel: t.channel, winner: t.winner, variants: t.variants, order: r.order, answers: r.answers, skippedRotations: r.skippedRotations }) + '\n');
         }
       });

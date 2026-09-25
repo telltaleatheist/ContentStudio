@@ -38,7 +38,7 @@ rules:
   first_person: |-
     {unit} "{text}" speaks as the video's maker, in the first person (I, me, my, we, our).
   narrates: |-
-    {unit} "{text}" reports what the video or its commentator does (says, argues, explains, reacts to, turns to, mocks, breaks down) instead of stating the subject matter itself.
+    In {unit_lower} "{text}", the one doing the action is the video itself or the person presenting it (as in "Reading a news article", "Introducing the guests", "A tour of the website", "the host says"), not a person, claim or event from the footage.
   sentence: |-
     {unit} "{text}" is written as a complete sentence, with a subject and a main verb, rather than as a topic label.
   nonsense: |-

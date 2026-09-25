@@ -69,7 +69,12 @@ async function run() {
 }
 
 const FACTS = rules.channelFacts('Test Channel', ['owen morgan', 'telltale']);
-const ON = settingsM.resolveRerollGateSettings({ rerollGate: 'on' });
+// The mechanics are checked at a flat 0.5 on every rule, so they do not move when a measured
+// default does (the defaults have their own check below).
+const ON = settingsM.resolveRerollGateSettings({
+  rerollGate: 'on',
+  rerollGateTuning: { thresholds: Object.fromEntries(Object.keys(settingsM.REROLL_GATE_DEFAULTS.thresholds).map((k) => [k, 0.5])) },
+});
 const yes = (p, extra = {}) => ({ type: 'yesno', p, labelMass: 0.97, missingLabels: [], ...extra });
 
 /**
@@ -421,6 +426,11 @@ check('settings: the declared defaults; a bad stored value is refused by name', 
   const d = settingsM.resolveRerollGateSettings({});
   assert.deepStrictEqual(d, settingsM.REROLL_GATE_DEFAULTS);
   assert.strictEqual(d.maxRerolls, 3);
+  // The measured numbers (P9.md): sentence is asked and recorded but never gates until Owen rules.
+  assert.strictEqual(d.thresholds['chapters.sentence'], 0);
+  assert.strictEqual(d.thresholds['chapters.creator'], 0.3);
+  assert.strictEqual(d.thresholds['description.narrates'], 0.2);
+  assert.strictEqual(d.mode, 'off', 'off until the calibration is complete (P9.md)');
   for (const f of Object.keys(rules.FIELD_RULES)) for (const r of rules.FIELD_RULES[f]) assert.strictEqual(typeof d.thresholds[`${f}.${r}`], 'number');
   assert.throws(() => settingsM.resolveRerollGateSettings({ rerollGate: 'yes' }), /"on" or "off"/);
   assert.throws(() => settingsM.resolveRerollGateSettings({ rerollGateTuning: { thresholds: { 'titles.sentence': 0.5 } } }), /not a rule the gate asks/);
