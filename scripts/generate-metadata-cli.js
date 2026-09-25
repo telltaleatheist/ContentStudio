@@ -620,9 +620,9 @@ async function main() {
       `                 cached ${cachedTranscript.cachedAt} from "${cachedTranscript.whisperModel}", ` +
       `${(contentItems[0].srtSegments || []).length} caption segment(s), ${contentItems[0].content.length} chars`;
     console.error(`  TRANSCRIPT: ${transcriptSource}`);
-    console.error('              Whisper was NOT run. Pass --transcribe to force a fresh transcription.\n');
+    console.error('              No transcription was run. Pass --transcribe to force a fresh one.\n');
   } else {
-    console.error(`  TRANSCRIPT: ${args.transcribe ? 'FRESH (--transcribe)' : 'no cache for this video'} — running Whisper\n`);
+    console.error(`  TRANSCRIPT: ${args.transcribe ? 'FRESH (--transcribe)' : 'no cache for this input'} — reading the input (a video is transcribed on Crucible; a transcript file is imported as it is)\n`);
     const whisperService = new WhisperService();
     whisperService.on('progress', (p) => {
       if (p.percent !== undefined) progressCallback('transcription', p.message, p.percent);
@@ -651,6 +651,10 @@ async function main() {
     if (inputFailures.length > 0) {
       for (const f of inputFailures) console.error(`  ! input stage: ${f}`);
     }
+    // A transcript-file input is imported as it is and runs no ASR: its stamp and the summary
+    // say so, never "transcription" (the input handler's own type is the one fact read here).
+    const imported = contentItems.every((item) => item.contentType === 'transcript_file');
+    const transcriber = imported ? 'imported transcript file (no ASR)' : `crucible:${asrVenue.server}:qwen3-asr-1.7b`;
     writeCache(caches.transcript, {
       // 2: the ContentItem's segments may now carry speaker tags, and its `content` may be
       // screenplay-prefixed because of them. A version-1 cache is a transcript from before
@@ -660,10 +664,12 @@ async function main() {
       version: 2,
       video: videoStamp(args.input),
       cachedAt: new Date().toISOString(),
-      whisperModel: `crucible:${asrVenue.server}:qwen3-asr-1.7b`,
+      whisperModel: transcriber,
       contentItems,
     });
-    transcriptSource = `FRESH Crucible transcription (crucible:${asrVenue.server}:qwen3-asr-1.7b), cached to ${caches.transcript}`;
+    transcriptSource = imported
+      ? `IMPORTED transcript file, no ASR run, cached to ${caches.transcript}`
+      : `FRESH Crucible transcription (${transcriber}), cached to ${caches.transcript}`;
     console.error(`\n  TRANSCRIPT: ${transcriptSource}\n`);
     // A fresh transcript invalidates chapters measured against the old one.
     if (fs.existsSync(caches.chapters)) {
