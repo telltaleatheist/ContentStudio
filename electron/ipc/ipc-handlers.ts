@@ -3932,8 +3932,11 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   // The ported AutoCutStudio timeline editor: its own BrowserWindow, its own Python
   // backend under editor-backend/, and its own channels. Registered as one seam, the
   // same way publish/ is. `store` is passed for the archive settings (archiveRoot,
-  // archiveMountUrl), whose defaults are resolved at the read site.
-  setupEditorIpc(store);
+  // archiveMountUrl), whose defaults are resolved at the read site, and for the metadata
+  // routing the Stories analyzer follows (#205). The prompt-sets directory goes with it
+  // because the analyzer's calls run through AIManagerService, whose constructor loads the
+  // prompt assets from there.
+  setupEditorIpc(store, { promptSetsDir: getPromptSetsDirectory() });
   // ==================== END EDITOR ====================
 
   // ==================== TRANSCRIPT LINK ====================

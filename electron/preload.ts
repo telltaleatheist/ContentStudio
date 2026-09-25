@@ -414,19 +414,20 @@ const api = {
     ipcRenderer.removeAllListeners('transcribe-complete');
   },
 
-  // Story analysis (local Ollama LLM). `consolidate: false` says "this span is already ONE
-  // story"; the default (true) lives in chapter-splitter alone and is not repeated here.
-  ollamaListModels: (payload?: { host?: string }) => ipcRenderer.invoke('ollama:list-models', payload),
+  // Story analysis. The model is never in a payload: the main process resolves it from the
+  // metadata routing table's chapters row on every call (LEDGER #205), and `storyRoutedModel`
+  // is how the editor learns what that is for its read-only line. `consolidate: false` says
+  // "this span is already ONE story"; the default (true) lives in chapter-splitter alone and
+  // is not repeated here.
+  storyRoutedModel: () => ipcRenderer.invoke('story:routed-model'),
   analyzeStoryChapters: (payload: {
     segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
-    model: string;
-    host?: string;
     consolidate?: boolean;
   }) => ipcRenderer.invoke('story:analyze-chapters', payload),
-  suggestStoryTitle: (payload: { text: string | string[]; model: string; host?: string }) =>
+  suggestStoryTitle: (payload: { text: string | string[] }) =>
     ipcRenderer.invoke('story:suggest-title', payload),
   cancelStoryAnalysis: () => ipcRenderer.invoke('story:cancel'),
-  unloadStoryModel: (payload: { model: string; host?: string }) => ipcRenderer.invoke('story:unload-model', payload),
+  unloadStoryModel: () => ipcRenderer.invoke('story:unload-model'),
   onStoryAnalyzeProgress: (callback: (p: { phase: string; done: number; total: number }) => void) => {
     ipcRenderer.on('story:analyze-progress', (_event, p) => callback(p));
   },

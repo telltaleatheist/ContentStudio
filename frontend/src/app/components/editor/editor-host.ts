@@ -403,9 +403,12 @@ export interface EditorHost {
   loadTranscript(payload: { zipPath: string }): Promise<any>;
 
   // ── Story analysis (LLM) ────────────────────────────────────────────────────
+  // The model is never chosen here. It is the chapters row of the metadata routing table,
+  // resolved by the main process on every call (LEDGER #204, #205); the editor only asks
+  // what that currently is, for its read-only line.
 
-  /** Models the host's local LLM runtime currently offers. */
-  ollamaListModels(host?: string): Promise<{ connected: boolean; models: Array<{ id: string; name: string }> }>;
+  /** The routed model the next story call will run on. Rejects when the routing cannot be resolved. */
+  storyRoutedModel(): Promise<{ model: string; label: string; kind: 'local' | 'cloud' }>;
 
   /**
    * Split a span of transcript into chapters. `consolidate: false` when the span IS one
@@ -414,8 +417,6 @@ export interface EditorHost {
    */
   analyzeStoryChapters(payload: {
     segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
-    model: string;
-    host?: string;
     consolidate?: boolean;
   }): Promise<{ chapters: Array<{
     index: number; startSeconds: number; endSeconds: number; label: string; detail: string; verbalCue: boolean;
@@ -426,13 +427,16 @@ export interface EditorHost {
   }> }>;
 
   /** Suggest one title from a story's subject list (preferred) or raw transcript text. */
-  suggestStoryTitle(payload: { text: string | string[]; model: string; host?: string }): Promise<{ title: string }>;
+  suggestStoryTitle(payload: { text: string | string[] }): Promise<{ title: string }>;
 
   /** Abort the in-flight analysis at its next boundary. */
   cancelStoryAnalysis(): Promise<{ stopped: boolean }>;
 
-  /** Evict a model from the runtime's memory. Housekeeping — the editor ignores failures. */
-  unloadStoryModel(payload: { model: string; host?: string }): Promise<{ ok: boolean }>;
+  /**
+   * Evict the local model the titling loop left resident, if the routed model is local.
+   * Housekeeping — the editor ignores failures, and a cloud selection has nothing to release.
+   */
+  unloadStoryModel(): Promise<{ ok: boolean; released: string | null }>;
 
   /** Progress ticks for chapter analysis. */
   onStoryAnalyzeProgress(callback: (p: { phase: string; done: number; total: number }) => void): void;
