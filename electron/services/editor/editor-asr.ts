@@ -61,6 +61,8 @@ export interface ServedAsrRequest {
   readonly model: string;
   readonly jobId: string;
   readonly words: number;
+  /** Pieces the server's loop guard re-decoded (its `redecoded` rows): the editor's loop count. */
+  readonly redecoded: number;
   readonly wallSeconds: number;
 }
 
@@ -99,12 +101,14 @@ export async function serveEditorAsrRequest(
     serverVersion: outcome.serverVersion,
     jobId: outcome.jobId,
     region: request.region,
+    // Pieces the server's loop guard re-cut and decoded again: the editor's loop count.
+    redecoded: transcript.redecoded,
     words: tokens.map((t) => ({ word: t.word, start: t.start, end: t.end, probability: null })),
   };
   const temp = `${wordsPath}.writing`;
   fs.writeFileSync(temp, JSON.stringify(doc), 'utf-8');
   fs.renameSync(temp, wordsPath);
-  return { wordsPath, model: outcome.model, jobId: outcome.jobId, words: tokens.length, wallSeconds: outcome.wallSeconds };
+  return { wordsPath, model: outcome.model, jobId: outcome.jobId, words: tokens.length, redecoded: transcript.redecoded, wallSeconds: outcome.wallSeconds };
 }
 
 /** The line that answers `request`: a response, or the error the run fails with. */
@@ -149,7 +153,8 @@ export function createAsrResponder(options: {
           ...(options.signal === undefined ? {} : { signal: options.signal }),
           onProgress: (percent) => options.write(asrProgressLine(request, percent)),
         });
-        options.log(`asr_request ${request.id}: ${served.words} words from job ${served.jobId} in ${served.wallSeconds.toFixed(1)} s → ${served.wordsPath}`);
+        options.log(`asr_request ${request.id}: ${served.words} words from job ${served.jobId} in ${served.wallSeconds.toFixed(1)} s` +
+          `${served.redecoded > 0 ? `, ${served.redecoded} piece(s) re-decoded by the server's loop guard` : ''} → ${served.wordsPath}`);
         options.write(asrAnswerLine(request, served));
       } catch (error) {
         const text = error instanceof Error ? error.message : String(error);
