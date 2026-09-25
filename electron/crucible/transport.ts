@@ -17,18 +17,27 @@
  *
  * PORTED, NOT INVENTED. The chat parser's rules are Briefcase's
  * llm/crucible-chat.service.ts `readReply` (a missing finish_reason is refused,
- * never defaulted to `stop`, plan 0a), which the 1.0.34 SDK's own `chat()` now
- * enforces (`readChatResponse` reads `finish_reason` strictly), so the SDK is
- * called rather than a raw fetch. The body rules are Briefcase's target.ts
- * with two ContentStudio rulings over them: `max_tokens` IS sent to Anthropic,
- * 16000, because Crucible fills 4096 when it is absent and a thinking model
- * spends that on reasoning (LEDGER #187); and `thinking` is stated on every
- * call, cloud included, where Crucible drops it and says so in
+ * never defaulted to `stop`, plan 0a), read off a STREAM (chat-stream.ts) so
+ * the job's stall clock hears every chunk (P3). The body rules are Briefcase's
+ * target.ts with two ContentStudio rulings over them: `max_tokens` IS sent to
+ * Anthropic, 16000, because Crucible fills 4096 when it is absent and a
+ * thinking model spends that on reasoning (LEDGER #187); and `thinking` is
+ * stated on every call, cloud included, where Crucible drops it and says so in
  * `X-Crucible-Sampling` (the 27B manifest states no default, so an unstated
  * `thinking` would be two models behaving differently for one call, plan 1).
- * The venue is P1's registry `selected` server (Q14: no automatic hand-off);
- * residency and the lease are lease.ts (BookForge's lease.ts, Briefcase's
+ * Residency and the lease are lease.ts (BookForge's lease.ts, Briefcase's
  * residency).
+ *
+ * THE LANE IS THE VENUE (P3, docs/crucible/P3.md "What transport.ts must call").
+ * Every call runs inside `queueAITask` and reads the step's hooks
+ * (`crucibleStepHooks()`): a GPU call runs on `hooks.server` and nowhere else
+ * (the job's venue: the fast pin's server or the selected one, LEDGER #205); a
+ * cloud call has no lane and goes to the SELECTED server, the one whose key the
+ * routing dialog judged Claude against (plan 0 #20). Every load and lease is
+ * written to the in-flight ledger the moment the server admits it, settled when
+ * it ends, and a hook's abort signal (Stop, a park, a stall, quit) is handed to
+ * every fetch. A busy card is NOT retried here: the SDK's refusal travels up as
+ * the `cause` of the door's own, and the lane parks the job on it.
  *
  * WHAT THE DOOR DOES ON EVERY CALL:
  *   - records itself in the caller's `promptTrace` with the server that runs it,
@@ -50,15 +59,16 @@ import {
   CrucibleProtocolError,
   CrucibleRefused,
   CrucibleServerError,
-  type ChatResponse,
   type DecideQuestion,
   type DecideResponse,
 } from '@crucible/client';
 import { JobCancelledError, isAbortError } from '../services/metadata/cancellation';
 import { isUpstreamModelId, upstreamOf, type ContentStudioAct } from './acts';
+import { readChatStream, refusalOf, type StreamedChat } from './chat-stream';
 import type { CrucibleClientFactory } from './client-factory';
 import { checkBeforeSending, estimateTokens, loadedContextOf, tokensNeeded } from './context-check';
 import { CrucibleCallError } from './errors';
+import { crucibleStepHooks, type CrucibleStepHooks } from './lanes';
 import { JobLeases, callRefusalOf, withJobLeases, type LeaseHost, type LeaseTimings } from './lease';
 import type { CrucibleProbes } from './probe';
 import type { CrucibleServers } from './servers';
@@ -70,6 +80,9 @@ import type { CrucibleServers } from './servers';
  * ANTHROPIC_MAX_TOKENS_DEFAULT), so it is always sent.
  */
 export const ANTHROPIC_MAX_TOKENS = 16000;
+
+/** How often a streamed answer tells the stall clock it is alive (P3): a beat per second at most. */
+const BEAT_EVERY_MS = 1_000;
 
 /** One line of a run's prompt trace, as AIManagerService.promptTrace has always held it, plus the server. */
 export interface PromptTraceRecord {
@@ -142,17 +155,27 @@ export interface DecideRequest {
 
 export interface TransportHost {
   servers: Pick<CrucibleServers, 'selected' | 'routingView'>;
-  factory: Pick<CrucibleClientFactory, 'clientFor'>;
+  factory: Pick<CrucibleClientFactory, 'clientFor' | 'engineFetch'>;
   probes: Pick<CrucibleProbes, 'reach'>;
+  /** The step's lane hooks. Default: lanes.ts `crucibleStepHooks()`; a keeper may pass its own. */
+  hooks?: () => CrucibleStepHooks;
 }
 
 /** The model strings the old transports used. A caller still holding one is refused by name. */
 const RETIRED_PREFIXES = ['ollama:', 'claude:', 'openai:'] as const;
 
+/** Every signal that should end this call, as one (a missing one is left out, never invented). */
+function anySignal(...signals: Array<AbortSignal | null | undefined>): AbortSignal | undefined {
+  const present = signals.filter((s): s is AbortSignal => s !== null && s !== undefined);
+  if (present.length === 0) return undefined;
+  return present.length === 1 ? present[0] : AbortSignal.any(present);
+}
+
 export class CrucibleTransport {
   /** Servers already told they get `analysis` this session (plan 6.4: one line per server). */
   private readonly analysisNoted = new Set<string>();
   private readonly leaseHost: LeaseHost;
+  private readonly hooksOf: () => CrucibleStepHooks;
 
   constructor(
     private readonly host: TransportHost,
@@ -160,6 +183,7 @@ export class CrucibleTransport {
     private readonly timings: Partial<LeaseTimings> = {},
   ) {
     this.leaseHost = { client: (server, options) => host.factory.clientFor(server, options) };
+    this.hooksOf = host.hooks ?? crucibleStepHooks;
   }
 
   /** A new job's leases. The caller releases it once, in its `finally` (model-lifecycle.ts does). */
@@ -169,7 +193,9 @@ export class CrucibleTransport {
 
   /**
    * Hold `model` on `server` for the whole of `fn` (plan 13.3), released on
-   * every way out. `fn` is handed the job, to pass to each call it makes.
+   * every way out. `fn` is handed the job, to pass to each call it makes. Runs
+   * inside a lane like every call; `server` must be the lane's (a GPU step never
+   * runs anywhere else, P3).
    */
   async withJobLease<T>(
     server: string,
@@ -180,9 +206,15 @@ export class CrucibleTransport {
     const job = this.job(options.what);
     return withJobLeases(job, async () => {
       if (!isUpstreamModelId(model)) {
+        const hooks = this.hooksOf();
+        const onLane = this.gpuServer(hooks, job, options.what);
+        if (onLane !== server) {
+          throw new CrucibleCallError('refused', `${options.what} asked for "${server}", and its lane runs on "${onLane}"; a GPU step never moves (P3, #205).`, server);
+        }
         const venue = await this.venue(server, options.act ?? 'generate');
-        job.server = server;
-        await job.hold(server, model, { act: venue.act, need: null, loadContext: options.loadContext, signal: options.signal });
+        await job.hold(server, model, {
+          act: venue.act, need: null, loadContext: options.loadContext, signal: anySignal(options.signal, hooks.signal), hooks,
+        });
       }
       return fn(job);
     });
@@ -207,14 +239,16 @@ export class CrucibleTransport {
           `${ANTHROPIC_MAX_TOKENS} (LEDGER #187), because a thinking model at a smaller ceiling returns no text.`,
       );
     }
-    this.throwIfAborted(request.signal, request.what);
+    const hooks = this.hooksOf();
+    const signal = anySignal(request.signal, hooks.signal);
+    this.throwIfAborted(signal, request.what);
 
     const oneCall = request.job === undefined;
     const job = request.job ?? this.job(request.what);
     try {
-      const server = job.server ?? this.host.servers.selected();
+      const server = upstream ? this.host.servers.selected() : this.gpuServer(hooks, job, request.what);
       const venue = await this.venue(server, 'generate');
-      job.server ??= server;
+      if (!upstream) job.server ??= server;
       request.trace?.push({
         what: request.what,
         model,
@@ -237,12 +271,13 @@ export class CrucibleTransport {
       let reensured = false;
       for (;;) {
         if (!upstream) {
-          await job.hold(server, model, { act: venue.act, need, loadContext: request.loadContext, signal: request.signal });
+          await job.hold(server, model, { act: venue.act, need, loadContext: request.loadContext, signal, hooks });
           job.assertHeld(server, model);
           await this.checkContext(job, server, model, request);
         }
         try {
-          const answer = await this.send(server, model, venue.act, request);
+          const answer = await this.send(server, model, venue.act, request, signal, hooks);
+          hooks.beat();
           return this.readAnswer(answer, server, model, venue.act, request);
         } catch (err) {
           if (!upstream && !reensured && err instanceof CrucibleRefused && err.code === 'model_not_resident') {
@@ -251,7 +286,7 @@ export class CrucibleTransport {
             job.forget(server, model);
             continue;
           }
-          throw this.refusal(err, server, model, request.what, request.signal);
+          throw this.refusal(err, server, model, request.what, signal);
         }
       }
     } finally {
@@ -259,31 +294,57 @@ export class CrucibleTransport {
     }
   }
 
-  private async send(server: string, model: string, act: ContentStudioAct, request: ChatRequest): Promise<ChatResponse> {
-    const client = await this.host.factory.clientFor(server);
+  /**
+   * One streamed completion on the chat door (chat-stream.ts). The body is the one the SDK's
+   * `chat()` would send (its `#chatRequest` keys), plus `stream` and the usage frame.
+   */
+  private async send(
+    server: string,
+    model: string,
+    act: ContentStudioAct,
+    request: ChatRequest,
+    signal: AbortSignal | undefined,
+    hooks: CrucibleStepHooks,
+  ): Promise<StreamedChat> {
     const upstream = isUpstreamModelId(model);
     const clock = request.timeoutMs === undefined ? undefined : AbortSignal.timeout(request.timeoutMs);
-    const signal = clock === undefined ? request.signal
-      : request.signal === undefined ? clock : AbortSignal.any([request.signal, clock]);
+    const combined = anySignal(signal, clock);
     const messages = request.system === undefined
-      ? [{ role: 'user' as const, content: request.prompt }]
-      : [{ role: 'system' as const, content: request.system }, { role: 'user' as const, content: request.prompt }];
+      ? [{ role: 'user', content: request.prompt }]
+      : [{ role: 'system', content: request.system }, { role: 'user', content: request.prompt }];
+    const body: Record<string, unknown> = {
+      model,
+      messages,
+      stream: true,
+      stream_options: { include_usage: true },
+      max_tokens: request.maxTokens,
+      // Stated on every call, cloud included: Crucible does not forward it to Anthropic and
+      // says so in X-Crucible-Sampling (`dropped`), which is the declared state (plan 6.3).
+      chat_template_kwargs: { enable_thinking: request.thinking },
+    };
+    // Local only (LEDGER #194): no sampling parameter crosses to a cloud upstream.
+    if (!upstream && request.temperature !== undefined) body['temperature'] = request.temperature;
+    // JSON on a local model only: Crucible turns `json_object` into nothing on Anthropic
+    // (only a json_schema becomes a forced tool), and the cloud compilation carries its JSON
+    // contract in the system turn, as it did.
+    if (!upstream && request.responseFormat !== undefined) body['response_format'] = request.responseFormat;
     try {
-      return await client.chat({
-        model,
-        messages,
-        maxTokens: request.maxTokens,
-        thinking: request.thinking,
-        act,
-        ...(upstream || request.temperature === undefined ? {} : { temperature: request.temperature }),
-        // JSON on a local model only: Crucible turns `json_object` into nothing on
-        // Anthropic (only a json_schema becomes a forced tool), and the cloud
-        // compilation carries its JSON contract in the system turn, as it did.
-        ...(upstream || request.responseFormat === undefined ? {} : { responseFormat: request.responseFormat }),
-        ...(signal === undefined ? {} : { signal }),
+      const { response, url } = await this.host.factory.engineFetch(server, '/v1/openai/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'X-Crucible-Act': act },
+        body: JSON.stringify(body),
+        ...(combined === undefined ? {} : { signal: combined }),
+      });
+      if (!response.ok) throw await refusalOf(response, url);
+      let last = 0;
+      return await readChatStream(response, url, () => {
+        const now = Date.now();
+        if (now - last < BEAT_EVERY_MS) return;
+        last = now;
+        hooks.beat();
       });
     } catch (err) {
-      if (clock?.aborted && !request.signal?.aborted) {
+      if (clock?.aborted && !signal?.aborted) {
         throw new CrucibleCallError(
           'unreachable',
           `${request.what} on ${model} did not finish within ${Math.round(request.timeoutMs! / 1000)} s on "${server}".`,
@@ -294,22 +355,23 @@ export class CrucibleTransport {
     }
   }
 
-  private readAnswer(answer: ChatResponse, server: string, model: string, act: ContentStudioAct, request: ChatRequest): ChatResult {
-    const usage = answer.usage === null ? null : { ...answer.usage };
+  private readAnswer(answer: StreamedChat, server: string, model: string, act: ContentStudioAct, request: ChatRequest): ChatResult {
+    const usage = answer.usage;
     if (answer.finishReason === 'length') {
       throw new CrucibleCallError(
         'truncated',
         `the answer to ${request.what} from ${model} on "${server}" was cut off at its ${request.maxTokens}-token ` +
-          `ceiling (${usage?.completionTokens ?? 'unstated'} output tokens, ${answer.content.length} chars of text). ` +
-          `A truncated answer must not be used, so nothing is returned.`,
+          `ceiling (${usage?.completionTokens ?? 'unstated'} output tokens, ${answer.text.length} chars of text` +
+          `${answer.reasoningChars > 0 ? `, ${answer.reasoningChars} of reasoning` : ''}). A truncated answer must ` +
+          `not be used, so nothing is returned.`,
         server,
       );
     }
     log.info(
-      `[crucible] ${request.what}: ${model} on "${server}" (${act}) answered ${answer.content.length} chars, ` +
+      `[crucible] ${request.what}: ${model} on "${server}" (${act}) answered ${answer.text.length} chars, ` +
         `finish ${answer.finishReason}, tokens ${usage?.promptTokens ?? 'unstated'} in / ${usage?.completionTokens ?? 'unstated'} out`,
     );
-    return { text: answer.content, finishReason: answer.finishReason, usage, server, model, act };
+    return { text: answer.text, finishReason: answer.finishReason, usage, server, model, act };
   }
 
   /** The check before sending, against what the server states the model is loaded with. */
@@ -345,7 +407,8 @@ export class CrucibleTransport {
   /**
    * One decision (plan 10, PHASE22-DECIDE). Exported for the chaptering service
    * another agent is finishing; P2 wires no caller. The model is required: the
-   * routing names the scorer, and this door never picks one.
+   * routing names the scorer, and this door never picks one. A GPU step: it runs
+   * on its lane's server.
    */
   async decide(request: DecideRequest): Promise<DecideResponse> {
     const model = this.requireCrucibleModel(request.model, request.what);
@@ -356,11 +419,13 @@ export class CrucibleTransport {
         null, 400, 'decide_needs_logprobs',
       );
     }
-    this.throwIfAborted(request.signal, request.what);
+    const hooks = this.hooksOf();
+    const signal = anySignal(request.signal, hooks.signal);
+    this.throwIfAborted(signal, request.what);
     const oneCall = request.job === undefined;
     const job = request.job ?? this.job(request.what);
     try {
-      const server = job.server ?? this.host.servers.selected();
+      const server = this.gpuServer(hooks, job, request.what);
       await this.venue(server, 'decide');
       job.server ??= server;
       const state = typeof request.state === 'string' ? request.state : JSON.stringify(request.state);
@@ -375,7 +440,7 @@ export class CrucibleTransport {
       const need = estimateTokens(state.length);
       let reensured = false;
       for (;;) {
-        await job.hold(server, model, { act: 'decide', need, signal: request.signal });
+        await job.hold(server, model, { act: 'decide', need, signal, hooks });
         job.assertHeld(server, model);
         const facts = job.contextFacts(server, model);
         checkBeforeSending({
@@ -384,10 +449,12 @@ export class CrucibleTransport {
         });
         try {
           const client = await this.host.factory.clientFor(server);
-          return await client.decide(
+          const answer = await client.decide(
             { model, state: request.state, questions: request.questions, ...(request.missing === undefined ? {} : { missing: request.missing }) },
-            { act: 'decide', ...(request.signal === undefined ? {} : { signal: request.signal }) },
+            { act: 'decide', ...(signal === undefined ? {} : { signal }) },
           );
+          hooks.beat();
+          return answer;
         } catch (err) {
           if (!reensured && err instanceof CrucibleRefused && err.code === 'model_not_resident') {
             reensured = true;
@@ -395,9 +462,9 @@ export class CrucibleTransport {
             continue;
           }
           if (err instanceof CrucibleServerError && err.code === 'decide_not_served') {
-            throw new CrucibleCallError('decide_not_served', `"${server}" cannot serve ${request.what} on ${model}: ${err.serverMessage}`, server, err.status, err.code);
+            throw new CrucibleCallError('decide_not_served', `"${server}" cannot serve ${request.what} on ${model}: ${err.serverMessage}`, server, err.status, err.code, null, err);
           }
-          throw this.refusal(err, server, model, request.what, request.signal);
+          throw this.refusal(err, server, model, request.what, signal);
         }
       }
     } finally {
@@ -406,6 +473,21 @@ export class CrucibleTransport {
   }
 
   // ── the venue and the act ─────────────────────────────────────────────────
+
+  /**
+   * The server a GPU step runs on: its lane's, and nothing else (P3). A job that
+   * already holds a server keeps it; a lane that says otherwise is refused by
+   * name rather than followed onto a second card.
+   */
+  private gpuServer(hooks: CrucibleStepHooks, job: JobLeases, what: string): string {
+    if (hooks.lane !== 'gpu' || hooks.server === null) {
+      throw new CrucibleCallError('refused', `${what} is a local model call, and it reached the door on a ${hooks.lane} lane with no server; a GPU call runs on its server's lane (P3).`);
+    }
+    if (job.server !== null && job.server !== hooks.server) {
+      throw new CrucibleCallError('refused', `${what} belongs to a job holding "${job.server}", and its lane runs on "${hooks.server}"; a job's work never moves between servers (#205).`, hooks.server);
+    }
+    return hooks.server;
+  }
 
   /**
    * The server, checked, and the act it takes. Every refusal names the fix:
@@ -482,11 +564,11 @@ export class CrucibleTransport {
         'upstream_unconfigured',
         `"${server}" has no ${upstream} key, so ${model} cannot run there. Add it on that server in Settings › ` +
           `Crucible Servers › ${server} › Keys; nothing was sent anywhere else.`,
-        server, err.status, err.code,
+        server, err.status, err.code, null, err,
       );
     }
     if (err instanceof CrucibleProtocolError) {
-      return new CrucibleCallError('protocol_error', `"${server}" answered ${what} in a shape ContentStudio cannot use: ${err.message}`, server);
+      return new CrucibleCallError('protocol_error', `"${server}" answered ${what} in a shape ContentStudio cannot use: ${err.message}`, server, null, null, null, err);
     }
     return callRefusalOf(err, server);
   }
@@ -496,7 +578,7 @@ export class CrucibleTransport {
 
 let installed: CrucibleTransport | null = null;
 
-/** main.ts (and the CLI) install the one transport once the registry exists. */
+/** main.ts (and cli-lanes.ts, for a CLI) install the one transport once the registry exists. */
 export function installCrucibleTransport(transport: CrucibleTransport | null): void {
   installed = transport;
 }

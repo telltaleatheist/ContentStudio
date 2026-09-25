@@ -140,6 +140,12 @@ export class CrucibleCallError extends Error {
     readonly serverCode: string | null = null,
     /** The holder's sentence for `busy` ("busy: bookforge, tts 62% done"), for P3's parked line. */
     readonly busyLine: string | null = null,
+    /**
+     * The SDK's own refusal this one names, unchanged. P3's lanes read it by TYPE through the
+     * `cause` chain (parking.ts `parkRefusalOf`: CrucibleBusy, CrucibleLeased, engine_in_use...),
+     * so a busy card parks the job rather than failing it (docs/crucible/P3.md).
+     */
+    readonly cause: unknown = undefined,
   ) {
     super(`${code}: ${message}`);
     this.name = 'CrucibleCallError';

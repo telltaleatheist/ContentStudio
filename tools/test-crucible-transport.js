@@ -14,7 +14,12 @@
  *  - a reply without `finish_reason` is refused, and `length` is a hard failure;
  *  - the act is `generate` where the server lists it and `analysis` (said once) where not;
  *  - a heartbeat answered `unknown_lease` fails the job's next call, loudly;
- *  - decide carries its act and its model, and a server without the door refuses by name.
+ *  - decide carries its act and its model, and a server without the door refuses by name;
+ *  - (P3's contract) a call runs on its lane's server, writes every load and lease to the
+ *    in-flight ledger and settles it, beats the stall clock on a streamed answer, and carries a
+ *    busy card's SDK refusal as its `cause` so the lane parks the job.
+ *
+ * Every call runs inside a lane step (`lanes.aiCall`), as it does in the app.
  *
  * No GPU, no model, no network beyond 127.0.0.1, and no paid call anywhere.
  */
@@ -25,8 +30,10 @@ const DIST = path.join(REPO, 'dist', 'main');
 const services = (name) => require(path.join(DIST, 'services', name));
 const ASSETS_DIR = path.join(REPO, 'electron', 'assets');
 
-const { installCrucibleTransport, ANTHROPIC_MAX_TOKENS } = crucible('transport');
+const { installCrucibleTransport, ANTHROPIC_MAX_TOKENS, CrucibleTransport } = crucible('transport');
 const { CrucibleCallError } = crucible('errors');
+const { installLanes, gpuCall, routeOfModelId } = crucible('lanes');
+const { parkRefusalOf } = crucible('parking');
 
 const KEY = 'sk-ant-api03-keeper-key-abcdefghijklmnop-WXYZ';
 const MODELS = [
@@ -40,12 +47,19 @@ async function withDoor(options, fn) {
   const made = context({ leaseTimings: { heartbeatMs: 40, releaseGraceMs: 20, requestTimeoutMs: 500 } });
   made.ctx.servers.add({ name: 'mac', url: server.url, token: server.token });
   installCrucibleTransport(made.ctx.transport);
+  installLanes(made.ctx.lanes);
   try {
     await fn(server, made.ctx);
   } finally {
     installCrucibleTransport(null);
+    installLanes(null);
     await server.close();
   }
+}
+
+/** Run `fn` as one lane step for `model`, as queueAITask does in the app. */
+function onLane(ctx, model, fn) {
+  return ctx.lanes.aiCall(routeOfModelId(model), 'the keeper step', fn);
 }
 
 function manager(extra = {}) {
@@ -67,7 +81,7 @@ function assertCloudBody(body, what) {
 
 // ── the bodies, per plan 6.3 row, from the real call sites ──────────────────
 
-check('6.3 rows, local: each call site states thinking, its budget and the act, and nothing samples but stage 1', () => withDoor({}, async (server) => {
+check('6.3 rows, local: each call site states thinking, its budget and the act, and nothing samples but stage 1', () => withDoor({}, async (server, ctx_) => {
   const moreTitles = services('metadata/more-titles.js');
   const rewrite = services('metadata/rewrite-pass.js');
   const tasks = services('metadata/metadata-tasks.js');
@@ -86,8 +100,11 @@ check('6.3 rows, local: each call site states thinking, its budget and the act, 
   // chapter detail (thinking ON) and a stage-1 consensus sample (thinking off, temperature 0.7)
   const chapterer = new WholeTranscriptChapterService({ model: local.model, trace: ai.promptTrace, lifecycle, grain: 'broad' });
   chapterer.numCtx = 16384;
-  await chapterer.ask('detail', 'Name this chapter.', 'chapter 1', 60_000, { thinking: true });
-  await chapterer.ask('chapters', 'List the turns.', 'stage 1', 60_000, { thinking: false, temperature: 0.7 });
+  // The chapter stage holds its lane for its whole run, as the generator's queueAITask does.
+  await ctx_.lanes.aiCall(gpuCall(local.model), 'the chapter stage', async () => {
+    await chapterer.ask('detail', 'Name this chapter.', 'chapter 1', 60_000, { thinking: true });
+    await chapterer.ask('chapters', 'List the turns.', 'stage 1', 60_000, { thinking: false, temperature: 0.7 });
+  });
   await lifecycle.releaseAll();
   // more titles (thinking off), scrub/Soften (thinking on): one-call jobs
   await moreTitles.askForMoreTitles({ prompt: 'the titles prompt', sourceLabel: 'keeper.mp4' }, ['A title'], local, { aiManager: ai }).catch(() => undefined);
@@ -96,6 +113,7 @@ check('6.3 rows, local: each call site states thinking, its budget and the act, 
   await rewrite.askToRewrite(pass, plan, local, { aiManager: ai }, 'keeper.mp4', 'Rewrite this.');
 
   const bodies = chats(server).map((r) => ({ body: r.body, act: actOf(r) }));
+  assert.ok(bodies.every((b) => b.body.stream === true), 'every chat is streamed, so the stall clock hears it (P3)');
   const thinking = bodies.map((b) => b.body.chat_template_kwargs?.enable_thinking);
   assert.deepStrictEqual(thinking, [false, true, false, false, true], 'titles, detail, stage 1, more titles, soften');
   assert.deepStrictEqual(bodies.map((b) => b.body.max_tokens), [8192, 8192, 8192, 8192, 8192]);
@@ -146,10 +164,11 @@ check('the compilation package on a LOCAL model asks for json_object, thinking o
 
 check('a sampling parameter to a cloud upstream, a wrong Anthropic ceiling, or a stale prefix is refused before sending', () => withDoor({}, async (server, ctx) => {
   const base = { prompt: 'x', act: 'generate', thinking: false, what: 'the keeper call', trace: null };
-  assert.strictEqual((await rejection(ctx.transport.chat({ ...base, model: 'anthropic/claude-sonnet-5', maxTokens: 16000, temperature: 0.7 }))).code, 'sampling_to_cloud');
-  assert.strictEqual((await rejection(ctx.transport.chat({ ...base, model: 'anthropic/claude-sonnet-5', maxTokens: 4096 }))).code, 'invalid_model');
+  const cloud = (request) => onLane(ctx, 'anthropic/claude-sonnet-5', () => ctx.transport.chat(request));
+  assert.strictEqual((await rejection(cloud({ ...base, model: 'anthropic/claude-sonnet-5', maxTokens: 16000, temperature: 0.7 }))).code, 'sampling_to_cloud');
+  assert.strictEqual((await rejection(cloud({ ...base, model: 'anthropic/claude-sonnet-5', maxTokens: 4096 }))).code, 'invalid_model');
   for (const stale of ['ollama:qwen3.8:27b', 'claude:claude-sonnet-5', 'openai:gpt-4o', 'claude-cli:opus']) {
-    assert.strictEqual((await rejection(ctx.transport.chat({ ...base, model: stale, maxTokens: 100 }))).code, 'invalid_model', stale);
+    assert.strictEqual((await rejection(cloud({ ...base, model: stale, maxTokens: 100 }))).code, 'invalid_model', stale);
   }
   assert.strictEqual(chats(server).length, 0);
 }));
@@ -157,14 +176,14 @@ check('a sampling parameter to a cloud upstream, a wrong Anthropic ceiling, or a
 // ── the refusals ─────────────────────────────────────────────────────────────
 
 check('409 model_not_resident: the model is made resident again ONCE and the chat resent', () => withDoor({}, async (server, ctx) => {
-  await ctx.transport.withJobLease('mac', 'qwen3.8-27b-4bit', async (job) => {
+  await onLane(ctx, 'qwen3.8-27b-4bit', () => ctx.transport.withJobLease('mac', 'qwen3.8-27b-4bit', async (job) => {
     // Someone else's load evicts our model mid-job.
     server.setResident('qwen3.5-9b');
     const answer = await ctx.transport.chat({
       model: 'qwen3.8-27b-4bit', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, job, what: 'the keeper call', trace: null,
     });
     assert.strictEqual(answer.finishReason, 'stop');
-  }, { what: 'the keeper job' });
+  }, { what: 'the keeper job' }));
   assert.strictEqual(chats(server).length, 2, 'one refused send and one resend, never more');
   const loads = server.jobs.filter((j) => j.type === 'load-model' && j.model === 'qwen3.8-27b-4bit');
   assert.strictEqual(loads.length, 2, 'the job load and the ONE re-ensure');
@@ -173,17 +192,17 @@ check('409 model_not_resident: the model is made resident again ONCE and the cha
 
 check('a second model_not_resident is not chased: the call fails by name', () => withDoor({}, async (server, ctx) => {
   server.faults.refuse = [{ match: { path: '/v1/openai/chat/completions' }, status: 409, code: 'model_not_resident', times: 2 }];
-  const err = await rejection(ctx.transport.chat({
+  const err = await rejection(onLane(ctx, 'qwen3.8-27b-4bit', () => ctx.transport.chat({
     model: 'qwen3.8-27b-4bit', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, what: 'the keeper call', trace: null,
-  }));
+  })));
   assert.strictEqual(err.serverCode, 'model_not_resident');
   assert.strictEqual(chats(server).length, 2);
 }));
 
 check('upstream_unconfigured is a clear error naming the server and where the key goes', () => withDoor({ upstreams: {} }, async (_server, ctx) => {
-  const err = await rejection(ctx.transport.chat({
+  const err = await rejection(onLane(ctx, 'anthropic/claude-sonnet-5', () => ctx.transport.chat({
     model: 'anthropic/claude-sonnet-5', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 16000, what: 'the keeper call', trace: null,
-  }));
+  })));
   assert.ok(err instanceof CrucibleCallError);
   assert.strictEqual(err.code, 'upstream_unconfigured');
   assert.match(err.message, /"mac" has no anthropic key/);
@@ -192,9 +211,9 @@ check('upstream_unconfigured is a clear error naming the server and where the ke
 
 check('a 429 passes through as a 429 with the server\'s code, sent once and never retried here', () => withDoor({}, async (server, ctx) => {
   server.faults.refuse = [{ match: { path: '/v1/openai/chat/completions' }, status: 429, code: 'rate_limited', message: 'slow down', retryAfter: 5 }];
-  const err = await rejection(ctx.transport.chat({
+  const err = await rejection(onLane(ctx, 'anthropic/claude-sonnet-5', () => ctx.transport.chat({
     model: 'anthropic/claude-sonnet-5', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 16000, what: 'the keeper call', trace: null,
-  }));
+  })));
   assert.strictEqual(err.status, 429);
   assert.strictEqual(err.serverCode, 'rate_limited');
   assert.strictEqual(chats(server).length, 1);
@@ -203,9 +222,9 @@ check('a 429 passes through as a 429 with the server\'s code, sent once and neve
 check('over the loaded context: throws BEFORE sending, naming the model, the server and both numbers', () => withDoor(
   { models: [{ id: 'qwen3.5-9b', paramsB: 9, installed: true, contextDefault: 16384, maxModelLen: 16384 }] },
   async (server, ctx) => {
-    const err = await rejection(ctx.transport.chat({
+    const err = await rejection(onLane(ctx, 'qwen3.5-9b', () => ctx.transport.chat({
       model: 'qwen3.5-9b', prompt: 'word '.repeat(20000), act: 'generate', thinking: false, maxTokens: 8192, what: 'the keeper call', trace: null,
-    }));
+    })));
     assert.strictEqual(err.code, 'over_context');
     assert.match(err.message, /qwen3\.5-9b on "mac" is loaded with 16384/);
     assert.match(err.message, /needs ~\d+ tokens/);
@@ -215,17 +234,17 @@ check('over the loaded context: throws BEFORE sending, naming the model, the ser
 ));
 
 check('a load context the call itself does not fit is refused before any load', () => withDoor({}, async (server, ctx) => {
-  const err = await rejection(ctx.transport.chat({
+  const err = await rejection(onLane(ctx, 'qwen3.8-27b-4bit', () => ctx.transport.chat({
     model: 'qwen3.8-27b-4bit', prompt: 'word '.repeat(20000), act: 'generate', thinking: false, maxTokens: 8192, loadContext: 8192, what: 'the keeper call', trace: null,
-  }));
+  })));
   assert.strictEqual(err.code, 'over_context');
   assert.strictEqual(server.jobs.length, 0, 'nothing loaded');
 }));
 
 check('the job loads the model at its stated context (LEDGER #111), and that is the window it is checked against', () => withDoor({}, async (server, ctx) => {
-  await ctx.transport.chat({
+  await onLane(ctx, 'qwen3.8-27b-4bit', () => ctx.transport.chat({
     model: 'qwen3.8-27b-4bit', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, loadContext: 24576, what: 'the keeper call', trace: null,
-  });
+  }));
   const load = server.jobs.find((j) => j.type === 'load-model');
   assert.strictEqual(load.params.context, 24576);
   assert.deepStrictEqual(load.params.lease, { act: 'generate', ttl_seconds: 120 }, 'the lease is taken on the load, ttl 120 s');
@@ -234,9 +253,9 @@ check('the job loads the model at its stated context (LEDGER #111), and that is 
 check('cancel aborts the open fetch and gives the lease back', () => withDoor({}, async (server, ctx) => {
   server.inject({ chatDelayMs: 5_000 });
   const controller = new AbortController();
-  const pending = ctx.transport.chat({
+  const pending = onLane(ctx, 'qwen3.8-27b-4bit', () => ctx.transport.chat({
     model: 'qwen3.8-27b-4bit', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, signal: controller.signal, what: 'the keeper call', trace: null,
-  });
+  }));
   await until(() => chats(server).length === 1);
   const started = Date.now();
   controller.abort();
@@ -248,11 +267,13 @@ check('cancel aborts the open fetch and gives the lease back', () => withDoor({}
 }));
 
 check('a reply without finish_reason is REFUSED (never read as stop), and finish_reason length is a hard failure', () => withDoor(
-  { chatReplies: { 'qwen3.8-27b-4bit': (body) => (body.max_tokens === 111 ? { content: 'half an', finishReason: 'length' } : { content: 'x', finishReason: null }) } },
+  { chatReplies: { 'qwen3.8-27b-4bit': (body) => (body.max_tokens === 111 ? { content: 'half an', finishReason: 'length' } : body.max_tokens === 112 ? { content: 'x', noDone: true } : { content: 'x', finishReason: null }) } },
   async (_server, ctx) => {
     const base = { model: 'qwen3.8-27b-4bit', prompt: 'hello', act: 'generate', thinking: false, what: 'the keeper call', trace: null };
-    assert.strictEqual((await rejection(ctx.transport.chat({ ...base, maxTokens: 100 }))).code, 'protocol_error');
-    const cut = await rejection(ctx.transport.chat({ ...base, maxTokens: 111 }));
+    const call = (request) => onLane(ctx, 'qwen3.8-27b-4bit', () => ctx.transport.chat(request));
+    assert.strictEqual((await rejection(call({ ...base, maxTokens: 100 }))).code, 'protocol_error');
+    assert.strictEqual((await rejection(call({ ...base, maxTokens: 112 }))).code, 'unreachable', 'a stream with no [DONE] is truncated, not whole');
+    const cut = await rejection(call({ ...base, maxTokens: 111 }));
     assert.strictEqual(cut.code, 'truncated');
     assert.match(cut.message, /cut off at its 111-token ceiling/);
   },
@@ -262,8 +283,8 @@ check('the act: `generate` where the server lists it, `analysis` on a pre-1.0.24
   { legacyActs: true },
   async (server, ctx) => {
     const base = { model: 'qwen3.8-27b-4bit', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, what: 'the keeper call', trace: null };
-    await ctx.transport.chat(base);
-    await ctx.transport.chat(base);
+    await onLane(ctx, base.model, () => ctx.transport.chat(base));
+    await onLane(ctx, base.model, () => ctx.transport.chat(base));
     assert.deepStrictEqual(chats(server).map(actOf), ['analysis', 'analysis']);
     assert.deepStrictEqual(server.leases.taken.map((l) => l.act), ['analysis', 'analysis'], 'the lease names the same act');
     const said = logged.filter((l) => l.text.includes('predates 1.0.24; sending act analysis'));
@@ -272,13 +293,13 @@ check('the act: `generate` where the server lists it, `analysis` on a pre-1.0.24
 ));
 
 check('a heartbeat answered unknown_lease fails the job\'s next call, and the job, loudly', () => withDoor({}, async (server, ctx) => {
-  const err = await rejection(ctx.transport.withJobLease('mac', 'qwen3.8-27b-4bit', async (job) => {
+  const err = await rejection(onLane(ctx, 'qwen3.8-27b-4bit', () => ctx.transport.withJobLease('mac', 'qwen3.8-27b-4bit', async (job) => {
     server.expireLease();
     await until(() => job.held().some((h) => h.lost !== null));
     await ctx.transport.chat({
       model: 'qwen3.8-27b-4bit', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, job, what: 'the keeper call', trace: null,
     });
-  }, { what: 'the keeper job' }));
+  }, { what: 'the keeper job' })));
   assert.strictEqual(err.code, 'lease_lost');
   assert.match(err.message, /unknown_lease/);
   assert.strictEqual(chats(server).length, 0, 'nothing was sent unprotected');
@@ -286,7 +307,7 @@ check('a heartbeat answered unknown_lease fails the job\'s next call, and the jo
 
 check('a job holds ONE lease per model and heartbeats it; switching models hands the first back', () => withDoor({}, async (server, ctx) => {
   const job = ctx.transport.job('the keeper job');
-  const call = (model) => ctx.transport.chat({ model, prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, job, what: 'the keeper call', trace: null });
+  const call = (model) => onLane(ctx, model, () => ctx.transport.chat({ model, prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, job, what: 'the keeper call', trace: null }));
   await call('qwen3.8-27b-4bit');
   await call('qwen3.8-27b-4bit');
   await until(() => server.requestsTo('/v1/leases/').some((r) => r.path.endsWith('/heartbeat')));
@@ -300,43 +321,78 @@ check('a job holds ONE lease per model and heartbeats it; switching models hands
 
 check('another client\'s lease pinning OUR model: the call runs under it, said, and takes none of its own', () => withDoor({}, async (server, ctx) => {
   server.leaseAsOther('qwen3.8-27b-4bit', 'bookforge');
-  const answer = await ctx.transport.chat({
+  const answer = await onLane(ctx, 'qwen3.8-27b-4bit', () => ctx.transport.chat({
     model: 'qwen3.8-27b-4bit', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, what: 'the keeper call', trace: null,
-  });
+  }));
   assert.strictEqual(answer.server, 'mac');
   assert.ok(logged.some((l) => /running under their lease/.test(l.text)));
 }));
 
 check('another client\'s lease on a DIFFERENT model: busy with the holder\'s sentence, nothing loaded over it', () => withDoor({}, async (server, ctx) => {
   server.leaseAsOther('qwen3.5-9b', 'bookforge');
-  const err = await rejection(ctx.transport.chat({
+  const err = await rejection(onLane(ctx, 'qwen3.8-27b-4bit', () => ctx.transport.chat({
     model: 'qwen3.8-27b-4bit', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, what: 'the keeper call', trace: null,
-  }));
+  })));
   assert.strictEqual(err.code, 'busy');
   assert.match(err.busyLine, /bookforge/);
   assert.strictEqual(chats(server).length, 0);
+  // The SDK's own refusal rides as the cause, so P3's lane parks the job on it by type.
+  const park = parkRefusalOf(err);
+  assert.ok(park !== null && park.code === 'leased', `the lane reads the busy card: ${JSON.stringify(park)}`);
 }));
 
 check('a paused or older server takes no work, by name', () => withDoor({}, async (_server, ctx) => {
   ctx.servers.setPaused('mac', true);
   const base = { model: 'qwen3.8-27b-4bit', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, what: 'the keeper call', trace: null };
-  assert.strictEqual((await rejection(ctx.transport.chat(base))).code, 'paused');
+  // The lane refuses a standalone GPU call on a paused server before the door is reached.
+  assert.strictEqual((await rejection(onLane(ctx, base.model, () => ctx.transport.chat(base)))).code, 'server_paused');
 }).then(() => withDoor({ version: '1.0.24' }, async (_server, ctx) => {
   const base = { model: 'qwen3.8-27b-4bit', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, what: 'the keeper call', trace: null };
-  assert.strictEqual((await rejection(ctx.transport.chat(base))).code, 'needs_update');
+  assert.strictEqual((await rejection(onLane(ctx, base.model, () => ctx.transport.chat(base)))).code, 'needs_update');
 })));
+
+check('P3\'s contract: the load and the lease are in the ledger before the next await, settled at the end; the answer beats', () => withDoor({}, async (_server, ctx) => {
+  const said = [];
+  const transport = new CrucibleTransport({
+    servers: ctx.servers, factory: ctx.factory, probes: ctx.probes,
+    hooks: () => ({
+      lane: 'gpu', server: 'mac', jobId: 'job-1', signal: null,
+      submitted: (row) => said.push(`submitted ${row.jobType} ${row.model}`),
+      leased: (row) => said.push(`leased ${row.model}`),
+      settled: (server, kind) => said.push(`settled ${kind}`),
+      streamed: () => { if (said[said.length - 1] !== 'streamed') said.push('streamed'); },
+      beat: () => { if (said[said.length - 1] !== 'beat') said.push('beat'); },
+      streamDropped: async () => ({ rows: [], kept: [], timedOut: false }),
+    }),
+  });
+  await transport.chat({ model: 'qwen3.8-27b-4bit', prompt: 'hello', act: 'generate', thinking: false, maxTokens: 100, what: 'the keeper call', trace: null });
+  assert.deepStrictEqual(said, [
+    'submitted load-model qwen3.8-27b-4bit', 'streamed', 'settled job', 'leased qwen3.8-27b-4bit', 'beat', 'settled lease',
+  ]);
+}));
+
+check('a GPU call runs on its lane\'s server and nowhere else, and a lane-less local call is refused by name', () => withDoor({}, async (_server, ctx) => {
+  const lane = (server) => new CrucibleTransport({
+    servers: ctx.servers, factory: ctx.factory, probes: ctx.probes,
+    hooks: () => ({ lane: 'cloud', server, jobId: '', signal: null, submitted() {}, leased() {}, settled() {}, streamed() {}, beat() {}, async streamDropped() { return { rows: [], kept: [], timedOut: false }; } }),
+  });
+  const err = await rejection(lane(null).chat({ model: 'qwen3.8-27b-4bit', prompt: 'x', act: 'generate', thinking: false, maxTokens: 10, what: 'the keeper call', trace: null }));
+  assert.match(err.message, /runs on its server's lane/);
+  // Outside any lane, the lanes' own refusal: nothing admitted it.
+  assert.match((await rejection(ctx.transport.chat({ model: 'qwen3.8-27b-4bit', prompt: 'x', act: 'generate', thinking: false, maxTokens: 10, what: 'the keeper call', trace: null }))).message, /outside queueAITask/);
+}));
 
 // ── decide ───────────────────────────────────────────────────────────────────
 
 check('decide: act `decide`, the named model, the report mode; a server without the door refuses by name', () => withDoor({}, async (server, ctx) => {
-  const answer = await ctx.transport.decide({
+  const answer = await onLane(ctx, 'qwen3.5-9b', () => ctx.transport.decide({
     model: 'qwen3.5-9b',
     state: 'The host talks about the budget vote.',
     questions: { topic: { type: 'choice', instructions: 'Which item?', options: { budget: 'the budget', mayor: 'the mayor' } } },
     missing: 'report',
     what: 'assign sentence 1',
     trace: null,
-  });
+  }));
   assert.ok(answer.answers.topic);
   const sent = server.requestsTo('/v1/decide', 'POST')[0];
   assert.strictEqual(actOf(sent), 'decide');
@@ -344,9 +400,9 @@ check('decide: act `decide`, the named model, the report mode; a server without 
   assert.strictEqual(sent.body.missing, 'report');
   assert.strictEqual(server.leases.taken[0].act, 'decide');
 }).then(() => withDoor({ legacyActs: true }, async (_server, ctx) => {
-  const err = await rejection(ctx.transport.decide({
+  const err = await rejection(onLane(ctx, 'qwen3.5-9b', () => ctx.transport.decide({
     model: 'qwen3.5-9b', state: 'x', questions: { q: { type: 'yesno', instructions: 'Is it?' } }, what: 'assign', trace: null,
-  }));
+  })));
   assert.strictEqual(err.code, 'decide_not_served');
 })));
 

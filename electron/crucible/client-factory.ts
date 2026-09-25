@@ -13,7 +13,7 @@
  * `client`, so a Crucible shared with BookForge, Foundry and Briefcase can say
  * whose work is on the card. One name, declared once.
  */
-import { CrucibleClient } from '@crucible/client';
+import { API_VERSION, CrucibleClient, SDK_VERSION } from '@crucible/client';
 import type { CrucibleServers } from './servers';
 import { EngineResolver, type ClientMaker, type ResolvedEngine } from './engine-resolve';
 
@@ -76,6 +76,35 @@ export class CrucibleClientFactory {
   /** Engine resolution for unregistered credentials, uncached. */
   async resolveCredentials(url: string, token: string): Promise<ResolvedEngine> {
     return new EngineResolver(makeClient).resolve({ name: url, url, token });
+  }
+
+  /**
+   * THE ONE RAW DOOR: an authenticated `fetch` to the ENGINE behind a registered server, for
+   * the one route the SDK does not give ContentStudio enough of. Ported from Briefcase's
+   * `engineFetch` (client-factory.ts). The SDK's `chatStream()` yields content only and drops
+   * `finish_reason` and usage, and a streamed answer's `length` stop is the hard failure LEDGER
+   * #112 is built on; so the transport streams the chat door itself (P2) and reaches it here,
+   * where the token already lives. The headers are the SDK's own (`#fetch`): the bearer, the
+   * API version, the client name in `X-Crucible-Client` and the User-Agent the SDK composes,
+   * so a streamed chat is filed under the same client on a shared server's bench. The token is
+   * read from the registry at call time and never leaves this method.
+   */
+  async engineFetch(name: string, path: string, init: { method: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal }): Promise<{ response: Response; url: string }> {
+    const entry = this.servers.getWithToken(name);
+    const engine = await this.resolver.resolve(entry);
+    const headers = new Headers(init.headers ?? {});
+    headers.set('User-Agent', `${CRUCIBLE_CLIENT_NAME} crucible-client/${SDK_VERSION}`);
+    headers.set('X-Crucible-Client', CRUCIBLE_CLIENT_NAME);
+    headers.set('Authorization', `Bearer ${entry.token}`);
+    headers.set('X-Crucible-Api', String(API_VERSION));
+    const url = `${engine.url.replace(/\/+$/, '')}${path}`;
+    const response = await fetch(url, {
+      method: init.method,
+      headers,
+      ...(init.body === undefined ? {} : { body: init.body }),
+      ...(init.signal === undefined ? {} : { signal: init.signal }),
+    });
+    return { response, url: engine.url };
   }
 
   /** Drop every cached hop (a keeper, or a Re-check button). */

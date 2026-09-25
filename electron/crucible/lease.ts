@@ -5,8 +5,10 @@
  * Ported from two places, each for its half:
  *  - BookForge's electron/crucible/lease.ts: the numbers (ttl 120 s, a
  *    heartbeat at a third of it, a 10 s clock on each lease call, a 2 s grace
- *    on release), the release that treats `unknown_lease` as the state it
- *    wanted, and every open lease given back on quit. BookForge hand-rolls the
+ *    on release), and the release that treats `unknown_lease` as the state it
+ *    wanted. (Its give-back of every open lease on quit is P3's held quit sweep
+ *    here: lanes.ts aborts the running jobs, whose `finally` releases, and then
+ *    sweeps the in-flight ledger.) BookForge hand-rolls the
  *    three routes because its SDK predated them; the vendored 1.0.34 SDK has
  *    `lease`, `heartbeat` and `release`, so they are called through it.
  *  - Briefcase's llm/crucible-chat.service.ts: making a model resident with a
@@ -23,11 +25,12 @@
  * look exactly like one that was protected until the model vanished under it.
  *
  * THE JOB IS EXPLICIT, NOT AMBIENT. Briefcase keeps its run in an
- * AsyncLocalStorage; ContentStudio's calls cross the 1-slot AI queue
- * (queue-manager.service.ts), which runs the task from the queue's own async
- * context, so an ambient scope would be lost at exactly the seam every local
- * call crosses. So a {@link JobLeases} is threaded the way `JobModelLifecycle`
- * always was, and model-lifecycle.ts is now a thin face over one.
+ * AsyncLocalStorage; ContentStudio's job spans many lane steps (each model call
+ * is its own `queueAITask`) and ends in the generator's `finally`, outside any
+ * step, so a {@link JobLeases} is threaded the way `JobModelLifecycle` always
+ * was, and model-lifecycle.ts is now a thin face over one. What IS per step is
+ * the ledger (P3): each hold keeps the hooks of the step that took it, and
+ * settles its rows through them.
  *
  * NOTHING HERE UNLOADS A MODEL. Leases are released; the server settles the
  * card (Owen's Crucible ruling: a model nothing holds is unloaded). "Unload
@@ -49,6 +52,7 @@ import {
   type ModelInfo,
 } from '@crucible/client';
 import { CrucibleCallError } from './errors';
+import type { CrucibleStepHooks } from './lanes';
 import { crucibleUnavailableCause } from './transport-failure';
 import { stated } from './unstated';
 
@@ -89,22 +93,23 @@ export function callRefusalOf(err: unknown, server: string): unknown {
   if (line !== null) {
     const status = err instanceof CrucibleRefused ? err.status : null;
     const code = err instanceof CrucibleRefused ? err.code : null;
-    return new CrucibleCallError('busy', `"${server}" is busy (${line}). Nothing was started there.`, server, status, code, line);
+    // The SDK's own refusal rides as `cause`: P3's lanes park the job on it by type.
+    return new CrucibleCallError('busy', `"${server}" is busy (${line}). Nothing was started there.`, server, status, code, line, err);
   }
   if (err instanceof CrucibleRefused) {
     if (err.code === 'context_over_limit') {
-      return new CrucibleCallError('over_context', `"${server}" refused the load: ${err.serverMessage}`, server, err.status, err.code);
+      return new CrucibleCallError('over_context', `"${server}" refused the load: ${err.serverMessage}`, server, err.status, err.code, null, err);
     }
-    return new CrucibleCallError('refused', `"${server}" refused (${err.code}): ${err.serverMessage}`, server, err.status, err.code);
+    return new CrucibleCallError('refused', `"${server}" refused (${err.code}): ${err.serverMessage}`, server, err.status, err.code, null, err);
   }
   if (err instanceof CrucibleServerError) {
-    return new CrucibleCallError('refused', `"${server}" failed (${err.code}, HTTP ${err.status}): ${err.serverMessage}`, server, err.status, err.code);
+    return new CrucibleCallError('refused', `"${server}" failed (${err.code}, HTTP ${err.status}): ${err.serverMessage}`, server, err.status, err.code, null, err);
   }
   if (err instanceof CrucibleProtocolError) {
-    return new CrucibleCallError('protocol_error', `"${server}" answered in a shape ContentStudio cannot read: ${err.message}`, server);
+    return new CrucibleCallError('protocol_error', `"${server}" answered in a shape ContentStudio cannot read: ${err.message}`, server, null, null, null, err);
   }
   const wire = crucibleUnavailableCause(err);
-  if (wire !== null) return new CrucibleCallError('unreachable', `"${server}" is not answering (${wire}).`, server);
+  if (wire !== null) return new CrucibleCallError('unreachable', `"${server}" is not answering (${wire}).`, server, null, null, null, err);
   return err;
 }
 
@@ -174,28 +179,24 @@ interface Hold {
   beat: NodeJS.Timeout | null;
   beating: Promise<void> | null;
   stopped: boolean;
-}
-
-/** Every job with a lease open right now, for the quit release. */
-const openJobs = new Set<JobLeases>();
-
-/**
- * Release every lease this process holds. Called from `before-quit` and from a
- * CLI's SIGINT/SIGTERM handler (plan 0a: a Ctrl-C that leaves a lease held
- * leaves the card stuck for everyone until the ttl).
- */
-export async function releaseAllCrucibleLeases(): Promise<void> {
-  await Promise.all([...openJobs].map((job) => job.releaseAll()));
-}
-
-/** How many jobs hold a lease right now (a keeper, a log line). */
-export function openJobLeaseCount(): number {
-  return [...openJobs].filter((job) => job.heldCount() > 0).length;
+  /**
+   * The ledger hooks of the step that took the lease (P3). Kept with the hold because the
+   * release usually happens outside any step (the job's `finally`), and the ledger row the
+   * take wrote must be settled by the same ledger.
+   */
+  ledger: Pick<CrucibleStepHooks, 'settled'>;
 }
 
 export interface HoldRequest {
   /** The act the lease is taken for: the act of the call that opened it (BookForge's row-lease rule). */
   act: string;
+  /**
+   * The step's lane hooks (P3, docs/crucible/P3.md): a load job and a lease are written to the
+   * in-flight ledger the moment the server admits them, before the next await; each SSE event
+   * of a load moves the ledger's cursor and beats the stall clock; a load stream that cannot be
+   * followed any more sweeps its server.
+   */
+  hooks: Pick<CrucibleStepHooks, 'submitted' | 'leased' | 'settled' | 'streamed' | 'streamDropped'>;
   /** Tokens the calling request needs (prompt + output budget), or null when it cannot be stated. */
   need: number | null;
   /** The context to load at, when this job loads the model (today's num_ctx, LEDGER #111). */
@@ -295,7 +296,6 @@ export class JobLeases {
     }
     const hold = await this.acquire(server, model, request);
     this.holds.set(server, hold);
-    openJobs.add(this);
     if (hold.leaseId !== null) this.startHeartbeat(hold);
   }
 
@@ -310,7 +310,7 @@ export class JobLeases {
     const row = rows.find((m) => m.id === model);
     const hold = (fields: Partial<Hold>): Hold => ({
       server, model, act: request.act, leaseId: null, maxModelLen: null, loadedAt: null, lost: null,
-      beat: null, beating: null, stopped: false, ...fields,
+      beat: null, beating: null, stopped: false, ledger: request.hooks, ...fields,
     });
     if (row === undefined) {
       const known = rows.filter((m) => m.modalities.includes('text')).map((m) => m.id);
@@ -328,6 +328,8 @@ export class JobLeases {
       if (!tooSmall) {
         try {
           const lease = await client.lease(model, { act: request.act, ttlSeconds: CRUCIBLE_LEASE_TTL_SECONDS });
+          // Recorded before the next await (P3): a kill from here on leaves a row the sweep reads.
+          request.hooks.leased({ server, id: lease.leaseId, model });
           log.info(`[crucible] ${this.what}: leased resident ${model} on "${server}" for ${request.act} (${lease.leaseId})`);
           return hold({ leaseId: lease.leaseId, maxModelLen: window });
         } catch (err) {
@@ -388,6 +390,8 @@ export class JobLeases {
     } catch (err) {
       throw callRefusalOf(err, server);
     }
+    // Recorded before the next await (P3): a kill mid-load leaves the sweep a job to cancel.
+    request.hooks.submitted({ server, id: jobId, jobType: 'load-model', model });
     log.info(
       `[crucible] ${this.what}: loading ${model} on "${server}"` +
         `${request.loadContext === undefined ? ' at its manifest context' : ` at ${request.loadContext} tokens`} (job ${jobId})`,
@@ -398,10 +402,11 @@ export class JobLeases {
     request.signal?.addEventListener('abort', onAbort, { once: true });
     let terminal: JobEvent;
     try {
-      terminal = await this.followLoad(client, server, model, jobId, request.signal);
+      terminal = await this.followLoad(client, server, model, jobId, request);
     } finally {
       request.signal?.removeEventListener('abort', onAbort);
     }
+    request.hooks.settled(server, 'job', jobId);
     if (terminal.event === 'failed') {
       const error = (terminal.data as { error?: { code?: string; message?: string } }).error;
       throw new CrucibleCallError(
@@ -413,10 +418,14 @@ export class JobLeases {
       );
     }
     const status = await client.job(jobId);
+    if (status.leaseId !== null) request.hooks.leased({ server, id: status.leaseId, model });
     if (terminal.event === 'cancelled' || request.signal?.aborted) {
       // A cancel that lands as the load finishes must still give back the lease
       // the load took: it is in no hold yet, so nothing else would (Briefcase).
-      if (status.leaseId !== null) await client.release(status.leaseId).catch(() => undefined);
+      if (status.leaseId !== null) {
+        const released = await client.release(status.leaseId).then(() => true, (err) => isUnknownLease(err));
+        if (released) request.hooks.settled(server, 'lease', status.leaseId);
+      }
       throw new LoadAborted();
     }
     if (status.leaseId === null) {
@@ -437,7 +446,8 @@ export class JobLeases {
    * BookForge's stream-reconnect); lost past the budget, the load is cancelled
    * best-effort and the call is `unreachable`.
    */
-  private async followLoad(client: CrucibleClient, server: string, model: string, jobId: string, signal?: AbortSignal): Promise<JobEvent> {
+  private async followLoad(client: CrucibleClient, server: string, model: string, jobId: string, request: HoldRequest): Promise<JobEvent> {
+    const signal = request.signal;
     const { firstMs, maxMs, budgetMs } = this.timings.loadStreamRetry;
     let lastEventId = 0;
     let droppedAt: number | null = null;
@@ -446,6 +456,8 @@ export class JobLeases {
       try {
         for await (const event of client.events(jobId, lastEventId > 0 ? { lastEventId } : {})) {
           lastEventId = event.id;
+          // The ledger's reconnect cursor, and the stall clock's beat (P3).
+          request.hooks.streamed(server, jobId, String(event.id));
           droppedAt = null;
           wait = firstMs;
           if (event.event === 'failed' || event.event === 'cancelled' || event.event === 'done') return event;
@@ -458,12 +470,10 @@ export class JobLeases {
         const now = Date.now();
         droppedAt ??= now;
         if (now - droppedAt + wait > budgetMs) {
-          void client.cancel(jobId).catch(() => undefined);
-          throw new CrucibleCallError(
-            'unreachable',
-            `"${server}" stopped answering while loading ${model} (${Math.round((now - droppedAt) / 1000)} s: ${wire}).`,
-            server,
-          );
+          const reason = `lost the load of ${model} for ${Math.round((now - droppedAt) / 1000)} s: ${wire}`;
+          // The ladder ran out: give that server's holds back (P3's dropped-stream sweep), then fail.
+          await request.hooks.streamDropped(server, reason).catch(() => undefined);
+          throw new CrucibleCallError('unreachable', `"${server}" stopped answering while loading ${model} (${reason}).`, server);
         }
         log.warn(`[crucible] the event stream of load ${jobId} on "${server}" dropped (${wire}); following it again after event ${lastEventId}`);
         await sleep(wait, signal);
@@ -493,6 +503,8 @@ export class JobLeases {
           if (hold.stopped) return;
           if (isUnknownLease(err)) {
             hold.lost = err instanceof CrucibleRefused ? `${err.code}: ${err.serverMessage}` : String(err);
+            // The server holds nothing for us any more: nothing left for a sweep to release.
+            hold.ledger.settled(hold.server, 'lease', hold.leaseId!);
             log.error(
               `[crucible] ${this.what}: the lease on ${hold.model} on "${hold.server}" is GONE (${hold.lost}); ` +
                 `this job's next call on it fails rather than run unprotected`,
@@ -533,10 +545,14 @@ export class JobLeases {
     try {
       const client = await this.host.client(hold.server, { timeoutMs: this.timings.requestTimeoutMs });
       await client.release(hold.leaseId);
+      hold.ledger.settled(hold.server, 'lease', hold.leaseId);
       log.info(`[crucible] ${this.what}: released ${hold.model} on "${hold.server}" (${hold.leaseId})`);
     } catch (err) {
-      // Already gone is the state a release wanted.
-      if (isUnknownLease(err)) return;
+      // Already gone is the state a release wanted: nothing is held, so the row is settled.
+      if (isUnknownLease(err)) {
+        hold.ledger.settled(hold.server, 'lease', hold.leaseId);
+        return;
+      }
       // The ONE swallow (BookForge's): the work is done, the lease expires in at
       // most its ttl on its own, and failing a finished job over tidying would
       // report a loss that did not happen.
@@ -561,7 +577,6 @@ export class JobLeases {
       .filter((h) => h.lost !== null)
       .map((h) => `${h.model} on "${h.server}" (${h.lost})`);
     for (const hold of holds) await this.releaseHold(hold);
-    openJobs.delete(this);
     return lost;
   }
 }

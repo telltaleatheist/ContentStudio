@@ -48,8 +48,9 @@
  *  - `port`, and the standalone mode above, so the app itself can be pointed
  *    at a fake;
  *  - (P2) the chat door refuses an `X-Crucible-Act` it does not know (and, on a
- *    `legacyActs` server, `generate`/`decide`), and a canned reply with
- *    `finishReason: null` leaves `finish_reason` out of the answer.
+ *    `legacyActs` server, `generate`/`decide`), answers `stream: true` as an
+ *    OpenAI chunk stream, and a canned reply with `finishReason: null` leaves
+ *    `finish_reason` out of the answer (`noDone: true` cuts the stream short).
  *
  * Not a keeper itself: `tools/check-crucible.js` runs the `test-crucible-*` files.
  */
@@ -1175,6 +1176,34 @@ async function startFakeCrucible(options = {}) {
             extraHeaders['X-Crucible-Context'] = JSON.stringify(typeof ctx === 'number'
                 ? { num_ctx: ctx, source: 'request' }
                 : { num_ctx: 40960, source: 'modelfile' });
+        }
+        // ContentStudio (P2): a streamed chat, as ContentStudio's door sends every chat (so the
+        // job's stall clock hears each chunk, P3). OpenAI `chat.completion.chunk` frames: the
+        // role, any reasoning, the content in two pieces, the finish (left null throughout when
+        // the canned reply says `finishReason: null`), the usage frame when asked for, and
+        // `[DONE]` unless the reply says `noDone: true` (a stream cut short).
+        if (body['stream'] === true) {
+            const id = `chatcmpl-${(0, crypto_1.randomBytes)(4).toString('hex')}`;
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'X-Crucible-Sampling': JSON.stringify(sources), ...extraHeaders });
+            const chunk = (delta, finish, extra = {}) => res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', model, choices: [{ index: 0, delta, finish_reason: finish }], ...extra })}\n\n`);
+            chunk({ role: 'assistant' }, null);
+            if (shaped.reasoning !== undefined)
+                chunk({ reasoning: shaped.reasoning }, null);
+            const content = shaped.content ?? '';
+            const half = Math.ceil(content.length / 2);
+            for (const part of [content.slice(0, half), content.slice(half)]) {
+                if (part !== '')
+                    chunk({ content: part }, null);
+            }
+            chunk({}, shaped.finishReason === null ? null : (shaped.finishReason ?? 'stop'));
+            const streamOptions = body['stream_options'];
+            if (streamOptions && streamOptions['include_usage'] === true) {
+                res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', model, choices: [], usage: { prompt_tokens: promptTokensOf(body), completion_tokens: 7, total_tokens: promptTokensOf(body) + 7 } })}\n\n`);
+            }
+            if (shaped.noDone !== true)
+                res.write('data: [DONE]\n\n');
+            res.end();
+            return;
         }
         send(res, 200, {
             id: `chatcmpl-${(0, crypto_1.randomBytes)(4).toString('hex')}`,
