@@ -3,8 +3,9 @@
  *
  * What it pins, each a place where the wiring could be wrong while the pure service is right:
  *
- *   - the outline and every decide question go to the fixed scorer (qwen3.5-9b), loaded at
- *     16,384 (snap-chapters.ts SCORER_LOAD_CONTEXT), the outline thinking-off at temperature 0;
+ *   - the outline and every decide question go to the fixed scorer (qwen3.5-9b), loaded at the
+ *     smallest step that holds them (8,192 for this short video; LEDGER #209, snap-chapters.ts
+ *     loadContextFor), the outline thinking-off at temperature 0;
  *   - the titles go to the chapters row (the 27B), loaded at 24,576 to hold a 16,384 thinking
  *     budget (LEDGER #208), thinking ON, and X-Crucible-Sampling says the server took both the
  *     call's `thinking` and its `max_tokens` as sent ("request"; the Crucible agent's check);
@@ -76,7 +77,7 @@ function transportsOn(ctx, chaptersOption) {
   return { models, job, warned, t: snap.snapTransports({ models, job, trace: [], laneName: 'keeper', warn: (w) => warned.push(w) }) };
 }
 
-check('the outline and decide run on the 9B at 16,384; the titles on the chapters row at 24,576, thinking on, taken as sent', () => withSnap({}, async (server, ctx) => {
+check('the outline and decide run on the 9B at 8,192 (all a short video needs); the titles on the chapters row at 24,576, thinking on, taken as sent', () => withSnap({}, async (server, ctx) => {
   const { models, job, t } = transportsOn(ctx, 'qwen38-27b');
   assert.deepStrictEqual(models.scorer, { model: 'qwen3.5-9b', server: 'mac' });
   const r = await service.chapter(CAPTIONS, { granularity: 'chapters', chat: t.chat, decide: t.decide });
@@ -85,7 +86,11 @@ check('the outline and decide run on the 9B at 16,384; the titles on the chapter
   const decides = server.decideBodies();
   assert.ok(decides.length >= 1 && decides.every((b) => b.model === 'qwen3.5-9b' && b.missing === 'report'));
   const loads = server.requestsTo('/v1/jobs', 'POST').map((q) => q.body).filter((b) => b.type === 'load-model');
-  assert.deepStrictEqual(loads.map((b) => [b.model, b.params.context]), [['qwen3.5-9b', 16384], ['qwen3.8-27b-4bit', 24576]]);
+  assert.deepStrictEqual(loads.map((b) => [b.model, b.params.context]), [['qwen3.5-9b', 8192], ['qwen3.8-27b-4bit', 24576]]);
+  // The step rule itself: a stream chunk's ~12k-token state takes 16,384; a thinking title 24,576.
+  assert.strictEqual(snap.loadContextFor(3.5 * 12000, snap.DECIDE_QUESTION_TOKENS), 16384);
+  assert.strictEqual(snap.loadContextFor(3.5 * 2000, 1000), 8192);
+  assert.strictEqual(snap.loadContextFor(3.5 * 6000, 16384), 24576);
 
   const chats = server.requestsTo('/v1/openai/chat/completions', 'POST').map((q) => q.body);
   const outline = chats.filter((b) => b.model === 'qwen3.5-9b');

@@ -1534,8 +1534,8 @@ async function rejects(promise) {
     const ch = storyHandlersFor({ metadataRouting: { chapters: 'claude-cli' }, ollamaHost: NO_OLLAMA });
     eq(await ch['story:routed-model'](), { model: 'claude-cli:opus', label: 'claude -p (Opus, subscription)', kind: 'cloud' }, 'the read-only line:');
     const res = await ch['story:analyze-chapters'](fakeEvent, { segments: storySegments, grain: 'stories' });
-    eq(door.chats.map((c) => [c.model, c.thinking, c.temperature, c.loadContext]), [['qwen3.5-9b', false, 0, 16384]], 'the outline call:');
-    eq(door.decides.every((d) => d.model === 'qwen3.5-9b' && d.loadContext === 16384 && d.missing === 'report'), true, 'every decide on the 9B at 16,384:');
+    eq(door.chats.map((c) => [c.model, c.thinking, c.temperature, c.loadContext]), [['qwen3.5-9b', false, 0, 8192]], 'the outline call, at the smallest step that holds it (LEDGER #209):');
+    eq(door.decides.every((d) => d.model === 'qwen3.5-9b' && d.loadContext === 8192 && d.missing === 'report'), true, 'every decide on the 9B at 8,192:');
     eq(storyCalls.map((c) => [c.model, c.shape.thinking]), [['claude-cli:opus', true], ['claude-cli:opus', true]], 'the titles, thinking on (LEDGER #208):');
     // The titles read HOST:/CLIP: lines (the brief's decision 5).
     eq(/\nCLIP: The council argued about the budget vote number 3/.test(storyCalls[0].prompt), true, 'the tagged title prompt:');

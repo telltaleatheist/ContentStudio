@@ -8,9 +8,10 @@
  *
  *   outline + decide  CHAPTER_SCORER_MODEL (the 9B), a fixed role declared in metadata-routing.ts,
  *                     always on a Crucible server: decide needs a distribution and no upstream
- *                     returns one. Loaded at SCORER_LOAD_CONTEXT under the job's lease.
+ *                     returns one. Loaded under the job's lease at the smallest step that
+ *                     fits the call (loadContextFor, LEDGER #209).
  *   titles            the CHAPTERS routing row: a local model (the 27B) through the transport at
- *                     TITLE_LOAD_CONTEXT, or a cloud row (Anthropic through Crucible, or claude -p
+ *                     the step that holds the prompt plus its 16,384 thinking budget, or a cloud row (Anthropic through Crucible, or claude -p
  *                     outside it) through the caller's `cloudPlain` door, which strips <think> and
  *                     takes no lane.
  *
@@ -36,18 +37,29 @@ import type { MetadataRoutingOption, SnapChapterModels } from './metadata-routin
 import type { ChapterPipelineResult } from './chapter-transcript';
 import type { Chapter as PublishedChapter } from './chapter-generator.service';
 import { TimeUtils } from './chapter-generator.service';
+import { estimateTokens } from '../../crucible/context-check';
 import type { ChapteringResult, ChatFn, ChatOptions, DecideFn } from './chaptering/types';
 
-/** The 9B's load context: a snap state is ≤12k tokens plus its questions (plan 7.3, chunks.ts). */
-export const SCORER_LOAD_CONTEXT = 16384;
+/**
+ * The load context a call asks for (LEDGER #209, Owen: "we should only be using as much context
+ * (8k vs 16k) as necessary"): the smallest step of LOAD_CONTEXT_STEP that holds the call's prompt
+ * plus its answer budget plus a 512-token margin, by the transport's own estimate (context-check.ts).
+ * A short video's outline and decide states fit 8,192; a stream chunk's (~12k tokens) takes 16,384;
+ * a thinking title (prompt + the 16,384 budget) takes 24,576. A job whose later call needs more
+ * grows the load once (lease.ts); nothing here is a floor carried from another job.
+ */
+export const LOAD_CONTEXT_STEP = 8192;
+
+export function loadContextFor(promptChars: number, answerTokens: number): number {
+  const need = estimateTokens(promptChars) + answerTokens + 512;
+  return Math.ceil(need / LOAD_CONTEXT_STEP) * LOAD_CONTEXT_STEP;
+}
 
 /**
- * The title model's load context when it is local: a 6,000-token chapter window + the ~1,000-token
- * body + the 16,384-token thinking budget (#208) is ~23.4k (summarize.ts), so 24,576. The Mac's
- * 27B-4bit takes up to 131,072 (its capability row, Crucible 1.0.38); the PC's 27B loads at 16,384
- * (plan 0 #11), where a thinking-on title is refused `over_context` by name before sending, never cut.
+ * What a decide call answers beyond its state: each question is the state plus one quoted sentence
+ * and its options, scored for one letter, so the state plus this margin is the need.
  */
-export const TITLE_LOAD_CONTEXT = 24576;
+export const DECIDE_QUESTION_TOKENS = 1024;
 
 /** The shape of every cloud title call: the caller's door (AIManagerService.runPlainRequest). */
 export type CloudPlain = (prompt: string, model: string, what: string, shape: { thinking: boolean }) => Promise<string | null>;
@@ -81,7 +93,6 @@ const REQUESTED_KEYS = [['thinking', 'enable_thinking'], ['max_tokens']] as cons
 async function localChat(
   deps: Omit<SnapTitleDeps, 'titles' | 'cloudPlain' | 'job'> & { job: JobLeases },
   model: string,
-  loadContext: number,
   prompt: string,
   o: ChatOptions,
   onSampling: (sampling: Record<string, string>, server: string) => void,
@@ -95,7 +106,7 @@ async function localChat(
         thinking: o.thinking,
         maxTokens: o.maxTokens,
         ...(o.temperature === undefined ? {} : { temperature: o.temperature }),
-        loadContext,
+        loadContext: loadContextFor(prompt.length, o.maxTokens),
         job: deps.job,
         ...(deps.signal === undefined ? {} : { signal: deps.signal }),
         what: o.what,
@@ -140,7 +151,7 @@ export function titleChat(deps: SnapTitleDeps): ChatFn {
     if (o.role !== 'summarize') throw new Error(`the title door was asked for the ${o.role} role (${o.what})`);
     if (deps.titles.kind === 'local') {
       if (deps.job === undefined) throw new Error(`the chapters row is the local ${deps.titles.model}, and no job lease was handed to the snap wiring`);
-      return localChat({ ...deps, job: deps.job }, deps.titles.model, TITLE_LOAD_CONTEXT, prompt, o, onSampling);
+      return localChat({ ...deps, job: deps.job }, deps.titles.model, prompt, o, onSampling);
     }
     try {
       const text = await deps.cloudPlain!(prompt, deps.titles.model, o.what, { thinking: o.thinking });
@@ -163,7 +174,7 @@ export function snapTransports(deps: SnapTransportDeps): { chat: ChatFn; decide:
   // needs no cloud door even when the chapters row is cloud.
   let titles: ChatFn | null = null;
   const chat: ChatFn = (prompt, o) => {
-    if (o.role === 'outline') return localChat(deps, models.scorer.model, SCORER_LOAD_CONTEXT, prompt, o, () => undefined);
+    if (o.role === 'outline') return localChat(deps, models.scorer.model, prompt, o, () => undefined);
     titles ??= titleChat({ ...deps, titles: models.titles });
     return titles(prompt, o);
   };
@@ -174,7 +185,7 @@ export function snapTransports(deps: SnapTransportDeps): { chat: ChatFn; decide:
         state: request.state,
         questions: request.questions,
         missing: request.missing,
-        loadContext: SCORER_LOAD_CONTEXT,
+        loadContext: loadContextFor(request.state.length, DECIDE_QUESTION_TOKENS),
         job: deps.job,
         ...(deps.signal === undefined ? {} : { signal: deps.signal }),
         what: o.what,

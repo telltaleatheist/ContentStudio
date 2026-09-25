@@ -56,7 +56,7 @@ import { gpuCall, queueAITask } from '../queue-manager.service';
 import { beatJob, installedLanes, setJobStage } from '../../crucible/lanes';
 import { chapter as chapterOnSnap } from './chaptering/chaptering.service';
 import { PIPELINE_DIAL } from './chaptering/granularity';
-import { SCORER_LOAD_CONTEXT, TITLE_LOAD_CONTEXT, snapTransports, toChapterPipelineResult } from './snap-chapters';
+import { snapTransports, toChapterPipelineResult } from './snap-chapters';
 import * as log from 'electron-log';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -1445,9 +1445,6 @@ export class MetadataGeneratorService {
         `outline and decide on ${models.scorer.model} on "${models.scorer.server}", titles on ${models.titles.model} ` +
         `(thinking ${titleThinking ? 'on' : 'off'})`
     );
-    // The job's model contexts, so a later stage on the same model never sizes under them (LEDGER #111).
-    lifecycle.recordContext(models.scorer.model, SCORER_LOAD_CONTEXT);
-    if (models.titles.kind === 'local') lifecycle.recordContext(models.titles.model, TITLE_LOAD_CONTEXT);
 
     const transports = snapTransports({
       models,

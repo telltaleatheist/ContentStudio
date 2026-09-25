@@ -50,8 +50,8 @@ export const TITLE_MAX_TOKENS = 16384;
 /**
  * The most transcript one title call reads, in tokens (the declared ~4 characters per token of
  * chunks.ts). 6,000 + the ~1,000-token body + the 16,384 budget is ~23.4k: the transport loads
- * the title model at TITLE_LOAD_CONTEXT to hold it (snap-chapters.ts), and refuses by name before
- * sending on a server whose load is smaller (the PC's 27B loads at 16,384; P2's context check).
+ * the title model at the smallest step that holds the call (snap-chapters.ts loadContextFor,
+ * LEDGER #209), and refuses by name before sending on a server whose ceiling is smaller.
  */
 export const SUMMARIZE_TRANSCRIPT_TOKENS = 6000;
 
