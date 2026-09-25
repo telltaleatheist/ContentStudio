@@ -4,6 +4,7 @@ import * as log from 'electron-log';
 import { EditorPaths } from './app-config';
 import { BinaryResolver } from './binary-resolver';
 import { DuganAutomixer, DuganTrack } from './dugan-automixer';
+import { createAsrResponder } from './editor-asr';
 import * as path from 'path';
 
 export interface PythonExecutionOptions {
@@ -27,6 +28,8 @@ export interface WorkflowExecutionOptions {
  */
 export class PythonService {
   private runningProcesses: Map<string, ChildProcess> = new Map();
+  /** The Crucible asr job of a running transcription, per job id: aborted (DELETEd) on kill. */
+  private asrAborts: Map<string, AbortController> = new Map();
   private binaryResolver: BinaryResolver;
 
   constructor() {
@@ -145,6 +148,9 @@ export class PythonService {
    * Kill a running process
    */
   killProcess(jobId: string): boolean {
+    // A transcription's Crucible job is cancelled with a DELETE (asr.ts), not left running.
+    this.asrAborts.get(jobId)?.abort();
+    this.asrAborts.delete(jobId);
     const process = this.runningProcesses.get(jobId);
     if (process) {
       log.info(`Killing process [${jobId}]`);
@@ -778,17 +784,21 @@ export class PythonService {
   }
 
   /**
-   * Run cli/transcribe.py to Whisper-transcribe a processed session's source audio
-   * tracks and write a `<session>_transcript.json` sidecar next to the zip. Mirrors
+   * Run cli/transcribe.py to transcribe a processed session's source audio tracks and
+   * write a `<session>_transcript.json` sidecar next to the zip. Mirrors
    * executeWorkflow's line-buffered stdout protocol (progress/error/success), and
-   * registers the child in runningProcesses so killProcess(jobId) cancels it —
-   * killProcess sends the default signal (SIGTERM), which is exactly what
-   * transcribe.py handles for a clean cancel, so NO special-casing is needed here.
+   * registers the child in runningProcesses so killProcess(jobId) cancels it.
    *
-   * whisper-cli, the model, and ffmpeg are resolved via BinaryResolver and passed
-   * as CLI args BEFORE spawning; a resolver throw REJECTS the returned promise with
-   * the resolver's actionable message and the process is never spawned. There is no
-   * stdin protocol (args only), so stdin is closed immediately after spawn.
+   * THE DECODE IS CRUCIBLE'S (P5, LEDGER #206). transcribe.py keeps all the audio logic
+   * and asks for each compact WAV's words on stdout (`asr_request`); this side runs the
+   * Crucible asr job and answers on the child's STDIN, which therefore stays open for the
+   * run (editor-asr.ts has the protocol). killProcess(jobId) aborts the job in flight —
+   * a DELETE on the server, never an abandoned job holding the card — and SIGTERMs the
+   * child, which transcribe.py handles as a clean cancel.
+   *
+   * `asrContext` is the session's context (asr-facts.ts editorTrackFacts): the verbatim
+   * instruction and whatever could spell a name. ffmpeg is resolved via BinaryResolver
+   * BEFORE spawning; a resolver throw REJECTS the returned promise and nothing is spawned.
    *
    * Terminal delivery is via callbacks.onComplete(code, result, errorMessage),
    * guaranteed exactly once from EITHER 'close' or 'error'. On success result is the
@@ -798,6 +808,7 @@ export class PythonService {
   transcribe(
     jobId: string,
     zipPath: string,
+    asrContext: string,
     callbacks: {
       onProgress?: (progress: number, message: string, etaSeconds: number | null) => void;
       onComplete?: (code: number, result: any, errorMessage: string | null) => void;
@@ -808,12 +819,8 @@ export class PythonService {
     return new Promise<void>((resolve, reject) => {
       // Resolve every external tool BEFORE spawning — a resolver throw rejects the
       // promise with its actionable message and NOTHING is spawned.
-      let whisperCli: string;
-      let whisperModel: string;
       let ffmpeg: string;
       try {
-        whisperCli = this.binaryResolver.getWhisperCliPath();
-        whisperModel = this.binaryResolver.getWhisperModelPath();
         ffmpeg = this.binaryResolver.getFfmpegPath();
       } catch (err) {
         log.error(`[${jobId}] Tool resolution failed before spawn:`, err);
@@ -829,21 +836,29 @@ export class PythonService {
       const args = [
         scriptPath,
         '--zip', zipPath,
-        '--whisper-bin', whisperCli,
-        '--whisper-model', whisperModel,
         '--ffmpeg', ffmpeg,
       ];
 
       log.info(`[${jobId}] Spawning transcribe.py:`, args);
       const pythonProcess = spawn(pythonPath, args, { env, cwd: workingDir });
       this.runningProcesses.set(jobId, pythonProcess);
+      const asrAbort = new AbortController();
+      this.asrAborts.set(jobId, asrAbort);
 
-      // No stdin protocol — close it so the CLI never blocks on a read, and don't
-      // let an EPIPE (Python exiting) bubble up as an uncaught exception.
+      // stdin carries the asr answers; an EPIPE (Python exiting mid-answer) must not
+      // bubble up as an uncaught exception — the exit itself is what reports the run.
       pythonProcess.stdin.on('error', (err) => {
         log.error(`[${jobId}] stdin error:`, err);
       });
-      pythonProcess.stdin.end();
+      const answerAsr = createAsrResponder({
+        context: asrContext,
+        jobId,
+        signal: asrAbort.signal,
+        write: (line) => {
+          if (!pythonProcess.stdin.destroyed && pythonProcess.stdin.writable) pythonProcess.stdin.write(line);
+        },
+        log: (line) => log.info(`[${jobId}] ${line}`),
+      });
 
       let finalResult: any = null;
       let errorMessage: string | null = null;
@@ -861,6 +876,7 @@ export class PythonService {
           log.info(`[${jobId}] Non-JSON output:`, line);
           return;
         }
+        if (answerAsr(message)) return;
         if (message.type === 'progress') {
           if (callbacks.onProgress) {
             const eta = typeof message.etaSeconds === 'number' ? message.etaSeconds : null;
@@ -897,6 +913,9 @@ export class PythonService {
         if (completed) return;
         completed = true;
         this.runningProcesses.delete(jobId);
+        // A job still in flight when the child ended belongs to nobody now: DELETE it.
+        asrAbort.abort();
+        this.asrAborts.delete(jobId);
         pythonProcess.stdout.removeAllListeners();
         pythonProcess.stderr.removeAllListeners();
         pythonProcess.stdin.removeAllListeners();
