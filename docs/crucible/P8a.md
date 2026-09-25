@@ -159,7 +159,66 @@ Flashpoint broadcast played on the screen track; snap chaptered it as six Flashp
 u3 end / f1 start 2:42:09 → 2:41:23 (46 s); f1 end / u4 start 2:56:08–2:56:13 → 2:56:34 (21 s).
 Five of Owen's seven edges are within 60 s.
 
-STREAM_EPISODES
+#### `episodes` (switch cost 45)
+
+| | |
+|---|---|
+| wall | 3,062 s (51 min): outline 106 s, assign 2,415 s (42 decisions, 0.93 s per question), titles 469 s (27 chapters, thinking off) |
+| sentences / chapters | 1,990 / 27 |
+| declared | 1 chapter (1:23:34–1:53:14) titled from 2 parts; no sentence floored; no ad span |
+
+```
+    0:00  Gene Bailey hosts Flashpoint with Pastor Hank Kuhneman and Ryan Helfenbein
+    3:10  Survey shows 7% trust AI bots over pastors, prompting a warning against replacing fellowship
+    6:30  Troy Miller warns parents cannot outsource child safety to Meta
+   18:28  Tobacco executives' congressional perjury parallels Meta's deceptive design
+   28:23  Musk fine-tuned Grok to identify as Hitler, proving AI bias is engineered
+   44:53  Catholic Church AI priest removed after granting invalid absolution
+ 1:04:57  Survey shows 60% prefer AI accuracy over pastors, but only 7% trust it
+ 1:08:52  Claude's nuanced genocide answers and Bonhoeffer correction show AI's improved but limited depth
+ 1:15:38  Imago Dei prevents AI from surpassing God's creation
+ 1:23:34  Phil Arms' book claims Pokemon is a satanic assault on children
+ 1:53:14  Boeing gifts Samaritan's Purse DC-8 to Liberty University aviation program
+ 1:54:52  Trump calls chicken on Iran over midterms; Rubio condemns lunatic clerics
+ 2:01:24  FPTN launches new website and reports 35,000 letters for midterm campaign
+ 2:04:21  Trump and Zelensky meet as Rubio proposes energy ceasefire
+ 2:08:25  Pastor Hank prays for global realignment and the God factor
+ 2:13:36  Phil Armstrong's 1998 book claims Pokemon and Harry Potter train children in demonism and murder.
+ 2:31:46  Armstrong argues Christian parents must brainwash children to counter Pokemon
+ 2:41:18  Evans' Napoleon book and the German church's fatal mistakes
+ 2:42:21  Renee Good and Alex Preddy deaths spark empathy debate
+ 2:54:32  Mormon cosmology: Elohim, celestial sex, and the heavenly council
+ 2:56:19  Boeing gifts Samaritan's Purse DC-8 to Liberty University
+ 2:59:56  Trump's Iran deal timing and the Strait of Hormuz hegemony claim
+ 3:06:15  Hank Kunneman's prophetic claim: Elijah, the Red Sea, and Trump
+ 3:09:36  Marco Rubio's lunatic clerics claim and the Iran nuclear threat
+ 3:11:36  FPTN website launch and the rightnowamerica.org letter campaign
+ 3:15:01  Trump and Zelensky meet as Rubio proposes energy ceasefire
+ 3:24:17  The God factor, global realignment, and the promise of liberty
+```
+
+Against Owen's record: u1 start 33 s; u1 end ~100 s; u2/u3 seam 512 s (not found); cut start
+0 s, cut end 151 s; u3 end / f1 start 13 s; f1 end / u4 start 6–11 s. Five of seven edges
+within 60 s, and the three episode seams it finds are tighter than at `stories`.
+
+**`episodes` does not yet produce episodes.** 27 chapters where Owen made 5 (plus the cut).
+Two causes, both visible in the run:
+
+1. **Each chunk writes its own outline** (≈40 min of stream per chunk), and the 9B lists 7–13
+   "episodes" per chunk whatever the body says, so the count is bounded below by the chunks, and
+   switch cost 45 does not merge neighbours that are genuinely different sub-topics. An
+   `episodes` grain needs a level ABOVE the chunks (an outline of the chunk outlines, or an
+   outline over a condensed whole), which the plan's §10.2 "level 1 is broad" assumed would fit
+   one state and on a 3.4 h stream does not.
+2. **Chunk 5's outline ignored the plain-lines instruction** and answered in prose ("Analysis of
+   the transcript reveals that…", "The stream flows as follows:"); the parser keeps every
+   non-empty line, so prose sentences became options. Measured once; the outline parse has no
+   shape check today (segment.py had none either).
+
+Both runs: the 9B loaded at 16,384 in 7–8 s, the 27B in 6–7 s; the harness released each lease
+at the phase end and the card cleared (Crucible's unload ruling), except once (stories' 27B),
+which the harness unloaded itself since it had loaded it. `/v1/activity` afterwards: nothing
+resident, no lease.
 
 ## Deviations from the plan
 
@@ -182,3 +241,21 @@ STREAM_EPISODES
   model `A. section 1: <label>`, so the name is part of the measured prompt) and question names
   `s<i>`; neither is integer-like, and an integer-like name is refused by name rather than
   prefixed.
+
+## Open questions for Owen
+
+1. **Titles: thinking on or off?** On the Mac's 27B-4bit, thinking-on titles took 37–412 s and
+   4 of 9 ran out their 8,192 tokens with no answer; thinking-off titles took ~12 s each and all
+   answered (8 of 58 came back without a summary line). The service keeps ON as its default until
+   you rule.
+2. **Episodes needs a level above the chunks** (see above). Proposed for P8b: an outline written
+   over the chunk outlines (a few hundred tokens), used as the options for every chunk, so the
+   whole stream is assigned against ONE list and Viterbi runs once over all of it.
+3. **The ad option leans** (§0a's trap, measured on Duffy: 40–72 of 145 sentences). The yes/no
+   catches it every time, but real plugs arrive as outline items ("Promotion of the book") and
+   are not flagged `isAd`. Options: score the ad column against its own per-video median before
+   Viterbi (Briefcase's flag fix), or put the ad option first rather than last and measure again.
+4. **An outline answered in prose** was taken line by line as options. Should a non-list answer
+   fail loudly (Law 1), or be read under a declared rule?
+5. **Speaker tags in titles.** The stream's tracks are mic = host and screen = clip;
+   `summarize_chapter_tagged` could get HOST/CLIP lines from them. Not wired: P8b's call.
