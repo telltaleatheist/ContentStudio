@@ -74,6 +74,7 @@ import {
   routedModelString,
   validateRoutingSelections,
 } from '../services/metadata/metadata-routing';
+import { resolveRerollGateSettings } from '../services/metadata/reroll/settings';
 import { PROMPTS_SUBDIR, initPromptAssets, promptAssets, reloadPromptAssets } from '../services/metadata/prompt-assets';
 import { setupPublishIpc } from '../services/publish/publish-ipc';
 import { SpreakerConfigService } from '../services/spreaker/spreaker-config.service';
@@ -1548,6 +1549,11 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         //
         // It does NOT decide the chapter models. Chapters are not a routed task any more.
         metadataRouting: resolveMetadataRouting(migrateStoredRouting(settings.metadataRouting).selections),
+        // The re-roll gate (LEDGER #201), read from the store AT JOB TIME like the routing: an
+        // absent key is the declared, measured default (reroll/settings.ts, docs/crucible/P9.md),
+        // and a stored value the gate cannot read fails the job by name rather than running it
+        // under some other bar.
+        rerollGate: resolveRerollGateSettings({ rerollGate: settings.rerollGate, rerollGateTuning: settings.rerollGateTuning }),
         inputNotes: params.inputNotes || {},
         insights: insights || undefined,
         // "Show prompt": transcribe + assemble the prompt, then STOP (no AI call).
