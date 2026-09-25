@@ -15,7 +15,9 @@ for the symbol rather than trusting the number.
 
 Read first: C `docs/INTEGRATING-AN-APP.md` (the order and the gotchas), BC
 `docs/crucible-migration-plan.md` (the sibling plan this one copies its shape from), and
-`CS/LEDGER.md` §2 (the laws this plan is held to).
+`CS/LEDGER.md` §2 (the laws this plan is held to). **Then §0a below**: what Briefcase learned
+finishing the same migration (2026-09-24), and which facts in this plan Crucible has moved past
+since it was written (1.0.23 → 1.0.32).
 
 ---
 
@@ -30,7 +32,7 @@ Read first: C `docs/INTEGRATING-AN-APP.md` (the order and the gotchas), BC
 | 3 | Cloud Claude | Cloud models become Crucible upstream ids, `anthropic/<id>`. API keys move out of `userData/api-keys.json` into Crucible server settings (`PUT /v1/settings`), and the app stops holding keys. No temperature or other sampling parameter is ever sent to a cloud upstream. `openai:` is deleted: it is reachable only through legacy Settings. | S |
 | 4 | CPU-sized models | **Stay local**, because Crucible is a GPU orchestrator. TitaNet speaker tagging (sherpa-onnx, in-process) is unchanged. `nomic-embed-text` key-phrase ranking moves **off Ollama to an in-process ONNX runtime**. Its frequency fallback is removed (Law 1), and so is its silent document truncation (§12). | S |
 | 5 | Voice isolation | Becomes a Crucible `denoise` job using the new `vocals` manifest, which arrives just after 1.0.24. The model runs at 44.1 kHz and ContentStudio resamples. Chunking and skipping silent chunks stay on the client, so each job is one file in and one file out (§9). | S |
-| 6 | ASR | Pipeline and editor transcription both become the Crucible `asr` job: mlx-whisper on the Mac, faster-whisper on the PC. The model is **large-v3-turbo wherever a manifest exists**, which today means Mac yes and PC no (§8, §19 N4). The editor's word timings go through a **measurement gate** before cut-by-word relies on them. The job runs with `vad_filter:false` on mlx, every param stated, and the server's 900 s windows. | S |
+| 6 | ASR | Pipeline and editor transcription both become the Crucible `asr` job: mlx-whisper on the Mac, faster-whisper on the PC. The model is **large-v3-turbo wherever a manifest exists**, which today means Mac yes and PC no (§8, §19 N4). The editor's word timings go through a **measurement gate** before cut-by-word relies on them. The job runs with `vad_filter:false` on mlx, every param stated, and the server's 900 s windows. **Superseded by LEDGER #203 (Qwen3-ASR, §8's note) and by Crucible 1.0.29's ids (§0a).** | S |
 | 7 | Episode splitter | It is broken, so it is **not ported**. It is reworked as the coarsest grain of the shared chaptering service (#9). `EpisodeSplitterService.analyze()` and everything only it calls are deleted. | S |
 | 8 | Editor Stories analyzer | **It is just chapters**: "broad chapters for a livestream". The same outline+assign chaptering runs at **broad** grain. `E/ollama-service.ts` and `E/chapter-splitter.ts`'s analyzer are retired. `story:suggest-title` stays as a per-chapter title call on the routed model. It is **not** a separate routing task. | S |
 | 9 | Chaptering | **One service, "chaptering at a chosen granularity"**, built on snap OUTLINE + ASSIGN + Viterbi. It serves three grains: metadata chapters (`detailed`/`broad`/`stories`), editor Stories (`broad`), and episode splitting (`episodes`, the coarsest). Publishable titles and summaries still come from `summarize_chapter` on the routed model (§10). | S |
@@ -39,13 +41,130 @@ Read first: C `docs/INTEGRATING-AN-APP.md` (the order and the gotchas), BC
 | 12 | Field input | Chapters run first. Titles, description, tags, thumbnail and pinned comment then read the **chapter digest** by default instead of the full transcript. The default switches **only after** an A/B on a handful of Owen's real videos (§7). | S (gate) |
 | 13 | Model choice | ContentStudio's per-field routing table (M/metadata-routing.ts) **stays the source of truth**. Each option maps to one Crucible model id (§6.2). ContentStudio never writes the server's shared `localModels`. | S |
 | 14 | Servers | Two: the **Mac** (local, mlx-darwin, the default) and **owens-pc** (3090 Ti, vLLM, over the tailnet, faster). The registry follows BookForge (`{name,url,token,added}`, order, Running/Paused, `newJobsWaitFor`). Each queue item has a **"fast" choice that pins it to the PC**. | S |
-| 15 | Busy | A `409 server_busy` / `leased`, or a load the card cannot hold right now, **parks** the item. It never interrupts and never loops. The queue re-admits it later, or sends it to the other server when the item is not pinned (§13). With no reachable server, GPU work waits. There is no CPU fallback. | S |
-| 16 | ASR default model | `mlx-whisper-large-v3-turbo` on the Mac. On the PC it is `faster-whisper-large-v3` until a turbo manifest exists. | S |
+| 15 | Busy | A `409 server_busy` / `leased`, or a load the card cannot hold right now, **parks** the item. It never interrupts and never loops. The queue re-admits it later, or sends it to the other server when the item is not pinned (§13). With no reachable server, GPU work waits. There is no CPU fallback. **The "sends it to the other server" half conflicts with Owen's 2026-09-24 Briefcase ruling (§0a, §21 Q14).** | S |
+| 16 | ASR default model | `mlx-whisper-large-v3-turbo` on the Mac. On the PC it is `faster-whisper-large-v3` until a turbo manifest exists. **Superseded:** those ids were retired in Crucible 1.0.29; the model is `qwen3-asr-1.7b` (#203, §8). | S |
 | 17 | Re-roll gate | This is a later phase on snap: rule checks as yes/no questions, a re-roll of at most 3 with the failing reason passed back, the best attempt kept, and **delivered flagged, never blocked**. Title ranking is validated against Owen's 177 decided A/B tests first (§11). It conflicts with Law 3; see §21. | S (scope) |
 | 18 | Outline writer | The **scorer model (qwen3.5-9b) writes the outline**, because that is the measured setup. Owen can move it to the routed chapters model instead. | D |
 | 19 | Grain → switch cost | `detailed` = 20 (the measured best). `broad`/`stories` = the level-1 outline of a two-level outline. `episodes` = level-1 with a duration-aware outline prompt. The numbers are set by measurement in P8. | D |
 | 20 | Where cloud calls go | To the **local (Mac) server**, which holds the migrated keys. The PC gets keys only through an explicit "copy my key to …" action. | D |
 | 21 | Fields after chapters | Scrub and Soften keep their always-on / on-demand rewrite until the re-roll gate measures better (§11). | D |
+
+---
+
+## 0a. Lessons from Briefcase's migration (added 2026-09-24)
+
+Briefcase finished the same move on `feat/crucible` (now on its `main`, `cb7c45d`): every AI call
+through Crucible, snap chapters and flags, Qwen3-ASR transcription. What it learned that this
+plan does not yet say, in the order ContentStudio will meet it. Crucible facts below were
+checked in C at `v1.0.32`.
+
+**Crucible moved while the plan waited. Re-read §1, §3.4, §8 and §19 against these:**
+
+- **1.0.24 delivered most of §19.** The `generate` class, `/v1/decide` + SDK `decide()`, the
+  mlx-lm logprob patch (`top_logprobs` 11 → 40, commit `50cfc38`), `initial_prompt` on whisper
+  `asr` (N2), a turbo manifest for cuda-linux (N4), the `vocals-roformer` denoise manifest (N3's
+  first half), and a **load-time context** (N5: `load-model` takes `params.context`, refused
+  `context_over_limit` above the host's ceiling; the ceilings are in `capability()`'s `generate`
+  row as `context_ceilings`). See §19's status notes.
+- **Decide's missing labels are `missing: 'report'`, not a floor** (N7). A letter outside the
+  engine's top-n comes back with a `null` probability and is named in `missingLabels`; `'refuse'`
+  (the default) is the old `502 label_not_in_probs`. Viterbi's finite floor is **the client's
+  declared rule** (Briefcase `backend/src/scorer/crucible-decide.ts`), not the server's.
+- **The asr lineup changed (1.0.29, Owen's ruling).** It offers exactly `qwen3-asr-1.7b`,
+  `qwen3-asr-0.6b` (1.0.32), `whisper-large-v3-turbo` and `whisper-tiny`, each **one id on every
+  backend**, plus Mac-only MLX ports `qwen3-asr-1.7b-mlx` / `qwen3-asr-0.6b-mlx`. **Every
+  backend-prefixed id is gone**: `mlx-whisper-*` and `faster-whisper-*` are refused
+  `400 unknown_model` naming the ids offered, never aliased. §0 #6/#16, §3.4's subjects and §8's
+  whisper text name retired ids. See §8's note.
+- **1.0.25 made informational SDK fields nullable** (`T | null`): an informational field is read
+  tolerantly and the code path that NEEDS it refuses by name. `promptTokens: null` means "not
+  reported", never 0. `activity.chat.inFlight: null` is read as busy. `max_model_len` can be null:
+  §7.2's context check must then take the load context, then the `generate` row's
+  `context_ceilings`, and **refuse by name** when none is stated. Briefcase shipped a 16K guess
+  here first and had to take it out (it is a Law 1 fallback).
+- **1.0.26** settles a card before answering `engine_in_use`; **1.0.27** makes a dropped client
+  cancel its non-streamed chat/decide. On the Mac, mlx-lm still finishes up to 2 requests it had
+  accepted. Repin with `adopt-crucible-release.mjs <version>`, always naming the version.
+- **The chat parser should refuse a missing `finish_reason`** rather than defaulting it to
+  `stop`. §6.1's `length` rule depends on it being real.
+
+**Servers: Owen's ruling in Briefcase conflicts with §0 #14/#15 and §13.2.** On 2026-09-24 Owen
+said of Briefcase: *"if the mac is busy then it should pause and wait until it isnt busy anymore.
+it should only hand the job to another server if the user switches crucible servers. it should
+never randomly hand a gpu job to another server."* Briefcase replaced BookForge's ranked
+`{order, disabled}` routing with **one selected server** (`{selected}`): a busy or silent server
+makes work wait with the reason, a Settings switch moves work not yet started, and nothing moves
+on its own. ContentStudio's explicit **fast pin** is a user choice, so it fits that rule, but
+`newJobsWaitFor: 'any'` and "sends it to the other server when the item is not pinned" (§0 #15,
+§13.2, P3's tests) are exactly the automatic hand-off he ruled out. Asked as §21 Q14.
+
+**No fallbacks, and what "down" looks like.** Owen's Briefcase rulings: *"if crucible is down,
+briefcase is down... the user just cant take any actions that would require crucible"*, and
+*"programmatic fallbacks are okay. the problem is unexpected code paths and band aids"*. What
+worked:
+
+- One **readiness** service (ready / starting / unreachable / not-installed / not-configured),
+  pushed to the renderer. Every AI control is disabled with that one reason and **one door**
+  (Start / Install / Connect). Browsing, downloads, the editor's non-AI features and export never
+  touch it.
+- A **"no Crucible" test suite** that boots the app's services with no server at all and asserts
+  every non-AI feature works (Briefcase `backend/test/no-crucible/`), so a non-AI path that
+  starts depending on the AI layer fails a test, not a user.
+- A **retired-component cleanup** for P10: Briefcase removes the old whisper models, llama
+  runtime and NLI env once, 15 s after boot, with a dry-run script and an opt-out env var. It
+  freed ~24 GB on the Mac. Do the same for the app's own whisper.cpp models and
+  `voice-separator-env` (never Ollama's model store, which is Ollama's, not the app's).
+
+**Model pickers list only what the server offers.** Owen, on seeing "(unavailable)" entries:
+*"if claude isnt available then it shouldnt be listed in the model list."* Briefcase builds every
+picker from one backend source: the server's models that `/v1/models` says are loadable or
+resident, plus each upstream's models **only when that upstream is configured on the server**,
+grouped "On this Crucible" / "Claude via Crucible". A stored choice the server cannot run is
+**replaced by the server's own pick for the class** (and saved when the user next saves), never
+shown as unavailable. This bears on §6.2's routing options (`qwen35-4b` and the Claude rungs):
+the routing dialog should hide what the venue cannot run, not list it disabled.
+
+**Leases on interrupt, and on quit.** Ctrl-C on a standalone tool (Briefcase's flag eval) left its
+lease held until the TTL, and the card was stuck for everyone. Every CLI that takes a lease
+(`generate-metadata-cli.js`, `prompt-harness/run.js`, the live smoke) needs SIGINT/SIGTERM
+handlers that cancel its jobs and release its leases, then exit 130/143. On app quit, give
+in-flight runs ~2 s to unwind and release their own leases **before** the ledger sweep: a lease
+granted after quit began is in no ledger row the sweep could read.
+
+**Snap, from running it on real videos.**
+
+- **Quote the text being judged, never an index.** Owen: *"one mistake other agents have made
+  was asking it to identify a sentence by ID number. we arent going to do that. we give it the
+  thing it's judging."* The chunk is the primed state; the question quotes the unit (Briefcase
+  flags quote a 3-sentence passage; chapters quote the sentence and the one before).
+- **A multi-option softmax needs a per-video baseline.** For flags, a group of sentences almost
+  always "does" some category a little, so "none" rarely won: 351 of 360 units read as hot, and
+  the result was three 8-minute sections all carrying the one category the model leaned on all
+  video. Fixed by scoring each option's **rise above its own median in that video** (capped at
+  0.5, so a genuine whole-video theme still reads) and cutting any span over 90 s at its quietest
+  boundaries. The same trap applies to §11's rule checks and to the ad option in §10.2's assign:
+  measure the baseline before trusting an absolute threshold.
+- **Weight the progress bar by work, not by stage.** Snap is most of a run's wall time (~15 min of
+  a 28-min video's 18). Briefcase first gave it 22% of the bar, and it looked stuck.
+- **A justification call puts the verdict first.** When an LLM judges and explains (Briefcase's
+  flag check writes the reason each marker shows), the JSON schema orders `verdict` before
+  `reason`, so the call is committed before the prose. In Briefcase's verifier, giving the model
+  room to reason before answering measured worse (it talked itself out of real findings).
+
+**Mechanics that cost time.**
+
+- **Regenerate the module with the target release's own generator.** Run `gen-modules.py` from an
+  extract of that tag (`git archive v1.0.32 | tar -x`), not from a working checkout, and check it
+  with `--check`. A module naming a retired id is refused `unknown_subject`.
+- **Qwen word timings need the `align` job type installed**, not only the `qwen3-aligner` weights:
+  a missing env is `409 env_missing` at the submit. The module lists `align` as a job type and
+  `qwen3-aligner` as a subject.
+- **`capability()` and `/v1/info` answer "can this server run X"** before anything is uploaded:
+  Briefcase reads the `asr` and `align` capability rows and parks with "has not downloaded
+  qwen3-asr-0.6b yet" instead of uploading a video to be refused.
+- **Native modules differ between Electron and the test runner** (Briefcase's `better-sqlite3`:
+  `npm rebuild` for jest, `electron-rebuild` for the app). If ContentStudio's `tools/test-*` run
+  under plain Node, pin which build is on disk before each.
 
 ---
 
@@ -183,6 +302,11 @@ type = "rvc"
 [[needs]]
 class = "decide"        # after 1.0.24 (snap scorer); omitted before
 
+# SUPERSEDED (2026-09-24): the backend-prefixed whisper ids below were retired in Crucible
+# 1.0.29 and a module naming them is refused `unknown_subject`. Per #203 the transcriber is
+# Qwen3-ASR with its aligner: add `[[job_types]] type = "align"` above, and replace the two
+# whisper subjects with `qwen3-asr-1.7b` and `qwen3-aligner` (one id each on every backend).
+# Generate with the target release's own gen-modules.py (§0a).
 [[subjects]]            # the transcriber, backend-scoped as bookforge.toml does it
 kind = "model"
 id = "mlx-whisper-large-v3-turbo"
@@ -208,6 +332,7 @@ held until the first-run choices are recorded (BF `first-run-models.ts`).
 ## 4. Registry, pairing, probe, the engine hop, and the fast server
 
 - **Rows.** `crucible-servers.json` holds `[{name,url,token,added}]`, written temp-then-rename with the token masked in every listing. `crucible-routing.json` holds `{order, disabled, newJobsWaitFor, fastServer}`. `fastServer` is ContentStudio's one addition: the name of the row that "fast" pins to, which is **owens-pc** by default.
+  - *Briefcase note (2026-09-24):* after Owen's no-hand-off ruling, Briefcase's record is `{selected}`: one server all work goes to, the first added is selected, removing the selected one leaves none selected (never another picked for the user), and a pre-ruling `{order, disabled}` file reads as its first running server. If Q14 goes the same way here, the record is `{selected, fastServer}`.
 - **Auto-connect.** When the registry is empty, adopt the pairing file (`~/.crucible/pairing`), after `info()` answers with its name and `apiVersion === 1`. On Owen's Mac that is the running 1.0.23 service, and the row is named `mac`.
 - **The PC.** Owen adds owens-pc once, by connect code or device-code pairing (`startPairing('owens-pc:7100' over the tailnet, 'ContentStudio')`), from the Servers pane. The PC's engine may be behind the Windows tray orchestrator (`:7101`). Follow `engineOf(info)` **once**, cache it for 60 s, and never follow a chain (BF `engine-resolve.ts`).
 - **Probe.** It tells apart **unreachable / not-Crucible / bad token / API mismatch / timeout** (3 s clock; a sleeping PC answers nothing). It is cached for 15 s for the lanes, and the Test button bypasses the cache.
@@ -389,6 +514,30 @@ This one gate decides whether `digest-default` ships. The default ships only on 
 > - **Loop failures:** a loop that survives the re-cuts fails as `asr_decode_loop`, naming the time range. It surfaces as a failure, never a fallback.
 > - **Engines:** 8 pieces at a time on the PC (vLLM), 1 on the Mac (mlx-audio).
 > - Where the whisper-specific text below conflicts with this, this note wins.
+>
+> **As shipped, 2026-09-24 (Crucible 1.0.29-1.0.32, and what Briefcase learned running it):**
+> - **Ids.** `qwen3-asr-1.7b` is one id on both backends (vLLM on the PC; since 1.0.30 Qwen's own
+>   `qwen_asr` package on MPS on the Mac, 84 s per 10 min with timestamps). `qwen3-asr-0.6b` exists
+>   too (1.0.32). `qwen3-asr-1.7b-mlx` / `qwen3-asr-0.6b-mlx` are Mac-only MLX ports, ~2.5x faster
+>   **but they drop fillers** (9 against the official package's 24 on the same window).
+>   ContentStudio keeps ums and uhs to cut on, so it wants the **official** id, not `-mlx`.
+>   Briefcase, which does not, uses `qwen3-asr-0.6b-mlx` on the Mac.
+> - **The aligner is a job type.** `word_timestamps:true` runs `qwen3-aligner` in the `align` worker
+>   env: without that env the submit is `409 env_missing`, without the weights `409
+>   model_not_installed` naming the aligner. The module lists both (§3.4). Check the `asr` and
+>   `align` rows of `/v1/info` before uploading, and park with which one is missing.
+> - **Language is required**, one of the aligner's eleven (en de fr es it pt ru ja ko zh yue).
+>   `auto` is refused. A language outside them should be refused by name before any upload.
+> - **Segments are pieces of up to 180 s**, not sentences, and the aligner's words carry **no
+>   punctuation** (the segment `text` has it; "don't" may come back as `don` + `t`). An SRT built
+>   from segments gives 3-minute cues. Briefcase matches the words to the punctuated text on their
+>   letters and digits, character by character, gives each text token to the word holding its
+>   last letter, and cuts cues at sentence punctuation (full-width 。！？ included), at the words'
+>   times (BC `backend/src/crucible/asr/crucible-transcript.ts` `alignWordsToText`, with tests).
+>   §8.1's `word_timestamps:false` would lose the only times finer than a piece: ask for words.
+> - **Transcript shape** is whisper's keys (`model`, `revision`, `language`, `segments[{start,end,
+>   text,words}]`), plus `engine`, `aligner`, `pieces`, `silent_pieces`, `redecoded`.
+>   `language_probability` is always 1.0.
 
 ### 8.1 Pipeline transcription
 
@@ -475,7 +624,7 @@ chapter({ units, grain: 'detailed'|'broad'|'stories'|'episodes', promotedItems, 
 **Model roles (Owen, 2026-09-23): "9b -> outline, outline -> snap, final chapter -> 27b -> chapter title".** The 9B writes the outline, snap on the 9B assigns the sentences, and each finished chapter goes to the 27B (the chapters routing, `summarize_chapter`) for its title and summary.
 
 1. **Outline (9B).** One chat with `thinking:false`, temperature 0, and ≤25 short labels as plain lines. On a long video this becomes a **two-level outline**: level 1 is broad (≤25), then a sub-outline per level-1 section (≤25) over that section only. That keeps the options ≤26 and every state ≤12k tokens. `broad`/`stories` use level 1 only. `detailed` uses level 2 on long videos and level 1 on short ones.
-2. **Assign.** One `decide` question per sentence: `choice`, "which section of the video is this sentence part of?". The options are the outline items plus one fixed **ad/sponsor/self-promotion** item, whose description names the channel's `promoted_items`. The sentence is quoted with its previous sentence. The transcript chunk is the primed `state`, with 64 questions per decide, as in Briefcase.
+2. **Assign.** One `decide` question per sentence (quoting the sentence itself, never its index; §0a): `choice`, "which section of the video is this sentence part of?". The options are the outline items plus one fixed **ad/sponsor/self-promotion** item, whose description names the channel's `promoted_items`. The sentence is quoted with its previous sentence. The transcript chunk is the primed `state`, with 64 questions per decide, as in Briefcase.
 3. **Viterbi.** It runs over log P(item | sentence). Any item may follow any other, with a flat switch cost (20 for `detailed`) as the grain dial. Boundaries are where the item changes.
 4. **Ad spans.** Each ad span is confirmed with a yes/no. A rejected span is re-segmented without the ad option. Confirmed ad spans become the promo chapters that code already excludes (M/promo-chapters.ts).
 5. **Timestamps** come from the sentence units' cue times. The model never emits one (Law 6).
@@ -586,7 +735,8 @@ They are copied into `M/chaptering/` with a header naming the Briefcase commit, 
 
 - **Ledger.** `<userData>/crucible-in-flight.json` (BF `in-flight-ledger.ts`) is written synchronously right after every `submit()` and lease, as `{server, kind, id, model, jobId, lastEventId, at}`.
 - **Startup.** The sweep is **awaited** in `app.whenReady` (main.ts:156) before IPC handlers accept `generate-metadata`. It cancels our jobs, releases our leases, and unloads only what we alone loaded (`cardHeldBy`).
-- **Quit.** `before-quit` (main.ts:293) runs the same sweep under a 30 s deadline.
+- **Quit.** `before-quit` (main.ts:293) runs the same sweep under a 30 s deadline, after giving in-flight runs ~2 s to release their own leases (§0a: a lease granted after quit began is in no ledger row).
+- **Interrupt.** Every CLI that leases (§20) cancels its jobs and releases its leases on SIGINT/SIGTERM before exiting (§0a).
 - **Dropped stream.** Sweep that server.
 - **Renderer.** Its reset of `processing` to `pending` on reload (job-queue.ts:65-71) already matches: a job cut off by a restart re-runs from its `resumeFrom` stage.
 
@@ -608,6 +758,7 @@ They are copied into `M/chaptering/` with a header naming the Briefcase commit, 
   - The OpenAI and Ollama-host fields are **removed**, and so are the API-key fields in Settings.
 - **Routing dialog** (`model-routing-dialog`):
   - each option shows its Crucible id and, per server, installed / pullable (Download → a pull task) / does not fit here (the server's sentence);
+  - *Briefcase note:* Owen asked that a model the server cannot run **not be listed at all** (§0a). Consider showing only installed/pullable options per venue, and replacing a stored routing the venue cannot run with the server's pick, rather than listing it disabled;
   - `claude -p` options are marked "outside Crucible";
   - the per-field grid is unchanged (M/metadata-routing.ts:275).
   - A new **Stories/Episodes** row is *not* added: they follow `chapters` (§0 #8).
@@ -705,7 +856,7 @@ Every phase ends with `npm run build:all` green, `npm run check:pure` green, the
 
 **P9: re-roll gate and title ranking.** *After P8.* §11. Done when the gate's pass/fail agrees with Owen on 50 hand-labelled titles and chapter titles, and title ranking agrees with the 177 decided A/B tests above chance by a margin set with Owen.
 
-**P10: removal.** *After P5 (whisper.cpp), P7 (voice-separator-env), P8 (Ollama, since editor Stories are its last user).* §15. Done when a clean install downloads no Ollama, whisper.cpp or separator env, and the grep test is green.
+**P10: removal.** *After P5 (whisper.cpp), P7 (voice-separator-env), P8 (Ollama, since editor Stories are its last user).* §15. Done when a clean install downloads no Ollama, whisper.cpp or separator env, and the grep test is green. Add a one-time **retired-file cleanup** for existing installs (the app's own whisper models and separator env; never Ollama's store), with a dry run and an opt-out, as Briefcase did (§0a).
 
 **Act cutover.** No separate phase. When each server reports `generate`, §6.4 starts sending it. The only follow-up is to delete the `analysis` branch once both servers run ≥ 1.0.24.
 
@@ -774,6 +925,16 @@ quit-sweep, stall-clock, asr, denoise, decide-wire, acts and key-migration.
 9. **N9: a lane reservation across acts** (BookForge's owed item). One job's ASR → decide → generate would then not be interleaved by another client.
 10. **N10: the `contentstudio` module** (§3.4). This is ContentStudio's own PR to C `modules/`.
 
+**Status, checked in C at `v1.0.32` (2026-09-24):**
+
+- **N1 delivered** in 1.0.24: `generate`, `capability?context_tokens=&concurrency=`, `/v1/decide` + SDK `decide()`, and the mlx-lm patch (`top_logprobs` 40).
+- **N2 delivered** for whisper (`initial_prompt`, 1.0.24). Under #203 Qwen takes `context` instead (≤1,024 tokens; `initial_prompt` is refused on Qwen), so the filename-title seed goes in `context`.
+- **N3:** `vocals-roformer` shipped in 1.0.24. `denoise` is still served by the `rvc` env (`workerenv.JOB_TYPES_SERVED_BY_ENV`), so the second half is still owed or ruled.
+- **N4 delivered, then superseded:** the turbo manifest landed in 1.0.24, and 1.0.29 made `whisper-large-v3-turbo` one id on both backends. Moot under #203.
+- **N5 delivered** in 1.0.24: `load-model` takes `params.context`, refused `context_over_limit` above the host ceiling in `capability()`.
+- **N7 answered differently:** `missing: 'report'` (null + `missingLabels`); the floor is the client's declared rule (§0a).
+- **N6, N8, N9, N10:** not checked here; N10 is ContentStudio's own PR, and its subjects must use the 1.0.29 ids (§3.4).
+
 **Not requested:** an embeddings route. CPU-sized models stay local by Owen's rule.
 
 **Dependency on 1.0.24.**
@@ -811,6 +972,8 @@ quit-sweep, stall-clock, asr, denoise, decide-wire, acts and key-migration.
 11. **Law 2 violation today:** `E/chapter-splitter.ts` authors prompts inline (:344-1101). They are deleted in P8; `story:suggest-title`'s prompt moves to `assets/prompts/`.
 12. **Law 1 violations today:** whisper-bridge.ts:89 substitutes `base` for an invalid model name with a warning; `PROVIDER_DEFAULTS` supplies models silently. Both are deleted by this plan.
 13. **Default whisper setting `'small'`** (main.ts:186, IPC:1093) vs the ledger's large-v3-turbo. It is moot after P5, but wrong until then.
+14. **Automatic hand-off between servers** (added 2026-09-24). §0 #15, §4's `newJobsWaitFor` and §13.2 send an unpinned parked item to the other server. Owen ruled the opposite for Briefcase: *"it should never randomly hand a gpu job to another server"*; work moves only when the user switches servers. Does the same hold here, leaving the fast pin as the only way work reaches the PC?
+15. **`qwen3-asr-1.7b` or its `-mlx` port on the Mac** (added 2026-09-24). The port is ~2.5x faster but keeps fewer fillers; #203 chose Qwen for its fillers. Proposed: the official id for the editor (cut-by-word) and the pipeline alike, unless Owen wants the port for pipeline-only transcripts.
 
 ---
 
