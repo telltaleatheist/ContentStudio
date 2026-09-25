@@ -684,21 +684,54 @@ check('a plug the outline named as an ordinary item is flagged isAd when the yes
   const yes = fakeVideo(300, sections, { perUnit, adVerdict: 0.8 });
   const r = await service.chapter(yes.captions, { granularity: 'stories', chat: yes.chat, decide: yes.decide, summarize: false });
   assert.deepStrictEqual(r.chapters.map((c) => [c.label, c.isAd]), [['Alpha topic', false], ['Promotion of the book', true], ['Beta topic', false]]);
-  assert.deepStrictEqual(r.plugVerdicts, [{ start: 100, end: 120, p: 0.8, threshold: 0.5, read: 'answered', source: 'outline-item' }]);
-  // Only the candidate was asked: one yes/no, over its own passage.
-  const asks = yes.calls.decide.filter((d) => d.req.questions.q);
-  assert.strictEqual(asks.length, 1);
-  assert.ok(asks[0].req.questions.q.instructions.includes('Sentence 100 of') && !asks[0].req.questions.q.instructions.includes('Sentence 99 of'));
+  assert.deepStrictEqual(r.plugVerdicts, [{ start: 100, end: 120, p: 0.8, threshold: 0.5, read: 'answered', source: 'outline-item', windows: 3 }]);
+  // Only the candidate was asked, in windows that each fit the 700-character quote, so every one
+  // of its sentences was READ and nothing outside it was.
+  const asks = yes.calls.decide.filter((d) => d.req.questions.q).map((d) => d.req.questions.q.instructions);
+  assert.strictEqual(asks.length, 3);
+  for (let i = 100; i < 120; i++) assert.ok(asks.some((q) => q.includes(`Sentence ${i} of`)), `sentence ${i} read`);
+  assert.ok(!asks.some((q) => q.includes('Sentence 99 of') || q.includes('Sentence 120 of')));
+  assert.deepStrictEqual(plugs.confirmWindows(['a'.repeat(400), 'b'.repeat(400), 'c'.repeat(900), 'd'], 0, 4), [[0, 1], [1, 2], [2, 3], [3, 4]]);
+  assert.deepStrictEqual(plugs.confirmWindows(['x'.repeat(300), 'y'.repeat(300), 'z'], 0, 3), [[0, 3]]);
   // A no keeps it content.
   const no = fakeVideo(300, sections, { perUnit, adVerdict: 0.1 });
   const r2 = await service.chapter(no.captions, { granularity: 'stories', chat: no.chat, decide: no.decide, summarize: false });
   assert.ok(!r2.chapters.some((c) => c.isAd));
   assert.deepStrictEqual(r2.plugVerdicts.map((p) => [p.source, p.p]), [['outline-item', 0.1]]);
+  // One window saying no keeps the whole run content: a plug throughout, or not a plug.
+  const mixed = fakeVideo(300, sections, { perUnit });
+  const decide = mixed.decide;
+  const oneNo = async (req, o) => {
+    const res = await decide(req, o);
+    if (res.answers.q && req.questions.q.instructions.includes('Sentence 119 of')) res.answers.q = yesno(0.05);
+    return res;
+  };
+  const r3 = await service.chapter(mixed.captions, { granularity: 'stories', chat: mixed.chat, decide: oneNo, summarize: false });
+  assert.ok(!r3.chapters.some((c) => c.isAd));
+  assert.strictEqual(r3.plugVerdicts[0].p, 0.05);
   // The rule itself: first or second on at least half the run's sentences.
   const at = (pAd, pTop) => ({ row: [Math.log(pTop), Math.log((1 - pTop - pAd) / 2), Math.log((1 - pTop - pAd) / 2), Math.log(pAd)], plug: 3 });
   assert.ok(plugs.isOutlineItemCandidate([at(0.3, 0.6), at(0.3, 0.6), at(0.001, 0.9)]));
   assert.ok(!plugs.isOutlineItemCandidate([at(0.3, 0.6), at(0.001, 0.9), at(0.001, 0.9)]));
   assert.ok(!plugs.isOutlineItemCandidate([]));
+});
+
+check('a confirmed ad run keeps only its core, the sentences the ad option leads; the rest goes back to the content', async () => {
+  const row = (lead, p) => [0, 1, 2].map((j) => Math.log(j === lead ? p : (1 - p) / 2));
+  const L = [
+    ...Array.from({ length: 10 }, () => row(0, 0.9)),
+    ...Array.from({ length: 5 }, () => row(0, 0.55)),
+    ...Array.from({ length: 10 }, () => row(2, 0.9)),
+    ...Array.from({ length: 10 }, () => row(1, 0.9)),
+  ];
+  const path = [...Array(10).fill(0), ...Array(15).fill(2), ...Array(10).fill(1)];
+  const t = plugs.trimToCores(L, path, 2, 20);
+  assert.deepStrictEqual(t.trims, [{ start: 10, end: 25, core: [15, 25] }]);
+  assert.deepStrictEqual(viterbi.runsOf(t.path, 2), [[15, 25]]);
+  assert.ok(t.path.slice(10, 15).every((j) => j === 0));
+  // A run already all core, or with no sentence the ad option leads, is left as it was.
+  assert.deepStrictEqual(plugs.trimToCores(L, [...Array(15).fill(0), ...Array(10).fill(2), ...Array(10).fill(1)], 2, 20).trims, []);
+  assert.deepStrictEqual(plugs.trimToCores(L, [...Array(10).fill(0), ...Array(5).fill(2), ...Array(20).fill(1)], 2, 20).trims, []);
 });
 
 check('the ad prior (Owen: ads at about 5:00 and 10:00) lowers the bar near those marks, at chapters only, and places nothing', async () => {

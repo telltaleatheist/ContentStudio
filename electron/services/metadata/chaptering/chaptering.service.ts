@@ -53,7 +53,7 @@ import { BATCH, MAX_ITEMS, SNAP_PROMPTS } from './prompts';
 import { writeOutline } from './outline';
 import { assignQuestions, optionNames, questionName, readChoiceDistribution, readYesNo, wireOptions } from './assign';
 import { viterbi } from './viterbi';
-import { CONFIRM_THRESHOLD, adBaseline, baselineRow, confirmPlugs, confirmThreshold, isOutlineItemCandidate } from './plugs';
+import { CONFIRM_THRESHOLD, adBaseline, baselineRow, confirmPlugs, confirmThreshold, confirmWindows, isOutlineItemCandidate, trimToCores } from './plugs';
 import { Chunk, ChunkPath, ChunkPlanOptions, Piece, pathPieces, planChunks, stitchChunks, unitTokens } from './chunks';
 import { Span, childrenOf, piecesToSpans } from './chapters';
 import { TITLE_MAX_TOKENS, summarizeChapter } from './summarize';
@@ -593,9 +593,14 @@ async function runLevel(ctx: LevelContext, units: SentenceUnit[], offset: number
         reads.set(`${a}:${b}`, answer.read);
         return answer.p;
       }, threshold);
-      path = confirmed.path;
+      const trimmed = trimToCores(confirmed.logProbs, confirmed.path, plug, spec.switchCost);
+      path = trimmed.path;
       for (const v of confirmed.verdicts) {
-        verdicts.push({ start: offset + v.start, end: offset + v.end, p: v.p, threshold: v.threshold, read: reads.get(`${v.start}:${v.end}`)!, source: 'ad-option' });
+        const trim = trimmed.trims.find((t) => t.start === v.start && t.end === v.end);
+        verdicts.push({
+          start: offset + v.start, end: offset + v.end, p: v.p, threshold: v.threshold, read: reads.get(`${v.start}:${v.end}`)!, source: 'ad-option',
+          ...(trim ? { kept: [offset + trim.core[0], offset + trim.core[1]] as [number, number] } : {}),
+        });
       }
     } else path = viterbi(L, spec.switchCost);
     pieces = pathPieces(path, items, plug, offset);
@@ -619,11 +624,14 @@ async function runLevel(ctx: LevelContext, units: SentenceUnit[], offset: number
           reads.set(`${a}:${b}`, answer.read);
           return answer.p;
         }, (a, b) => threshold(at + a, at + b));
-        path = confirmed.path;
+        const trimmed = trimToCores(confirmed.logProbs, confirmed.path, r.plug, spec.switchCost);
+        path = trimmed.path;
         for (const v of confirmed.verdicts) {
+          const trim = trimmed.trims.find((t) => t.start === v.start && t.end === v.end);
           verdicts.push({
             start: offset + at + v.start, end: offset + at + v.end, p: v.p, threshold: v.threshold,
             read: reads.get(`${v.start}:${v.end}`)!, source: 'ad-option',
+            ...(trim ? { kept: [offset + at + trim.core[0], offset + at + trim.core[1]] as [number, number] } : {}),
           });
         }
       } else path = viterbi(L, spec.switchCost);
@@ -647,12 +655,21 @@ async function runLevel(ctx: LevelContext, units: SentenceUnit[], offset: number
         if (own && own.plug >= 0) rows.push(own);
       }
       if (!isOutlineItemCandidate(rows)) continue;
-      const k = ownerOf(Math.floor((a + b - 1) / 2));
-      const answer = await askPlug(k, a, b, 'outline-item');
+      // Every sentence is read: a plug throughout, or not a plug (plugs.ts confirmWindows).
+      const windows = confirmWindows(texts, a, b);
+      const answer = { p: 1, read: 'answered' as PlugVerdict['read'] };
+      for (const [x, y] of windows) {
+        const one = await askPlug(ownerOf(Math.floor((x + y - 1) / 2)), x, y, 'outline-item');
+        if (one.p < answer.p) answer.p = one.p;
+        if (one.read !== 'answered') answer.read = one.read;
+      }
       // segment.py's 0.5, never the prior's lower bar: the outline named this stretch as content,
       // and on Duffy the prior's 0.25 flagged a parenting critique near 10:00 (P8b.md).
       const need = CONFIRM_THRESHOLD;
-      verdicts.push({ start: piece.start, end: piece.end, p: answer.p, threshold: need, read: answer.read, source: 'outline-item' });
+      verdicts.push({
+        start: piece.start, end: piece.end, p: answer.p, threshold: need, read: answer.read, source: 'outline-item',
+        ...(windows.length > 1 ? { windows: windows.length } : {}),
+      });
       if (answer.p >= need) {
         piece.isAd = true;
         log.info(`[Chaptering] level ${spec.level}: "${piece.label}" (sentences ${piece.start}-${piece.end}) is a plug the outline named; the yes/no said ${answer.p.toFixed(2)}`);

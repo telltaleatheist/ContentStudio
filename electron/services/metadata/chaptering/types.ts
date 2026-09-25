@@ -195,6 +195,13 @@ export interface PlugVerdict {
   source: 'ad-option' | 'outline-item';
   /** The P(yes) an answer needed here: 0.5, lowered near the channel's usual ad marks (the declared prior, plugs.ts). */
   threshold: number;
+  /**
+   * A confirmed ad-option run kept only its core [start, end): the sentences on which the ad option
+   * leads (plugs.ts trimToCores). Absent when the whole run was kept.
+   */
+  kept?: [number, number];
+  /** An outline-item candidate read in this many windows, P(yes) the least of them (plugs.ts confirmWindows). */
+  windows?: number;
 }
 
 export interface Chapter {
