@@ -211,7 +211,7 @@ async function liveLanes(serverUrl, log) {
         return await queueAITask(gpuCall(SCORER), `reroll-cal-${Date.now()}`, what, () =>
           transport.withJobLease('mac', SCORER, (job) =>
             work(async (request, o) => transport.decide({ model: SCORER, state: request.state, questions: request.questions, missing: 'report', job, signal: cli.signal, what: o.what, trace: null })),
-          { what, act: 'decide', loadContext: 16384, signal: cli.signal }),
+          { what, act: 'decide', loadContext: 8192, signal: cli.signal }),
         );
       } catch (err) {
         const code = err && err.code;
@@ -293,6 +293,14 @@ async function runRank(args, log) {
         for (const t of slice) {
           if (done.has(t.video_id)) continue;
           const titles = t.variants.map((v) => v.title);
+          // A test whose variants share a title cannot be ranked (the ranker refuses a list with a
+          // title twice); it is recorded as skipped, with why, and counted out of the rate.
+          if (new Set(titles.map((x) => x.replace(/\s+/g, ' ').trim())).size !== titles.length) {
+            done.add(t.video_id);
+            fs.appendFileSync(outFile, JSON.stringify({ video_id: t.video_id, channel: t.channel, skipped: 'two variants carry the same title', variants: t.variants }) + '\n');
+            log(`rank: ${t.video_id} skipped, two variants carry the same title`);
+            continue;
+          }
           const { facts } = factsFor(t.channel);
           const r = await ranking.rankTitles(titles, facts.channel, decide, `calibration rank ${t.video_id}`);
           done.add(t.video_id);
@@ -402,7 +410,9 @@ function report(args) {
   // Ranking.
   const rankFile = path.join(args.out, 'rank.jsonl');
   if (fs.existsSync(rankFile)) {
-    const recs = readJsonl(rankFile);
+    const all = readJsonl(rankFile);
+    const recs = all.filter((r) => !r.skipped);
+    if (all.length > recs.length) say(`  (${all.length - recs.length} test(s) skipped: ${all.filter((r) => r.skipped).map((r) => `${r.video_id} ${r.skipped}`).join('; ')})`);
     let pairs = 0;
     let won = 0;
     let top1 = 0;

@@ -19,7 +19,7 @@
  */
 
 import { readYesNo } from './decide-read';
-import { ChannelFacts, FIELD_RULES, QuestionSlot, ruleRequests } from './rules';
+import { ChannelFacts, FIELD_RULES, QuestionSlot, ruleRequests, WAIVERS } from './rules';
 import { RerollGateSettings, thresholdOf } from './settings';
 import { DecideFn, DecideRequest, DecideResponse, GateError, GateField, RuleId, RuleReading, UnitScore } from './types';
 
@@ -62,13 +62,21 @@ export function unitScore(
   baselines: Baselines,
   settings: RerollGateSettings,
 ): UnitScore {
+  // A waiver reading (rules.ts WAIVERS) at or over the cut lifts the rules it names on this unit.
+  const waived = new Map<RuleId, RuleId>();
+  for (const r of raw) {
+    const lifts = WAIVERS[r.rule];
+    if (lifts && r.pYes !== null && r.pYes >= settings.waiverCut) for (const l of lifts) waived.set(l, r.rule);
+  }
   const readings: RuleReading[] = raw.map((r) => {
     const baseline = baselines[r.rule] ?? 0;
-    const score = r.pYes === null ? 1 : 1 - Math.max(0, r.pYes - baseline);
-    return { rule: r.rule, pYes: r.pYes, baseline, score, read: r.read, labelMass: r.labelMass };
+    const by = waived.get(r.rule);
+    const score = by !== undefined || r.pYes === null ? 1 : 1 - Math.max(0, r.pYes - baseline);
+    return { rule: r.rule, pYes: r.pYes, baseline, score, read: r.read, labelMass: r.labelMass, ...(by === undefined ? {} : { waivedBy: by }) };
   });
-  const failing = readings.filter((r) => r.score < thresholdOf(settings, field, r.rule)).map((r) => r.rule);
-  return { text, readings, score: Math.min(...readings.map((r) => r.score)), failing };
+  // A waiver is a question, never a rule: it cannot fail, whatever a stored threshold says.
+  const failing = readings.filter((r) => WAIVERS[r.rule] === undefined && r.score < thresholdOf(settings, field, r.rule)).map((r) => r.rule);
+  return { text, readings, score: Math.min(...readings.filter((r) => WAIVERS[r.rule] === undefined).map((r) => r.score)), failing };
 }
 
 /**

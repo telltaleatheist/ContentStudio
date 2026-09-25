@@ -43,6 +43,8 @@ rules:
     {unit} "{text}" is written as a complete sentence, with a subject and a main verb, rather than as a topic label.
   nonsense: |-
     {unit} "{text}" is garbled, stops before it is finished, or does not make sense.
+  cta: |-
+    {unit} "{text}" is an invitation to the viewer, such as to subscribe, comment, share, support the channel or follow a link.
 
 rank:
   state: |-

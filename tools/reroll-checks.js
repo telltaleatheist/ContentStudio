@@ -162,6 +162,27 @@ check('Owen\'s standard (LEDGER #211) is in the rule statements, and the labels 
   assert.throws(() => rules.statementFor('titles', 'sentence', 'x', FACTS), /not asked of titles/);
 });
 
+check('a call to action waives creator and narrates on its sentence, declared; a plain sentence is judged as ever', async () => {
+  const units = ['Subscribe and leave a comment.', 'This channel breaks it down for you.'];
+  const res = await gate.runGate({
+    fields: [{ field: 'description', units, stateText: (u) => u.join(' ') }],
+    facts: FACTS,
+    // The 9B's measured reading of a CTA: creator and narrates both high (P9.md), cta high.
+    decide: fakeDecide((rule, text) => (rule === 'cta' ? (text.startsWith('Subscribe') ? 0.95 : 0.05) : (rule === 'creator' || rule === 'narrates') && !text.startsWith('It fails') ? 0.9 : 0.01)),
+    revise: async (r) => r.units.map(() => 'It fails by its own terms.'),
+    settings: ON, sourceLabel: 'item', rank: false,
+  });
+  assert.deepStrictEqual(res.fields.get('description'), ['Subscribe and leave a comment.', 'It fails by its own terms.']);
+  const cta = res.record.fields[0].units[0].attempts[0];
+  assert.deepStrictEqual(cta.failing, []);
+  assert.ok(cta.readings.filter((r) => r.rule === 'creator' || r.rule === 'narrates').every((r) => r.waivedBy === 'cta' && r.score === 1));
+  assert.ok(res.record.fields[0].units[1].attempts[0].failing.includes('creator'));
+  // cta is never a failure itself, whatever it reads.
+  assert.strictEqual(settingsM.REROLL_GATE_DEFAULTS.thresholds['description.cta'], 0);
+  assert.deepStrictEqual(rules.WAIVERS.cta, ['creator', 'first_person', 'narrates'], 'a call to action is not first person either ("tell me in the comments")');
+  assert.throws(() => settingsM.resolveRerollGateSettings({ rerollGateTuning: { waiverCut: 1.5 } }), /0 to 1/);
+});
+
 // ------------------------------------------------------------------- at most 26
 
 check('a choice takes 2..26 options; 27 titles are refused by the ranker and declared unranked by the gate', async () => {
@@ -445,8 +466,11 @@ check('settings: the declared defaults; a bad stored value is refused by name', 
   // The measured numbers (P9.md): sentence is asked and recorded but never gates until Owen rules.
   assert.strictEqual(d.thresholds['chapters.sentence'], 0);
   assert.strictEqual(d.thresholds['chapters.creator'], 0.3);
-  assert.strictEqual(d.thresholds['description.narrates'], 0.2);
-  assert.strictEqual(d.mode, 'off', 'off until the calibration is complete (P9.md)');
+  assert.strictEqual(d.thresholds['chapters.narrates'], 0.2);
+  assert.strictEqual(d.mode, 'on', 'on: the false-alarm rate held on unseen text (P9.md)');
+  assert.strictEqual(d.thresholds['description.narrates'], 0.1);
+  assert.strictEqual(d.thresholds['thumbnail_text.creator'], 0.1);
+  assert.strictEqual(d.thresholds['pinned_comment.creator_third_person'], 0.3);
   for (const f of Object.keys(rules.FIELD_RULES)) for (const r of rules.FIELD_RULES[f]) assert.strictEqual(typeof d.thresholds[`${f}.${r}`], 'number');
   assert.throws(() => settingsM.resolveRerollGateSettings({ rerollGate: 'yes' }), /"on" or "off"/);
   assert.throws(() => settingsM.resolveRerollGateSettings({ rerollGateTuning: { thresholds: { 'titles.sentence': 0.5 } } }), /not a rule the gate asks/);

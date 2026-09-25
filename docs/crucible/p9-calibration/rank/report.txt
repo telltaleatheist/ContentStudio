@@ -1,0 +1,35 @@
+[log.info] [PromptAssets] loaded 5 channel(s) from /Volumes/Callisto/Projects/ContentStudio/.claude/worktrees/agent-aaae49b9a35b615ef/electron/assets/prompts: youtube-fireside, youtube-shorts, podcast-spreaker, youtube-telltale, youtube-unfiltered
+
+## agreement with the hand labels (0 of 70 labelled items scored)
+  chapters creator        t=0.5 agree NaN% (caught 0/0, false alarms 0/0)
+                          best t=0.1 agree NaN% (caught 0/0, false alarms 0/0)
+                          P(yes) on violators: - | on clean: n=0
+  chapters narrates       t=0.5 agree NaN% (caught 0/0, false alarms 0/0)
+                          best t=0.1 agree NaN% (caught 0/0, false alarms 0/0)
+                          P(yes) on violators: - | on clean: n=0
+  chapters sentence       t=0.5 agree NaN% (caught 0/0, false alarms 0/0)
+                          best t=0.1 agree NaN% (caught 0/0, false alarms 0/0)
+                          P(yes) on violators: - | on clean: n=0
+  chapters nonsense       t=0.5 agree NaN% (caught 0/0, false alarms 0/0)
+                          best t=0.1 agree NaN% (caught 0/0, false alarms 0/0)
+                          P(yes) on violators: - | on clean: n=0
+  chapters pass/fail at 0.5 on every rule: 0/0 agree
+  descriptions creator        t=0.5 agree NaN% (caught 0/0, false alarms 0/0)
+                              best t=0.1 agree NaN% (caught 0/0, false alarms 0/0)
+                              P(yes) on violators: - | on clean: n=0
+  descriptions first_person   t=0.5 agree NaN% (caught 0/0, false alarms 0/0)
+                              best t=0.1 agree NaN% (caught 0/0, false alarms 0/0)
+                              P(yes) on violators: - | on clean: n=0
+  descriptions narrates       t=0.5 agree NaN% (caught 0/0, false alarms 0/0)
+                              best t=0.1 agree NaN% (caught 0/0, false alarms 0/0)
+                              P(yes) on violators: - | on clean: n=0
+  descriptions nonsense       t=0.5 agree NaN% (caught 0/0, false alarms 0/0)
+                              best t=0.1 agree NaN% (caught 0/0, false alarms 0/0)
+                              P(yes) on violators: - | on clean: n=0
+  descriptions pass/fail at 0.5 on every rule: 0/0 agree
+  (1 test(s) skipped: MUQzRT-nOew two variants carry the same title)
+
+## title ranking over 176 decided A/B tests
+  winner ranked above a loser in 200/351 pairs = 57.0% (chance 50%; z = 2.62)
+  winner ranked first in 74/176 = 42.0% (chance 33.4%)
+  margin (winner relative - loser relative): mean 0.209, n=351 p10 -1.587 p25 -0.507 p50 0.153 p75 1.107 p90 1.973 p99 2.763

@@ -1,0 +1,43 @@
+[log.info] [PromptAssets] loaded 5 channel(s) from /Volumes/Callisto/Projects/ContentStudio/.claude/worktrees/agent-aaae49b9a35b615ef/electron/assets/prompts: youtube-fireside, youtube-shorts, podcast-spreaker, youtube-telltale, youtube-unfiltered
+
+## chapters: 41 groups
+questions 100, decide time 110 s (1101 ms/question)
+  creator                P(yes) n=50 p10 0.002 p25 0.004 p50 0.023 p75 0.438 p90 0.963 p99 0.988 | no-evidence 0
+                         hist 0.0:36 0.1:0 0.2:1 0.3:0 0.4:1 0.5:0 0.6:1 0.7:1 0.8:0 0.9:10
+  narrates               P(yes) n=50 p10 0.438 p25 0.500 p50 0.622 p75 0.706 p90 0.893 p99 0.932 | no-evidence 0
+                         hist 0.0:0 0.1:0 0.2:0 0.3:3 0.4:8 0.5:11 0.6:14 0.7:5 0.8:5 0.9:4
+
+## descriptions: 20 groups
+questions 196, decide time 135 s (688 ms/question)
+  creator                P(yes) n=98 p10 0.001 p25 0.002 p50 0.007 p75 0.068 p90 0.407 p99 0.932 | no-evidence 0
+                         hist 0.0:79 0.1:4 0.2:2 0.3:3 0.4:1 0.5:2 0.6:1 0.7:0 0.8:4 0.9:2
+  narrates               P(yes) n=98 p10 0.269 p25 0.378 p50 0.531 p75 0.777 p90 0.924 p99 0.953 | no-evidence 0
+                         hist 0.0:0 0.1:2 0.2:14 0.3:9 0.4:18 0.5:13 0.6:10 0.7:10 0.8:5 0.9:17
+
+## agreement with the hand labels (70 of 70 labelled items scored)
+  chapters creator        t=0.5 agree 98% (caught 11/11, false alarms 1/39)
+                          best t=0.5 agree 98% (caught 11/11, false alarms 1/39)
+                          P(yes) on violators: 0.96 0.68 0.91 0.95 0.97 0.97 0.99 0.96 0.91 0.97 0.94 | on clean: n=39 p10 0.002 p25 0.003 p50 0.014 p75 0.029 p90 0.060 p99 0.706
+  chapters narrates       t=0.5 agree 54% (caught 16/16, false alarms 23/34)
+                          best t=0.7 agree 88% (caught 12/16, false alarms 2/34)
+                          P(yes) on violators: 0.93 0.71 0.89 0.89 0.93 0.82 0.78 0.93 0.68 0.88 0.78 0.62 0.62 0.78 0.65 0.87 | on clean: n=34 p10 0.407 p25 0.438 p50 0.531 p75 0.622 p90 0.651 p99 0.905
+  chapters sentence       t=0.5 agree 60% (caught 0/20, false alarms 0/30)
+                          best t=0.1 agree 60% (caught 0/20, false alarms 0/30)
+                          P(yes) on violators: 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 0.00 | on clean: n=30 p10 0.000 p25 0.000 p50 0.000 p75 0.000 p90 0.000 p99 0.000
+  chapters nonsense       t=0.5 agree 100% (caught 0/0, false alarms 0/50)
+                          best t=0.1 agree 100% (caught 0/0, false alarms 0/50)
+                          P(yes) on violators: - | on clean: n=50 p10 0.000 p25 0.000 p50 0.000 p75 0.000 p90 0.000 p99 0.000
+  chapters pass/fail at 0.5 on every rule: 33/50 agree
+  descriptions creator        t=0.5 agree 90% (caught 4/4, false alarms 2/16)
+                              best t=0.6 agree 95% (caught 4/4, false alarms 1/16)
+                              P(yes) on violators: 0.92 0.88 0.84 0.93 | on clean: n=16 p10 0.003 p25 0.010 p50 0.042 p75 0.133 p90 0.562 p99 0.818
+  descriptions first_person   t=0.5 agree 85% (caught 0/3, false alarms 0/17)
+                              best t=0.1 agree 85% (caught 0/3, false alarms 0/17)
+                              P(yes) on violators: 0.00 0.00 0.00 | on clean: n=17 p10 0.000 p25 0.000 p50 0.000 p75 0.000 p90 0.000 p99 0.000
+  descriptions narrates       t=0.5 agree 70% (caught 6/6, false alarms 6/14)
+                              best t=0.8 agree 100% (caught 6/6, false alarms 0/14)
+                              P(yes) on violators: 0.95 0.95 0.94 0.95 0.95 0.95 | on clean: n=14 p10 0.321 p25 0.349 p50 0.469 p75 0.531 p90 0.731 p99 0.755
+  descriptions nonsense       t=0.5 agree 95% (caught 0/1, false alarms 0/19)
+                              best t=0.1 agree 95% (caught 0/1, false alarms 0/19)
+                              P(yes) on violators: 0.00 | on clean: n=19 p10 0.000 p25 0.000 p50 0.000 p75 0.000 p90 0.000 p99 0.000
+  descriptions pass/fail at 0.5 on every rule: 15/20 agree

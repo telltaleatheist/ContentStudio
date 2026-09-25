@@ -45,13 +45,26 @@ export const QUESTIONS_PER_DECIDE = 64;
  *
  * The ORDER is the order a re-roll names them in: the first failing rule of a unit is the one its
  * re-roll call is about.
+ *
+ * `cta` on the description is not a rule but a WAIVER (WAIVERS below): Owen ruled that a call to
+ * action is not a reference to the creator (#211), and a clause saying so inside the creator
+ * statement did not move the 9B ("Subscribe and leave a comment." still read 0.82). So the gate
+ * asks the question directly and lifts creator and narrates on a unit that is one.
  */
 export const FIELD_RULES: Record<GateField, readonly RuleId[]> = {
   titles: ['creator', 'narrates', 'nonsense'],
   chapters: ['creator', 'narrates', 'sentence', 'nonsense'],
-  description: ['creator', 'first_person', 'narrates', 'nonsense'],
+  description: ['creator', 'first_person', 'narrates', 'nonsense', 'cta'],
   thumbnail_text: ['creator', 'nonsense'],
   pinned_comment: ['creator_third_person', 'nonsense'],
+};
+
+/**
+ * A reading that lifts other rules on its unit when its P(yes) is at or over the cut
+ * (settings.ts `waiverCut`). The waived rules score 1 and say why (`waivedBy`).
+ */
+export const WAIVERS: Partial<Record<RuleId, readonly RuleId[]>> = {
+  cta: ['creator', 'first_person', 'narrates'],
 };
 
 /** What the gate knows about the channel: the facts the state and the statements name. */
