@@ -386,6 +386,19 @@ interface ParsedMetadata {
    * item's titles is the one the operator is most likely to want more of them from.
    */
   _prompt_trace?: Array<{ what: string; model: string; chars: number; at: string; prompt: string }>;
+  /**
+   * The re-roll gate's record (electron/services/metadata/reroll/, LEDGER #201): the title
+   * ranking and every unit's attempts. Only what the titles list reads is typed here; the rest is
+   * carried verbatim for the trace pane. Absent on items generated before the gate, and `mode:
+   * 'off'` on a run with the gate switched off — the list then shows no rank rather than one
+   * nobody measured.
+   */
+  reroll_gate?: {
+    mode: 'on' | 'off';
+    scorer: string;
+    ranking?: { order: Array<{ title: string; p: number; relative: number; rank: number }>; skippedRotations: number } | null;
+    fields?: Array<{ field: string; stillFailing: Array<{ index: number; text: string; rules: string[]; score: number }> }>;
+  };
 }
 
 @Component({
@@ -3491,6 +3504,26 @@ export class MetadataReports implements OnInit, OnDestroy {
     return this.publish.titleEdits()[raw] ?? raw;
   }
 
+  /**
+   * The re-roll gate's rank for one GENERATED title (1 = best), with its score, or null when the
+   * run did not rank this item (no gate, the gate off, too many titles). Looked up by the
+   * generated text, which is what the gate ranked: an operator's edit keeps its row's rank.
+   */
+  titleRank(title: any): { rank: number; of: number; relative: number } | null {
+    const order = this.metadata()?.reroll_gate?.ranking?.order;
+    if (!order) return null;
+    const raw = this.rawTitleText(title);
+    const hit = order.find((o) => o.title === raw);
+    return hit ? { rank: hit.rank, of: order.length, relative: hit.relative } : null;
+  }
+
+  /** The rules this generated title still fails after the gate's re-rolls, or [] (shipped flagged, LEDGER #201). */
+  titleFlags(title: any): string[] {
+    const titles = this.metadata()?.reroll_gate?.fields?.find((f) => f.field === 'titles');
+    const raw = this.rawTitleText(title);
+    return titles?.stillFailing.find((f) => f.text === raw)?.rules ?? [];
+  }
+
   /** True when this row's text is an operator edit rather than the generated text. */
   isTitleEdited(title: any): boolean {
     return this.rawTitleText(title) in this.publish.titleEdits();
@@ -3617,6 +3650,8 @@ export class MetadataReports implements OnInit, OnDestroy {
       // Passed through verbatim, for the same reason content_provenance is: a record of what
       // the run sent, not a value with variants to normalize.
       _prompt_trace: raw._prompt_trace,
+      // Verbatim, like the trace: the gate's record of this run, read by the titles list.
+      reroll_gate: raw.reroll_gate,
     };
   }
 

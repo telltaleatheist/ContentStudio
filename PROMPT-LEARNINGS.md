@@ -828,3 +828,29 @@ least specific field is cut first.
   times. These are open for Owen's ear.
 - **`labels`.** These are plain field names, so the facts read as data under the instruction.
   "Names and topics" carries an earlier run's tags, which are dense with names.
+
+## Part 12 — `shared/pipeline/reroll.yml` (added 2026-09-25, P9)
+
+The re-roll gate's text (LEDGER #201; docs/crucible/P9.md). Three kinds of block:
+
+- **`state` and `labels`.** The primed state of every rule check: what the text is, the channel,
+  and who made the video (the prompt set's `brand_terms`), then the text itself, one unit per line
+  for a list. The creator's names have to be in the state: "Owen" and "the host" are only a
+  violation when the model knows who the host is.
+- **`rules`.** Yes/no STATEMENTS a judge reads; Crucible asks "Is this statement true of the state
+  above?". Each quotes its unit (plan §0a: never an index). They name the WRONG form on purpose:
+  they are questions to a judge, not instructions to a writer, so Law 4 does not apply to them.
+  Measured on the 9B against 70 hand labels (P9.md): `creator` and `first_person` separate cleanly
+  as first written (violators 0.73–0.99, clean medians under 0.03). **`narrates` took four
+  wordings.** v1 ("reports what the video or its commentator does … instead of stating the subject
+  matter itself") put a median P(yes) of 0.73 on CLEAN chapter titles: the model reads nearly any
+  title as describing something. v2 ("is about the video itself or the person presenting it")
+  swung the other way (violators down to 0.01). v3 (a list of verbs) fired on every verb. v4, the
+  shipped one, asks who does the action and gives three short examples of the wrong form: clean
+  median 0.25, 44/50 chapter titles right. `sentence` measured 42/50 and does not gate (P9.md).
+- **`rank`.** The ranking question. The state deliberately does NOT list the titles: a list in the
+  state has an order, and the order would bias; the titles are only the options, rotated.
+- **`reroll`.** The revision call after a failure: the rule's WANTED form, positively (Law 4), the
+  keep clause, the lines shape, the failing entries (the one place a wrong form may appear: as the
+  input of a revision call). Not yet measured live: the calibration was stopped before a re-roll
+  was sent (P9.md).
