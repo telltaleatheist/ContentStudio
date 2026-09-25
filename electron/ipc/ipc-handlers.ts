@@ -89,6 +89,7 @@ import type { TranscriptRef } from '../services/publish/publish-types';
 import type { TranscriptLink } from '../services/metadata/editor-transcript-link';
 import { getMainWindow } from '../main';
 import { setupCrucibleIpc } from '../crucible/crucible-ipc';
+import { crucibleVoiceIsolation } from '../crucible/denoise';
 import type { CrucibleContext } from '../crucible/context';
 
 /**
@@ -3944,7 +3945,9 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   // routing the Stories analyzer follows (#205). The prompt-sets directory goes with it
   // because the analyzer's calls run through AIManagerService, whose constructor loads the
   // prompt assets from there.
-  setupEditorIpc(store, { promptSetsDir: getPromptSetsDirectory() });
+  // Voice isolation runs on the selected Crucible (LEDGER #200, plan P7): the Denoise toggle
+  // reads that server's capability, and each chunk is a `denoise` job there.
+  setupEditorIpc(store, { promptSetsDir: getPromptSetsDirectory(), voiceIsolation: crucibleVoiceIsolation(analytics.crucible) });
   // ==================== END EDITOR ====================
 
   // ==================== TRANSCRIPT LINK ====================

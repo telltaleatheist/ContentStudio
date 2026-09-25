@@ -4,6 +4,12 @@ import * as log from 'electron-log';
 import { EditorPaths } from './app-config';
 import { BinaryResolver } from './binary-resolver';
 import { DuganAutomixer, DuganTrack } from './dugan-automixer';
+import {
+  SEPARATION_RELEASE,
+  SEPARATION_REQUEST,
+  answerSeparationRequest,
+  type SeparationHandler,
+} from './separation-protocol';
 import * as path from 'path';
 
 export interface PythonExecutionOptions {
@@ -20,6 +26,14 @@ export interface WorkflowExecutionOptions {
   onError?: (data: string) => void;
   onProgress?: (progress: number, message: string, subProgress?: number) => void;
   onComplete?: (code: number, result?: any) => void;
+  /**
+   * Voice isolation's model call (LEDGER #200): each `separation_request` the
+   * workflow writes is run here and answered on its stdin (separation-protocol.ts).
+   * Absent, a request is answered with an error, never left waiting.
+   */
+  onSeparationRequest?: SeparationHandler;
+  /** A track's isolation is done (`separation_release`), and again when the run ends: give the card back. */
+  onSeparationRelease?: () => Promise<void>;
 }
 
 /**
@@ -215,6 +229,24 @@ export class PythonService {
 
     let finalResult: any = null;
 
+    // Ends whatever voice-isolation job is on a Crucible when the run ends: a
+    // cancel kills this process, and the job must be DELETEd, not abandoned
+    // holding the lane (electron/crucible/denoise.ts).
+    const runEnded = new AbortController();
+    const writeStdin = (line: string, what: string): void => {
+      if (pythonProcess.stdin.destroyed) {
+        log.error(`[${jobId}] Cannot write ${what} — stdin is destroyed`);
+        return;
+      }
+      pythonProcess.stdin.write(line, (err) => {
+        if (err) log.error(`[${jobId}] Failed to write ${what} to stdin:`, err);
+      });
+    };
+    const releaseSeparation = (why: string): void => {
+      if (!options.onSeparationRelease) return;
+      options.onSeparationRelease().catch((err) => log.error(`[${jobId}] Releasing voice isolation (${why}) failed:`, err));
+    };
+
     // Line buffer for stdout — Node.js data events don't guarantee
     // complete lines, so we must buffer and split on newlines to
     // avoid silently dropping JSON messages (like ducking_request).
@@ -257,6 +289,16 @@ export class PythonService {
         } else if (message.type === 'success') {
           log.info(`[${jobId}] Workflow success:`, message.result);
           finalResult = message.result;
+        } else if (message.type === SEPARATION_REQUEST) {
+          log.info(`[${jobId}] Voice-isolation request: chunk ${message.chunk} of ${message.chunks} (${message.track})`);
+          void answerSeparationRequest(
+            message,
+            options.onSeparationRequest,
+            (line) => writeStdin(line, 'the separation answer'),
+            runEnded.signal,
+          );
+        } else if (message.type === SEPARATION_RELEASE) {
+          releaseSeparation('the track is done');
         } else if (message.type === 'ducking_request') {
           // Validate before touching message.tracks — an invalid payload must not
           // throw (silently swallowed) and leave Python blocked. Instead reply
@@ -363,6 +405,8 @@ export class PythonService {
       if (completed) return;
       completed = true;
       this.runningProcesses.delete(jobId);
+      runEnded.abort();
+      releaseSeparation('the run ended');
 
       // Remove all listeners to release closure references
       pythonProcess.stdout.removeAllListeners();
