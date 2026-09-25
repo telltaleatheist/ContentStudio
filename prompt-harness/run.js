@@ -27,7 +27,10 @@
  *
  * PREREQ:
  *   npm run build:electron        # once, and after any change under electron/
- *   ollama pull qwen3.8:27b       # or pass --units none to only print prompts
+ *   --units none only prints prompts. Running units needs the Crucible transport, which this
+ *   harness does not install yet (plan 20: it is to drive the compiled transport against a
+ *   named server, as scripts/generate-metadata-cli.js does since P2); a run that reaches a
+ *   model call without it is refused by name.
  */
 
 const path = require('path');
@@ -148,7 +151,6 @@ async function main() {
    * `<promptSetsDir>/prompts` — exactly as it does against userData in the app.
    */
   const mgr = new AIManagerService({
-    provider: 'ollama',
     summarizationModel: routing.SUMMARIZATION_MODEL,
     promptSet: args.channel,
     promptSetsDir: path.dirname(args.assets),
@@ -164,11 +166,11 @@ async function main() {
   // only local models this process loads are the ones the units name.
   const plan = tasks.planMetadataUnits({
     routing: routing.resolveMetadataRouting(undefined),
-    defaultHost: 'http://localhost:11434',
     aiManager: mgr,
     hasInsights: Boolean(insightsBlock),
     hasChapters: false,
     alsoLoads: [],
+    lifecycle: new (require(path.join(DIST, 'services/metadata/model-lifecycle.js')).JobModelLifecycle)('the prompt harness'),
   });
 
   const warnings = [];

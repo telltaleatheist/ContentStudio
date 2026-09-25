@@ -24,21 +24,18 @@
  * no lines in it throws, naming what came back. Nothing re-asks.
  */
 
-import axios from 'axios';
 import log from 'electron-log';
 
 import { AIManagerService } from './ai-manager.service';
-import { askOllamaPlain, parseLines } from './plain-call';
-import { estimateTokens } from './ollama-json';
+import { parseLines } from './plain-call';
+import { estimateTokens } from './context-sizing';
 import {
   LOCAL_FIELD_CTX_MAX,
-  LOCAL_FIELD_KEEP_ALIVE,
   LOCAL_FIELD_NUM_PREDICT,
   LOCAL_FIELD_TIMEOUT_MS,
   runNumCtx,
 } from './metadata-tasks';
 import { MetadataRoutingOption, resolveOperatorOption, taskOptionIds } from './metadata-routing';
-import { queueAITask } from '../queue-manager.service';
 
 /** How many titles one operator request asks for. Stated once; it is in the prompt too. */
 export const MORE_TITLES_COUNT = 10;
@@ -142,20 +139,18 @@ export interface MoreTitlesResult {
 }
 
 export interface MoreTitlesTransport {
-  /** Built by the caller, which is where the API keys and the Ollama host live. */
+  /** Built by the caller; its promptTrace records the call, with the server that ran it. */
   aiManager: AIManagerService;
-  ollamaHost: string;
 }
 
 /**
  * Send the replayed prompt on the operator's chosen model and read the answer.
  *
- * TWO TRANSPORTS, the same two the titles unit itself has, reached the same way:
- *   cloud — AIManagerService.runPlainRequest (CloudFieldUnit's call)
- *   local — askOllamaPlain over /api/generate (LocalFieldUnit's call)
- * The local path does NOT go through AIManagerService's Ollama route on purpose: that one
- * middle-truncates a prompt bigger than its fixed window, and a replay that silently drops
- * the middle of the brief is not the brief.
+ * ONE DOOR, the titles unit's own (AIManagerService.runPlainRequest, then Crucible or
+ * `claude -p`), with the titles call's shape: thinking OFF (plan 6.3's more-titles row, the
+ * titles unit's measured setting). A local model states the field budget and a load context
+ * sized for this prompt alone (there is no run to share one with); the door refuses a prompt
+ * over the loaded context before sending, so the replay is the brief whole or not at all.
  */
 export async function askForMoreTitles(
   stored: StoredTitlesCall,
@@ -166,48 +161,28 @@ export async function askForMoreTitles(
   const prompt = buildMoreTitlesPrompt(stored.prompt, existingTitles);
   const what = `${MORE_TITLES_COUNT} more titles for ${stored.sourceLabel} (operator request)`;
 
-  let text: string;
-  if (option.kind === 'cloud') {
-    const answer = await transport.aiManager.runPlainRequest(prompt, option.model, what);
-    if (!answer) {
-      throw new Error(`The request for ${what} on "${option.model}" came back empty.`);
-    }
-    text = answer;
-  } else {
-    // One call on one model, so the window is sized for this prompt alone — there is no run
-    // to share a pinned num_ctx with, and nothing else is resident on this account.
-    const numCtx = runNumCtx({
-      model: option.model,
-      needs: [estimateTokens(prompt.length) + LOCAL_FIELD_NUM_PREDICT],
-      max: LOCAL_FIELD_CTX_MAX,
-      what,
-    });
-    const client = axios.create({ baseURL: transport.ollamaHost });
-    const result = await queueAITask(
-      `more-titles-${option.model}-${stored.sourceLabel}`,
-      `Titles: ${MORE_TITLES_COUNT} more on ${option.model}`,
-      async () =>
-        askOllamaPlain(client, {
-          model: option.model,
-          prompt,
-          numCtx,
-          numPredict: LOCAL_FIELD_NUM_PREDICT,
-          keepAlive: LOCAL_FIELD_KEEP_ALIVE,
+  const answer = await transport.aiManager.runPlainRequest(
+    prompt,
+    option.model,
+    what,
+    option.kind === 'local'
+      ? {
+          thinking: false,
+          maxTokens: LOCAL_FIELD_NUM_PREDICT,
+          loadContext: runNumCtx({
+            model: option.model,
+            needs: [estimateTokens(prompt.length) + LOCAL_FIELD_NUM_PREDICT],
+            max: LOCAL_FIELD_CTX_MAX,
+            what,
+          }),
           timeoutMs: LOCAL_FIELD_TIMEOUT_MS,
-          what,
-          logPrefix: `[MoreTitles] ${option.model}`,
-        }),
-      undefined,
-      LOCAL_FIELD_TIMEOUT_MS + 60_000
-    );
-    if (!result.ok) {
-      throw new Error(
-        `The request for ${what} on "${option.model}" produced no usable answer ` +
-          `(${result.reason}): ${result.detail}`
-      );
-    }
-    text = result.text;
+        }
+      : { thinking: false }
+  );
+  if (!answer) {
+    throw new Error(`The request for ${what} on "${option.model}" came back empty.`);
   }
+  const text = answer;
 
   // The titles unit's own reader: one option per line, numbering and bullets tolerated and
   // stripped, an answer with no lines in it throws carrying what came back.

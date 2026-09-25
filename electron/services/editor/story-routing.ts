@@ -33,7 +33,7 @@ import {
 export interface StoryModel {
   /** The routing option the chapters row names. */
   option: MetadataRoutingOption;
-  /** What AIManagerService's makeRequest routes on: `ollama:<name>` or a cloud model string. */
+  /** What AIManagerService's makeRequest routes on: a Crucible id, or `claude-cli:<alias>`. */
   model: string;
   /** The option's label, for the editor's read-only line ("Stories run on <label>"). */
   label: string;

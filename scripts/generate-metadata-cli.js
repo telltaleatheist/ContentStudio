@@ -14,6 +14,14 @@
  * electron/services/**; this file assembles parameter objects, caches what the app throws away,
  * and prints what came back.
  *
+ * EVERY MODEL CALL GOES THROUGH CRUCIBLE (P2, LEDGER #193): the app's own registry and routing
+ * record are read out of the real userData (`crucible-servers.json`, `crucible-routing.json`),
+ * the app's one transport is built over them and installed, and the run goes to the server the
+ * app has selected. `--server <name>` sends THIS run to another registered server without
+ * writing the routing record (it never picks one on its own: Q14, #205). Every lease the run
+ * takes is released on SIGINT/SIGTERM before the process exits 130/143 (plan 0a), so a Ctrl-C
+ * never leaves a card pinned until its ttl.
+ *
  * FOUR DELIBERATE OVERRIDES, each printed loudly at startup (the fourth, --claude-cli, is
  * documented at its patch site below):
  *
@@ -46,7 +54,9 @@
  *
  * PREREQ:
  *   npm run build:electron
- *   ollama serve   (qwen3.8:27b, qwen3.5:9b)
+ *   a Crucible server registered and selected in the app (Settings › Crucible Servers), with
+ *   the routed local models on it (qwen3.8-27b-4bit, qwen3.5-9b) and, for a cloud route, its
+ *   own Anthropic key
  *
  * USAGE:
  *   node scripts/generate-metadata-cli.js --input "/path/video.mov" --channel youtube-telltale
@@ -137,9 +147,11 @@ Everything else:
                        a standalone video's internal turns), broad (fewer, bigger pieces),
                        or stories (compilations). An unknown value fails the run by name.
   --assets <dir>       Prompt assets root. Default: <repo>/electron/assets/prompts.
+  --server <name>      Send this run to that registered Crucible server instead of the one
+                       the app has selected. The routing record is not modified.
   --claude-cli         Send every Claude call through \`claude -p --model sonnet\` (the Claude
-                       Code subscription) instead of the metered API. ALWAYS sonnet, whatever
-                       the routing named. Test runs only; printed loudly.
+                       Code subscription) instead of Crucible's Anthropic upstream. ALWAYS
+                       sonnet, whatever the routing named. Test runs only; printed loudly.
   --output-dir <dir>   Where the job's report .txt/.json go. Default: the app's outputDirectory.
   --out <path>         Also write the assembled report text here.
   --no-insights        Run without the CHANNEL PERFORMANCE DATA block.
@@ -189,6 +201,7 @@ function parseArgs(argv) {
     else if (a === '--chapters') args.freshChapters = true;
     else if (a === '--show-prompts') args.showPrompts = true;
     else if (a === '--claude-cli') args.claudeCli = true;
+    else if (a === '--server') args.server = argv[++i];
     else if (FIELD_FLAGS[a]) args.fields.push(FIELD_FLAGS[a]);
     else fail(`Unknown option: ${a}  (--help for usage)`);
   }
@@ -357,44 +370,79 @@ async function main() {
     require(path.join(DIST, 'services/metadata/speaker-tagging.service.js'));
   const { getRuntimePaths } = require(path.join(DIST, 'lib/bridges/index.js'));
 
+  // ---- Crucible: the app's registry, the app's transport ------------------------------
+  //
+  // Built exactly as main.ts builds it (createCrucibleContext over userData), with the two
+  // things a CLI must not do left out: no background loops (auto-connect, readiness) and no
+  // api-keys.json move (that is the app's, once, plan 6.6). The server is the app's selected
+  // one, or `--server`, read through a view of the registry that never writes the choice.
+  const { createCrucibleContext } = require(path.join(DIST, 'crucible/context.js'));
+  const { CrucibleTransport, installCrucibleTransport } = require(path.join(DIST, 'crucible/transport.js'));
+  const { releaseAllCrucibleLeases } = require(path.join(DIST, 'crucible/lease.js'));
+  const crucibleContext = createCrucibleContext({ stateDir: USER_DATA, clipboard: () => {} });
+  const registered = crucibleContext.servers.names();
+  if (registered.length === 0) {
+    fail(`No Crucible server is registered in ${USER_DATA}. Start the app once (it adopts the Crucible on this ` +
+      `computer), or add one in Settings › Crucible Servers.`);
+  }
+  if (args.server !== undefined && !registered.includes(args.server)) {
+    fail(`--server "${args.server}" is not a registered Crucible server. Registered: ${registered.join(', ')}`);
+  }
+  const runServer = args.server ?? crucibleContext.servers.selected();
+  const transport = new CrucibleTransport({
+    servers: { selected: () => runServer, routingView: () => crucibleContext.servers.routingView() },
+    factory: crucibleContext.factory,
+    probes: crucibleContext.probes,
+  });
+  installCrucibleTransport(transport);
+  // Plan 0a: a Ctrl-C that leaves a lease held leaves the card stuck for everyone until the
+  // ttl. Every lease this run holds is handed back first, then the process exits as a signal.
+  for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+    process.once(signal, () => {
+      console.error(`\n  ${signal}: releasing this run's Crucible leases before exiting`);
+      releaseAllCrucibleLeases().finally(() => process.exit(code));
+    });
+  }
+
   // ---- --claude-cli: the fourth deliberate override, printed loudly below --------------
   //
-  // Every Claude API call this run would make goes through `claude -p --model sonnet`
-  // instead — the operator's Claude Code subscription, not the metered API key (operator,
-  // 2026-08-24: "until we get this right, set it to claude -p so I'm not burning through
-  // API use on tests; just sonnet for now"). ONE patch point covers the whole pipeline:
-  // every cloud call — field units and both chapter stages — funnels through
-  // AIManagerService.makeClaudeRequest (runPlainRequest routes there, and the chapter
-  // service's cloudPlain IS runPlainRequest). The system prompt and the plain/JSON split
-  // are carried over exactly; the model is ALWAYS sonnet, whatever the routing named, and
-  // the banner says so. A failed spawn throws with the CLI's stderr — this is a transport
-  // swap for test runs, not a fallback, and it has no fallback of its own.
+  // Every Claude call this run would send to Crucible's Anthropic upstream goes through
+  // `claude -p --model sonnet` instead — the operator's Claude Code subscription, not the
+  // metered key (operator, 2026-08-24: "until we get this right, set it to claude -p so I'm
+  // not burning through API use on tests; just sonnet for now"). ONE patch point covers the
+  // whole pipeline, re-seated on the transport seam in P2 (plan 20): every cloud call — field
+  // units, both chapter stages, the distiller, the compilation package — reaches the one door
+  // as an `anthropic/` model, so the door's `chat` is wrapped and every `anthropic/` call is
+  // answered by `claude -p` with the same system turn. The model is ALWAYS sonnet, whatever the
+  // routing named, and the banner says so (LEDGER #158's semantics, kept). A failed spawn throws
+  // with the CLI's stderr — a transport swap for test runs, not a fallback, with none of its
+  // own. Local models are untouched.
   if (args.claudeCli) {
     const { AIManagerService } = require(path.join(DIST, 'services/metadata/ai-manager.service.js'));
-    const { SYSTEM_PROMPTS } = require(path.join(DIST, 'services/metadata/system-prompts.js'));
     const { spawn } = require('child_process');
-    const JSON_NUDGE =
-      'You are a helpful assistant. When asked to return JSON, output ONLY valid JSON with no ' +
-      'markdown, no commentary, and no extra text. Start your response with { and end with }.';
-    // The claude-cli: routing rung dispatches to its own transport method (ai-manager's
-    // makeClaudeCliRequest, which honours the routed alias — opus since the operator's
-    // switch). A test run must not silently run opus where its banner promises sonnet, so
-    // the override pins that method's alias too. Same transport, still subscription — the
-    // pin is about the banner telling the truth, not about billing.
+    // The claude-cli: routing rung has its own transport method (ai-manager's
+    // makeClaudeCliRequest, which honours the routed alias). A test run must not silently run
+    // opus where its banner promises sonnet, so the override pins that method's alias too.
     const realCliRequest = AIManagerService.prototype.makeClaudeCliRequest;
     AIManagerService.prototype.makeClaudeCliRequest = function (prompt, _cliModel, plain) {
       console.error(`  [claude-cli] routing named claude-cli:${_cliModel} -> pinned to sonnet for this test run`);
       return realCliRequest.call(this, prompt, 'sonnet', plain);
     };
-    AIManagerService.prototype.makeClaudeRequest = function (prompt, model, plain) {
-      const system = plain ? SYSTEM_PROMPTS.PLAIN_SYSTEM : JSON_NUDGE;
-      console.error(`  [claude-cli] ${model} -> claude -p --model sonnet (${prompt.length} chars)`);
-      return new Promise((resolve, reject) => {
+    const realChat = transport.chat.bind(transport);
+    transport.chat = async function (request) {
+      if (!request.model.startsWith('anthropic/')) return realChat(request);
+      console.error(`  [claude-cli] ${request.model} -> claude -p --model sonnet (${request.prompt.length} chars)`);
+      request.trace?.push({
+        what: request.what, model: request.model, chars: request.prompt.length, at: new Date().toISOString(),
+        prompt: request.prompt, server: 'claude -p (--claude-cli)',
+      });
+      const text = await new Promise((resolve, reject) => {
         // Hermetic cwd, same reason as the production transport: `claude -p` loads project
         // memory for its working directory, and this script runs from the repo.
         const hermeticCwd = require('path').join(require('os').tmpdir(), 'contentstudio-claude-cli');
         require('fs').mkdirSync(hermeticCwd, { recursive: true });
-        const child = spawn('claude', ['-p', '--model', 'sonnet', '--system-prompt', system], {
+        const cliArgs = ['-p', '--model', 'sonnet', ...(request.system ? ['--system-prompt', request.system] : [])];
+        const child = spawn('claude', cliArgs, {
           stdio: ['pipe', 'pipe', 'pipe'],
           cwd: hermeticCwd,
           // A nested `claude` must not inherit this session's entrypoint state.
@@ -406,23 +454,12 @@ async function main() {
         child.stderr.on('data', (d) => { err += d; });
         child.on('error', reject);
         child.on('close', (code) => {
-          if (code !== 0) {
-            reject(new Error(`claude -p exited ${code} for a ${model} call: ${err.trim() || '(no stderr)'}`));
-          } else {
-            resolve(out.trim());
-          }
+          if (code !== 0) reject(new Error(`claude -p exited ${code} for a ${request.model} call: ${err.trim() || '(no stderr)'}`));
+          else resolve(out.trim());
         });
-        child.stdin.end(prompt);
+        child.stdin.end(request.prompt);
       });
-    };
-    // initializeClaude's connection test is itself a billed API call; with the transport
-    // swapped it tests nothing this run will use. The client is still constructed so every
-    // "is Claude ready" check in the pipeline answers the same as a real run.
-    AIManagerService.prototype.initializeClaude = async function () {
-      const Anthropic = require(path.join(REPO_ROOT, 'node_modules', '@anthropic-ai', 'sdk'));
-      this.anthropicClient = new (Anthropic.default || Anthropic)({ apiKey: this.config.apiKey || 'claude-cli' });
-      console.error('  [claude-cli] initializeClaude: connection test skipped (transport is claude -p)');
-      return true;
+      return { text, finishReason: 'stop', usage: null, server: 'claude -p (--claude-cli)', model: request.model, act: 'generate' };
     };
   }
 
@@ -436,16 +473,8 @@ async function main() {
   const channel = args.channel || settings.promptSet;
   if (!channel) fail('No channel: pass --channel, or set one in the app settings (promptSet).');
 
-  // ipc-handlers.ts:1146-1176 — provider/model/api key resolution, verbatim in shape.
-  const metaProvider = settings.metadataProvider || settings.aiProvider;
-  const apiKeysPath = path.join(USER_DATA, 'api-keys.json');
-  const apiKeys = fs.existsSync(apiKeysPath) ? JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8')) : {};
-  const aiModel = settings.metadataModel || settings.aiModel || settings.ollamaModel;
-  const aiProvider = settings.metadataProvider || settings.aiProvider || 'ollama';
-  const fullModel = aiModel ? `${aiProvider}:${aiModel}` : undefined;
-  let apiKey;
-  if (aiProvider === 'openai') apiKey = apiKeys.openaiApiKey;
-  else if (aiProvider === 'claude') apiKey = apiKeys.claudeApiKey;
+  // No provider, model or key is read from the settings any more (P2): the routing table
+  // picks every model and the selected Crucible server holds the key (LEDGER #193, #194).
 
   const analyticsStore = new AnalyticsStoreService(path.join(USER_DATA, 'analytics'));
   const guidelinesMod = require(path.join(DIST, 'services/analytics/insights-guidelines.js'));
@@ -524,8 +553,8 @@ async function main() {
     console.error('');
     console.error('  ** CLAUDE TRANSPORT OVERRIDE (--claude-cli) **');
     console.error('     Every Claude call goes through `claude -p --model sonnet` — the Claude Code');
-    console.error('     subscription, NOT the metered API key. ALWAYS sonnet, whatever the routing');
-    console.error('     named. Calls to other providers (ollama etc.) are untouched.');
+    console.error('     subscription, NOT Crucible\'s Anthropic upstream. ALWAYS sonnet, whatever the');
+    console.error('     routing named. Local models on Crucible are untouched.');
     console.error('');
   }
   console.error(`  input:       ${args.input}`);
@@ -561,7 +590,7 @@ async function main() {
   // Chapters route per-field since 2026-08-24 (the `chapters` entry above); the summarizer
   // follows the chapters selection, falling to SUMMARIZATION_MODEL only when chapters are local.
   console.error(`  summarizer:  follows chapters=${resolvedRouting.chapters}`);
-  console.error(`  packaging:   ${fullModel} (compilation only)`);
+  console.error(`  packaging:   follows titles=${resolvedRouting.titles} (compilation only)`);
   console.error(
     `  insights:    ${insights
       ? `evidence ${insights.rawBlock.length} chars, guidelines cache ` +
@@ -573,7 +602,7 @@ async function main() {
     console.error('  ** INSIGHTS RECOMPUTED IN MEMORY — see --help; nothing was written back **');
   }
   console.error(`  output dir:  ${outputDir}`);
-  console.error(`  ollama host: ${settings.ollamaHost || 'http://localhost:11434'}`);
+  console.error(`  crucible:    ${runServer}${args.server !== undefined ? ' (--server; the app\'s selection is not changed)' : ' (the app\'s selected server)'}`);
   console.error(`${bar}\n`);
 
   const started = Date.now();
@@ -659,12 +688,7 @@ async function main() {
   const baseParams = {
     inputs: [args.input],
     mode: settings.defaultMode || 'individual',
-    aiProvider: metaProvider,
-    aiModel: fullModel,
     summarizationModel: routing.SUMMARIZATION_MODEL,
-    metadataModel: fullModel,
-    aiApiKey: apiKey,
-    aiHost: settings.ollamaHost || 'http://localhost:11434',
     outputPath: outputDir,
     promptSet: channel,
     promptSetsDir,
@@ -681,7 +705,6 @@ async function main() {
     // real one has is how a CLI stops being the real pipeline.
     speakerEnrollmentAudio: settings.speakerEnrollmentAudio || undefined,
     metadataRouting: resolvedRouting,
-    cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
     inputNotes: {},
     insights: insights || undefined,
     preTranscribedContent: contentItems,

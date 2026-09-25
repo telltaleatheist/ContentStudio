@@ -1,41 +1,23 @@
 /**
- * One plain-text model call, and the parsers that read its answers
+ * The parsers that read plain-text answers, and the one strip every answer gets
  *
  * WHY THIS FILE EXISTS (operator's ruling, 2026-08-24): "no more JSON for these calls unless
  * absolutely necessary." Every generation call in the metadata pipeline asks for ONE thing —
  * ten titles, one tag line, one description, one chapter's name and summary — and wrapping
  * those answers in JSON string literals is where an entire failure class lived: the
- * close-quote runaway (a model writes ” where the string's closing " belongs and the schema
- * grammar masks end-of-message), the `"..."`-as-whole-body bail-out, the repair ladder, the
- * truncation recovery. A paragraph asked for as a paragraph has none of those places to fail.
+ * close-quote runaway, the `"..."`-as-whole-body bail-out, the repair ladder, the truncation
+ * recovery. A paragraph asked for as a paragraph has none of those places to fail.
  *
- * WHAT A PLAIN CALL IS. A filled prompt in, text out, with NO JSON machinery on either
- * transport:
- *   local — /api/generate with the run's context and output budgets, NO `format` field,
- *           NO `think` key (ollama-json trap 2: `think: false` relocates the reasoning into
- *           `response`), no sampling parameters (operator's ruling 2026-08-24: provider
- *           defaults everywhere).
- *   cloud — AIManagerService.runPlainRequest: no output_config, no JSON system nudge, no
- *           stop sequences; the 4000-token max_tokens stays as a runaway brake.
+ * THE TRANSPORT THAT LIVED HERE IS GONE (P2). `askOllamaPlain` posted to Ollama's
+ * /api/generate and /api/chat; every model call now goes through the one Crucible door
+ * (electron/crucible/transport.ts), which states `thinking` on every call, refuses a
+ * truncated answer (`finish_reason: length`, LEDGER #112) and checks the prompt against the
+ * loaded context before sending. What stays here is what reads the answer.
  *
- * Without `format: "json"` the local models put their reasoning in the separate `thinking`
- * field and the answer in `response`; a model that inlines `<think>` blocks anyway has them
- * stripped here, once, for every caller.
- *
- * WHAT THROWS vs WHAT RETURNS `ok: false` — the same split ollama-json.ts draws, because the
- * callers' policies are built on it: a TRANSPORT failure (host unreachable, model missing,
- * timeout, cancellation) throws, an unusable ANSWER (truncated by the output budget, empty)
- * comes back as a value and the caller applies its own declared policy.
- *
- * THE PARSERS live here so the formats have one home beside the transport that carries them.
- * Each one reads exactly the shape its prompt asks for and THROWS naming what it got when the
- * answer is not that shape — the caller's one-re-ask policy is the recovery, never a silent
- * repair (deliver-and-curate governs what happens after the re-ask, and it is the caller's
- * call).
+ * THE PARSERS live here so the formats have one home. Each one reads exactly the shape its
+ * prompt asks for and THROWS naming what it got when the answer is not that shape — never a
+ * silent repair (deliver-and-curate governs what happens next, and it is the caller's call).
  */
-
-import { AxiosInstance } from 'axios';
-import { isAbortError } from './cancellation';
 
 /**
  * Inline reasoning, removed. `<think>...</think>` blocks are the one thing a plain answer can
@@ -44,160 +26,6 @@ import { isAbortError } from './cancellation';
  */
 export function stripThinking(text: string): string {
   return text.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/<think>[\s\S]*$/, '').trim();
-}
-
-export interface OllamaPlainRequest {
-  /** Bare Ollama model name, as `ollama list` prints it. No provider prefix. */
-  model: string;
-  prompt: string;
-  /** ONE value for the whole run (ollama-json trap 4) — the caller's budget resolves it. */
-  numCtx: number;
-  /** Output budget. Sized for THINKING as much as the answer — see the callers. */
-  numPredict: number;
-  keepAlive?: string;
-  /**
-   * Sampling temperature, sent only when set. The 2026-08-24 no-sampling-parameters ruling
-   * stands for every ordinary call — provider defaults, and a model that cannot perform there
-   * is replaced, not tuned. This field exists for the ONE caller that ruling was never about:
-   * the chapter stage's consensus sampling (2026-08-30 campaign), which asks the same question
-   * several times ON PURPOSE and majority-votes the answers. Diversity across those samples is
-   * the mechanism, not a rescue, and 0.7 is the measured setting (chapter-campaign ledger,
-   * rounds 8-12: default temp gave 19-vs-14-chapter run variance; 0.2 froze one mediocre
-   * reading; 0.7 with a >=3-of-5 vote produced the boundary sets that matched the shipped
-   * baseline). Leave it unset everywhere else.
-   */
-  temperature?: number;
-  /**
-   * `false` disables the model's thinking pass, and it changes the TRANSPORT: the request
-   * goes to /api/chat, where `think: false` genuinely turns thinking off and the answer
-   * arrives alone in `message.content`. It must never be sent to /api/generate — trap 2
-   * (ollama-json.ts): there it does not disable thinking, it RELOCATES the reasoning into
-   * `response`, which for a plain call means reasoning prose above the answer lines.
-   *
-   * WHO SETS IT: the chapter stage's consensus samples and name scaffold, the titles call,
-   * the insights distiller, and (since the evening of 2026-08-30) the DESCRIPTION calls —
-   * whose contract was reshaped to the one-paragraph form thinking-off reliably produces
-   * (parseLeadBody), after thinking-on's 4-5 minutes per call was measured as the whole cost
-   * of the operator's 20-minute runs. The chapter DETAIL calls are the one place thinking
-   * stays ON: their title-plus-summary shape was tested with it, and thinking-off dropped
-   * the summaries. Callers on the cloud transport never pass it.
-   */
-  think?: false;
-  timeoutMs: number;
-  signal?: AbortSignal;
-  /** What this call is FOR, in a few words. The noun in every log and error message here. */
-  what: string;
-  /** Log tag, e.g. `[Chapters] stage "detail"`. */
-  logPrefix: string;
-}
-
-export type OllamaPlainResult =
-  | { ok: true; text: string }
-  | { ok: false; reason: 'length' | 'empty'; detail: string };
-
-/** Matches ollama-json's keep-alive so a mixed run still loads each model once. */
-const PLAIN_KEEP_ALIVE = '10m';
-
-/**
- * POST one prompt, get plain text back.
- *
- * No `format`, no `think`, no sampling options — the request body is the smallest thing that
- * carries the prompt and the two budgets.
- */
-export async function askOllamaPlain(
-  client: AxiosInstance,
-  request: OllamaPlainRequest
-): Promise<OllamaPlainResult> {
-  const options = {
-    num_ctx: request.numCtx,
-    num_predict: request.numPredict,
-    ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
-  };
-  let data: any;
-  try {
-    const response =
-      request.think === false
-        ? await client.post(
-            '/api/chat',
-            {
-              model: request.model,
-              messages: [{ role: 'user', content: request.prompt }],
-              stream: false,
-              think: false,
-              keep_alive: request.keepAlive || PLAIN_KEEP_ALIVE,
-              options,
-            },
-            { timeout: request.timeoutMs, signal: request.signal }
-          )
-        : await client.post(
-            '/api/generate',
-            {
-              model: request.model,
-              prompt: request.prompt,
-              stream: false,
-              keep_alive: request.keepAlive || PLAIN_KEEP_ALIVE,
-              options,
-            },
-            { timeout: request.timeoutMs, signal: request.signal }
-          );
-    data = response.data;
-  } catch (error) {
-    throw plainTransportError(error, request);
-  }
-
-  if (data?.done_reason === 'length') {
-    return {
-      ok: false,
-      reason: 'length',
-      detail:
-        `the model hit its ${request.numPredict}-token output ceiling on ${request.what}, so what came ` +
-        `back is a truncated fragment rather than an answer`,
-    };
-  }
-
-  const raw =
-    request.think === false
-      ? typeof data?.message?.content === 'string'
-        ? data.message.content
-        : ''
-      : typeof data?.response === 'string'
-        ? data.response
-        : '';
-  const text = stripThinking(raw);
-  if (text.length === 0) {
-    // The `thinking` field is deliberately NOT read as the answer here: without a JSON
-    // grammar there is nothing to push the answer into it, so a run whose `response` is
-    // empty produced reasoning and no answer — which is an unusable answer, not a hidden one.
-    return { ok: false, reason: 'empty', detail: `the model returned no answer text on ${request.what}` };
-  }
-  return { ok: true, text };
-}
-
-/** Transport failures, named so the message says what to DO — mirrors ollama-json's wording. */
-function plainTransportError(error: any, request: OllamaPlainRequest): Error {
-  if (isAbortError(error)) {
-    return new Error(`${request.what} was cancelled by the user (model ${request.model})`);
-  }
-  const status = error?.response?.status;
-  const detail = error?.response?.data?.error || error?.message || 'unknown error';
-  if (status === 404) {
-    return new Error(
-      `${request.what} needs Ollama model "${request.model}", which is not installed. ` +
-        `Pull it with: ollama pull ${request.model}`
-    );
-  }
-  if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT') {
-    return new Error(
-      `${request.what} timed out after ${Math.round(request.timeoutMs / 1000)}s (model ${request.model})`
-    );
-  }
-  if (error?.code === 'ECONNREFUSED' || error?.code === 'ENOTFOUND') {
-    return new Error(
-      `${request.what} could not reach Ollama at ${error?.config?.baseURL || 'the configured host'}: ` +
-        `${detail}. Nothing is substituted for a host that is not answering — start Ollama and run it again.`
-    );
-  }
-  return new Error(`${request.what} failed on model ${request.model}: ${detail}`);
 }
 
 // ---------------------------------------------------------------------------

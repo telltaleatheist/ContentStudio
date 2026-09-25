@@ -69,7 +69,6 @@ import {
   buildRoutingView,
   describeRouting,
   migrateStoredRouting,
-  probeOllamaInventory,
   resolveChapterModelOption,
   resolveMetadataRouting,
   routedModelString,
@@ -90,6 +89,7 @@ import type { TranscriptLink } from '../services/metadata/editor-transcript-link
 import { getMainWindow } from '../main';
 import { setupCrucibleIpc } from '../crucible/crucible-ipc';
 import type { CrucibleContext } from '../crucible/context';
+import { catalogInventory } from '../crucible/catalog';
 
 /**
  * Analytics services created in main.ts at startup and shared with the IPC layer.
@@ -1119,44 +1119,15 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
 
   ipcMain.handle('get-startup-readiness', async () => {
     const settings = (store as any).store;
-    const provider = settings.metadataProvider || settings.aiProvider || 'openai';
-    const model = settings.metadataModel || settings.ollamaModel || '';
-    let aiReady = false;
-    let aiReason = '';
-
-    if (!model) {
-      aiReason = 'No AI model is selected.';
-    } else if (provider === 'openai' || provider === 'claude') {
-      const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-      let keys: any = {};
-      if (fs.existsSync(apiKeysPath)) {
-        keys = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
-      }
-      const key = provider === 'openai' ? keys.openaiApiKey : keys.claudeApiKey;
-      aiReady = typeof key === 'string' && key.trim().length > 0;
-      if (!aiReady) aiReason = `The selected ${provider === 'openai' ? 'OpenAI' : 'Claude'} provider has no API key.`;
-    } else if (provider === 'ollama') {
-      const host = String(settings.ollamaHost || 'http://localhost:11434').replace(/\/$/, '');
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 4000);
-      try {
-        const response = await fetch(`${host}/api/tags`, { signal: controller.signal });
-        if (response.ok) {
-          const data = await response.json() as any;
-          const models = Array.isArray(data.models) ? data.models.map((item: any) => item.name) : [];
-          aiReady = models.includes(model);
-          if (!aiReady) aiReason = `The selected Ollama model (${model}) is not installed.`;
-        } else {
-          aiReason = `Ollama returned HTTP ${response.status}.`;
-        }
-      } catch {
-        aiReason = `Ollama is not reachable at ${host}.`;
-      } finally {
-        clearTimeout(timeout);
-      }
-    } else {
-      aiReason = `Unsupported AI provider: ${provider}.`;
-    }
+    // THE AI HALF IS CRUCIBLE'S READINESS (P2, plan 5). It used to ask Ollama's /api/tags for
+    // the legacy Settings model, or look for a key in api-keys.json; every model call goes
+    // through the selected Crucible server now, so "is AI ready" is the question P1's
+    // readiness service already answers, in its own sentence, with its one door.
+    const crucibleReadiness = analytics.crucible.readiness.current();
+    const aiReady = crucibleReadiness.state === 'ready';
+    const aiReason = aiReady ? '' : crucibleReadiness.reason;
+    const provider = 'crucible';
+    const model = crucibleReadiness.server ?? '';
 
     const whisperModel = settings.whisperModel || 'small';
     const requiredToolIds = ['ffmpeg', 'whisper-engine'];
@@ -1253,12 +1224,17 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       );
     }
     const stored = migration.selections;
-    // Which local models are actually installed, read fresh on every open. The host is
-    // the one generation resolves against (passed down as aiHost), so what the modal
-    // marks installed is what a run would find.
-    const inventory = await probeOllamaInventory(
-      String((store as any).get('ollamaHost', 'http://localhost:11434'))
-    );
+    // What the SELECTED Crucible server offers, read fresh on every open: its catalog, its
+    // models and whether it has an Anthropic key (plan 6.2, 0a). The dialog lists only that,
+    // and the server it names is the one a run on these selections would go to.
+    let selected: string | null;
+    try {
+      selected = analytics.crucible.servers.selected();
+    } catch {
+      // No server selected is an answer the inventory states in its own words.
+      selected = null;
+    }
+    const inventory = await catalogInventory(analytics.crucible.factory, selected);
     return buildRoutingView(stored, inventory);
   });
 
@@ -1514,63 +1490,12 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       // Get settings using electron-store API
       const settings = (store as any).store;
 
-      // Determine AI provider from settings
-      // Try new separate provider fields first, fall back to legacy aiProvider field
-      const metaProvider = settings.metadataProvider || settings.aiProvider;
-
-      // Load API keys from api-keys.json
-      const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-      let apiKeys: any = {};
-      if (fs.existsSync(apiKeysPath)) {
-        apiKeys = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
-      }
-
-      // Reconstruct full model with provider prefix (e.g., "claude:claude-sonnet-4-5")
-      // Settings stores provider and model separately, but AIManagerService needs prefixed format
-      // Prefer newer metadataProvider/metadataModel fields over legacy aiProvider/aiModel
-      const aiModel = settings.metadataModel || settings.aiModel || settings.ollamaModel;
-      const aiProvider = settings.metadataProvider || settings.aiProvider || 'ollama';
-      const fullModel = aiModel ? `${aiProvider}:${aiModel}` : undefined;
-
-      // Get the API key strictly for the provider that fullModel is built from.
-      // (OR-ing meta/summ providers here would pick the wrong key when they differ —
-      // e.g. metadata=claude + summarization=openai must send Claude requests with the Claude key.)
-      let apiKey = undefined;
-      if (aiProvider === 'openai') {
-        apiKey = apiKeys.openaiApiKey;
-      } else if (aiProvider === 'claude') {
-        apiKey = apiKeys.claudeApiKey;
-      }
-
-      /**
-       * WHAT THE SETTINGS PAGE'S "AI MODEL" STILL GOVERNS, which is much less than it did.
-       *
-       * It used to be the model that wrote every field of every chapterless item (the legacy
-       * whole-metadata call) AND the model that summarized every transcript on every path. The
-       * first is gone: those items are routed like all the others, against the routing table
-       * the operator sets in the routing dialog. The second is gone too — summarization runs on
-       * SUMMARIZATION_MODEL, declared in metadata-routing.ts, so a transcript is not silently
-       * read by a cloud provider on a run whose every visible field is local; and as of
-       * 2026-08-23 it runs for COMPILATION ONLY.
-       *
-       * COMPILATION PACKAGING WENT TOO, on 2026-09-13, and it was the last generation call this
-       * field governed. It fell here for no better reason than that nothing had moved it: an
-       * operator who had routed every field to `claude -p` still watched a compilation go out
-       * over the metered API to whatever Settings remembered. It now follows the routing
-       * table's `titles` selection like the summarizer follows `chapters`
-       * (resolveCompilationPackagingOption).
-       *
-       * What is left is the PROVIDER CLIENTS this service constructs — `fullModel` and its key
-       * are how AIManagerService knows which SDK client to build — plus the API key itself. No
-       * generation call reads it for its model any more, and the log line says so, because a
-       * stale sentence here is how a forgotten setting keeps governing things.
-       */
-      log.info(
-        `[IPC] Settings AI model ${fullModel} (provider: ${aiProvider}, model: ${aiModel}) no longer selects any ` +
-          `generation call's model — it only names the provider client to construct. Per-field metadata and ` +
-          `compilation packaging both follow the routing table, and summarization — now compilation's alone — ` +
-          `runs on ${SUMMARIZATION_MODEL}`
-      );
+      // NO PROVIDER, MODEL OR KEY IS READ HERE ANY MORE (P2, LEDGER #193/#194/#204). The
+      // Settings "AI Model" fields (`metadataProvider`, `metadataModel`, `aiProvider`, `aiModel`,
+      // `ollamaModel`) governed nothing but which SDK client AIManagerService constructed once
+      // every generation call followed the routing table, and there are no SDK clients now:
+      // every call goes through the selected Crucible server on the routing table's choice, and
+      // the key is that server's (api-keys.json is moved into it once, crucible/key-migration.ts).
 
       // Performance-feedback loop: when the active prompt set maps to a
       // registered analytics channel that has computed insights, append the
@@ -1615,17 +1540,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       const summarizerOption = resolveChapterModelOption(resolvedRouting);
       const summarizationModel =
         summarizerOption.kind === 'cloud' ? summarizerOption.model : SUMMARIZATION_MODEL;
+      log.info(`[IPC] compilation summarization (compilation mode only) runs on ${summarizationModel}`);
 
       // Prepare metadata generation parameters
       const metadataParams = {
         inputs: params.inputs,
         mode: params.mode || settings.defaultMode,
-        aiProvider: metaProvider, // Use metadata provider as primary
-        aiModel: fullModel, // Full prefixed model (e.g., "claude:claude-sonnet-4-5")
         summarizationModel,
-        metadataModel: fullModel,
-        aiApiKey: apiKey,
-        aiHost: settings.ollamaHost || 'http://localhost:11434',
         outputPath: params.outputPath || settings.outputDirectory,
         promptSet: activePromptSet,
         promptSetsDir: getPromptSetsDirectory(),
@@ -1674,9 +1595,6 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         //
         // It does NOT decide the chapter models. Chapters are not a routed task any more.
         metadataRouting: resolveMetadataRouting(migrateStoredRouting(settings.metadataRouting).selections),
-        // Keys for whatever providers the routing reaches, which need not be the provider
-        // `aiApiKey` belongs to.
-        cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
         inputNotes: params.inputNotes || {},
         insights: insights || undefined,
         // "Show prompt": transcribe + assemble the prompt, then STOP (no AI call).
@@ -1686,7 +1604,6 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
 
       const safeMetadataParams = {
         ...metadataParams,
-        aiApiKey: metadataParams.aiApiKey ? '***' : undefined,
         // Summarized: the full block is several KB and would drown the log
         insights: insights
           ? `<prepared evidence for "${insights.channelName}", ${insights.rawBlock.length} chars, ` +
@@ -2509,29 +2426,21 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         });
 
         // Built for THIS call only, and `initialize()` is deliberately not run: the prompt is
-        // already assembled, so there is no prompt set to load and no connection to test, and
-        // every client this call needs is created on demand by ensureProviderReady — which
-        // names a missing key rather than substituting a provider that has one.
+        // already assembled, so there is no prompt set to load and nothing to probe: the one
+        // Crucible door prepares the call on the model it names and refuses by name what the
+        // selected server cannot run (a missing key included), substituting nothing.
         //
         // `promptSetsDir` is still required. The constructor initialises the prompt assets
         // whatever the caller intends to ask for, and without a directory it resolves a
         // relative path and throws. Same value every other construction site passes.
-        const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-        const apiKeys: any = fs.existsSync(apiKeysPath)
-          ? JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'))
-          : {};
-        const ollamaHost = (store as any).store?.ollamaHost || 'http://localhost:11434';
         const aiConfig: AIConfig = {
-          provider: 'claude',
-          host: ollamaHost,
-          cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
           promptSetsDir: getPromptSetsDirectory(),
         };
         const aiManager = new AIManagerService(aiConfig);
 
         let result;
         try {
-          result = await askForMoreTitles(stored, existingTitles, option, { aiManager, ollamaHost });
+          result = await askForMoreTitles(stored, existingTitles, option, { aiManager });
         } finally {
           aiManager.cleanup();
         }
@@ -2647,27 +2556,18 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         const sourceLabel = softenSourceLabel(item);
 
         // Built for THIS pass only, and `initialize()` is deliberately not run — same reason
-        // the titles handler above gives: every client is created on demand by
-        // ensureProviderReady, which names a missing key rather than substituting a provider
-        // that has one. `promptSetsDir` is still required, because the constructor initialises
+        // the titles handler above gives: the Crucible door prepares every call and refuses by
+        // name what the server cannot run. `promptSetsDir` is still required, because the constructor initialises
         // the prompt assets whatever the caller intends to ask for — and this pass DOES ask
         // for one (shared/pipeline/soften.yml).
-        const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-        const apiKeys: any = fs.existsSync(apiKeysPath)
-          ? JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'))
-          : {};
-        const ollamaHost = (store as any).store?.ollamaHost || 'http://localhost:11434';
         const aiConfig: AIConfig = {
-          provider: 'claude',
-          host: ollamaHost,
-          cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
           promptSetsDir: getPromptSetsDirectory(),
         };
         const aiManager = new AIManagerService(aiConfig);
 
         let pass;
         try {
-          pass = await runSoftenPass(item, option, { aiManager, ollamaHost });
+          pass = await runSoftenPass(item, option, { aiManager });
         } finally {
           aiManager.cleanup();
         }
@@ -2863,19 +2763,10 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         working._prompt_trace = [];
 
         // Built for THIS pass only, and `initialize()` is deliberately not run — same reason
-        // the titles and softening handlers give: every client is created on demand by
-        // ensureProviderReady, which names a missing key rather than substituting a provider
-        // that has one. `promptSet` IS passed here, unlike softening: the link block above is
+        // the titles and softening handlers give: the Crucible door prepares every call and
+        // refuses by name what the server cannot run. `promptSet` IS passed here, unlike softening: the link block above is
         // the channel's, and `descriptionLinks()` is empty without it.
-        const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-        const apiKeys: any = fs.existsSync(apiKeysPath)
-          ? JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'))
-          : {};
-        const ollamaHost = (store as any).store?.ollamaHost || 'http://localhost:11434';
         const aiConfig: AIConfig = {
-          provider: 'claude',
-          host: ollamaHost,
-          cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
           promptSetsDir: getPromptSetsDirectory(),
           promptSet: job.prompt_set,
         };
@@ -2885,7 +2776,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         try {
           pass = await scrubGeneratedItem(working, {
             option,
-            transport: { aiManager, ollamaHost },
+            transport: { aiManager },
             origin: 'operator request',
           });
         } finally {
@@ -3143,103 +3034,10 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     }
   });
 
-  // AI Setup - Check Ollama availability and get models
-  ipcMain.handle('check-ollama', async () => {
-    try {
-      const host = String((store as any).get('ollamaHost', 'http://localhost:11434')).replace(/\/$/, '');
-      const response = await fetch(`${host}/api/tags`);
-      if (!response.ok) {
-        return { available: false, models: [] };
-      }
-      const data = await response.json() as any;
-      const models = data.models ? data.models.map((m: any) => m.name) : [];
-      return { available: true, models };
-    } catch (error) {
-      log.info('Ollama not available:', error);
-      return { available: false, models: [] };
-    }
-  });
-
-  // AI Setup - Get available models for a provider
-  // Reads API keys from stored file if not provided
-  ipcMain.handle('get-available-models', async (_event, provider: 'ollama' | 'openai' | 'claude', apiKey?: string, host?: string) => {
-    try {
-      log.info(`Getting available models for ${provider}`);
-
-      // If no API key provided, read from stored keys file
-      let key = apiKey;
-      if (!key && (provider === 'openai' || provider === 'claude')) {
-        const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-        if (fs.existsSync(apiKeysPath)) {
-          const data = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
-          if (provider === 'openai') {
-            key = data.openaiApiKey;
-          } else if (provider === 'claude') {
-            key = data.claudeApiKey;
-          }
-        }
-      }
-
-      const models = await AIManagerService.getAvailableModels(provider, key, host);
-      log.info(`Found ${models.length} models for ${provider}`);
-      return { success: true, models };
-    } catch (error) {
-      log.error(`Error getting models for ${provider}:`, error);
-      return { success: false, models: [], error: String(error) };
-    }
-  });
-
-  // AI Setup - Get API keys
-  ipcMain.handle('get-api-keys', async () => {
-    try {
-      const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-
-      if (!fs.existsSync(apiKeysPath)) {
-        return { claudeApiKey: undefined, openaiApiKey: undefined };
-      }
-
-      const data = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
-
-      // Return masked keys for security (frontend just needs to know if they exist)
-      return {
-        claudeApiKey: data.claudeApiKey ? '***' : undefined,
-        openaiApiKey: data.openaiApiKey ? '***' : undefined
-      };
-    } catch (error) {
-      log.error('Error getting API keys:', error);
-      return { claudeApiKey: undefined, openaiApiKey: undefined };
-    }
-  });
-
-  // AI Setup - Save API key
-  ipcMain.handle('save-api-key', async (event, provider: string, apiKey: string) => {
-    try {
-      const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-
-      let existingKeys: any = {};
-      if (fs.existsSync(apiKeysPath)) {
-        existingKeys = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
-      }
-
-      // Update the appropriate key
-      if (provider === 'claude') {
-        existingKeys.claudeApiKey = apiKey;
-      } else if (provider === 'openai') {
-        existingKeys.openaiApiKey = apiKey;
-      } else {
-        return { success: false, error: 'Invalid provider' };
-      }
-
-      // Save to file
-      fs.writeFileSync(apiKeysPath, JSON.stringify(existingKeys, null, 2), 'utf-8');
-
-      log.info(`API key saved for ${provider}`);
-      return { success: true };
-    } catch (error) {
-      log.error('Error saving API key:', error);
-      return { success: false, error: String(error) };
-    }
-  });
+  // The AI-setup channels (`check-ollama`, `get-available-models`, `get-api-keys`,
+  // `save-api-key`) are gone with P2 (plan 6.5): there is no Ollama to probe, the model lists
+  // are the selected Crucible server's catalog (the routing dialog reads it), and the app holds
+  // no key (keys are typed into a server's row in Settings › Crucible Servers, #194).
 
   // Open external URL
   ipcMain.handle('open-external', async (_event, url: string) => {
@@ -3318,22 +3116,15 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       // This used to read the legacy Settings model (metadataModel/aiModel), which sent the
       // split to the paid Anthropic API even when every routed field was on claude -p.
       const settings = (store as any).store;
-      const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-      let apiKeys: any = {};
-      if (fs.existsSync(apiKeysPath)) apiKeys = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
       const chapterOption = resolveChapterModelOption(
         resolveMetadataRouting(migrateStoredRouting(settings.metadataRouting).selections)
       );
       const fullModel = routedModelString(chapterOption);
-      const aiProvider = (chapterOption.kind === 'local' ? 'ollama' : 'claude') as 'ollama' | 'openai' | 'claude';
       log.info(`[TranscriptSplit] Routed to the chapters selection: ${fullModel}`);
 
       const aiConfig: AIConfig = {
-        provider: aiProvider,
         metadataModel: fullModel,
         summarizationModel: fullModel,
-        cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
-        host: settings.ollamaHost || 'http://localhost:11434',
         // Where the prompt assets live. Every prompt is an asset now, including the
         // episode-split one, so a service built without this has nowhere to read them from.
         promptSetsDir: getPromptSetsDirectory(),
@@ -3354,7 +3145,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
           srtSegments,
           totalDurationSeconds,
           aiService,
-          provider: aiProvider,
+          transport: chapterOption.kind === 'local' ? 'local' : 'cloud',
         });
         return {
           success: true,
