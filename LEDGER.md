@@ -250,7 +250,9 @@ Status marks: ✅ in force · ❌ dead (with cause of death) · ⚠️ open/unce
   the rule; future phrasing changes need the loop (G3).
 
 ### Tags & hashtags
-- ✅ **Code-assembled from entity/key-phrase pools on chaptered items** — no model writes
+- ✅ **Code-assembled from the pools the chapter list yields on chaptered items** (#205: the
+  names and phrases the chapters share with the transcript, in chapter order; the
+  nomic-embed-text key-phrase ranking is removed) — no model writes
   them (a model invents plausible tags the video never says = YouTube spam signal;
   `occursIn` is the test). Model-written only on chapterless items.
 - ❌ Genericized "channel brand terms" line — model invented "O. Morgan". ✅ `brand_terms`

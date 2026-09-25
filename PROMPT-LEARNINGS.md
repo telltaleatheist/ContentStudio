@@ -216,8 +216,9 @@ slot rather than a fixed line because of Unfiltered (above).
 
 ### `tags.yml` — the separator, the exemplar, and the register
 
-Read by exactly two paths. On the **chaptered** path tags are assembled in code from the entity
-and key-phrase pools with no model call at all, so this section is stripped out of every group's
+Read by exactly two paths. On the **chaptered** path tags are assembled in code from the names
+and phrases the chapter list shares with the transcript (LEDGER #205), with no model call at
+all, so this section is stripped out of every group's
 instructions. It is sent to a model on the **text-subject** path (no chapters, therefore no
 pools measured against a chapter list) and on the **compilation** call, and it is what declares
 that the channel publishes tags at all.
@@ -280,8 +281,9 @@ unfilled count slot.
 
 ### `hashtags.yml`
 
-Hashtags are **derived in code** on every routed path (`tags-hashtags.ts`: the entity and
-key-phrase pools, camel-cased, deduped against the published title), so this section is stripped
+Hashtags are **derived in code** on every routed path (`tags-hashtags.ts`: the name and phrase
+pools, camel-cased, deduped against the published title; on a chaptered item both come off the
+chapter list, on a chapterless one there are names only — LEDGER #205), so this section is stripped
 out of every group's instructions. It survives because it declares that the channel renders
 hashtags at all, and because the compilation call still reads it.
 
