@@ -18,6 +18,7 @@ import { createCrucibleContext, type CrucibleContext } from './crucible/context'
 import { installCrucibleTransport } from './crucible/transport';
 import { installLanes } from './crucible/lanes';
 import { setAsrVenueResolver } from './services/transcription/crucible-transcription';
+import { resolveUserDataPath } from './user-data-path';
 
 /**
  * ContentStudio - Main Electron Process
@@ -44,12 +45,19 @@ import { setAsrVenueResolver } from './services/transcription/crucible-transcrip
  * It must happen before ANY getPath('userData') call, which in practice means before
  * electron-store is constructed and before app.whenReady, because Electron caches the
  * resolved path on first use.
+ *
+ * A DEVELOPMENT run may name another folder with CONTENTSTUDIO_USER_DATA (user-data-path.ts), so
+ * an agent's or a test's launch never runs on Owen's real data; a packaged build ignores it.
  */
-app.setPath('userData', path.join(app.getPath('appData'), 'contentstudio'));
+const userDataChoice = resolveUserDataPath({ env: process.env, isPackaged: app.isPackaged, appData: app.getPath('appData') });
+app.setPath('userData', userDataChoice.path);
 
 // Configure logging with rotation
 log.transports.console.level = 'info';
 log.transports.file.level = 'debug';
+
+// Whose data this run is on, first thing in the log (Law 8).
+log.info(`[Boot] ${userDataChoice.line}`);
 
 // Log rotation settings
 log.transports.file.maxSize = 5 * 1024 * 1024; // 5 MB max file size
