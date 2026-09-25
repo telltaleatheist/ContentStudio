@@ -408,33 +408,18 @@ def _resolve_media_tool(name, audio_processor):
     return name
 
 
-def denoise_mic_audio(audio_type, audio_path, voice_sep_env, audio_processor):
-    """Isolate the speaker's voice on a mic track via core/voice_separation.py,
-    returning the path to the cleaned track.
+def denoise_mic_audio(audio_type, audio_path, audio_processor):
+    """Isolate the speaker's voice on a mic track, returning the cleaned track's path.
 
-    FAIL LOUD: a missing env / interpreter / model / orchestrator, or any
-    non-zero exit from voice_separation.py, aborts the whole run. We never fall
-    back to the noisy original, because that would silently ship un-isolated
-    audio the user explicitly asked to clean."""
-    if not voice_sep_env:
-        emit_error(f"Voice isolation requested for {audio_type} but the app provided "
-                   "no voice-separator env path (voiceSeparatorEnv missing)")
-        raise RuntimeError("voiceSeparatorEnv missing")
+    The model runs on a Crucible (LEDGER #200): core/voice_separation.py plans the
+    chunks, skips the silent ones and reassembles the stems HERE, and asks
+    Electron's main process for each chunk with a `separation_request` on this
+    process's stdout; main runs the `denoise` job and answers on stdin.
 
-    env_dir = Path(voice_sep_env)
-    # conda envs put the interpreter at python.exe on Windows, bin/python3 on unix.
-    sep_python = env_dir / ('python.exe' if sys.platform == 'win32' else 'bin/python3')
-    model_dir = env_dir / 'audio-separator-models'
-    model = model_dir / 'vocals_mel_band_roformer.ckpt'
-    orchestrator = BASE_DIR / 'core' / 'voice_separation.py'
-
-    for label, p in (('voice-separator env', env_dir),
-                     ('separator python', sep_python),
-                     ('separator model', model),
-                     ('voice_separation.py orchestrator', orchestrator)):
-        if not p.exists():
-            emit_error(f"Voice isolation for {audio_type} failed: {label} not found at {p}")
-            raise FileNotFoundError(f"{label} not found: {p}")
+    FAIL LOUD: a failed job, a server that cannot isolate voice, or any other
+    error aborts the whole run. We never fall back to the noisy original, because
+    that would silently ship un-isolated audio the user explicitly asked to clean."""
+    from core.voice_separation import isolate_voice, VoiceIsolationError
 
     ffmpeg = _resolve_media_tool('ffmpeg', audio_processor)
     ffprobe = _resolve_media_tool('ffprobe', audio_processor)
@@ -451,53 +436,46 @@ def denoise_mic_audio(audio_type, audio_path, voice_sep_env, audio_processor):
     emit_operation_start(f"Isolating voice on {mic_label}", can_skip=False)
     emit_progress(30, f"Isolating voice on {mic_label} — analyzing audio...", sub_progress=0)
 
-    cmd = [str(sep_python), str(orchestrator),
-           '--input', str(src), '--output', str(cleaned),
-           '--sep-python', str(sep_python),
-           '--model-dir', str(model_dir),
-           '--ffmpeg', str(ffmpeg), '--ffprobe', str(ffprobe)]
-
-    # Voice isolation is slow (~1 min per 6-min section), so give it a real,
-    # advancing sub-progress bar with descriptive text instead of a frozen "30%".
-    # We parse the orchestrator's PLAN / CHUNK lines and translate them into
-    # emit_progress(sub_progress=...); every line is still mirrored to our stderr
-    # for the detailed workflow log.
+    # Voice isolation is slow (~1 min per 6-min section), so it gets a real,
+    # advancing sub-progress bar. voice_separation.py reports its PLAN / CHUNK
+    # lines (and mirrors them to stderr for the detailed log); they are turned
+    # into emit_progress(sub_progress=...) here. Main moves the bar WITHIN a
+    # chunk from the job's own events (python-service.ts), between these lines.
     import re
-    total_sections = None
-    total_min = None
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.PIPE, text=True, bufsize=1)
-    for raw in proc.stderr:
-        line = raw.rstrip()
-        if not line:
-            continue
-        print(line, file=sys.stderr)
+    plan = {'sections': None, 'minutes': None}
+
+    def report(line):
         if line.startswith('PLAN'):
             mtot = re.search(r'->\s*(\d+)\s*chunks', line)
             mmin = re.search(r'([\d.]+)\s*min input', line)
-            total_sections = int(mtot.group(1)) if mtot else None
-            total_min = float(mmin.group(1)) if mmin else None
-            if total_sections:
-                emit_progress(30, f"Isolating voice on {mic_label} — 0 of {total_sections} "
-                              f"sections ({total_min:.0f} min of audio)", sub_progress=0)
-            continue
+            plan['sections'] = int(mtot.group(1)) if mtot else None
+            plan['minutes'] = float(mmin.group(1)) if mmin else None
+            if plan['sections']:
+                emit_progress(30, f"Isolating voice on {mic_label} — 0 of {plan['sections']} "
+                              f"sections ({plan['minutes']:.0f} min of audio)", sub_progress=0)
+            return
         mchunk = re.match(r'CHUNK\s+(\d+)/(\d+)\s+\(([\d.]+)-([\d.]+)\s*min\)(.*)', line)
         if mchunk:
             done, n = int(mchunk.group(1)), int(mchunk.group(2))
             upto_min = float(mchunk.group(4))
             silent = 'SILENT' in mchunk.group(5)
             pct = round(done / n * 100.0, 1)
+            total_min = plan['minutes']
             where = (f"{upto_min:.0f} of {total_min:.0f} min" if total_min
                      else f"{upto_min:.0f} min")
             note = " (silence — skipped)" if silent else ""
             emit_progress(30, f"Isolating voice on {mic_label} — section {done} of {n}, "
                           f"{where} done{note}", sub_progress=pct)
-    proc.wait()
-    if proc.returncode != 0 or not cleaned.exists():
-        emit_error(f"Voice isolation failed for {audio_type} "
-                   f"(voice_separation.py exit {proc.returncode}) — see log above")
-        raise RuntimeError(
-            f"voice_separation.py failed for {audio_type} (exit {proc.returncode})")
+
+    try:
+        isolate_voice(str(src), str(cleaned), ffmpeg=ffmpeg, ffprobe=ffprobe, track=mic_label,
+                      parent_pid=_PARENT_PID, report=report)
+    except VoiceIsolationError as err:
+        emit_error(f"Voice isolation failed for {audio_type}: {err}")
+        raise RuntimeError(f"Voice isolation failed for {audio_type}: {err}") from err
+    if not cleaned.exists():
+        emit_error(f"Voice isolation for {audio_type} finished without writing {cleaned.name}")
+        raise RuntimeError(f"Voice isolation for {audio_type} wrote no output")
 
     emit_progress(30, f"Voice isolation complete on {mic_label}", sub_progress=100)
     print(f"✓ Voice isolation complete for {audio_type}: {cleaned.name}", file=sys.stderr)
@@ -921,12 +899,11 @@ def main():
         _validate_continuations(video_continuations, video_seam_gaps, video_sources)
         auto_duck = data.get('autoDuck', False)
         use_downloaded_stream = data.get('useDownloadedStream', False)
-        # Voice isolation (audio-separator): remove background from mic1/mic2 BEFORE
-        # alignment. denoise_mics comes from the workflow checkbox; voice_sep_env is
-        # the absolute path to the managed separator env (or None when not installed),
-        # injected by the Electron IPC handler.
+        # Voice isolation: remove background from mic1/mic2 BEFORE alignment.
+        # denoise_mics comes from the workflow checkbox, which is only offered when
+        # the selected Crucible can isolate voice (LEDGER #200); the model runs
+        # there, one `denoise` job per chunk, answered by Electron on stdin.
         denoise_mics = data.get('denoiseMics', False)
-        voice_sep_env = data.get('voiceSeparatorEnv')
 
         # RE-PROCESS REUSE: adopt each source's existing `_processed` audio instead of
         # extracting, aligning and ducking it again. A completed run leaves those files
@@ -1285,7 +1262,7 @@ def main():
                         and normalized_type in ('mic1', 'mic2')
                         and not audio_type.endswith('Sb')):
                     audio_path = denoise_mic_audio(
-                        audio_type, audio_path, voice_sep_env, audio_processor
+                        audio_type, audio_path, audio_processor
                     )
 
                 synced_path = None  # Track synced file for cleanup if needed

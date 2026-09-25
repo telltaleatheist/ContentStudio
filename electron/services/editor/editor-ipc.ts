@@ -15,6 +15,8 @@ import * as assetManager from './asset-manager';
 import { setupStoryAnalysisHandlers, StoryIpcDeps } from './story-ipc';
 import { buildAsrContext } from '../transcription/asr-context';
 import { asrContextTemplate, editorTrackFacts } from '../transcription/asr-facts';
+import { separationProgress } from './separation-protocol';
+import type { CrucibleVoiceIsolator, VoiceIsolationDeps } from '../../crucible/denoise';
 import { ArchiveBusyError,
   ArchiveSync, comparablePath, destinationFor, DEFAULT_ARCHIVE_ROOT, DEFAULT_ARCHIVE_MOUNT_URL
 } from './archive-sync';
@@ -473,10 +475,11 @@ interface ProjectScanResult {
 }
 
 /**
- * What the editor's channels need from the host beyond the store. Today that is only the
- * story handlers' prompt-assets directory (story-ipc.ts says why).
+ * What the editor's channels need from the host beyond the store: the story handlers'
+ * prompt-assets directory (story-ipc.ts says why), and voice isolation on the selected
+ * Crucible (LEDGER #200; electron/crucible/denoise.ts).
  */
-export type EditorIpcDeps = StoryIpcDeps;
+export type EditorIpcDeps = StoryIpcDeps & { voiceIsolation: VoiceIsolationDeps };
 
 /**
  * Register every editor channel. Called from setupIpcHandlers, following the
@@ -488,7 +491,7 @@ export function setupEditorIpc(store: Store<any>, deps: EditorIpcDeps): void {
   setupTitleHandoffHandlers();
   setupMediaHandlers();
   setupEditorFileHandlers();
-  setupProcessingHandlers();
+  setupProcessingHandlers(deps.voiceIsolation);
   setupProjectHandlers();
   setupEditorConfigHandlers();
   setupArchiveHandlers(store);
@@ -1205,7 +1208,7 @@ function setupEditorFileHandlers(): void {
 // Processing: source auto-detection, assets, workflow execution
 // ─────────────────────────────────────────────────────────────────────────────
 
-function setupProcessingHandlers(): void {
+function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps): void {
   /**
    * The downloadable environment: ffmpeg/ffprobe, the Python runtime, the Whisper model
    * (all three REQUIRED) and voice isolation (optional, the Denoise toggle's gate). These four
@@ -1226,9 +1229,8 @@ function setupProcessingHandlers(): void {
   };
 
   /**
-   * Asset listing — the install state of the shared OwenMorgan components. The editor reads
-   * exactly one of these (`voice-separator-env`) to decide whether the Denoise toggle can be
-   * offered, but the whole list is returned because that is ACS's shape.
+   * Asset listing — the install state of the shared OwenMorgan components, for the environment
+   * modal. The Denoise toggle no longer reads it: voice isolation runs on a Crucible (below).
    */
   ipcMain.handle('assets:list', async () => {
     try {
@@ -1238,6 +1240,14 @@ function setupProcessingHandlers(): void {
       return { success: false, error: error?.message || String(error) };
     }
   });
+
+  /**
+   * Can the Denoise toggle be offered? Voice isolation is a Crucible `denoise` job (LEDGER #200),
+   * so the answer is the SELECTED server's `/v1/info` row for `vocals-roformer`, with the reason
+   * and the command that fixes it on every "no". `voice-separator-env` is not consulted: it stays
+   * on disk until P10 removes it, and nothing reaches it.
+   */
+  ipcMain.handle('editor:voice-isolation-status', async () => voiceIsolation.status());
 
   /** Install ONE component by id. Resolves with the InstallResult — `ok:false` carries the
    *  verbatim reason, which the environment modal prints as its own error line. */
@@ -1489,16 +1499,46 @@ function setupProcessingHandlers(): void {
     try {
       const jobId = `job_${Date.now()}`;
 
-      // Tell Python where the optional voice-isolation env lives (absolute path
-      // or null when not installed). The `denoiseMics` boolean already arrives in
-      // `options` from the frontend; this just supplies the env location Python
-      // needs to run core/voice_separation.py.
-      options.voiceSeparatorEnv = binaryResolver().getVoiceSeparatorEnvDir();
-
       log.info(`Starting workflow job: ${jobId}`, options);
 
       const sender = event.sender;
+      const sendProgress = (progress: number, message: string, subProgress?: number): void => {
+        if (sender.isDestroyed()) return;
+        sender.send('workflow-output', { jobId, type: 'progress', data: message, progress, sub_progress: subProgress });
+      };
+
+      // VOICE ISOLATION ON THE SELECTED CRUCIBLE (LEDGER #200). voice_separation.py asks for
+      // each chunk; the isolator is opened on the first request of a track (its /v1/info row is
+      // checked before anything is uploaded), holds the separator's lease across that track's
+      // chunks, and is disposed on the track's `separation_release` and again when the run ends.
+      let isolator: Promise<CrucibleVoiceIsolator> | null = null;
+      const isolatorLog = (line: string): void => log.info(`[${jobId}] [voice isolation] ${line}`);
+
       pythonService().executeWorkflow(jobId, {
+        onSeparationRequest: async (request, signal) => {
+          if (isolator === null) isolator = voiceIsolation.open(isolatorLog);
+          const running = await isolator;
+          const done = await running.separate(request.wav, request.out, {
+            signal,
+            // The row stays at the overall step voice isolation reports (30); the bar is the
+            // chunk's place in the track, moved by the job's own fraction.
+            onProgress: (p) => {
+              const line = separationProgress(request, p, running.server);
+              sendProgress(30, line.message, line.subProgress);
+            },
+          });
+          isolatorLog(`chunk ${request.chunk} of ${request.chunks} (${request.track}) done as job ${done.jobId}; `
+            + `load ${done.loadSeconds ?? '?'} s, separate ${done.separateSeconds ?? '?'} s`);
+          return done.stem;
+        },
+        onSeparationRelease: async () => {
+          const held = isolator;
+          isolator = null;
+          if (held === null) return;
+          // An isolator that never opened has nothing to give back.
+          const opened = await held.catch(() => null);
+          if (opened !== null) await opened.dispose();
+        },
         inputData: options,
         onOutput: (data) => {
           if (sender.isDestroyed()) return;
@@ -1511,9 +1551,8 @@ function setupProcessingHandlers(): void {
           sender.send('workflow-output', { jobId, type: 'stderr', data });
         },
         onProgress: (progress, message, subProgress) => {
-          if (sender.isDestroyed()) return;
           log.info(`[${jobId}] Sending workflow-output (progress) to renderer: ${progress}% - ${message}`);
-          sender.send('workflow-output', { jobId, type: 'progress', data: message, progress, sub_progress: subProgress });
+          sendProgress(progress, message, subProgress);
         },
         onComplete: (code, result) => {
           if (sender.isDestroyed()) {

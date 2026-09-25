@@ -254,6 +254,10 @@ export class EditorHostAdapter implements EditorHost {
     return this.electron.listAssets();
   }
 
+  voiceIsolationStatus(): Promise<{ available: boolean; reason: string }> {
+    return this.electron.voiceIsolationStatus();
+  }
+
   // ── Installing the environment ──────────────────────────────────────────────
   //
   // ContentStudio downloads the editor's toolchain into the shared OwenMorgan location, so the

@@ -69,7 +69,18 @@ id = "qwen3.8-27b-4bit"
 kind = "model"
 id = "qwen3.5-9b"
 
-# NOT YET: voice isolation (LEDGER #200) will add `rvc` as a job type (it is
-# what installs the env `denoise` runs in; naming `denoise` is refused) and the
-# `vocals-roformer` denoise subject. That is P7's to add, so that coordinating a
-# server before then never pulls the rvc env for a feature that is not built.
+# Voice isolation (LEDGER #200, plan section 9, P7): the editor's Denoise runs
+# Crucible's `denoise` job on the vocals separator. `denoise` has no installer
+# of its own: `rvc` builds the env it runs in and turns it on
+# (workerenv.JOB_TYPES_SERVED_BY_ENV), and naming `denoise` here is refused by
+# name. So the job type is `rvc`, the price of the full rvc env that plan
+# section 19 N3 records as still owed or ruled.
+[[job_types]]
+type = "rvc"
+
+# The vocals Mel-Band RoFormer (Kimberley Jensen), 44.1 kHz native: the same
+# checkpoint voice-separator-env ran. `denoise-roformer` (room hiss) is a
+# different model and is not what the editor asks for.
+[[subjects]]
+kind = "denoise"
+id = "vocals-roformer"

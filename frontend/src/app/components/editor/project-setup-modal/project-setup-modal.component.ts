@@ -108,12 +108,6 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
   @Output() started = new EventEmitter<void>();
   /** The run finished and produced a session. The host rescans, stamps and opens it. */
   @Output() completed = new EventEmitter<{ zipPath: string }>();
-  /**
-   * The Denoise row asked for the environment dialog — voice isolation is not installed, and
-   * this is where the user found that out. The host opens it OVER this modal and tells this
-   * component to re-read the component list when it closes (`refreshEnvironment`).
-   */
-  @Output() openEnvironment = new EventEmitter<void>();
 
   state: ProjectSetupState = 'idle';
   /** Inline failure text for the CURRENT state (detection, payload, start, or the job). */
@@ -148,8 +142,12 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
   autoDuck = true;
   useDownloadedStream = false;
   denoiseMics = false;
-  /** The voice-separator asset gate; the Denoise toggle only exists once it is installed. */
-  separatorInstalled = false;
+  /**
+   * The Crucible gate (LEDGER #200): the Denoise toggle only exists when the selected server
+   * can isolate voice. `voiceIsolationReason` says why not, where the toggle would have been.
+   */
+  voiceIsolationAvailable = false;
+  voiceIsolationReason = 'Checking the Crucible for voice isolation…';
 
   /**
    * Adopt the `_processed` audio already on disk instead of deriving it again. Only ever
@@ -182,7 +180,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.attached = this.attachRunning;
     this.jobSub = this.host.getCurrentJob().subscribe(job => this.onJob(job));
-    void this.refreshSeparatorStatus();
+    void this.refreshVoiceIsolationStatus();
     if (!this.attachRunning) {
       void this.detect();
     }
@@ -348,25 +346,26 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
   }
 
   /**
-   * Re-read the component list — called by the host after the environment dialog this modal
-   * opened has closed, so a voice-isolation component installed there turns the Denoise toggle
-   * on without closing and reopening the setup.
+   * Re-read the Denoise gate — called by the host after the environment dialog has closed.
+   * Voice isolation no longer depends on anything that dialog installs, but the Crucible may
+   * have been fixed meanwhile, and asking again costs one /v1/info.
    */
   refreshEnvironment(): Promise<void> {
-    return this.refreshSeparatorStatus();
+    return this.refreshVoiceIsolationStatus();
   }
 
-  /** Install state of the optional voice-isolation component (the Denoise toggle's gate). */
-  private async refreshSeparatorStatus(): Promise<void> {
+  /** Can the selected Crucible isolate voice (the Denoise toggle's gate)? */
+  private async refreshVoiceIsolationStatus(): Promise<void> {
     try {
-      const res = await this.host.listAssets();
-      const comp = (res.components || []).find((c: any) => c.id === 'voice-separator-env');
-      this.separatorInstalled = !!comp && comp.state === 'installed';
+      const status = await this.host.voiceIsolationStatus();
+      this.voiceIsolationAvailable = status.available;
+      this.voiceIsolationReason = status.reason;
     } catch (err) {
-      // Not fatal: the toggle stays hidden and the run proceeds without isolation, which is
-      // exactly what an uninstalled component means. Reported to the console, not swallowed.
+      // Not fatal: the toggle stays hidden and says why, and the run proceeds without
+      // isolation. Reported to the console as well, not swallowed.
       console.error('[project-setup] voice-isolation status unreadable:', err);
-      this.separatorInstalled = false;
+      this.voiceIsolationAvailable = false;
+      this.voiceIsolationReason = `Needs a Crucible with voice isolation; asking it failed: ${(err as Error)?.message || err}`;
     } finally {
       this.cdr.detectChanges();
     }
@@ -647,7 +646,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
         sources: this.buildRows(),
         autoDuck: this.autoDuck,
         denoiseMics: this.denoiseMics,
-        separatorInstalled: this.separatorInstalled,
+        voiceIsolationAvailable: this.voiceIsolationAvailable,
         useDownloadedStream: this.useDownloadedStream,
         // Manual alignment lives on the workflow page; runs started here are full auto.
         alignmentOverrides: null,

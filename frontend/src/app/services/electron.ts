@@ -946,11 +946,13 @@ declare global {
         error?: string;
       }>;
       /**
-       * The downloadable environment. `listAssets` backs both the Denoise gate and the
-       * environment modal; the other five are the install surface behind File ▸ Environment…
-       * Progress is sent to THIS window on 'asset-progress' by whichever install is running.
+       * The downloadable environment. `listAssets` backs the environment modal; the other five
+       * are the install surface behind File ▸ Environment… Progress is sent to THIS window on
+       * 'asset-progress' by whichever install is running.
        */
       listAssets: () => Promise<{ success: boolean; components?: AssetComponentStatus[]; error?: string }>;
+      /** The Denoise toggle's gate: can the selected Crucible isolate voice, and if not, why. */
+      editorVoiceIsolationStatus: () => Promise<{ available: boolean; reason: string }>;
       installAsset: (id: string) => Promise<AssetInstallResult>;
       cancelAsset: (id: string) => Promise<{ success: boolean }>;
       ensureRequiredAssets: () =>
@@ -2184,12 +2186,17 @@ export class ElectronService {
     return this.editorBridge.autoDetectAudio(masterVideoPath);
   }
 
-  /**
-   * Install state of the editor backend's downloadable components. Read by the Denoise gate
-   * (one component) and by the environment modal (all of them).
-   */
+  /** Install state of the editor backend's downloadable components, for the environment modal. */
   async listAssets(): Promise<{ success: boolean; components?: AssetComponentStatus[]; error?: string }> {
     return this.editorBridge.listAssets();
+  }
+
+  /**
+   * Can the selected Crucible isolate voice (its `denoise` row offers `vocals-roformer`,
+   * installed)? The reason names what is missing and the command that supplies it.
+   */
+  async voiceIsolationStatus(): Promise<{ available: boolean; reason: string }> {
+    return this.editorBridge.editorVoiceIsolationStatus();
   }
 
   /**

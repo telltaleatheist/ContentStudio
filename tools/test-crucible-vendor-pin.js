@@ -98,8 +98,9 @@ check('the module names what its declaration names, with the 1.0.29+ ids and no 
   assert.deepStrictEqual(moduleDoc.job_types.map((j) => j.type), declared('type'));
   assert.deepStrictEqual(moduleDoc.needs.map((n) => n.class), declared('class'));
   assert.deepStrictEqual(moduleDoc.subjects.map((s) => s.id), declared('id'));
-  assert.deepStrictEqual(moduleDoc.job_types.map((j) => j.type), ['llm', 'asr', 'align']);
-  assert.deepStrictEqual(moduleDoc.subjects.map((s) => s.id), ['qwen3-asr-1.7b', 'qwen3-aligner', 'qwen3.8-27b-4bit', 'qwen3.5-9b']);
+  // P7: `rvc` installs the env `denoise` runs in, and the vocals separator is the editor's (LEDGER #200).
+  assert.deepStrictEqual(moduleDoc.job_types.map((j) => j.type), ['llm', 'asr', 'align', 'rvc']);
+  assert.deepStrictEqual(moduleDoc.subjects.map((s) => s.id), ['qwen3-asr-1.7b', 'qwen3-aligner', 'qwen3.8-27b-4bit', 'qwen3.5-9b', 'vocals-roformer']);
   // LEDGER #205 / plan 21 Q15: the official id, never the -mlx port; and no retired whisper id.
   assert.ok(!moduleText.includes('-mlx'));
   assert.ok(!/mlx-whisper|faster-whisper/.test(moduleText));
@@ -110,7 +111,7 @@ check('moduleForBackend strips `backends` and filters to one backend; an unstate
   const vendored = readVendoredModule(path.join(MODULE_DIR, 'contentstudio.module.json'));
   const mac = moduleForBackend(vendored, 'mlx-darwin', 'mac');
   assert.ok(!JSON.stringify(mac).includes('backends'));
-  assert.deepStrictEqual(mac.job_types.map((j) => j.type), ['llm', 'asr', 'align']);
+  assert.deepStrictEqual(mac.job_types.map((j) => j.type), ['llm', 'asr', 'align', 'rvc']);
   const windows = moduleForBackend(vendored, 'llama-windows', 'pc');
   // The native Windows engine serves llm only; asr and align need WSL (INTEGRATING-AN-APP.md section 11).
   assert.deepStrictEqual(windows.job_types.map((j) => j.type), ['llm']);
