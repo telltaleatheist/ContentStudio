@@ -24,6 +24,7 @@ import {
   parsePairing,
   pollPairing,
   startPairing,
+  type CrucibleClient,
   type Pairing,
   type PairingRequest,
 } from '@crucible/client';
@@ -32,7 +33,7 @@ import { connectCodeFor, elideConnectCode } from './connect-code';
 import { CrucibleConnectError } from './errors';
 import { maskToken } from './registry';
 import type { CrucibleServers } from './servers';
-import type { CrucibleProbes } from './probe';
+import { failureOutcome, type CrucibleProbes } from './probe';
 import { readCruciblePairingFile, type PairingFileHost } from './pairing-file';
 import type {
   ConnectCodeReading,
@@ -213,9 +214,17 @@ export class CrucibleConnect {
     if (found === null) {
       throw new CrucibleConnectError('nothing_discovered', 'There is no Crucible on this computer, so there is no connect code to copy.');
     }
-    const setup = await this.factory
-      .clientForCredentials(found.pairing.url, found.pairing.token, { timeoutMs: LOCAL_SETUP_TIMEOUT_MS })
-      .setup();
+    let setup: Awaited<ReturnType<CrucibleClient['setup']>>;
+    try {
+      setup = await this.factory
+        .clientForCredentials(found.pairing.url, found.pairing.token, { timeoutMs: LOCAL_SETUP_TIMEOUT_MS })
+        .setup();
+    } catch (err) {
+      // Named for what it is, the Crucible on this computer at its pairing address, rather
+      // than the IPC block's generic "that server".
+      const failure = failureOutcome(err, `the Crucible on this computer (${found.pairing.url})`, LOCAL_SETUP_TIMEOUT_MS);
+      throw new CrucibleConnectError(failure.outcome, failure.message);
+    }
     if (setup.urls.length === 0 || setup.urls.length !== setup.pairing.length) {
       throw new CrucibleConnectError(
         'not_reachable_elsewhere',

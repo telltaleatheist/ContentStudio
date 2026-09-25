@@ -317,7 +317,22 @@ export class CrucibleReadiness {
     }
 
     if (here.present) {
-      return this.answer('unreachable', `Crucible is installed on this computer but not connected to ContentStudio.${failed}`, 'start');
+      // Its own control decides the door. Briefcase offered Start here whatever the state,
+      // which on a broken install is a button that cannot work (found live 2026-09-25):
+      // stopped or not answering → Start; running (auto-connect has not added it, or could
+      // not) → add it; broken → install again to repair; anything else → its sentence, and
+      // the Servers pane.
+      const presence = await this.presence();
+      if (presence === null || presence.offerStart) {
+        return this.answer('unreachable', `Crucible is installed on this computer but not connected to ContentStudio.${failed}`, 'start');
+      }
+      if (presence.state === 'running') {
+        return this.answer('not-configured', 'Crucible is running on this computer but is not in ContentStudio\'s list yet. Add it in Settings › Crucible Servers.', 'connect');
+      }
+      if (presence.state === 'broken') {
+        return this.answer('not-installed', presence.message ?? 'The Crucible installation on this computer is incomplete.', 'install');
+      }
+      return this.answer('unreachable', presence.message ?? `The Crucible on this computer is ${presence.state}.`, 'connect');
     }
     if (plan.hostable === 'no') {
       return this.answer('not-configured', `${plan.hostableWhy.replace(/[.\s]+$/, '')}. Connect to a Crucible on another computer in Settings › Crucible Servers.`, 'connect');

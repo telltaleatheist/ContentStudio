@@ -87,10 +87,25 @@ check('unreachable, and it is the Crucible on this computer, stopped: start', as
   ctx.readiness.stop();
 });
 
-check('installed here but not registered: start (which adopts it)', async () => {
-  const { ctx } = wired({ here: DISCOVERED(null) });
+check('installed here, not registered, and stopped: start (which adopts it)', async () => {
+  const { ctx } = wired({ here: DISCOVERED(null), status: { state: 'stopped', detail: 'stopped', url: '', name: '' } });
   const view = await ctx.readiness.refresh();
   assert.deepStrictEqual([view.state, view.action], ['unreachable', 'start']);
+  ctx.readiness.stop();
+});
+
+check('installed here, not registered, and its control says broken: install to repair, never a Start that cannot work', async () => {
+  const { ctx } = wired({ here: DISCOVERED(null), status: { state: 'broken', detail: 'no installation.json', url: '', name: '' } });
+  const view = await ctx.readiness.refresh();
+  assert.deepStrictEqual([view.state, view.action], ['not-installed', 'install']);
+  assert.match(view.reason, /incomplete and cannot start/);
+  ctx.readiness.stop();
+});
+
+check('installed here, running, but not in the list: add it (connect), not Start', async () => {
+  const { ctx } = wired({ here: DISCOVERED(null), status: { state: 'running', detail: 'running', url: 'http://127.0.0.1:7100', name: 'crucible@x' } });
+  const view = await ctx.readiness.refresh();
+  assert.deepStrictEqual([view.state, view.action], ['not-configured', 'connect']);
   ctx.readiness.stop();
 });
 

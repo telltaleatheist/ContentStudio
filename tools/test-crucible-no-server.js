@@ -35,10 +35,11 @@ async function invoke(channel, ...args) {
 
 check('with a stopped local Crucible: boot starts the loops, they settle, readiness offers Start, and nothing is written', async () => {
   const stopped = await fake.unusedLoopbackUrl();
-  const { ctx, pushed } = context({
+  const { ctx, pushed, scripted } = context({
     pairingHost: pairingHost(pairingLineFor('crucible@owens-mac-studio', stopped, TOKEN)),
     discovered: () => ({ present: true, serverName: 'crucible@owens-mac-studio', url: stopped, tokenMasked: '****4321', file: '/x/pairing', registeredAs: null }),
   });
+  scripted.state.status = { state: 'stopped', detail: 'launchd: not running', url: stopped, name: 'crucible@owens-mac-studio' };
   ctx.autoConnect.retryDelaysMs = [20];
   ctx.start();
   await ctx.autoConnect.whenIdle();
