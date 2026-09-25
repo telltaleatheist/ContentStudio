@@ -183,25 +183,33 @@ check('the shipped defaults are all local, and the big fields share one model', 
     const option = routing.METADATA_ROUTING_OPTIONS[resolved[task]];
     if (option.kind !== 'local') throw new Error(task + ' defaults to a ' + option.kind + ' model');
   }
-  const big = routing.METADATA_ROUTING_TASKS.filter((t) => t.modal).map((t) => resolved[t.id]);
+  // Tags is a modal row since #204 but keeps its own small default (the 9B), so the
+  // one-model rule is asserted over the big fields — the five that write prose.
+  const big = routing.METADATA_ROUTING_TASKS.filter((t) => t.modal && t.id !== 'tags').map((t) => resolved[t.id]);
   if (new Set(big).size !== 1) {
     throw new Error('the big fields default to ' + new Set(big).size + ' models; one model is the shipped state');
   }
 });
 
 /**
- * PER-FIELD ROUTING (2026-08-24). The modal is a field→model table: five big fields, each
+ * PER-FIELD ROUTING (2026-08-24). The modal is a field→model table: the big fields, each
  * settable to anything its task offers — every big field offers the 27B and all three cloud
- * rungs (Sonnet, Opus, Haiku). Tags are NOT a row ("if we use 9b for something then leave
- * it") and stay a stored-entry-only setting. Chapters are a routed task again, capable rungs
- * only — the 9B on chapters was half the measured 2026-08-23 failure stack.
+ * rungs (Sonnet, Opus, Haiku). Chapters are a routed task again, capable rungs only — the 9B
+ * on chapters was half the measured 2026-08-23 failure stack.
+ *
+ * TAGS IS A ROW TOO, since #204 (2026-09-24). It used to be hidden ("if we use 9b for
+ * something then leave it"), which meant a dialog showing every row on claude -p still ran
+ * the local 9B for tags on chapterless items. Owen: "it should not be using anything but
+ * claude -p for any ai calls ever if all routing is set to claude -p". It is not held to the
+ * big-rung rule: its options are the two small locals plus the capable rungs, and Haiku is
+ * not among them.
  */
-check('the modal is per-field: five big rows, tags row-less, cloud rungs everywhere', () => {
+check('the modal is per-field: five big rows plus tags, cloud rungs on every big row', () => {
   const modal = routing.METADATA_ROUTING_TASKS.filter((t) => t.modal).map((t) => t.id);
-  eq(modal.join(','), 'titles,description,chapters,thumbnail_text,pinned_comment');
+  eq(modal.join(','), 'titles,description,chapters,tags,thumbnail_text,pinned_comment');
   const tags = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'tags');
-  eq(tags.modal, false, 'tags stay out of the modal');
-  for (const task of routing.METADATA_ROUTING_TASKS.filter((t) => t.modal)) {
+  eq(tags.modal, true, 'tags is a visible row (#204)');
+  for (const task of routing.METADATA_ROUTING_TASKS.filter((t) => t.modal && t.id !== 'tags')) {
     for (const rung of ['qwen38-27b', 'sonnet5', 'opus5', 'haiku45']) {
       if (!task.options.includes(rung)) {
         throw new Error(task.id + ' does not offer ' + rung + '; every big field offers every big rung');
@@ -226,7 +234,7 @@ check('chapter resolution reads the chapters entry, and the view carries the mod
   eq(view.tasks.find((t) => t.id === 'titles').selectedOptionId, 'opus5',
     'a hand-set entry survives in the payload the modal saves back whole');
   eq(view.tasks.find((t) => t.id === 'chapters').modal, true);
-  eq(view.tasks.find((t) => t.id === 'tags').modal, false);
+  eq(view.tasks.find((t) => t.id === 'tags').modal, true, 'the view carries the tags row (#204)');
 });
 
 /**
