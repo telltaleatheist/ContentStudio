@@ -146,6 +146,22 @@ check('the re-roll prompt names the rule in positive form and carries the failin
   assert.throws(() => rules.revisePrompt('chapters', 'creator', [], FACTS), /no entries/);
 });
 
+check('Owen\'s standard (LEDGER #211) is in the rule statements, and the labels agree with it', () => {
+  const creator = rules.statementFor('description', 'creator', 'Subscribe and leave a comment.', FACTS);
+  assert.ok(/subscribe, comment/.test(creator) && /does not count/.test(creator), 'a call to action is not a reference to the creator');
+  const narrates = rules.statementFor('chapters', 'narrates', 'The fossil-record claim, refuted', FACTS);
+  assert.ok(/, refuted/.test(narrates) && /mocked line by line/.test(narrates) && /does not count/.test(narrates), '"X, refuted" is not narration');
+  // The quoted unit still comes first, so the fake scorer (and the model) reads the text being judged.
+  assert.ok(creator.startsWith('The sentence "Subscribe and leave a comment."'));
+  const labels = fs.readFileSync(path.join(__dirname, 'fixtures', 'titlecheck', 'labels.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  const ruled = labels.filter((l) => l.ruled_by);
+  assert.deepStrictEqual(ruled.map((l) => l.id).sort(), ['ch05', 'ch32', 'ch34', 'ch36', 'de09', 'de13']);
+  for (const l of ruled) assert.ok(!l.violates.includes(l.set === 'chapters' ? 'narrates' : 'creator'), `${l.id} is clean under #211`);
+  // `sentence` never gates (#211: chapter titles are "one or two sentences").
+  assert.strictEqual(settingsM.REROLL_GATE_DEFAULTS.thresholds['chapters.sentence'], 0);
+  assert.throws(() => rules.statementFor('titles', 'sentence', 'x', FACTS), /not asked of titles/);
+});
+
 // ------------------------------------------------------------------- at most 26
 
 check('a choice takes 2..26 options; 27 titles are refused by the ranker and declared unranked by the gate', async () => {

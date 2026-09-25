@@ -49,18 +49,18 @@ export interface RerollGateSettings {
  * "fails above P(yes) 0.7"):
  *
  *   creator        0.3  bimodal: violators 0.73-0.99, clean median 0.006; 50/50 chapter titles
- *                       right at P 0.7. The two clean-labelled readings above it are calls to
- *                       action ("Subscribe and leave a comment.").
+ *                       right at P 0.7. The two clean-labelled readings above it were calls to
+ *                       action ("Subscribe and leave a comment."), which Owen ruled are not a
+ *                       reference to the creator (#211); the statement now says so, and is
+ *                       re-measured by the batches P9.md lists.
  *   first_person   0.5  bimodal: 20/20 descriptions right at P 0.5.
  *   narrates       0.2  the statement that measured (v4, "the one doing the action is the
  *                       video itself or the person presenting it"); v1's wording leaned to a
  *                       0.73 median on CLEAN titles, plan §0a's trap, and was replaced at the
  *                       source rather than baselined. P 0.8: 10/16 chapter violators on its
  *                       own (the rest are caught by creator), 1 false alarm in 34.
- *   sentence       0    MEASURED, NOT GATING: 84% agreement at best, and the operator's own
- *                       edited chapter titles are sentences ("Ralph Reed warns Democrats are
- *                       coming with a vengeance"). It is asked and recorded; it never sends a
- *                       title back until Owen rules the format.
+ *   sentence       0    MEASURED, NEVER GATING (Owen, #211: chapter titles are "one or two
+ *                       sentences describing what's being discussed"). Asked and recorded only.
  *   nonsense       0.5  no garbled unit in the sample; clean readings sit under 0.05.
  *   creator_third_person 0.5  unmeasured (no labelled pinned comments); the symmetric default.
  *
