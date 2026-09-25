@@ -171,6 +171,8 @@ const api = {
   crucibleReadinessRefresh: () => ipcRenderer.invoke('crucible:readiness-refresh'),
   crucibleReadinessDecline: () => ipcRenderer.invoke('crucible:readiness-decline'),
   crucibleReadinessStart: () => ipcRenderer.invoke('crucible:readiness-start'),
+  crucibleLanes: () => ipcRenderer.invoke('crucible:lanes'),
+  crucibleQueuePlan: (candidates: Array<{ jobId: string; fast: boolean }>) => ipcRenderer.invoke('crucible:queue-plan', candidates),
   onCrucibleServersChanged: (callback: (change: any) => void) => {
     const listener = (_event: any, change: any) => callback(change);
     ipcRenderer.on('crucible:servers-changed', listener);
@@ -185,6 +187,11 @@ const api = {
     const listener = (_event: any, progress: any) => callback(progress);
     ipcRenderer.on('crucible:install-progress', listener);
     return () => ipcRenderer.removeListener('crucible:install-progress', listener);
+  },
+  onCrucibleLanes: (callback: (view: any) => void) => {
+    const listener = (_event: any, view: any) => callback(view);
+    ipcRenderer.on('crucible:lanes', listener);
+    return () => ipcRenderer.removeListener('crucible:lanes', listener);
   },
   // ==================== END CRUCIBLE ====================
 

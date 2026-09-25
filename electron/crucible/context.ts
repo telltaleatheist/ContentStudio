@@ -9,15 +9,25 @@
  * recorders, so the same wiring is under test (plan section 0a: the "no
  * Crucible" suite boots the real services with no server at all).
  *
- * Nothing in here touches the network. `start()` begins the two background
- * loops (auto-connect and readiness), both fire-and-forget; `stop()` ends them
- * on quit. Neither is ever awaited by `app.whenReady`.
+ * Nothing in here touches the network. `start()` begins the three background
+ * loops (auto-connect, readiness and the lanes' 15 s preflight), all
+ * fire-and-forget; `stop()` ends them on quit. None is ever awaited by
+ * `app.whenReady`.
+ *
+ * P3 adds the queue's layer over the same state directory: the in-flight
+ * ledger (`<userData>/crucible-in-flight.json`), the lanes, and the two sweeps.
+ * `sweepAtStartup()` gives back what a kill left behind and GATES GPU
+ * admission until it settles (plan section 13.4); `quit()` aborts the running
+ * jobs, lets them unwind, then sweeps under the quit deadline.
  */
 import type { Runner } from '@crucible/bootstrap';
 import * as log from 'electron-log';
 import { CrucibleAutoConnect } from './auto-connect';
 import { CrucibleClientFactory } from './client-factory';
 import { CrucibleConnect, type ClipboardWriter } from './connect';
+import { InFlightLedger } from './in-flight-ledger';
+import { STARTUP_SWEEP_DEADLINE_MS, sweepCrucibleInFlight, type SweepReport } from './in-flight-sweep';
+import { CrucibleLanes } from './lanes';
 import { discoveredRow } from './discovery';
 import { processLocalControls } from './engine-presence';
 import { loadBootstrap, processInstallHost, type CrucibleReleaseSources, type InstallHost } from './install';
@@ -27,10 +37,11 @@ import { CrucibleProbes } from './probe';
 import { CrucibleReadiness } from './readiness';
 import { CrucibleServers } from './servers';
 import { CrucibleSettingsBridge } from './settings-bridge';
+import { CrucibleRoutingError } from './errors';
 import { migrateLegacyKeys } from './key-migration';
 import { CrucibleTransport, type TransportHost } from './transport';
 import type { LeaseTimings } from './lease';
-import type { CrucibleInstallProgress, CrucibleReadinessView, CrucibleServersChangedPayload, KeyMigrationOutcome } from './wire';
+import type { CrucibleInstallProgress, CrucibleLanesView, CrucibleReadinessView, CrucibleServersChangedPayload, KeyMigrationOutcome } from './wire';
 
 export interface CrucibleContextDeps {
   /** Where crucible-servers.json, crucible-routing.json and crucible-install-state.json live. */
@@ -51,7 +62,17 @@ export interface CrucibleContextDeps {
     serversChanged?: (change: CrucibleServersChangedPayload) => void;
     readiness?: (view: CrucibleReadinessView) => void;
     installProgress?: (event: CrucibleInstallProgress) => void;
+    lanes?: (view: CrucibleLanesView) => void;
   };
+  /**
+   * A CLI's `--server`: this process sends its work to that registered server instead of the
+   * selected one, and the routing record is never written. Refused by name when unregistered.
+   */
+  serverOverride?: string;
+  /** The ledger's file name under `stateDir`. Default `crucible-in-flight.json`; a CLI names its own. */
+  ledgerFile?: string;
+  /** The lanes' clocks, replaceable by a keeper. */
+  lanes?: { now?: () => number; stallMs?: number; preflightEveryMs?: number };
   /** The install seam, injectable so a keeper never installs, spawns or reads GitHub. Default: the real machine. */
   local?: Partial<LocalEngineDeps>;
 }
@@ -73,6 +94,15 @@ export interface CrucibleContext {
     last(): KeyMigrationOutcome | null;
   };
   pairingHost: PairingFileHost;
+  ledger: InFlightLedger;
+  lanes: CrucibleLanes;
+  /**
+   * Give back every hold the ledger lists (what a kill left behind), under the
+   * startup deadline. GPU admission waits for it; call it once, at boot.
+   */
+  sweepAtStartup(): Promise<SweepReport>;
+  /** Quit: abort the running jobs, let them unwind ~2 s, sweep the ledger; 30 s in all. Never throws. */
+  quit(): Promise<SweepReport>;
   /** Begin the background loops. Never awaited. */
   start(): void;
   /** End them (quit). */
@@ -109,7 +139,21 @@ export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContex
   const connect = new CrucibleConnect(factory, servers, probes, pairingHost, deps.clipboard);
   const autoConnect = new CrucibleAutoConnect(servers, factory, pairingHost);
   const settings = new CrucibleSettingsBridge(factory);
-  const transport = new CrucibleTransport({ servers, factory, probes } satisfies TransportHost, deps.leaseTimings ?? {});
+  // The choice the lanes and the door read: the registry's own, or a CLI's `--server` over it.
+  const override = deps.serverOverride;
+  const choice = override === undefined ? servers : {
+    names: () => servers.names(),
+    routingView: () => servers.routingView(),
+    fastServer: () => servers.fastServer(),
+    onChange: (listener: Parameters<CrucibleServers['onChange']>[0]) => servers.onChange(listener),
+    selected: (): string => {
+      if (!servers.names().includes(override)) {
+        throw new CrucibleRoutingError('unknown_server', `"${override}" is not a registered Crucible server (registered: ${servers.names().join(', ') || 'none'}).`);
+      }
+      return override;
+    },
+  };
+  const transport = new CrucibleTransport({ servers: choice, factory, probes } satisfies TransportHost, deps.leaseTimings ?? {});
 
   // THE KEY MOVE, once (plan 6.6). Only into the Crucible the pairing file on
   // THIS computer names, never a remote one; repeated at every start (and on
@@ -172,6 +216,20 @@ export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContex
     push.installProgress,
   );
   const readiness = new CrucibleReadiness(servers, probes, local, push.readiness);
+  const ledger = InFlightLedger.inDir(deps.stateDir, (line) => log.warn(`[crucible] ${line}`), deps.ledgerFile);
+  const lanes = new CrucibleLanes({
+    servers: choice,
+    clientFor: (name, options) => factory.clientFor(name, options),
+    reach: async (name) => {
+      const answer = await probes.reach(name);
+      return { reach: answer.reach, message: answer.probe.outcome === 'ok' ? answer.probe.facts.busyLine : answer.probe.message };
+    },
+    ledger,
+    push: push.lanes,
+    ...deps.lanes,
+  });
+  const sweep = (reason: string, deadlineMs: number): Promise<SweepReport> =>
+    sweepCrucibleInFlight({ ledger, clientFor: (name) => factory.clientFor(name) }, { reason, deadlineMs });
 
   return {
     servers,
@@ -185,14 +243,26 @@ export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContex
     transport,
     keys: { migrate: migrateKeys, last: () => lastKeys },
     pairingHost,
+    ledger,
+    lanes,
+    sweepAtStartup() {
+      const swept = sweep('startup: what the last run left behind', STARTUP_SWEEP_DEADLINE_MS);
+      lanes.setAdmissionGate(swept);
+      return swept;
+    },
+    quit() {
+      return lanes.quit((deadlineMs) => sweep('quit', deadlineMs));
+    },
     start() {
       autoConnect.start();
       readiness.start();
+      lanes.start();
       void migrateKeys();
     },
     stop() {
       autoConnect.stop();
       readiness.stop();
+      lanes.stop();
     },
   };
 }

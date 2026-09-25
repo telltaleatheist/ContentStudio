@@ -125,7 +125,7 @@ function scriptedLocal(overrides = {}) {
 function context(options = {}) {
   const { createCrucibleContext } = crucible('context');
   const dir = options.dir ?? tempDir();
-  const pushed = { servers: [], readiness: [], install: [] };
+  const pushed = { servers: [], readiness: [], install: [], lanes: [] };
   const clipboard = [];
   const scripted = options.scripted ?? scriptedLocal();
   if (options.discovered) scripted.local.host.discovered = options.discovered;
@@ -139,8 +139,12 @@ function context(options = {}) {
       serversChanged: (change) => pushed.servers.push(change),
       readiness: (view) => pushed.readiness.push(view),
       installProgress: (event) => pushed.install.push(event),
+      lanes: (view) => pushed.lanes.push(view),
     },
     local: scripted.local,
+    // P3: the lanes' clocks, so a keeper drives the preflight and the stall clock itself.
+    ...(options.lanes === undefined ? {} : { lanes: options.lanes }),
+    ...(options.ledgerFile === undefined ? {} : { ledgerFile: options.ledgerFile }),
   });
   return { ctx, dir, pushed, clipboard, scripted };
 }

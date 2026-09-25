@@ -1,5 +1,6 @@
 import { Injectable, signal, effect } from '@angular/core';
 import { InputItem } from './inputs-state';
+import type { ResumeStage } from '../features/crucible/crucible.types';
 
 export type ItemStatus = 'pending' | 'transcribing' | 'transcribed' | 'generating' | 'completed' | 'failed';
 
@@ -19,7 +20,25 @@ export interface QueuedJob {
   // 'held' = transcribed and the prompt is assembled, waiting for the user to send
   // it to the AI (the "Transcribe only" two-stage flow). The backend holds the
   // transcript so sending reuses it without re-transcribing.
-  status: 'pending' | 'processing' | 'completed' | 'failed' | 'held';
+  // 'parked' = its Crucible server is busy, paused or not there, and it WAITS for that
+  // server (LEDGER #205: never moved to another). It starts again by itself when main's
+  // preflight says the holder has gone (CRUCIBLE-MIGRATION-PLAN.md section 13.2).
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'held' | 'parked';
+  /**
+   * Pinned "fast": runs on the fast server (Settings › Crucible Servers), and only there.
+   * The pin is the only way work reaches the PC (LEDGER #195, #205).
+   */
+  fast: boolean;
+  /** The server this job ran on, or waits for; null before it was first placed. */
+  venue?: string | null;
+  /** Why it is parked, in the holder's words ("GPU busy: foundry, tts 62% done"). */
+  parkedLine?: string;
+  /** Where it picks up when it runs again: a parked job skips what it already did. */
+  resumeFrom?: ResumeStage;
+  /** Parked while being SENT from 'held': main still holds its transcript, so it resumes by sending. */
+  resumeHeld?: boolean;
+  /** Parked from a "Transcribe only" run: it resumes as one, stopping with the prompt held. */
+  resumeShowPrompt?: boolean;
   createdAt: Date;
   completedAt?: Date;
   progress: number;
@@ -66,6 +85,8 @@ export class JobQueueService {
           // their transcript lived only in the (now-restarted) main process, so the
           // prompt can't be sent anymore — they must be re-transcribed.
           chapterGrain: job.chapterGrain ?? 'broad',
+          // A row saved before the fast pin existed was never pinned.
+          fast: job.fast ?? false,
           status: (job.status === 'processing' || job.status === 'held') ? 'pending' as const : job.status,
           currentlyProcessing: (job.status === 'processing' || job.status === 'held') ? '' : job.currentlyProcessing,
           heldPrompt: job.status === 'held' ? undefined : job.heldPrompt
@@ -77,7 +98,7 @@ export class JobQueueService {
     }
   }
 
-  addJob(name: string, inputs: InputItem[], promptSet: string, mode: 'individual' | 'compilation', chapterGrain: 'detailed' | 'broad' | 'stories'): string {
+  addJob(name: string, inputs: InputItem[], promptSet: string, mode: 'individual' | 'compilation', chapterGrain: 'detailed' | 'broad' | 'stories', fast: boolean): string {
     const jobId = `job-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const newJob: QueuedJob = {
       id: jobId,
@@ -86,6 +107,7 @@ export class JobQueueService {
       promptSet,
       mode,
       chapterGrain,
+      fast,
       status: 'pending',
       createdAt: new Date(),
       progress: 0,
@@ -133,6 +155,15 @@ export class JobQueueService {
 
   getHeldJobs(): QueuedJob[] {
     return this.jobs().filter(job => job.status === 'held');
+  }
+
+  /** Rows the queue may start (in order): the run's target status, and every parked row. */
+  getStartableJobs(target: 'pending' | 'held'): QueuedJob[] {
+    return this.jobs().filter(job => job.status === target || job.status === 'parked');
+  }
+
+  hasParkedJob(): boolean {
+    return this.jobs().some(job => job.status === 'parked');
   }
 
   getNextHeldJob(): QueuedJob | undefined {

@@ -49,7 +49,8 @@ import { PreparedChannelInsights, resolveGuidelinesBlock } from '../analytics/in
 const GUIDELINES_NUM_PREDICT = 2048;
 import { JobCancelledError } from './cancellation';
 import type { TranscriptRef } from '../publish/publish-types';
-import { queueAITask } from '../queue-manager.service';
+import { gpuCall, queueAITask } from '../queue-manager.service';
+import { beatJob, setJobStage } from '../../crucible/lanes';
 import * as log from 'electron-log';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -882,8 +883,8 @@ export class MetadataGeneratorService {
    * Is this error the run stopping because the user cancelled it?
    *
    * The error itself is only half the answer. An aborted provider call surfaces as that
-   * client's own transport error, and the AI queue re-wraps every rejection as a plain
-   * Error (queue-manager.service.ts), so the type and message do not survive the trip.
+   * client's own transport error, and makeRequest re-wraps every rejection as a plain
+   * Error (ai-manager.service.ts), so the type and message do not survive the trip.
    * What does survive is the fact that cancellation was requested — and once it has been,
    * whatever the run threw on the way down IS the cancellation.
    */
@@ -947,6 +948,8 @@ export class MetadataGeneratorService {
     /** The digest form of this item's published chapters, for the calls that CHOOSE to read them. */
     digestChapters?: DigestChapter[]
   ): Promise<MetadataTaskRun> {
+    // A job that parks from here on resumes past its chapters (plan section 13.2).
+    setJobStage('fields');
     const subjects = chapterSubjects || [];
     const hasChapters = subjects.length > 0;
 
@@ -1196,6 +1199,8 @@ export class MetadataGeneratorService {
     lifecycle: JobModelLifecycle,
     sink?: { [sourceLabel: string]: ChapterPipelineResult }
   ): Promise<ChapterOutcome> {
+    // Past transcription: a job that parks from here resumes from its saved transcript.
+    setJobStage('chapters');
     const sourceLabel = item.source || `item_${itemIndex + 1}`;
 
     if (!item.srtSegments || item.srtSegments.length === 0) {
@@ -1386,8 +1391,9 @@ export class MetadataGeneratorService {
     // Ollama loading a model or thrashing KV cache has been clocked here at 516 silent
     // seconds — but only this code knows that, so it says so.
     //
-    // A SIGNAL and nothing more: nothing is killed, retried or rerouted. The 4-hour task
-    // timeout below remains the only thing that ends a genuinely wedged run.
+    // A SIGNAL and nothing more: nothing is killed, retried or rerouted. What ends a genuinely
+    // wedged run is the job's stall clock (electron/crucible/stream-stall.ts), which this
+    // notice deliberately does NOT feed: only reportProgress below, a real step done, beats it.
     const STALL_NOTICE_MS = 60_000;
     let stallTimer: NodeJS.Timeout | undefined;
     // Latched by the final disarm. Without it, the watchdog case re-arms the timer: the
@@ -1433,6 +1439,8 @@ export class MetadataGeneratorService {
       const [from, to] = stageWeights[stage];
       const percent = Math.round(from + ((to - from) * done) / Math.max(1, total));
       lastProgress = { stage, percent, at: Date.now() };
+      // A step of the chapter pipeline finished: a sign of life for the job's stall clock.
+      beatJob();
       armStallNotice();
       params.progressCallback?.(
         'generating',
@@ -1487,11 +1495,6 @@ export class MetadataGeneratorService {
 
     log.info(`[MetadataGenerator] Chaptering starting for ${label} on ${model}`);
 
-    // The AI pool's default 30-minute watchdog is sized for ONE stalled request. A long
-    // livestream is a few dozen requests in a row on a big model, and on slower hardware
-    // that legitimately outruns the default. 4 hours still backstops a genuinely wedged run.
-    const CHAPTER_TASK_TIMEOUT_MS = 4 * 60 * 60 * 1000;
-
     try {
       // On the CLOUD transport the pipeline must not hold the AI queue slot: every one of
       // its calls goes through aiManager.makeRequest, which takes that single slot ITSELF
@@ -1504,17 +1507,19 @@ export class MetadataGeneratorService {
         armStallNotice();
         return await chapterer.generate(item.srtSegments!);
       }
+      // The whole local chapter run holds its server's GPU slot, as it held the old 1-slot
+      // pool. It has no wall-clock cap any more (it had 4 hours): the job's stall clock ends
+      // it after 10 minutes with no step finished, and never for being long (plan section 13.5).
       return await queueAITask(
+        gpuCall(model),
         `chapters-${params.jobId || 'job'}-${itemIndex}`,
         `Chapters: ${label}`,
         () => {
-          // Armed only once the run actually starts. Time spent waiting for the AI
-          // queue slot is not a stall, and the UI already says the job is queued.
+          // Armed only once the run actually starts. Time spent waiting for the GPU
+          // slot is not a stall, and the UI already says the job is queued.
           armStallNotice();
           return chapterer.generate(item.srtSegments!);
-        },
-        undefined,
-        CHAPTER_TASK_TIMEOUT_MS
+        }
       );
     } finally {
       // Completion, failure, cancellation and the queue watchdog force-failing the task

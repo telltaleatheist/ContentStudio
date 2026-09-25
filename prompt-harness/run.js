@@ -27,10 +27,9 @@
  *
  * PREREQ:
  *   npm run build:electron        # once, and after any change under electron/
- *   --units none only prints prompts. Running units needs the Crucible transport, which this
- *   harness does not install yet (plan 20: it is to drive the compiled transport against a
- *   named server, as scripts/generate-metadata-cli.js does since P2); a run that reaches a
- *   model call without it is refused by name.
+ *   a Crucible server registered and selected in the app, with the routed models on it
+ *   (--units none only prints prompts). The harness drives the app's own compiled transport
+ *   over the app's registry (openCliLanes installs both, P2/P3).
  */
 
 const path = require('path');
@@ -49,6 +48,9 @@ Module._resolveFilename = function (request, ...rest) {
   if (request === 'electron' || request === 'electron-log') return require.resolve(STUB);
   return originalResolve.call(this, request, ...rest);
 };
+
+/** This process's lanes (electron/crucible/cli-lanes.ts), opened at the top of main(). */
+let cli = null;
 
 function fail(msg) {
   console.error(`\n✖ ${msg}\n`);
@@ -126,6 +128,14 @@ async function main() {
     fail(`Compiled main process not found at ${DIST}\n  Build it first:  npm run build:electron`);
   }
   const args = parseArgs(process.argv.slice(2));
+
+  // The lanes every local model call runs on (electron/crucible/lanes.ts), over the app's own
+  // registry and routing record in the real userData (the electron stub's /tmp is not where the
+  // app keeps them), with this process's own in-flight ledger. Ctrl-C (SIGINT) and SIGTERM
+  // cancel this run's Crucible jobs and release its leases, then exit 130/143 (plan section 0a).
+  const { USER_DATA } = require(path.join(REPO_ROOT, 'scripts', '_electron-shim-real-userdata.js'));
+  const { openCliLanes } = require(path.join(DIST, 'crucible/cli-lanes.js'));
+  cli = openCliLanes({ stateDir: USER_DATA, tool: 'prompt-harness' });
 
   const { AIManagerService } = require(path.join(DIST, 'services/metadata/ai-manager.service.js'));
   const tasks = require(path.join(DIST, 'services/metadata/metadata-tasks.js'));
@@ -292,8 +302,14 @@ async function main() {
   if (args.out) fs.writeFileSync(args.out, JSON.stringify(payload, null, 2));
   console.log(`\nFull output saved: ${path.relative(process.cwd(), path.join(outDir, `run-${stamp}.json`))}\n`);
 
-  // The compiled services keep handles open (queue manager timers); force a clean exit.
+  // Nothing should be held by now; close() gives back anything that is and removes this
+  // process's ledger file. Then force a clean exit (the compiled services keep handles open).
+  await cli.close();
   process.exit(0);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch(async (e) => {
+  console.error(e);
+  if (cli) await cli.close();
+  process.exit(1);
+});

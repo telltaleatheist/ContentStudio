@@ -94,6 +94,9 @@ const yaml = require(path.join(REPO_ROOT, 'node_modules', 'js-yaml'));
 // process.cwd(), so the CLI works from any directory.
 process.env.CONTENTSTUDIO_PROJECT_ROOT = REPO_ROOT;
 
+/** This process's lanes (electron/crucible/cli-lanes.ts), opened at the top of main(). */
+let cli = null;
+
 function fail(msg) {
   console.error(`\n✖ ${msg}\n`);
   process.exit(1);
@@ -355,6 +358,13 @@ async function main() {
   if (!fs.existsSync(args.input)) fail(`Input not found: ${args.input}`);
   if (!fs.existsSync(args.assets)) fail(`Prompt assets not found: ${args.assets}`);
 
+  // The lanes every local model call runs on (electron/crucible/lanes.ts), over the app's own
+  // registry and routing record, with this process's own in-flight ledger. Ctrl-C (SIGINT) and
+  // SIGTERM cancel this run's Crucible jobs and release its leases, then exit 130/143
+  // (CRUCIBLE-MIGRATION-PLAN.md sections 0a, 13.4).
+  const { openCliLanes } = require(path.join(DIST, 'crucible/cli-lanes.js'));
+  cli = openCliLanes({ stateDir: USER_DATA, tool: 'generate-metadata-cli', ...(args.server === undefined ? {} : { server: args.server }) });
+
   // ---- the app's real settings, read the way the app reads them ------------------------
   const Store = require('electron-store');
   const store = new Store({});
@@ -372,15 +382,11 @@ async function main() {
 
   // ---- Crucible: the app's registry, the app's transport ------------------------------
   //
-  // Built exactly as main.ts builds it (createCrucibleContext over userData), with the two
-  // things a CLI must not do left out: no background loops (auto-connect, readiness) and no
-  // api-keys.json move (that is the app's, once, plan 6.6). The server is the app's selected
-  // one, or `--server`, read through a view of the registry that never writes the choice.
-  const { createCrucibleContext } = require(path.join(DIST, 'crucible/context.js'));
-  const { CrucibleTransport, installCrucibleTransport } = require(path.join(DIST, 'crucible/transport.js'));
-  const { releaseAllCrucibleLeases } = require(path.join(DIST, 'crucible/lease.js'));
-  const crucibleContext = createCrucibleContext({ stateDir: USER_DATA, clipboard: () => {} });
-  const registered = crucibleContext.servers.names();
+  // openCliLanes above built the app's own context over userData and installed its lanes and
+  // its one door (the transport), with the two things a CLI must not do left out: no background
+  // loops and no api-keys.json move (that is the app's, once, plan 6.6). The run goes to the
+  // server the app has selected, or `--server`, which never writes the choice.
+  const registered = cli.context.servers.names();
   if (registered.length === 0) {
     fail(`No Crucible server is registered in ${USER_DATA}. Start the app once (it adopts the Crucible on this ` +
       `computer), or add one in Settings › Crucible Servers.`);
@@ -388,21 +394,8 @@ async function main() {
   if (args.server !== undefined && !registered.includes(args.server)) {
     fail(`--server "${args.server}" is not a registered Crucible server. Registered: ${registered.join(', ')}`);
   }
-  const runServer = args.server ?? crucibleContext.servers.selected();
-  const transport = new CrucibleTransport({
-    servers: { selected: () => runServer, routingView: () => crucibleContext.servers.routingView() },
-    factory: crucibleContext.factory,
-    probes: crucibleContext.probes,
-  });
-  installCrucibleTransport(transport);
-  // Plan 0a: a Ctrl-C that leaves a lease held leaves the card stuck for everyone until the
-  // ttl. Every lease this run holds is handed back first, then the process exits as a signal.
-  for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
-    process.once(signal, () => {
-      console.error(`\n  ${signal}: releasing this run's Crucible leases before exiting`);
-      releaseAllCrucibleLeases().finally(() => process.exit(code));
-    });
-  }
+  const runServer = args.server ?? cli.context.servers.selected();
+  const transport = cli.context.transport;
 
   // ---- --claude-cli: the fourth deliberate override, printed loudly below --------------
   //
@@ -709,6 +702,9 @@ async function main() {
     insights: insights || undefined,
     preTranscribedContent: contentItems,
     progressCallback,
+    // Aborted by Ctrl-C/SIGTERM, so the call in flight stops rather than finishing unwatched.
+    cancelSignal: cli.signal,
+    cancelCallback: () => cli.signal.aborted,
   };
 
   // ---- STAGE 2: the chapters --------------------------------------------------------------
@@ -815,11 +811,13 @@ async function main() {
     console.error(`${bar}\nSHOW PROMPTS (--show-prompts): ${written.length} prompt(s) written, NO model was called.\n`);
     for (const f of written) console.error(`  ${f}`);
     console.error(`${bar}\n`);
+    await cli.close();
     process.exit(0);
   }
 
   if (chaptersOnly) {
     console.error(`${bar}\nCHAPTERS ONLY (--chapters with no field flag): nothing was generated and no report was written.\n${bar}\n`);
+    await cli.close();
     process.exit(0);
   }
 
@@ -879,7 +877,9 @@ async function main() {
     console.error(`  written: ${args.out}\n`);
   }
 
-  // The compiled services keep handles open (queue-manager timers); force a clean exit.
+  // Nothing should be held by now; close() gives back anything that is and removes this
+  // process's ledger file. Then force a clean exit (the compiled services keep handles open).
+  await cli.close();
   process.exit(0);
 }
 
@@ -913,4 +913,8 @@ function granularityNotes(selected) {
   return notes;
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch(async (e) => {
+  console.error(e);
+  if (cli) await cli.close();
+  process.exit(1);
+});

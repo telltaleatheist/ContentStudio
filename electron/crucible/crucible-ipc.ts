@@ -15,8 +15,8 @@
  * because Electron would flatten it to a string the renderer would have to
  * parse (Law 10).
  *
- * Pushes, to every window: `crucible:servers-changed`, `crucible:readiness`
- * and `crucible:install-progress`. They are wired in main.ts through the
+ * Pushes, to every window: `crucible:servers-changed`, `crucible:readiness`,
+ * `crucible:install-progress` and `crucible:lanes` (the inputs page's strip). They are wired in main.ts through the
  * context's `push` deps; this block only registers the request channels.
  */
 import { ipcMain } from 'electron';
@@ -27,7 +27,7 @@ import { discoveredRow } from './discovery';
 import { CrucibleConnectError, CrucibleRegistryError, CrucibleRoutingError, CrucibleSettingsError } from './errors';
 import { CrucibleInstallError, installRefusalOf } from './install';
 import { failureOutcome } from './probe';
-import type { AddServerRequest, CrucibleIpcResult, CrucibleSettingsPatch } from './wire';
+import type { AddServerRequest, CrucibleIpcResult, CrucibleSettingsPatch, QueuePlanCandidate } from './wire';
 
 function ok<T>(data: T): CrucibleIpcResult<T> {
   return { success: true, data };
@@ -72,7 +72,7 @@ export function setupCrucibleIpc(context: CrucibleContext): void {
   if (!context || typeof context.servers?.list !== 'function') {
     throw new Error('setupCrucibleIpc requires a CrucibleContext.');
   }
-  const { servers, probes, connect, settings, local, readiness, pairingHost } = context;
+  const { servers, probes, connect, settings, local, readiness, pairingHost, lanes } = context;
 
   // ── the list ────────────────────────────────────────────────────────────
 
@@ -184,6 +184,22 @@ export function setupCrucibleIpc(context: CrucibleContext): void {
   ipcMain.handle('crucible:readiness-decline', () => guard('readiness-decline', () => readiness.decline()));
   /** The Start door: the ONE way the app starts the Crucible on this computer, so readiness says `starting` while it does. */
   ipcMain.handle('crucible:readiness-start', () => guard('readiness-start', () => readiness.startLocal()));
+
+  // ── the queue (P3) ──────────────────────────────────────────────────────
+
+  /** The lanes strip: one chip per server. */
+  ipcMain.handle('crucible:lanes', () => guard('lanes', () => lanes.view()));
+
+  /**
+   * Which queue rows start now, which wait and why (plan section 13.2). Main
+   * decides; the renderer runs what it is told. Waits for the startup sweep.
+   */
+  ipcMain.handle('crucible:queue-plan', (_event, candidates: unknown) => guard('queue-plan', () => {
+    if (!Array.isArray(candidates) || !candidates.every((row) => typeof row?.jobId === 'string' && typeof row?.fast === 'boolean')) {
+      throw new CrucibleRoutingError('invalid_choice', 'A queue plan needs the rows as {jobId, fast} in queue order.');
+    }
+    return lanes.plan(candidates as QueuePlanCandidate[]);
+  }));
 
   log.info('[crucible] IPC handlers registered');
 }

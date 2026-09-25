@@ -90,6 +90,8 @@ import { getMainWindow } from '../main';
 import { setupCrucibleIpc } from '../crucible/crucible-ipc';
 import type { CrucibleContext } from '../crucible/context';
 import { catalogInventory } from '../crucible/catalog';
+import type { LaneRun } from '../crucible/lanes';
+import type { ResumeStage } from '../crucible/wire';
 
 /**
  * Analytics services created in main.ts at startup and shared with the IPC layer.
@@ -600,20 +602,24 @@ function sendToRenderer(channel: string, payload: any): void {
   }
 }
 
-// ==================== TWO-PHASE PIPELINE ====================
-// Phase 1: Transcription pool — up to 5 concurrent (WhisperService supports concurrent jobs)
-// Phase 2: AI generation queue — 1 at a time, sequential (protects AI API rate limits)
+// ==================== THE PIPELINE, ON ITS LANE ====================
+// One job is transcription, then generation, run start to finish inside its Crucible server's
+// lane (electron/crucible/lanes.ts; CRUCIBLE-MIGRATION-PLAN.md section 13). This used to be two
+// queues: a 5-slot transcription pool and a 1-at-a-time AI generation queue shared by every job.
+// Both are gone. A job is admitted to ONE server (its fast pin's or the selected one, never
+// another: LEDGER #205), runs there alone, and the Mac's job and the PC's run side by side. The
+// renderer asks main which rows to start (`crucible:queue-plan`) and main answers at most one per
+// server, so what used to be the global queue is now the lanes.
 
 interface PipelineJob {
   jobId: string;
   metadataParams: any;
   progressCallback: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => void;
   contentItems?: ContentItem[];
-  resolve: (value: any) => void;
-  reject: (error: any) => void;
   cancelled: boolean;
   /**
-   * Fired by cancel(), alongside the `cancelled` flag.
+   * Fired by cancel(), alongside the `cancelled` flag — and by the lane, when the job parks,
+   * stalls or the app quits (the lane owns the same controller).
    *
    * The flag is polled — it can only be read BETWEEN stages, which is no help at all
    * during the one long model call a cancel is most likely to arrive in the middle of.
@@ -621,20 +627,19 @@ interface PipelineJob {
    * instead of running to completion and being billed.
    */
   abortController: AbortController;
+  /** The lane this job was admitted to: its stall clock's beat. */
+  run: LaneRun;
 }
 
-interface AiGenerationJob {
-  jobId: string;
-  execute: () => Promise<any>;
-  resolve: (value: any) => void;
-  reject: (error: any) => void;
+/**
+ * Did the LANE end this job (a park, a stall, quit) rather than the user or the job itself?
+ * Then the pipeline sends no terminal progress event of its own: the answer is the lane's
+ * (a typed `parked` result, or the stall's sentence), and a "cancelled" 'error' event sent
+ * first would have the renderer mark the row failed with the wrong reason.
+ */
+function endedByLane(job: PipelineJob): boolean {
+  return job.abortController.signal.aborted && !job.cancelled;
 }
-
-const MAX_CONCURRENT_TRANSCRIPTIONS = 5;
-let activeTranscriptions = 0;
-const transcriptionQueue: PipelineJob[] = [];
-const aiGenerationQueue: AiGenerationJob[] = [];
-let isAiGenerationRunning = false;
 
 // ==================== "SHOW PROMPT" HELD TRANSCRIPTS ====================
 // When a job runs with showPrompt=true we transcribe + assemble the prompt but STOP
@@ -656,35 +661,12 @@ const heldTranscripts = new Map<string, {
   computedChapters?: { [sourceLabel: string]: any };
 }>();
 
-function enqueuePipelineJob(job: PipelineJob): void {
-  const queuePosition = transcriptionQueue.length + activeTranscriptions;
-  log.info(`[Pipeline] Enqueueing job: ${job.jobId} (${queuePosition} jobs ahead)`);
-  transcriptionQueue.push(job);
-  processTranscriptionQueue();
-}
-
-function processTranscriptionQueue(): void {
-  while (activeTranscriptions < MAX_CONCURRENT_TRANSCRIPTIONS && transcriptionQueue.length > 0) {
-    const job = transcriptionQueue.shift()!;
-
-    if (job.cancelled) {
-      job.resolve({ success: false, error: 'Job cancelled by user' });
-      continue;
-    }
-
-    activeTranscriptions++;
-    log.info(`[Pipeline] Starting transcription for job: ${job.jobId} (${activeTranscriptions} active, ${transcriptionQueue.length} queued)`);
-
-    // Run transcription in background (don't await — allows multiple to run concurrently)
-    runTranscription(job).finally(() => {
-      activeTranscriptions--;
-      log.info(`[Pipeline] Transcription finished for job: ${job.jobId} (${activeTranscriptions} active)`);
-      processTranscriptionQueue();
-    });
-  }
-}
-
-async function runTranscription(job: PipelineJob): Promise<void> {
+/**
+ * Transcribe a job's inputs, then generate its metadata. Answers the job's result; throws only
+ * when generation itself throws. Runs inside the job's lane (generate-metadata below).
+ */
+async function runPipeline(job: PipelineJob): Promise<any> {
+  const inputFailures: string[] = [];
   try {
     const { WhisperService } = require('../services/metadata/whisper.service');
     const { InputHandlerService } = require('../services/metadata/input-handler.service');
@@ -720,6 +702,8 @@ async function runTranscription(job: PipelineJob): Promise<void> {
     // Set up whisper progress forwarding
     whisperService.on('progress', (progress: any) => {
       if (job.cancelled) return;
+      // Transcription progress is a sign of life for the job's stall clock (plan section 13.5).
+      job.run.beat();
       if (job.progressCallback && progress.videoPath) {
         const filename = progress.videoPath.split('/').pop() || progress.videoPath;
         let itemIndex: number | undefined = undefined;
@@ -768,13 +752,11 @@ async function runTranscription(job: PipelineJob): Promise<void> {
       useSavedTranscriptMap.set(inputPath, true);
     }
 
-    const inputFailures: string[] = [];
     const contentItems = await inputHandler.processMultipleInputs(
       normalizedInputs, customNotesMap, inputFailures, transcriptLinkMap, useSavedTranscriptMap);
 
-    if (job.cancelled) {
-      job.resolve({ success: false, error: 'Job cancelled by user' });
-      return;
+    if (job.cancelled || endedByLane(job)) {
+      return { success: false, error: 'Job cancelled by user' };
     }
 
     if (contentItems.length === 0) {
@@ -786,173 +768,131 @@ async function runTranscription(job: PipelineJob): Promise<void> {
         message: errorMessage,
         jobId: job.jobId
       });
-      job.resolve({ success: false, error: errorMessage });
-      return;
+      return { success: false, error: errorMessage };
     }
 
-    // Store content items and move to AI generation queue
     job.contentItems = contentItems;
-
-    // Send queued status if AI generation is busy
-    if (isAiGenerationRunning || aiGenerationQueue.length > 0) {
-      sendToRenderer('generation-progress', {
-        phase: 'queued',
-        message: 'Waiting for AI generation...',
-        jobId: job.jobId
-      });
-    }
-
-    // Enqueue AI generation for this job
-    enqueueAiGenerationJob(job.jobId, async () => {
-      if (job.cancelled) {
-        return { success: false, error: 'Job cancelled by user' };
-      }
-
-      const { MetadataGeneratorService } = require('../services/metadata/metadata-generator.service');
-
-      const paramsWithCallback = {
-        ...job.metadataParams,
-        preTranscribedContent: job.contentItems,
-        inputWarnings: inputFailures,
-        progressCallback: job.progressCallback,
-        cancelCallback: () => job.cancelled,
-        cancelSignal: job.abortController.signal
-      };
-
-      const jobResult = await MetadataGeneratorService.generate(paramsWithCallback);
-
-      // "Show prompt" flow: the transcript is done and the prompt is assembled, but
-      // NO metadata call happened. Hold the transcript so "Send to AI" can reuse it,
-      // and do NOT emit a terminal 'complete' — the frontend keys off the RESOLVED
-      // value here, not a progress event. On failure we still surface a terminal
-      // 'error' as usual. Warnings are forwarded because chapters DO run in this flow
-      // now, so "chapters failed, the prompt you are reading has no chapter subjects"
-      // has to reach the user while they are still deciding whether to send it.
-      if (job.metadataParams.showPrompt) {
-        if (jobResult.success) {
-          heldTranscripts.set(job.jobId, {
-            contentItems: job.contentItems!,
-            metadataParams: job.metadataParams,
-            computedChapters: jobResult.computedChapters,
-          });
-          return {
-            success: true,
-            prompts: jobResult.prompts,
-            jobId: job.jobId,
-            held: true,
-            warnings: jobResult.warnings,
-          };
-        }
-        sendToRenderer('generation-progress', {
-          phase: 'error',
-          message: jobResult.error || 'Unknown error'
-        });
-        return jobResult;
-      }
-
-      if (jobResult.success) {
-        sendToRenderer('generation-progress', {
-          phase: 'complete',
-          message: 'Metadata generation complete!'
-        });
-      } else {
-        sendToRenderer('generation-progress', {
-          phase: 'error',
-          message: jobResult.error || 'Unknown error'
-        });
-      }
-
-      return jobResult;
-    }).then(result => {
-      job.resolve(result);
-    }).catch(error => {
-      // Generation THREW (rather than returning success:false) — emit a terminal error
-      // event so progress-stream UIs don't hang on "generating".
+  } catch (error) {
+    log.error(`[Pipeline] Transcription failed for job ${job.jobId}:`, error);
+    if (!endedByLane(job)) {
       sendToRenderer('generation-progress', {
         phase: 'error',
         message: error instanceof Error ? error.message : String(error),
         jobId: job.jobId
       });
-      job.reject(error);
-    });
-
-  } catch (error) {
-    log.error(`[Pipeline] Transcription failed for job ${job.jobId}:`, error);
-    sendToRenderer('generation-progress', {
-      phase: 'error',
-      message: error instanceof Error ? error.message : String(error),
-      jobId: job.jobId
-    });
-    job.resolve({ success: false, error: error instanceof Error ? error.message : String(error) });
-  }
-}
-
-function enqueueAiGenerationJob(jobId: string, execute: () => Promise<any>): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const queuePosition = aiGenerationQueue.length + (isAiGenerationRunning ? 1 : 0);
-    log.info(`[AiQueue] Enqueueing AI job: ${jobId} (position ${queuePosition})`);
-
-    aiGenerationQueue.push({ jobId, execute, resolve, reject });
-
-    // Send queue position to frontend for non-pipeline jobs
-    if (queuePosition > 0) {
-      sendToRenderer('generation-progress', {
-        phase: 'queued',
-        message: `Queued (position ${queuePosition})`,
-        jobId
-      });
     }
-
-    processAiGenerationQueue();
-  });
-}
-
-async function processAiGenerationQueue(): Promise<void> {
-  if (isAiGenerationRunning || aiGenerationQueue.length === 0) {
-    return;
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
-
-  isAiGenerationRunning = true;
-  const job = aiGenerationQueue.shift()!;
-
-  log.info(`[AiQueue] Starting AI job: ${job.jobId} (${aiGenerationQueue.length} remaining)`);
 
   try {
-    const result = await job.execute();
-    job.resolve(result);
+    const { MetadataGeneratorService } = require('../services/metadata/metadata-generator.service');
 
-    // THE completion site both generation entry points share. 'generate-metadata' reaches
-    // here through runTranscription and 'send-held-prompt' enqueues onto this same queue,
-    // so hooking here is one hook rather than two that could drift; and it is AFTER
-    // job.resolve, so the record-creation pass cannot delay the answer the renderer is
-    // waiting on.
-    //
-    // `json_file` is the positive evidence that a report was written. A show-prompt run
-    // returns success with prompts and no report — there are no items on disk to give
-    // publish records to — and a failed run wrote nothing either. Both are announced
-    // rather than passed over quietly.
-    if (result && result.success === true && typeof result.json_file === 'string') {
-      void attachPublishRecordsForJob(job.jobId).catch((error) => {
-        log.error(
-          `[Publish] could not create publish records for job ${job.jobId}: ` +
-          `${error instanceof Error ? error.message : String(error)}`
-        );
-      });
-    } else {
-      log.info(
-        `[Publish] job ${job.jobId} wrote no metadata report (${
-          result && result.success === true ? 'show-prompt run — nothing generated yet' : 'the run did not succeed'
-        }), so no publish records were created for it.`
-      );
+    const paramsWithCallback = {
+      ...job.metadataParams,
+      preTranscribedContent: job.contentItems,
+      inputWarnings: inputFailures,
+      progressCallback: job.progressCallback,
+      cancelCallback: () => job.cancelled,
+      cancelSignal: job.abortController.signal
+    };
+
+    const jobResult = await MetadataGeneratorService.generate(paramsWithCallback);
+
+    // "Show prompt" flow: the transcript is done and the prompt is assembled, but
+    // NO metadata call happened. Hold the transcript so "Send to AI" can reuse it,
+    // and do NOT emit a terminal 'complete' — the frontend keys off the RESOLVED
+    // value here, not a progress event. On failure we still surface a terminal
+    // 'error' as usual. Warnings are forwarded because chapters DO run in this flow
+    // now, so "chapters failed, the prompt you are reading has no chapter subjects"
+    // has to reach the user while they are still deciding whether to send it.
+    if (job.metadataParams.showPrompt) {
+      if (jobResult.success) {
+        heldTranscripts.set(job.jobId, {
+          contentItems: job.contentItems!,
+          metadataParams: job.metadataParams,
+          computedChapters: jobResult.computedChapters,
+        });
+        return {
+          success: true,
+          prompts: jobResult.prompts,
+          jobId: job.jobId,
+          held: true,
+          warnings: jobResult.warnings,
+        };
+      }
+      if (!endedByLane(job)) {
+        sendToRenderer('generation-progress', {
+          phase: 'error',
+          message: jobResult.error || 'Unknown error',
+          jobId: job.jobId
+        });
+      }
+      return jobResult;
     }
+
+    if (!endedByLane(job)) {
+      sendToRenderer('generation-progress', jobResult.success
+        ? { phase: 'complete', message: 'Metadata generation complete!', jobId: job.jobId }
+        : { phase: 'error', message: jobResult.error || 'Unknown error', jobId: job.jobId });
+    }
+    afterGeneration(job.jobId, jobResult);
+    return jobResult;
   } catch (error) {
-    log.error(`[AiQueue] AI job ${job.jobId} failed:`, error);
-    job.reject(error);
-  } finally {
-    isAiGenerationRunning = false;
-    log.info(`[AiQueue] AI job ${job.jobId} completed`);
-    processAiGenerationQueue();
+    // Generation THREW (rather than returning success:false) — emit a terminal error
+    // event so progress-stream UIs don't hang on "generating".
+    if (!endedByLane(job)) {
+      sendToRenderer('generation-progress', {
+        phase: 'error',
+        message: error instanceof Error ? error.message : String(error),
+        jobId: job.jobId
+      });
+    }
+    throw error;
   }
+}
+
+/**
+ * THE completion site both generation entry points share: 'generate-metadata' (runPipeline)
+ * and 'send-held-prompt'. One hook rather than two that could drift; called AFTER the result
+ * is known and never awaited, so the record-creation pass cannot delay the answer the
+ * renderer is waiting on.
+ *
+ * `json_file` is the positive evidence that a report was written. A show-prompt run
+ * returns success with prompts and no report — there are no items on disk to give
+ * publish records to — and a failed run wrote nothing either. Both are announced
+ * rather than passed over quietly.
+ */
+function afterGeneration(jobId: string, result: any): void {
+  if (result && result.success === true && typeof result.json_file === 'string') {
+    void attachPublishRecordsForJob(jobId).catch((error) => {
+      log.error(
+        `[Publish] could not create publish records for job ${jobId}: ` +
+        `${error instanceof Error ? error.message : String(error)}`
+      );
+    });
+  } else {
+    log.info(
+      `[Publish] job ${jobId} wrote no metadata report (${
+        result && result.success === true ? 'show-prompt run — nothing generated yet' : 'the run did not succeed'
+      }), so no publish records were created for it.`
+    );
+  }
+}
+
+/**
+ * The two job-shaped fields every generation request carries (plan section 13.2). `fast` is
+ * required: a renderer that did not say whether the row is pinned would have its job placed
+ * by a default nobody chose (Law 1). `resumeFrom` absent is the ordinary first run.
+ */
+function laneParams(params: any, firstStage: ResumeStage): { fast: boolean; resumeFrom: ResumeStage } {
+  if (typeof params?.fast !== 'boolean') {
+    throw new Error('A generation request must say whether the row is pinned fast (`fast: true|false`).');
+  }
+  const resumeFrom = params.resumeFrom ?? firstStage;
+  if (resumeFrom !== 'transcribe' && resumeFrom !== 'chapters' && resumeFrom !== 'fields') {
+    throw new Error(`resumeFrom is ${JSON.stringify(params.resumeFrom)}; it is one of transcribe, chapters, fields.`);
+  }
+  return { fast: params.fast, resumeFrom };
 }
 
 /**
@@ -1461,6 +1401,11 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       heldTranscripts.delete(jobId);
 
       const job = runningJobs.get(jobId);
+      if (!job) {
+        // Not running, but it may be PARKED on a server, or holding a lane `crucible:queue-plan`
+        // reserved for it: forget both, so a removed row cannot start later or count on a chip.
+        await analytics.crucible.lanes.stopJob(jobId, 'Removed from the queue');
+      }
       if (job) {
         job.cancel();
         runningJobs.delete(jobId);
@@ -1484,6 +1429,8 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     if (!params || typeof params.jobId !== 'string' || !params.jobId.trim()) {
       throw new Error('generate-metadata requires a non-empty jobId');
     }
+    // Whether the row is pinned fast, and where it resumes (plan section 13.2).
+    const { fast, resumeFrom } = laneParams(params, 'transcribe');
     try {
       log.info('Starting metadata generation with params:', JSON.stringify(params, null, 2));
 
@@ -1616,62 +1563,64 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       // Send progress update
       sendToRenderer('generation-progress', {
         phase: 'starting',
-        message: 'Initializing metadata generation...'
+        message: 'Initializing metadata generation...',
+        jobId: params.jobId
       });
 
-      // Submit to two-phase pipeline (transcription pool → AI generation queue)
-      const result = await new Promise<any>((resolve, reject) => {
-        const progressCallback = (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => {
-          log.info(`[IPC] Progress event: phase=${phase}, message=${message}, percent=${percent}, filename=${filename}, itemIndex=${itemIndex}`);
-          sendToRenderer('generation-progress', {
-            phase,
-            message,
-            percent,
-            ...(filename && { filename }),
-            ...(itemIndex !== undefined && { itemIndex })
-          });
-        };
-
-        const pipelineJob: PipelineJob = {
-          // No `|| 'metadata-job'`. That default was unreachable — the single renderer caller
-          // always sends nextJob.id — and one new caller away from being reachable, at which
-          // point every such job would share one literal id AND skip the cancellation
-          // registration ten lines below, which is guarded on `params.jobId` being truthy.
-          // An uncancellable job whose id collides with every other uncancellable job is not
-          // a default worth having; the guard above makes the absence impossible instead.
+      // Every event carries its job id: the Mac's job and the PC's run at once now, and the
+      // renderer's listener for one row must not read the other's progress.
+      const progressCallback = (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => {
+        log.info(`[IPC] Progress event: job=${params.jobId}, phase=${phase}, message=${message}, percent=${percent}, filename=${filename}, itemIndex=${itemIndex}`);
+        sendToRenderer('generation-progress', {
+          phase,
+          message,
+          percent,
           jobId: params.jobId,
-          metadataParams,
-          progressCallback,
-          resolve,
-          reject,
-          cancelled: false,
-          abortController: new AbortController()
-        };
+          ...(filename && { filename }),
+          ...(itemIndex !== undefined && { itemIndex })
+        });
+      };
 
-        // Store cancellation callback
-        if (params.jobId) {
-          runningJobs.set(params.jobId, {
-            cancel: () => {
-              pipelineJob.cancelled = true;
-              // Aborts whatever provider call is in flight right now. This is the event
-              // the generator needed: nothing polls for it, and nothing waits for the
-              // current stage to end.
-              pipelineJob.abortController.abort();
-              log.info(`[Pipeline] Job ${params.jobId} marked as cancelled`);
-              // Remove from transcription queue if still waiting
-              const tIdx = transcriptionQueue.indexOf(pipelineJob);
-              if (tIdx !== -1) {
-                transcriptionQueue.splice(tIdx, 1);
-                resolve({ success: false, error: 'Job cancelled by user' });
-              }
-            }
-          });
+      // No `|| 'metadata-job'` for the id. That default was unreachable — the single renderer
+      // caller always sends nextJob.id — and one new caller away from being reachable, at which
+      // point every such job would share one literal id AND skip the cancellation registration.
+      // An uncancellable job whose id collides with every other uncancellable job is not a
+      // default worth having; the guard above makes the absence impossible instead.
+      const abortController = new AbortController();
+      let pipelineJob: PipelineJob | null = null;
+      runningJobs.set(params.jobId, {
+        cancel: () => {
+          if (pipelineJob !== null) pipelineJob.cancelled = true;
+          // Aborts whatever provider call is in flight right now (the generator needed an
+          // event, not a flag it polls between stages), and gives back what the job holds on
+          // its Crucible: its open jobs cancelled, its lease released (plan section 13.5).
+          void analytics.crucible.lanes.stopJob(params.jobId, 'Stopped by the user');
+          abortController.abort();
+          log.info(`[Pipeline] Job ${params.jobId} marked as cancelled`);
         }
-
-        enqueuePipelineJob(pipelineJob);
       });
 
-      return result;
+      // Admitted to ONE server's lane — the fast pin's or the selected one — and run there, or
+      // PARKED with that server's reason (LEDGER #195, #205). Waits for the startup sweep.
+      const outcome = await analytics.crucible.lanes.runJob(
+        { jobId: params.jobId, fast, stage: resumeFrom, controller: abortController },
+        (run) => {
+          pipelineJob = {
+            jobId: params.jobId,
+            metadataParams,
+            progressCallback,
+            cancelled: false,
+            abortController,
+            run,
+          };
+          return runPipeline(pipelineJob);
+        }
+      );
+      if (outcome.kind === 'parked') {
+        sendToRenderer('generation-progress', { phase: 'parked', message: outcome.result.holderLine, jobId: params.jobId });
+        return outcome.result;
+      }
+      return outcome.value;
 
     } catch (error) {
       log.error('Error generating metadata:', error);
@@ -1679,14 +1628,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       // when generation rejects rather than returning success:false.
       sendToRenderer('generation-progress', {
         phase: 'error',
-        message: error instanceof Error ? error.message : String(error)
+        message: error instanceof Error ? error.message : String(error),
+        jobId: params.jobId
       });
       throw error;
     } finally {
       // Always release the cancel closure — on rejection too, not just success.
-      if (params.jobId) {
-        runningJobs.delete(params.jobId);
-      }
+      runningJobs.delete(params.jobId);
     }
   });
 
@@ -1694,13 +1642,16 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   // transcript (NO re-transcription) and runs the full metadata + chapters + output
   // generation, wiring progress + a terminal 'complete'/'error' exactly like the
   // normal AI phase so the frontend's existing progress handling finalizes the job.
-  ipcMain.handle('send-held-prompt', async (_event, { jobId }: { jobId: string }) => {
-    const held = heldTranscripts.get(jobId);
+  ipcMain.handle('send-held-prompt', async (_event, request: { jobId: string; fast?: boolean }) => {
+    const jobId = request?.jobId;
+    const held = typeof jobId === 'string' ? heldTranscripts.get(jobId) : undefined;
     if (!held) {
       // No fallback: never silently re-transcribe. Fail loud so the UI can tell the
       // user the transcript is gone and the analysis must be re-run.
       return { success: false, error: `No held transcript for job ${jobId} (it may have expired)` };
     }
+    // The transcript and its chapters are both held: what is left is the fields.
+    const { fast } = laneParams(request, 'fields');
 
     // Same progress forwarding the normal AI phase uses (see generate-metadata).
     const progressCallback = (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => {
@@ -1708,38 +1659,51 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         phase,
         message,
         percent,
+        jobId,
         ...(filename && { filename }),
         ...(itemIndex !== undefined && { itemIndex })
       });
     };
 
+    const abortController = new AbortController();
+    runningJobs.set(jobId, {
+      cancel: () => {
+        void analytics.crucible.lanes.stopJob(jobId, 'Stopped by the user');
+        abortController.abort();
+      }
+    });
     try {
-      // Serialize through the AI generation queue (1-at-a-time) like every other AI run.
-      const result = await enqueueAiGenerationJob(jobId, async () => {
-        const { MetadataGeneratorService } = require('../services/metadata/metadata-generator.service');
+      // On its lane, like every other AI run: one job per server, parked when that server is busy.
+      const outcome = await analytics.crucible.lanes.runJob(
+        { jobId, fast, stage: 'fields', controller: abortController },
+        async () => {
+          const { MetadataGeneratorService } = require('../services/metadata/metadata-generator.service');
 
-        const jobResult = await MetadataGeneratorService.generate({
-          ...held.metadataParams,
-          showPrompt: false,
-          preTranscribedContent: held.contentItems,
-          preComputedChapters: held.computedChapters,
-          progressCallback,
-        });
+          const jobResult = await MetadataGeneratorService.generate({
+            ...held.metadataParams,
+            showPrompt: false,
+            preTranscribedContent: held.contentItems,
+            preComputedChapters: held.computedChapters,
+            progressCallback,
+            cancelSignal: abortController.signal,
+          });
 
-        if (jobResult.success) {
-          sendToRenderer('generation-progress', {
-            phase: 'complete',
-            message: 'Metadata generation complete!'
-          });
-        } else {
-          sendToRenderer('generation-progress', {
-            phase: 'error',
-            message: jobResult.error || 'Unknown error'
-          });
+          // A park or a stall aborted it: the lane's answer is the one the row shows.
+          if (!abortController.signal.aborted) {
+            sendToRenderer('generation-progress', jobResult.success
+              ? { phase: 'complete', message: 'Metadata generation complete!', jobId }
+              : { phase: 'error', message: jobResult.error || 'Unknown error', jobId });
+            afterGeneration(jobId, jobResult);
+          }
+          return jobResult;
         }
-
-        return jobResult;
-      });
+      );
+      // Parked: the held transcript stays, so the row resumes from it without transcribing again.
+      if (outcome.kind === 'parked') {
+        sendToRenderer('generation-progress', { phase: 'parked', message: outcome.result.holderLine, jobId });
+        return outcome.result;
+      }
+      const result = outcome.value;
 
       // Transcript consumed on success — drop it so it can't leak. On failure keep it
       // so the user can retry "Send to AI" without re-transcribing (cleared later by
@@ -1757,6 +1721,8 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         jobId
       });
       return { success: false, error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      runningJobs.delete(jobId);
     }
   });
 

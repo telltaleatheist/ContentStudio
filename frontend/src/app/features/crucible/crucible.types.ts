@@ -408,6 +408,83 @@ export interface CrucibleReadinessView {
   at: string;
 }
 
+// ── the queue: lanes, parking, the fast pin (P3) ─────────────────────────────
+
+/**
+ * Where a job picks up when it runs again after a park or a restart (plan
+ * section 13.2). `transcribe` runs the whole job; past it, the saved-transcript
+ * sidecar lets the job skip ASR. Chapters are not stored between runs, so
+ * `fields` recomputes them as `chapters` does.
+ */
+export type ResumeStage = 'transcribe' | 'chapters' | 'fields';
+
+/**
+ * What `generate-metadata` and `send-held-prompt` answer when the job did not
+ * run to an end because its server is busy, paused, or not there (LEDGER #205:
+ * it waits, it never moves). A typed answer, not a thrown message the renderer
+ * would have to parse (Law 10).
+ */
+export interface ParkedJobResult {
+  status: 'parked';
+  /** The server it waits for; null when nothing is selected or pinned. */
+  server: string | null;
+  /** The holder's sentence ("GPU busy: foundry, tts 62% done"), or the venue's ("… is paused, work waits"). */
+  holderLine: string;
+  /** Where it resumes from. */
+  stage: ResumeStage;
+  /** Why, by code: server_busy, leased, engine_in_use, accelerator_busy, insufficient_memory, no_server, paused, unreachable. */
+  code: string;
+}
+
+/** One server's chip on the inputs page's lanes strip. */
+export interface LaneChip {
+  server: string;
+  selected: boolean;
+  fast: boolean;
+  paused: boolean;
+  /**
+   * `running`: a ContentStudio job holds this lane. `busy`: another client holds
+   * the card. `idle`: nothing does. `unreachable`: the last read failed.
+   * `unread`: not read yet (or paused, which is not read).
+   */
+  state: 'running' | 'busy' | 'idle' | 'unreachable' | 'unread';
+  /** The resident model id, or null. */
+  resident: string | null;
+  /** Who holds the card, in the server's words, when `state` is `busy`. */
+  busyLine: string | null;
+  /** The ContentStudio job on this lane, or null. */
+  runningJobId: string | null;
+  /** How many jobs are parked waiting for this server. */
+  parked: number;
+  /** Why the last read failed, when `state` is `unreachable`. */
+  unreadReason: string | null;
+  /** When the preflight last read this server (epoch ms), or null. */
+  readAt: number | null;
+}
+
+/** `crucible:lanes` and its push: one chip per registered server. */
+export interface CrucibleLanesView {
+  lanes: LaneChip[];
+}
+
+/** One queue row the renderer could start, in queue order. */
+export interface QueuePlanCandidate {
+  jobId: string;
+  fast: boolean;
+}
+
+/**
+ * `crucible:queue-plan`: which rows start now (at most one per server; its lane
+ * is reserved for it), which wait and why, and which fail on a
+ * misconfiguration. Main decides; the renderer only runs what it is told.
+ */
+export interface QueuePlan {
+  start: Array<{ jobId: string; server: string }>;
+  /** `parked` rows wait on the server (grey); the rest wait for our own job ahead of them on that lane. */
+  waiting: Array<{ jobId: string; server: string | null; line: string; parked: boolean }>;
+  failed: Array<{ jobId: string; reason: string }>;
+}
+
 // ── the IPC envelope ────────────────────────────────────────────────────────
 
 /**

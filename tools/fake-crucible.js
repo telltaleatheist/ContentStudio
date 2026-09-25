@@ -511,7 +511,11 @@ async function startFakeCrucible(options = {}) {
             slots: {
                 accelerated: {
                     busy: job === null && ownRunning.length === 0 ? 0 : 1, of: 1, queue_depth: ownQueued.length,
-                    accepts_work: job === null && ownRunning.length === 0 && openLease === null && (named.cardHeld === undefined || named.cardHeld.times === 0),
+                    // ContentStudio (P3): a lease does NOT change accepts_work on a real server
+                    // (crucible v1.0.34 api.py: "It does NOT change `accepts_work` below. A lease
+                    // is not a reservation"), and the queue's leased-park waits on `lease`, not on
+                    // this. The typed original counted the lease here; that was a fake-only fact.
+                    accepts_work: job === null && ownRunning.length === 0 && (named.cardHeld === undefined || named.cardHeld.times === 0),
                 },
             },
             running: [...(job === null ? [] : [job]), ...ownRunning],

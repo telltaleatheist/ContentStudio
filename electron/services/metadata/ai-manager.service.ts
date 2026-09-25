@@ -32,7 +32,7 @@ import {
 } from './metadata-tasks';
 import { ChannelData, PROMPTS_SUBDIR, initPromptAssets, promptAssets } from './prompt-assets';
 import { Chapter } from './chapter-generator.service';
-import { queueAITask } from '../queue-manager.service';
+import { queueAITask, routeOfModelId } from '../queue-manager.service';
 import { JobCancelledError } from './cancellation';
 import { stripThinking } from './plain-call';
 import { bucketLoadContext } from './context-sizing';
@@ -1440,9 +1440,10 @@ export class AIManagerService {
    *   anything else        the Crucible transport, which refuses a string that is not a
    *                        Crucible id by name (a stale `ollama:`/`claude:`/`openai:` one).
    *
-   * Every call takes the 1-slot AI queue itself, as it always has (callers must not nest it:
-   * the pool would deadlock); P3's lanes replace the queue. A cancel that arrives while the
-   * request is QUEUED stops it before it is sent.
+   * Every call goes through its LANE itself (electron/crucible/lanes.ts, P3): a local model
+   * takes its server's one GPU slot, a cloud one and `claude -p` take none (plan 13.1). Callers
+   * must NOT wrap makeRequest in queueAITask: nesting would deadlock the slot. A cancel that
+   * arrives while the request waits for the slot stops it before it is sent.
    */
   private async makeRequest(
     prompt: string,
@@ -1455,16 +1456,12 @@ export class AIManagerService {
     const requestId = Math.random().toString(36).substring(7);
     console.log(`[AIManager] AI REQUEST START [${requestId}] ${what} on ${model} (${prompt.length} chars)`);
 
-    // The error the call itself threw. The AI queue re-wraps every rejection as a plain Error
-    // (queue-manager.service.ts), which would flatten the door's typed refusal (`over_context`,
-    // `truncated`, `busy`...) into a sentence; a caller with a declared policy for one of them
-    // reads its code (Law 10), so the original is kept and re-thrown as itself.
-    let thrown: { error: unknown } | null = null;
     try {
       const result = await queueAITask<string | null>(
+        routeOfModelId(model),
         `ai-${requestId}`,
         `AI Request: ${model}`,
-        async () => { try {
+        async () => {
           if (this.config.abortSignal?.aborted) {
             throw new JobCancelledError(`before the "${model}" request left the AI queue`);
           }
@@ -1499,17 +1496,17 @@ export class AIManagerService {
             trace: this.promptTrace,
           });
           return answer.text;
-        } catch (error) { thrown = { error }; throw error; } }
+        }
       );
       console.log(`[AIManager] AI REQUEST END [${requestId}] (${result?.length || 0} chars)`);
       return result;
     } catch (error: any) {
       console.error(`[AIManager] AI REQUEST FAILED [${requestId}]:`, error?.message || error);
-      // The call's own error when it threw one; the queue's only when the queue itself failed
-      // the task (its watchdog, a cancel while queued). The orchestrator decides a run was
-      // cancelled from the abort signal, not from the error.
-      if (thrown !== null) throw (thrown as { error: unknown }).error;
-      throw new Error(error?.message || `AI request failed for model "${model}"`);
+      // Re-thrown AS ITSELF: the lanes pass a call's error through with its type, and a
+      // caller with a declared policy for one of the door's refusals (`over_context`,
+      // `truncated`) reads its code (Law 10); a park reads the SDK refusal the door carries as
+      // its `cause` (P3). The orchestrator decides a run was cancelled from the abort signal.
+      throw error;
     }
   }
 
