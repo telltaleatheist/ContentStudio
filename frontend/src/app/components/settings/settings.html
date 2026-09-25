@@ -37,6 +37,12 @@
       </mat-card>
     }
 
+    <!-- Crucible Servers (CRUCIBLE-MIGRATION-PLAN.md P1): the GPU engine every model call
+         moves onto. Added beside the AI Model and API-key fields below, which stay until P2
+         moves the calls themselves; this card saves as it goes and is not part of the
+         page's Save Settings. -->
+    <app-crucible-servers />
+
     <!-- AI Model Section -->
     <mat-card class="settings-card">
     <mat-card-header>

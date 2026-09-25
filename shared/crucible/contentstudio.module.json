@@ -1,0 +1,69 @@
+{
+  "name": "contentstudio",
+  "version": "1.0.34+455e28293d07",
+  "job_types": [
+    {
+      "type": "llm",
+      "backends": [
+        "cuda-linux",
+        "llama-windows",
+        "mlx-darwin"
+      ]
+    },
+    {
+      "type": "asr",
+      "backends": [
+        "cuda-linux",
+        "mlx-darwin"
+      ]
+    },
+    {
+      "type": "align",
+      "backends": [
+        "cuda-linux",
+        "mlx-darwin"
+      ]
+    }
+  ],
+  "needs": [
+    {
+      "class": "decide"
+    }
+  ],
+  "subjects": [
+    {
+      "kind": "model",
+      "id": "qwen3-asr-1.7b",
+      "backends": [
+        "cuda-linux",
+        "mlx-darwin"
+      ]
+    },
+    {
+      "kind": "model",
+      "id": "qwen3-aligner",
+      "backends": [
+        "cuda-linux",
+        "mlx-darwin"
+      ]
+    },
+    {
+      "kind": "model",
+      "id": "qwen3.8-27b-4bit",
+      "backends": [
+        "cuda-linux",
+        "llama-windows",
+        "mlx-darwin"
+      ]
+    },
+    {
+      "kind": "model",
+      "id": "qwen3.5-9b",
+      "backends": [
+        "cuda-linux",
+        "llama-windows",
+        "mlx-darwin"
+      ]
+    }
+  ]
+}

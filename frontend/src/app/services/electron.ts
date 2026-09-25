@@ -35,6 +35,31 @@ import type {
   StoryScope,
   TranscriptLink,
 } from '../features/transcript-link/transcript-link.types';
+import type {
+  AddServerRequest,
+  ConnectCodeReading,
+  CopiedConnectCode,
+  CrucibleEnginePresence,
+  CrucibleInstallProgress,
+  CrucibleInstallStatus,
+  CrucibleIpcResult,
+  CruciblePairingDecision,
+  CruciblePairingPrompt,
+  CrucibleProbeAnswer,
+  CrucibleReadinessView,
+  CrucibleReleaseCheck,
+  CrucibleServerRow,
+  CrucibleServersChangedPayload,
+  CrucibleServersView,
+  CrucibleSettingsPatch,
+  CrucibleSettingsView,
+  CrucibleSetupView,
+  KeyCopyOutcome,
+  LocalConnectCodes,
+  RoutingView,
+  UpstreamName,
+  UpstreamTestAnswer,
+} from '../features/crucible/crucible.types';
 
 /**
  * The main process's answer to "does this video have a saved Whisper transcript?".
@@ -673,6 +698,40 @@ declare global {
 
       // External URLs
       openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
+
+      // Crucible (the inference servers; features/crucible/crucible.types.ts). Read through
+      // services/crucible.ts, which unwraps the envelope; nothing else calls these.
+      crucibleServers: () => Promise<CrucibleIpcResult<CrucibleServersView>>;
+      crucibleProbe: (name: string) => Promise<CrucibleIpcResult<CrucibleProbeAnswer>>;
+      crucibleTest: (name: string) => Promise<CrucibleIpcResult<CrucibleProbeAnswer>>;
+      crucibleAdd: (request: AddServerRequest) => Promise<CrucibleIpcResult<CrucibleServerRow>>;
+      crucibleRemove: (name: string) => Promise<CrucibleIpcResult<CrucibleServerRow>>;
+      crucibleSelect: (name: string) => Promise<CrucibleIpcResult<RoutingView>>;
+      crucibleSetFast: (name: string | null) => Promise<CrucibleIpcResult<RoutingView>>;
+      crucibleSetPaused: (name: string, paused: boolean) => Promise<CrucibleIpcResult<RoutingView>>;
+      cruciblePairStart: (address: string, name?: string) => Promise<CrucibleIpcResult<CruciblePairingPrompt>>;
+      cruciblePairPoll: (requestId: string) => Promise<CrucibleIpcResult<CruciblePairingDecision>>;
+      cruciblePairCancel: (requestId: string) => Promise<CrucibleIpcResult<{ cancelled: true }>>;
+      crucibleConnectCodeRead: (line: string) => Promise<CrucibleIpcResult<ConnectCodeReading>>;
+      crucibleConnectCodeCopy: (name: string) => Promise<CrucibleIpcResult<CopiedConnectCode>>;
+      crucibleConnectCodesLocal: () => Promise<CrucibleIpcResult<LocalConnectCodes>>;
+      crucibleConnectCodeCopyLocal: (url: string) => Promise<CrucibleIpcResult<CopiedConnectCode>>;
+      crucibleSettingsGet: (name: string) => Promise<CrucibleIpcResult<CrucibleSettingsView>>;
+      crucibleSettingsPut: (name: string, patch: CrucibleSettingsPatch) => Promise<CrucibleIpcResult<CrucibleSettingsView>>;
+      crucibleUpstreamTest: (name: string, upstream: UpstreamName, probe: { key?: string; url?: string }) => Promise<CrucibleIpcResult<UpstreamTestAnswer>>;
+      crucibleCopyMyKey: (name: string) => Promise<CrucibleIpcResult<KeyCopyOutcome>>;
+      crucibleSetup: () => Promise<CrucibleIpcResult<CrucibleSetupView>>;
+      crucibleInstallStatus: () => Promise<CrucibleIpcResult<CrucibleInstallStatus>>;
+      crucibleInstallStart: () => Promise<CrucibleIpcResult<{ started: true; release: string }>>;
+      crucibleReleaseCheck: () => Promise<CrucibleIpcResult<CrucibleReleaseCheck>>;
+      crucibleLocalPresence: () => Promise<CrucibleIpcResult<CrucibleEnginePresence>>;
+      crucibleReadiness: () => Promise<CrucibleIpcResult<CrucibleReadinessView>>;
+      crucibleReadinessRefresh: () => Promise<CrucibleIpcResult<CrucibleReadinessView>>;
+      crucibleReadinessDecline: () => Promise<CrucibleIpcResult<CrucibleReadinessView>>;
+      crucibleReadinessStart: () => Promise<CrucibleIpcResult<CrucibleReadinessView>>;
+      onCrucibleServersChanged: (callback: (change: CrucibleServersChangedPayload) => void) => () => void;
+      onCrucibleReadiness: (callback: (view: CrucibleReadinessView) => void) => () => void;
+      onCrucibleInstallProgress: (callback: (event: CrucibleInstallProgress) => void) => () => void;
 
       // Analytics (performance feedback loop)
       analyticsListChannels: () => Promise<{ success: boolean; channels?: AnalyticsChannel[]; error?: string }>;

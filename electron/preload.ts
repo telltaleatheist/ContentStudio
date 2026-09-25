@@ -139,6 +139,59 @@ const api = {
   // External URLs
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
 
+  // ==================== CRUCIBLE ====================
+  // The inference servers (CRUCIBLE-MIGRATION-PLAN.md P1). Every answer is a
+  // CrucibleIpcResult envelope: {success, data} or {success, code, error}. No answer carries
+  // a token; the three push channels carry masked rows, a readiness sentence and install
+  // progress. Adding a server takes a pasted connect code or {discovered: true}; a
+  // device-code pairing crosses as a request id and the short user code only.
+  crucibleServers: () => ipcRenderer.invoke('crucible:servers'),
+  crucibleProbe: (name: string) => ipcRenderer.invoke('crucible:probe', name),
+  crucibleTest: (name: string) => ipcRenderer.invoke('crucible:test', name),
+  crucibleAdd: (request: { connectCode: string; name?: string } | { discovered: true; name?: string }) =>
+    ipcRenderer.invoke('crucible:add', request),
+  crucibleRemove: (name: string) => ipcRenderer.invoke('crucible:remove', name),
+  crucibleSelect: (name: string) => ipcRenderer.invoke('crucible:select', name),
+  crucibleSetFast: (name: string | null) => ipcRenderer.invoke('crucible:set-fast', name),
+  crucibleSetPaused: (name: string, paused: boolean) => ipcRenderer.invoke('crucible:set-paused', name, paused),
+  cruciblePairStart: (address: string, name?: string) => ipcRenderer.invoke('crucible:pair-start', { address, name }),
+  cruciblePairPoll: (requestId: string) => ipcRenderer.invoke('crucible:pair-poll', requestId),
+  cruciblePairCancel: (requestId: string) => ipcRenderer.invoke('crucible:pair-cancel', requestId),
+  crucibleConnectCodeRead: (line: string) => ipcRenderer.invoke('crucible:connect-code-read', line),
+  crucibleConnectCodeCopy: (name: string) => ipcRenderer.invoke('crucible:connect-code-copy', name),
+  crucibleConnectCodesLocal: () => ipcRenderer.invoke('crucible:connect-codes-local'),
+  crucibleConnectCodeCopyLocal: (url: string) => ipcRenderer.invoke('crucible:connect-code-copy-local', url),
+  crucibleSettingsGet: (name: string) => ipcRenderer.invoke('crucible:settings-get', name),
+  crucibleSettingsPut: (name: string, patch: any) => ipcRenderer.invoke('crucible:settings-put', name, patch),
+  crucibleUpstreamTest: (name: string, upstream: string, probe: { key?: string; url?: string }) =>
+    ipcRenderer.invoke('crucible:upstream-test', name, upstream, probe),
+  crucibleCopyMyKey: (name: string) => ipcRenderer.invoke('crucible:copy-my-key', name),
+  crucibleSetup: () => ipcRenderer.invoke('crucible:setup'),
+  crucibleInstallStatus: () => ipcRenderer.invoke('crucible:install-status'),
+  crucibleInstallStart: () => ipcRenderer.invoke('crucible:install-start'),
+  crucibleReleaseCheck: () => ipcRenderer.invoke('crucible:release-check'),
+  crucibleLocalPresence: () => ipcRenderer.invoke('crucible:local-presence'),
+  crucibleReadiness: () => ipcRenderer.invoke('crucible:readiness'),
+  crucibleReadinessRefresh: () => ipcRenderer.invoke('crucible:readiness-refresh'),
+  crucibleReadinessDecline: () => ipcRenderer.invoke('crucible:readiness-decline'),
+  crucibleReadinessStart: () => ipcRenderer.invoke('crucible:readiness-start'),
+  onCrucibleServersChanged: (callback: (change: any) => void) => {
+    const listener = (_event: any, change: any) => callback(change);
+    ipcRenderer.on('crucible:servers-changed', listener);
+    return () => ipcRenderer.removeListener('crucible:servers-changed', listener);
+  },
+  onCrucibleReadiness: (callback: (view: any) => void) => {
+    const listener = (_event: any, view: any) => callback(view);
+    ipcRenderer.on('crucible:readiness', listener);
+    return () => ipcRenderer.removeListener('crucible:readiness', listener);
+  },
+  onCrucibleInstallProgress: (callback: (event: any) => void) => {
+    const listener = (_event: any, progress: any) => callback(progress);
+    ipcRenderer.on('crucible:install-progress', listener);
+    return () => ipcRenderer.removeListener('crucible:install-progress', listener);
+  },
+  // ==================== END CRUCIBLE ====================
+
   // Analytics (performance feedback loop)
   analyticsListChannels: () => ipcRenderer.invoke('analytics-list-channels'),
   analyticsAddChannel: (entry: any) => ipcRenderer.invoke('analytics-add-channel', entry),

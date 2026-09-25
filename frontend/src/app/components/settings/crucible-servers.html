@@ -1,0 +1,309 @@
+<mat-card class="settings-card crucible-card" id="crucible-section">
+  <mat-card-header>
+    <div class="card-header-content">
+      <div>
+        <mat-card-title>Crucible Servers</mat-card-title>
+        <mat-card-subtitle>The GPU engine every model call is moving onto: the one on this computer, or one you connect across the network</mat-card-subtitle>
+      </div>
+      <button mat-stroked-button class="recheck-button" (click)="recheck()">
+        <mat-icon>refresh</mat-icon>
+        Re-check
+      </button>
+    </div>
+  </mat-card-header>
+  <mat-card-content>
+
+    <!-- ── readiness: the one answer, and its one door ───────────────────── -->
+    @if (readiness(); as r) {
+      <div class="cru-readiness" [attr.data-state]="r.state">
+        <mat-icon>{{ r.state === 'ready' ? 'check_circle' : r.state === 'starting' ? 'hourglass_top' : 'error_outline' }}</mat-icon>
+        <div class="cru-readiness-text">
+          <strong>{{ readinessHeadline(r) }}</strong>
+          <span>{{ r.reason }}</span>
+          @if (r.progress) { <span class="cru-dim">{{ r.progress }}</span> }
+          @if (r.declined) { <span class="cru-dim">You said "Not now" to bringing Crucible up. It stays that way until ContentStudio restarts, unless you press the door yourself.</span> }
+        </div>
+        @if (r.action === 'start' || r.action === 'install') {
+          <div class="cru-readiness-doors">
+            <button mat-flat-button color="primary" [disabled]="localBusy() !== null || installing()" (click)="readinessAct(r)">{{ readinessDoor(r) }}</button>
+            @if (!r.declined) {
+              <button mat-button (click)="declineReadiness()">Not now</button>
+            }
+          </div>
+        }
+      </div>
+    }
+
+    @if (loadError(); as err) {
+      <p class="cru-warn">{{ err }}</p>
+    }
+
+    @if (offer(); as found) {
+      <div class="cru-offer">
+        <div>
+          <strong>There is a Crucible on this computer</strong>
+          <span class="cru-dim">{{ found.serverName }} at {{ found.url }} · key {{ found.tokenMasked }}</span>
+        </div>
+        <button mat-flat-button color="primary" [disabled]="localBusy() !== null" (click)="adopt()">
+          {{ localBusy() === 'adopt' ? 'Adding…' : 'Add it' }}
+        </button>
+      </div>
+    }
+
+    <!-- ── the list, and the one selected server ─────────────────────────── -->
+    <div class="cru-section">
+      <p class="cru-label">Server ContentStudio uses</p>
+      <p class="cru-hint">
+        All AI work goes to the selected server, and waits for it while it is busy or paused. Work never moves to
+        another server unless you select that one; work already running finishes where it started.
+      </p>
+      @if (missing(); as name) {
+        <p class="cru-warn">The selected server "{{ name }}" isn't connected any more. Select a server to run AI work.</p>
+      } @else if (noneSelected()) {
+        <p class="cru-warn">No server is selected. Select one to run AI work.</p>
+      }
+      @if (view() !== null && rows().length === 0) {
+        <p class="cru-hint">No Crucible server yet. Add the one on this computer above, or connect one below.</p>
+      }
+
+      <div class="cru-list">
+        @for (row of rows(); track row.name) {
+          <div class="cru-row" [class.selected]="row.selected" [class.paused]="row.paused">
+            <div class="cru-row-head">
+              <span class="cru-name">{{ row.name }}</span>
+              @if (row.selected) { <span class="cru-pill on">Selected</span> }
+              @if (row.fast) { <span class="cru-pill fast">Fast</span> }
+              @if (row.paused) { <span class="cru-pill paused">Paused</span> }
+              @if (probes()[row.name]; as answer) {
+                <span class="cru-reach" [class.problem]="reachIsProblem(answer.reach)" [class.busy]="answer.reach === 'busy'">{{ reachWord(answer.reach) }}</span>
+              } @else {
+                <span class="cru-reach">Checking…</span>
+              }
+            </div>
+
+            @if (row.server; as server) {
+              <div class="cru-dim">{{ server.url }} · key {{ server.tokenMasked }}</div>
+            }
+
+            @if (probes()[row.name]; as answer) {
+              @if (answer.probe.outcome === 'ok') {
+                <div class="cru-facts">{{ factsLine(answer.probe.facts) }}</div>
+                <div class="cru-dim">{{ residentLine(answer.probe.facts) }}</div>
+                @if (answer.probe.facts.busyLine; as line) {
+                  <div class="cru-busy">{{ line }}</div>
+                }
+                @if (answer.probe.facts.capabilities; as caps) {
+                  <div class="cru-caps">
+                    @for (cap of caps; track cap.capability) {
+                      <span class="cru-cap" [class.no]="!cap.enabled" [attr.title]="cap.reason">{{ capabilityLine(cap) }}</span>
+                    }
+                  </div>
+                } @else if (answer.probe.facts.capabilitiesUnread; as why) {
+                  <div class="cru-dim">{{ why }}</div>
+                }
+                @if (answer.probe.facts.needsUpdate) {
+                  <div class="cru-warn">This Crucible is older than ContentStudio supports. Update it on that computer.</div>
+                }
+              } @else {
+                <div class="cru-warn">{{ answer.probe.message }}</div>
+              }
+            }
+            @if (rowError()[row.name]; as err) {
+              <div class="cru-warn">{{ err }}</div>
+            }
+
+            <div class="cru-actions">
+              @if (confirmForget() === row.name) {
+                <span class="cru-confirm">Forget {{ row.name }}? Its key is removed from this computer; the server itself is untouched.</span>
+                <button mat-stroked-button color="warn" (click)="forget(row.name)">Forget</button>
+                <button mat-button (click)="confirmForget.set(null)">Cancel</button>
+              } @else {
+                <button mat-stroked-button [disabled]="testing()[row.name] === true" (click)="test(row.name)">
+                  {{ testing()[row.name] ? 'Testing…' : 'Test' }}
+                </button>
+                @if (!row.selected) {
+                  <button mat-stroked-button (click)="select(row)">Select</button>
+                }
+                <mat-slide-toggle
+                  [checked]="!row.paused"
+                  (change)="setPaused(row, !$event.checked)"
+                  [attr.aria-label]="row.name + (row.paused ? ' is paused' : ' is running')">
+                  {{ row.paused ? 'Paused' : 'Running' }}
+                </mat-slide-toggle>
+                <button mat-button (click)="toggleKeys(row.name)">{{ keysOpen() === row.name ? 'Hide keys' : 'Keys' }}</button>
+                <button mat-button title="Copy this server's connect code, to add it on another computer" (click)="copyCode(row.name)">Copy code</button>
+                <button mat-button (click)="confirmForget.set(row.name)">Forget</button>
+              }
+            </div>
+
+            @if (keysOpen() === row.name) {
+              <div class="cru-keys">
+                <app-crucible-server-keys [server]="row.name" />
+              </div>
+            }
+          </div>
+        }
+      </div>
+      @if (note(); as message) {
+        <p class="cru-note">{{ message }}</p>
+      }
+    </div>
+
+    <!-- ── the fast pin ──────────────────────────────────────────────────── -->
+    @if (rows().length > 0) {
+      <div class="cru-section">
+        <p class="cru-label">Fast server</p>
+        <mat-form-field appearance="outline" class="full-width">
+          <mat-label>Where a queue item marked Fast runs</mat-label>
+          <mat-select [value]="fastServer()" (selectionChange)="setFast($event.value)">
+            <mat-option [value]="null">None</mat-option>
+            @for (row of rows(); track row.name) {
+              <mat-option [value]="row.name">{{ row.name }}</mat-option>
+            }
+          </mat-select>
+          <mat-hint>A per-item pin, for work you want done quickly (owens-pc's 3090 Ti). It is the only way work reaches a server other than the selected one; nothing is sent there on its own.</mat-hint>
+        </mat-form-field>
+      </div>
+    }
+
+    <!-- ── adding a server ───────────────────────────────────────────────── -->
+    <div class="cru-section">
+      <p class="cru-label">Add a server</p>
+      <div class="cru-modes" role="radiogroup" aria-label="How to add a server">
+        <button type="button" class="cru-mode" role="radio" [class.on]="addMode() === 'pair'" [attr.aria-checked]="addMode() === 'pair'" (click)="setAddMode('pair')">
+          <span class="cru-mode-title">By address</span>
+          <span class="cru-mode-desc">The other computer's name or IP. It answers with a short code, and connects.</span>
+        </button>
+        <button type="button" class="cru-mode" role="radio" [class.on]="addMode() === 'code'" [attr.aria-checked]="addMode() === 'code'" (click)="setAddMode('code')">
+          <span class="cru-mode-title">With a connect code</span>
+          <span class="cru-mode-desc">A crucible:// code copied from ContentStudio, BookForge or Briefcase on that computer.</span>
+        </button>
+      </div>
+
+      @if (addMode() === 'pair') {
+        @if (pairing(); as prompt) {
+          <div class="cru-pairing">
+            <span class="cru-usercode">{{ prompt.userCode }}</span>
+            <span class="cru-hint">
+              {{ prompt.approvalRequired ? 'Waiting for ' + prompt.name + ' to approve ContentStudio. Check that it shows this same code.' : 'Connecting to ' + prompt.name + '…' }}
+            </span>
+            <button mat-button (click)="cancelPairing()">Cancel</button>
+          </div>
+        } @else {
+          <div class="cru-form">
+            <input class="cru-input" placeholder="owens-pc, 100.64.0.9 or http://owens-pc:7100" [(ngModel)]="pairAddress" (keydown.enter)="startPairing()" />
+            <input class="cru-input cru-input-name" placeholder="Name here (optional)" [(ngModel)]="pairName" />
+            <button mat-flat-button color="primary" [disabled]="pairBusy() || pairAddress.trim() === ''" (click)="startPairing()">
+              {{ pairBusy() ? 'Asking…' : 'Connect' }}
+            </button>
+          </div>
+        }
+        @if (pairError(); as err) { <p class="cru-warn">{{ err }}</p> }
+      } @else {
+        <div class="cru-form">
+          <input class="cru-input" placeholder="crucible://name@host:7100/#…" spellcheck="false" [(ngModel)]="connectCode" (ngModelChange)="onCodeChanged()" (keydown.enter)="addByCode()" />
+          <input class="cru-input cru-input-name" placeholder="Name here (optional)" [(ngModel)]="codeName" />
+          <button mat-flat-button color="primary" [disabled]="codeBusy() || codePreview()?.ok !== true" (click)="addByCode()">
+            {{ codeBusy() ? 'Checking…' : 'Add server' }}
+          </button>
+        </div>
+        @if (codePreview(); as preview) {
+          @if (preview.ok) {
+            <p class="cru-hint">{{ preview.name }} at {{ preview.url }} · key {{ preview.tokenMasked }}</p>
+          } @else {
+            <p class="cru-warn">{{ preview.message }}</p>
+          }
+        }
+        @if (codeError(); as err) { <p class="cru-warn">{{ err }}</p> }
+      }
+    </div>
+
+    <!-- ── this computer: the doors, and its connect codes ───────────────── -->
+    <div class="cru-section">
+      <p class="cru-label">Crucible on this computer</p>
+      @if (setup(); as s) {
+        <p class="cru-hint">{{ s.plan.machine }}</p>
+        @if (s.plan.discovered.present) {
+          @if (s.plan.discovered.registeredAs; as registered) {
+            <p class="cru-hint">
+              {{ s.plan.discovered.serverName }} runs on this computer and is in the list above as {{ registered }}. It is
+              shared with BookForge, Foundry and Briefcase, so ContentStudio never stops or removes it.
+            </p>
+          } @else {
+            <p class="cru-hint">{{ s.plan.discovered.serverName }} is on this computer but not in the list yet. Add it above.</p>
+          }
+          @if (presence(); as p) {
+            @if (p.message) { <p class="cru-hint">{{ p.message }}</p> }
+            @if (p.offerStart) {
+              <div class="cru-actions">
+                <button mat-stroked-button [disabled]="localBusy() !== null" (click)="startLocal()">
+                  {{ localBusy() === 'start' ? 'Starting…' : 'Start Crucible' }}
+                </button>
+              </div>
+            }
+          }
+          <div class="cru-actions">
+            <button mat-stroked-button [disabled]="localBusy() !== null || installing()" (click)="checkRelease()">
+              {{ localBusy() === 'release' ? 'Checking…' : 'Check for a newer Crucible' }}
+            </button>
+          </div>
+          @if (release(); as r) {
+            @switch (r.action) {
+              @case ('upgrade') {
+                <p class="cru-hint">Crucible {{ r.latest }} is available; this computer runs {{ r.running }}.</p>
+                <div class="cru-actions">
+                  <button mat-flat-button color="primary" [disabled]="localBusy() !== null || installing()" (click)="install()">Update Crucible to {{ r.latest }}</button>
+                </div>
+              }
+              @case ('none') {
+                <p class="cru-hint">{{ r.code === 'crucible_already_latest' ? 'This computer has the newest Crucible.' : 'This computer runs a newer Crucible than the release channel offers, so ContentStudio leaves it alone.' }}</p>
+              }
+              @case ('install') { <p class="cru-hint">Crucible {{ r.latest }} is available.</p> }
+              @case ('unknown') { <p class="cru-warn">{{ r.refusal.message }}</p> }
+            }
+          }
+
+          <p class="cru-label cru-sub-label">This computer's connect code</p>
+          @if (localCodes(); as codes) {
+            <p class="cru-hint">
+              Copy one into ContentStudio on another computer to let it use {{ codes.server }}. Pick the address that
+              computer can reach. The code carries this Crucible's access key: share it only with your own computers.
+            </p>
+            @for (line of codes.lines; track line.url) {
+              <div class="cru-code-line">
+                <code>{{ line.elided }}</code>
+                <button mat-stroked-button (click)="copyLocalCode(line.url)">Copy</button>
+              </div>
+            }
+          }
+          @if (localCodesError(); as err) { <p class="cru-warn">{{ err }}</p> }
+        } @else if (s.plan.hostable === 'no') {
+          <p class="cru-hint">{{ s.plan.hostableWhy }}</p>
+        } @else {
+          <p class="cru-hint">There is no Crucible on this computer. {{ s.plan.hostableWhy }}</p>
+          @if (!installing() && installEvents().length === 0) {
+            <ol class="cru-steps">
+              @for (step of s.plan.steps; track step.title) {
+                <li><strong>{{ step.title }}</strong> <span class="cru-dim">{{ step.detail }}</span></li>
+              }
+            </ol>
+          }
+          @if (s.install.interrupted && !installing()) {
+            <p class="cru-warn">The last install did not finish (ContentStudio was closed while it ran). Install again to pick up where it stopped.</p>
+          }
+          <div class="cru-actions">
+            <button mat-flat-button color="primary" [disabled]="localBusy() !== null || installing()" (click)="install()">
+              {{ installing() ? 'Installing Crucible…' : localBusy() === 'install' ? 'Checking the release…' : 'Install Crucible' }}
+            </button>
+          </div>
+        }
+        @if (installing() || installEvents().length > 0) {
+          <p class="cru-hint">{{ installLine() }}</p>
+        }
+      } @else {
+        <p class="cru-hint">Looking for Crucible on this computer…</p>
+      }
+      @if (localError(); as err) { <p class="cru-warn">{{ err }}</p> }
+    </div>
+  </mat-card-content>
+</mat-card>

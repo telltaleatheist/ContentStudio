@@ -9,6 +9,7 @@ import { FormsModule } from '@angular/forms';
 import { ElectronService } from '../../services/electron';
 import { NotificationService } from '../../services/notification';
 import { AiSetupWizard } from '../ai-setup-wizard/ai-setup-wizard';
+import { CrucibleServers } from './crucible-servers';
 import { ActivatedRoute, Router } from '@angular/router';
 import type { Subscription } from 'rxjs';
 import type { SpreakerStatus } from '../../features/publish/publish.types';
@@ -37,7 +38,8 @@ interface DownloadComponent {
     MatInputModule,
     MatSelectModule,
     FormsModule,
-    AiSetupWizard
+    AiSetupWizard,
+    CrucibleServers
   ],
   templateUrl: './settings.html',
   styleUrl: './settings.scss',
