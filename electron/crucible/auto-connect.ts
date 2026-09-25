@@ -133,7 +133,10 @@ export class CrucibleAutoConnect {
       const name = await this.run(false);
       if (name !== null) log.info(`[crucible] The Crucible on this computer is connected as "${name}"`);
     } catch (err) {
-      const unreachable = failureOutcome(err, 'the Crucible on this computer').outcome === 'unreachable';
+      // Nothing answering, or answering too slowly to count, is the service not
+      // being up yet: worth asking again. A wrong name or token is not.
+      const outcome = failureOutcome(err, 'the Crucible on this computer').outcome;
+      const unreachable = outcome === 'unreachable' || outcome === 'timeout';
       log.info(`[crucible] Did not connect the Crucible on this computer: ${(err as Error).message}`);
       const next = this.retryDelaysMs[attempt];
       if (unreachable && next !== undefined && !this.servers.exists()) this.schedule(next, attempt + 1);

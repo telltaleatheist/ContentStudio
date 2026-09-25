@@ -31,7 +31,18 @@ import { CrucibleConnectError } from './errors';
  * refuses the line.
  */
 export function connectCodeFor(name: string, url: string, token: string): string {
-  const authority = new URL(url).host;
+  const parsed = new URL(url);
+  // THE FORMAT CARRIES NO SCHEME: the SDK's parsePairing reads every code back
+  // as `http://host:port` (its pairing.ts). A code for an https server would
+  // come back as a different server, so it is refused rather than written.
+  if (parsed.protocol !== 'http:') {
+    throw new CrucibleConnectError(
+      'invalid_pairing',
+      `"${name}" is registered at ${url}, and a connect code can only name an http:// address `
+        + '(the format has no scheme, and is read back as http). Hand this one over by its address instead.',
+    );
+  }
+  const authority = parsed.host;
   if (authority === '') {
     throw new CrucibleConnectError(
       'invalid_pairing',

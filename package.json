@@ -20,6 +20,7 @@
     "build:all": "npm run build:electron && npm run build:preload && npm run build:frontend",
     "check:pure": "node tools/routing-publish-checks.js",
     "check:digest": "node tools/chapter-digest-smoke.js",
+    "check:crucible": "node tools/check-crucible.js",
     "start:angular": "cd frontend && npm start",
     "start:electron": "npm run build:electron && npm run build:preload && wait-on http://localhost:4200 && cross-env NODE_ENV=development electron .",
     "electron:dev": "concurrently --kill-others \"npm run start:angular\" \"npm run start:electron\"",

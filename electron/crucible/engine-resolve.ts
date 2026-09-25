@@ -43,8 +43,13 @@ export interface ResolvedEngine {
 export type ClientMaker = (url: string, token: string, options?: { timeoutMs?: number }) => CrucibleClient;
 
 export const RESOLVE_TTL_MS = 60_000;
-/** The clock on each `info()` a resolution makes: a sleeping machine answers nothing for minutes. */
-export const RESOLVE_PROBE_MS = 5_000;
+/**
+ * The clock on each `info()` a resolution makes: a sleeping machine answers
+ * nothing for minutes. The probe's own 3 s (plan section 4, probe.ts
+ * PROBE_TIMEOUT_MS; not imported, since probe.ts imports this file), because
+ * the probe's `info` IS this call, and a probe that says "3 s" must mean it.
+ */
+export const RESOLVE_PROBE_MS = 3_000;
 
 export class EngineResolveError extends Error {
   constructor(readonly code: 'crucible_orchestrator_has_no_engine' | 'crucible_orchestrator_chain', message: string) {
