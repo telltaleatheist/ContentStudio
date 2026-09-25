@@ -215,7 +215,9 @@ async function clearTheCard(
   say: (line: string) => void,
 ): Promise<SweptServer> {
   const now = deps.now ?? Date.now;
-  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => { const t = setTimeout(resolve, ms); t.unref?.(); }));
+  // A plain (ref'd) timer on purpose: this poll is bounded by the sweep's deadline, and an
+  // unref'd one let a CLI process exit halfway through its own give-back.
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const deadline = now() + timing.confirmForMs;
   let activity: Activity;
   for (;;) {
