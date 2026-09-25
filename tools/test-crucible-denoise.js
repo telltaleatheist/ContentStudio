@@ -129,6 +129,24 @@ check('the stem path round trip: the stem lands at the path asked for, the same 
   }
 });
 
+check('a FLAC stem (the Mac\'s 1.0.38) is read, checked and kept under the server\'s extension', async () => {
+  const dir = tempDir('cs-p7-flac-');
+  const chunk = writeWav(path.join(dir, 'chunk_0003.wav'), { seconds: 2 });
+  const flac = path.join(dir, 'stem.flac');
+  const made = spawnSync('ffmpeg', ['-nostdin', '-v', 'error', '-i', chunk, '-c:a', 'flac', '-y', flac]);
+  assert.strictEqual(made.status, 0, String(made.stderr));
+  const t = await setup({ denoise: { stemAs: { ext: '.flac', bytes: fs.readFileSync(flac) } } });
+  try {
+    await t.isolator.start();
+    const done = await t.isolator.separate(chunk, path.join(t.dir, 'out_0003.wav'));
+    assert.strictEqual(done.stem, path.join(t.dir, 'out_0003.flac'));
+    assert.ok(!fs.existsSync(path.join(t.dir, 'out_0003.wav')));
+    assert.deepStrictEqual(denoise.readAudioFormat(done.stem), { sampleRate: 44100, channels: 2, frames: 88200 });
+  } finally {
+    await t.server.close();
+  }
+});
+
 check('a failed job aborts the run with the server\'s message, and no stem is left behind', async () => {
   const t = await setup({ denoise: { failWith: { code: 'worker_failed', message: 'the separator process died: MPS out of memory' } } });
   try {
@@ -336,12 +354,12 @@ check('the protocol answers every request: a malformed one and a missing handler
   assert.deepStrictEqual(line, { message: 'Isolating voice on mic 1 — section 2 of 4: separating', subProgress: 37.5 });
 });
 
-check('voice_separation.py end to end: chunked in Python, each chunk a job on the fake, the stems reassembled', async () => {
+for (const [label, denoiseScript] of [['WAV stems (1.0.34)', {}], ['FLAC stems (the Mac\'s 1.0.38)', { stemAs: { ext: '.flac', transcode: true } }]]) check(`voice_separation.py end to end with ${label}: chunked in Python, each chunk a job on the fake, the stems reassembled`, async () => {
   for (const tool of ['ffmpeg', 'ffprobe', 'python3']) {
     const found = spawnSync('which', [tool]);
     if (found.status !== 0) throw new Error(`${tool} is not on PATH; this check runs the real Python side`);
   }
-  const t = await setup();
+  const t = await setup({ denoise: denoiseScript });
   try {
     // 4.8 s of tone, 4.8 s of digital silence, 3.4 s of tone at 48 kHz: forced cuts at 4.8 s and
     // 9.6 s (--target-min 0.05, --max-min 0.08) make three chunks, the middle one silent.
