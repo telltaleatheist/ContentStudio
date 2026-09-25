@@ -413,7 +413,6 @@ export interface MetadataRoutingTask {
   modal: boolean;
 }
 
-/** The Ollama host every plain-local option was checked against. */
 /**
  * What the editor's Stories analyzer will run on: the routing table's chapters row, as the
  * main process resolves it on every story call (LEDGER #204, #205). Read-only in the editor —
@@ -425,6 +424,7 @@ export interface StoryRoutedModel {
   kind: 'local' | 'cloud';
 }
 
+/** The Ollama host every plain-local option was checked against. */
 export interface MetadataRoutingHost {
   host: string;
   reachable: boolean;

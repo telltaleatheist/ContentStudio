@@ -1354,5 +1354,125 @@ check('a source with no sets THROWS rather than answering', () => {
   if (!threw) throw new Error('decidePrimary answered for a source with no items');
 });
 
-console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+// ---------------------------------------------------------------- editor Stories routing (#205)
+//
+// The Stories analyzer's model is the chapters row of the routing table, resolved per call
+// (LEDGER #204, #205). These drive the REAL handlers: story-ipc.js registers against a
+// recording ipcMain, and AIManagerService.runPlainRequest — the one door every routed call
+// goes through — is replaced by a recorder, so what is asserted is the model string the
+// handler actually hands the transport, and nothing is sent anywhere.
+
+async function checkAsync(name, fn) {
+  try {
+    await fn();
+    console.log('PASS  ' + name);
+  } catch (e) {
+    failures++;
+    console.log('FAIL  ' + name + ' :: ' + e.message);
+  }
+}
+
+const storyStub = require(STUB);
+let storyChannels = {};
+storyStub.ipcMain = { handle: (channel, fn) => { storyChannels[channel] = fn; } };
+const storyIpc = require(path.join(ROOT, 'services/editor/story-ipc.js'));
+
+/** Register the story handlers against a store holding `settings`; returns the channels. */
+function storyHandlersFor(settings) {
+  storyChannels = {};
+  const fakeStore = { get: (key) => settings[key] };
+  storyIpc.setupStoryAnalysisHandlers(fakeStore, {
+    promptSetsDir: path.join(__dirname, '..', 'electron', 'assets'),
+  });
+  return storyChannels;
+}
+
+const storyCalls = [];
+let storyAnswer = () => '{"title": "The Working Title"}';
+const realRunPlain = aiManager.AIManagerService.prototype.runPlainRequest;
+aiManager.AIManagerService.prototype.runPlainRequest = async function (prompt, model, what) {
+  storyCalls.push({ model, what, chars: prompt.length });
+  return storyAnswer(prompt, model, what);
+};
+
+// Port 9 (discard) refuses at once, so the local unload's POST fails fast and is only warned
+// about — the unload is housekeeping — without reaching a real Ollama.
+const NO_OLLAMA = 'http://127.0.0.1:9';
+const fakeEvent = { sender: { isDestroyed: () => false, send: () => {} } };
+const storySegments = [
+  { text: 'The council voted on the budget tonight.', startSeconds: 0, endSeconds: 20, speaker: 'host' },
+  { text: 'Then the mayor walked out of the meeting.', startSeconds: 20, endSeconds: 40, speaker: 'host' },
+];
+
+async function rejects(promise) {
+  try { await promise; } catch (e) { return e; }
+  throw new Error('expected a refusal, got an answer');
+}
+
+(async () => {
+  await checkAsync('Stories on a claude -p chapters selection call claude -p, and leave nothing to unload', async () => {
+    storyCalls.length = 0;
+    const ch = storyHandlersFor({ metadataRouting: { chapters: 'claude-cli' }, ollamaHost: NO_OLLAMA });
+    eq(await ch['story:routed-model'](), { model: 'claude-cli:opus', label: 'claude -p (Opus, subscription)', kind: 'cloud' },
+      'the read-only line:');
+    eq(await ch['story:suggest-title'](null, { text: ['budget vote', 'mayor walks out'] }), { title: 'The Working Title' },
+      'the title:');
+    eq(storyCalls.map((c) => c.model), ['claude-cli:opus'], 'the model the title call was sent on:');
+    eq(await ch['story:unload-model'](), { ok: true, released: null }, 'a cloud selection releases nothing:');
+  });
+
+  await checkAsync('the chapter analysis runs on the routed model, and a stop ends it as a stop', async () => {
+    storyCalls.length = 0;
+    const ch = storyHandlersFor({ metadataRouting: { chapters: 'claude-cli-sonnet' }, ollamaHost: NO_OLLAMA });
+    // The first call records its model and presses Stop, the way the renderer's button does.
+    storyAnswer = () => { ch['story:cancel'](); return '{}'; };
+    const err = await rejects(ch['story:analyze-chapters'](fakeEvent, { segments: storySegments }));
+    storyAnswer = () => '{"title": "The Working Title"}';
+    eq(err.name, 'AnalysisCancelledError', 'a stop is reported as a stop:');
+    eq(storyCalls.map((c) => c.model), ['claude-cli:sonnet'], 'the one call made before the stop:');
+  });
+
+  await checkAsync('Stories on a local chapters selection go to Ollama, and that model is what gets released', async () => {
+    storyCalls.length = 0;
+    const ch = storyHandlersFor({ metadataRouting: { chapters: 'qwen38-27b' }, ollamaHost: NO_OLLAMA });
+    eq((await ch['story:routed-model']()).model, 'ollama:qwen3.8:27b', 'the read-only line:');
+    await ch['story:suggest-title'](null, { text: ['budget vote'] });
+    eq(storyCalls.map((c) => c.model), ['ollama:qwen3.8:27b'], 'the model the title call was sent on:');
+    eq(await ch['story:unload-model'](), { ok: true, released: 'qwen3.8:27b' }, 'the bare Ollama name is unloaded:');
+    eq(await ch['story:unload-model'](), { ok: true, released: null }, 'and only once:');
+  });
+
+  await checkAsync('an absent routing store runs Stories on the shipped chapters default, as every run does', async () => {
+    const ch = storyHandlersFor({ ollamaHost: NO_OLLAMA });
+    const shipped = routing.routingOption('chapters', routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'chapters').defaultOptionId);
+    eq((await ch['story:routed-model']()).model, routing.routedModelString(shipped), 'the default:');
+  });
+
+  await checkAsync('a chapters routing this build cannot honour REFUSES by name, before any call', async () => {
+    storyCalls.length = 0;
+    for (const metadataRouting of [{ chapters: 'cogito-14b-from-the-old-picker' }, 'not-an-object']) {
+      const ch = storyHandlersFor({ metadataRouting, ollamaHost: NO_OLLAMA });
+      const routedErr = await rejects(ch['story:routed-model']());
+      if (!/metadataRouting/.test(routedErr.message)) throw new Error(`the refusal does not name the setting: ${routedErr.message}`);
+      await rejects(ch['story:analyze-chapters'](fakeEvent, { segments: storySegments }));
+      await rejects(ch['story:suggest-title'](null, { text: ['budget vote'] }));
+    }
+    eq(storyCalls.length, 0, 'calls sent on an unresolvable routing:');
+  });
+
+  await checkAsync('a local story prompt too long to send whole is refused, not middle-truncated', async () => {
+    storyCalls.length = 0;
+    const huge = ['word '.repeat(Math.ceil(aiManager.AIManagerService.OLLAMA_MAX_PROMPT_CHARS / 5) + 10)]; // a subject list is sent whole; raw text is capped by the prompt builder
+    const local = storyHandlersFor({ metadataRouting: { chapters: 'qwen38-27b' }, ollamaHost: NO_OLLAMA });
+    const err = await rejects(local['story:suggest-title'](null, { text: huge }));
+    eq(err.name, 'StoryPromptTooLongError', 'the refusal:');
+    eq(storyCalls.length, 0, 'calls sent:');
+    const cli = storyHandlersFor({ metadataRouting: { chapters: 'claude-cli' }, ollamaHost: NO_OLLAMA });
+    await cli['story:suggest-title'](null, { text: huge });
+    eq(storyCalls.map((c) => c.model), ['claude-cli:opus'], 'claude -p reads it whole:');
+  });
+
+  aiManager.AIManagerService.prototype.runPlainRequest = realRunPlain;
+  console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
+  process.exit(failures === 0 ? 0 : 1);
+})();
