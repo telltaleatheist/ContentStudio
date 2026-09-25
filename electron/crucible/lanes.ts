@@ -254,6 +254,8 @@ export class CrucibleLanes {
   private readonly parks = new Map<string, ParkRecord>();
   /** Parks the preflight has cleared: `plan()` starts them. */
   private readonly cleared = new Set<string>();
+  /** Each job's give-back in progress, so they run one after another (sweepJob). */
+  private readonly jobSweeps = new Map<string, Promise<void>>();
   private gate: Promise<unknown> = Promise.resolve();
   private timer: NodeJS.Timeout | null = null;
   private reading = false;
@@ -481,7 +483,9 @@ export class CrucibleLanes {
       return { kind: 'done', server, value: value as T };
     } finally {
       run.clock.stop();
-      // What the job's own finally did not give back (transport releases its lease there), the lane does.
+      // What the job's own finally did not give back (transport releases its lease there), the
+      // lane does, after any give-back already under way (a stall's, a Stop's) has settled.
+      await this.jobSweeps.get(run.jobId);
       if (this.deps.ledger.rowsOf(run.jobId).length > 0) {
         await this.sweepJob(run.jobId, `${run.jobId} ended with holds still recorded`);
       }
@@ -511,11 +515,21 @@ export class CrucibleLanes {
     await this.sweepJob(run.jobId, `${run.jobId} went quiet`);
   }
 
-  private async sweepJob(jobId: string, reason: string): Promise<SweepReport> {
-    return sweepCrucibleInFlight(
+  /**
+   * Give back one job's holds. Chained per job: a stall's sweep, a Stop's and the job's own
+   * end can all ask at once, and each must read the ledger AFTER the one before settled its
+   * rows, or two of them release one lease twice.
+   */
+  private sweepJob(jobId: string, reason: string): Promise<SweepReport> {
+    const before = this.jobSweeps.get(jobId) ?? Promise.resolve();
+    const next = before.then(() => sweepCrucibleInFlight(
       { ledger: this.deps.ledger, clientFor: (server) => this.deps.clientFor(server) },
       { reason, deadlineMs: JOB_SWEEP_DEADLINE_MS, jobId },
-    );
+    ));
+    const settled = next.then(() => undefined, () => undefined);
+    this.jobSweeps.set(jobId, settled);
+    void settled.then(() => { if (this.jobSweeps.get(jobId) === settled) this.jobSweeps.delete(jobId); });
+    return next;
   }
 
   // ── one model call ───────────────────────────────────────────────────────
