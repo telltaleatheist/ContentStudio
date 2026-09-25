@@ -331,30 +331,22 @@
     gap: 6px;
     padding: 2px 4px 8px;
 
+    /* The routed-model line, in the slot the picker used to fill: same box, but read-only text
+       that truncates rather than a control. `.missing` is the main process's refusal. */
     .story-model {
       flex: 1 1 auto;
       min-width: 0;
       font-size: 11px;
-      color: #e2e2e6;
+      color: #b8b8be;
       background: #1c1c1f;
       border: 1px solid #3a3a40;
       border-radius: 4px;
       padding: 3px 6px;
-      outline: none;
-      &:focus { border-color: #55555c; }
-    }
-    .story-refresh {
-      flex: 0 0 auto;
-      width: 24px;
-      font-size: 13px;
-      line-height: 1;
-      color: #b8b8be;
-      background: #2b2b30;
-      border: 1px solid #3a3a40;
-      border-radius: 4px;
-      padding: 3px 0;
-      cursor: pointer;
-      &:hover { background: #34343a; color: #fff; }
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      cursor: default;
+      &.missing { color: #f0a0a0; border-color: #6a3a3a; }
     }
     /* Analyze and Merge share a shape; only the emphasis differs — Merge is a repair, not the
        primary action, so it stays quiet. */
@@ -947,15 +939,18 @@
     .split-title { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; color: #e8e8ec; }
     .split-model {
       flex: 0 1 auto;
-      max-width: 180px;
+      max-width: 260px;
       font-size: 11px;
-      color: #e2e2e6;
+      color: #b8b8be;
       background: #1c1c1f;
       border: 1px solid #3a3a40;
       border-radius: 4px;
       padding: 3px 6px;
-      outline: none;
-      &:focus { border-color: #55555c; }
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      cursor: default;
+      &.missing { color: #f0a0a0; border-color: #6a3a3a; }
     }
     .split-rerun {
       flex: 0 0 auto;

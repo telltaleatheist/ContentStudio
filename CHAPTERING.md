@@ -754,9 +754,9 @@ violated by construction.
 
 What survived is what was always pure: the cue reader, the word stream, the quote matcher
 (`findQuoteTime`, now in `chapter-transcript.ts` beside the cursor that drives it) and the
-result shape. `nomic-embed-text` is still installed and still used — by key-phrase ranking,
-which is where it is now declared (`KEY_PHRASE_EMBEDDING_MODEL`). It is not a chapter model
-any more and is no longer reported as one.
+result shape. `nomic-embed-text` went on to serve key-phrase ranking for a month; that ranking,
+and with it every use of the model in this app, was removed on 2026-09-25 (LEDGER #205). Tag
+pools now come off the chapter list.
 
 ### The architecture now
 

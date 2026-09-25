@@ -236,7 +236,7 @@ function ctxFor(decision) {
     videoTitle: 'The parish that rents out its prisoners',
     promptSetName: 'youtube-telltale',
     entities: ['Louisiana', 'Fox News'],
-    keyPhrases: ['work release', 'prisoner exception'],
+    phrases: ['work release', 'prisoner exception'],
     contentText: OVER,
     contentSpeakerTagged: true,
     generated: {},

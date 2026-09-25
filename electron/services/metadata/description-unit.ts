@@ -29,8 +29,9 @@
  * answering, while constraining a JUDGMENT task measurably destroys it. These two calls are
  * mechanical. Chapter summarization is not, and nothing here is copied there.
  *
- * WHAT THEY READ. The chapter titles and summaries, the entity pool, the key-phrase pool —
- * AND THE RAW TRANSCRIPT.
+ * WHAT THEY READ. The chapter titles and summaries, the entity pool, the phrase pool the
+ * chapter list yields (tags-hashtags.ts chapterPools; empty on a chapterless item) — AND THE
+ * RAW TRANSCRIPT.
  *
  * The transcript is new, and it SUPERSEDES the summaries-only input contract §2 laid down. That
  * contract was a context-window concession dressed as a design: it said the description layer
@@ -634,7 +635,7 @@ export class DescriptionUnit implements MetadataUnit {
     const [min, max] = bodyWordRange(channel);
     const pools = [
       ctx.entities.length > 0 ? `Names: ${ctx.entities.join(', ')}` : '',
-      ctx.keyPhrases.length > 0 ? `Phrases: ${ctx.keyPhrases.join(', ')}` : '',
+      ctx.phrases.length > 0 ? `Phrases: ${ctx.phrases.join(', ')}` : '',
     ]
       .filter(Boolean)
       .join('\n');

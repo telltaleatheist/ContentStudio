@@ -137,15 +137,15 @@ export class EditorHostAdapter implements EditorHost {
 
   // ── Story analysis ──────────────────────────────────────────────────────────
 
-  ollamaListModels(host?: string): Promise<{ connected: boolean; models: Array<{ id: string; name: string }> }> {
-    return this.electron.ollamaListModels(host);
+  storyRoutedModel(): Promise<{ model: string; label: string; kind: 'local' | 'cloud' }> {
+    return this.electron.storyRoutedModel();
   }
 
   analyzeStoryChapters(payload: Parameters<ElectronService['analyzeStoryChapters']>[0]): Promise<any> {
     return this.electron.analyzeStoryChapters(payload);
   }
 
-  suggestStoryTitle(payload: { text: string | string[]; model: string; host?: string }): Promise<{ title: string }> {
+  suggestStoryTitle(payload: { text: string | string[] }): Promise<{ title: string }> {
     return this.electron.suggestStoryTitle(payload);
   }
 
@@ -153,8 +153,8 @@ export class EditorHostAdapter implements EditorHost {
     return this.electron.cancelStoryAnalysis();
   }
 
-  unloadStoryModel(payload: { model: string; host?: string }): Promise<{ ok: boolean }> {
-    return this.electron.unloadStoryModel(payload);
+  unloadStoryModel(): Promise<{ ok: boolean; released: string | null }> {
+    return this.electron.unloadStoryModel();
   }
 
   onStoryAnalyzeProgress(callback: (p: { phase: string; done: number; total: number }) => void): void {

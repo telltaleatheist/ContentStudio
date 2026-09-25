@@ -911,12 +911,77 @@ check('the shipped defaults stay inside the two-model budget, chapters included'
   }
 });
 
-check('the embedding model does not count against the budget', () => {
-  const roster = tasks.buildModelRoster([
-    { model: 'qwen3.8:27b', what: 'titles' },
-    { model: 'nomic-embed-text', what: 'key phrases' },
-  ], [routing.KEY_PHRASE_EMBEDDING_MODEL]);
-  eq(roster.models.length, 1, '274MB of embeddings was counted as a resident LLM');
+// ---------------------------------------------------------------- tags from the chapter list (#205)
+//
+// nomic-embed-text and key-phrase ranking are removed, not moved (LEDGER #205). A chaptered
+// item's tag pools are read off its chapter list, in the order the list carries, and kept only
+// where the transcript says them; a chapterless item has no phrase pool and its tags are the
+// Tags row's to write. `extractPools` is the generator's own entry point (private in TS only).
+const generatorModule = require(path.join(ROOT, 'services/metadata/metadata-generator.service.js'));
+const extractPools = (...args) => generatorModule.MetadataGeneratorService.extractPools(...args);
+
+const TAG_CONTENT =
+  'HOST Tonight we go to Jackson Parish, where the sheriff signs a prison labor contract. ' +
+  'HOST The prisoner exception in the Thirteenth Amendment is why this is legal. ' +
+  'CLIP Fox News said the prison labor contract saves money. ' +
+  'HOST The prisoner exception has to go.';
+const TAG_SUBJECTS = [
+  'Jackson Parish rents out its prisoners through prison labor',
+  'Fox News defends the prisoner exception on air',
+];
+const TAG_DETAILS = [
+  'The sheriff of Jackson Parish signs a prison labor contract for profit.',
+  'A Fox News segment praises the Thirteenth Amendment prisoner exception.',
+];
+
+check('a chaptered item\'s pools come off its chapter list, in chapter order, grounded', () => {
+  const warnings = [];
+  const pools = extractPools(TAG_CONTENT, TAG_SUBJECTS, TAG_DETAILS, 'fixture', warnings);
+  eq(pools.entities, ['Jackson Parish', 'Fox News', 'Thirteenth Amendment'], 'names, chapter 1 before chapter 2:');
+  // "prison labor" (the title) folds into "prison labor contract" (the detail) in its place.
+  eq(pools.phrases, ['jackson parish', 'prison labor contract', 'fox news', 'prisoner exception', 'thirteenth amendment'],
+    'phrases, folded to the longer form, chapter 1 before chapter 2:');
+  // "rents out" / "on air" are the chapter model's words, not the video's: never a pool entry.
+  for (const p of [...pools.entities, ...pools.phrases]) {
+    if (!entities.occursIn(TAG_CONTENT, p)) throw new Error(`"${p}" is not in the transcript`);
+  }
+  eq(warnings, [], 'a grounded pool declares nothing:');
+});
+
+check('tags on a chaptered item are exactly the chapter-derived pools, in that order', () => {
+  const pools = extractPools(TAG_CONTENT, TAG_SUBJECTS, TAG_DETAILS, 'fixture', []);
+  const assembled = tagsHashtags.assembleTags({
+    primaryPhrase: pools.phrases[0] || pools.entities[0] || '',
+    entities: pools.entities,
+    phrases: pools.phrases,
+    contentText: TAG_CONTENT.replace(/\b(HOST|CLIP) /g, ''),
+  });
+  const nonMisspelt = assembled.tags.filter((t) => entities.occursIn(TAG_CONTENT, t));
+  // The primary phrase is the chapter list's first phrase; the names follow; then the phrases
+  // not already taken, in chapter order.
+  eq(nonMisspelt, ['jackson parish', 'Fox News', 'Thirteenth Amendment', 'prison labor contract', 'prisoner exception'],
+    'the tags a chaptered item publishes:');
+  eq(assembled.notInContent, [], 'nothing ungrounded was even offered:');
+});
+
+check('a chapter list that shares nothing with the transcript is DECLARED, not filled from elsewhere', () => {
+  const warnings = [];
+  const pools = extractPools(TAG_CONTENT, ['An unrelated chapter about gardening'], [''], 'fixture', warnings);
+  eq(pools, { entities: [], phrases: [] }, 'no substitute pool:');
+  eq(warnings.length, 1, 'the empty pool is declared once:');
+});
+
+// That the Tags row writes a chapterless item's tags is asserted above ("an item WITHOUT
+// chapters plans the same routed units"); this is the pool half of the same item.
+check('a chapterless item has no phrase pool: no transcript n-grams stand in for a chapter list', () => {
+  const pools = extractPools(TAG_CONTENT, [], [], 'fixture', []);
+  eq(pools.phrases, [], 'the phrase pool:');
+});
+
+check('nomic-embed-text is gone from the routing module and the routing view', () => {
+  if ('KEY_PHRASE_EMBEDDING_MODEL' in routing) throw new Error('KEY_PHRASE_EMBEDDING_MODEL is still exported');
+  const view = routing.buildRoutingView(undefined, { host: 'http://localhost:11434', reachable: true, models: [] });
+  eq(Object.keys(view.chapters).sort(), ['generationAvailability', 'generationModel'], 'the chapters view:');
 });
 
 check('a third model is a DECLARED warning naming the fields, and never a refusal', () => {
@@ -1354,5 +1419,125 @@ check('a source with no sets THROWS rather than answering', () => {
   if (!threw) throw new Error('decidePrimary answered for a source with no items');
 });
 
-console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+// ---------------------------------------------------------------- editor Stories routing (#205)
+//
+// The Stories analyzer's model is the chapters row of the routing table, resolved per call
+// (LEDGER #204, #205). These drive the REAL handlers: story-ipc.js registers against a
+// recording ipcMain, and AIManagerService.runPlainRequest — the one door every routed call
+// goes through — is replaced by a recorder, so what is asserted is the model string the
+// handler actually hands the transport, and nothing is sent anywhere.
+
+async function checkAsync(name, fn) {
+  try {
+    await fn();
+    console.log('PASS  ' + name);
+  } catch (e) {
+    failures++;
+    console.log('FAIL  ' + name + ' :: ' + e.message);
+  }
+}
+
+const storyStub = require(STUB);
+let storyChannels = {};
+storyStub.ipcMain = { handle: (channel, fn) => { storyChannels[channel] = fn; } };
+const storyIpc = require(path.join(ROOT, 'services/editor/story-ipc.js'));
+
+/** Register the story handlers against a store holding `settings`; returns the channels. */
+function storyHandlersFor(settings) {
+  storyChannels = {};
+  const fakeStore = { get: (key) => settings[key] };
+  storyIpc.setupStoryAnalysisHandlers(fakeStore, {
+    promptSetsDir: path.join(__dirname, '..', 'electron', 'assets'),
+  });
+  return storyChannels;
+}
+
+const storyCalls = [];
+let storyAnswer = () => '{"title": "The Working Title"}';
+const realRunPlain = aiManager.AIManagerService.prototype.runPlainRequest;
+aiManager.AIManagerService.prototype.runPlainRequest = async function (prompt, model, what) {
+  storyCalls.push({ model, what, chars: prompt.length });
+  return storyAnswer(prompt, model, what);
+};
+
+// Port 9 (discard) refuses at once, so the local unload's POST fails fast and is only warned
+// about — the unload is housekeeping — without reaching a real Ollama.
+const NO_OLLAMA = 'http://127.0.0.1:9';
+const fakeEvent = { sender: { isDestroyed: () => false, send: () => {} } };
+const storySegments = [
+  { text: 'The council voted on the budget tonight.', startSeconds: 0, endSeconds: 20, speaker: 'host' },
+  { text: 'Then the mayor walked out of the meeting.', startSeconds: 20, endSeconds: 40, speaker: 'host' },
+];
+
+async function rejects(promise) {
+  try { await promise; } catch (e) { return e; }
+  throw new Error('expected a refusal, got an answer');
+}
+
+(async () => {
+  await checkAsync('Stories on a claude -p chapters selection call claude -p, and leave nothing to unload', async () => {
+    storyCalls.length = 0;
+    const ch = storyHandlersFor({ metadataRouting: { chapters: 'claude-cli' }, ollamaHost: NO_OLLAMA });
+    eq(await ch['story:routed-model'](), { model: 'claude-cli:opus', label: 'claude -p (Opus, subscription)', kind: 'cloud' },
+      'the read-only line:');
+    eq(await ch['story:suggest-title'](null, { text: ['budget vote', 'mayor walks out'] }), { title: 'The Working Title' },
+      'the title:');
+    eq(storyCalls.map((c) => c.model), ['claude-cli:opus'], 'the model the title call was sent on:');
+    eq(await ch['story:unload-model'](), { ok: true, released: null }, 'a cloud selection releases nothing:');
+  });
+
+  await checkAsync('the chapter analysis runs on the routed model, and a stop ends it as a stop', async () => {
+    storyCalls.length = 0;
+    const ch = storyHandlersFor({ metadataRouting: { chapters: 'claude-cli-sonnet' }, ollamaHost: NO_OLLAMA });
+    // The first call records its model and presses Stop, the way the renderer's button does.
+    storyAnswer = () => { ch['story:cancel'](); return '{}'; };
+    const err = await rejects(ch['story:analyze-chapters'](fakeEvent, { segments: storySegments }));
+    storyAnswer = () => '{"title": "The Working Title"}';
+    eq(err.name, 'AnalysisCancelledError', 'a stop is reported as a stop:');
+    eq(storyCalls.map((c) => c.model), ['claude-cli:sonnet'], 'the one call made before the stop:');
+  });
+
+  await checkAsync('Stories on a local chapters selection go to Ollama, and that model is what gets released', async () => {
+    storyCalls.length = 0;
+    const ch = storyHandlersFor({ metadataRouting: { chapters: 'qwen38-27b' }, ollamaHost: NO_OLLAMA });
+    eq((await ch['story:routed-model']()).model, 'ollama:qwen3.8:27b', 'the read-only line:');
+    await ch['story:suggest-title'](null, { text: ['budget vote'] });
+    eq(storyCalls.map((c) => c.model), ['ollama:qwen3.8:27b'], 'the model the title call was sent on:');
+    eq(await ch['story:unload-model'](), { ok: true, released: 'qwen3.8:27b' }, 'the bare Ollama name is unloaded:');
+    eq(await ch['story:unload-model'](), { ok: true, released: null }, 'and only once:');
+  });
+
+  await checkAsync('an absent routing store runs Stories on the shipped chapters default, as every run does', async () => {
+    const ch = storyHandlersFor({ ollamaHost: NO_OLLAMA });
+    const shipped = routing.routingOption('chapters', routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'chapters').defaultOptionId);
+    eq((await ch['story:routed-model']()).model, routing.routedModelString(shipped), 'the default:');
+  });
+
+  await checkAsync('a chapters routing this build cannot honour REFUSES by name, before any call', async () => {
+    storyCalls.length = 0;
+    for (const metadataRouting of [{ chapters: 'cogito-14b-from-the-old-picker' }, 'not-an-object']) {
+      const ch = storyHandlersFor({ metadataRouting, ollamaHost: NO_OLLAMA });
+      const routedErr = await rejects(ch['story:routed-model']());
+      if (!/metadataRouting/.test(routedErr.message)) throw new Error(`the refusal does not name the setting: ${routedErr.message}`);
+      await rejects(ch['story:analyze-chapters'](fakeEvent, { segments: storySegments }));
+      await rejects(ch['story:suggest-title'](null, { text: ['budget vote'] }));
+    }
+    eq(storyCalls.length, 0, 'calls sent on an unresolvable routing:');
+  });
+
+  await checkAsync('a local story prompt too long to send whole is refused, not middle-truncated', async () => {
+    storyCalls.length = 0;
+    const huge = ['word '.repeat(Math.ceil(aiManager.AIManagerService.OLLAMA_MAX_PROMPT_CHARS / 5) + 10)]; // a subject list is sent whole; raw text is capped by the prompt builder
+    const local = storyHandlersFor({ metadataRouting: { chapters: 'qwen38-27b' }, ollamaHost: NO_OLLAMA });
+    const err = await rejects(local['story:suggest-title'](null, { text: huge }));
+    eq(err.name, 'StoryPromptTooLongError', 'the refusal:');
+    eq(storyCalls.length, 0, 'calls sent:');
+    const cli = storyHandlersFor({ metadataRouting: { chapters: 'claude-cli' }, ollamaHost: NO_OLLAMA });
+    await cli['story:suggest-title'](null, { text: huge });
+    eq(storyCalls.map((c) => c.model), ['claude-cli:opus'], 'claude -p reads it whole:');
+  });
+
+  aiManager.AIManagerService.prototype.runPlainRequest = realRunPlain;
+  console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
+  process.exit(failures === 0 ? 0 : 1);
+})();

@@ -184,7 +184,10 @@ async function main() {
     videoTitle: args.source,
     promptSetName: args.channel,
     entities: entities.topEntities(transcript, 12),
-    keyPhrases: entities.candidateKeyPhrases(transcript).slice(0, 40),
+    // No phrase pool. The pool is read off the chapter list now (LEDGER #205), and the harness
+    // hands over a raw transcript with no chapters; a frequency-sorted n-gram list in its place
+    // would be the fallback that ruling removed, so the description runs without a Phrases line.
+    phrases: [],
     contentText: transcript,
     // Filled as each call returns, and read by the calls that take an earlier field as input
     // data. Reset per run below, so run 2 never reads run 1's titles.

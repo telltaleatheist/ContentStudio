@@ -12,8 +12,7 @@ import { PythonService } from './python-service';
 import { BinaryResolver } from './binary-resolver';
 import { AlignmentAudioService } from './alignment-audio-service';
 import * as assetManager from './asset-manager';
-import * as ollamaService from './ollama-service';
-import { analyzeChapters, suggestTitle, Segment } from './chapter-splitter';
+import { setupStoryAnalysisHandlers, StoryIpcDeps } from './story-ipc';
 import { ArchiveBusyError,
   ArchiveSync, comparablePath, destinationFor, DEFAULT_ARCHIVE_ROOT, DEFAULT_ARCHIVE_MOUNT_URL
 } from './archive-sync';
@@ -472,12 +471,18 @@ interface ProjectScanResult {
 }
 
 /**
+ * What the editor's channels need from the host beyond the store. Today that is only the
+ * story handlers' prompt-assets directory (story-ipc.ts says why).
+ */
+export type EditorIpcDeps = StoryIpcDeps;
+
+/**
  * Register every editor channel. Called from setupIpcHandlers, following the
  * setupPublishIpc precedent.
  */
-export function setupEditorIpc(store: Store<any>): void {
+export function setupEditorIpc(store: Store<any>, deps: EditorIpcDeps): void {
   setupEditorSessionHandlers();
-  setupStoryAnalysisHandlers();
+  setupStoryAnalysisHandlers(store, deps);
   setupTitleHandoffHandlers();
   setupMediaHandlers();
   setupEditorFileHandlers();
@@ -880,104 +885,6 @@ function setupEditorSessionHandlers(): void {
     } catch (err: any) {
       throw new Error(`Failed to parse transcript sidecar ${transcriptPath}: ${err.message}`);
     }
-  });
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Story analysis (local Ollama LLM)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Story-analysis handlers: local-LLM (Ollama) chapter splitting + title
- * suggestions for Story Mode. All synchronous request/response — the renderer
- * holds the transcript and passes the relevant segments in; the main process
- * only runs the LLM call + phrase→timestamp mapping. Failures reject with the
- * real error (Ollama down, empty response, unparseable) — never a fabricated
- * result.
- */
-function setupStoryAnalysisHandlers(): void {
-  // The single in-flight analysis (chapter split OR title suggestion). Only one runs at a time —
-  // the renderer gates on `analyzing`/`splitRunning` — so one controller is enough. 'story:cancel'
-  // aborts it, which kills the HTTP request and unwinds the pipeline loop on the next check.
-  let activeRun: AbortController | null = null;
-
-  // List locally-installed Ollama models (for the model picker).
-  ipcMain.handle('ollama:list-models', async (_event, payload?: { host?: string }) => {
-    return ollamaService.listModels(payload?.host);
-  });
-
-  // Stop whatever analysis is running. Safe to call when nothing is — returns `stopped: false`
-  // rather than throwing, so a stale click from a closed dialog is harmless.
-  ipcMain.handle('story:cancel', async () => {
-    if (!activeRun) return { stopped: false };
-    log.info('[Story] cancel requested — aborting the in-flight analysis');
-    activeRun.abort();
-    return { stopped: true };
-  });
-
-  // Split a span of transcript into consecutive subject chapters. The pipeline is many small
-  // single-question calls (~40 for a 12-minute video, ~390 for a 2-hour livestream), so step
-  // progress is streamed back to the calling renderer on 'story:analyze-progress'. The model is
-  // unloaded afterwards — a 14B left resident after a 25-minute run is memory nobody asked for.
-  ipcMain.handle(
-    'story:analyze-chapters',
-    async (event, payload: { segments: Segment[]; model: string; host?: string; consolidate?: boolean }) => {
-      const { segments, model, host, consolidate } = payload || ({} as any);
-      if (!Array.isArray(segments) || segments.length === 0) {
-        throw new Error('No transcript segments provided for chapter analysis.');
-      }
-      const controller = new AbortController();
-      activeRun = controller;
-      const generate = (prompt: string, opts?: ollamaService.GenerateOptions) =>
-        ollamaService.generate(model, prompt, { host, signal: controller.signal, ...opts });
-      const onProgress = (p: { phase: string; done: number; total: number }) => {
-        if (!event.sender.isDestroyed()) event.sender.send('story:analyze-progress', p);
-      };
-      try {
-        // `consolidate` is forwarded, NOT defaulted here — chapter-splitter owns the default (true).
-        // The renderer sends false when the span is a story it has already defined, where stage 5
-        // can only produce false merges. Defaulting in two places is how the two drift apart.
-        const chapters = await analyzeChapters(
-          segments, model, generate, onProgress, controller.signal, { consolidate }
-        );
-        return { chapters };
-      } finally {
-        if (activeRun === controller) activeRun = null;
-        // Unloaded on a stop too — a stopped run has no more claim on the memory than a finished
-        // one, and stopping is usually how a user reacts to the machine being busy.
-        await ollamaService.unload(model, host);
-      }
-    }
-  );
-
-  // Suggest a single title for a story's transcript text. NOT unloaded afterwards — titling runs
-  // once per story in a tight loop, and evicting between them would reload the model every time.
-  // The renderer unloads once when its loop ends (or is stopped) via 'story:unload-model'.
-  ipcMain.handle(
-    'story:suggest-title',
-    // `text` is either transcript text or a story's chapter labels. A subject list is the better
-    // input — no truncation, and it is the shape the eventual titling adapter conditions on — so
-    // the type must admit it rather than let an array cross a `string` boundary unremarked.
-    async (_event, payload: { text: string | string[]; model: string; host?: string }) => {
-      const { text, model, host } = payload || ({} as any);
-      const controller = new AbortController();
-      activeRun = controller;
-      const generate = (prompt: string, opts?: ollamaService.GenerateOptions) =>
-        ollamaService.generate(model, prompt, { host, signal: controller.signal, ...opts });
-      try {
-        const title = await suggestTitle(text, generate);
-        return { title };
-      } finally {
-        if (activeRun === controller) activeRun = null;
-      }
-    }
-  );
-
-  // Evict a model the renderer is done with (end of a titling loop, or a stop). Never throws.
-  ipcMain.handle('story:unload-model', async (_event, payload: { model: string; host?: string }) => {
-    const { model, host } = payload || ({} as any);
-    await ollamaService.unload(model, host);
-    return { ok: true };
   });
 }
 

@@ -413,6 +413,17 @@ export interface MetadataRoutingTask {
   modal: boolean;
 }
 
+/**
+ * What the editor's Stories analyzer will run on: the routing table's chapters row, as the
+ * main process resolves it on every story call (LEDGER #204, #205). Read-only in the editor —
+ * the picker it used to have is gone, and this is the line that took its place.
+ */
+export interface StoryRoutedModel {
+  model: string;
+  label: string;
+  kind: 'local' | 'cloud';
+}
+
 /** The Ollama host every plain-local option was checked against. */
 export interface MetadataRoutingHost {
   host: string;
@@ -422,19 +433,14 @@ export interface MetadataRoutingHost {
 }
 
 /**
- * The two models nobody picks, which still have to be reported.
+ * The chapters row's model and whether it is installed, as the main process reports it.
  *
- * Chapters run on every item that has a timestamped transcript, on `generationModel`.
- * Key-phrase ranking runs on every item, on `keyPhraseModel`. The modal shows both because
- * the warning is the part that was worth keeping when the picker went: a missing chapter
- * model means no chapters at all, and a missing embedding model means measurably worse tags
- * on a run that declares it.
+ * `keyPhraseModel` / `keyPhraseAvailability` sat here for nomic-embed-text until key-phrase
+ * ranking was removed (LEDGER #205); the dialog's "not installed" note went with them.
  */
 export interface MetadataRoutingChapters {
   generationModel: string;
-  keyPhraseModel: string;
   generationAvailability: MetadataRoutingAvailability;
-  keyPhraseAvailability: MetadataRoutingAvailability;
 }
 
 /**
@@ -816,19 +822,16 @@ declare global {
       removeTranscribeListeners: () => void;
       loadTranscript: (payload: { zipPath: string }) => Promise<any>;
 
-      // Story analysis (local Ollama)
-      ollamaListModels: (opts?: { host?: string }) =>
-        Promise<{ connected: boolean; models: Array<{ id: string; name: string }> }>;
+      // Story analysis. The model is the routing table's chapters row, resolved by the main
+      // process on every call (LEDGER #205); no payload names one.
+      storyRoutedModel: () => Promise<StoryRoutedModel>;
       analyzeStoryChapters: (payload: {
         segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
-        model: string;
-        host?: string;
         consolidate?: boolean;
       }) => Promise<{ chapters: any[] }>;
-      suggestStoryTitle: (payload: { text: string | string[]; model: string; host?: string }) =>
-        Promise<{ title: string }>;
+      suggestStoryTitle: (payload: { text: string | string[] }) => Promise<{ title: string }>;
       cancelStoryAnalysis: () => Promise<{ stopped: boolean }>;
-      unloadStoryModel: (payload: { model: string; host?: string }) => Promise<{ ok: boolean }>;
+      unloadStoryModel: () => Promise<{ ok: boolean; released: string | null }>;
       onStoryAnalyzeProgress: (callback: (p: { phase: string; done: number; total: number }) => void) => void;
       removeStoryAnalyzeProgressListener: () => void;
 
@@ -1979,22 +1982,20 @@ export class ElectronService {
     return this.editorBridge.loadTranscript(payload);
   }
 
-  // ── Story analysis (local Ollama) ───────────────────────────────────────────
+  // ── Story analysis (the chapters routing) ───────────────────────────────────
 
-  async ollamaListModels(host?: string): Promise<{ connected: boolean; models: Array<{ id: string; name: string }> }> {
-    return this.editorBridge.ollamaListModels(host ? { host } : undefined);
+  async storyRoutedModel(): Promise<StoryRoutedModel> {
+    return this.editorBridge.storyRoutedModel();
   }
 
   async analyzeStoryChapters(payload: {
     segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
-    model: string;
-    host?: string;
     consolidate?: boolean;
   }): Promise<{ chapters: any[] }> {
     return this.editorBridge.analyzeStoryChapters(payload);
   }
 
-  async suggestStoryTitle(payload: { text: string | string[]; model: string; host?: string }): Promise<{ title: string }> {
+  async suggestStoryTitle(payload: { text: string | string[] }): Promise<{ title: string }> {
     return this.editorBridge.suggestStoryTitle(payload);
   }
 
@@ -2002,8 +2003,8 @@ export class ElectronService {
     return this.editorBridge.cancelStoryAnalysis();
   }
 
-  async unloadStoryModel(payload: { model: string; host?: string }): Promise<{ ok: boolean }> {
-    return this.editorBridge.unloadStoryModel(payload);
+  async unloadStoryModel(): Promise<{ ok: boolean; released: string | null }> {
+    return this.editorBridge.unloadStoryModel();
   }
 
   onStoryAnalyzeProgress(callback: (p: { phase: string; done: number; total: number }) => void): void {

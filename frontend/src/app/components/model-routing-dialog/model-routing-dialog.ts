@@ -7,7 +7,6 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatSelectModule } from '@angular/material/select';
 import {
   ElectronService,
-  MetadataRoutingChapters,
   MetadataRoutingHost,
   MetadataRoutingOption,
   MetadataRoutingTask,
@@ -137,27 +136,13 @@ export type ModelRoutingDialogResult = boolean | undefined;
           <mat-icon>info_outline</mat-icon>
           <div>
             <p>
-              <strong>Tags</strong> on a chaptered item are assembled in code from the video's own
-              words and use no model at all; a chapterless item's tags run on the small local model
-              ({{ smallModelLabel() }}). Hashtags follow the tags.
+              <strong>Tags</strong> on a chaptered item are assembled in code from the names and
+              phrases its chapter list shares with the video's own words, and use no model at all; a
+              chapterless item's tags are written by the Tags row ({{ tagsModelLabel() }}). Hashtags
+              follow the tags.
             </p>
           </div>
         </div>
-
-        @if (chapters(); as chapter) {
-          @if (chapter.keyPhraseAvailability === 'not-installed') {
-            <div class="pipeline-note">
-              <mat-icon>auto_stories</mat-icon>
-              <div>
-                <p class="row-note missing">
-                  {{ chapter.keyPhraseModel }} is not installed on {{ localModels().host }} — key phrases for
-                  tags and hashtags will be ranked by frequency instead, and runs will say so in their
-                  warnings.
-                </p>
-              </div>
-            </div>
-          }
-        }
 
         @if (saveError(); as message) {
           <div class="routing-error save-error">
@@ -306,12 +291,6 @@ export class ModelRoutingDialog implements OnInit {
    */
   readonly localModels = signal<MetadataRoutingHost>({ host: '', reachable: false, installedCount: 0 });
 
-  /**
-   * The always-on chapter pipeline's models. Null until the payload loads — never rendered
-   * as a guess, for the same reason `localModels` starts unreachable.
-   */
-  readonly chapters = signal<MetadataRoutingChapters | null>(null);
-
   /** Selections as they were when the payload loaded — Save stays off until this differs. */
   private initialSelections: Record<string, string> = {};
 
@@ -323,8 +302,8 @@ export class ModelRoutingDialog implements OnInit {
     return keys.some(key => current[key] !== initial[key]);
   });
 
-  /** What a chapterless item's tags actually run on, named from the payload. */
-  readonly smallModelLabel = computed(() => {
+  /** What a chapterless item's tags run on: the Tags row's current selection (#204). */
+  readonly tagsModelLabel = computed(() => {
     const tags = this.tasks().find(task => task.id === 'tags');
     const chosen = tags?.options.find(option => option.id === this.selections()['tags']);
     return chosen?.label ?? 'the registry default';
@@ -355,7 +334,6 @@ export class ModelRoutingDialog implements OnInit {
       // Baseline first: hasChanges() must never see new selections against a stale baseline.
       this.initialSelections = { ...selections };
       this.localModels.set(routing.localModels);
-      this.chapters.set(routing.chapters);
       this.tasks.set(routing.tasks);
       this.selections.set(selections);
       this.phase.set('ready');

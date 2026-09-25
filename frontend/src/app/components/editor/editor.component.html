@@ -146,14 +146,11 @@
     <div class="split-modal" (click)="$event.stopPropagation()">
       <div class="split-head">
         <span class="split-title">Split “{{ splitStoryTitle }}” into chapters</span>
-        <select class="split-model" [value]="selectedOllamaModel"
-                (change)="onOllamaModelChange($any($event.target).value)"
-                title="Model used for chapter detection — a larger model finds more subject breaks">
-          <option *ngIf="ollamaModels.length === 0" value="">No models — is Ollama running?</option>
-          <option *ngFor="let m of ollamaModels" [value]="m.id">{{ m.name }}</option>
-        </select>
+        <!-- Read-only: the model is the chapters row of Settings → Routing (LEDGER #205), not a
+             pick made here. -->
+        <span class="split-model" [class.missing]="!!storyModelError" [title]="storyModelLine">{{ storyModelLine }}</span>
         <button class="split-rerun" (click)="startSplit()"
-                [disabled]="splitRunning || !selectedOllamaModel" title="Detect chapters with the chosen model">
+                [disabled]="splitRunning" title="Detect chapters on the routed model">
           {{ splitRunning ? '…' : (splitChapters.length ? 'Re-run' : 'Start') }}
         </button>
         <button class="split-x" (click)="cancelSplit()" title="Close">×</button>
@@ -161,10 +158,10 @@
 
       <!-- Idle: nothing runs until Start is pressed (no model loads on open). -->
       <div class="split-idle" *ngIf="!splitRunning && !splitError && !splitChapters.length">
-        Pick a model above, then hit <b>Start</b> to detect chapters for this story.
+        Hit <b>Start</b> to detect chapters for this story.
       </div>
       <div class="split-loading" *ngIf="splitRunning">
-        <div class="split-loading-text">{{ aiPhase || 'Detecting chapters' }} · {{ selectedOllamaModel }}</div>
+        <div class="split-loading-text">{{ aiPhase || 'Detecting chapters' }} · {{ storyModel?.label || '' }}</div>
         <div class="split-progress">
           <div class="split-progress-fill" [class.indeterminate]="aiProgressTotal <= 0"
                [style.width.%]="aiProgressTotal > 0 ? aiProgressPct : 100"></div>
@@ -296,15 +293,11 @@
            modal. -->
       <div class="stories-pane" *ngIf="storyMode">
         <div class="stories-toolbar">
-          <select class="story-model" [value]="selectedOllamaModel"
-                  (change)="onOllamaModelChange($any($event.target).value)"
-                  [title]="ollamaConnected ? 'Local Ollama model used for analysis' : 'Ollama not detected — start it, then refresh'">
-            <option *ngIf="ollamaModels.length === 0" value="">No models — is Ollama running?</option>
-            <option *ngFor="let m of ollamaModels" [value]="m.id">{{ m.name }}</option>
-          </select>
-          <button class="story-refresh" (click)="refreshOllamaModels()" title="Refresh model list">⟳</button>
+          <!-- Read-only: the model is the chapters row of Settings → Routing (LEDGER #205). The
+               picker that stood here chose a model the routing table never saw. -->
+          <span class="story-model" [class.missing]="!!storyModelError" [title]="storyModelLine">{{ storyModelLine }}</span>
           <button class="story-analyze" (click)="analyzeTimeline()"
-                  [disabled]="analyzing || !selectedOllamaModel || transcriptState !== 'ready'"
+                  [disabled]="analyzing || transcriptState !== 'ready'"
                   [title]="hasStories()
                       ? 'For each story: derive its chapters, then a working title from them. Skips stories whose chapters are already current and titles you typed yourself.'
                       : 'Split the whole timeline into stories by subject'">

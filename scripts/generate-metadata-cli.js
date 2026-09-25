@@ -5,7 +5,7 @@
  *
  * WHY THIS EXISTS, and how it differs from prompt-harness/run.js. The harness plans and runs
  * the routed FIELD units against a fixture transcript with no timings, so it deliberately never
- * touches the chapter pipeline, Whisper, the entity/key-phrase pools, the analytics insights
+ * touches the chapter pipeline, Whisper, the name/phrase pools, the analytics insights
  * block or the output writer. This drives the whole thing through the app's own two entry
  * points — `InputHandlerService.processMultipleInputs` then `MetadataGeneratorService.generate`
  * — which is exactly the split ipc-handlers makes between its transcription job and its AI job.
@@ -46,7 +46,7 @@
  *
  * PREREQ:
  *   npm run build:electron
- *   ollama serve   (qwen3.8:27b, qwen3.5:9b, nomic-embed-text)
+ *   ollama serve   (qwen3.8:27b, qwen3.5:9b)
  *
  * USAGE:
  *   node scripts/generate-metadata-cli.js --input "/path/video.mov" --channel youtube-telltale
@@ -122,8 +122,8 @@ Field selection (no flag = every field the channel publishes):
                        Granularity notes, printed again at run time:
                          - description = ONE unit that makes two calls (hook then body). The
                            hook and the body cannot be run separately.
-                         - tags on a chaptered item are assembled in CODE from the entity and
-                           key-phrase pools; no model writes them and no prompt is involved.
+                         - tags on a chaptered item are assembled in CODE from the pools its
+                           chapter list yields; no model writes them and no prompt is involved.
                          - hashtags are always derived in code from the tags and titles.
                          - thumbnail_text normally reads the titles as input data; without
                            --titles it runs with neither that block nor its cross-field check.

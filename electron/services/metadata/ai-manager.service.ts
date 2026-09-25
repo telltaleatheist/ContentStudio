@@ -232,8 +232,11 @@ export class AIManagerService {
   // A full metadata JSON can exceed 2000 tokens; too small a budget truncates the
   // JSON mid-object and fails parsing. 4096 leaves ample room in the 32k context.
   private static readonly OLLAMA_NUM_PREDICT = 4096;
-  // Max prompt chars before truncation: (context - response - margin) * ~3.5 chars/token
-  private static readonly OLLAMA_MAX_PROMPT_CHARS = Math.floor(
+  // Max prompt chars before truncation: (context - response - margin) * ~3.5 chars/token.
+  // Public because the editor's Stories handlers read it: chapter-splitter refuses rather
+  // than summarize a truncated chapter, and on a local route the refusal has to happen before
+  // makeOllamaRequest would middle-truncate (editor-ipc.ts, LEDGER #205).
+  static readonly OLLAMA_MAX_PROMPT_CHARS = Math.floor(
     (AIManagerService.OLLAMA_NUM_CTX - AIManagerService.OLLAMA_NUM_PREDICT - 512) * 3.5
   );
 

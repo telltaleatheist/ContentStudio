@@ -75,7 +75,6 @@ import { DigestChapter } from './chapter-digest';
 import { JobModelLifecycle } from './model-lifecycle';
 import {
   CHAPTER_PIPELINE_MODELS,
-  KEY_PHRASE_EMBEDDING_MODEL,
   METADATA_ROUTING_OPTIONS,
   MetadataRoutingOption,
   MetadataRoutingTaskId,
@@ -104,8 +103,8 @@ import type { FieldContentMode } from './chapter-digest';
  * A metadata field a unit can be responsible for.
  *
  * `hashtags`, `tags` and `spoken_keywords` are not routable tasks in the chaptered path.
- * Hashtags and tags are ASSEMBLED IN CODE from the entity and key-phrase pools (spec §4,
- * §6.2, §6.3 — tags-hashtags.ts); spoken keywords exist only in the shorts prompt set and
+ * Hashtags and tags are ASSEMBLED IN CODE from the pools the chapter list yields (spec §4,
+ * §6.2, §6.3; LEDGER #205 — tags-hashtags.ts); spoken keywords exist only in the shorts prompt set and
  * ride with whichever group absorbs the sections no unit claimed.
  *
  * `description_hook` is the first ~150 characters of the description, generated as its own
@@ -191,14 +190,22 @@ export interface MetadataRunContext {
   /** The loaded prompt set, which in this app IS the channel. */
   promptSetName: string;
   /**
-   * Proper nouns measured out of the CONTENT text (entity-extraction.ts), best-first.
+   * The names the video is about. On a chaptered item, the proper nouns the CHAPTER LIST
+   * carries, kept where the content text says them, in chapter order (tags-hashtags.ts
+   * chapterPools, LEDGER #205); on a chapterless item, measured out of the content text
+   * (entity-extraction.ts), best-first.
    *
    * One extraction, three consumers — the description prompts, the assembled tags and the
    * derived hashtags — so those three cannot disagree about who the video is about.
    */
   entities: string[];
-  /** Key phrases ranked against the content text (key-phrases.ts), best-first. */
-  keyPhrases: string[];
+  /**
+   * The phrases the chapter list shares with the content text, in chapter order. EMPTY on a
+   * chapterless item: there is no chapter list to take them from, no ranking to put in its
+   * place (the embedding ranking went with nomic-embed-text, #205), and that item's tags are
+   * written by the Tags routing row instead.
+   */
+  phrases: string[];
   /**
    * The app's CONTENT text: the ad-free editor transcript when one is linked, the final
    * export's otherwise (`contentTextOf`). Tag assembly tests every candidate against it,
@@ -642,16 +649,15 @@ export interface ModelRoster {
 /**
  * The roster, as a pure function so the count and the warning can be asserted without a model.
  *
- * Embedding models are EXCLUDED, and that is a real distinction rather than an exemption:
- * nomic-embed-text is 274MB and loads beside a generation model rather than instead of it, so
- * counting it against a budget that exists to stop multi-GB reloads would misreport the cost.
+ * It used to take an exclusion list for the embedding model, which loaded beside a generation
+ * model rather than instead of it. Key-phrase ranking and nomic-embed-text are gone (LEDGER
+ * #205), so every model a run loads counts.
  */
-export function buildModelRoster(entries: ModelRosterEntry[], excludeModels: string[] = []): ModelRoster {
-  const excluded = new Set(excludeModels);
+export function buildModelRoster(entries: ModelRosterEntry[]): ModelRoster {
   const byModel: Record<string, string[]> = {};
   const models: string[] = [];
   for (const entry of entries) {
-    if (!entry.model || excluded.has(entry.model)) continue;
+    if (!entry.model) continue;
     if (!byModel[entry.model]) {
       byModel[entry.model] = [];
       models.push(entry.model);
@@ -1125,7 +1131,7 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
     `[MetadataTasks] this item ${hasChapters ? 'HAS' : 'has NO'} chapters, so its tags are ` +
       (publishesTags
         ? hasChapters
-          ? 'assembled in code from the entity and key-phrase pools and no model writes them'
+          ? 'assembled in code from the pools its chapter list yields and no model writes them'
           : `written by the model the "Tags" routing selection names, because there is no chapter list for those pools to be measured against`
         : 'not published by this channel at all') +
       `; hashtags ${assemblesHashtags ? 'are' : 'are not'} derived in code`
@@ -1240,15 +1246,12 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
    *
    * Everything that makes a local model resident inside this run counts: every field's call,
    * the chapter pipeline's generation model, the summarizer's if the transcript was long enough
-   * to need it. The embedding model does not — see buildModelRoster.
+   * to need it.
    */
-  const roster = buildModelRoster(
-    [
-      ...built.filter((b) => b.local).map((b) => ({ model: b.model, what: b.field })),
-      ...alsoLoads,
-    ],
-    [KEY_PHRASE_EMBEDDING_MODEL]
-  );
+  const roster = buildModelRoster([
+    ...built.filter((b) => b.local).map((b) => ({ model: b.model, what: b.field })),
+    ...alsoLoads,
+  ]);
   log.info(
     `[MetadataTasks] this run loads ${roster.models.length} local model(s): ${roster.summary}` +
       (roster.overBudget ? '' : ` (budget is ${LOCAL_MODEL_BUDGET})`)
@@ -1493,23 +1496,26 @@ async function usableTagsOrThrow(
 }
 
 /**
- * Tags and hashtags, built in code from the pools this run already measured.
+ * Tags and hashtags, built in code from the pools this run read off the chapter list.
  *
  * Spec §2's ownership ruling, applied: neither field is ever emitted by a model on the
  * chaptered path. What that buys, beyond a saved call, is a property no model can offer —
  * every tag published came out of the content text, tested by `occursIn`, because YouTube
  * treats a tag the video does not mention as a spam signal (§6.2).
  *
- * The PRIMARY PHRASE is the top-ranked key phrase, which is the phrase the embedding ranking
- * put closest to the whole document. The CATEGORY terms are the highest-ranked SINGLE WORDS in
- * the same ranking — one word is what makes a term broad, and being high in the ranking is what
- * makes it this video's broad term rather than any video's. (They were briefly taken from the
- * TAIL of the ranking, on the theory that the least document-specific phrase is the most
- * general one. It is not: the tail of a spoken transcript is "lies told" and "book titled".)
+ * THE POOLS COME FROM THE CHAPTER LIST (LEDGER #205; tags-hashtags.ts chapterPools), in the
+ * order the chapter list carries, which is the only ranking there is now. The embedding
+ * ranking that used to put a "primary phrase" at the top and take "category" words from the
+ * top of its single-word tail went with nomic-embed-text. So the PRIMARY PHRASE is the first
+ * grounded phrase of the first chapter — the first thing the video is about, said the way the
+ * video says it — and there are NO CATEGORY TERMS: a category was "the highest-ranked single
+ * word", and a chapter list carries no ranking to take one from. A word chosen by position
+ * would be a fabricated ranking wearing the old name (Law 1), so assembleTags no longer takes
+ * them and the budget goes unspent rather than filled.
  *
- * Nothing here throws on an empty pool: a video whose transcript yielded no rankable phrase
- * gets no tags and says so in the log. Manufacturing one from the filename would be inventing
- * an input.
+ * Nothing here throws on an empty pool: a video whose chapter list shares no grounded name or
+ * phrase with its transcript gets no tags, and the run's warnings say so (extractPools).
+ * Manufacturing one from the filename would be inventing an input.
  */
 function assembleCodeOwnedFields(
   aiManager: AIManagerService,
@@ -1520,10 +1526,9 @@ function assembleCodeOwnedFields(
 
   if (run.plan.assembleTags) {
     const assembled = assembleTags({
-      primaryPhrase: ctx.keyPhrases[0] || ctx.entities[0] || '',
+      primaryPhrase: ctx.phrases[0] || ctx.entities[0] || '',
       entities: ctx.entities,
-      keyPhrases: ctx.keyPhrases,
-      categories: ctx.keyPhrases.filter((p) => !p.includes(' ')).slice(0, 3),
+      phrases: ctx.phrases,
       // Without the speaker labels, for the same reason the entity pool is measured without
       // them: this is the "does the video actually say this?" test that keeps a tag off a video
       // it does not belong to, and HOST/CLIP/UNSURE are words the app wrote, not words the video
@@ -1545,7 +1550,7 @@ function assembleCodeOwnedFields(
     const titles = Array.isArray(merged.titles) ? (merged.titles as unknown[]) : [];
     const hashtags = buildHashtags({
       entities: ctx.entities,
-      keyPhrases: ctx.keyPhrases,
+      phrases: ctx.phrases,
       // Deduped against the FIRST title, which is the one the operator publishes by default.
       title: typeof titles[0] === 'string' ? (titles[0] as string) : ctx.videoTitle,
       // The channel's own brand tag, when the prompt set declares channel_tags. Never

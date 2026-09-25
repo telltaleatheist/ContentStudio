@@ -73,10 +73,10 @@ export interface MetadataRoutingOption {
  * reports whether it is installed before a run spends an hour finding out.
  *
  * ONE MODEL, where this used to name two. `nomic-embed-text` was the chapter pipeline's
- * junction scorer and the chapter pipeline no longer scores junctions; it is still used, by
- * key-phrase ranking, and it is declared where THAT reads it (KEY_PHRASE_EMBEDDING_MODEL
- * below). Leaving it in a constant called CHAPTER_PIPELINE_MODELS would say a run's chapters
- * depend on a model they cannot even reach.
+ * junction scorer, then key-phrase ranking's embedding model, and since 2026-09-25 it is
+ * nothing (LEDGER #205): key-phrase ranking was removed with it, and the pools the tags read
+ * come off the chapter list (tags-hashtags.ts chapterPools). No embedding model is declared
+ * anywhere in this app.
  */
 /**
  * The model that extracts evidence from a transcript, on the ONE path that still asks for it.
@@ -112,17 +112,6 @@ export const CHAPTER_PIPELINE_MODELS = {
   /** Reads the whole transcript in one call, then writes each chapter's detail. */
   generation: 'qwen3.8:27b',
 } as const;
-
-/**
- * The embedding model key-phrase ranking uses (key-phrases.ts), declared for the same reason
- * the chapter model is: the routing modal can say it is missing before a run finds out.
- *
- * Its absence is NOT a failure — the ranking falls to frequency and the run RECORDS that as a
- * declared mode in its warnings — so the modal reports it as a quality notice rather than a
- * blocker. It is also the one local model this app loads that does NOT count against the
- * two-model budget: 274MB loads beside a generation model rather than instead of it.
- */
-export const KEY_PHRASE_EMBEDDING_MODEL = 'nomic-embed-text';
 
 export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
   sonnet5: { kind: 'cloud', label: 'Claude Sonnet 5', model: 'claude:claude-sonnet-5' },
@@ -327,9 +316,10 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     /**
      * READ ON THE TEXT-SUBJECT PATH, not on the chaptered one.
      *
-     * An item WITH chapters has its tags assembled in code from the entity and key-phrase
-     * pools (metadata spec §4 and §6.2, tags-hashtags.ts): no model writes them, so this
-     * selection is not consulted for that item and the run's log says so per item.
+     * An item WITH chapters has its tags assembled in code from the pools its chapter list
+     * yields (metadata spec §4 and §6.2; LEDGER #205; tags-hashtags.ts chapterPools): no model
+     * writes them, so this selection is not consulted for that item and the run's log says so
+     * per item.
      *
      * An item WITHOUT chapters — a text subject the operator typed, an import whose chapter
      * pipeline came back short — has no chapter list for those pools to be measured against, so
@@ -827,28 +817,21 @@ export interface MetadataRoutingHostView {
 }
 
 /**
- * The two models nobody chooses, which still have to be REPORTED.
+ * The chapter model, reported beside the rows.
  *
- * Chapters run on every item with a timestamped transcript, on CHAPTER_PIPELINE_MODELS.
- * Key-phrase ranking runs on every item, on KEY_PHRASE_EMBEDDING_MODEL. Nobody picks either,
- * so there is no row to hang a "not installed" warning off — but the warning is the part that
- * was worth having: a stored `cogito:14b` selection once cost a job its chapters an hour into
- * the run, and the probe exists so that is said BEFORE the run rather than after it.
+ * Chapters run on every item with a timestamped transcript, on the chapters row's selection,
+ * reported through the same function generation consults so the modal can never say one
+ * model while the run uses another. The warning is the part worth having: a stored
+ * `cogito:14b` selection once cost a job its chapters an hour into the run, and the probe
+ * exists so that is said BEFORE the run rather than after it.
  *
- * The two are separate fields because they are not the same failure. Without the chapter
- * model an item gets no chapters at all; without the embedding model the run continues with
- * frequency-ranked key phrases and declares it in its warnings, which the user should get to
- * decline in advance.
- *
- * `keyPhrase*` used to be `embedding*` on this same view, when the embedding model was the
- * chapter pipeline's junction scorer. It is renamed rather than repurposed: reporting it
- * under chapters would say a run's chapters depend on it, and since 2026-08-22 they do not.
+ * `keyPhraseModel` / `keyPhraseAvailability` sat beside these for nomic-embed-text, which
+ * key-phrase ranking loaded on every item. That ranking was removed on 2026-09-25 (LEDGER
+ * #205) and the two fields went with it: there is no second model to report.
  */
 export interface MetadataRoutingChaptersView {
   generationModel: string;
-  keyPhraseModel: string;
   generationAvailability: MetadataRoutingAvailability;
-  keyPhraseAvailability: MetadataRoutingAvailability;
 }
 
 export interface MetadataRoutingView {
@@ -913,10 +896,8 @@ export function buildRoutingView(stored: unknown, inventory: OllamaInventory): M
       const chapterOption = resolveChapterModelOption(resolved);
       return {
         generationModel: chapterOption.model,
-        keyPhraseModel: KEY_PHRASE_EMBEDDING_MODEL,
         generationAvailability:
           chapterOption.kind === 'cloud' ? ('cloud' as const) : chapterModel(chapterOption.model),
-        keyPhraseAvailability: chapterModel(KEY_PHRASE_EMBEDDING_MODEL),
       };
     })(),
     localModels: {
