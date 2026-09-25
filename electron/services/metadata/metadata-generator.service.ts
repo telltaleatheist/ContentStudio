@@ -274,7 +274,9 @@ export class MetadataGeneratorService {
 
       // Progress callback passed through so the handler can send 'preparing' events.
       const inputHandler = new InputHandlerService(
-        whisperService, runOutputDir, params.progressCallback, speakerTagger);
+        whisperService, runOutputDir,
+        { jobName: params.jobName ?? null, promptSet: params.promptSet ?? null },
+        params.progressCallback, speakerTagger);
 
       /**
        * The transcript's direct-pass ceiling follows the ROUTED field models, not the legacy

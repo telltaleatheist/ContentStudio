@@ -470,7 +470,7 @@ export class Inputs implements OnInit, OnDestroy {
     if (!check?.exists) return '';
     const when = check.savedAt ? new Date(check.savedAt).toLocaleString() : 'an earlier run';
     return `Skip Whisper and reuse the transcript made ${when}` +
-      (check.whisperModel ? ` by Whisper ${check.whisperModel}` : '') +
+      (check.whisperModel ? ` by ${check.whisperModel}` : '') +
       '. Untick to transcribe again and replace it.';
   }
 

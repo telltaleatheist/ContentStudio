@@ -1,12 +1,25 @@
 /**
- * Whisper Service - Video Transcription using whisper.cpp
+ * The pipeline's transcriber — Crucible's `asr` job on `qwen3-asr-1.7b` (P5, LEDGER #206).
  *
- * High-level service that orchestrates transcription workflow:
- * 1. Extract audio from video using FFmpeg
- * 2. Transcribe audio using Whisper
- * 3. Parse and return SRT segments
+ * The class keeps its old name because every caller knows it by that name (the queue, the
+ * episode splitter, the metadata CLI); P10 renames it when whisper.cpp leaves the app. Nothing
+ * here, or anywhere the pipeline reaches, calls whisper-bridge any more: #206 "no more local
+ * whisper ... until then nothing may call them".
  *
- * Uses bridge libraries for binary management.
+ * One transcription:
+ *  1. ffmpeg extracts 16 kHz mono FLAC (the upload) — and, when a speaker tagger runs, the
+ *     16-bit WAV it scores, extracted first and the FLAC made from it, so the video is decoded
+ *     once.
+ *  2. The context is built from what the item already knows (services/transcription/
+ *     asr-facts.ts): the verbatim instruction (#203) and every fact that could spell a proper
+ *     noun. The filename-title seed whisper.cpp got through `--prompt` rides in it.
+ *  3. One Crucible asr job (services/transcription/crucible-transcription.ts →
+ *     electron/crucible/asr.ts), progress mapped onto this service's bar.
+ *  4. `transcript.json` → `SRTSegment[]` cut at sentence punctuation at the aligner's word
+ *     times (crucible-transcript.ts), and the words themselves kept.
+ *  5. Speaker tagging per caption, while the WAV is still on disk.
+ *
+ * Every failure fails the item with the server's own message; nothing falls back (Law 1).
  */
 
 import { EventEmitter } from 'events';
@@ -18,18 +31,17 @@ import * as log from 'electron-log';
 
 import {
   getRuntimePaths,
-  getWhisperLibraryPath,
-  getSelectedWhisperModel,
   verifyBinary,
   FfmpegBridge,
   FfprobeBridge,
-  WhisperBridge,
-  type WhisperProgress,
 } from '../../lib/bridges';
 // TYPE-ONLY, and that matters: speaker-tagging.service.ts imports `SRTSegment` from this file,
 // so a value import here would be a runtime cycle. `import type` is erased at compile time, and
 // the two modules only ever meet through the object the caller passes in.
 import type { SpeakerTagger, SpeakerTaggingSummary } from './speaker-tagging.service';
+import { pipelineAsrContext, type PipelineItemFactsInput } from '../transcription/asr-facts';
+import { transcribeOnCrucible } from '../transcription/crucible-transcription';
+import { transcriptToSegments, type TranscriptWord } from '../transcription/crucible-transcript';
 
 export interface TranscriptionProgress {
   jobId: string;
@@ -44,347 +56,181 @@ export interface SRTSegment {
   end: string;
   text: string;
   /** Speaker/track id this segment is attributed to (e.g. "mic", "screen").
-   *  Set only for imported transcripts that carry source attribution; Whisper
-   *  output leaves it undefined. */
+   *  Set only for imported transcripts that carry source attribution, or by speaker tagging;
+   *  a fresh transcription leaves it undefined. */
   speaker?: string;
   /** Human-readable speaker label (e.g. "Mic", "Screen audio"). */
   speakerLabel?: string;
+}
+
+/** What the caller knows about the item, for the context (asr-facts.ts). `videoPath` is the call's own. */
+export type TranscriptionFacts = Omit<PipelineItemFactsInput, 'videoPath'>;
+
+export interface TranscribeVideoOptions {
+  speakerTagger?: SpeakerTagger;
+  /** The facts that seed the context. REQUIRED as an object: `{}` states "nothing known beyond the file". */
+  facts: TranscriptionFacts;
 }
 
 interface TranscriptionJob {
   id: string;
   videoPath: string;
   tempDir: string;
-  audioPath: string | null;
-  aborted: boolean;
+  abort: AbortController;
 }
 
 export class WhisperService extends EventEmitter {
   private ffmpeg: FfmpegBridge;
   private ffprobe: FfprobeBridge;
-  private whisper: WhisperBridge;
   private activeJobs = new Map<string, TranscriptionJob>();
 
   constructor() {
     super();
-
-    log.info('[WhisperService] Initializing...');
-    log.info('[WhisperService] Platform:', process.platform);
-    log.info('[WhisperService] Architecture:', process.arch);
-
-    // Get runtime paths
     const paths = getRuntimePaths();
-
-    // Verify downloaded prerequisites before constructing process bridges.
+    // Only ffmpeg and ffprobe are local now; the model is Crucible's.
     try {
       verifyBinary(paths.ffmpeg, 'FFmpeg');
       verifyBinary(paths.ffprobe, 'FFprobe');
-      verifyBinary(paths.whisper, 'Whisper');
-      const selectedModel = path.join(paths.whisperModelsDir, `ggml-${getSelectedWhisperModel()}.bin`);
-      if (!fs.existsSync(selectedModel)) throw new Error(`Whisper model not found at: ${selectedModel}`);
     } catch (error) {
-      throw new Error(`Transcription components are not installed. Open Settings → Transcription Downloads and install FFmpeg, the Whisper engine, and your selected model. ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`Transcription needs FFmpeg, which is not installed. Open Settings → Transcription Downloads and install FFmpeg. ${error instanceof Error ? error.message : String(error)}`);
     }
-
-    // Initialize bridges
     this.ffmpeg = new FfmpegBridge(paths.ffmpeg);
     this.ffprobe = new FfprobeBridge(paths.ffprobe);
-    this.whisper = new WhisperBridge({
-      binaryPath: paths.whisper,
-      modelsDir: paths.whisperModelsDir,
-      libraryPath: getWhisperLibraryPath(),
-    });
-
-    // Forward whisper progress events
-    this.whisper.on('progress', (progress: WhisperProgress) => {
-      const job = this.findJobByProcessId(progress.processId);
-      if (job) {
-        this.emit('progress', {
-          jobId: job.id,
-          videoPath: job.videoPath,
-          percent: Math.round(15 + (progress.percent * 0.85)), // Scale 0-100 to 15-100
-          message: progress.message,
-        } as TranscriptionProgress);
-      }
-    });
-
-    log.info('[WhisperService] Initialized successfully');
-    log.info('[WhisperService] FFmpeg:', paths.ffmpeg);
-    log.info('[WhisperService] Whisper:', paths.whisper);
-    log.info('[WhisperService] Models:', paths.whisperModelsDir);
   }
 
   /**
-   * Find job by whisper process ID
-   */
-  private findJobByProcessId(processId: string): TranscriptionJob | undefined {
-    // The processId from whisper matches the jobId we pass
-    return this.activeJobs.get(processId);
-  }
-
-  /**
-   * Transcribe a video file to SRT format
-   * Returns job ID for tracking progress
+   * Transcribe one video.
    *
    * `speakerTagger`, when the run has one, scores every caption against the operator's enrolled
-   * voice before this method returns. It happens HERE, inside the try block, for one reason: the
-   * 16 kHz mono WAV the tagger needs is the audio whisper.cpp just read, and the very next thing
-   * this method does is delete it. Tagging anywhere else would mean extracting the audio a second
-   * time — a second decode of a 90-minute export, to hear the same samples.
+   * voice before this method returns, while the WAV it needs is still on disk (the very next
+   * thing this method does is delete it).
    */
   async transcribeVideo(
     videoPath: string,
-    modelName?: string,
-    speakerTagger?: SpeakerTagger
+    options: TranscribeVideoOptions
   ): Promise<{
     jobId: string;
-    srtPath: string;
     segments: SRTSegment[];
+    /** The aligner's words, punctuated (crucible-transcript.ts `segmentTokens`), in seconds. */
+    words: TranscriptWord[];
     durationSec: number | null;
+    /** `crucible:<server>:qwen3-asr-1.7b` — what the saved transcript records. */
     model: string;
     /** Present only when a tagger ran. Absent means this run was in the untagged mode. */
     speakerTagging?: SpeakerTaggingSummary;
   }> {
-    // Generate unique job ID
     const jobId = crypto.randomBytes(8).toString('hex');
-
-    // Resolved ONCE, and returned with the result. A saved transcript records the model
-    // that produced it, and a caller re-asking `getSelectedWhisperModel()` afterwards
-    // would be recording whatever the setting says by then, not what actually ran.
-    const model = modelName || getSelectedWhisperModel();
-
-    // Create temporary directory
-    const tempDir = path.join(os.tmpdir(), `whisper-${jobId}`);
+    const tempDir = path.join(os.tmpdir(), `asr-${jobId}`);
     fs.mkdirSync(tempDir, { recursive: true });
-
-    // Initialize job tracking
-    const job: TranscriptionJob = {
-      id: jobId,
-      videoPath,
-      tempDir,
-      audioPath: null,
-      aborted: false,
-    };
+    const job: TranscriptionJob = { id: jobId, videoPath, tempDir, abort: new AbortController() };
     this.activeJobs.set(jobId, job);
-
-    log.info(`[WhisperService] [${jobId}] Starting transcription for: ${videoPath}`);
+    log.info(`[Transcription] [${jobId}] Starting transcription for: ${videoPath}`);
 
     try {
-      // Validate input file
       if (!fs.existsSync(videoPath)) {
         throw new Error(`Video file not found: ${videoPath}`);
       }
+      const speakerTagger = options.speakerTagger;
 
-      // Get video duration for progress tracking
+      // Reported with the result (ItemProvenance.final_duration_sec); a failed probe stays a
+      // stated null rather than a guessed number.
       let duration: number | undefined;
       try {
         duration = await this.ffprobe.getDuration(videoPath);
-        log.info(`[WhisperService] [${jobId}] Video duration: ${duration}s`);
+        log.info(`[Transcription] [${jobId}] Video duration: ${duration}s`);
       } catch (err) {
-        log.warn(`[WhisperService] [${jobId}] Could not get duration: ${err}`);
+        log.warn(`[Transcription] [${jobId}] Could not get duration: ${err}`);
       }
 
-      // Extract audio
-      this.emitProgress(jobId, 5, 'Extracting audio...');
-      const audioPath = path.join(tempDir, 'audio.wav');
+      this.emitProgress(jobId, 2, 'Extracting audio...');
+      const flacPath = path.join(tempDir, 'audio.flac');
+      const wavPath = speakerTagger ? path.join(tempDir, 'audio.wav') : null;
+      const extract = async (from: string, to: string, codec: 'pcm_s16le' | 'flac'): Promise<void> => {
+        const result = await this.ffmpeg.extractAudio(from, to, { codec, processId: `${jobId}-extract`, duration });
+        if (!result.success) throw new Error(`Audio extraction failed: ${result.error}`);
+      };
+      if (wavPath) {
+        await extract(videoPath, wavPath, 'pcm_s16le');
+        await extract(wavPath, flacPath, 'flac');
+      } else {
+        await extract(videoPath, flacPath, 'flac');
+      }
+      if (job.abort.signal.aborted) throw new Error('Transcription cancelled');
 
-      const extractResult = await this.ffmpeg.extractAudio(videoPath, audioPath, {
-        processId: `${jobId}-extract`,
-        duration,
+      const { context, account } = pipelineAsrContext({ videoPath, ...options.facts });
+      log.info(`[Transcription] [${jobId}] asr context from ${account}: ${JSON.stringify(context)}`);
+
+      const outcome = await transcribeOnCrucible({
+        audioFile: flacPath,
+        context,
+        clientRefStem: `pipeline:${jobId}`,
+        tag: jobId,
+        signal: job.abort.signal,
+        band: { from: 10, to: 94 },
+        onProgress: (percent, message) => this.emitProgress(jobId, percent, message),
       });
 
-      if (!extractResult.success) {
-        throw new Error(`Audio extraction failed: ${extractResult.error}`);
+      const { segments, words, transcript, unalignedSegments } = transcriptToSegments(outcome.transcript);
+      if (unalignedSegments > 0) {
+        // The declared alternate in crucible-transcript.ts: those pieces are cued from the
+        // aligner's own words, unpunctuated, rather than lost.
+        log.warn(`[Transcription] [${jobId}] ${unalignedSegments} piece(s) of ${path.basename(videoPath)} did not line up with ` +
+          'their word timings; their captions were cut from the words themselves, without punctuation');
       }
-
-      job.audioPath = audioPath;
-      log.info(`[WhisperService] [${jobId}] Audio extracted to: ${audioPath}`);
-
-      // Transcribe with whisper
-      this.emitProgress(jobId, 15, 'Starting transcription...');
-
-      // Time-based progress estimation (whisper stderr is buffered by OS, so real progress is delayed)
-      // Estimate ~10x realtime processing for base model on Apple Silicon
-      const estimatedDuration = duration ? duration / 10 : 120;
-      const transcribeStart = Date.now();
-
-      const progressTimer = setInterval(() => {
-        const job = this.activeJobs.get(jobId);
-        if (!job || job.aborted) {
-          clearInterval(progressTimer);
-          return;
-        }
-        const elapsed = (Date.now() - transcribeStart) / 1000;
-        // Scale from 15% to 90% based on estimated time
-        const estimatedPercent = Math.min(90, Math.round(15 + (elapsed / estimatedDuration) * 75));
-        this.emitProgress(jobId, estimatedPercent, 'Transcribing audio...');
-      }, 3000); // Update every 3 seconds
-
-      const whisperResult = await this.whisper.transcribe(audioPath, tempDir, {
-        model,
-        processId: jobId, // Use jobId so we can correlate progress events
-        // The filename IS metadata the operator wrote: "u2 - jake lang.mov" names the
-        // person on screen, and seeding the decoder with it is what turns "Jake Lane"
-        // into Jake Lang at the source instead of asking every downstream call to guess.
-        initialPrompt: path.basename(videoPath, path.extname(videoPath)).replace(/^[a-z]?\d+\s*-\s*/i, ''),
-      });
-
-      clearInterval(progressTimer);
-
-      if (!whisperResult.success || !whisperResult.srtPath) {
-        throw new Error(`Transcription failed: ${whisperResult.error}`);
-      }
-
-      // Parse SRT file
-      const srtContent = fs.readFileSync(whisperResult.srtPath, 'utf-8');
-      const segments = this.parseSRT(srtContent);
-
-      // A whisper exit of 0 with an empty / segment-less SRT is NOT a success: it
-      // means silent, music-only, or failed-extraction audio. Returning empty
-      // content here would let the AI generation stage fabricate metadata from
-      // nothing, so surface a clear error for the caller to report per-item.
+      // No speech is not a success: generating metadata from nothing would fabricate it.
       if (segments.length === 0) {
         throw new Error(`Transcription produced no speech segments for ${videoPath}`);
       }
+      log.info(`[Transcription] [${jobId}] ${segments.length} captions, ${words.length} words from ${transcript.model}` +
+        `${transcript.redecoded > 0 ? `, ${transcript.redecoded} piece(s) re-decoded by the server's loop guard` : ''}` +
+        ` (job ${outcome.jobId} on ${outcome.server}, ${outcome.wallSeconds.toFixed(1)} s)`);
 
-      log.info(`[WhisperService] [${jobId}] Transcription complete: ${segments.length} segments`);
-
-      // Speaker tagging, while audio.wav is still on disk. Any failure THROWS out of here and
-      // fails the item: the operator configured an enrollment, which is a request for tagged
-      // output, and returning untagged segments instead would look exactly like success.
+      // Speaker tagging, while audio.wav is still on disk. Any failure THROWS and fails the item:
+      // an enrollment is a request for tagged output.
       let speakerTagging: SpeakerTaggingSummary | undefined;
-      if (speakerTagger) {
+      if (speakerTagger && wavPath) {
         this.emitProgress(jobId, 95, 'Identifying speakers...');
-        speakerTagging = speakerTagger.tagSegments(segments, audioPath, path.basename(videoPath));
+        speakerTagging = speakerTagger.tagSegments(segments, wavPath, path.basename(videoPath));
       }
 
       this.emitProgress(jobId, 100, 'Transcription complete');
-
-      // Segments are parsed in memory, so clean up the whole job temp dir (audio.wav
-      // AND the whisper-<jobId> dir with its .srt) instead of leaking it on success.
-      // srtPath is still returned for backward compatibility with existing callers'
-      // type contracts, but the file no longer exists — consumers should use segments.
-      this.cleanupJob(job);
-
-      // Remove from active jobs
-      this.activeJobs.delete(jobId);
-
-      // `durationSec` is REPORTED, not newly measured: the probe above already ran, for
-      // progress estimation, and the number was thrown away. It is the run's one source
-      // of truth for the final export's length (ItemProvenance.final_duration_sec), so
-      // nothing downstream has to ffprobe the same file a second time to record it.
-      // null when that probe failed — which the caller can already see happening in the
-      // log above, and which stays a stated absence rather than a guessed number.
-      return { jobId, srtPath: whisperResult.srtPath, segments, durationSec: duration ?? null, model, speakerTagging };
-
+      return { jobId, segments, words, durationSec: duration ?? null, model: outcome.model, speakerTagging };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      log.error(`[WhisperService] [${jobId}] Transcription failed: ${errorMessage}`);
-
-      // Clean up on error
+      log.error(`[Transcription] [${jobId}] Transcription failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    } finally {
       this.cleanupJob(job);
       this.activeJobs.delete(jobId);
-
-      throw error;
     }
   }
 
-  /**
-   * Emit progress event
-   */
   private emitProgress(jobId: string, percent: number, message: string): void {
     const job = this.activeJobs.get(jobId);
     if (!job) return;
-
-    this.emit('progress', {
-      jobId,
-      videoPath: job.videoPath,
-      percent,
-      message,
-    } as TranscriptionProgress);
+    this.emit('progress', { jobId, videoPath: job.videoPath, percent, message } as TranscriptionProgress);
   }
 
-  /**
-   * Parse SRT file into segments
-   */
-  private parseSRT(srtContent: string): SRTSegment[] {
-    const segments: SRTSegment[] = [];
-    // Tolerate CRLF line endings (Windows): split blocks on blank lines that may use
-    // \r\n, and strip any trailing \r from individual lines so timestamps parse.
-    const blocks = srtContent.trim().split(/\r?\n\r?\n+/);
-
-    for (const block of blocks) {
-      const lines = block.trim().split('\n').map((line) => line.replace(/\r$/, ''));
-      if (lines.length < 3) continue;
-
-      const index = parseInt(lines[0], 10);
-      const timeParts = lines[1].split(' --> ');
-      if (timeParts.length !== 2) continue;
-
-      const [start, end] = timeParts;
-      const text = lines.slice(2).join('\n');
-
-      segments.push({ index, start, end, text });
-    }
-
-    return segments;
-  }
-
-  /**
-   * Clean up audio file from job
-   */
-  private cleanupAudio(job: TranscriptionJob): void {
-    if (job.audioPath && fs.existsSync(job.audioPath)) {
-      try {
-        fs.unlinkSync(job.audioPath);
-      } catch (err) {
-        log.warn(`[WhisperService] [${job.id}] Failed to clean up audio: ${err}`);
-      }
-    }
-  }
-
-  /**
-   * Clean up all job files
-   */
   private cleanupJob(job: TranscriptionJob): void {
-    this.cleanupAudio(job);
-
     if (job.tempDir && fs.existsSync(job.tempDir)) {
       try {
         fs.rmSync(job.tempDir, { recursive: true, force: true });
       } catch (err) {
-        log.warn(`[WhisperService] [${job.id}] Failed to clean up temp directory: ${err}`);
+        log.warn(`[Transcription] [${job.id}] Failed to clean up temp directory: ${err}`);
       }
     }
   }
 
   /**
-   * Cancel ongoing transcription(s)
+   * Cancel ongoing transcription(s): the extraction is killed and the Crucible job DELETEd
+   * (asr.ts), never merely abandoned.
    * @param jobId Optional specific job to cancel. If not provided, cancels all jobs.
    */
   cancel(jobId?: string): void {
-    if (jobId) {
-      const job = this.activeJobs.get(jobId);
-      if (job) {
-        log.info(`[WhisperService] [${jobId}] Cancelling transcription`);
-        job.aborted = true;
-        this.whisper.abort(jobId);
-        this.ffmpeg.abort(`${jobId}-extract`);
-      }
-    } else {
-      log.info('[WhisperService] Cancelling all transcriptions');
-      this.whisper.abortAll();
-      this.ffmpeg.abortAll();
-      for (const job of this.activeJobs.values()) {
-        job.aborted = true;
-      }
+    const jobs = jobId ? [this.activeJobs.get(jobId)].filter((j): j is TranscriptionJob => !!j) : [...this.activeJobs.values()];
+    for (const job of jobs) {
+      log.info(`[Transcription] [${job.id}] Cancelling transcription`);
+      job.abort.abort();
+      this.ffmpeg.abort(`${job.id}-extract`);
     }
-  }
-
-  /**
-   * Get list of available models
-   */
-  getAvailableModels(): string[] {
-    return this.whisper.getAvailableModels();
   }
 }

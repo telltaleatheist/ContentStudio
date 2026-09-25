@@ -234,10 +234,12 @@ export class EpisodeSplitterService {
           sendProgress('transcribing', `File ${fileIndex + 1}/${audioPaths.length}: ${progress.message}`, scaledPercent);
         });
 
-        const transcriptionResult = await queueTranscription<{ jobId: string; srtPath: string; segments: SRTSegment[] }>(
+        const transcriptionResult = await queueTranscription<{ jobId: string; segments: SRTSegment[] }>(
           transcriptionTaskId,
           `Transcribe: ${fileName}`,
-          () => whisperService.transcribeVideo(audioPath),
+          // No channel and no run facts here: the splitter works on raw source audio before any
+          // item exists, so the asr context carries the file's own title and nothing else.
+          () => whisperService.transcribeVideo(audioPath, { facts: {} }),
           (percent, message) => {
             const filePercent = (fileIndex + percent / 100) / audioPaths.length;
             sendProgress('transcribing', `File ${fileIndex + 1}/${audioPaths.length}: ${message}`, Math.round(2 + filePercent * 45));
