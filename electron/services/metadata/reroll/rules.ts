@@ -64,7 +64,7 @@ export const FIELD_RULES: Record<GateField, readonly RuleId[]> = {
  * (settings.ts `waiverCut`). The waived rules score 1 and say why (`waivedBy`).
  */
 export const WAIVERS: Partial<Record<RuleId, readonly RuleId[]>> = {
-  cta: ['creator', 'narrates'],
+  cta: ['creator', 'first_person', 'narrates'],
 };
 
 /** What the gate knows about the channel: the facts the state and the statements name. */

@@ -57,8 +57,9 @@ export interface RerollGateSettings {
  *   creator        0.3  bimodal: violators 0.73-0.99, clean median 0.006; 50/50 chapter titles
  *                       right at P 0.7. The two clean-labelled readings above it were calls to
  *                       action ("Subscribe and leave a comment."), which Owen ruled are not a
- *                       reference to the creator (#211); the statement now says so, and is
- *                       re-measured by the batches P9.md lists.
+ *                       reference to the creator (#211). A clause in the statement did not move
+ *                       the 9B (0.82 after it), so a `cta` question now WAIVES creator,
+ *                       first_person and narrates on a call to action (rules.ts WAIVERS).
  *   first_person   0.5  bimodal: 20/20 descriptions right at P 0.5.
  *   narrates       0.2  the statement that measured (v4, "the one doing the action is the
  *                       video itself or the person presenting it"); v1's wording leaned to a
@@ -85,13 +86,31 @@ const MEASURED_THRESHOLDS: Record<RuleId, number> = {
 };
 
 /**
- * The declared defaults (P9.md, "Calibration"). `mode` stays 'off' until the calibration is
- * complete — the A/B ranking run and the corpus-wide distributions were stopped on 2026-09-25
- * when the shared card was needed (P9.md says which batches remain) — and is switched on in the
- * commit that records the rest of the numbers.
+ * Where one field measured differently from its rule's number (P9.md "Corpus"). Description
+ * sentences read higher on narrates than chapter titles do: on 196 unseen sentences, P 0.8 flagged
+ * "The clip brands Angie Nixon…" and "The Fox News framing collapses…" (subject-first, 0.82–0.85),
+ * while every labelled description violator read 0.94 or more. So a description sentence fails
+ * narrates above P 0.9.
+ */
+const FIELD_THRESHOLDS: Record<string, number> = {
+  'description.narrates': 0.1,
+  // Two- to four-word captions have no subject to name him with; on 400 unseen ones the only
+  // creator readings over 0.7 were "SELF-OWN" (0.87) and "HE HOSTED A RIOTER" (0.84), both clean.
+  'thumbnail_text.creator': 0.1,
+  // The pinned comment is in the creator's own voice and talks about the people in the video as
+  // "he": on 119 unseen comments the only readings over 0.5 were four such comments (0.53-0.62,
+  // "He switches Bible translations three times…"), all written as the creator. Fails above 0.7.
+  'pinned_comment.creator_third_person': 0.3,
+};
+
+/**
+ * The declared defaults (P9.md, "Calibration"). `mode` is 'on' because the false-alarm rate held
+ * on unseen text at these thresholds (P9.md "Corpus": about 1 unit in 100 on titles, thumbnail
+ * text, chapter titles and pinned comments, about 2 in 100 description sentences), with 21 of 23
+ * labelled violators caught.
  */
 export const REROLL_GATE_DEFAULTS: RerollGateSettings = {
-  mode: 'off',
+  mode: 'on',
   maxRerolls: REROLL_CAP,
   thresholds: defaultThresholds(),
   // Off: the one rule that leaned (narrates) was fixed in its statement, which measured better
@@ -101,10 +120,14 @@ export const REROLL_GATE_DEFAULTS: RerollGateSettings = {
   waiverCut: 0.5,
 };
 
+
 function defaultThresholds(): Record<string, number> {
   const out: Record<string, number> = {};
   for (const field of Object.keys(FIELD_RULES) as GateField[]) {
-    for (const rule of FIELD_RULES[field]) out[thresholdKey(field, rule)] = MEASURED_THRESHOLDS[rule];
+    for (const rule of FIELD_RULES[field]) {
+      const key = thresholdKey(field, rule);
+      out[key] = FIELD_THRESHOLDS[key] ?? MEASURED_THRESHOLDS[rule];
+    }
   }
   return out;
 }

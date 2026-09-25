@@ -179,6 +179,7 @@ check('a call to action waives creator and narrates on its sentence, declared; a
   assert.ok(res.record.fields[0].units[1].attempts[0].failing.includes('creator'));
   // cta is never a failure itself, whatever it reads.
   assert.strictEqual(settingsM.REROLL_GATE_DEFAULTS.thresholds['description.cta'], 0);
+  assert.deepStrictEqual(rules.WAIVERS.cta, ['creator', 'first_person', 'narrates'], 'a call to action is not first person either ("tell me in the comments")');
   assert.throws(() => settingsM.resolveRerollGateSettings({ rerollGateTuning: { waiverCut: 1.5 } }), /0 to 1/);
 });
 
@@ -465,8 +466,11 @@ check('settings: the declared defaults; a bad stored value is refused by name', 
   // The measured numbers (P9.md): sentence is asked and recorded but never gates until Owen rules.
   assert.strictEqual(d.thresholds['chapters.sentence'], 0);
   assert.strictEqual(d.thresholds['chapters.creator'], 0.3);
-  assert.strictEqual(d.thresholds['description.narrates'], 0.2);
-  assert.strictEqual(d.mode, 'off', 'off until the calibration is complete (P9.md)');
+  assert.strictEqual(d.thresholds['chapters.narrates'], 0.2);
+  assert.strictEqual(d.mode, 'on', 'on: the false-alarm rate held on unseen text (P9.md)');
+  assert.strictEqual(d.thresholds['description.narrates'], 0.1);
+  assert.strictEqual(d.thresholds['thumbnail_text.creator'], 0.1);
+  assert.strictEqual(d.thresholds['pinned_comment.creator_third_person'], 0.3);
   for (const f of Object.keys(rules.FIELD_RULES)) for (const r of rules.FIELD_RULES[f]) assert.strictEqual(typeof d.thresholds[`${f}.${r}`], 'number');
   assert.throws(() => settingsM.resolveRerollGateSettings({ rerollGate: 'yes' }), /"on" or "off"/);
   assert.throws(() => settingsM.resolveRerollGateSettings({ rerollGateTuning: { thresholds: { 'titles.sentence': 0.5 } } }), /not a rule the gate asks/);
