@@ -13,7 +13,13 @@
  *   - the two-level outline: level 1 for broad/stories/episodes, refined leaves for detailed;
  *   - `decide_not_served` ends the run naming the server, with no chapters;
  *   - sentence units carry times from the captions;
- *   - the granularity table maps every setting to a real prompt body and a positive cost.
+ *   - the granularity table maps every setting to a real prompt body and a positive cost;
+ *   - PARITY: Viterbi, the confirm loop and the sentence splitter reproduce segment.py and
+ *     submap.py on fixtures those files' own functions wrote (docs/crucible/reference/
+ *     make_fixtures.py);
+ *   - every ContentStudio transcript shape is read, and a word-level one keeps word times;
+ *   - a yes/no is floored like a choice, and an ad check with no evidence confirms nothing;
+ *   - a chapter too long for one title call is read in parts, declared, nothing truncated.
  *
  * NO MODEL IS CALLED: a deterministic fake stands in for both transports. Run it against the
  * COMPILED main process, which is what ships:
