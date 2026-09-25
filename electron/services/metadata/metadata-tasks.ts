@@ -30,9 +30,9 @@
  *
  * ONE SHAPE, and it is not local-vs-cloud. Every field call — local or cloud — is the
  * prompt-set shape: that field's yml section, its self-check, the transcript, and a plain-text
- * output contract. LocalFieldUnit posts to Ollama through plain-call.ts; CloudFieldUnit posts
- * through the AI manager's plain transport. They build their prompt with the same builder and
- * read their answer through the same parser. The only difference is transport.
+ * output contract. Both post through the AI manager's plain door to Crucible (P2); they build
+ * their prompt with the same builder and read their answer through the same parser. The only
+ * difference is the shape of the call: a local one states a budget, a load context and a lease.
  *
  * THERE USED TO BE A SECOND SHAPE: the trained adapters (`promptStyle: 'adapter'`), fine-tuned
  * models fed a terse `task:`/`format:` turn with the brief baked into their weights. They were
@@ -50,31 +50,29 @@
  * when it exceeds two. It does not block: which model writes which field is the operator's
  * choice, and a silently overridden routing selection would be worse than a slow run.
  *
- * ONE num_ctx PER MODEL PER RUN. Ollama FULLY RELOADS a model on any num_ctx change
- * (ollama-json.ts trap 4), so per-call sizing would reload the 27B between titles and
- * thumbnails and again before the pinned comment. Every unit on a model shares one
+ * ONE LOAD CONTEXT PER MODEL PER RUN. Loading a model at a different context is a FULL
+ * reload (LEDGER #111; `load-model`'s `params.context` on Crucible, num_ctx on the Ollama this
+ * replaced), so per-call sizing would reload the 27B between titles and thumbnails and again
+ * before the pinned comment. Every unit on a model shares one
  * `ModelRunContextBudget`, sized from the LARGEST prompt that model will send this run, and the
  * budget cannot size BELOW a window the job has already made resident on that model
  * (model-lifecycle.ts's ratchet) — the chapter stage runs first on the same hardware.
  *
  * NO UNIT RELEASES A MODEL. Every unit here used to unload its model as it finished, which
  * reloaded ~17GB of weights for the next call on the same model and froze the operator's
- * machine while it did. A unit DECLARES what it made resident to the job's `JobModelLifecycle`
- * and the JOB releases the set once, in a finally in metadata-generator.service.ts. That is why
- * there is no `unload()` on the unit seam any more: a per-stage release is the defect.
+ * machine while it did. A unit's calls hold the model under the JOB's Crucible lease
+ * (`JobModelLifecycle.leases`, plan 13.3) and the JOB releases it once, in a finally in
+ * metadata-generator.service.ts. That is why there is no `unload()` on the unit seam: a
+ * per-stage release is the defect.
  */
 
-import axios, { AxiosInstance } from 'axios';
 import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
-import { gpuCall, queueAITask } from '../queue-manager.service';
-import { JobCancelledError, isAbortError } from './cancellation';
-import { bucketNumCtx, estimateTokens } from './ollama-json';
-import { askOllamaPlain, parseLines } from './plain-call';
+import { bucketLoadContext, estimateTokens } from './context-sizing';
+import { parseLines } from './plain-call';
 import { DigestChapter } from './chapter-digest';
 import { JobModelLifecycle } from './model-lifecycle';
 import {
-  CHAPTER_PIPELINE_MODELS,
   METADATA_ROUTING_OPTIONS,
   MetadataRoutingOption,
   MetadataRoutingTaskId,
@@ -479,7 +477,7 @@ export function buildInputDataBlock(
 }
 
 // ---------------------------------------------------------------------------
-// One num_ctx per model per run
+// One load context per model per run
 // ---------------------------------------------------------------------------
 
 /**
@@ -494,22 +492,15 @@ export function buildInputDataBlock(
 export const LOCAL_FIELD_CTX_MAX = 40960;
 
 /**
- * Output budget for a local field call.
+ * Output budget for a local field call. Today's number, kept through P2 (plan 16: "budgets and
+ * context in P2 are today's"); P4 sets answer-sized budgets from measured answers (plan 7.2).
  *
- * Sized for THINKING as much as for the answer. Ten titles are ~200 tokens, but these models
- * reason first and the chapter work measured ~1,900-2,900 tokens of reasoning per call.
- * `think: false` is not an option — it relocates the reasoning into `response` and breaks the
- * JSON (ollama-json.ts, trap 2) — so the budget has to hold both.
+ * Exported because the operator's "ten more titles" replay and the rewrite passes are the same
+ * shape of call on the same model, and a second copy of this number would be a second policy.
+ * (Its old comment said thinking-off "is not an option"; every field call has stated it off
+ * since 2026-08-30, plan 21 item 10.)
  */
 export const LOCAL_FIELD_NUM_PREDICT = 8192;
-
-/**
- * Long enough for one item's calls to run back to back without the model being evicted.
- *
- * Exported because the operator's "ten more titles" replay is the same call on the same model
- * (more-titles.ts) and a second copy of these two numbers would be a second policy.
- */
-export const LOCAL_FIELD_KEEP_ALIVE = '10m';
 
 /** A field call on a 27B carrying a full transcript; 10 minutes is generous, not tight. */
 export const LOCAL_FIELD_TIMEOUT_MS = 600_000;
@@ -526,11 +517,11 @@ export const LOCAL_FIELD_TIMEOUT_MS = 600_000;
 const INPUT_DATA_ALLOWANCE_CHARS = 2000;
 
 /**
- * The bucketed num_ctx for one MODEL for one RUN.
+ * The bucketed load context for one MODEL for one RUN.
  *
  * PURE, so the property that matters — several calls of different sizes on one model resolve to
  * ONE value — is testable without a model. `needs` are per-call token needs (prompt + that
- * call's own output budget); the largest wins, and `bucketNumCtx` rounds it up to a 4096 bucket
+ * call's own output budget); the largest wins, and `bucketLoadContext` rounds it up to a 4096 bucket
  * so two items whose transcripts differ by a few hundred words also land on the same value.
  */
 export function runNumCtx(options: {
@@ -545,11 +536,11 @@ export function runNumCtx(options: {
   if (options.needs.length === 0) {
     throw new Error(`Nothing registered a prompt size for the "${options.model}" calls, so there is nothing to size`);
   }
-  return bucketNumCtx({
+  return bucketLoadContext({
     promptTokens: Math.max(...options.needs),
     // Already included per call in `needs` — the largest call's own output budget is what has
     // to fit alongside its own prompt, not the sum of everybody's.
-    numPredict: 0,
+    maxTokens: 0,
     configured: options.configured,
     max: options.max,
     logPrefix: `[MetadataTasks] ${options.model}`,
@@ -558,9 +549,10 @@ export function runNumCtx(options: {
 }
 
 /**
- * ONE num_ctx for one model for one run (ollama-json.ts trap 4).
+ * ONE load context for one model for one run (LEDGER #111).
  *
- * THE DEFECT THIS EXISTS TO PREVENT. Ollama fully reloads a model on ANY num_ctx change. Under
+ * THE DEFECT THIS EXISTS TO PREVENT. A model loaded at a different context is a full reload
+ * (Ollama's num_ctx then, Crucible's `params.context` now). Under
  * grouping that never bit — one call per model, so one value. One call per FIELD means four
  * calls on the 27B whose prompts differ by the length of their instruction sections, which
  * under per-call sizing is up to four full reloads of a 17GB model inside one item.
@@ -607,9 +599,9 @@ export class ModelRunContextBudget {
     });
     this.lifecycle.recordContext(this.model, this.numCtx);
     log.info(
-      `[MetadataTasks] "${this.model}": num_ctx pinned at ${this.numCtx} for this whole run, shared by ` +
-        `${measured.length} call(s) — ${measured.map((m) => `${m.label} ${m.need}t`).join(', ')} — so Ollama ` +
-        `loads it once instead of reloading between fields`
+      `[MetadataTasks] "${this.model}": load context pinned at ${this.numCtx} for this whole run, shared by ` +
+        `${measured.length} call(s) — ${measured.map((m) => `${m.label} ${m.need}t`).join(', ')} — so the ` +
+        `server loads it once instead of reloading between fields`
     );
     return this.numCtx;
   }
@@ -700,7 +692,10 @@ export class CloudFieldUnit implements MetadataUnit {
   async generate(ctx: MetadataRunContext): Promise<Record<string, unknown>> {
     const prompt = this.aiManager.buildMetadataFieldPrompt(this.spec, ctx);
     const what = `the ${this.spec.field} call for ${ctx.sourceLabel}`;
-    const text = await this.aiManager.runPlainRequest(prompt, this.spec.model, what);
+    // Thinking stated off, as the local unit states it (plan 6.3's first row). On an
+    // `anthropic/` model Crucible does not forward it and says so (X-Crucible-Sampling); on
+    // `claude -p` it is not read.
+    const text = await this.aiManager.runPlainRequest(prompt, this.spec.model, what, { thinking: false });
     if (!text) {
       throw new Error(`The "${this.spec.field}" call on ${this.spec.model} for ${ctx.sourceLabel} came back empty`);
     }
@@ -713,39 +708,33 @@ export class CloudFieldUnit implements MetadataUnit {
 // ---------------------------------------------------------------------------
 
 /**
- * ONE field, written by a local base model, as plain text in the field's declared shape.
+ * ONE field, written by a local model, as plain text in the field's declared shape.
  *
  * A base model knows nothing about this channel, so it gets EVERYTHING about the one field it
  * is writing: the editorial preamble, that field's `##` section from the shared field files,
  * the insights block where it belongs, the transcript, and the one-key output contract. That is
  * exactly CloudFieldUnit's prompt, built by exactly CloudFieldUnit's builder, and read back
- * through exactly CloudFieldUnit's normalizer. The only difference is the transport — and the
- * transport is where the local traps live, which is why it is one shared implementation
- * (ollama-json.ts) and not a second copy of the same four lessons.
+ * through exactly CloudFieldUnit's normalizer. Since P2 the transport is the same door too
+ * (AIManagerService.runPlainRequest, then Crucible); what is local about this unit is the
+ * shape of its call: an output budget, the run's pinned load context, and the job's lease.
  */
 export class LocalFieldUnit implements MetadataUnit {
   readonly label: string;
   readonly fields: MetadataFieldId[];
   readonly inputFields: MetadataFieldId[];
-  private readonly client: AxiosInstance;
-  private readonly host: string;
 
   constructor(
     private readonly aiManager: AIManagerService,
     private readonly spec: MetadataFieldUnitSpec,
     private readonly option: MetadataRoutingOption,
-    defaultHost: string,
-    /** Shared with every other unit on this model — one num_ctx, one load. */
+    /** Shared with every other unit on this model — one load context, one load. */
     private readonly budget: ModelRunContextBudget,
-    /** Where this unit DECLARES the model it made resident. It never releases one itself. */
-    private readonly lifecycle: JobModelLifecycle,
-    private readonly abortSignal?: AbortSignal
+    /** The job's leases. This unit never releases one itself. */
+    private readonly lifecycle: JobModelLifecycle
   ) {
     this.fields = [spec.field];
     this.inputFields = spec.inputFields;
-    this.host = defaultHost;
-    this.label = `${spec.field} (local ${option.model} @ ${this.host})`;
-    this.client = axios.create({ baseURL: this.host });
+    this.label = `${spec.field} (local ${option.model})`;
     this.budget.register(spec.field, (ctx) => this.promptTokenNeed(ctx));
   }
 
@@ -769,70 +758,40 @@ export class LocalFieldUnit implements MetadataUnit {
   async generate(ctx: MetadataRunContext): Promise<Record<string, unknown>> {
     const prompt = this.aiManager.buildMetadataFieldPrompt(this.spec, ctx);
     const what = `the ${this.spec.field} call for ${ctx.sourceLabel}`;
-    const numCtx = this.budget.resolve(ctx);
+    const loadContext = this.budget.resolve(ctx);
 
     // The sizing pass ran before this call's input data existed. If the real prompt is bigger
-    // than the window that was pinned for it, Ollama would silently drop the front of it and
-    // answer about the rest, so this says so instead. Raising the window here is not on the
-    // table — it would reload the model and invalidate every other call's pinned value.
+    // than the window that was pinned for it, the door would refuse it anyway (it checks every
+    // call against the loaded context before sending); this says so here, in the terms of the
+    // pinning, which is the fix.
     const needed = estimateTokens(prompt.length) + LOCAL_FIELD_NUM_PREDICT + 512;
-    if (needed > numCtx) {
+    if (needed > loadContext) {
       throw new Error(
-        `${what} assembled to ~${needed} tokens, past the ${numCtx}-token window pinned for "${this.option.model}" ` +
+        `${what} assembled to ~${needed} tokens, past the ${loadContext}-token window pinned for "${this.option.model}" ` +
           `this run. The window is pinned once per model because changing it reloads the model, so this call ` +
           `cannot be widened: shorten the transcript this item carries, or route this field to another model.`
       );
     }
 
-    const result = await queueAITask(
-      gpuCall(this.option.model),
-      `metadata-local-${this.option.model}-${this.spec.field}-${ctx.sourceLabel}`,
-      `Metadata: ${this.label}`,
-      async () => {
-        if (this.abortSignal?.aborted) throw new JobCancelledError('cancelled before the local field call ran');
-        const answer = await askOllamaPlain(this.client, {
-          model: this.option.model,
-          prompt,
-          numCtx,
-          numPredict: LOCAL_FIELD_NUM_PREDICT,
-          keepAlive: LOCAL_FIELD_KEEP_ALIVE,
-          // Thinking off for every field this unit carries (the /api/chat transport in
-          // plain-call.ts). The local 27B's thinking pass reasoned entire output budgets away
-          // into truncated fragments four times on 2026-08-30 (stage-1 samples, the insights
-          // distiller, titles at 8192, the description at 4096), and the campaign measured
-          // these line-shaped outputs clean and fast thinking-off. The DESCRIPTION is not one
-          // of this unit's fields and is the deliberate exception — thinking off broke its
-          // hook/blank-line/body shape, so description-unit.ts keeps thinking and carries
-          // reasoning headroom in its budget instead.
-          think: false,
-          timeoutMs: LOCAL_FIELD_TIMEOUT_MS,
-          signal: this.abortSignal,
-          what,
-          logPrefix: `[MetadataTasks] ${this.label}`,
-        });
-        this.lifecycle.holdOllamaModel(this.host, this.option.model, `the ${this.spec.field} call`);
-        return answer;
-      }
-    );
-
-    // A field's unusable answer is FATAL for that field, which is the opposite of the chapter
-    // pipeline's policy on the same result — and deliberately so. A chapter call that comes
-    // back truncated costs one chapter out of ten; a field call that comes back truncated costs
-    // the whole field, and there is no partial version of a title list. Nothing retries at a
-    // smaller size and nothing reroutes to another model: the user chose this model for this
-    // field.
-    if (!result.ok) {
-      throw new Error(
-        `The local "${this.spec.field}" call on ${this.option.model} for ${ctx.sourceLabel} produced no usable ` +
-          `answer (${result.reason}): ${result.detail}` +
-          (result.reason === 'length'
-            ? ` — the ${LOCAL_FIELD_NUM_PREDICT}-token output budget was not enough for this prompt's reasoning ` +
-              `plus its answer. Route this field to a larger context or to the cloud.`
-            : '')
-      );
+    // A truncated answer throws out of the door (`truncated`, LEDGER #112) and is FATAL for
+    // this field, which is the opposite of the chapter pipeline's policy on the same result —
+    // deliberately: a chapter call cut off costs one chapter out of ten, a field call cut off
+    // costs the whole field, and there is no partial title list. Nothing retries at a smaller
+    // size and nothing reroutes: the operator chose this model for this field.
+    const text = await this.aiManager.runPlainRequest(prompt, this.option.model, what, {
+      // Thinking off for every field this unit carries. The local 27B's thinking pass reasoned
+      // entire output budgets away into truncated fragments four times on 2026-08-30, and the
+      // campaign measured these line-shaped outputs clean and fast thinking-off.
+      thinking: false,
+      maxTokens: LOCAL_FIELD_NUM_PREDICT,
+      loadContext,
+      job: this.lifecycle.leases,
+      timeoutMs: LOCAL_FIELD_TIMEOUT_MS,
+    });
+    if (!text) {
+      throw new Error(`The local "${this.spec.field}" call on ${this.option.model} for ${ctx.sourceLabel} returned no answer text`);
     }
-
-    return readFieldAnswer(this.spec.field, result.text, this.option.model, ctx);
+    return readFieldAnswer(this.spec.field, text, this.option.model, ctx);
   }
 }
 
@@ -910,7 +869,7 @@ export interface MetadataRunPlan {
    *
    * Two properties the order carries, both load-bearing:
    *   - TITLES FIRST, because the thumbnail call reads them as input data.
-   *   - UNITS ON THE SAME MODEL RUN CONSECUTIVELY, so Ollama loads each model once. Splitting
+   *   - UNITS ON THE SAME MODEL RUN CONSECUTIVELY, so the server loads each model once. Splitting
    *     the 27B's four calls around the 9B's would evict and reload both.
    */
   units: MetadataUnit[];
@@ -951,7 +910,6 @@ export interface MetadataRunPlan {
  */
 export interface MetadataPlanRequest {
   routing: ResolvedMetadataRouting;
-  defaultHost: string;
   aiManager: AIManagerService;
   hasInsights: boolean;
   /**
@@ -979,8 +937,6 @@ export interface MetadataPlanRequest {
    * stop. The orchestrator makes one per job and releases it once.
    */
   lifecycle: JobModelLifecycle;
-  /** This run's cancel signal, threaded to the local units. */
-  abortSignal?: AbortSignal;
 }
 
 /**
@@ -996,8 +952,8 @@ export interface MetadataPlanRequest {
  *   - ORDER. Titles run first, always, and the thumbnail call is handed them as input data
  *     (`inputFields`). The self-check line about not repeating a core word from the top 3
  *     titles is emitted for the thumbnail call because that call can READ the titles.
- *   - RESIDENCE. Units on one model run consecutively under one pinned num_ctx and a 10-minute
- *     keep-alive, so four calls on the 27B cost one load, not four.
+ *   - RESIDENCE. Units on one model run consecutively under one pinned load context and the job's
+ *     lease, so four calls on the 27B cost one load, not four.
  *
  * Two things ride with exactly one call each, and this is where that is decided:
  *   the insights block — the TITLES call, else the first call, logged. Channel performance data
@@ -1021,8 +977,7 @@ export interface MetadataPlanRequest {
  * written by the model the routing names. Both are logged per item.
  */
 export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan {
-  const { routing, defaultHost, aiManager, hasInsights, hasChapters, alsoLoads, lifecycle, abortSignal } =
-    request;
+  const { routing, aiManager, hasInsights, hasChapters, alsoLoads, lifecycle } = request;
 
   // A field the PROMPT SET does not define is not generated at all, whatever the routing
   // says. The Spreaker podcast set has no "## THUMBNAIL_TEXT" and never did — that is the
@@ -1160,7 +1115,7 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
     );
   }
 
-  /** model -> the ONE context budget every unit on it shares (ollama-json trap 4). */
+  /** model -> the ONE context budget every unit on it shares (LEDGER #111). */
   const budgets = new Map<string, ModelRunContextBudget>();
   const budgetFor = (model: string): ModelRunContextBudget => {
     let budget = budgets.get(model);
@@ -1190,15 +1145,7 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
       local: plan.option.kind === 'local',
       unit:
         plan.option.kind === 'local'
-          ? new LocalFieldUnit(
-              aiManager,
-              spec,
-              plan.option,
-              defaultHost,
-              budgetFor(plan.option.model),
-              lifecycle,
-              abortSignal
-            )
+          ? new LocalFieldUnit(aiManager, spec, plan.option, budgetFor(plan.option.model), lifecycle)
           : new CloudFieldUnit(aiManager, spec),
     });
   }
@@ -1211,10 +1158,8 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
       unit: new DescriptionUnit(
         aiManager,
         descriptionOption,
-        defaultHost,
         descriptionOption.kind === 'local' ? budgetFor(descriptionOption.model) : undefined,
-        lifecycle,
-        abortSignal
+        lifecycle
       ),
     });
   }

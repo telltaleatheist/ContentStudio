@@ -1,15 +1,14 @@
 // electron/services/editor/story-ipc.ts
-import { ipcMain, app } from 'electron';
+import { ipcMain } from 'electron';
 import Store from 'electron-store';
 import * as log from 'electron-log';
-import * as fs from 'fs';
-import * as path from 'path';
-import axios from 'axios';
 
 import { AnalysisCancelledError, analyzeChapters, suggestTitle, Segment } from './chapter-splitter';
 import { StoryModel, resolveStoryModel } from './story-routing';
 import { AIManagerService, AIConfig } from '../metadata/ai-manager.service';
-import { unloadOllamaModels } from '../metadata/ollama-json';
+import { crucibleTransport } from '../../crucible/transport';
+import { isCrucibleCallError } from '../../crucible/errors';
+import type { JobLeases } from '../../crucible/lease';
 
 /**
  * The editor's Story-analysis channels, in a module of their own rather than inside
@@ -30,24 +29,31 @@ export interface StoryIpcDeps {
 }
 
 /**
- * A story prompt the routed LOCAL model cannot read whole. makeOllamaRequest middle-truncates
- * anything over AIManagerService.OLLAMA_MAX_PROMPT_CHARS and only warns; chapter-splitter's own
- * contract is to refuse rather than summarize a truncated chapter (chapterNumCtx). Its ceiling
- * (32768 tokens, about 125k characters) sits above the transport's (about 98k), so without this
- * the move onto the shared door would have brought back the truncation the splitter refuses.
- * Carried out as the abort signal's REASON, because the splitter's askJson turns any other
- * thrown error into "unparseable, try again, then use the opening words" (Law 1).
+ * A story prompt the routed LOCAL model cannot read whole. The Crucible door refuses a prompt
+ * over the loaded context BEFORE sending (`over_context`, plan 6.1), which is chapter-splitter's
+ * own contract too: refuse rather than summarize a truncated chapter. Carried out as the abort
+ * signal's REASON, because the splitter's askJson turns any other thrown error into
+ * "unparseable, try again, then use the opening words" (Law 1). Read by its typed code, never
+ * its sentence (Law 10).
  */
 export class StoryPromptTooLongError extends Error {
-  constructor(chars: number, limit: number, model: string, what: string) {
+  constructor(refusal: string, what: string) {
     super(
-      `The ${what} prompt is ${chars} characters, and "${model}" is sent at most ${limit} whole ` +
-        `(a longer prompt would be cut in the middle). Refusing rather than analyzing a truncated ` +
-        `chapter: split the story into shorter stories, or route chapters to claude -p.`
+      `The ${what} prompt does not fit the routed model whole (${refusal}). Refusing rather than ` +
+        `analyzing a truncated chapter: split the story into shorter stories, or route chapters to claude -p.`
     );
     this.name = 'StoryPromptTooLongError';
   }
 }
+
+/**
+ * The shape of every story call (plan 6.3's story-title row): thinking OFF, a 2048-token answer.
+ * These are short one-question JSON calls; a thinking pass at this budget returns no answer.
+ * The local window is the 32768 tokens makeOllamaRequest loaded at, which is the splitter's own
+ * ceiling (CHAPTER_CTX_MAX), so no call it sized smaller gets less.
+ */
+const STORY_MAX_TOKENS = 2048;
+const STORY_LOAD_CONTEXT = 32768;
 
 /**
  * Story-analysis handlers: chapter splitting + title suggestions for Story Mode. All
@@ -62,22 +68,20 @@ export class StoryPromptTooLongError extends Error {
  * choose. Owen: "it should never call something i didnt expect it to call". It is resolved
  * per call through story-routing.ts, with the same three functions the transcript episode
  * splitter uses, and every call goes through AIManagerService.runPlainRequest, the door every
- * routed field call uses: a `claude-cli:` selection goes to `claude -p`, a local selection
- * goes to Ollama through the same client, the same single-slot AI queue and the same cancel
- * path as a generation run.
+ * routed field call uses: a `claude-cli:` selection goes to `claude -p`, anything else to the
+ * Crucible door (P2), through the same single-slot AI queue and the same cancel path as a
+ * generation run.
  *
  * WHAT THAT COSTS, KNOWINGLY. chapter-splitter.ts is many small single-question calls: about
  * 40 for a 12-minute video, about 390 for a 2-hour stream. On claude -p each one is a separate
  * process launch. Owen chose this with the count in front of him (#205), until P8 replaces
  * the analyzer with snap chaptering at broad grain. The splitter's per-call hints —
  * temperature 0, `format: "json"`, num_predict, num_ctx — do not travel through this door:
- * runPlainRequest sends provider defaults, per the 2026-08-24 no-sampling-parameters ruling
- * every other call runs under, and the splitter's parser reads the first JSON object out of a
- * plain answer either way. On a local route makeOllamaRequest loads the model at a fixed
- * 32768-token context, which is the splitter's own ceiling (CHAPTER_CTX_MAX), so no call it
- * would have sized smaller gets less; the character ceiling below that is enforced here
- * (StoryPromptTooLongError). The pipeline and its prompts are otherwise untouched; only the
- * transport changed.
+ * every story call states the one shape above (STORY_MAX_TOKENS, thinking off), no sampling
+ * parameter crosses (the 2026-08-24 ruling every other call runs under), and the splitter's
+ * parser reads the first JSON object out of a plain answer either way. A local route is held
+ * under a lease for the run (the analysis) or for the titling loop, and released where the old
+ * code unloaded the model: the server settles its own card (plan 6.5).
  *
  * Exported for tools/routing-publish-checks.js, which registers it against a recording ipcMain
  * and asserts which model each handler resolves; the app registers it through setupEditorIpc.
@@ -89,11 +93,10 @@ export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps
   // dropped, the claude -p child is killed), and chapter-splitter unwinds on its next check.
   let activeRun: AbortController | null = null;
 
-  // The local model the last titling call left resident, for 'story:unload-model'. Set only
-  // for a local selection: a cloud selection has nothing resident and nothing to release.
-  let resident: { host: string; model: string } | null = null;
-
-  const ollamaHost = (): string => String((store as any).get('ollamaHost') || 'http://localhost:11434');
+  // The titling loop's lease on its local model, for 'story:unload-model'. Taken by the first
+  // titling call on a local selection and held across the loop (evicting between titles would
+  // reload the model every time); a cloud selection has nothing to hold.
+  let titleJob: { job: JobLeases; model: string } | null = null;
 
   // Resolved on EVERY call, not once at registration: a selection changed in Settings →
   // Routing takes effect on the next run, exactly as it does for a generation job. A stored
@@ -102,44 +105,45 @@ export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps
 
   /**
    * Built for ONE analysis, the way `titles:generate-more` builds its manager: without
-   * initialize() — there is no prompt set to load and no connection to probe; the transport
-   * for the model this run names is prepared on first use by ensureProviderReady, which names
-   * a missing key rather than substituting a provider that has one. `promptSetsDir` is still
-   * required because the constructor loads the prompt assets whatever the caller asks for.
+   * initialize() — there is no prompt set to load and nothing to probe; the door prepares the
+   * call on the model this run names and refuses by name what it cannot run. `promptSetsDir` is
+   * still required because the constructor loads the prompt assets whatever the caller asks for.
    */
-  const storyManager = (signal: AbortSignal): AIManagerService => {
-    const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-    const apiKeys: any = fs.existsSync(apiKeysPath) ? JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8')) : {};
+  const storyManager = (signal: AbortSignal, jobLeases?: JobLeases): AIManagerService => {
     const aiConfig: AIConfig = {
-      provider: 'claude',
-      host: ollamaHost(),
-      cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
       promptSetsDir: deps.promptSetsDir,
       abortSignal: signal,
+      ...(jobLeases === undefined ? {} : { jobLeases }),
     };
     return new AIManagerService(aiConfig);
   };
 
   /**
    * chapter-splitter's `generate` callback over runPlainRequest. The splitter's per-call
-   * options are accepted and not forwarded (see the header). A cancelled request comes back
-   * through the AI queue as a plain Error; the signal is what says it was a stop, and it is
-   * rethrown as the splitter's own cancel type so both handlers surface "Analysis stopped."
-   * to the renderer rather than a transport message. A local prompt too long to send whole
-   * aborts the run with a StoryPromptTooLongError as the reason, which `refusalOr` surfaces.
+   * options are accepted and not forwarded (see the header). A cancelled request's error is
+   * not what says it was a stop; the signal is, and it is rethrown as the splitter's own cancel
+   * type so both handlers surface "Analysis stopped." to the renderer rather than a transport
+   * message. A local prompt the door refuses as over the loaded context aborts the run with a
+   * StoryPromptTooLongError as the reason, which `refusalOr` surfaces.
    */
   const generateOn = (aiManager: AIManagerService, routed: StoryModel, controller: AbortController, what: string) =>
     async (prompt: string): Promise<string> => {
-      const limit = AIManagerService.OLLAMA_MAX_PROMPT_CHARS;
-      if (routed.kind === 'local' && prompt.length > limit) {
-        const refusal = new StoryPromptTooLongError(prompt.length, limit, routed.model, what);
-        controller.abort(refusal);
-        throw refusal;
-      }
       let text: string | null;
       try {
-        text = await aiManager.runPlainRequest(prompt, routed.model, what);
+        text = await aiManager.runPlainRequest(
+          prompt,
+          routed.model,
+          what,
+          routed.kind === 'local'
+            ? { thinking: false, maxTokens: STORY_MAX_TOKENS, loadContext: STORY_LOAD_CONTEXT }
+            : { thinking: false }
+        );
       } catch (err) {
+        if (isCrucibleCallError(err, 'over_context')) {
+          const refusal = new StoryPromptTooLongError(err.message, what);
+          controller.abort(refusal);
+          throw refusal;
+        }
         if (controller.signal.aborted) throw new AnalysisCancelledError();
         throw err;
       }
@@ -172,8 +176,8 @@ export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps
   // Split a span of transcript into consecutive subject chapters. The pipeline is many small
   // single-question calls (~40 for a 12-minute video, ~390 for a 2-hour livestream), so step
   // progress is streamed back to the calling renderer on 'story:analyze-progress'. A local
-  // model is unloaded afterwards — a 27B left resident after a 25-minute run is memory nobody
-  // asked for.
+  // model is held under one lease for the run and released afterwards — a 27B pinned after a
+  // 25-minute run is memory nobody asked for.
   ipcMain.handle(
     'story:analyze-chapters',
     async (event, payload: { segments: Segment[]; consolidate?: boolean }) => {
@@ -185,7 +189,8 @@ export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps
       log.info(`[Story] chapter analysis runs on the chapters routing: ${routed.model} (${routed.label})`);
       const controller = new AbortController();
       activeRun = controller;
-      const aiManager = storyManager(controller.signal);
+      const job = routed.kind === 'local' ? crucibleTransport().job('story chapter analysis') : undefined;
+      const aiManager = storyManager(controller.signal, job);
       const generate = generateOn(aiManager, routed, controller, 'story chapter analysis');
       const onProgress = (p: { phase: string; done: number; total: number }) => {
         if (!event.sender.isDestroyed()) event.sender.send('story:analyze-progress', p);
@@ -203,13 +208,13 @@ export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps
       } finally {
         if (activeRun === controller) activeRun = null;
         aiManager.cleanup();
-        // Unloaded on a stop too — a stopped run has no more claim on the memory than a finished
+        // Released on a stop too — a stopped run has no more claim on the card than a finished
         // one, and stopping is usually how a user reacts to the machine being busy. Only a local
-        // selection has anything resident; claude -p and the API leave nothing to unload. The
-        // release goes through the same call a generation job releases its models with.
-        if (routed.kind === 'local') {
-          await unloadOllamaModels(axios.create({ baseURL: ollamaHost() }), [routed.option.model], '[Story]');
-          resident = null;
+        // selection holds a lease; claude -p and Anthropic hold nothing. The release goes through
+        // the same object a generation job releases its leases with (the unload it replaces).
+        if (job !== undefined) {
+          const lost = await job.releaseAll();
+          for (const line of lost) log.error(`[Story] the analysis lost its lease on ${line} before it ended`);
         }
       }
     }
@@ -228,7 +233,12 @@ export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps
       const routed = routedModel();
       const controller = new AbortController();
       activeRun = controller;
-      const aiManager = storyManager(controller.signal);
+      if (routed.kind === 'local' && titleJob?.model !== routed.model) {
+        // A new loop, or the routing changed mid-loop: the old hold goes, a new one is taken.
+        if (titleJob !== null) await titleJob.job.releaseAll();
+        titleJob = { job: crucibleTransport().job('story title suggestions'), model: routed.model };
+      }
+      const aiManager = storyManager(controller.signal, routed.kind === 'local' ? titleJob!.job : undefined);
       const generate = generateOn(aiManager, routed, controller, 'story title suggestion');
       try {
         const title = await suggestTitle(text, generate);
@@ -238,21 +248,22 @@ export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps
       } finally {
         if (activeRun === controller) activeRun = null;
         aiManager.cleanup();
-        // Recorded however the call ended: a failed or stopped titling call has still loaded
-        // the model, and the renderer's unload at the end of its loop is what releases it.
-        if (routed.kind === 'local') resident = { host: ollamaHost(), model: routed.option.model };
+        // Held however the call ended: a failed or stopped titling call has still taken the
+        // lease, and the renderer's unload at the end of its loop is what releases it.
       }
     }
   );
 
-  // Evict the local model the titling loop left resident (end of the loop, or a stop). Nothing
-  // to do after a cloud run, or when no titling call has run. Never throws — unloadOllamaModels
-  // warns and carries on, because a failure to release is housekeeping.
+  // Release the lease the titling loop held (end of the loop, or a stop): the old unload,
+  // now a lease release (plan 6.5), and the server settles its own card. Nothing to do after a
+  // cloud run, or when no titling call has run. Never throws — releaseAll warns and carries on,
+  // because a failure to release is housekeeping (the lease expires on its own).
   ipcMain.handle('story:unload-model', async () => {
-    const held = resident;
-    resident = null;
+    const held = titleJob;
+    titleJob = null;
     if (!held) return { ok: true, released: null };
-    await unloadOllamaModels(axios.create({ baseURL: held.host }), [held.model], '[Story]');
+    const lost = await held.job.releaseAll();
+    for (const line of lost) log.error(`[Story] the titling loop lost its lease on ${line} before it ended`);
     return { ok: true, released: held.model };
   });
 }

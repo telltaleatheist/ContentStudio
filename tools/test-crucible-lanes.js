@@ -238,14 +238,15 @@ check('cloud calls run while the GPU lane is busy; a second GPU call on the same
     const gpu = w.lanes.aiCall(gpuCall(MODEL), 'a long local call', async () => { order.push('gpu1 start'); await holding; order.push('gpu1 end'); return 'g1'; });
     while (!order.includes('gpu1 start')) await new Promise((resolve) => setTimeout(resolve, 5));
     const gpu2 = w.lanes.aiCall(gpuCall(MODEL), 'the next local call', async () => { order.push('gpu2 start'); return 'g2'; });
-    const cloud = await w.lanes.aiCall(routeOfModelId('claude:claude-sonnet-5'), 'a cloud call', async () => { order.push('cloud'); return 'c'; });
+    const cloud = await w.lanes.aiCall(routeOfModelId('anthropic/claude-sonnet-5'), 'a cloud call', async () => { order.push('cloud'); return 'c'; });
     const cli = await w.lanes.aiCall(routeOfModelId('claude-cli:sonnet'), 'a claude -p call', async () => { order.push('claude -p'); return 'p'; });
     assert.deepStrictEqual([cloud, cli], ['c', 'p']);
     assert.deepStrictEqual(order, ['gpu1 start', 'cloud', 'claude -p'], 'the cloud calls ran while the slot was held; the second GPU call did not');
     releaseGpu();
     assert.deepStrictEqual(await Promise.all([gpu, gpu2]), ['g1', 'g2']);
     assert.deepStrictEqual(order, ['gpu1 start', 'cloud', 'claude -p', 'gpu1 end', 'gpu2 start']);
-    assert.throws(() => routeOfModelId('mystery-model'), /names no provider/);
+    assert.throws(() => routeOfModelId('ollama:qwen3.8:27b'), /names no model this app routes/);
+    assert.strictEqual(routeOfModelId('qwen3.8-27b-4bit').lane, 'gpu', 'a Crucible id takes its server\'s slot');
   } finally {
     await w.close();
   }

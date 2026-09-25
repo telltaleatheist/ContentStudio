@@ -15,7 +15,9 @@ import { autoConfigure } from './services/publish/auto-config';
 import { SpreakerConfigService } from './services/spreaker/spreaker-config.service';
 import { stopArchiveSyncOnQuit } from './services/editor/editor-ipc';
 import { createCrucibleContext, type CrucibleContext } from './crucible/context';
+import { installCrucibleTransport } from './crucible/transport';
 import { installLanes } from './crucible/lanes';
+import { setAsrVenueResolver } from './services/transcription/crucible-transcription';
 
 /**
  * ContentStudio - Main Electron Process
@@ -175,9 +177,12 @@ app.whenReady().then(async () => {
     // Initialize electron-store after app is ready
     store = new Store<any>({
       defaults: {
-        aiProvider: 'openai',
-        ollamaModel: 'gpt-4o', // Used for all providers (OpenAI, Claude, and Ollama)
-        ollamaHost: 'http://localhost:11434',
+        // NO PROVIDER, MODEL, HOST OR KEY DEFAULTS (P2, LEDGER #193/#194/#204). `aiProvider`,
+        // `ollamaModel`, `ollamaHost`, `openaiApiKey` and `claudeApiKey` were seeded here
+        // and governed nothing but client construction once routing existed; every model
+        // call now goes through Crucible on the routing table's choice, and keys live on the
+        // server. An existing store may still hold the old keys; nothing reads them.
+        //
         // NOTE: no metadataRouting default here, deliberately. Which model writes which
         // field is the `metadataRouting` setting, and its defaults come from the registry
         // at the READ site (metadata-routing.ts). Seeding them here would freeze today's
@@ -189,12 +194,10 @@ app.whenReady().then(async () => {
         // CHAPTER_PIPELINE_MODELS. `chapterStageModels` went with the sealed pipeline it
         // configured — an existing store may still hold the key and nothing reads it.
         //
-        // FLOOR for the chapter run's context window, never a ceiling: the run sizes its own
+        // FLOOR for the chapter run's load context, never a ceiling: the run sizes its own
         // from the whole transcript it has to read. One value for the whole run, because
-        // Ollama reloads the model whenever num_ctx changes.
+        // loading the model at a different context is a full reload (LEDGER #111).
         chapterNumCtx: 16384,
-        openaiApiKey: '',
-        claudeApiKey: '',
         defaultPlatform: 'youtube',
         defaultMode: 'individual',
         outputDirectory: path.join(app.getPath('documents'), 'ContentStudio Output'),
@@ -261,14 +264,18 @@ app.whenReady().then(async () => {
     crucible = createCrucibleContext({
       stateDir: userDataPath,
       clipboard: (text) => clipboard.writeText(text),
-      // The app's own Claude key, for the explicit "copy my key to <server>" press (LEDGER
-      // #194). Read fresh from api-keys.json each time; P2's migration is what retires the
-      // file. A file that is not JSON throws here, and the press answers with that, by name.
-      legacyClaudeKey: () => {
-        const apiKeysPath = path.join(userDataPath, 'api-keys.json');
-        if (!fs.existsSync(apiKeysPath)) return undefined;
-        const keys = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8')) as { claudeApiKey?: unknown };
-        return typeof keys.claudeApiKey === 'string' ? keys.claudeApiKey : undefined;
+      // The old api-keys.json, moved ONCE into the Crucible on this computer and then deleted
+      // (plan 6.6, LEDGER #194); `keysMigratedTo` records where it went. Never pushed to a
+      // remote server on its own.
+      legacyKeys: {
+        file: path.join(userDataPath, 'api-keys.json'),
+        record: {
+          get: () => {
+            const value = (store as any).get('keysMigratedTo');
+            return typeof value === 'string' ? value : null;
+          },
+          set: (server: string) => (store as any).set('keysMigratedTo', server),
+        },
       },
       push: {
         serversChanged: (change) => pushToAllWindows('crucible:servers-changed', change),
@@ -292,6 +299,14 @@ app.whenReady().then(async () => {
     });
     // The one set of lanes every model call in this process goes through (queueAITask).
     installLanes(crucible.lanes);
+    // The one door every model call takes (plan 6.1). Installed process-wide because the
+    // callers are constructed per run all over the main process (IPC handlers, the metadata
+    // generator, the editor's Stories), and each would otherwise need the context threaded in.
+    installCrucibleTransport(crucible.transport);
+    // Where transcription runs (P5, LEDGER #206): the job's venue or the selected server, the
+    // SDK client for its engine, and the in-flight ledger. Until this runs every transcription
+    // is refused `crucible_not_connected`.
+    setAsrVenueResolver(crucible.asrVenue);
 
     // Set up IPC handlers
     setupIpcHandlers(store, {
@@ -377,6 +392,9 @@ app.on('before-quit', (event) => {
   // here stops the local Crucible itself: it is an OS service shared with BookForge, Foundry
   // and Briefcase, and another app may be mid-run (plan section 5).
   crucible?.stop();
+  // No separate lease release here: the held quit above aborts every running job, whose
+  // `finally` hands its leases back (JobModelLifecycle / the one-call job), and then sweeps
+  // whatever the ledger still lists (P3).
 });
 
 // Handle uncaught exceptions

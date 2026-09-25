@@ -133,7 +133,8 @@ function context(options = {}) {
     stateDir: dir,
     pairingHost: options.pairingHost ?? pairingHost(null),
     clipboard: (text) => { clipboard.push(text); },
-    legacyClaudeKey: options.legacyClaudeKey ?? (() => undefined),
+    ...(options.legacyKeys === undefined ? {} : { legacyKeys: options.legacyKeys }),
+    ...(options.leaseTimings === undefined ? {} : { leaseTimings: options.leaseTimings }),
     push: {
       serversChanged: (change) => pushed.servers.push(change),
       readiness: (view) => pushed.readiness.push(view),

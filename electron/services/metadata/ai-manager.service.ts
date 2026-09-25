@@ -1,19 +1,23 @@
 /**
- * AI Manager Service - Multi-Provider AI Support
+ * AI Manager Service: the prompt assembly every metadata call shares, and the two doors a
+ * model call leaves the app through.
  *
- * Handles AI metadata generation with Ollama, OpenAI, and Claude (Anthropic)
- * Replaces the Python ai_manager.py
+ * Every model call goes through ONE Crucible transport (electron/crucible/transport.ts,
+ * LEDGER #193), except `claude -p`, which stays outside Crucible as the subscription test
+ * transport and keeps its own branch in `makeRequest`. The Anthropic, OpenAI and Ollama
+ * clients this service used to construct are gone with P2 (plan 6.1, 6.5): the routing table
+ * picks the model (LEDGER #204), the selected Crucible server runs it, and the key is that
+ * server's (#194).
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, execFileSync } from 'child_process';
 import * as os from 'os';
-import * as yaml from 'js-yaml';
-import axios, { AxiosInstance } from 'axios';
-import OpenAI from 'openai';
-import Anthropic from '@anthropic-ai/sdk';
 import * as log from 'electron-log';
+import { ANTHROPIC_MAX_TOKENS, crucibleTransport, type PromptTraceRecord } from '../../crucible/transport';
+import { isUpstreamModelId } from '../../crucible/acts';
+import type { JobLeases } from '../../crucible/lease';
 import { renderChapterList } from './chapter-digest';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
 import { METADATA_FIELDS } from './metadata-fields';
@@ -29,8 +33,9 @@ import {
 import { ChannelData, PROMPTS_SUBDIR, initPromptAssets, promptAssets } from './prompt-assets';
 import { Chapter } from './chapter-generator.service';
 import { queueAITask, routeOfModelId } from '../queue-manager.service';
-import { JobCancelledError, isAbortError } from './cancellation';
+import { JobCancelledError } from './cancellation';
 import { stripThinking } from './plain-call';
+import { bucketLoadContext } from './context-sizing';
 
 /**
  * How much raw transcript each transport reads BEFORE anything is condensed.
@@ -81,46 +86,58 @@ export function directPassesRaw(options: {
 }
 
 export interface AIConfig {
-  provider: 'ollama' | 'openai' | 'claude';
   /**
-   * Which direct-pass ceiling the transcript is measured against, decided by WHERE THE
-   * FIELD CALLS GO, not by `provider` above. The per-field metadata path sets it from the
-   * resolved routing: every routed field model local → 'local' (90k), any cloud → 'cloud'
-   * (60k, the cost ceiling). Absent for callers whose every call really does go through
-   * `provider` (compilation packaging, episode splitting) — there the provider IS the
-   * answer and it is derived, not defaulted.
-   *
-   * This field exists because the 2026-08-22 restructure made `provider` a legacy setting
-   * the metadata calls no longer follow: an all-local run under a cloud `provider` was
-   * condensing 62k-char transcripts that fit the local window raw.
+   * Which direct-pass ceiling a transcript is measured against, decided by WHERE THE FIELD
+   * CALLS GO: every routed field model local -> 'local' (90k), any cloud -> 'cloud'. Required
+   * by `summarizeTranscript`, which refuses without it: the provider setting it used to be
+   * derived from is gone (P2), and a ceiling guessed from nothing is Law 1's fallback.
    */
   transcriptCeiling?: 'local' | 'cloud';
-  model?: string; // Legacy single model (backward compatibility)
-  summarizationModel?: string; // Model for fast summarization
-  metadataModel?: string; // Model for final metadata generation
-  apiKey?: string;
-  host?: string;
+  /** The compilation summarizer's model (metadata-routing SUMMARIZATION_MODEL, or the chapters row). */
+  summarizationModel?: string;
+  /**
+   * The model a caller that routes one whole-service call names up front: the episode
+   * splitter's chapters selection. No routed field call reads it (LEDGER #204).
+   */
+  metadataModel?: string;
   promptSet?: string;
   promptSetsDir?: string;
   // "CHANNEL PERFORMANCE DATA" block from the analytics feedback loop, appended
   // to the metadata prompt when present (resolved by the caller; optional).
   insightsBlock?: string;
   /**
-   * Keys for the cloud providers a per-task ROUTING may reach, independent of the
-   * provider `apiKey` above.
-   *
-   * Routing (metadata-routing.ts) lets a single run send one group to Claude while the
-   * legacy `metadataModel` points somewhere else entirely, so the key for a group's
-   * provider cannot be inferred from `provider`. Absent key for a routed provider is a
-   * loud failure at request time, never a silent switch to a provider that is configured.
-   */
-  cloudApiKeys?: { claude?: string; openai?: string };
-  /**
-   * Fired when the user cancels the run. Handed to every provider client so a request
-   * already in flight is ABORTED rather than left to finish and be billed — a cancelled
-   * job has no business still paying for a 28k-token Claude call.
+   * Fired when the user cancels the run. Handed to every call so a request already in flight
+   * is ABORTED rather than left to finish and be billed.
    */
   abortSignal?: AbortSignal;
+  /**
+   * The JOB's Crucible leases (plan 13.3), for the local calls this service sends itself
+   * (compilation summarizing and packaging). Absent: each such call is a one-call job,
+   * leased and released around itself.
+   */
+  jobLeases?: JobLeases;
+}
+
+/**
+ * How one plain call is shaped, stated at every call site (plan 6.3): THINKING is never left
+ * to a model default, because the 9B's manifest defaults it off and the 27B's states nothing,
+ * so one call would behave two ways (plan 1).
+ */
+export interface PlainCallShape {
+  thinking: boolean;
+  /**
+   * The local output budget. On an `anthropic/` model the door always sends 16000 (LEDGER
+   * #187) and this is not read; on `claude -p` neither is.
+   */
+  maxTokens?: number;
+  /** Local only: the context to load the model at when this job loads it (today's num_ctx). */
+  loadContext?: number;
+  /** Local only: the chapter stage's consensus samples. Refused on a cloud upstream (#194). */
+  temperature?: number;
+  /** The job's leases, when the caller has a job; else the service's own, else a one-call job. */
+  job?: JobLeases;
+  /** A wall clock on the answer (the old per-call timeouts). */
+  timeoutMs?: number;
 }
 
 export interface MetadataResult {
@@ -215,35 +232,18 @@ export class AIManagerService {
    * slices this per item onto `_prompt_trace`, the job JSON stores it, and the reports
    * page renders it — so every generated item can show exactly what the models were told.
    *
-   * SCOPE: everything routed through makeRequest, which is every CLOUD call and the legacy
-   * package/summarization paths. The per-field LOCAL calls (description-unit, metadata-tasks,
-   * the chapter pipeline's Ollama transport) speak to Ollama directly and do not appear;
-   * "Show prompt" already covers those before the run.
+   * SCOPE: EVERY call, since P2. The one door (crucible/transport.ts) records each call here
+   * with the Crucible server that ran it (Law 8), local and cloud alike, and the `claude -p`
+   * branch records its own with `claude -p` as the server. The per-field local calls used to
+   * speak to Ollama directly and never appeared; they go through the same door now, handed
+   * this array.
    *
    * One AIManagerService is constructed per generation run, so the trace's lifetime is the
    * job's and nothing carries across runs.
    */
-  readonly promptTrace: Array<{ what: string; model: string; chars: number; at: string; prompt: string }> = [];
-
-  // Ollama context window size - controls KV cache memory allocation.
-  // 131072 (default) creates a ~40GB KV cache for 70B models, causing OOM on most systems.
-  // 32768 reduces it to ~10GB while still supporting long prompts (master analysis, episode splitting).
-  private static readonly OLLAMA_NUM_CTX = 32768;
-  // A full metadata JSON can exceed 2000 tokens; too small a budget truncates the
-  // JSON mid-object and fails parsing. 4096 leaves ample room in the 32k context.
-  private static readonly OLLAMA_NUM_PREDICT = 4096;
-  // Max prompt chars before truncation: (context - response - margin) * ~3.5 chars/token.
-  // Public because the editor's Stories handlers read it: chapter-splitter refuses rather
-  // than summarize a truncated chapter, and on a local route the refusal has to happen before
-  // makeOllamaRequest would middle-truncate (editor-ipc.ts, LEDGER #205).
-  static readonly OLLAMA_MAX_PROMPT_CHARS = Math.floor(
-    (AIManagerService.OLLAMA_NUM_CTX - AIManagerService.OLLAMA_NUM_PREDICT - 512) * 3.5
-  );
+  readonly promptTrace: PromptTraceRecord[] = [];
 
   private config: AIConfig;
-  private ollamaClient?: AxiosInstance;
-  private openaiClient?: OpenAI;
-  private anthropicClient?: Anthropic;
   private currentPromptSet?: PromptSet;
   /**
    * The CHANNEL behind the loaded prompt set (prompts/channels/*.yml): its field list, its
@@ -264,116 +264,15 @@ export class AIManagerService {
   // instead of a bare "Failed to initialize AI manager".
   lastInitError?: string;
 
-  /**
-   * Get available models for a provider
-   */
-  static async getAvailableModels(
-    provider: 'ollama' | 'openai' | 'claude',
-    apiKey?: string,
-    host?: string
-  ): Promise<Array<{ id: string; name: string }>> {
-    try {
-      if (provider === 'claude') {
-        if (!apiKey) {
-          throw new Error('API key required for Claude');
-        }
-
-        const anthropic = new Anthropic({ apiKey });
-        log.info('[AIManager] Fetching Claude models from API...');
-        const response = await anthropic.models.list();
-        log.info(`[AIManager] Received ${response.data.length} models from Claude API`);
-
-        // Log all models for debugging
-        response.data.forEach(model => {
-          log.info(`[AIManager] Claude model: ${model.id} (${model.display_name || 'no display name'})`);
-        });
-
-        // Filter for chat-capable models (claude-3 and claude-sonnet/opus/haiku families)
-        // Exclude embedding models and other non-chat models
-        const chatModels = response.data
-          .filter(model => {
-            const id = model.id.toLowerCase();
-            // Include Claude 3.x, Claude 4.x, and sonnet/opus/haiku models
-            return (id.includes('claude-3') ||
-                    id.includes('claude-sonnet') ||
-                    id.includes('claude-opus') ||
-                    id.includes('claude-haiku')) &&
-                   !id.includes('embedding');
-          })
-          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-
-        log.info(`[AIManager] Filtered to ${chatModels.length} chat-capable Claude models`);
-
-        // Return up to 10 most recent chat models
-        return chatModels.slice(0, 10).map(model => ({
-          id: model.id,
-          name: model.display_name || model.id
-        }));
-      } else if (provider === 'openai') {
-        if (!apiKey) {
-          throw new Error('API key required for OpenAI');
-        }
-
-        const openai = new OpenAI({ apiKey });
-        const response = await openai.models.list();
-
-        // Filter for chat models and get top 3
-        const chatModels = response.data
-          .filter(model => model.id.startsWith('gpt-'))
-          .sort((a, b) => b.created - a.created)
-          .slice(0, 3);
-
-        return chatModels.map(model => ({
-          id: model.id,
-          name: model.id
-        }));
-      } else if (provider === 'ollama') {
-        const ollamaHost = host || 'http://localhost:11434';
-        const client = axios.create({ baseURL: ollamaHost });
-
-        const response = await client.get('/api/tags');
-
-        // Get top 3 models
-        const models = response.data.models || [];
-        const topModels = models.slice(0, 3);
-
-        return topModels.map((model: any) => ({
-          id: model.name,
-          name: model.name
-        }));
-      }
-
-      return [];
-    } catch (error) {
-      log.error(`[AIManager] Failed to get available models for ${provider}:`, error);
-      console.error(`[AIManager] Failed to get available models for ${provider}:`, error);
-      return [];
-    }
-  }
-
   constructor(config: AIConfig) {
     this.config = config;
 
-    /**
-     * The two models are resolved INDEPENDENTLY now, and that is a fix rather than a tidy-up.
-     *
-     * The old condition was `config.summarizationModel && config.metadataModel` — BOTH or
-     * neither. Since this build the summarization model is declared
-     * (metadata-routing.ts SUMMARIZATION_MODEL) while the metadata model comes from a Settings
-     * field that may legitimately be empty, so the AND would have thrown the declared
-     * summarizer away the moment Settings had no model in it and quietly summarized on
-     * `ollama:phi-3.5:3.8b` instead. A declared value must not be conditional on an unrelated
-     * one being present.
-     */
-    const PROVIDER_DEFAULTS: Record<string, { summary: string; metadata: string }> = {
-      // Fast model for summaries (2.2GB) / quality model for metadata (4.7GB).
-      ollama: { summary: 'ollama:phi-3.5:3.8b', metadata: 'ollama:qwen2.5:7b' },
-      openai: { summary: 'openai:gpt-4o-mini', metadata: 'openai:gpt-4o' },
-      claude: { summary: 'claude:claude-3-haiku-20240307', metadata: 'claude:claude-3-5-sonnet-20241022' },
-    };
-    const defaults = PROVIDER_DEFAULTS[config.provider];
-    this.summaryModel = config.summarizationModel || config.model || defaults?.summary || '';
-    this.metadataModel = config.metadataModel || config.model || defaults?.metadata || '';
+    // Each model is exactly what the caller named, or nothing. PROVIDER_DEFAULTS, which
+    // supplied a model per provider when none was named, is deleted (plan 6.5, Law 1): a
+    // model nobody chose is the call LEDGER #204 was written about. A call that needs one
+    // and has none refuses by name where it is made.
+    this.summaryModel = config.summarizationModel || '';
+    this.metadataModel = config.metadataModel || '';
 
     // Set prompts directories
     this.promptsDir = this.getPromptsDir();
@@ -392,9 +291,8 @@ export class AIManagerService {
     initPromptAssets(path.join(this.promptSetsDir, PROMPTS_SUBDIR));
 
     console.log('[AIManager] Initialized');
-    console.log('[AIManager] Provider:', config.provider);
-    console.log('[AIManager] Summary model:', this.summaryModel);
-    console.log('[AIManager] Metadata model:', this.metadataModel);
+    console.log('[AIManager] Summary model:', this.summaryModel || '(none named)');
+    console.log('[AIManager] Metadata model:', this.metadataModel || '(none named)');
   }
 
   /**
@@ -410,11 +308,12 @@ export class AIManagerService {
   /**
    * Chunk size when a transcript is over the direct-pass ceiling and has to be condensed.
    *
-   * 8000 was a 14B-era number. The summarizer's transport pins num_ctx 32768 (~114,000
-   * characters), so 8k chunks were spending fifteen calls on work that fits in two, and each
-   * of those calls saw a fifteenth of the video with no idea what surrounded it.
+   * 8000 was a 14B-era number: 8k chunks spent fifteen calls on work that fits in two, and
+   * each of those calls saw a fifteenth of the video with no idea what surrounded it. 60,000
+   * characters is ~17k tokens plus the 4096 budget; the call is loaded at that size and checked
+   * against the loaded context before sending (plan 7.3 lowers it in P4).
    */
-  private static readonly OLLAMA_SUMMARIZE_CHUNK_CHARS = 60000;
+  private static readonly LOCAL_SUMMARIZE_CHUNK_CHARS = 60000;
 
   /**
    * Get the prompts directory path
@@ -445,67 +344,19 @@ export class AIManagerService {
   }
 
   /**
-   * Initialize the AI provider(s) - supports multi-provider setups
+   * Load this run's prompt set. It no longer prepares or probes any model client (P2): every
+   * call is prepared by the one door on the model IT names, and a server that cannot run it
+   * refuses THAT call by name. No provider is probed per run (LEDGER #204: a probe on the
+   * legacy Settings model failed runs routed entirely to `claude -p`).
    */
   async initialize(): Promise<boolean> {
     this.lastInitError = undefined;
     try {
-      // Load prompts
       this.loadPrompts();
-
-      // Only Ollama is prepared here. Cloud providers are NOT probed at startup (operator,
-      // 2026-09-24): the old probe spent a paid Anthropic/OpenAI call on the LEGACY
-      // Settings model (metadataModel, e.g. claude:claude-sonnet-5) before every run, even
-      // when per-field routing sends every field to `claude -p` on the subscription —
-      // so an empty API balance failed runs that never touch the API ("credit balance is
-      // too low"). A cloud client is created by ensureProviderReady() the first time a
-      // routed call actually needs it, and a missing key or refused call fails THAT call,
-      // loudly, naming the provider and model.
-      const isCloudModel = (model: string) =>
-        model.startsWith('claude') || model.startsWith('openai:') || model.startsWith('gpt-');
-      const needsOllama = !isCloudModel(this.summaryModel) || !isCloudModel(this.metadataModel);
-
-      log.info(`[AIManager] Provider detection: needsOllama=${needsOllama} (cloud providers prepare on first routed call)`);
-      log.info(`[AIManager] Models: summary=${this.summaryModel}, metadata=${this.metadataModel}`);
-
-      if (needsOllama) {
-        log.info('[AIManager] Initializing Ollama...');
-        const success = await this.initializeOllama();
-        log.info(`[AIManager] Ollama initialization: ${success ? 'SUCCESS' : 'FAILED'}`);
-        return success;
-      }
-
       return true;
     } catch (error) {
       log.error('[AIManager] Initialization failed:', error);
-      console.error('[AIManager] Initialization failed:', error);
       this.lastInitError = error instanceof Error ? error.message : String(error);
-      return false;
-    }
-  }
-
-  /**
-   * Initialize Ollama provider
-   */
-  private async initializeOllama(): Promise<boolean> {
-    try {
-      const host = this.config.host || 'http://localhost:11434';
-      log.info(`[AIManager] Connecting to Ollama at ${host}...`);
-
-      this.ollamaClient = axios.create({
-        baseURL: host,
-        headers: { 'Content-Type': 'application/json' },
-        timeout: 300000, // 5 minutes
-      });
-
-      // Test connection
-      const response = await this.ollamaClient.get('/api/tags');
-
-      log.info('[AIManager] Ollama server connected');
-      return true;
-    } catch (error: any) {
-      log.error('[AIManager] Cannot connect to Ollama:', error?.message || error);
-      this.lastInitError = `Cannot connect to Ollama at ${this.config.host || 'http://localhost:11434'}: ${error?.message || error}`;
       return false;
     }
   }
@@ -638,8 +489,13 @@ export class AIManagerService {
       return transcript;
     }
 
-    const ceiling = this.config.transcriptCeiling
-      ?? (this.config.provider === 'ollama' ? 'local' : 'cloud');
+    const ceiling = this.config.transcriptCeiling;
+    if (ceiling === undefined) {
+      throw new Error(
+        `summarizeTranscript for ${sourceName} was called on a service constructed with no transcriptCeiling; ` +
+          `the ceiling follows where the field calls go, and this caller did not say.`
+      );
+    }
     const directPassMax = DIRECT_PASS_MAX_CHARS[ceiling];
 
     if (directPassesRaw({ chars: transcript.length, ceiling, forceCondense: options?.forceCondense })) {
@@ -668,15 +524,16 @@ export class AIManagerService {
     console.log(`[AIManager]     Transcript length: ${transcript.length} chars`);
     console.log(`[AIManager]     Using model: ${this.summaryModel}`);
 
-    // Chunk size follows the SUMMARIZER's transport (the model doing the condensing),
-    // which is independent of both `provider` and the ceiling above. Same provider
-    // detection as initialize(): anything not explicitly cloud-prefixed is Ollama.
-    const summaryIsCloud =
-      this.summaryModel.startsWith('claude:') || this.summaryModel.startsWith('claude-') ||
-      this.summaryModel.startsWith('openai:') || this.summaryModel.startsWith('gpt-');
+    // Chunk size follows the SUMMARIZER's model (the one doing the condensing), which is
+    // independent of the ceiling above: a Crucible upstream id or `claude -p` is cloud,
+    // anything else is a model a Crucible server holds.
+    if (!this.summaryModel) {
+      throw new Error(`Summarizing ${sourceName} needs the summarizer model, and this service was constructed with none.`);
+    }
+    const summaryIsCloud = isUpstreamModelId(this.summaryModel) || this.summaryModel.startsWith('claude-cli:');
     const chunkSize = summaryIsCloud
       ? AIManagerService.CLOUD_SUMMARIZE_CHUNK_CHARS
-      : AIManagerService.OLLAMA_SUMMARIZE_CHUNK_CHARS;
+      : AIManagerService.LOCAL_SUMMARIZE_CHUNK_CHARS;
 
     try {
       let result: string;
@@ -722,10 +579,8 @@ export class AIManagerService {
       const prompt = this.createSummarizationPrompt(chunks[i], `${sourceName}_chunk_${i}`);
       let response: string | null;
       try {
-        // 600s, matching LOCAL_GROUP_TIMEOUT_MS: this call's num_ctx differs from the
-        // chapter pipeline's, so Ollama fully reloads the 27b before generating and the
-        // window has to hold the reload as well as the summary.
-        response = await this.makeRequest(prompt, this.summaryModel, 600, `summarization chunk ${i + 1} of ${sourceName}`);
+        response = await this.runPlainRequest(
+          prompt, this.summaryModel, `summarization chunk ${i + 1} of ${sourceName}`, this.summaryShape(prompt));
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         throw new Error(`Summarization failed for ${sourceName} chunk ${i + 1}/${chunks.length}: ${reason}`);
@@ -747,9 +602,7 @@ export class AIManagerService {
    */
   private async summarizeSingleChunk(transcript: string, sourceName: string): Promise<string> {
     const prompt = this.createSummarizationPrompt(transcript, sourceName);
-    // 600s for the same reason as the chunked path above: the local model may need a
-    // full reload (num_ctx change) before it can start writing.
-    const response = await this.makeRequest(prompt, this.summaryModel, 600, `summarization of ${sourceName}`);
+    const response = await this.runPlainRequest(prompt, this.summaryModel, `summarization of ${sourceName}`, this.summaryShape(prompt));
 
     // A trivially short/empty summary means the model produced nothing usable —
     // fail loudly rather than silently substituting truncated raw transcript.
@@ -758,6 +611,32 @@ export class AIManagerService {
     }
     return response.trim();
   }
+
+  /**
+   * The compilation condensation call's shape (plan 6.3): thinking off, a 4096-token answer,
+   * and on a local model the context its own prompt needs, bucketed the way every local call
+   * is sized. 600 s is the clock it always had.
+   */
+  private summaryShape(prompt: string): PlainCallShape {
+    return {
+      thinking: false,
+      maxTokens: AIManagerService.SUMMARY_MAX_TOKENS,
+      loadContext: bucketLoadContext({
+        promptChars: prompt.length,
+        maxTokens: AIManagerService.SUMMARY_MAX_TOKENS,
+        max: AIManagerService.LOCAL_PACKAGE_CTX_MAX,
+        what: `condensing a compilation item on ${this.summaryModel}`,
+      }),
+      timeoutMs: 600_000,
+    };
+  }
+
+  /** The condensation answer's budget (plan 6.3 row: 4096). */
+  private static readonly SUMMARY_MAX_TOKENS = 4096;
+  /** The compilation package's local budget (plan 6.3 row: 4096 local, 16000 cloud). */
+  private static readonly PACKAGE_LOCAL_MAX_TOKENS = 4096;
+  /** The refusal point for either compilation call's local context: the field calls' ceiling. */
+  private static readonly LOCAL_PACKAGE_CTX_MAX = 40960;
 
   /**
    * The evidence-extraction prompt that runs before anything else reads a transcript.
@@ -1109,63 +988,6 @@ export class AIManagerService {
   }
 
   /**
-   * Make sure the provider behind `model` has a client, for models this instance was not
-   * constructed around.
-   *
-   * Per-task routing can send one group to a model whose provider initialize() never
-   * touched. Creating the client here is not a fallback — the model was explicitly
-   * requested and this is the first time it is needed. A MISSING KEY is the failure, and
-   * it throws naming the provider and the model rather than quietly sending the request
-   * somewhere that is configured.
-   */
-  private async ensureProviderReady(model: string): Promise<void> {
-    if (model.startsWith('claude-cli:')) {
-      // The `claude -p` transport needs no client and no API key — the binary either runs
-      // or the call throws loudly at spawn time, naming what to fix. Nothing to prepare.
-      return;
-    }
-    if (model.startsWith('claude:')) {
-      if (this.anthropicClient) return;
-      const key = this.config.cloudApiKeys?.claude
-        || (this.metadataModel.startsWith('claude:') ? this.config.apiKey : undefined);
-      if (!key) {
-        throw new Error(
-          `Metadata is routed to "${model}", but no Anthropic API key is configured. Add it in AI Setup — ` +
-            `no other provider was substituted.`
-        );
-      }
-      this.anthropicClient = new Anthropic({ apiKey: key });
-      log.info(`[AIManager] Initialized Claude client on demand for routed model ${model}`);
-      return;
-    }
-
-    if (model.startsWith('openai:')) {
-      if (this.openaiClient) return;
-      const key = this.config.cloudApiKeys?.openai
-        || (this.metadataModel.startsWith('openai:') ? this.config.apiKey : undefined);
-      if (!key) {
-        throw new Error(
-          `Metadata is routed to "${model}", but no OpenAI API key is configured. Add it in AI Setup — ` +
-            `no other provider was substituted.`
-        );
-      }
-      this.openaiClient = new OpenAI({ apiKey: key });
-      log.info(`[AIManager] Initialized OpenAI client on demand for routed model ${model}`);
-      return;
-    }
-
-    if (model.startsWith('ollama:') && !this.ollamaClient) {
-      const host = this.config.host || 'http://localhost:11434';
-      this.ollamaClient = axios.create({
-        baseURL: host,
-        headers: { 'Content-Type': 'application/json' },
-        timeout: 300000,
-      });
-      log.info(`[AIManager] Initialized Ollama client on demand for routed model ${model} @ ${host}`);
-    }
-  }
-
-  /**
    * Request + parse + repair, WITHOUT the description-links post-processing.
    *
    * Task units share this because those links have to be appended once, to the merged
@@ -1185,11 +1007,26 @@ export class AIManagerService {
       throw new Error('runMetadataRequest needs the routed model for this call; there is no default model.');
     }
     const requestModel = model;
-    await this.ensureProviderReady(requestModel);
+    // The compilation package, the one JSON caller left (Law 12's exception): thinking off,
+    // JSON asked of a local model through response_format json_object (plan 6.3), 4096 tokens
+    // local and the Anthropic ceiling on cloud. On cloud the JSON contract rides in the system
+    // turn, as it always did: a json_schema would become a forced tool through Crucible, and
+    // how that combines with thinking is unmeasured (plan 19 N6).
+    const shape: PlainCallShape = {
+      thinking: false,
+      maxTokens: AIManagerService.PACKAGE_LOCAL_MAX_TOKENS,
+      loadContext: bucketLoadContext({
+        promptChars: prompt.length,
+        maxTokens: AIManagerService.PACKAGE_LOCAL_MAX_TOKENS,
+        max: AIManagerService.LOCAL_PACKAGE_CTX_MAX,
+        what: `the compilation package on ${requestModel}`,
+      }),
+      timeoutMs: 300_000,
+    };
 
     const maxAttempts = 2;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const response = await this.makeRequest(prompt, requestModel, 300, `metadata package (attempt ${attempt})`);
+      const response = await this.makeRequest(prompt, requestModel, `metadata package (attempt ${attempt})`, shape, 'json');
 
       if (!response) {
         log.error('[AIManager] === METADATA GENERATION FAILED ===');
@@ -1217,12 +1054,13 @@ export class AIManagerService {
   }
 
   /**
-   * One cloud request whose answer is PLAIN TEXT — the transport for every plain-format call
+   * `runPlainRequest` (below the insights setters): one request whose answer is PLAIN TEXT, on
+   * any routed model: `claude -p`, or the Crucible door for a local or `anthropic/` model
    * (operator's ruling 2026-08-24: no JSON for these calls unless absolutely necessary).
    *
-   * No output_config, no JSON system nudge, no stop sequences: the request is the prompt and
-   * the 4000-token runaway brake and nothing else. Inline <think> blocks are stripped once,
-   * here, so no caller re-learns that a reasoning model sometimes narrates before it answers.
+   * No JSON system nudge, no stop sequences: the request is the prompt, the plain system turn
+   * on cloud, and the shape the caller states. Inline <think> blocks are stripped once, here,
+   * so no caller re-learns that a reasoning model sometimes narrates before it answers.
    *
    * Returns null for an EMPTY answer — the caller's one-decision cost, exactly as the local
    * transport's `ok: false` is — and throws on transport failure, which affects every
@@ -1241,9 +1079,8 @@ export class AIManagerService {
     return Boolean(this.config.insightsBlock);
   }
 
-  async runPlainRequest(prompt: string, model: string, what: string): Promise<string | null> {
-    await this.ensureProviderReady(model);
-    const response = await this.makeRequest(prompt, model, 300, what, true);
+  async runPlainRequest(prompt: string, model: string, what: string, shape: PlainCallShape): Promise<string | null> {
+    const response = await this.makeRequest(prompt, model, what, shape, 'plain');
     const text = stripThinking(response || '');
     if (text.length === 0) {
       log.warn(`[AIManager] the answer to ${what} from "${model}" came back empty`);
@@ -1597,227 +1434,88 @@ export class AIManagerService {
   }
 
   /**
-   * Make request to AI provider - intelligently routes based on model name
+   * THE TWO DOORS a model call leaves this app through, chosen by the model string alone.
+   *
+   *   claude-cli:<alias>   `claude -p`, outside Crucible (LEDGER #193), exactly as before.
+   *   anything else        the Crucible transport, which refuses a string that is not a
+   *                        Crucible id by name (a stale `ollama:`/`claude:`/`openai:` one).
+   *
+   * Every call goes through its LANE itself (electron/crucible/lanes.ts, P3): a local model
+   * takes its server's one GPU slot, a cloud one and `claude -p` take none (plan 13.1). Callers
+   * must NOT wrap makeRequest in queueAITask: nesting would deadlock the slot. A cancel that
+   * arrives while the request waits for the slot stops it before it is sent.
    */
   private async makeRequest(
     prompt: string,
     model: string,
-    timeout: number = 600,
-    what: string = 'AI request',
-    /** Plain-text call (runPlainRequest): the Claude route sends no JSON system nudge. */
-    plain?: boolean
+    what: string,
+    shape: PlainCallShape,
+    /** `plain` (runPlainRequest) or `json` (the compilation package): which system turn a cloud call carries. */
+    mode: 'plain' | 'json'
   ): Promise<string | null> {
     const requestId = Math.random().toString(36).substring(7);
-    const timestamp = new Date().toISOString();
-
-    // Recorded BEFORE the call: a request that fails or times out is still a prompt that
-    // was sent, and the trace exists to answer "what did the model actually read".
-    this.promptTrace.push({ what, model, chars: prompt.length, at: timestamp, prompt });
-
-    console.log(`[AIManager] ▶ AI REQUEST START [${requestId}] at ${timestamp}`);
-    console.log(`[AIManager]   Model: ${model}`);
-    console.log(`[AIManager]   Prompt length: ${prompt.length} chars`);
+    console.log(`[AIManager] AI REQUEST START [${requestId}] ${what} on ${model} (${prompt.length} chars)`);
 
     try {
-      // Route every provider call through its lane (electron/crucible/lanes.ts): a local
-      // model takes its server's one GPU slot (OOM protection), a cloud one takes none
-      // (plan section 13.1). Callers must NOT wrap makeRequest in queueAITask — nesting
-      // would deadlock the slot.
       const result = await queueAITask<string | null>(
         routeOfModelId(model),
         `ai-${requestId}`,
         `AI Request: ${model}`,
         async () => {
-          // The queue slot may have been waited on for minutes. A cancel that arrives
-          // while this request is QUEUED must not let it start: the caller's boundary
-          // guard ran before the wait, not after it.
           if (this.config.abortSignal?.aborted) {
             throw new JobCancelledError(`before the "${model}" request left the AI queue`);
           }
-
-          // Every transport prepares here, on the model this request names — initialize()
-          // no longer probes cloud providers, so no call path may assume a client exists.
-          await this.ensureProviderReady(model);
-
-          // Detect provider from model name - EXPLICIT routing, no fallbacks
-          // Model format must be "provider:model" (e.g., "ollama:cogito:14b", "openai:gpt-4o", "claude:claude-3-5-sonnet")
-          if (model.startsWith('openai:')) {
-            console.log(`[AIManager]   Provider: OpenAI`);
-            return await this.makeOpenAIRequest(prompt, model.replace('openai:', ''));
-          } else if (model.startsWith('claude-cli:')) {
-            // The subscription rung: Claude through the `claude -p` CLI instead of the
-            // metered API. The suffix is the CLI's model alias ('opus', 'sonnet'), passed
-            // through verbatim. Checked before nothing it could shadow — 'claude-cli:'
-            // matches neither 'claude:' nor 'ollama:'.
+          if (model.startsWith('claude-cli:')) {
+            // Recorded here, not by the Crucible door, BEFORE the call: a request that fails is
+            // still a prompt that was sent. The "server" is the transport's own name (Law 8).
+            this.promptTrace.push({ what, model, chars: prompt.length, at: new Date().toISOString(), prompt, server: 'claude -p' });
             console.log(`[AIManager]   Provider: claude -p (subscription)`);
-            return await this.makeClaudeCliRequest(prompt, model.replace('claude-cli:', ''), plain);
-          } else if (model.startsWith('claude:')) {
-            console.log(`[AIManager]   Provider: Claude`);
-            return await this.makeClaudeRequest(prompt, model.replace('claude:', ''), plain);
-          } else if (model.startsWith('ollama:')) {
-            console.log(`[AIManager]   Provider: Ollama`);
-            return await this.makeOllamaRequest(prompt, model.replace('ollama:', ''), timeout);
-          } else {
-            // No valid provider prefix - this is a bug, throw error
-            throw new Error(`Invalid model format: "${model}". Model must have provider prefix (openai:, claude:, or ollama:)`);
+            return await this.makeClaudeCliRequest(prompt, model.replace('claude-cli:', ''), mode === 'plain');
           }
+          const cloud = isUpstreamModelId(model);
+          if (!cloud && shape.maxTokens === undefined) {
+            throw new Error(`${what} on the local model ${model} stated no output budget; every local call states one.`);
+          }
+          const job = shape.job ?? this.config.jobLeases;
+          const answer = await crucibleTransport().chat({
+            model,
+            prompt,
+            // The system turn is the cloud contract, as makeClaudeRequest sent it; a local
+            // prompt carries the plain contract inline already (the field prompts open with it).
+            ...(cloud ? { system: mode === 'plain' ? SYSTEM_PROMPTS.PLAIN_SYSTEM : AIManagerService.JSON_SYSTEM_TURN } : {}),
+            act: 'generate',
+            thinking: shape.thinking,
+            maxTokens: cloud ? ANTHROPIC_MAX_TOKENS : shape.maxTokens!,
+            ...(shape.temperature === undefined ? {} : { temperature: shape.temperature }),
+            ...(mode === 'json' && !cloud ? { responseFormat: { type: 'json_object' as const } } : {}),
+            ...(cloud || shape.loadContext === undefined ? {} : { loadContext: shape.loadContext }),
+            ...(job === undefined ? {} : { job }),
+            ...(this.config.abortSignal === undefined ? {} : { signal: this.config.abortSignal }),
+            ...(shape.timeoutMs === undefined ? {} : { timeoutMs: shape.timeoutMs }),
+            what,
+            trace: this.promptTrace,
+          });
+          return answer.text;
         }
       );
-
-      const endTimestamp = new Date().toISOString();
-      console.log(`[AIManager] ■ AI REQUEST END [${requestId}] at ${endTimestamp}`);
-      console.log(`[AIManager]   Response length: ${result?.length || 0} chars`);
-
+      console.log(`[AIManager] AI REQUEST END [${requestId}] (${result?.length || 0} chars)`);
       return result;
     } catch (error: any) {
-      const endTimestamp = new Date().toISOString();
-      console.error(`[AIManager] ✖ AI REQUEST FAILED [${requestId}] at ${endTimestamp}:`, error);
-      // Re-throw with context so the caller gets a useful error message. A CANCELLED
-      // request arrives here as a plain Error whatever it was thrown as — the AI queue
-      // re-wraps every rejection (queue-manager.service.ts) — so there is nothing to
-      // re-classify here. Its message survives, and the orchestrator decides a run was
-      // cancelled from the abort signal, not from the error.
-      throw new Error(error?.message || `AI request failed for model "${model}"`);
+      console.error(`[AIManager] AI REQUEST FAILED [${requestId}]:`, error?.message || error);
+      // Re-thrown AS ITSELF: the lanes pass a call's error through with its type, and a
+      // caller with a declared policy for one of the door's refusals (`over_context`,
+      // `truncated`) reads its code (Law 10); a park reads the SDK refusal the door carries as
+      // its `cause` (P3). The orchestrator decides a run was cancelled from the abort signal.
+      throw error;
     }
   }
 
   /**
-   * Make request to Ollama
+   * The JSON contract, as the one cloud JSON caller left (the compilation package) sends it in
+   * the system turn. Kept word for word from makeClaudeRequest.
    */
-  private async makeOllamaRequest(
-    prompt: string,
-    model: string,
-    timeout: number
-  ): Promise<string | null> {
-    if (!this.ollamaClient) {
-      throw new Error('Ollama client not initialized');
-    }
-
-    // Truncate prompt if it exceeds the context window capacity. Use MIDDLE
-    // truncation: metadata prompts put the field instructions LAST, so plain
-    // head-truncation would delete the instructions and keep only transcript,
-    // yielding garbage. Keep the head and tail, drop the middle of the transcript.
-    let effectivePrompt = prompt;
-    const maxChars = AIManagerService.OLLAMA_MAX_PROMPT_CHARS;
-    if (prompt.length > maxChars) {
-      const marker = '\n[... transcript truncated to fit context ...]\n';
-      const keep = maxChars - marker.length;
-      const headLen = Math.ceil(keep / 2);
-      const tailLen = Math.floor(keep / 2);
-      effectivePrompt = prompt.substring(0, headLen) + marker + prompt.substring(prompt.length - tailLen);
-      log.warn(`[AIManager] Prompt too long (${prompt.length} chars, max ${maxChars}), middle-truncating to ${effectivePrompt.length} chars`);
-    }
-
-    try {
-      const response = await this.ollamaClient.post(
-        '/api/generate',
-        {
-          model,
-          prompt: effectivePrompt,
-          stream: false,
-          options: {
-            num_predict: AIManagerService.OLLAMA_NUM_PREDICT,
-            num_ctx: AIManagerService.OLLAMA_NUM_CTX,
-          },
-        },
-        { timeout: timeout * 1000, signal: this.config.abortSignal }
-      );
-
-      // Warn if the response was cut off at num_predict — the JSON is likely
-      // incomplete and will fail parsing. This DETECTS the same thing the Claude
-      // max_tokens check does but still only warns, where that one now throws
-      // (2026-09-13): a truncated Ollama answer has always reached the caller and
-      // failed at the parse, and changing that is a separate decision about a
-      // separate transport, not a side effect of fixing the Claude ceiling.
-      if (response.data.done_reason === 'length') {
-        log.warn(`[AIManager] Ollama response was truncated (done_reason=length, hit num_predict=${AIManagerService.OLLAMA_NUM_PREDICT} limit)!`);
-      }
-
-      return response.data.response;
-    } catch (error: any) {
-      if (isAbortError(error)) {
-        throw new JobCancelledError(`the Ollama request to "${model}" was aborted mid-flight`);
-      }
-
-      // Extract useful error details from Ollama response
-      const ollamaError = error?.response?.data?.error || error?.message || 'Unknown error';
-      const status = error?.response?.status;
-      const isTimeout = error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT';
-
-      if (isTimeout) {
-        log.error(`[AIManager] Ollama request timed out after ${timeout}s for model "${model}"`);
-        throw new Error(`Ollama request timed out after ${timeout}s. Model "${model}" may be too large for your hardware, or Ollama is still loading the model. Try a smaller model or increase available memory.`);
-      } else if (status === 404) {
-        log.error(`[AIManager] Ollama model "${model}" not found`);
-        throw new Error(`Ollama model "${model}" not found. Make sure you've pulled it with: ollama pull ${model}`);
-      } else {
-        log.error(`[AIManager] Ollama request failed for model "${model}":`, ollamaError);
-        throw new Error(`Ollama request failed (model: ${model}): ${ollamaError}`);
-      }
-    }
-  }
-
-  /**
-   * Make request to OpenAI
-   */
-  private async makeOpenAIRequest(prompt: string, model: string): Promise<string | null> {
-    if (!this.openaiClient) {
-      console.error('[AIManager] OpenAI client not initialized');
-      throw new Error('OpenAI client not initialized');
-    }
-
-    console.log(`[AIManager] Making OpenAI request to model: ${model}`);
-
-    try {
-      const response = await this.openaiClient.chat.completions.create(
-        {
-          model,
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: 2000,
-        },
-        { signal: this.config.abortSignal }
-      );
-
-      const content = response.choices[0]?.message?.content;
-      console.log(`[AIManager] OpenAI response received, content length: ${content?.length || 0}`);
-
-      if (!content) {
-        console.error('[AIManager] OpenAI returned empty content. Response:', JSON.stringify(response, null, 2));
-      }
-
-      return content || null;
-    } catch (error: any) {
-      if (isAbortError(error)) {
-        throw new JobCancelledError(`the OpenAI request to "${model}" was aborted mid-flight`);
-      }
-      const errorMsg = error?.message || 'Unknown error';
-      console.error('[AIManager] OpenAI request failed:', errorMsg);
-      console.error('[AIManager] OpenAI error details:', error?.response?.data || error);
-      throw new Error(`OpenAI request failed (model: ${model}): ${errorMsg}`);
-    }
-  }
-
-  /**
-   * Map friendly Claude model names to actual API model names
-   */
-  private mapClaudeModelName(friendlyName: string): string {
-    const modelMap: { [key: string]: string } = {
-      // Haiku 4.5 — the routing's cheap cloud rung (haiku45). The alias-less dated id is
-      // the one the API is guaranteed to accept.
-      'claude-haiku-4-5': 'claude-haiku-4-5-20251001',
-      // Claude 4 models
-      'claude-sonnet-4': 'claude-sonnet-4-20250514',
-      'claude-opus-4': 'claude-opus-4-20250514',
-      // Claude 3.5 models (still widely used)
-      'claude-3-5-sonnet': 'claude-3-5-sonnet-20241022',
-      'claude-3-5-haiku': 'claude-3-5-haiku-20241022',
-      // Older Claude 3 models
-      'claude-3-haiku': 'claude-3-haiku-20240307',
-      'claude-3-opus': 'claude-3-opus-20240229',
-    };
-
-    return modelMap[friendlyName] || friendlyName;
-  }
+  private static readonly JSON_SYSTEM_TURN =
+    'You are a helpful assistant. When asked to return JSON, output ONLY valid JSON with no markdown, no commentary, and no extra text. Start your response with { and end with }.';
 
   /**
    * The `claude -p` transport — the routing modal's subscription rung (operator, 2026-08-24).
@@ -1989,117 +1687,6 @@ export class AIManagerService {
       });
       child.stdin.end(prompt);
     });
-  }
-
-  /**
-   * Make request to Claude
-   */
-  private async makeClaudeRequest(prompt: string, model: string, plain?: boolean): Promise<string | null> {
-    if (!this.anthropicClient) {
-      throw new Error('Claude client not initialized');
-    }
-
-    try {
-      // Map friendly name to actual API model name
-      const actualModel = this.mapClaudeModelName(model);
-
-      // Adaptive thinking is how a 5-family model is SUPPOSED to reason: structured
-      // thinking blocks the text-block extraction below never reads, sized by the model to
-      // the task. The instruction-only attempt at suppressing reasoning failed on the one
-      // call that genuinely needs it — stage-1 read a 42-minute transcript and thought
-      // straight past an 8000-token ceiling in inline <think> tags, twice (2026-08-24
-      // 03:48), stripping to an empty answer — because Sonnet 5 is trained to reason
-      // before hard analysis and a system nudge does not undo training. Adaptive lets the
-      // easy calls skip thinking (measured: 150-token answers) and the hard ones think in
-      // the channel built for it. Haiku 4.5 is pre-4.6 and rejects `adaptive`, so it goes
-      // without; its inline reasoning, if any, is handled by stripThinking as before.
-      const supportsAdaptive = !actualModel.startsWith('claude-haiku-4-5');
-      const params: Record<string, unknown> = {
-        model: actualModel,
-        // A runaway brake sized to hold BOTH the thinking and the answer: the largest
-        // legitimate answer stays under ~2500 tokens, and a hard stage-1 thinks ~6000 on
-        // top of it (measured 2026-08-24 03:49: 5871 output tokens around a 325-char
-        // boundary list).
-        //
-        // THE CEILING IS NOT CONDITIONED ON `plain` ANY MORE (2026-09-13). It used to be —
-        // 16000 for the plain path, 8000 for the JSON path — on the assumption that a call
-        // which does not ASK for thinking does not get any. That assumption is false: a
-        // 5-family model runs adaptive thinking when the `thinking` parameter is absent,
-        // and returns it with `display: "omitted"`, so the JSON path was thinking into an
-        // 8000-token ceiling it was never sized for. It cost a whole compilation run
-        // (2026-09-13 17:30 and again 17:31): stop_reason max_tokens, output=8000, and NO
-        // text block at all, because the budget went entirely on reasoning that never
-        // reached an answer. The same call squeaked in at output=7336 on 2026-09-06. One
-        // ceiling, sized for thinking, on every call to a model that thinks.
-        max_tokens: supportsAdaptive ? 16000 : 8000,
-        messages: [{ role: 'user', content: prompt }],
-      };
-      // Asked for EXPLICITLY on both paths as of 2026-09-13, where this used to sit inside
-      // the `plain` branch — same reason the ceiling is now shared: it is the mode these
-      // models run anyway, and a request that receives adaptive thinking without naming it
-      // is a request nobody sized.
-      if (supportsAdaptive) params.thinking = { type: 'adaptive' };
-      if (plain) {
-        // The plain contract, in the channel built for it: answer in the requested shape,
-        // reasoning stays internal (with adaptive thinking there is a real internal for it
-        // to stay in). Same asset the field prompts carry inline.
-        params.system = SYSTEM_PROMPTS.PLAIN_SYSTEM;
-      } else {
-        // The JSON nudge, for the two JSON callers left: the compilation package and the
-        // episode splitter. Every routed field call goes through runPlainRequest instead.
-        params.system =
-          'You are a helpful assistant. When asked to return JSON, output ONLY valid JSON with no markdown, no commentary, and no extra text. Start your response with { and end with }.';
-      }
-
-      const response = (await this.anthropicClient.messages.create(
-        params as never,
-        // The signal is the whole point of the cancel path: without it a cancel during
-        // this call is billed in full and the answer is thrown away.
-        { signal: this.config.abortSignal }
-      )) as Anthropic.Message;
-
-      // Log why Claude stopped
-      log.info(`[AIManager] Claude stop_reason: ${response.stop_reason}`);
-      log.info(`[AIManager] Claude usage: input=${response.usage.input_tokens}, output=${response.usage.output_tokens}`);
-
-      const textBlock = response.content.find((block) => block.type === 'text');
-      const text = textBlock?.type === 'text' ? textBlock.text : null;
-
-      // A TRUNCATED ANSWER IS A FAILED REQUEST, and it throws (2026-09-13).
-      //
-      // This used to log a warning and hand the caller whatever it had — which was either a
-      // JSON fragment that failed to parse, a description cut off mid-sentence that would
-      // have been published as written, or, when the whole budget went on thinking, NO text
-      // block and therefore `null`. That last shape is what the operator actually saw: null
-      // travels up to runMetadataRequest, which reports it as "No response from AI", retries
-      // the identical request, burns the identical ceiling, and fails the run with a message
-      // describing something that did not happen. The model answered; the request was too
-      // small to hold the answer.
-      //
-      // So it is named here, once, as itself. The empty-answer contract is UNCHANGED for a
-      // call that ran to completion: `end_turn` with no text still returns null, and
-      // runPlainRequest still treats that as this field's decision rather than the run's.
-      if (response.stop_reason === 'max_tokens') {
-        const got = text
-          ? `${text.length} chars of text, cut off mid-answer`
-          : 'no text block at all — the whole budget went on thinking';
-        throw new Error(
-          `the answer from "${actualModel}" was cut off at the ${params.max_tokens}-token ceiling ` +
-            `(${response.usage.output_tokens} output tokens, ${got}). A truncated answer must not be ` +
-            `published, so nothing is returned. Route this call to a model with more room, or shorten its input.`
-        );
-      }
-
-      return text;
-    } catch (error: any) {
-      if (isAbortError(error)) {
-        throw new JobCancelledError(`the Claude request to "${model}" was aborted mid-flight`);
-      }
-      const errorMsg = error?.message || 'Unknown error';
-      log.error('[AIManager] Claude request failed:', errorMsg);
-      console.error('[AIManager] Claude request failed:', error);
-      throw new Error(`Claude request failed (model: ${model}): ${errorMsg}`);
-    }
   }
 
   /**

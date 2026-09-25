@@ -1,6 +1,4 @@
-@if (aiWizardOpen()) {
-  <app-ai-setup-wizard (closed)="closeAIWizard()" (completed)="completeAIWizard()"></app-ai-setup-wizard>
-} @else if (setup.optionalDialogOpen()) {
+@if (setup.optionalDialogOpen()) {
   <div class="setup-backdrop" role="presentation">
     <section class="setup-dialog" role="dialog" aria-modal="true" aria-labelledby="setup-title">
       <button class="dialog-close" type="button" aria-label="Close setup" (click)="setup.closeOptionalDialog()">×</button>
@@ -15,11 +13,12 @@
           <div class="section-copy">
             <span class="section-mark">AI</span>
             <div>
-              <h3>Connect an AI provider</h3>
-              <p>{{ setup.readiness()?.ai?.reason }}</p>
+              <!-- Every model call goes through Crucible (P2): the one door to it is the
+                   readiness banner and Settings › Crucible Servers, not a provider wizard. -->
+              <h3>Connect to Crucible</h3>
+              <p>{{ setup.readiness()?.ai?.reason }} Set it up in Settings › Crucible Servers.</p>
             </div>
           </div>
-          <button class="secondary-action" type="button" (click)="configureAI()">Open AI setup</button>
         </div>
       }
 

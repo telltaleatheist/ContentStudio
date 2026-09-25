@@ -320,11 +320,8 @@ export class EpisodeSplitterService {
 
       // Initialize AI service
       const aiConfig: AIConfig = {
-        provider: aiProvider as 'ollama' | 'openai' | 'claude',
         metadataModel: aiModel,
         summarizationModel: aiModel,
-        apiKey: aiApiKey,
-        host: aiHost,
         promptSetsDir: params.promptSetsDir,
       };
 
@@ -414,19 +411,19 @@ export class EpisodeSplitterService {
     srtSegments: SRTSegment[];
     totalDurationSeconds: number;
     aiService: AIManagerService;
-    provider?: string;
+    /** Where the routed chapters model runs: a GPU-held model's window is the smaller one. Stated, never defaulted. */
+    transport: 'local' | 'cloud';
   }): Promise<TranscriptChapter[]> {
     const { srtSegments, totalDurationSeconds, aiService } = params;
-    const provider = params.provider ?? 'claude';
 
     if (!srtSegments || srtSegments.length === 0) {
       throw new Error('Transcript has no segments to analyze.');
     }
 
-    // Same char-budget sampling as the audio path so Ollama prompts aren't
-    // silently truncated. Whole segments are kept verbatim so quoted
-    // start_phrases still map against the full segment list.
-    const budgetChars = provider === 'ollama' ? 90000 : 300000;
+    // Same char-budget sampling as the audio path, so a local prompt fits the window the
+    // Crucible door checks it against before sending (it refuses rather than cut). Whole
+    // segments are kept verbatim so quoted start_phrases still map against the full list.
+    const budgetChars = params.transport === 'local' ? 90000 : 300000;
     const budgetedSegments = sampleSegmentsToBudget(srtSegments, budgetChars);
     const transcript = buildSparseTimestampTranscript(budgetedSegments, 5);
 
@@ -965,7 +962,16 @@ ${episodeTranscript}`;
 
       log.info(`[EpisodeSplitter] Requesting AI analysis with model: ${model}`);
 
-      const response = await service.makeRequest(prompt, model, 600);
+      // The splitter's one JSON call, in the shape the old Ollama route sent it: thinking off, a
+      // 4096-token answer, and on a local model the fixed 32768-token window that route loaded
+      // at (P8 replaces this splitter with chaptering at the coarsest grain, plan 10).
+      const response = await service.makeRequest(
+        prompt,
+        model,
+        'episode boundary analysis',
+        { thinking: false, maxTokens: 4096, loadContext: 32768, timeoutMs: 600_000 },
+        'json'
+      );
 
       return response;
     } catch (error) {

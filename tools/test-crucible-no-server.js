@@ -96,7 +96,8 @@ check('every crucible:* channel answers the envelope with no server there, and n
     ['crucible:settings-get', 'mac'],
     ['crucible:settings-put', 'mac', { upstreams: { anthropic: { key: 'sk-ant-never-sent-9999' } } }],
     ['crucible:upstream-test', 'mac', 'anthropic', { key: 'sk-ant-never-sent-9999' }],
-    ['crucible:copy-my-key', 'mac'],
+    ['crucible:key-migration'],
+    ['crucible:key-migration-resolve', 'keep'],
     ['crucible:setup'],
     ['crucible:install-status'],
     ['crucible:local-presence'],
@@ -184,7 +185,7 @@ check('queueAITask with no server: a cloud call runs; a local call is refused by
   assert.strictEqual(await queue.queueAITask(queue.routeOfModelId('claude-cli:sonnet'), 'c1', 'a claude -p call', async () => 'ran'), 'ran', 'no lanes installed: a cloud call needs none');
   await assert.rejects(queue.queueAITask(queue.gpuCall('qwen3.5-9b'), 'g0', 'a local call', async () => 'never'), /No Crucible lanes are installed/);
   lanes.installLanes(ctx.lanes);
-  assert.strictEqual(await queue.queueAITask(queue.routeOfModelId('claude:claude-sonnet-5'), 'c2', 'a cloud call', async () => 'ran'), 'ran');
+  assert.strictEqual(await queue.queueAITask(queue.routeOfModelId('anthropic/claude-sonnet-5'), 'c2', 'a cloud call', async () => 'ran'), 'ran');
   await assert.rejects(queue.queueAITask(queue.gpuCall('qwen3.5-9b'), 'g1', 'a local call', async () => 'never'), (err) => err.code === 'no_selected_server');
   lanes.installLanes(null);
   ctx.stop();

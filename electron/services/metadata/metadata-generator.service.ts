@@ -41,14 +41,12 @@ import { SCRUB_ROUTING_TASK, scrubGeneratedItem } from './scrub';
 import { DigestChapter, FieldContentDecision, digestChaptersOf, resolveFieldContent } from './chapter-digest';
 import { topEntities, transcriptCasing } from './entity-extraction';
 import { chapterPools } from './tags-hashtags';
-import { askOllamaPlain } from './plain-call';
-import { bucketNumCtx, estimateTokens } from './ollama-json';
+import { bucketLoadContext } from './context-sizing';
 import { SYSTEM_PROMPTS } from './system-prompts';
 import { PreparedChannelInsights, resolveGuidelinesBlock } from '../analytics/insights-guidelines';
 
 /** Lessons are 5-10 lines; the budget is sized for a local model's thinking, not the answer. */
 const GUIDELINES_NUM_PREDICT = 2048;
-import axios from 'axios';
 import { JobCancelledError } from './cancellation';
 import type { TranscriptRef } from '../publish/publish-types';
 import { gpuCall, queueAITask } from '../queue-manager.service';
@@ -71,17 +69,13 @@ const PHRASE_POOL_SIZE = 40;
 export interface GenerationParams {
   inputs: string[];
   mode?: 'individual' | 'compilation';
-  aiProvider: 'ollama' | 'openai' | 'claude';
-  aiModel?: string; // Legacy single model (backward compatibility)
-  summarizationModel?: string; // Model for fast summarization
-  metadataModel?: string; // Model for final metadata generation
-  aiApiKey?: string;
   /**
-   * Keys for the cloud providers the ROUTING may reach, which is not necessarily the
-   * provider `aiApiKey` belongs to (see AIConfig.cloudApiKeys).
+   * The compilation summarizer's model: the chapters row when it is cloud, else the declared
+   * SUMMARIZATION_MODEL (ipc-handlers). No provider, host, key or legacy model rides here any
+   * more (P2): the routing table picks every model (LEDGER #204), the selected Crucible server
+   * runs it, and the key is that server's (#194).
    */
-  cloudApiKeys?: { claude?: string; openai?: string };
-  aiHost?: string;
+  summarizationModel?: string;
   outputPath?: string;
   promptSet?: string;
   promptSetsDir?: string;
@@ -118,11 +112,10 @@ export interface GenerationParams {
    *
    * This is the ONLY input that decides which model writes which field — and, since
    * 2026-08-23, the chapter model with them: chapters are still not a routed task, but they
-   * run on the routing's own `chapters` entry (resolveChapterModelOption),
-   * falling back to CHAPTER_PIPELINE_MODELS when the slot's tasks disagree.
+   * run on the routing's own `chapters` entry (resolveChapterModelOption).
    */
   metadataRouting?: MetadataRoutingSelections;
-  /** Chapter context-window FLOOR. One value for the whole run (Ollama reloads on change). */
+  /** Chapter load-context FLOOR. One value for the whole run (a different context reloads, LEDGER #111). */
   chapterNumCtx?: number;
   /**
    * What the chapter pipeline detects (LEDGER #170): 'detailed' (a standalone video's
@@ -228,16 +221,15 @@ export class MetadataGeneratorService {
      * Every stage used to release its own model as it finished — the chapter pipeline, then
      * each field unit, then the description unit — and the next stage, usually on the SAME
      * model, re-streamed ~17GB of weights into unified memory and froze the operator's machine
-     * for the length of the load. The stages now DECLARE what they made resident here and
-     * nothing releases anything until the job is over, which is what the 10-minute keep-alive
-     * in ollama-json.ts was always for. It also carries the num_ctx ratchet, so two stages
-     * sharing a model cannot reload it by sizing their windows independently.
+     * for the length of the load. The stages now hold their model under this job's Crucible
+     * lease (plan 13.3) and nothing releases anything until the job is over. It also carries
+     * the load-context ratchet, so two stages sharing a model cannot reload it by sizing their
+     * windows independently.
      */
-    const lifecycle = new JobModelLifecycle();
+    const lifecycle = new JobModelLifecycle(`the metadata job ${params.jobId}`);
 
     console.log('[MetadataGenerator] Starting generation...');
     console.log('[MetadataGenerator] Inputs:', params.inputs.length);
-    console.log('[MetadataGenerator] AI Provider:', params.aiProvider);
     console.log('[MetadataGenerator] Prompt Set:', params.promptSet || 'default');
 
     try {
@@ -296,19 +288,18 @@ export class MetadataGeneratorService {
 
       // Initialize AI Manager
       const aiConfig: AIConfig = {
-        provider: params.aiProvider,
         transcriptCeiling,
-        model: params.aiModel, // Legacy support
         summarizationModel: params.summarizationModel,
-        metadataModel: params.metadataModel,
-        apiKey: params.aiApiKey,
-        cloudApiKeys: params.cloudApiKeys,
-        host: params.aiHost,
         promptSet: params.promptSet,
         promptSetsDir: params.promptSetsDir,
         // insightsBlock is NOT set here: it is resolved right after construction, below,
         // because resolving it may spend the one distillation call on a routed transport.
         abortSignal: params.cancelSignal,
+        // The compilation summarizer and packaging run under the job's lease like every other
+        // local call of this job (plan 13.3); made on first use, so an all-cloud run needs none.
+        get jobLeases() {
+          return lifecycle.leases;
+        },
       };
 
       log.info('[MetadataGenerator] Creating AIManagerService...');
@@ -734,7 +725,7 @@ export class MetadataGeneratorService {
           // check out throws, and this item fails the way any other field call failing fails it.
           await scrubGeneratedItem(metadata, {
             option: routingOption(SCRUB_ROUTING_TASK, this.routing(params)[SCRUB_ROUTING_TASK]),
-            transport: { aiManager, ollamaHost: params.aiHost || 'http://localhost:11434' },
+            transport: { aiManager },
             // The run's own scrub. The reports page's button passes 'operator request' through
             // the same function, and the trace entries say which of the two wrote them.
             origin: 'post-generation',
@@ -995,13 +986,11 @@ export class MetadataGeneratorService {
 
     const plan = planMetadataUnits({
       routing: this.routing(params),
-      defaultHost: params.aiHost || 'http://localhost:11434',
       aiManager,
       hasInsights: aiManager.hasInsightsBlock(),
       hasChapters,
       alsoLoads,
       lifecycle,
-      abortSignal: params.cancelSignal,
     });
     console.log(
       `[MetadataGenerator] ${sourceLabel}: ` +
@@ -1136,9 +1125,9 @@ export class MetadataGeneratorService {
 
   /**
    * The distillation call's transport: the TITLES field's routed option, because the
-   * guidelines exist to serve the titles call. Cloud goes through the plain cloud request
-   * (which carries the plain system contract); a local model goes through the same plain
-   * Ollama shape the field calls use.
+   * guidelines exist to serve the titles call. Both kinds go through the plain door (cloud
+   * carries the plain system contract in its system turn); a local model states the budget and
+   * a load context the way the field calls do.
    *
    * There used to be a third case and a throw with it: a titles routing whose `promptStyle`
    * was 'adapter' could not take an instruction prompt at all. The adapters were retired
@@ -1154,44 +1143,33 @@ export class MetadataGeneratorService {
     if (!option) {
       throw new Error(`The titles routing names unknown option "${optionId}", so the guidelines distiller has no transport`);
     }
+    // Thinking OFF on both kinds (plan 6.3's distiller row). With it on, the local 27B reasons
+    // past the whole 2048-token budget and returns a truncated fragment (hit live on both
+    // channels on 2026-08-30); the lesson list is exactly the plain line output the campaign
+    // measured clean thinking-off. The cloud call carries the plain contract in its system
+    // turn; the local prompt carries it inline, as it always did.
     if (option.kind === 'cloud') {
       return {
         model: option.model,
-        distill: (prompt, what) => aiManager.runPlainRequest(prompt, option.model, what),
+        distill: (prompt, what) => aiManager.runPlainRequest(prompt, option.model, what, { thinking: false }),
       };
     }
-    const host = params.aiHost || 'http://localhost:11434';
     return {
       model: option.model,
       distill: async (prompt, what) => {
         const fullPrompt = `${SYSTEM_PROMPTS.PLAIN_SYSTEM}\n\n${prompt}`;
-        const result = await askOllamaPlain(axios.create({ baseURL: host }), {
-          model: option.model,
-          prompt: fullPrompt,
-          numCtx: bucketNumCtx({
-            promptTokens: estimateTokens(fullPrompt.length),
-            numPredict: GUIDELINES_NUM_PREDICT,
+        return aiManager.runPlainRequest(fullPrompt, option.model, what, {
+          thinking: false,
+          maxTokens: GUIDELINES_NUM_PREDICT,
+          loadContext: bucketLoadContext({
+            promptChars: fullPrompt.length,
+            maxTokens: GUIDELINES_NUM_PREDICT,
             max: 32768,
             logPrefix: '[InsightsGuidelines]',
             what,
           }),
-          numPredict: GUIDELINES_NUM_PREDICT,
-          // Thinking off (the /api/chat transport in plain-call.ts). With it on, the local
-          // 27B reasons past the whole 2048-token budget and returns a truncated fragment —
-          // hit live on both channels on 2026-08-30, and the second ask failed the same way
-          // because it was the same coin flipped twice. The lesson list is exactly the plain
-          // line output the 2026-08-30 campaign measured clean with thinking off.
-          think: false,
           timeoutMs: 600_000,
-          signal: params.cancelSignal,
-          what,
-          logPrefix: '[InsightsGuidelines]',
         });
-        if (!result.ok) {
-          log.warn(`[InsightsGuidelines] ${what}: ${result.detail}`);
-          return null;
-        }
-        return result.text;
       },
     };
   }
@@ -1395,7 +1373,6 @@ export class MetadataGeneratorService {
     // defaults to the same capable local model the old slot projection defaulted to.
     const chapterOption = resolveChapterModelOption(resolveMetadataRouting(params.metadataRouting));
     const model = chapterOption.model;
-    const host = params.aiHost || 'http://localhost:11434';
     const label = item.source || `item_${itemIndex + 1}`;
 
     // Chapter work is 0-60% of this item's "generating" phase; the metadata call that
@@ -1477,15 +1454,16 @@ export class MetadataGeneratorService {
     };
 
     const chapterer = new WholeTranscriptChapterService({
-      host,
       model,
-      // The cloud transport, exactly when the slot resolved to a cloud option. `model` is
-      // then the provider-prefixed string runPlainRequest routes on, and the service's
-      // local machinery (context sizing, residency) stands down — see the option's doc.
+      // Every local call records itself on the run's trace, with the server that ran it.
+      trace: aiManager.promptTrace,
+      // The cloud path, exactly when the row resolved to a cloud option. `model` is then the
+      // string runPlainRequest routes on, and the service's local machinery (context sizing,
+      // the lease) stands down — see the option's doc.
       cloudPlain:
         chapterOption.kind === 'cloud'
-          ? (prompt: string, cloudModel: string, what: string) =>
-              aiManager.runPlainRequest(prompt, cloudModel, what)
+          ? (prompt: string, cloudModel: string, what: string, shape: { thinking: boolean }) =>
+              aiManager.runPlainRequest(prompt, cloudModel, what, shape)
           : undefined,
       // The rolling window's cloud input ceiling — the same direct-pass ceiling every cloud
       // field call measures against.
@@ -1517,7 +1495,7 @@ export class MetadataGeneratorService {
       onProgress: reportProgress,
     });
 
-    log.info(`[MetadataGenerator] Chaptering starting for ${label} on ${model} @ ${host}`);
+    log.info(`[MetadataGenerator] Chaptering starting for ${label} on ${model}`);
 
     try {
       // On the CLOUD transport the pipeline must not hold the AI queue slot: every one of

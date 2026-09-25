@@ -142,6 +142,8 @@ export interface AsrCrucibleClient {
 export interface AsrVenue {
   readonly server: string;
   readonly client: AsrCrucibleClient;
+  /** P3's in-flight ledger for this venue's jobs, when the wiring has one (P2 wires it). */
+  readonly ledger?: AsrJobLedger;
 }
 
 // ─────────────────────────────────────────────────────────────────────────── the outcomes

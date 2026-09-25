@@ -27,6 +27,8 @@ import { createCrucibleContext, type CrucibleContext } from './context';
 import { InFlightLedger } from './in-flight-ledger';
 import { JOB_SWEEP_DEADLINE_MS, STARTUP_SWEEP_DEADLINE_MS, sweepCrucibleInFlight } from './in-flight-sweep';
 import { installLanes, type CrucibleLanes } from './lanes';
+import { installCrucibleTransport } from './transport';
+import { setAsrVenueResolver } from '../services/transcription/crucible-transcription';
 
 export interface CliLanes {
   context: CrucibleContext;
@@ -46,16 +48,27 @@ function alive(pid: number): boolean {
   }
 }
 
-export function openCliLanes(options: { stateDir: string; tool: string; say?: (line: string) => void }): CliLanes {
+export function openCliLanes(options: {
+  stateDir: string;
+  tool: string;
+  say?: (line: string) => void;
+  /**
+   * Send THIS run to another registered server than the one the app has selected
+   * (`--server`), without writing the routing record (P2). Refused by name when it is
+   * not registered.
+   */
+  server?: string;
+}): CliLanes {
   const say = options.say ?? ((line: string) => console.error(`[crucible] ${line}`));
   const prefix = `crucible-in-flight-${options.tool}-`;
   const ledgerFile = `${prefix}${process.pid}.json`;
   const context = createCrucibleContext({
     stateDir: options.stateDir,
-    // A CLI never pairs, copies a code or copies a key: these seams are refused, never faked.
+    // A CLI never pairs or copies a code, and never moves api-keys.json (that is the app's,
+    // once, plan 6.6: no `legacyKeys` here). These seams are refused, never faked.
     clipboard: () => { throw new Error(`${options.tool} does not write the clipboard.`); },
-    legacyClaudeKey: () => undefined,
     ledgerFile,
+    ...(options.server === undefined ? {} : { serverOverride: options.server }),
   });
   const clientFor = (server: string) => context.factory.clientFor(server);
 
@@ -74,6 +87,10 @@ export function openCliLanes(options: { stateDir: string; tool: string; say?: (l
   }));
   context.lanes.setAdmissionGate(swept);
   installLanes(context.lanes);
+  // The one door, over the same registry, the same choice and the same lanes (P2), and the
+  // transcription venue on the same choice and ledger (P5's seam).
+  installCrucibleTransport(context.transport);
+  setAsrVenueResolver(context.asrVenue);
 
   const controller = new AbortController();
   const giveBack = async (reason: string): Promise<void> => {

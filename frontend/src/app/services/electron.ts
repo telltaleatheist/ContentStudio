@@ -55,10 +55,10 @@ import type {
   CrucibleSettingsPatch,
   CrucibleSettingsView,
   CrucibleSetupView,
+  KeyMigrationOutcome,
   QueuePlan,
   QueuePlanCandidate,
   ResumeStage,
-  KeyCopyOutcome,
   LocalConnectCodes,
   RoutingView,
   UpstreamName,
@@ -331,11 +331,12 @@ export interface YouTubeCollectorState {
 
 // Metadata model routing (which model generates which metadata task)
 /**
- * Whether the option's model is actually on the machine. `unknown` means it could not be
- * checked — Ollama did not answer, or the option is served by something Ollama does not
- * list — and is deliberately not the same as `not-installed`.
+ * Whether the SELECTED Crucible server can run the option (metadata-routing.ts, P2):
+ * installed there, pullable there (not downloaded yet), not here at all, a Claude model on
+ * that server's key, `claude -p` outside Crucible, or unknown because the server could not be
+ * read — which is deliberately not the same as `not-here`.
  */
-export type MetadataRoutingAvailability = 'cloud' | 'installed' | 'not-installed' | 'unknown';
+export type MetadataRoutingAvailability = 'installed' | 'pullable' | 'not-here' | 'upstream' | 'outside' | 'unknown';
 
 export interface MetadataRoutingOption {
   id: string;
@@ -343,10 +344,7 @@ export interface MetadataRoutingOption {
   /** The model name behind the label, so a missing one can be named. */
   model: string;
   availability: MetadataRoutingAvailability;
-  /**
-   * Why `unknown`, when the host banner does not already say it — or, on an option that
-   * needs more than one model, which of them is missing when it is `not-installed`.
-   */
+  /** The server's own sentence, when the option is shown although the server cannot run it. */
   availabilityNote?: string;
 }
 
@@ -453,12 +451,13 @@ export interface StoryRoutedModel {
   kind: 'local' | 'cloud';
 }
 
-/** The Ollama host every plain-local option was checked against. */
-export interface MetadataRoutingHost {
-  host: string;
+/** The Crucible server every option was judged against: the one Settings has selected. */
+export interface MetadataRoutingServer {
+  name: string | null;
   reachable: boolean;
   error?: string;
-  installedCount: number;
+  /** Whether that server has an Anthropic key; null when its settings could not be read. */
+  anthropicConfigured: boolean | null;
 }
 
 /**
@@ -479,7 +478,7 @@ export interface MetadataRoutingChapters {
  */
 export interface MetadataRouting {
   tasks: MetadataRoutingTask[];
-  localModels: MetadataRoutingHost;
+  server: MetadataRoutingServer;
   chapters: MetadataRoutingChapters;
 }
 
@@ -694,12 +693,6 @@ declare global {
       // Logging
       saveLogs: (frontendLogs: string) => Promise<{ success: boolean; frontendPath?: string; backendPath?: string; error?: string }>;
 
-      // AI Setup
-      checkOllama: () => Promise<{ available: boolean; models: string[] }>;
-      getApiKeys: () => Promise<{ claudeApiKey?: string; openaiApiKey?: string }>;
-      saveApiKey: (provider: string, apiKey: string) => Promise<{ success: boolean; error?: string }>;
-      getAvailableModels: (provider: 'ollama' | 'openai' | 'claude', apiKey?: string, host?: string) => Promise<{ success: boolean; models: Array<{ id: string; name: string }>; error?: string }>;
-
       // External URLs
       openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
 
@@ -723,7 +716,8 @@ declare global {
       crucibleSettingsGet: (name: string) => Promise<CrucibleIpcResult<CrucibleSettingsView>>;
       crucibleSettingsPut: (name: string, patch: CrucibleSettingsPatch) => Promise<CrucibleIpcResult<CrucibleSettingsView>>;
       crucibleUpstreamTest: (name: string, upstream: UpstreamName, probe: { key?: string; url?: string }) => Promise<CrucibleIpcResult<UpstreamTestAnswer>>;
-      crucibleCopyMyKey: (name: string) => Promise<CrucibleIpcResult<KeyCopyOutcome>>;
+      crucibleKeyMigration: () => Promise<CrucibleIpcResult<KeyMigrationOutcome | null>>;
+      crucibleKeyMigrationResolve: (choice: 'replace' | 'keep') => Promise<CrucibleIpcResult<KeyMigrationOutcome>>;
       crucibleSetup: () => Promise<CrucibleIpcResult<CrucibleSetupView>>;
       crucibleInstallStatus: () => Promise<CrucibleIpcResult<CrucibleInstallStatus>>;
       crucibleInstallStart: () => Promise<CrucibleIpcResult<{ started: true; release: string }>>;
@@ -1372,31 +1366,6 @@ export class ElectronService {
   async saveLogs(frontendLogs: string): Promise<{ success: boolean; frontendPath?: string; backendPath?: string; error?: string }> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.saveLogs(frontendLogs);
-  }
-
-  // AI Setup
-  async checkOllama(): Promise<{ available: boolean; models: string[] }> {
-    if (!this.ipcRenderer) return { available: false, models: [] };
-    return await this.ipcRenderer.checkOllama();
-  }
-
-  async getApiKeys(): Promise<{ claudeApiKey?: string; openaiApiKey?: string }> {
-    if (!this.ipcRenderer) return {};
-    return await this.ipcRenderer.getApiKeys();
-  }
-
-  async saveApiKey(provider: 'claude' | 'openai', apiKey: string): Promise<{ success: boolean; error?: string }> {
-    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.saveApiKey(provider, apiKey);
-  }
-
-  async getAvailableModels(
-    provider: 'ollama' | 'openai' | 'claude',
-    apiKey?: string,
-    host?: string
-  ): Promise<{ success: boolean; models: Array<{ id: string; name: string }>; error?: string }> {
-    if (!this.ipcRenderer) return { success: false, models: [], error: 'Electron not available' };
-    return await this.ipcRenderer.getAvailableModels(provider, apiKey, host);
   }
 
   async openExternal(url: string): Promise<{ success: boolean; error?: string }> {

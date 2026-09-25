@@ -36,8 +36,14 @@ import { processPairingFileHost, type PairingFileHost } from './pairing-file';
 import { CrucibleProbes } from './probe';
 import { CrucibleReadiness } from './readiness';
 import { CrucibleServers } from './servers';
-import { CrucibleSettingsBridge, type LegacyClaudeKey } from './settings-bridge';
-import type { CrucibleInstallProgress, CrucibleLanesView, CrucibleReadinessView, CrucibleServersChangedPayload } from './wire';
+import { CrucibleSettingsBridge } from './settings-bridge';
+import { CrucibleRoutingError } from './errors';
+import { migrateLegacyKeys } from './key-migration';
+import { CrucibleTransport, type TransportHost } from './transport';
+import { crucibleAsrVenue } from './asr-venue';
+import type { AsrVenue } from './asr';
+import type { LeaseTimings } from './lease';
+import type { CrucibleInstallProgress, CrucibleLanesView, CrucibleReadinessView, CrucibleServersChangedPayload, KeyMigrationOutcome } from './wire';
 
 export interface CrucibleContextDeps {
   /** Where crucible-servers.json, crucible-routing.json and crucible-install-state.json live. */
@@ -45,8 +51,14 @@ export interface CrucibleContextDeps {
   /** Where the pairing file is read from. Default: this process's platform, env and home. */
   pairingHost?: PairingFileHost;
   clipboard: ClipboardWriter;
-  /** The app's own Claude key, for "copy my key to <server>". Never handed to the renderer. */
-  legacyClaudeKey: LegacyClaudeKey;
+  /**
+   * The old `<userData>/api-keys.json`, moved once into the Crucible on this
+   * computer and then deleted (plan 6.6), and where `keysMigratedTo` is kept.
+   * Absent: no migration runs (a keeper that is not about keys).
+   */
+  legacyKeys?: { file: string; record: { get(): string | null; set(server: string): void } };
+  /** Only a keeper passes this: short clocks for the lease heartbeat and the load stream. */
+  leaseTimings?: Partial<LeaseTimings>;
   /** Pushes to every renderer window. Default: nothing (a keeper). */
   push?: {
     serversChanged?: (change: CrucibleServersChangedPayload) => void;
@@ -54,6 +66,11 @@ export interface CrucibleContextDeps {
     installProgress?: (event: CrucibleInstallProgress) => void;
     lanes?: (view: CrucibleLanesView) => void;
   };
+  /**
+   * A CLI's `--server`: this process sends its work to that registered server instead of the
+   * selected one, and the routing record is never written. Refused by name when unregistered.
+   */
+  serverOverride?: string;
   /** The ledger's file name under `stateDir`. Default `crucible-in-flight.json`; a CLI names its own. */
   ledgerFile?: string;
   /** The lanes' clocks, replaceable by a keeper. */
@@ -71,6 +88,15 @@ export interface CrucibleContext {
   settings: CrucibleSettingsBridge;
   local: CrucibleLocalEngine;
   readiness: CrucibleReadiness;
+  /** The one door every model call takes (plan 6.1). main.ts installs it process-wide. */
+  transport: CrucibleTransport;
+  /** Where transcription runs (P5's `setAsrVenueResolver`): the job's venue or the selected server. */
+  asrVenue: () => AsrVenue;
+  /** The api-keys.json move (plan 6.6): run it, answer its question, read what it last said. */
+  keys: {
+    migrate(resolve?: 'replace' | 'keep'): Promise<KeyMigrationOutcome>;
+    last(): KeyMigrationOutcome | null;
+  };
   pairingHost: PairingFileHost;
   ledger: InFlightLedger;
   lanes: CrucibleLanes;
@@ -116,7 +142,59 @@ export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContex
   const probes = new CrucibleProbes(factory, servers);
   const connect = new CrucibleConnect(factory, servers, probes, pairingHost, deps.clipboard);
   const autoConnect = new CrucibleAutoConnect(servers, factory, pairingHost);
-  const settings = new CrucibleSettingsBridge(factory, servers, deps.legacyClaudeKey);
+  const settings = new CrucibleSettingsBridge(factory);
+  // The choice the lanes and the door read: the registry's own, or a CLI's `--server` over it.
+  const override = deps.serverOverride;
+  const choice = override === undefined ? servers : {
+    names: () => servers.names(),
+    routingView: () => servers.routingView(),
+    fastServer: () => servers.fastServer(),
+    onChange: (listener: Parameters<CrucibleServers['onChange']>[0]) => servers.onChange(listener),
+    selected: (): string => {
+      if (!servers.names().includes(override)) {
+        throw new CrucibleRoutingError('unknown_server', `"${override}" is not a registered Crucible server (registered: ${servers.names().join(', ') || 'none'}).`);
+      }
+      return override;
+    },
+  };
+  const transport = new CrucibleTransport({ servers: choice, factory, probes } satisfies TransportHost, deps.leaseTimings ?? {});
+
+  // THE KEY MOVE, once (plan 6.6). Only into the Crucible the pairing file on
+  // THIS computer names, never a remote one; repeated at every start (and on
+  // every registry change) until it has happened, so a failure keeps the file
+  // and tries again rather than losing the key.
+  let lastKeys: KeyMigrationOutcome | null = null;
+  let keysRunning: Promise<KeyMigrationOutcome> | null = null;
+  const migrateKeys = (resolve?: 'replace' | 'keep'): Promise<KeyMigrationOutcome> => {
+    const legacy = deps.legacyKeys;
+    if (legacy === undefined) {
+      return Promise.resolve({ status: 'nothing', server: null, keyHint: null, openaiDropped: false, message: 'This process moves no keys.' });
+    }
+    if (keysRunning !== null) return keysRunning;
+    keysRunning = migrateLegacyKeys({
+      factory,
+      file: legacy.file,
+      localServer: () => {
+        const row = discoveredRow(servers.list(), pairingHost);
+        return row.present ? row.registeredAs : null;
+      },
+      record: legacy.record,
+    }, resolve)
+      .catch((err: unknown): KeyMigrationOutcome => ({
+        status: 'failed', server: null, keyHint: null, openaiDropped: false,
+        message: err instanceof Error ? err.message : String(err),
+      }))
+      .then((outcome) => {
+        lastKeys = outcome;
+        if (outcome.status !== 'nothing') log.info(`[crucible] api-keys.json: ${outcome.status}: ${outcome.message}`);
+        return outcome;
+      })
+      .finally(() => { keysRunning = null; });
+    return keysRunning;
+  };
+  servers.onChange((change) => {
+    if (change.reason === 'added') void migrateKeys();
+  });
 
   const runner = deps.local?.runner ?? ((): Runner => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -144,7 +222,7 @@ export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContex
   const readiness = new CrucibleReadiness(servers, probes, local, push.readiness);
   const ledger = InFlightLedger.inDir(deps.stateDir, (line) => log.warn(`[crucible] ${line}`), deps.ledgerFile);
   const lanes = new CrucibleLanes({
-    servers,
+    servers: choice,
     clientFor: (name, options) => factory.clientFor(name, options),
     reach: async (name) => {
       const answer = await probes.reach(name);
@@ -166,6 +244,9 @@ export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContex
     settings,
     local,
     readiness,
+    transport,
+    asrVenue: crucibleAsrVenue({ servers: choice, factory, ledger }),
+    keys: { migrate: migrateKeys, last: () => lastKeys },
     pairingHost,
     ledger,
     lanes,
@@ -181,6 +262,7 @@ export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContex
       autoConnect.start();
       readiness.start();
       lanes.start();
+      void migrateKeys();
     },
     stop() {
       autoConnect.stop();

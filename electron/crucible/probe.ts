@@ -48,11 +48,14 @@ import type {
 
 /**
  * The oldest Crucible ContentStudio routes work to (plan section 4). An older
- * server is shown as "needs update" and gets no work. 1.0.23 is the release
- * the plan was written against; 1.0.24's `generate` and `decide` classes are
- * detected per server by reading `capability()`, never by version.
+ * server is shown as "needs update" and gets no work (the transport refuses
+ * it by name). 1.0.32 since P2: the decide door and its SDK method arrived in
+ * 1.0.24, and the Qwen3-ASR lineup the transcription phase sends (#203, #206)
+ * in 1.0.30; 1.0.32 is the release Briefcase checked the whole lineup against
+ * (plan 0a). The acts are still detected per server from `capability()`, never
+ * from this number (plan 6.4).
  */
-export const MIN_CRUCIBLE = '1.0.23';
+export const MIN_CRUCIBLE = '1.0.32';
 /** The clock on each probe call (plan section 4: a 3 s clock). */
 export const PROBE_TIMEOUT_MS = 3_000;
 /** How long a probe answers `reach()` before it is asked again (plan section 4: 15 s). The Test button bypasses it. */

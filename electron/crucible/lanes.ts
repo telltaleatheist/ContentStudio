@@ -75,22 +75,28 @@ export const RESERVATION_MS = 30_000;
  */
 export type AiCallRoute = { lane: 'gpu'; model: string } | { lane: 'cloud'; model: string };
 
-/** A local model call (a bare Ollama/Crucible model id, as the field units carry it). */
+/** A local model call (a Crucible model id, as the chapter stage carries it). */
 export function gpuCall(model: string): AiCallRoute {
   return { lane: 'gpu', model };
 }
 
 /**
- * The route of a provider-prefixed id, as ai-manager's makeRequest and the
- * routing table spell them. An id with no known prefix is refused by name, not
- * guessed onto a lane (Law 1).
+ * The route of a model string as ai-manager's makeRequest and the routing table
+ * spell them since P2 (plan 6.2): `claude-cli:<alias>` (outside Crucible) and an
+ * upstream id `<upstream>/<model>` take no lane; a bare Crucible id is a model a
+ * server holds, so it takes that server's slot (PHASE15-HOST 1: a local id never
+ * contains `/`). The retired `ollama:`/`claude:`/`openai:` strings are refused by
+ * name rather than guessed onto a lane (Law 1).
  */
 export function routeOfModelId(model: string): AiCallRoute {
-  if (model.startsWith('claude-cli:') || model.startsWith('claude:') || model.startsWith('openai:') || model.startsWith('anthropic/')) {
-    return { lane: 'cloud', model };
+  if (model.startsWith('claude-cli:') || model.includes('/')) return { lane: 'cloud', model };
+  if (/^(ollama|claude|openai):/.test(model) || model.trim() === '' || model.includes(':')) {
+    throw new Error(
+      `"${model}" names no model this app routes (a Crucible id such as qwen3.8-27b-4bit, an upstream id such as ` +
+        `anthropic/claude-sonnet-5, or claude-cli:<alias>), so it has no lane.`,
+    );
   }
-  if (model.startsWith('ollama:')) return { lane: 'gpu', model };
-  throw new Error(`"${model}" names no provider this app routes (claude-cli:, claude:, anthropic/, ollama:), so it has no lane.`);
+  return { lane: 'gpu', model };
 }
 
 // ── transport's seam ────────────────────────────────────────────────────────
@@ -169,6 +175,15 @@ export function setJobStage(stage: ResumeStage): void {
 /** A sign of life for the current job (a progress line); outside a job it does nothing. */
 export function beatJob(): void {
   runStore.getStore()?.beat();
+}
+
+/**
+ * The current job's venue and id, or null outside a job. For a door that is not a lane step
+ * (transcription, P5): its work goes where the job's model calls go, never elsewhere (#205).
+ */
+export function currentJobVenue(): { server: string; jobId: string } | null {
+  const run = runStore.getStore();
+  return run === undefined ? null : { server: run.server, jobId: run.jobId };
 }
 
 /** How `runJob` ended. */

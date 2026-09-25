@@ -120,13 +120,11 @@
  * it means the model is not there, which is not a style question.
  */
 
-import axios, { AxiosInstance } from 'axios';
 import * as log from 'electron-log';
-import { estimateTokens } from './ollama-json';
-import { askOllamaPlain, parseLeadBody } from './plain-call';
+import { estimateTokens } from './context-sizing';
+import { parseLeadBody } from './plain-call';
 import { JobModelLifecycle } from './model-lifecycle';
 import { MetadataRoutingOption } from './metadata-routing';
-import { gpuCall, queueAITask } from '../queue-manager.service';
 import { JobCancelledError } from './cancellation';
 import { describerClauses } from './chapter-title-quality';
 import { promptAssets, ChannelData } from './prompt-assets';
@@ -244,13 +242,6 @@ const SHORT_HOOK_FAULT = 'it came back as ';
  */
 
 /**
- * Output budget per call.
- *
- * A whole description is ~450 tokens, but these models reason first — the chapter work
- * measured 1,900-2,900 tokens of it — and `think: false` is not an option (ollama-json trap
- * 2). The ceiling is sized so that a model which reasons anyway still finishes.
- */
-/**
  * Thinking is OFF for descriptions (operator, 2026-08-30 evening: "turn thinking off, pack
  * and ship") — the 4-5 minutes of reasoning per call was the whole cost of the 20-minute
  * runs, and what it bought (the hook / blank line / body layout) is no longer asked for:
@@ -268,7 +259,6 @@ const NUM_PREDICT = 4096;
  * used 600s all along for the same reason.
  */
 const CALL_TIMEOUT_MS = 600_000;
-const KEEP_ALIVE = '10m';
 
 /**
  * The candidate prompt, from prompts/shared/pipeline/description.yml.
@@ -304,9 +294,9 @@ export const DESCRIPTION_FIELDS: MetadataFieldId[] = ['description_hook', 'descr
  * ONE class for local and cloud rather than two, which is the opposite of how the prompt-set
  * groups are built (CloudGroupUnit / LocalGroupUnit) — and deliberately, because the
  * difference here is four lines rather than a prompt shape. The prompts are identical, the
- * inputs are identical, and the only divergence is the transport: the local branch decodes
- * under a JSON Schema grammar and sizes its own context window; the cloud branch sends the
- * same schema as structured outputs and sizes nothing.
+ * inputs are identical, and both go through the AI manager's plain door to Crucible (P2); the
+ * only divergence is the shape of the call: the local branch states an output budget, the
+ * run's pinned load context and the job's lease, and the cloud branch states none of them.
  */
 export class DescriptionUnit implements MetadataUnit {
   readonly label: string;
@@ -314,41 +304,33 @@ export class DescriptionUnit implements MetadataUnit {
   /** These two calls read the coverage block, the pools and the transcript — no other field. */
   readonly inputFields: MetadataFieldId[] = [];
 
-  private readonly client?: AxiosInstance;
-  private readonly host?: string;
+  private readonly local: boolean;
 
   constructor(
     private readonly aiManager: AIManagerService,
     private readonly option: MetadataRoutingOption,
-    defaultHost: string,
     /**
      * The ONE context budget every call on this model shares, on the local path.
      *
-     * These two calls used to size a private num_ctx against their own small ceiling, which was
-     * safe while they read summaries and nothing else. They read the transcript now, and they
-     * routinely share the 9B with the tags call — and Ollama fully reloads a model on any
-     * num_ctx change, so a private value here would reload it between the description and the
-     * tags. Absent on the cloud path, where there is no window to pin.
+     * These two calls read the transcript, and they routinely share a model with the tags call
+     * — and loading a model at a different context reloads it (LEDGER #111), so a private value
+     * here would reload it between the description and the tags. Absent on the cloud path,
+     * where there is no window to pin.
      */
     private readonly budget: ModelRunContextBudget | undefined,
-    /**
-     * Where this unit DECLARES the model it made resident. It never releases one: these two
-     * calls share the 9B with the tags call, and unloading it here reloaded it for that call.
-     */
-    private readonly lifecycle: JobModelLifecycle,
-    private readonly abortSignal?: AbortSignal
+    /** The job's leases. This unit never releases one: its calls share a model with the tags call. */
+    private readonly lifecycle: JobModelLifecycle
   ) {
-    if (option.kind === 'local') {
+    this.local = option.kind === 'local';
+    if (this.local) {
       if (!budget) {
         throw new Error(
           `The description unit for local model "${option.model}" was constructed with no context budget. ` +
-            `Every local call on a model shares one pinned num_ctx (metadata-tasks.ts) because changing it ` +
+            `Every local call on a model shares one pinned load context (metadata-tasks.ts) because changing it ` +
             `reloads the model; there is no per-unit sizing to fall back on.`
         );
       }
-      this.host = defaultHost;
-      this.client = axios.create({ baseURL: this.host });
-      this.label = `description (local ${option.model} @ ${this.host})`;
+      this.label = `description (local ${option.model})`;
       budget.register('description', (ctx) =>
         estimateTokens(this.buildPrompt(DESCRIPTION_PROMPTS.CANDIDATE, ctx, '').length) + NUM_PREDICT
       );
@@ -575,50 +557,28 @@ export class DescriptionUnit implements MetadataUnit {
    */
   private async askPlain(prompt: string, what: string, ctx: MetadataRunContext): Promise<string> {
     const fullWhat = `the description ${what} for ${ctx.sourceLabel}`;
-    if (!this.client) {
-      const text = await this.aiManager.runPlainRequest(prompt, this.option.model, fullWhat);
-      if (!text) {
-        throw new Error(`${fullWhat} on "${this.option.model}" came back empty`);
-      }
-      return text;
-    }
-
-    // One num_ctx for the whole MODEL for the whole RUN (ollama-json trap 4) — not one per
-    // unit. Resolved by the first call on this model to run, from the largest prompt it will
-    // send, and shared from there.
-    const numCtx = this.budget!.resolve(ctx);
-
-    const result = await queueAITask(
-      gpuCall(this.option.model),
-      `description-${this.option.model}-${ctx.sourceLabel}-${what}`,
-      `Metadata: ${this.label} — ${what}`,
-      async () => {
-        if (this.abortSignal?.aborted) throw new JobCancelledError('cancelled before the description call ran');
-        const answer = await askOllamaPlain(this.client!, {
-          model: this.option.model,
-          prompt,
-          numCtx,
-          numPredict: NUM_PREDICT,
-          keepAlive: KEEP_ALIVE,
-          // Thinking off (operator, 2026-08-30 evening). The old two-part layout needed the
-          // reasoning pass; the one-paragraph contract does not — see NUM_PREDICT above.
-          think: false,
-          timeoutMs: CALL_TIMEOUT_MS,
-          signal: this.abortSignal,
-          what: fullWhat,
-          logPrefix: `[Description] ${this.label}`,
-        });
-        this.lifecycle.holdOllamaModel(this.host!, this.option.model, 'the description calls');
-        return answer;
-      }
+    // Thinking off on both kinds (operator, 2026-08-30 evening): the old two-part layout
+    // needed the reasoning pass, the one-paragraph contract does not (see NUM_PREDICT). The
+    // local shape adds the budget, the model's one pinned context for the whole run (resolved
+    // by the first call on the model, from the largest prompt it will send) and the job's lease.
+    const text = await this.aiManager.runPlainRequest(
+      prompt,
+      this.option.model,
+      fullWhat,
+      this.local
+        ? {
+            thinking: false,
+            maxTokens: NUM_PREDICT,
+            loadContext: this.budget!.resolve(ctx),
+            job: this.lifecycle.leases,
+            timeoutMs: CALL_TIMEOUT_MS,
+          }
+        : { thinking: false }
     );
-
-    if (!result.ok) {
-      throw new Error(
-        `${fullWhat} on "${this.option.model}" produced no usable answer (${result.reason}): ${result.detail}`
-      );
+    if (!text) {
+      throw new Error(`${fullWhat} on "${this.option.model}" came back empty`);
     }
-    return result.text;
+    return text;
   }
 
   // ----------------------------------------------------------------------------- prompting
@@ -862,9 +822,9 @@ function sameOpening(a: string, b: string): boolean {
  *                            re-asks rather than publishing it as a search snippet; an option
  *                            whose re-ask brings back the same thing is dropped here.
  *
- * The second is NOT the output ceiling being hit: ollama-json already fails a call outright on
- * `done_reason: "length"`, so these came back as completed answers that the model simply stopped
- * writing partway through a clause. Raising num_predict would not touch them, and a body that
+ * The second is NOT the output ceiling being hit: the Crucible door fails a call outright on
+ * `finish_reason: length` (LEDGER #112), so these came back as completed answers that the model
+ * simply stopped writing partway through a clause. Raising the budget would not touch them, and a body that
  * does not end on a terminator is a fact about the answer rather than an opinion about it.
  *
  * WHAT DOES NOT DROP AN OPTION: register. That is a taste call, taste is exactly what the

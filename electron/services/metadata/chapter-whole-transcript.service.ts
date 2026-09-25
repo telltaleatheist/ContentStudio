@@ -88,7 +88,7 @@
  *  - the transcript is uncased   -> the entity scaffold and the grounding check cannot run,
  *                                  and a warning says the titles were written without them.
  *
- * What is NOT a degradation and therefore throws: a transport failure (Ollama unreachable,
+ * What is NOT a degradation and therefore throws: a transport failure (the Crucible server unreachable,
  * model not installed, request timeout), and a chapter span with no words in it (the
  * boundaries came from cue times, so an empty span means the arithmetic is wrong).
  *
@@ -102,7 +102,6 @@
  * work against it without knowing which architecture produced it.
  */
 
-import axios, { AxiosInstance } from 'axios';
 import * as log from 'electron-log';
 import * as os from 'os';
 import { SRTSegment } from './whisper.service';
@@ -119,9 +118,11 @@ import {
   Cue,
 } from './chapter-transcript';
 import { CHAPTER_PROMPTS, ChapterGrain } from './chapter-prompts';
-import { bucketNumCtx, estimateTokens, TOKENS_PER_WORD, OLLAMA_KEEP_ALIVE } from './ollama-json';
-import { askOllamaPlain, parseLines, parseTitleDetail } from './plain-call';
+import { bucketLoadContext, estimateTokens, TOKENS_PER_WORD } from './context-sizing';
+import { parseLines, parseTitleDetail, stripThinking } from './plain-call';
 import { JobModelLifecycle } from './model-lifecycle';
+import { crucibleTransport, type PromptTraceRecord } from '../../crucible/transport';
+import { isCrucibleCallError } from '../../crucible/errors';
 import { formatPrompt } from './system-prompts';
 import { topEntities, transcriptCasing } from './entity-extraction';
 import { groundTitle, narratesAnActor } from './chapter-title-quality';
@@ -133,9 +134,6 @@ export type ChapterStage = 'chapters' | 'detail';
 // CONSTANTS
 // =============================================================================
 
-/** Keeps the model resident across the run without unloading anything else. */
-const KEEP_ALIVE = OLLAMA_KEEP_ALIVE;
-
 /**
  * Output budget per generation call.
  *
@@ -144,8 +142,8 @@ const KEEP_ALIVE = OLLAMA_KEEP_ALIVE;
  * has to fit alongside the prompt in the context window. 4096 was measured to be too small
  * for this shape of call — a 72-minute podcast hit the ceiling on both the first ask and the
  * re-ask and produced NOTHING — so the budget is 8192 and the extra 4096 is reasoning
- * headroom. `think: false` is deliberately NOT sent (trap 2: it does not disable thinking,
- * it RELOCATES the reasoning into `response`, breaking the JSON).
+ * headroom for the detail calls, which run thinking-on (plan 6.3). Every call states
+ * `thinking` either way (the 27B's manifest states no default).
  */
 const NUM_PREDICT = 8192;
 
@@ -231,21 +229,27 @@ function numCtxGpuCeiling(model: string): number {
 // =============================================================================
 
 export interface WholeTranscriptChapterOptions {
-  /** Ollama base URL. */
-  host: string;
-  /** Bare Ollama model name for both stages, as `ollama list` prints it. */
+  /**
+   * The model for both stages, as the routing names it: a Crucible id on the local path
+   * (`qwen3.8-27b-4bit`), the cloud string runPlainRequest routes on otherwise.
+   */
   model: string;
+  /**
+   * Where every local call records itself (the run's AIManagerService.promptTrace), with the
+   * server that ran it (Law 8). The cloud path records through cloudPlain, on the same array.
+   */
+  trace: PromptTraceRecord[];
   /**
    * The JOB's model residence. This stage holds its model here instead of releasing it when it
    * finishes: the next stage usually wants the same one, and re-streaming 17GB of weights
    * between two stages of one job is what froze the operator's machine. The job releases the
-   * set once, at the end (model-lifecycle.ts).
+   * set once, at the end (model-lifecycle.ts): the job's Crucible lease on it.
    *
-   * It also carries the num_ctx ratchet, so a stage that shares this model with the field calls
-   * does not size a SMALLER window than the one already resident and reload it for nothing.
+   * It also carries the load-context ratchet, so a stage that shares this model with the field
+   * calls does not size a SMALLER window than the one already loaded and reload it for nothing.
    */
   lifecycle: JobModelLifecycle;
-  /** Floor for the context window, never a ceiling. The run sizes its own (trap 3). */
+  /** Floor for the load context, never a ceiling. The run sizes its own. */
   numCtx?: number;
   /** The video's title or filename — the detail call's second required context input. */
   videoTitle?: string;
@@ -263,16 +267,16 @@ export interface WholeTranscriptChapterOptions {
   /**
    * Cloud transport for both stages, present exactly when the writing model resolved to a
    * cloud option (resolveChapterModelOption). The caller passes AIManagerService's
-   * runPlainRequest bound to itself; `model` is then the provider-prefixed string that method
-   * routes on ("claude:claude-sonnet-5") rather than an Ollama tag. Null is an EMPTY answer —
-   * one decision for the caller — and a transport failure throws, same as the local branch.
+   * runPlainRequest bound to itself (which takes the AI queue slot per call); `model` is then
+   * the string that method routes on (`anthropic/claude-sonnet-5`, `claude-cli:opus`). Null is
+   * an EMPTY answer — one decision for the caller — and a transport failure throws, same as
+   * the local branch.
    *
-   * When present, nothing local happens: no context-window sizing (the provider owns its
-   * window), no model residency (`lifecycle` holds nothing), no Ollama traffic. The
-   * local path is otherwise UNTOUCHED — this is a second transport inside `ask()`, not a
-   * second pipeline, and every stage, retry rule and warning reads identically on both.
+   * When present, nothing local happens: no context sizing (the provider owns its window), no
+   * lease (`lifecycle` holds nothing). This is a second call shape inside `ask()`, not a second
+   * pipeline, and every stage, retry rule and warning reads identically on both.
    */
-  cloudPlain?: (prompt: string, model: string, what: string) => Promise<string | null>;
+  cloudPlain?: (prompt: string, model: string, what: string, shape: { thinking: boolean }) => Promise<string | null>;
   /**
    * The rolling window's input ceiling on the cloud transport, in characters — the caller's
    * direct-pass ceiling. Required with cloudPlain: this service must not import the cloud
@@ -344,7 +348,6 @@ function readQuoteLines(text: string, what: string): ChapterClaim[] {
 // =============================================================================
 
 export class WholeTranscriptChapterService {
-  private readonly client: AxiosInstance;
   private readonly options: WholeTranscriptChapterOptions;
   private readonly warnings: string[] = [];
   private calls = 0;
@@ -358,17 +361,13 @@ export class WholeTranscriptChapterService {
 
   constructor(options: WholeTranscriptChapterOptions) {
     this.options = options;
-    this.client = axios.create({
-      baseURL: options.host,
-      headers: { 'Content-Type': 'application/json' },
-    });
   }
 
   /**
    * Run all three stages over one video's caption segments.
    *
    * Throws only on the failures that mean there is no chapter list to publish (the chapter
-   * call answered unusably twice, Ollama unreachable, model missing, timeout, a span whose
+   * call answered unusably twice, the server unreachable, model missing, timeout, a span whose
    * arithmetic is wrong). Everything else comes back as a DECLARED mode: counted in `stats`
    * and named in `warnings`.
    */
@@ -426,9 +425,9 @@ export class WholeTranscriptChapterService {
     );
 
     // ---- stage 1: the rolling window -------------------------------------------
-    // The context window is an Ollama concern: sized, ratcheted and GPU-checked only on the
-    // local transport. A cloud provider owns its own window and the sizing would record a
-    // residency for a model that never loads.
+    // The load context is a local concern: sized, ratcheted and GPU-checked only on the local
+    // path. A cloud provider owns its own window and the sizing would record a residency for a
+    // model that never loads.
     if (!this.options.cloudPlain) this.numCtx = this.runNumCtx(transcript);
     const windowed = await this.rollingWindows(cues);
     const starts = windowed.starts;
@@ -742,14 +741,12 @@ export class WholeTranscriptChapterService {
     // with it, one temp-0.7 sample can reason for 15 minutes; without it, a sample is about a
     // minute and the answer shape is the same quote lines. The single-sample (cloud) path is
     // untouched.
-    const text = await this.ask(
-      'chapters',
-      prompt,
-      what,
-      CHAPTERS_TIMEOUT_MS,
-      sampleCount > 1 ? STAGE1_SAMPLE_TEMPERATURE : undefined,
-      sampleCount > 1 ? false : undefined
-    );
+    const text = await this.ask('chapters', prompt, what, CHAPTERS_TIMEOUT_MS, {
+      // Off on both paths (plan 6.3's stage-1 row). On the cloud path Crucible does not forward
+      // it (said in X-Crucible-Sampling) and claude -p does not read it.
+      thinking: false,
+      ...(sampleCount > 1 ? { temperature: STAGE1_SAMPLE_TEMPERATURE } : {}),
+    });
     if (text) {
       try {
         return { claims: readQuoteLines(text, `${what} (chapters)`) };
@@ -812,8 +809,8 @@ export class WholeTranscriptChapterService {
       });
       const what = windows > 1 ? `this video's name list, window ${windows}` : "this video's name list";
       // No thinking pass: listing names is transcription, not reasoning, and the campaign ran
-      // this call thinking-off. On the cloud transport `ask` ignores both extra arguments.
-      const text = await this.ask('detail', prompt, what, DETAIL_TIMEOUT_MS, undefined, false);
+      // this call thinking-off.
+      const text = await this.ask('detail', prompt, what, DETAIL_TIMEOUT_MS, { thinking: false });
       if (text) {
         try {
           for (const line of parseLines(text, `${what} (chapters)`)) {
@@ -1035,7 +1032,7 @@ export class WholeTranscriptChapterService {
   }
 
   /**
-   * ONE num_ctx for the whole run (trap 4: Ollama fully reloads the model on any change).
+   * ONE load context for the whole run (LEDGER #111: loading at a different context reloads).
    *
    * Sized from the whole-transcript call, which is the largest prompt this run can send by
    * construction — every detail call reads a SLICE of the same transcript under a shorter
@@ -1061,9 +1058,9 @@ export class WholeTranscriptChapterService {
     // made resident on this model (model-lifecycle.ts): sizing under a resident window reloads
     // the model to make it smaller, which buys nothing and costs the operator a UI freeze.
     // Clamped to CTX_MAX by `contextFloor`, so a floor can never turn into the refusal below.
-    const numCtx = bucketNumCtx({
+    const numCtx = bucketLoadContext({
       promptTokens,
-      numPredict: NUM_PREDICT,
+      maxTokens: NUM_PREDICT,
       configured: Math.max(
         this.options.numCtx || 0,
         this.options.lifecycle.contextFloor(this.options.model, CTX_MAX)
@@ -1084,7 +1081,7 @@ export class WholeTranscriptChapterService {
     }
 
     log.info(
-      `[Chapters] num_ctx ${numCtx} for the whole run (${words} transcript words ~${promptTokens} prompt ` +
+      `[Chapters] load context ${numCtx} for the whole run (${words} transcript words ~${promptTokens} prompt ` +
         `tokens, output budget ${NUM_PREDICT})`
     );
     return numCtx;
@@ -1129,7 +1126,7 @@ export class WholeTranscriptChapterService {
     // the summary (two "could not be described" chapters in one video) and slipping register.
     // Detail prompts are chunk-sized, so the thinking tail that breaks the big-prompt calls
     // has never been a failure mode here.
-    const text = await this.ask('detail', prompt, what, DETAIL_TIMEOUT_MS);
+    const text = await this.ask('detail', prompt, what, DETAIL_TIMEOUT_MS, { thinking: true });
     if (!text) return { title: '', detail: '' };
     try {
       return parseTitleDetail(text, `${what} (chapters)`);
@@ -1142,21 +1139,23 @@ export class WholeTranscriptChapterService {
   /**
    * One generation call, PLAIN TEXT, or null when its ANSWER was unusable.
    *
-   * No JSON on either transport (operator's ruling 2026-08-24): stage 1's answer is quote
-   * lines and stage 3's is a title line and a summary, so there is no grammar, no schema and
-   * no repair anywhere in this pipeline. The local traps that survive the change —
-   * /api/generate, no `think` key, one num_ctx per run — live in plain-call.ts. This method
-   * is the POLICY: an unusable answer costs the caller ONE decision, so it returns null and
-   * the caller applies its own rule. A transport failure affects every remaining call, so it
-   * throws.
+   * No JSON on either path (operator's ruling 2026-08-24): stage 1's answer is quote lines and
+   * stage 3's is a title line and a summary, so there is no grammar, no schema and no repair
+   * anywhere in this pipeline. This method is the POLICY: an unusable answer (empty, or cut off
+   * at the output ceiling, which the Crucible door refuses as `truncated`, LEDGER #112) costs
+   * the caller ONE decision, so it returns null and the caller applies its own rule. Any other
+   * failure affects every remaining call, so it throws.
+   *
+   * The local call goes straight to the Crucible door rather than through AIManagerService: the
+   * whole stage already holds the 1-slot AI queue (metadata-generator.service.ts), and the
+   * manager's door takes that slot per call, so going through it here would deadlock.
    */
   private async ask(
     stage: ChapterStage,
     prompt: string,
     what: string,
     timeoutMs: number,
-    temperature?: number,
-    think?: false
+    shape: { thinking: boolean; temperature?: number }
   ): Promise<string | null> {
     this.checkCancelled();
     this.calls++;
@@ -1165,33 +1164,40 @@ export class WholeTranscriptChapterService {
       // Same policy as the local branch: an empty ANSWER comes back as null and costs the
       // caller one decision; a TRANSPORT failure affects every remaining call and throws.
       // `temperature` never reaches here: the cloud path is single-sample by construction.
-      return await this.options.cloudPlain(prompt, this.options.model, `${what} (chapters)`);
+      return await this.options.cloudPlain(prompt, this.options.model, `${what} (chapters)`, { thinking: shape.thinking });
     }
 
-    const result = await askOllamaPlain(this.client, {
-      model: this.options.model,
-      prompt,
-      numCtx: this.numCtx,
-      numPredict: NUM_PREDICT,
-      keepAlive: KEEP_ALIVE,
-      temperature,
-      think,
-      timeoutMs,
-      signal: this.options.abortSignal,
-      what: `${what} (chapters)`,
-      logPrefix: `[Chapters] stage "${stage}"`,
-    });
-
-    // Resident from here until the JOB ends. The next stage — the detail calls, then the field
-    // calls when they are routed to the same model — finds it loaded, which is what the
-    // 10-minute keep-alive is for.
-    this.options.lifecycle.holdOllamaModel(this.options.host, this.options.model, 'the chapter pipeline');
-
-    if (!result.ok) {
-      log.warn(`[Chapters] stage "${stage}" got no usable answer: ${result.detail}`);
+    let text: string;
+    try {
+      const answer = await crucibleTransport().chat({
+        model: this.options.model,
+        prompt,
+        act: 'generate',
+        thinking: shape.thinking,
+        maxTokens: NUM_PREDICT,
+        ...(shape.temperature === undefined ? {} : { temperature: shape.temperature }),
+        loadContext: this.numCtx,
+        // Held under the JOB's lease from here until the job ends: the next stage (the detail
+        // calls, then the field calls when they are routed to the same model) finds it loaded.
+        job: this.options.lifecycle.leases,
+        ...(this.options.abortSignal === undefined ? {} : { signal: this.options.abortSignal }),
+        timeoutMs,
+        what: `${what} (chapters)`,
+        trace: this.options.trace,
+      });
+      text = stripThinking(answer.text);
+    } catch (error) {
+      if (isCrucibleCallError(error, 'truncated')) {
+        log.warn(`[Chapters] stage "${stage}" got no usable answer: ${error.message}`);
+        return null;
+      }
+      throw error;
+    }
+    if (text.length === 0) {
+      log.warn(`[Chapters] stage "${stage}" got no usable answer: the model returned no answer text on ${what}`);
       return null;
     }
-    return result.text;
+    return text;
   }
 
   // ---------------------------------------------------------------------- assembling
