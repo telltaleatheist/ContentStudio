@@ -1,6 +1,6 @@
 {
   "name": "contentstudio",
-  "version": "1.0.34+455e28293d07",
+  "version": "1.0.34+7de7dfd8ce35",
   "job_types": [
     {
       "type": "llm",
@@ -19,6 +19,13 @@
     },
     {
       "type": "align",
+      "backends": [
+        "cuda-linux",
+        "mlx-darwin"
+      ]
+    },
+    {
+      "type": "rvc",
       "backends": [
         "cuda-linux",
         "mlx-darwin"
@@ -62,6 +69,14 @@
       "backends": [
         "cuda-linux",
         "llama-windows",
+        "mlx-darwin"
+      ]
+    },
+    {
+      "kind": "denoise",
+      "id": "vocals-roformer",
+      "backends": [
+        "cuda-linux",
         "mlx-darwin"
       ]
     }
