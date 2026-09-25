@@ -162,6 +162,26 @@ check('Owen\'s standard (LEDGER #211) is in the rule statements, and the labels 
   assert.throws(() => rules.statementFor('titles', 'sentence', 'x', FACTS), /not asked of titles/);
 });
 
+check('a call to action waives creator and narrates on its sentence, declared; a plain sentence is judged as ever', async () => {
+  const units = ['Subscribe and leave a comment.', 'This channel breaks it down for you.'];
+  const res = await gate.runGate({
+    fields: [{ field: 'description', units, stateText: (u) => u.join(' ') }],
+    facts: FACTS,
+    // The 9B's measured reading of a CTA: creator and narrates both high (P9.md), cta high.
+    decide: fakeDecide((rule, text) => (rule === 'cta' ? (text.startsWith('Subscribe') ? 0.95 : 0.05) : (rule === 'creator' || rule === 'narrates') && !text.startsWith('It fails') ? 0.9 : 0.01)),
+    revise: async (r) => r.units.map(() => 'It fails by its own terms.'),
+    settings: ON, sourceLabel: 'item', rank: false,
+  });
+  assert.deepStrictEqual(res.fields.get('description'), ['Subscribe and leave a comment.', 'It fails by its own terms.']);
+  const cta = res.record.fields[0].units[0].attempts[0];
+  assert.deepStrictEqual(cta.failing, []);
+  assert.ok(cta.readings.filter((r) => r.rule === 'creator' || r.rule === 'narrates').every((r) => r.waivedBy === 'cta' && r.score === 1));
+  assert.ok(res.record.fields[0].units[1].attempts[0].failing.includes('creator'));
+  // cta is never a failure itself, whatever it reads.
+  assert.strictEqual(settingsM.REROLL_GATE_DEFAULTS.thresholds['description.cta'], 0);
+  assert.throws(() => settingsM.resolveRerollGateSettings({ rerollGateTuning: { waiverCut: 1.5 } }), /0 to 1/);
+});
+
 // ------------------------------------------------------------------- at most 26
 
 check('a choice takes 2..26 options; 27 titles are refused by the ranker and declared unranked by the gate', async () => {

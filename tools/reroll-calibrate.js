@@ -211,7 +211,7 @@ async function liveLanes(serverUrl, log) {
         return await queueAITask(gpuCall(SCORER), `reroll-cal-${Date.now()}`, what, () =>
           transport.withJobLease('mac', SCORER, (job) =>
             work(async (request, o) => transport.decide({ model: SCORER, state: request.state, questions: request.questions, missing: 'report', job, signal: cli.signal, what: o.what, trace: null })),
-          { what, act: 'decide', loadContext: 16384, signal: cli.signal }),
+          { what, act: 'decide', loadContext: 8192, signal: cli.signal }),
         );
       } catch (err) {
         const code = err && err.code;

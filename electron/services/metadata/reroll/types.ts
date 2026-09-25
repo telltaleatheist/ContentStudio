@@ -84,7 +84,13 @@ export type RuleId =
   | 'first_person'
   | 'narrates'
   | 'sentence'
-  | 'nonsense';
+  | 'nonsense'
+  /**
+   * Not a violation: "is this an invitation to the viewer" (subscribe, comment, a link). A YES
+   * WAIVES the creator and narrates rules on that unit (Owen, #211: a call to action is not a
+   * reference to the creator). Its threshold is 0, so it never sends anything back itself.
+   */
+  | 'cta';
 
 /** How one field's text is cut into the units a question quotes. */
 export interface FieldUnits {
@@ -107,6 +113,8 @@ export interface RuleReading {
   /** 'answered' as given; 'floored' when Yes or No took the declared floor; 'no-evidence' under the label-mass gate. */
   read: 'answered' | 'floored' | 'no-evidence';
   labelMass: number;
+  /** Set when a waiver (the `cta` reading) lifted this rule on this unit: the score is 1 and the reason is here. */
+  waivedBy?: RuleId;
 }
 
 export interface UnitScore {

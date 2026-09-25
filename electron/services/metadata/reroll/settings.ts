@@ -41,6 +41,12 @@ export interface RerollGateSettings {
    */
   baselineCap: number;
   baselineMinUnits: number;
+  /**
+   * A waiver reading (rules.ts WAIVERS: `cta`, "is this an invitation to the viewer") at or over
+   * this P(yes) lifts the rules it names on its unit (Owen, #211: a call to action is not a
+   * reference to the creator).
+   */
+  waiverCut: number;
 }
 
 /**
@@ -74,6 +80,8 @@ const MEASURED_THRESHOLDS: Record<RuleId, number> = {
   narrates: 0.2,
   sentence: 0,
   nonsense: 0.5,
+  // A waiver, not a violation: it never sends anything back (waiverCut is its own number).
+  cta: 0,
 };
 
 /**
@@ -90,6 +98,7 @@ export const REROLL_GATE_DEFAULTS: RerollGateSettings = {
   // than any baseline could (the baseline cannot tell a video of narrated titles from a lean).
   baselineCap: 0,
   baselineMinUnits: 5,
+  waiverCut: 0.5,
 };
 
 function defaultThresholds(): Record<string, number> {
@@ -145,6 +154,8 @@ export function resolveRerollGateSettings(stored: { rerollGate?: unknown; reroll
       out.maxRerolls = value as number;
     } else if (key === 'baselineCap') {
       out.baselineCap = unit(value, 'rerollGateTuning.baselineCap');
+    } else if (key === 'waiverCut') {
+      out.waiverCut = unit(value, 'rerollGateTuning.waiverCut');
     } else if (key === 'baselineMinUnits') {
       if (!Number.isInteger(value) || (value as number) < 2) {
         throw new GateError('bad_setting', `rerollGateTuning.baselineMinUnits must be a whole number of at least 2; the store holds ${JSON.stringify(value)}`);
@@ -161,7 +172,7 @@ export function resolveRerollGateSettings(stored: { rerollGate?: unknown; reroll
         out.thresholds[k] = unit(v, `rerollGateTuning.thresholds["${k}"]`);
       }
     } else {
-      throw new GateError('bad_setting', `rerollGateTuning holds "${key}", which the gate does not read (maxRerolls, baselineCap, baselineMinUnits, thresholds)`);
+      throw new GateError('bad_setting', `rerollGateTuning holds "${key}", which the gate does not read (maxRerolls, baselineCap, baselineMinUnits, waiverCut, thresholds)`);
     }
   }
   return out;
