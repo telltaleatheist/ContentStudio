@@ -532,11 +532,13 @@ const api = {
   // Processing: turning a raw project folder into an editable one.
   autoDetectAudio: (masterVideoPath: string) => ipcRenderer.invoke('auto-detect-audio', masterVideoPath),
   // The downloadable environment: ffmpeg/ffprobe, the Python runtime and the Whisper model
-  // (required — the editor cannot open a project without them), plus voice isolation
-  // (optional, the Denoise toggle's gate). Channels are AutoCutStudio's verbatim; nothing here
-  // collides with ContentStudio's own component system, which lives on `components:*`.
-  // Progress arrives on 'asset-progress', sent to THIS window (the one that asked to install).
+  // (required — the editor cannot open a project without them). Channels are AutoCutStudio's
+  // verbatim; nothing here collides with ContentStudio's own component system, which lives on
+  // `components:*`. Progress arrives on 'asset-progress', sent to THIS window (the one that
+  // asked to install).
   listAssets: () => ipcRenderer.invoke('assets:list'),
+  // The Denoise toggle's gate: can the selected Crucible isolate voice? (LEDGER #200)
+  editorVoiceIsolationStatus: () => ipcRenderer.invoke('editor:voice-isolation-status'),
   installAsset: (id: string) => ipcRenderer.invoke('assets:install', id),
   cancelAsset: (id: string) => ipcRenderer.invoke('assets:cancel', id),
   ensureRequiredAssets: () => ipcRenderer.invoke('assets:ensure-required'),

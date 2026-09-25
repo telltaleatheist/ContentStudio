@@ -543,13 +543,20 @@ export interface EditorHost {
   }>;
 
   /**
-   * Install state of the host's downloadable components. REQUIRED member, because two things
-   * read it: the Denoise toggle (which needs `voice-separator-env` alone) and the environment
-   * modal (which lists all of them). A host with no components answers with an empty list;
+   * Install state of the host's downloadable components. REQUIRED member, because the
+   * environment modal lists all of them. A host with no components answers with an empty list;
    * a host that cannot answer at all reports `success:false` and its reason, which the modal
    * prints verbatim rather than showing an empty list that would read as "nothing to install".
    */
   listAssets(): Promise<{ success: boolean; components?: AssetComponentStatus[]; error?: string }>;
+
+  /**
+   * The Denoise toggle's gate. Voice isolation runs on the host's inference server (in
+   * ContentStudio, the selected Crucible's `denoise` job; LEDGER #200), so the host answers
+   * whether that server can do it now, and on a "no" the reason and the fix, which the setup
+   * modal prints where the toggle would have been.
+   */
+  voiceIsolationStatus(): Promise<{ available: boolean; reason: string }>;
 
   /** Start a processing run with the payload the shared workflow builder produced. */
   startWorkflow(options: any): Promise<void>;

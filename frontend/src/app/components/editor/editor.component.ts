@@ -4211,21 +4211,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /**
-   * The Denoise toggle's "install it" link, from inside the project setup modal. Opens the same
-   * dialog ON TOP of the setup modal (nothing about the setup is lost), so the component can be
-   * installed where the user discovered it was missing.
-   */
-  onEnvironmentFromSetup(): void {
-    this.environmentBanner = null;
-    this.environmentAutoEnsure = false;
-    this.environmentOpen = true;
-  }
-
-  /**
    * The environment dialog dismissed itself. The setup modal (if it is open behind this one) is
-   * asked to re-read the voice-isolation component, because installing it is exactly why the
-   * user would have opened this from there and the Denoise toggle would otherwise stay hidden
-   * until the modal was closed and reopened.
+   * asked to re-read its Denoise gate, which is the selected Crucible's (LEDGER #200) and may
+   * have changed while the dialog was up.
    */
   onEnvironmentClosed(): void {
     this.environmentOpen = false;
