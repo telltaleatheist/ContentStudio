@@ -268,6 +268,53 @@ export function readWavFormat(file: string): WavFormat {
   }
 }
 
+/** What the stem check needs, whichever container the server chose. */
+export interface AudioFormat {
+  readonly sampleRate: number;
+  readonly channels: number;
+  readonly frames: number;
+}
+
+/**
+ * A FLAC file's rate, channels and length, from its STREAMINFO block (the
+ * first metadata block, which the format requires). A stream that does not
+ * state its total samples (0) is refused: the length is the whole check.
+ */
+export function readFlacFormat(file: string): AudioFormat {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const head = Buffer.alloc(42);
+    if (fs.readSync(fd, head, 0, 42, 0) !== 42 || head.toString('latin1', 0, 4) !== 'fLaC') {
+      throw new Error(`${file} is not a FLAC file`);
+    }
+    if ((head[4] & 0x7f) !== 0) throw new Error(`${file}'s first metadata block is not STREAMINFO`);
+    const info = head.subarray(8);
+    // Bytes 10..17 of STREAMINFO: rate (20 bits), channels-1 (3), bits-1 (5), total samples (36).
+    const sampleRate = (info[10] << 12) | (info[11] << 4) | (info[12] >> 4);
+    const channels = ((info[12] >> 1) & 0x07) + 1;
+    const frames = (info[13] & 0x0f) * 2 ** 32 + info.readUInt32BE(14);
+    if (frames === 0) throw new Error(`${file} does not state its length`);
+    return { sampleRate, channels, frames };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** A WAV (RIFF or RF64) or FLAC file's rate, channels and length, by its magic bytes. */
+export function readAudioFormat(file: string): AudioFormat {
+  const fd = fs.openSync(file, 'r');
+  const magic = Buffer.alloc(4);
+  try {
+    fs.readSync(fd, magic, 0, 4, 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  const kind = magic.toString('latin1');
+  if (kind === 'fLaC') return readFlacFormat(file);
+  if (kind === 'RIFF' || kind === 'RF64') return readWavFormat(file);
+  throw new Error(`${file} starts "${kind}", which is neither WAV nor FLAC`);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Refusals: the holder's line for a wait, the server's words for the rest
 // ─────────────────────────────────────────────────────────────────────────────
@@ -323,7 +370,7 @@ export interface SeparateOptions {
 }
 
 export interface SeparatedChunk {
-  /** Where the vocal stem was written: the caller's `out`. */
+  /** Where the vocal stem was written: the caller's `out`, with the server's extension (`.wav`, `.flac`). */
   readonly stem: string;
   readonly jobId: string;
   /** `done.extra.load_seconds`: the load on the chunk that paid it, 0 on the rest while the lease holds. */
@@ -482,17 +529,23 @@ export class CrucibleVoiceIsolator {
     } catch (err) {
       throw describeRefusal(err, server, `the stem of job ${jobId}`);
     }
+    // THE CONTAINER IS THE SERVER'S. 1.0.34 published WAV stems; the 1.0.38 on
+    // the Mac publishes FLAC (found live, 2026-09-25). The stem keeps the
+    // server's extension beside the path Python asked for, and the answer
+    // names the file actually written, so ffmpeg on the Python side reads it
+    // by what it is.
+    const target = path.join(path.dirname(out), `${path.basename(out, path.extname(out))}${path.extname(primary) || path.extname(out)}`);
     // Written beside, then renamed: a half-written stem must never be the one
     // voice_separation.py concatenates.
-    const partial = `${out}.partial`;
+    const partial = `${target}.partial`;
     fs.writeFileSync(partial, bytes);
-    let stem: WavFormat;
+    let stem: AudioFormat;
     try {
-      stem = readWavFormat(partial);
+      stem = readAudioFormat(partial);
     } catch (err) {
       fs.rmSync(partial, { force: true });
       throw new VoiceIsolationRefused('voice_isolation_stem_unreadable', server,
-        `the stem of job ${jobId} is not a WAV: ${err instanceof Error ? err.message : String(err)}`);
+        `the stem of job ${jobId} is neither a WAV nor a FLAC this side can read: ${err instanceof Error ? err.message : String(err)}`);
     }
     // THE SERVER'S TWO INVARIANTS, ASSERTED ON ARRIVAL (PHASE4-AUDIO.md 4.2:
     // "The app asserts the same thing"). voice_separation.py concatenates the
@@ -504,14 +557,14 @@ export class CrucibleVoiceIsolator {
         `the stem of job ${jobId} is ${stem.frames} frames at ${stem.sampleRate} Hz and ${name} was `
         + `${input.frames} frames at ${input.sampleRate} Hz`);
     }
-    fs.renameSync(partial, out);
+    fs.renameSync(partial, target);
 
     // AFTER the first chunk: a lease names what is already resident, and this
     // job is what made it so.
     await this.holdTheSeparator();
 
     const num = (key: string): number | null => (typeof done.extra[key] === 'number' ? done.extra[key] as number : null);
-    return { stem: out, jobId, loadSeconds: num('load_seconds'), separateSeconds: num('separate_seconds') };
+    return { stem: target, jobId, loadSeconds: num('load_seconds'), separateSeconds: num('separate_seconds') };
   }
 
   /** Give the card back. Idempotent and never throws, so it sits in a `finally`. */
