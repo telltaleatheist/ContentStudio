@@ -70,6 +70,30 @@ import { checkBeforeSending, estimateTokens, loadedContextOf, tokensNeeded } fro
 import { CrucibleCallError } from './errors';
 import { crucibleStepHooks, type CrucibleStepHooks } from './lanes';
 import { JobLeases, callRefusalOf, withJobLeases, type LeaseHost, type LeaseTimings } from './lease';
+import * as fs from 'fs';
+import * as path from 'path';
+
+/**
+ * A development capture of every chat body as sent (the Crucible agent's ask, 2026-09-26: the Mac
+ * 27B's `metal::malloc` crash reproduces only from the exact bytes, and a rebuild from the prompt
+ * code was 24% short of the tokenizer's count). Set CONTENTSTUDIO_DUMP_CHAT_BODIES to an absolute
+ * directory and each call writes `<n>-<act>-<model>.body.json` (the request body, byte for byte)
+ * and `.meta.json` (server, path, the headers the transport sets, load context, what). engineFetch
+ * adds User-Agent, X-Crucible-Client, Authorization and X-Crucible-Api on top. Unset, nothing is
+ * written and nothing is checked.
+ */
+const DUMP_CHAT_BODIES_ENV = 'CONTENTSTUDIO_DUMP_CHAT_BODIES';
+let dumpSeq = 0;
+function dumpChatBody(meta: Record<string, unknown>, body: string): void {
+  const dir = process.env[DUMP_CHAT_BODIES_ENV];
+  if (!dir) return;
+  if (!path.isAbsolute(dir)) throw new Error(`${DUMP_CHAT_BODIES_ENV} must be an absolute directory, got "${dir}"`);
+  fs.mkdirSync(dir, { recursive: true });
+  const n = String(++dumpSeq).padStart(3, '0');
+  const slug = `${n}-${String(meta['act'])}-${String(meta['model']).replace(/[^a-z0-9.-]+/gi, '_')}`;
+  fs.writeFileSync(path.join(dir, `${slug}.body.json`), body);
+  fs.writeFileSync(path.join(dir, `${slug}.meta.json`), JSON.stringify({ ...meta, sent_at: new Date().toISOString(), body_bytes: Buffer.byteLength(body) }, null, 2));
+}
 import type { CrucibleProbes } from './probe';
 import type { CrucibleServers } from './servers';
 
@@ -340,11 +364,14 @@ export class CrucibleTransport {
     // (only a json_schema becomes a forced tool), and the cloud compilation carries its JSON
     // contract in the system turn, as it did.
     if (!upstream && request.responseFormat !== undefined) body['response_format'] = request.responseFormat;
+    const headers = { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'X-Crucible-Act': act };
+    const bytes = JSON.stringify(body);
+    dumpChatBody({ server, path: '/v1/openai/chat/completions', act, model, headers, loadContext: request.loadContext ?? null, what: request.what }, bytes);
     try {
       const { response, url } = await this.host.factory.engineFetch(server, '/v1/openai/chat/completions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'X-Crucible-Act': act },
-        body: JSON.stringify(body),
+        headers,
+        body: bytes,
         ...(combined === undefined ? {} : { signal: combined }),
       });
       if (!response.ok) throw await refusalOf(response, url);
