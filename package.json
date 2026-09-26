@@ -25,6 +25,7 @@
     "check:chaptering": "node tools/chaptering-checks.js",
     "check:reroll": "node tools/reroll-checks.js",
     "check:retired": "node tools/retired-components-checks.js",
+    "check:legacy-gone": "node tools/check-legacy-runtime-gone.js",
     "start:angular": "cd frontend && npm start",
     "start:electron": "npm run build:electron && npm run build:preload && wait-on http://localhost:4200 && cross-env NODE_ENV=development electron .",
     "electron:dev": "concurrently --kill-others \"npm run start:angular\" \"npm run start:electron\"",
