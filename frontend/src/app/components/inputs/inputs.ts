@@ -528,6 +528,13 @@ export class Inputs implements OnInit, OnDestroy {
       for (const item of job.inputs) if (!byPath.has(item.path)) byPath.set(item.path, item);
     }
 
+    // An item added again after its transcript was already probed this session starts ticked too.
+    for (const item of byPath.values()) {
+      if (this.savedTranscripts()[item.path]?.exists === true && this.transcriptChoiceOf(item.path) === undefined) {
+        this.toggleUseSavedTranscript(item, true);
+      }
+    }
+
     const pending = [...byPath.values()].filter(item =>
       item.type === 'video' &&
       !this.savedTranscripts()[item.path] &&
@@ -540,10 +547,27 @@ export class Inputs implements OnInit, OnDestroy {
       const check = await this.electron.hasSavedTranscript(item.path);
       this.savedTranscriptProbing.set(this.savedTranscriptProbing().filter(p => p !== item.path));
       this.savedTranscripts.set({ ...this.savedTranscripts(), [item.path]: check });
+      // A saved transcript starts TICKED (Owen, 2026-09-26: "it should start checked if there's
+      // a transcript for that video"). Only an item nobody has chosen for yet — an explicit
+      // untick stays unticked.
+      if (check.exists && this.transcriptChoiceOf(item.path) === undefined) {
+        this.toggleUseSavedTranscript(item, true);
+      }
       if (!check.exists && check.reason) {
         console.log(`[Inputs] No saved transcript to reuse for ${item.displayName}: ${check.reason}`);
       }
     }
+  }
+
+  /** The operator's saved-transcript choice for this path, wherever it lives; undefined if never made. */
+  private transcriptChoiceOf(path: string): boolean | undefined {
+    const onPage = this.inputsState.inputItems().find(it => it.path === path);
+    if (onPage?.useSavedTranscript !== undefined) return onPage.useSavedTranscript;
+    for (const job of this.jobQueue.getPendingJobs()) {
+      const queued = job.inputs.find(it => it.path === path);
+      if (queued?.useSavedTranscript !== undefined) return queued.useSavedTranscript;
+    }
+    return undefined;
   }
 
   /**
