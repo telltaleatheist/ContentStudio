@@ -456,7 +456,10 @@ export interface StoryRoutedModel {
   kind: 'local' | 'cloud';
 }
 
-/** The Crucible server every option was judged against: the one Settings has selected. */
+/**
+ * The Crucible server every option was judged against: the one this routing's jobs run on
+ * (the routing's own server when it names one, else the one Settings has selected).
+ */
 export interface MetadataRoutingServer {
   name: string | null;
   reachable: boolean;
@@ -485,6 +488,20 @@ export interface MetadataRouting {
   tasks: MetadataRoutingTask[];
   server: MetadataRoutingServer;
   chapters: MetadataRoutingChapters;
+  /**
+   * The "Runs on" row (LEDGER #222): the server stored with this routing (null: the selected
+   * server runs its jobs), and the server Settings has selected.
+   */
+  runsOn: { routingServer: string | null; selectedServer: string | null };
+}
+
+/**
+ * What the routing dialog asks main to judge before anything is saved: the selections on
+ * screen, on the server its "Runs on" row now names (null: the selected server).
+ */
+export interface MetadataRoutingPreview {
+  server: string | null;
+  selections: Record<string, string>;
 }
 
 /**
@@ -666,7 +683,7 @@ declare global {
       cancelJob: (jobId: string) => Promise<{ success: boolean; error?: string }>;
 
       // Metadata model routing (rejects with a descriptive error)
-      getMetadataRouting: () => Promise<MetadataRouting>;
+      getMetadataRouting: (preview?: MetadataRoutingPreview) => Promise<MetadataRouting>;
       setMetadataRouting: (selections: Record<string, string>) => Promise<{ success: true }>;
 
       // Progress updates
@@ -1260,9 +1277,9 @@ export class ElectronService {
 
   // Metadata model routing — these reject rather than return a placeholder, so the
   // caller shows the real reason instead of an empty routing table.
-  async getMetadataRouting(): Promise<MetadataRouting> {
+  async getMetadataRouting(preview?: MetadataRoutingPreview): Promise<MetadataRouting> {
     if (!this.ipcRenderer) throw new Error('Model routing needs the Electron bridge, which is not available in this window.');
-    return await this.ipcRenderer.getMetadataRouting();
+    return await this.ipcRenderer.getMetadataRouting(preview);
   }
 
   async setMetadataRouting(selections: Record<string, string>): Promise<{ success: true }> {

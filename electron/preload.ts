@@ -24,7 +24,8 @@ const api = {
   },
 
   // Per-task model routing (the settings modal's whole contract)
-  getMetadataRouting: () => ipcRenderer.invoke('metadata-routing:get'),
+  getMetadataRouting: (preview?: { server: string | null; selections: Record<string, string> }) =>
+    ipcRenderer.invoke('metadata-routing:get', preview),
   setMetadataRouting: (selections: Record<string, string>) =>
     ipcRenderer.invoke('metadata-routing:set', selections),
 

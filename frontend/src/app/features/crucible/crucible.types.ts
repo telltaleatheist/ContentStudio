@@ -65,6 +65,12 @@ export interface CrucibleServersView {
   servers: CrucibleServerRow[];
   routing: RoutingView;
   discovered: DiscoveredCrucibleRow;
+  /**
+   * The server the model routing names (LEDGER #222), or null when it names none. When set,
+   * metadata jobs go there instead of to `routing.selected` (a fast-pinned item still goes to
+   * the fast server); the pane says so under "Server ContentStudio uses".
+   */
+  routingServer: string | null;
 }
 
 /** The push on `crucible:servers-changed`. */
