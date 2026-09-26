@@ -420,6 +420,35 @@ export interface ScrubResult {
   skipped?: Array<{ field: string; reason: string }>;
   /** How many earlier scrub receipts the item keeps. 0 the first time. */
   earlierScrubs?: number;
+  /** Fields THIS pass could not clean up; each was left as it was (LEDGER #223). */
+  failed?: ScrubFailureView[];
+  /** Every field the item now records as not cleaned up, carried ones included. */
+  itemFailed?: ScrubFailureView[];
+  error?: string;
+}
+
+/** One field the cleanup did not correct, as the item records it (scrub.ts ScrubFailure). */
+export interface ScrubFailureView {
+  field: string;
+  item_key: string;
+  /** The plain sentence the page shows. */
+  reason: string;
+  detail: string;
+}
+
+/** The sections a re-roll button can replace (section-reroll.ts). */
+export type RerollSectionField = 'description' | 'thumbnail_text' | 'pinned_comment' | 'chapters';
+
+/** What one re-roll or put-back did. */
+export interface RerollSectionResult {
+  success: boolean;
+  field?: RerollSectionField;
+  model?: string;
+  /** Everything that went differently from the plan, in plain words. */
+  notes?: string[];
+  /** How many earlier versions of the section the item keeps now. */
+  kept?: number;
+  scrubFailed?: ScrubFailureView[];
   error?: string;
 }
 
@@ -704,7 +733,9 @@ declare global {
       deleteReportItem: (jobId: string, itemId: string) => Promise<DeleteItemReceipt>;
       generateMoreTitles: (jobId: string, itemId: string, optionId: string) => Promise<MoreTitlesResult>;
       softenItem: (jobId: string, itemId: string, optionId: string) => Promise<SoftenResult>;
-      scrubItem: (jobId: string, itemId: string, optionId: string) => Promise<ScrubResult>;
+      scrubItem: (jobId: string, itemId: string, optionId: string, onlyKeys?: string[]) => Promise<ScrubResult>;
+      rerollSection: (jobId: string, itemId: string, field: RerollSectionField) => Promise<RerollSectionResult>;
+      rerollPutBack: (jobId: string, itemId: string, field: RerollSectionField) => Promise<RerollSectionResult>;
 
       // Job history
       getJobHistory: () => Promise<any[]>;
@@ -1369,9 +1400,24 @@ export class ElectronService {
    * re-reads the item it already has. A refusal arrives as `{ success: false, error }` and the
    * page shows the sentence the main process wrote.
    */
-  async scrubItem(jobId: string, itemId: string, optionId: string): Promise<ScrubResult> {
+  async scrubItem(jobId: string, itemId: string, optionId: string, onlyKeys?: string[]): Promise<ScrubResult> {
     if (!this.ipcRenderer) throw new Error('Electron bridge unavailable — cannot scrub an item.');
-    return await this.ipcRenderer.scrubItem(jobId, itemId, optionId);
+    return await this.ipcRenderer.scrubItem(jobId, itemId, optionId, onlyKeys);
+  }
+
+  /**
+   * Re-roll one section of a finished item on that section's routed model (LEDGER #223). In
+   * place; the replaced version is kept on the item. A refusal is `{ success: false, error }`.
+   */
+  async rerollSection(jobId: string, itemId: string, field: RerollSectionField): Promise<RerollSectionResult> {
+    if (!this.ipcRenderer) throw new Error('Electron bridge unavailable — cannot re-roll.');
+    return await this.ipcRenderer.rerollSection(jobId, itemId, field);
+  }
+
+  /** Swap the newest kept version of one section back onto it. */
+  async rerollPutBack(jobId: string, itemId: string, field: RerollSectionField): Promise<RerollSectionResult> {
+    if (!this.ipcRenderer) throw new Error('Electron bridge unavailable — cannot put a version back.');
+    return await this.ipcRenderer.rerollPutBack(jobId, itemId, field);
   }
 
   // Job history

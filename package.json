@@ -18,7 +18,7 @@
     "build:preload": "tsc -p tsconfig.preload.json",
     "build:frontend": "cd frontend && npm run build",
     "build:all": "npm run build:electron && npm run build:preload && npm run build:frontend",
-    "check:pure": "node tools/routing-publish-checks.js",
+    "check:pure": "node tools/routing-publish-checks.js && node tools/scrub-reroll-checks.js",
     "check:digest": "node tools/chapter-digest-smoke.js",
     "check:crucible": "node tools/check-crucible.js",
     "check:asr": "node tools/asr-checks.js",

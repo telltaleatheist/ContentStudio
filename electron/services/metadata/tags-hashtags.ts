@@ -30,6 +30,21 @@ import { COMMON_WORDS, extractProperNouns, occursIn } from './entity-extraction'
 /** Spec §4: stop adding at ~400 characters so the channel tags still fit under YouTube's 500. */
 export const GENERATED_TAG_BUDGET_CHARS = 400;
 
+/**
+ * How many proper nouns and phrases the description, tags and hashtags get to draw on.
+ *
+ * Not a cap on what the video contains — a cap on what any one call is asked to hold in its
+ * head. Twelve names is more than a 300-word body can name; forty phrases is more than a
+ * 400-character tag list can spend. Both are generous on purpose so the assembly rules
+ * downstream have something to choose from, and both are far short of "everything".
+ *
+ * Here rather than in metadata-generator.service.ts since LEDGER #223: the reports page's
+ * chapter re-roll rebuilds the pools after it rewrites the chapter titles, and it has to read
+ * the same two numbers the run did.
+ */
+export const ENTITY_POOL_SIZE = 12;
+export const PHRASE_POOL_SIZE = 40;
+
 /** How far down the phrase pool a tag may come from. See assembleTags. */
 const PHRASE_TAG_LIMIT = 12;
 
@@ -465,6 +480,68 @@ export function camelCaseHashtag(value: string): string {
 /** The hashtags field's stored shape: one space-separated line, as the .txt writer expects. */
 export function hashtagLine(hashtags: string[]): string {
   return hashtags.join(' ');
+}
+
+/** What the code-owned tag fields are assembled from. */
+export interface CodeOwnedTagInputs {
+  /** The pools (`chapterPools` on a chaptered item). */
+  entities: string[];
+  phrases: string[];
+  /** The content text every tag must occur in, speaker labels already stripped. */
+  contentText: string;
+  /** The item's first title, when it has one — the one the operator publishes by default. */
+  firstTitle: string | undefined;
+  /** The video's clean title, which the hashtags dedupe against when there is no first title. */
+  videoTitle: string;
+  /** The channel's brand tag, when the prompt set declares channel_tags. */
+  brandTag: string | undefined;
+  /** Whether this item's tags are assembled here (a chaptered item on a channel that publishes tags). */
+  assembleTags: boolean;
+  /** Whether this channel publishes hashtags. */
+  assembleHashtags: boolean;
+}
+
+export interface CodeOwnedTagFields {
+  /** The generated tag list, comma-joined, BEFORE the channel tags are appended. */
+  tags?: string;
+  tagAssembly?: TagAssembly;
+  /** One space-separated line. */
+  hashtags?: string;
+  hashtagList?: string[];
+}
+
+/**
+ * Tags and hashtags from the pools — THE ONE ASSEMBLY, shared by the run (metadata-tasks.ts
+ * assembleCodeOwnedFields) and the reports page's chapter re-roll (section-reroll.ts), so a
+ * re-derived list is built exactly the way the run built the one it replaces (LEDGER #223).
+ * The channel tags and the hashtag spacing come after, in AIManagerService.finalizeTagFields.
+ */
+export function codeOwnedTagFields(inputs: CodeOwnedTagInputs): CodeOwnedTagFields {
+  const out: CodeOwnedTagFields = {};
+  if (inputs.assembleTags) {
+    const assembled = assembleTags({
+      primaryPhrase: inputs.phrases[0] || inputs.entities[0] || '',
+      entities: inputs.entities,
+      phrases: inputs.phrases,
+      contentText: inputs.contentText,
+    });
+    out.tags = assembled.tags.join(',');
+    out.tagAssembly = assembled;
+  }
+  if (inputs.assembleHashtags) {
+    const hashtags = buildHashtags({
+      entities: inputs.entities,
+      phrases: inputs.phrases,
+      // Deduped against the FIRST title, which is the one the operator publishes by default.
+      title: typeof inputs.firstTitle === 'string' ? inputs.firstTitle : inputs.videoTitle,
+      // The channel's own brand tag, when the prompt set declares channel_tags. Never
+      // invented: a channel with no declared tag simply gets one fewer hashtag.
+      brandTag: inputs.brandTag,
+    });
+    out.hashtags = hashtagLine(hashtags);
+    out.hashtagList = hashtags;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

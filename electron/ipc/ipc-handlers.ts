@@ -59,8 +59,34 @@ import {
   runSoftenPass,
   softenSourceLabel,
 } from '../services/metadata/soften';
-import { ScrubRecord, resolveScrubOption, scrubGeneratedItem } from '../services/metadata/scrub';
-import type { ScrubWrite } from '../services/metadata/output-handler.service';
+import {
+  SCRUB_ITEM_KEYS,
+  SCRUB_ROUTING_TASK,
+  ScrubItemKey,
+  ScrubRecord,
+  holdBackLinks,
+  resolveScrubOption,
+  scrubGeneratedItem,
+} from '../services/metadata/scrub';
+import type { RerollWrite, ScrubWrite } from '../services/metadata/output-handler.service';
+import {
+  REROLL_FIELD_NAMES,
+  REROLL_ROUTING_TASK,
+  applySnapshot,
+  findStoredChapterCalls,
+  findStoredFieldCall,
+  isRerollField,
+  noStoredCallSentence,
+  planChapterReroll,
+  rederiveTagFields,
+  rerollChapterTitles,
+  rerollFieldText,
+  snapshotOf,
+  type ChaptersSnapshot,
+  type RerollField,
+} from '../services/metadata/section-reroll';
+import { contentTextOfFinishedItem } from '../services/metadata/finished-item-content';
+import { SYSTEM_PROMPTS } from '../services/metadata/system-prompts';
 import {
   inspectSavedTranscript,
   resolveOutputDirectory,
@@ -75,6 +101,7 @@ import {
   resolveMetadataRouting,
   resolveSnapChapterModels,
   routedModelString,
+  routingOption,
   validateRoutingSelections,
 } from '../services/metadata/metadata-routing';
 import { resolveRerollGateSettings } from '../services/metadata/reroll/settings';
@@ -931,6 +958,25 @@ let publishAutoAttach: PublishAutoAttachDeps | null = null;
  * operator asked for one correction, and running it twice in a row is not what he asked for.
  */
 const scrubsInFlight = new Set<string>();
+
+/**
+ * Items with a section re-roll or a put-back out right now (LEDGER #223). One at a time per
+ * item, and never beside a scrub of the same item: all of them read a section and write it back,
+ * so two at once would write one's work away. Checked together with `scrubsInFlight`.
+ */
+const rerollsInFlight = new Map<string, string>();
+
+/** Why an item cannot take a scrub or a re-roll right now, or null when it can. */
+function itemRewriteBusy(itemId: string): string | null {
+  if (scrubsInFlight.has(itemId)) {
+    return `A cleanup of this item is already running. Wait for it to finish, then try again.`;
+  }
+  const busy = rerollsInFlight.get(itemId);
+  if (busy !== undefined) {
+    return `A re-roll of this item's ${busy} is already running. Wait for it to finish, then try again.`;
+  }
+  return null;
+}
 
 /**
  * Give EVERY item of a finished run its publish record, right when the report lands.
@@ -2675,13 +2721,17 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
    * would both read the same before-text and the second to finish would write the first one's
    * work away.
    *
-   * FAILURE WRITES NOTHING (laws 1 and 3). A line list that comes back with the wrong count
-   * throws out of the pass naming the field, the model and both counts, before a single byte
-   * of the job file has been touched, and the page shows that sentence. No re-ask.
+   * A FIELD THAT FAILS IS LEFT AS IT WAS, AND SAID (LEDGER #223, superseding "failure writes
+   * nothing"). A line list that comes back with the wrong count, or any call that fails, leaves
+   * that one field exactly as it stood; the fields that came back in shape are written; the
+   * receipt's `failed` names each field that was not cleaned up, in plain words, and the page
+   * shows it beside that section with a button that re-runs just that part (`onlyKeys`). A
+   * partial re-run carries the other sections' warnings forward, and a clean one clears its
+   * own. No re-ask. A pass that throws outright (a cancel, a bad request) writes nothing.
    */
   ipcMain.handle(
     'metadata:scrub-item',
-    async (_event, jobId: string, itemId: string, optionId: string) => {
+    async (_event, jobId: string, itemId: string, optionId: string, onlyKeys?: unknown) => {
       let claimed: string | null = null;
       try {
         if (typeof jobId !== 'string' || !jobId.trim()) {
@@ -2695,15 +2745,25 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // must not reach a transport.
         const option = resolveScrubOption(optionId);
 
-        if (scrubsInFlight.has(itemId)) {
-          return {
-            success: false,
-            error:
-              `A scrub of item ${itemId} is already running. It rewrites the same four fields ` +
-              `this one would, so a second pass would read the same text and then write the ` +
-              `first one's work away. Wait for it to finish.`,
-          };
+        // "Clean up again" beside one section names just that section's keys (LEDGER #223). An
+        // absent list is the whole pass; a list with anything else in it is the page being wrong.
+        let only: ScrubItemKey[] | undefined;
+        if (onlyKeys !== undefined && onlyKeys !== null) {
+          if (
+            !Array.isArray(onlyKeys) ||
+            onlyKeys.length === 0 ||
+            onlyKeys.some((key) => !(SCRUB_ITEM_KEYS as readonly string[]).includes(key as string))
+          ) {
+            return {
+              success: false,
+              error: `The cleanup can be asked for ${SCRUB_ITEM_KEYS.join(', ')}; it was asked for ${JSON.stringify(onlyKeys)}.`,
+            };
+          }
+          only = onlyKeys as ScrubItemKey[];
         }
+
+        const busy = itemRewriteBusy(itemId);
+        if (busy !== null) return { success: false, error: busy };
 
         const outputDirectory = (store as any).store?.outputDirectory;
         if (!outputDirectory) {
@@ -2761,15 +2821,21 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
             option,
             transport: { aiManager },
             origin: 'operator request',
+            ...(only === undefined ? {} : { only }),
           });
         } finally {
           aiManager.cleanup();
         }
 
-        // Everything below is disk work, and it happens only because every call above came back
-        // in the shape its prompt asked for. A pass that threw wrote nothing.
+        // Everything below is disk work. A field whose call or read failed is not in the
+        // record's `fields` and so is not written; it is in `failed`, which the page shows beside
+        // its section (LEDGER #223). A pass that threw (a cancel, a bad request) wrote nothing.
         const record = working.scrubbed as ScrubRecord;
-        const write: ScrubWrite = { record, trace: working._prompt_trace };
+        const write: ScrubWrite = {
+          record,
+          trace: working._prompt_trace,
+          ...(only === undefined ? {} : { only: [...only] }),
+        };
         if ('description' in record.fields) write.description = working.description;
         if ('description_hook' in record.fields) write.description_hook = working.description_hook;
         if ('description_options' in record.fields) {
@@ -2781,9 +2847,11 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         const receipt = await handler.applyScrubToItem(jobId, itemId, write);
 
         log.info(
-          `[Scrub] operator request on item ${itemId} in job ${jobId}: ` +
+          `[Scrub] operator request on item ${itemId} in job ${jobId}` +
+            `${only === undefined ? '' : ` (only ${only.join(', ')})`}: ` +
             `${receipt.changed.length} field(s) rewritten on "${pass.model}", ` +
-            `${receipt.unchanged.length} unchanged, ${pass.skipped.length} not carried`
+            `${receipt.unchanged.length} unchanged, ${pass.skipped.length} not carried, ` +
+            `${pass.failed.length} not cleaned up`
         );
 
         return {
@@ -2792,6 +2860,9 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
           changed: receipt.changed,
           unchanged: receipt.unchanged,
           skipped: pass.skipped,
+          // This pass's own failures, and every failure the item records now (carried ones too).
+          failed: pass.failed,
+          itemFailed: receipt.failed,
           earlierScrubs: receipt.earlierScrubs,
         };
       } catch (error) {
@@ -2803,6 +2874,190 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       }
     }
   );
+
+  /**
+   * RE-ROLL ONE SECTION of a finished item — description, thumbnail text, pinned comment or
+   * chapter titles — on that section's ROUTED model (LEDGER #223; section-reroll.ts says how).
+   *
+   * The run's own stored prompt goes out again; the answer replaces the section in place; the
+   * cleanup runs over it as it does in a run; for chapters the tags and hashtags are rebuilt
+   * from the new titles. The version it replaces is kept on the item (`reroll_history`), and
+   * "put back" below swaps it back. A re-roll that fails writes nothing and says why.
+   */
+  ipcMain.handle('metadata:reroll-section', async (_event, jobId: string, itemId: string, field: unknown) => {
+    let claimed: string | null = null;
+    try {
+      if (typeof jobId !== 'string' || !jobId.trim()) {
+        return { success: false, error: 'A job id is required to re-roll a section.' };
+      }
+      if (!isItemId(itemId)) {
+        return { success: false, error: `"${String(itemId)}" is not an item id.` };
+      }
+      if (!isRerollField(field)) {
+        return { success: false, error: `"${String(field)}" is not a section that can be re-rolled.` };
+      }
+      const name = REROLL_FIELD_NAMES[field];
+      const busy = itemRewriteBusy(itemId);
+      if (busy !== null) return { success: false, error: busy };
+
+      const settings = (store as any).store;
+      const outputDirectory = settings?.outputDirectory;
+      if (!outputDirectory) {
+        throw new Error('No output directory configured — cannot locate the report to re-roll.');
+      }
+      const handler = OutputHandlerService.forOutputDir(outputDirectory);
+      const job = handler.getJobMetadata(jobId);
+      if (!job) return { success: false, error: `Job ${jobId} was not found in ${outputDirectory}.` };
+      const item = (job.items || []).find((entry: any) => entry && entry.item_id === itemId);
+      if (!item) return { success: false, error: `Item ${itemId} is not in job ${jobId}.` };
+      if (typeof job.prompt_set !== 'string' || !job.prompt_set.trim()) {
+        return {
+          success: false,
+          error: `Job ${jobId} does not record which channel it was made for, so its link block and tags cannot be put back the way the run made them. Nothing was sent.`,
+        };
+      }
+
+      rerollsInFlight.set(itemId, name);
+      claimed = itemId;
+
+      // THE ROUTING TABLE picks the model (LEDGER #204), read as a job reads it.
+      const routing = resolveMetadataRouting(migrateStoredRouting(settings.metadataRouting).selections);
+      const task = REROLL_ROUTING_TASK[field];
+      const option = routingOption(task, routing[task]);
+      const systemTurn = SYSTEM_PROMPTS.PLAIN_SYSTEM;
+
+      // A copy goes through the calls, as the scrub button's does; the record is written once, at
+      // the end, under the write queue, and refused if the section moved meanwhile.
+      const working: any = structuredClone(item);
+      const expected = snapshotOf(working, field);
+      const notes: string[] = [];
+
+      const aiConfig: AIConfig = { promptSetsDir: getPromptSetsDirectory(), promptSet: job.prompt_set };
+      const aiManager = new AIManagerService(aiConfig);
+      let scrubRecord: ScrubRecord | undefined;
+      let scrubOnly: ScrubItemKey[] = [];
+      let trace: RerollWrite['trace'] = [];
+      try {
+        const sourceLabel = typeof working._title === 'string' && working._title ? working._title : itemId;
+        if (field === 'chapters') {
+          const { steps, notes: planNotes } = planChapterReroll(working, findStoredChapterCalls(working, systemTurn));
+          notes.push(...planNotes);
+          // Thinking ON: #208's declared default for a title call. The run's own setting is not
+          // stored on the report, so this is the default stated, not a guess at the run's.
+          const result = await rerollChapterTitles(working, steps, option, aiManager, { sourceLabel, thinking: true });
+          notes.push(...result.notes);
+          const current = snapshotOf(working, 'chapters') as ChaptersSnapshot;
+          applySnapshot(working, 'chapters', { ...current, titles: result.titles, details: result.details });
+          scrubOnly = ['chapters'];
+        } else {
+          const stored = findStoredFieldCall(working, field, systemTurn);
+          if (!stored) return { success: false, error: noStoredCallSentence(field) };
+          let linkSuffix = '';
+          if (field === 'description') {
+            // The item's OWN link block goes back under the new body, byte for byte — found by
+            // the scrub's operator rule (the set's block exactly, else the item's own).
+            linkSuffix = holdBackLinks(working.description, aiManager.descriptionLinks(), 'operator request', itemId).suffix;
+            scrubOnly = ['description_hook', 'description'];
+          }
+          const expectedCount = field === 'description' ? null : promptAssets().channel(job.prompt_set).counts[field] ?? null;
+          const { next, notes: readNotes } = await rerollFieldText(field, stored, option, aiManager, {
+            linkSuffix,
+            expectedCount: typeof expectedCount === 'number' ? expectedCount : null,
+          });
+          notes.push(...readNotes);
+          applySnapshot(working, field, next);
+        }
+        trace = aiManager.promptTrace.slice();
+
+        // THE CLEANUP, as in a run, over just the text this re-roll wrote. A field it cannot
+        // clean up stays as re-rolled and is recorded (LEDGER #223); it never undoes the re-roll.
+        if (scrubOnly.length > 0) {
+          working._prompt_trace = [];
+          const pass = await scrubGeneratedItem(working, {
+            option: routingOption(SCRUB_ROUTING_TASK, routing[SCRUB_ROUTING_TASK]),
+            transport: { aiManager },
+            origin: 'operator request',
+            only: scrubOnly,
+          });
+          scrubRecord = working.scrubbed as ScrubRecord;
+          trace = [...trace, ...(working._prompt_trace as RerollWrite['trace'])];
+          for (const failure of pass.failed) notes.push(`${failure.reason} It is kept as re-rolled.`);
+        }
+
+        // THE TAGS AND HASHTAGS, rebuilt from the new chapter list exactly as the run built them.
+        if (field === 'chapters') {
+          try {
+            const content = contentTextOfFinishedItem(working, resolveOutputDirectory(settings.outputDirectory));
+            const built = rederiveTagFields(
+              working,
+              content.text,
+              promptAssets().channel(job.prompt_set).fields,
+              aiManager.channelTags()[0]
+            );
+            const finished = aiManager.finalizeTagFields(built);
+            if (finished.tags !== undefined) working.tags = finished.tags;
+            if (finished.hashtags !== undefined) working.hashtags = finished.hashtags;
+            notes.push(`Tags and hashtags were rebuilt from the new chapter titles, checked against ${content.from}. ${content.note}`);
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            notes.push(`Tags and hashtags were NOT rebuilt, so they still match the earlier chapter titles: ${reason}`);
+            log.warn(`[Reroll] item ${itemId}: tags and hashtags not rebuilt after the chapter re-roll: ${reason}`);
+          }
+        }
+      } finally {
+        aiManager.cleanup();
+      }
+
+      const write: RerollWrite = {
+        field,
+        expected,
+        next: snapshotOf(working, field),
+        model: option.model,
+        at: new Date().toISOString(),
+        notes,
+        trace,
+        ...(scrubRecord === undefined ? {} : { scrub: { record: scrubRecord, only: [...scrubOnly] } }),
+      };
+      const receipt = await handler.applyRerollToItem(jobId, itemId, write);
+      for (const note of notes) log.warn(`[Reroll] item ${itemId} ${name}: ${note}`);
+      log.info(`[Reroll] the ${name} of item ${itemId} in job ${jobId} re-rolled on "${option.model}"; ${receipt.kept} earlier version(s) kept`);
+      return { success: true, field, model: option.model, notes, kept: receipt.kept, scrubFailed: receipt.scrubFailed };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.error('[Reroll] request failed:', error);
+      return { success: false, error: message };
+    } finally {
+      if (claimed) rerollsInFlight.delete(claimed);
+    }
+  });
+
+  /** PUT BACK the newest kept version of one section (section-reroll.ts `putBackPrevious`). */
+  ipcMain.handle('metadata:reroll-put-back', async (_event, jobId: string, itemId: string, field: unknown) => {
+    let claimed: string | null = null;
+    try {
+      if (typeof jobId !== 'string' || !jobId.trim()) {
+        return { success: false, error: 'A job id is required to put a version back.' };
+      }
+      if (!isItemId(itemId)) return { success: false, error: `"${String(itemId)}" is not an item id.` };
+      if (!isRerollField(field)) {
+        return { success: false, error: `"${String(field)}" is not a section that keeps earlier versions.` };
+      }
+      const busy = itemRewriteBusy(itemId);
+      if (busy !== null) return { success: false, error: busy };
+      const outputDirectory = (store as any).store?.outputDirectory;
+      if (!outputDirectory) throw new Error('No output directory configured — cannot locate the report.');
+      rerollsInFlight.set(itemId, REROLL_FIELD_NAMES[field]);
+      claimed = itemId;
+      const receipt = await OutputHandlerService.forOutputDir(outputDirectory).putBackRerollVersion(jobId, itemId, field as RerollField);
+      return { success: true, field, kept: receipt.kept, notes: receipt.entry.notes };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.error('[Reroll] put back failed:', error);
+      return { success: false, error: message };
+    } finally {
+      if (claimed) rerollsInFlight.delete(claimed);
+    }
+  });
 
   // Delete job history entry
   ipcMain.handle('delete-job-history', async (_event, jobId: string) => {

@@ -81,9 +81,7 @@ import {
 } from './metadata-routing';
 import { DESCRIPTION_FIELDS, DescriptionUnit } from './description-unit';
 import {
-  assembleTags,
-  buildHashtags,
-  hashtagLine,
+  codeOwnedTagFields,
   unusableTagList,
   GENERATED_TAG_BUDGET_CHARS,
 } from './tags-hashtags';
@@ -1325,19 +1323,28 @@ function assembleCodeOwnedFields(
   merged: Record<string, unknown>
 ): void {
   const ctx = run.ctx;
+  const titles = Array.isArray(merged.titles) ? (merged.titles as unknown[]) : [];
 
-  if (run.plan.assembleTags) {
-    const assembled = assembleTags({
-      primaryPhrase: ctx.phrases[0] || ctx.entities[0] || '',
-      entities: ctx.entities,
-      phrases: ctx.phrases,
-      // Without the speaker labels, for the same reason the entity pool is measured without
-      // them: this is the "does the video actually say this?" test that keeps a tag off a video
-      // it does not belong to, and HOST/CLIP/UNSURE are words the app wrote, not words the video
-      // said. A tag is a claim about the content; the labels are a claim about the transcript.
-      contentText: stripSpeakerPrefixes(ctx.contentText),
-    });
-    merged.tags = assembled.tags.join(',');
+  // ONE assembly, shared with the reports page's chapter re-roll (tags-hashtags.ts
+  // codeOwnedTagFields, LEDGER #223), so a re-derived list is built exactly as this one is.
+  const built = codeOwnedTagFields({
+    entities: ctx.entities,
+    phrases: ctx.phrases,
+    // Without the speaker labels, for the same reason the entity pool is measured without
+    // them: this is the "does the video actually say this?" test that keeps a tag off a video
+    // it does not belong to, and HOST/CLIP/UNSURE are words the app wrote, not words the video
+    // said. A tag is a claim about the content; the labels are a claim about the transcript.
+    contentText: stripSpeakerPrefixes(ctx.contentText),
+    firstTitle: typeof titles[0] === 'string' ? (titles[0] as string) : undefined,
+    videoTitle: ctx.videoTitle,
+    brandTag: aiManager.channelTags()[0],
+    assembleTags: run.plan.assembleTags,
+    assembleHashtags: run.plan.assembleHashtags,
+  });
+
+  if (run.plan.assembleTags && built.tags !== undefined && built.tagAssembly !== undefined) {
+    const assembled = built.tagAssembly;
+    merged.tags = built.tags;
     log.info(
       `[MetadataTasks] ${ctx.sourceLabel}: assembled ${assembled.tags.length} tag(s) in code, ` +
         `${assembled.cost}/${GENERATED_TAG_BUDGET_CHARS} characters` +
@@ -1348,19 +1355,9 @@ function assembleCodeOwnedFields(
     );
   }
 
-  if (run.plan.assembleHashtags) {
-    const titles = Array.isArray(merged.titles) ? (merged.titles as unknown[]) : [];
-    const hashtags = buildHashtags({
-      entities: ctx.entities,
-      phrases: ctx.phrases,
-      // Deduped against the FIRST title, which is the one the operator publishes by default.
-      title: typeof titles[0] === 'string' ? (titles[0] as string) : ctx.videoTitle,
-      // The channel's own brand tag, when the prompt set declares channel_tags. Never
-      // invented: a channel with no declared tag simply gets one fewer hashtag.
-      brandTag: aiManager.channelTags()[0],
-    });
-    merged.hashtags = hashtagLine(hashtags);
-    log.info(`[MetadataTasks] ${ctx.sourceLabel}: derived ${hashtags.length} hashtag(s) in code: ${merged.hashtags}`);
+  if (run.plan.assembleHashtags && built.hashtags !== undefined && built.hashtagList !== undefined) {
+    merged.hashtags = built.hashtags;
+    log.info(`[MetadataTasks] ${ctx.sourceLabel}: derived ${built.hashtagList.length} hashtag(s) in code: ${merged.hashtags}`);
   }
 }
 

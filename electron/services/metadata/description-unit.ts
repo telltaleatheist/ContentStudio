@@ -257,7 +257,7 @@ const SHORT_HOOK_FAULT = 'it came back as ';
  * is five times the largest real one. A description that runs past it stops as `length`, which
  * LEDGER #112 makes a hard failure, and that is the correct verdict on a run-on.
  */
-const NUM_PREDICT = 2048;
+export const NUM_PREDICT = 2048;
 
 /**
  * 600s, not 300: with thinking ON and the 8192 budget, the arithmetic of a spilled or long
@@ -266,7 +266,7 @@ const NUM_PREDICT = 2048;
  * live on 2026-08-30: 4 - jehovahs witnesses died at exactly 300s). The detail calls have
  * used 600s all along for the same reason.
  */
-const CALL_TIMEOUT_MS = 600_000;
+export const CALL_TIMEOUT_MS = 600_000;
 
 /**
  * The candidate prompt, from prompts/shared/pipeline/description.yml.

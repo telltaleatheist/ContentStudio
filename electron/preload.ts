@@ -122,8 +122,17 @@ const api = {
   // through the scrub pass, on a model the operator picks. Unlike softening this writes IN
   // PLACE — the corrected text lands on the item itself, because a scrub is a correction of
   // the same text rather than a second register to choose between. The .txt is left alone.
-  scrubItem: (jobId: string, itemId: string, optionId: string) =>
-    ipcRenderer.invoke('metadata:scrub-item', jobId, itemId, optionId),
+  // `onlyKeys` re-runs just some of those fields — the "clean up again" beside a section whose
+  // cleanup failed (LEDGER #223). Absent means the whole pass.
+  scrubItem: (jobId: string, itemId: string, optionId: string, onlyKeys?: string[]) =>
+    ipcRenderer.invoke('metadata:scrub-item', jobId, itemId, optionId, onlyKeys),
+  // Re-roll one section of a finished item (description, thumbnail_text, pinned_comment,
+  // chapters) on its routed model, in place; the version it replaces is kept on the item and
+  // `rerollPutBack` swaps it back (LEDGER #223).
+  rerollSection: (jobId: string, itemId: string, field: string) =>
+    ipcRenderer.invoke('metadata:reroll-section', jobId, itemId, field),
+  rerollPutBack: (jobId: string, itemId: string, field: string) =>
+    ipcRenderer.invoke('metadata:reroll-put-back', jobId, itemId, field),
   deleteReportItem: (jobId: string, itemId: string) =>
     ipcRenderer.invoke('reports-delete-item', jobId, itemId),
 

@@ -1060,6 +1060,32 @@ select.control { flex: 1; }
   border-top: 1px solid var(--rp-line-soft);
   padding-top: 10px;
 }
+/* Re-roll one section (LEDGER #223). The armed state is the Clear-thumbnail pattern: a second
+   press over a hand edit, unmistakably different from the resting button. */
+button.ghost.reroll.armed {
+  border-color: var(--danger-text);
+  color: var(--danger-text);
+  background: color-mix(in srgb, var(--danger-text) 12%, transparent);
+}
+.asset-acts {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0 8px;
+}
+.reroll-msg {
+  margin: 6px 0 0;
+  padding: 0 4px;
+  color: var(--rp-ink-2);
+  font-size: var(--rp-fs-cap);
+  line-height: 1.5;
+  p { margin: 0 0 2px; }
+  &.err { color: var(--danger-text); }
+}
+.banner.scrub-failed {
+  align-items: center;
+  b { display: inline; margin: 0 4px 0 0; }
+  button { margin-left: auto; flex: none; }
+}
 .scrub-result {
   margin: 0;
   padding: 0 12px 12px 4px;
