@@ -5,7 +5,7 @@
  */
 
 import { AIManagerService, AIConfig, DIRECT_PASS_MAX_CHARS, MetadataResult } from './ai-manager.service';
-import { WhisperService } from './whisper.service';
+import { TranscriptionService } from './transcription.service';
 import { InputHandlerService, ContentItem } from './input-handler.service';
 import { Chapter } from './chapter-generator.service';
 import { ChapterPipelineResult, MIN_CHAPTERS } from './chapter-transcript';
@@ -288,9 +288,9 @@ export class MetadataGeneratorService {
     try {
       // Initialize services
       log.info('[MetadataGenerator] Initializing services...');
-      log.info('[MetadataGenerator] Creating WhisperService...');
-      const whisperService = new WhisperService();
-      log.info('[MetadataGenerator] WhisperService created successfully');
+      log.info('[MetadataGenerator] Creating TranscriptionService...');
+      const transcriptionService = new TranscriptionService();
+      log.info('[MetadataGenerator] TranscriptionService created successfully');
 
       // Resolved once, up here, because two things need the SAME directory: the saved
       // transcripts the input stage reads and writes, and the job report written further
@@ -320,7 +320,7 @@ export class MetadataGeneratorService {
 
       // Progress callback passed through so the handler can send 'preparing' events.
       const inputHandler = new InputHandlerService(
-        whisperService, runOutputDir,
+        transcriptionService, runOutputDir,
         { jobName: params.jobName ?? null, promptSet: params.promptSet ?? null },
         params.progressCallback, speakerTagger);
 
@@ -401,10 +401,10 @@ export class MetadataGeneratorService {
       });
       log.info(`[MetadataGenerator] Normalized ${normalizedInputs.length} inputs`);
 
-      // Set up progress forwarding from WhisperService
+      // Set up progress forwarding from TranscriptionService
       // Progress events now include jobId and videoPath for multi-transcription support
-      whisperService.on('progress', (progress: any) => {
-        console.log(`[MetadataGenerator] Whisper progress [${progress.jobId}]:`, progress.percent, progress.message);
+      transcriptionService.on('progress', (progress: any) => {
+        console.log(`[MetadataGenerator] Transcription progress [${progress.jobId}]:`, progress.percent, progress.message);
         if (params.progressCallback && progress.videoPath) {
           // Extract filename from videoPath
           const filename = progress.videoPath.split('/').pop() || progress.videoPath;

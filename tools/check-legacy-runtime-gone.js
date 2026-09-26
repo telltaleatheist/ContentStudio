@@ -47,11 +47,7 @@ const CLEANUP_FILES = new Set([
  * Removed by the parent after P4 merges (docs/crucible/P10.md, "for the parent"). Each entry is
  * a file and the rule it is excused from, and nothing else.
  */
-const KNOWN_EXCEPTIONS = [
-  { file: path.join('electron', 'services', 'metadata', 'metadata-generator.service.ts'), rule: 'the old transcriber name' },
-  { file: path.join('electron', 'services', 'metadata', 'chapter-whole-transcript.service.ts'), rule: 'the old transcriber name' },
-  { file: path.join('electron', 'services', 'metadata', 'whisper.service.ts'), rule: 'the old transcriber name' },
-];
+const KNOWN_EXCEPTIONS = [];
 
 const RULES = [
   // Ollama

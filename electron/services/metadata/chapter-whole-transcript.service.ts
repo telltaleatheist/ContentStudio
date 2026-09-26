@@ -104,7 +104,7 @@
 
 import * as log from 'electron-log';
 import * as os from 'os';
-import { SRTSegment } from './whisper.service';
+import { SRTSegment } from './transcription.service';
 import { Chapter, TimeUtils } from './chapter-generator.service';
 import {
   buildCues,
