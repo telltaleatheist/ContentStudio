@@ -1,5 +1,5 @@
 // electron/services/editor/story-ipc.ts
-import { ipcMain } from 'electron';
+import { ipcMain, IpcMainInvokeEvent } from 'electron';
 import Store from 'electron-store';
 import * as log from 'electron-log';
 
@@ -24,13 +24,13 @@ import { formatClock } from '../metadata/chaptering/chaptering.service';
  * checks exist to assert (LEDGER #204, #205).
  *
  * STORIES ARE CHAPTERING (LEDGER #199, #208, plan §10.1). Owen: "it's just chapters for a
- * livestream". `story:analyze-chapters` is the snap chaptering service over the editor's
- * segments, at the grain the renderer names:
+ * livestream". Two channels, each the snap chaptering service over the editor's segments at ONE
+ * grain, fixed by the channel (LEDGER #213: splitting a master livestream is always stories):
  *
- *   'stories'   the whole timeline split into stories (run 1), and a story split into several
- *               (the Split modal): stream-level splits into completely different subjects, one
- *               stream outline merged from the chunk outlines, one pass over the whole span;
- *   'chapters'  a story's own chapter list (run 2), the subject changes that go to YouTube.
+ *   'story:analyze-chapters'  `stories`: the whole timeline split into stories (run 1), and a story
+ *                             split into several (the Split modal), by 45-second junctions (#212);
+ *   'story:chapter-story'     `chapters`: one story's own chapter list (run 2), the subject changes
+ *                             that go to YouTube, by outline + assign.
  *
  * `story:suggest-title` titles a story from the chapters the editor already derived inside it,
  * with the same service's `summarize_chapter_parts` (a story is a `stories` chapter; its parts
@@ -98,7 +98,6 @@ export class AnalysisCancelledError extends Error {
   }
 }
 
-const STORY_GRAINS: readonly Granularity[] = ['stories', 'chapters'];
 
 export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps): void {
   // The single in-flight analysis (a split OR a title). Only one runs at a time (the renderer
@@ -141,70 +140,78 @@ export function setupStoryAnalysisHandlers(store: Store<any>, deps: StoryIpcDeps
     return { stopped: true };
   });
 
-  // Chapter a span of the editor's transcript at the grain the renderer names.
-  ipcMain.handle(
-    'story:analyze-chapters',
-    async (event, payload: { segments: Segment[]; grain: Granularity }) => {
-      const { segments, grain } = payload || ({} as any);
-      if (!Array.isArray(segments) || segments.length === 0) {
-        throw new Error('No transcript segments provided for chapter analysis.');
-      }
-      // Typed, never defaulted (Law 10): the grain is what the run detects.
-      if (!STORY_GRAINS.includes(grain)) {
-        throw new Error(`story:analyze-chapters needs a grain, 'stories' or 'chapters' (got ${JSON.stringify(grain)}).`);
-      }
-      const models = resolveSnapChapterModels(
-        resolveMetadataRouting(migrateStoredRouting((store as any).get('metadataRouting')).selections),
-        venue(),
-      );
-      log.info(
-        `[Story] ${grain} analysis on snap: outline and decide on ${models.scorer.model} on "${models.scorer.server}", ` +
-          `titles on the chapters routing, ${models.titles.model} (${models.titles.label})`,
-      );
-      const controller = new AbortController();
-      activeRun = controller;
-      const job = crucibleTransport().job(`story ${grain} analysis`);
-      const cloud = models.titles.kind === 'cloud' ? cloudDoor(controller.signal) : null;
-      try {
-        const transports = snapTransports({
-          models,
-          job,
-          trace: null,
-          ...(cloud ? { cloudPlain: cloud.door } : {}),
-          signal: controller.signal,
-          laneName: `story ${grain} analysis`,
-        });
-        // The service starts its first chapter at 0 (YouTube's rule); a span starts where its
-        // first line does, so the times are rebased onto it and back.
-        const t0 = segments[0].startSeconds;
-        const captions = segments.map((s) => ({ start: s.startSeconds - t0, end: s.endSeconds - t0, text: s.text, speaker: s.speaker }));
-        const onProgress = (p: ChapteringProgress) => {
-          if (!event.sender.isDestroyed()) event.sender.send('story:analyze-progress', { phase: p.phase, done: p.done, total: p.total, fraction: p.fraction });
-        };
-        const result = await chapter(captions, {
-          granularity: grain,
-          chat: transports.chat,
-          decide: transports.decide,
-          totalSeconds: segments[segments.length - 1].endSeconds - t0,
-          signal: controller.signal,
-          onProgress,
-        });
-        const chapters: StoryChapter[] = result.chapters.map((c, i) => {
-          const one = { startSeconds: c.startSec + t0, endSeconds: c.endSec + t0, label: c.title || c.label, detail: c.summary };
-          return { index: i, ...one, verbalCue: false, isAd: c.isAd, subChapters: [one] };
-        });
-        return { chapters, warnings: result.stats.warnings };
-      } catch (err) {
-        throw stopOr(controller, err);
-      } finally {
-        if (activeRun === controller) activeRun = null;
-        cloud?.cleanup();
-        // Released on a stop too: a stopped run has no more claim on the card than a finished one.
-        const lost = await job.releaseAll();
-        for (const line of lost) log.error(`[Story] the analysis lost its lease on ${line} before it ended`);
-      }
+  // The channel says the grain; a payload that names one is a caller written before #213, refused.
+  const segmentsOf = (channel: string, payload: unknown): Segment[] => {
+    const { segments } = (payload || {}) as { segments?: Segment[] };
+    if (payload && typeof payload === 'object' && 'grain' in payload) {
+      throw new Error(`${channel} takes no grain: the channel is the grain (LEDGER #213). Got ${JSON.stringify((payload as { grain: unknown }).grain)}.`);
     }
-  );
+    if (!Array.isArray(segments) || segments.length === 0) {
+      throw new Error('No transcript segments provided for chapter analysis.');
+    }
+    return segments;
+  };
+
+  // Split a span into stories: the whole timeline, or one story in several. Always `stories` (#213).
+  ipcMain.handle('story:analyze-chapters', async (event, payload: { segments: Segment[] }) =>
+    analyze(event, segmentsOf('story:analyze-chapters', payload), 'stories'));
+
+  // One story's own chapter list, the subject changes that go to YouTube. Always `chapters`.
+  ipcMain.handle('story:chapter-story', async (event, payload: { segments: Segment[] }) =>
+    analyze(event, segmentsOf('story:chapter-story', payload), 'chapters'));
+
+  async function analyze(event: IpcMainInvokeEvent, segments: Segment[], grain: Granularity) {
+    const models = resolveSnapChapterModels(
+      resolveMetadataRouting(migrateStoredRouting((store as any).get('metadataRouting')).selections),
+      venue(),
+    );
+    log.info(
+      `[Story] ${grain} analysis on snap: outline and decide on ${models.scorer.model} on "${models.scorer.server}", ` +
+        `titles on the chapters routing, ${models.titles.model} (${models.titles.label})`,
+    );
+    const controller = new AbortController();
+    activeRun = controller;
+    const job = crucibleTransport().job(`story ${grain} analysis`);
+    const cloud = models.titles.kind === 'cloud' ? cloudDoor(controller.signal) : null;
+    try {
+      const transports = snapTransports({
+        models,
+        job,
+        trace: null,
+        ...(cloud ? { cloudPlain: cloud.door } : {}),
+        signal: controller.signal,
+        laneName: `story ${grain} analysis`,
+      });
+      // The service starts its first chapter at 0 (YouTube's rule); a span starts where its
+      // first line does, so the times are rebased onto it and back.
+      const t0 = segments[0].startSeconds;
+      const captions = segments.map((s) => ({ start: s.startSeconds - t0, end: s.endSeconds - t0, text: s.text, speaker: s.speaker }));
+      const onProgress = (p: ChapteringProgress) => {
+        if (!event.sender.isDestroyed()) event.sender.send('story:analyze-progress', { phase: p.phase, done: p.done, total: p.total, fraction: p.fraction });
+      };
+      const result = await chapter(captions, {
+        granularity: grain,
+        chat: transports.chat,
+        decide: transports.decide,
+        totalSeconds: segments[segments.length - 1].endSeconds - t0,
+        signal: controller.signal,
+        onProgress,
+      });
+      const chapters: StoryChapter[] = result.chapters.map((c, i) => {
+        const one = { startSeconds: c.startSec + t0, endSeconds: c.endSec + t0, label: c.title || c.label, detail: c.summary };
+        return { index: i, ...one, verbalCue: false, isAd: c.isAd, subChapters: [one] };
+      });
+      return { chapters, warnings: result.stats.warnings };
+    } catch (err) {
+      throw stopOr(controller, err);
+    } finally {
+      if (activeRun === controller) activeRun = null;
+      cloud?.cleanup();
+      // Released on a stop too: a stopped run has no more claim on the card than a finished one.
+      const lost = await job.releaseAll();
+      for (const line of lost) log.error(`[Story] the analysis lost its lease on ${line} before it ended`);
+    }
+  }
 
   // Title one story from the chapters derived inside it: `summarize_chapter_parts` on the
   // chapters row, thinking ON (LEDGER #208). NOT released afterwards: titling runs once per story

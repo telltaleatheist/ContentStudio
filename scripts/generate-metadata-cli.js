@@ -146,9 +146,9 @@ Everything else:
   --route <f>=<m>      Route one field to one model for THIS run (repeatable), validated
                        against the app's own option lists, e.g. --route description=qwen38-27b.
                        The stored routing is never modified.
-  --grain <g>          What the chapter pipeline detects (LEDGER #170): detailed (default —
-                       a standalone video's internal turns), broad (fewer, bigger pieces),
-                       or stories (compilations). An unknown value fails the run by name.
+  --grain <g>          What the chapter pipeline detects (LEDGER #213): chapters (default —
+                       every single video) or stories (a podcast compilation, 45 s junctions).
+                       An unknown value fails the run by name.
   --chapter-engine <e> Which engine draws the chapters (P8b): snap (the declared default) or
                        whole-transcript. Default: the app's 'chapterEngine' setting, else snap.
   --title-thinking <on|off>
@@ -197,8 +197,8 @@ function parseArgs(argv) {
     else if (a === '--route') (args.routes = args.routes || []).push(argv[++i]);
     else if (a === '--grain') {
       args.grain = argv[++i];
-      if (!['detailed', 'broad', 'stories'].includes(args.grain)) {
-        console.error(`--grain must be detailed, broad, or stories (got "${args.grain}")`);
+      if (!['chapters', 'stories'].includes(args.grain)) {
+        console.error(`--grain must be chapters or stories (got "${args.grain}")`);
         process.exit(1);
       }
     }

@@ -1,4 +1,5 @@
 import { Injectable, NgZone } from '@angular/core';
+import type { ChapterPick } from './chapter-pick';
 import { Observable, Subject } from 'rxjs';
 import type {
   AudioFile,
@@ -895,7 +896,9 @@ declare global {
       storyRoutedModel: () => Promise<StoryRoutedModel>;
       analyzeStoryChapters: (payload: {
         segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
-        grain: 'stories' | 'chapters';
+      }) => Promise<{ chapters: any[]; warnings?: string[] }>;
+      chapterStory: (payload: {
+        segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
       }) => Promise<{ chapters: any[]; warnings?: string[] }>;
       suggestStoryTitle: (payload: { name?: string; chapters: Array<{ label: string; detail?: string; startSeconds: number; endSeconds: number }> }) => Promise<{ title: string }>;
       cancelStoryAnalysis: () => Promise<{ stopped: boolean }>;
@@ -1195,8 +1198,8 @@ export class ElectronService {
     inputs: string[] | Array<{ path: string; notes?: string }>;
     promptSet: string;
     mode: string;
-    /** What the chapter pipeline detects for this run — the queue-time pick (LEDGER #170). */
-    chapterGrain?: 'detailed' | 'broad' | 'stories';
+    /** What the chapter pipeline detects for this run — the queue-time pick (LEDGER #213). */
+    chapterGrain?: ChapterPick;
     /** Required: the queue row's own id. The main process refuses a request without it. */
     jobId: string;
     jobName?: string;
@@ -2045,11 +2048,18 @@ export class ElectronService {
     return this.editorBridge.storyRoutedModel();
   }
 
+  /** Split a span into stories (LEDGER #213: always the stories grain). */
   async analyzeStoryChapters(payload: {
     segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
-    grain: 'stories' | 'chapters';
   }): Promise<{ chapters: any[]; warnings?: string[] }> {
     return this.editorBridge.analyzeStoryChapters(payload);
+  }
+
+  /** One story's own chapter list (the chapters grain). */
+  async chapterStory(payload: {
+    segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
+  }): Promise<{ chapters: any[]; warnings?: string[] }> {
+    return this.editorBridge.chapterStory(payload);
   }
 
   async suggestStoryTitle(payload: { name?: string; chapters: Array<{ label: string; detail?: string; startSeconds: number; endSeconds: number }> }): Promise<{ title: string }> {

@@ -94,6 +94,9 @@ function parseArgs(argv) {
   a.transcript = rest[0];
   if (!a.granularity) throw new Error('--granularity is required (chapters or stories, LEDGER #208)');
   if (!a.mode) throw new Error('say --fake or --live');
+  // The fake answers outline + assign only; the stories grain's junctions have their fake in
+  // tools/chaptering-checks.js (fakeStream) and their live run in tools/snap-live.js.
+  if (a.mode === 'fake' && a.granularity === 'stories') throw new Error('--fake answers the chapters grain only (LEDGER #212); stories: tools/snap-live.js');
   return a;
 }
 
@@ -510,7 +513,7 @@ async function main() {
   );
   console.log(`calls: ${s.chatCalls} chat, ${s.decideCalls} decide | floored ${s.flooredUnits.length}, skipped ${s.skippedUnits.length}`);
   console.log(`speaker-tagged titles: ${s.speakerTagged} | ad baseline: ${s.adBaseline === null ? 'none' : s.adBaseline.toFixed(3)} | title ms: ${s.titleMs.join(', ')}`);
-  if (s.streamOutline) console.log(`stream outline (${s.streamOutline.length}): ${s.streamOutline.join(' | ')}`);
+  if (s.stories) console.log(`stories: ${s.stories.stretches} stretches, ${s.stories.selected.length} cuts placed, ${s.stories.merges.length} merges`);
   for (const c of result.chapters) {
     const tag = c.isAd ? ' [ad]' : c.level === 2 ? ' [2]' : '';
     console.log(`${clock(c.startSec).padStart(8)}  ${c.title || '(untitled)'}${tag}   <- ${c.label}`);

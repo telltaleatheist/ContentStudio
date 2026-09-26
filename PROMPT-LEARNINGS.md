@@ -448,28 +448,28 @@ granularity's switch cost (`electron/services/metadata/chaptering/granularity.ts
   QUOTES the sentence and the one before it; it never names a sentence by number (Owen: "we
   give it the thing it's judging"). The option names the model sees are `section 1`..`section n`,
   segment.py's own, because Crucible shows each option as `A. section 1: <label>`.
-- **Two grains (LEDGER #208, Owen 2026-09-25).** `snap_outline_chapters` (segment.py's body,
-  above) draws the subject changes that go to YouTube; `snap_outline_stories` draws stream-level
-  splits into completely different subjects ("stories are stream-level splits that are completely
-  different subjects, not just small changes within the same subjects"). The stories body is told
-  the stretch's runtime and that a stream has only a handful of stories, and it names what stays
-  INSIDE a story (the turns, claims and clips of one subject) in positive form. `_broad` and
-  `_episodes` were retired with their grains; "episodes" is not a name any more.
-- **`snap_outline_stories_merge` writes the stream-level outline.** A long stream is outlined
-  chunk by chunk (each ~40 minutes under the ~12k-token state), and P8a measured each chunk writing
-  7-13 items whatever its body said, so a 3.4 h stream came out as 27 "episodes" where Owen made 5
-  (docs/crucible/P8a.md). The merge body reads every chunk's own outline, in order, each headed
-  `Stretch k (clock-clock):`, and writes ONE list for the whole stream; every chunk is then assigned
-  against it. It says that a story running across two stretches is listed in both, because the
-  model otherwise keeps both copies as two stories. It is a plain-lines outline like the others
-  and is refused as prose the same way (outline.ts `proseLine`).
-  **Measured on the 9B (2026-09-25, the 2026-09-23 stream's five chunk outlines, 45 items):** a
-  body that asked to "list the separate stories of the whole stream" copied the items back, 37
-  lines, and the 25-item cap then silently dropped the second half of the stream (now warned).
-  The body that asks to GROUP the items ("most of their items are turns inside a larger story …
-  every turn, claim, clip and aside about that subject belongs to its one story; one label per
-  story") answered 5 lines, twice. Stating a count ("usually three to eight") coarsened it to 3
-  and was not kept: the handful is said in words, the model picks the number (Law 6).
+- **Two grains, two methods (LEDGER #208, #212).** `snap_outline_chapters` (segment.py's body,
+  above) draws the subject changes that go to YouTube. The stories grain writes NO outline since
+  #212: P8b's `snap_outline_stories` and its stream-level merge (`snap_outline_stories_merge`) were
+  deleted after the merged outline found 2 of Owen's 7 edges on the 2026-09-23 stream and lost the
+  Pokémon story (docs/crucible/P8b.md). What the merge body taught stays true of the 9B: asked to
+  list a stream's stories from chunk outlines it copied items back; asked to GROUP them it answered
+  a handful, but the handful was too coarse to place.
+- **The stories keys (`snap_story_*`, P8c, #212)** re-ask chapter-splitter.ts's questions
+  (docs/crucible/reference/chapter-splitter.ts) as snap decisions on the 9B, in positive form:
+  - `snap_story_junction`: a yes/no whose statement QUOTES the ~45 s stretch before a junction
+    (its tail, clipped at 1,400 characters) and the one after (its head), then states "the stretch
+    after it is on a new subject". Asked of the chunk state that holds the junction, 64 to a
+    request. P(yes) is ranked, never thresholded (the reference measured ranking doubling F1).
+  - `snap_story_place`: a choice over the lines of the junction's two stretches (options `line 1`..
+    `line n`, each the line quoted), "which line is the first line of the new subject: where the
+    speaker turns to it, announces it or closes off the old one" — the reference placement prompt's
+    order of preference in one sentence.
+  - `snap_story_pair` / `snap_story_pair_state`: consolidation. The state is part A's tail and part
+    B's head (≤5,000 tokens each) under their clocks; the statement "Part B carries on the same story
+    as part A … including a new angle on it or the reaction to it" names what stays inside a story,
+    where the reference's pair prompt said what does not.
+  Their measurements are in docs/crucible/P8c.md.
 - **`_promoted` variants** name the channel's own `promoted_items` in the ad item and in its
   yes/no. A channel that declares none gets the measured text, not a sentence saying so.
 - **`summarize_chapter_parts`** titles a chapter too long for one title call (an hour-long

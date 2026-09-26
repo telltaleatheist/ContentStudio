@@ -1496,6 +1496,24 @@ transportModule.installCrucibleTransport({
     door.decides.push(req);
     const answers = {};
     for (const [name, q] of Object.entries(req.questions)) {
+      // The stories grain (LEDGER #212): a junction is new when budget talk gives way to the mayor,
+      // a placement picks the first mayor line, a pair is one story when both parts are one subject.
+      if (/^j\d+$/.test(name)) {
+        const [before, after] = q.instructions.split('The stretch that comes straight after it:');
+        answers[name] = { type: 'yesno', p: /budget/.test(before) && /mayor/.test(after) ? 0.9 : 0.1, labelMass: 0.97, missingLabels: [] };
+        continue;
+      }
+      if (name === 'place') {
+        const names = Object.keys(q.options);
+        const pick = Math.max(0, names.findIndex((n) => /mayor/.test(q.options[n])));
+        answers[name] = { type: 'choice', probabilities: Object.fromEntries(names.map((n, i) => [n, i === pick ? 0.97 : 0.03 / (names.length - 1)])), labelMass: 0.98, missingLabels: [] };
+        continue;
+      }
+      if (name === 'same') {
+        const [a, b] = req.state.split('Part B, straight after it');
+        answers[name] = { type: 'yesno', p: /mayor/.test(a) === /mayor/.test(b) ? 0.9 : 0.1, labelMass: 0.97, missingLabels: [] };
+        continue;
+      }
       if (q.type === 'yesno') {
         answers[name] = { type: 'yesno', p: 0.05, labelMass: 0.97, missingLabels: [] };
         continue;
@@ -1528,14 +1546,15 @@ async function rejects(promise) {
 }
 
 (async () => {
-  await checkAsync('Stories at the stories grain: outline and decide on the 9B, titles on a claude -p row through claude -p, the editor\'s shape', async () => {
+  await checkAsync('Stories at the stories grain: junction decides on the 9B, titles on a claude -p row through claude -p, the editor\'s shape', async () => {
     resetDoor();
     progressSent.length = 0;
     const ch = storyHandlersFor({ metadataRouting: { chapters: 'claude-cli' }, ollamaHost: NO_OLLAMA });
     eq(await ch['story:routed-model'](), { model: 'claude-cli:opus', label: 'claude -p (Opus, subscription)', kind: 'cloud' }, 'the read-only line:');
-    const res = await ch['story:analyze-chapters'](fakeEvent, { segments: storySegments, grain: 'stories' });
-    eq(door.chats.map((c) => [c.model, c.thinking, c.temperature, c.loadContext]), [['qwen3.5-9b', false, 0, 8192]], 'the outline call, at the smallest step that holds it (LEDGER #209):');
-    eq(door.decides.every((d) => d.model === 'qwen3.5-9b' && d.loadContext === 8192 && d.missing === 'report'), true, 'every decide on the 9B at 8,192:');
+    const res = await ch['story:analyze-chapters'](fakeEvent, { segments: storySegments });
+    eq(door.chats.length, 0, 'no outline: the stories grain writes none (LEDGER #212):');
+    eq(door.decides.every((d) => d.model === 'qwen3.5-9b' && d.loadContext === 8192 && d.missing === 'report'), true, 'every decide on the 9B at the smallest step that holds it (LEDGER #209):');
+    eq(door.decides.some((d) => Object.keys(d.questions).some((k) => /^j\d+$/.test(k))) && door.decides.some((d) => d.questions.place) && door.decides.some((d) => d.questions.same), true, 'junctions, a placement and a pair were asked:');
     eq(storyCalls.map((c) => [c.model, c.shape.thinking]), [['claude-cli:opus', true], ['claude-cli:opus', true]], 'the titles, thinking on (LEDGER #208):');
     // The titles read HOST:/CLIP: lines (the brief's decision 5).
     eq(/\nCLIP: The council argued about the budget vote number 3/.test(storyCalls[0].prompt), true, 'the tagged title prompt:');
@@ -1549,22 +1568,27 @@ async function rejects(promise) {
     eq(progressSent[progressSent.length - 1].p.fraction, 1, 'progress ends at 1:');
   });
 
-  await checkAsync('Stories on a local chapters row: titles on the 27B at 24,576, thinking on at 16,384; one chapter layer at the chapters grain', async () => {
+  await checkAsync('a story\'s own chapters on a local chapters row (story:chapter-story): titles on the 27B at 24,576, thinking on at 16,384', async () => {
     resetDoor();
     const ch = storyHandlersFor({ metadataRouting: { chapters: 'qwen38-27b' }, ollamaHost: NO_OLLAMA });
-    const res = await ch['story:analyze-chapters'](fakeEvent, { segments: storySegments, grain: 'chapters' });
+    const res = await ch['story:chapter-story'](fakeEvent, { segments: storySegments });
+    eq(door.chats.filter((c) => c.model === 'qwen3.5-9b').length, 1, 'the chapters grain writes its outline:');
     const titles = door.chats.filter((c) => c.model === 'qwen3.8-27b-4bit');
     eq(titles.map((c) => [c.thinking, c.maxTokens, c.loadContext]), [[true, 16384, 24576], [true, 16384, 24576]], 'the title calls:');
     eq(storyCalls.length, 0, 'nothing went to the cloud door:');
     eq(res.chapters.map((c) => c.label), ['The council budget vote', 'The council budget vote'], 'the labels are the titles:');
   });
 
-  await checkAsync('the grain is required and typed; an unknown or absent one is refused before any call', async () => {
+  await checkAsync('the channel is the grain (LEDGER #213): a payload that names one, or has no segments, is refused before any call', async () => {
     resetDoor();
     const ch = storyHandlersFor({ metadataRouting: { chapters: 'claude-cli' }, ollamaHost: NO_OLLAMA });
-    for (const payload of [{ segments: storySegments }, { segments: storySegments, grain: 'episodes' }, { segments: storySegments, consolidate: false }]) {
-      const err = await rejects(ch['story:analyze-chapters'](fakeEvent, payload));
-      eq(/needs a grain, 'stories' or 'chapters'/.test(err.message), true, `the refusal for ${JSON.stringify(Object.keys(payload))}:`);
+    for (const channel of ['story:analyze-chapters', 'story:chapter-story']) {
+      for (const grain of ['stories', 'chapters']) {
+        const err = await rejects(ch[channel](fakeEvent, { segments: storySegments, grain }));
+        eq(/takes no grain/.test(err.message), true, `${channel} with grain ${grain}:`);
+      }
+      const empty = await rejects(ch[channel](fakeEvent, { segments: [] }));
+      eq(/No transcript segments/.test(empty.message), true, `${channel} with no segments:`);
     }
     eq(door.chats.length + door.decides.length + storyCalls.length, 0, 'calls made:');
   });
@@ -1574,7 +1598,7 @@ async function rejects(promise) {
     venue = { server: null, reason: 'no server is selected in Settings › Crucible Servers' };
     try {
       const ch = storyHandlersFor({ metadataRouting: { chapters: 'claude-cli' }, ollamaHost: NO_OLLAMA });
-      const err = await rejects(ch['story:analyze-chapters'](fakeEvent, { segments: storySegments, grain: 'stories' }));
+      const err = await rejects(ch['story:analyze-chapters'](fakeEvent, { segments: storySegments }));
       eq(err.name, 'SnapScorerUnavailableError', 'the refusal:');
       eq(/qwen3\.5-9b/.test(err.message) && /no server is selected/.test(err.message) && /claude -p \(Opus, subscription\)/.test(err.message), true, 'it names the model, the reason and the row:');
       eq(door.chats.length + door.decides.length + storyCalls.length, 0, 'calls made:');
@@ -1586,8 +1610,11 @@ async function rejects(promise) {
   await checkAsync('a stop mid-run ends it as a stop, and the job is released', async () => {
     resetDoor();
     const ch = storyHandlersFor({ metadataRouting: { chapters: 'claude-cli' }, ollamaHost: NO_OLLAMA });
-    door.onChat = () => ch['story:cancel']();
-    const err = await rejects(ch['story:analyze-chapters'](fakeEvent, { segments: storySegments, grain: 'stories' }));
+    // Stopped during the first title: the stories grain's first chat is a title (no outline).
+    const answer = storyAnswer;
+    storyAnswer = (...a) => { ch['story:cancel'](); return answer(...a); };
+    const err = await rejects(ch['story:analyze-chapters'](fakeEvent, { segments: storySegments }));
+    storyAnswer = answer;
     eq(err.name, 'AnalysisCancelledError', 'a stop is reported as a stop:');
     eq(door.jobs[0].released, 1, 'released on the stop:');
   });
@@ -1628,7 +1655,7 @@ async function rejects(promise) {
       const ch = storyHandlersFor({ metadataRouting, ollamaHost: NO_OLLAMA });
       const routedErr = await rejects(ch['story:routed-model']());
       if (!/metadataRouting/.test(routedErr.message)) throw new Error(`the refusal does not name the setting: ${routedErr.message}`);
-      await rejects(ch['story:analyze-chapters'](fakeEvent, { segments: storySegments, grain: 'stories' }));
+      await rejects(ch['story:analyze-chapters'](fakeEvent, { segments: storySegments }));
       await rejects(ch['story:suggest-title'](null, { name: 'x', chapters: [{ label: 'Budget vote', startSeconds: 0, endSeconds: 10 }] }));
     }
     eq(door.chats.length + door.decides.length + storyCalls.length, 0, 'calls sent on an unresolvable routing:');
@@ -1653,10 +1680,10 @@ async function rejects(promise) {
     const fmt = (sec) => new Date(sec * 1000).toISOString().slice(11, 23).replace('.', ',');
     const { candidates } = await splitModule.splitCandidates(srt.map((s) => ({ ...s, start: fmt(s.start), end: fmt(s.end) })), 240, { chat: t.chat, decide: t.decide });
     eq(candidates.map((c) => [c.index, c.startSeconds, c.endSeconds, c.timestamp, c.label, c.verbalCue, c.isAd]), [
-      [1, 0, 120, '0:00', 'Budget vote', false, false],
-      [2, 120, 240, '2:00', 'Mayor walks out', false, false],
+      [1, 0, 120, '0:00', '"The council argued about the budget vote number 0 tonight."', false, false],
+      [2, 120, 240, '2:00', '"Then the mayor walked out of meeting number 12 in a huff."', false, false],
     ], 'the menu:');
-    eq(storyCalls.length + door.chats.filter((c) => c.model !== 'qwen3.5-9b').length, 0, 'title calls:');
+    eq(storyCalls.length + door.chats.length, 0, 'no title call and no outline:');
     eq(['episode-splitter.service.ts', 'chapter-splitter.ts'].map((f) => require('fs').existsSync(path.join(__dirname, '..', 'electron', 'services', f.startsWith('chapter') ? 'editor' : 'metadata', f))), [false, false], 'the retired splitters are gone:');
   });
 
@@ -1688,7 +1715,7 @@ async function rejects(promise) {
         { number: 2, startSec: 300, endSec: 330, unitRange: [10, 12], label: 'Support the channel', level: 1, title: 'A word from the host', summary: 'S2', isAd: true },
         { number: 3, startSec: 330, endSec: 700, unitRange: [12, 30], label: 'The verdict', level: 1, title: '', summary: '', isAd: false },
       ],
-      stats: { unitCount: 30, chunkCount: 1, refinedSections: 0, outlineMs: 1, assignMs: 1, plugMs: 1, summarizeMs: 1, totalMs: 4, chatCalls: 4, decideCalls: 1, flooredUnits: [], skippedUnits: [], titledFromParts: [], streamOutline: null, adBaseline: 0.01, speakerTagged: false, titleMs: [5, 6, 7], warnings: ['w'] },
+      stats: { unitCount: 30, chunkCount: 1, refinedSections: 0, outlineMs: 1, assignMs: 1, plugMs: 1, summarizeMs: 1, totalMs: 4, chatCalls: 4, decideCalls: 1, flooredUnits: [], skippedUnits: [], titledFromParts: [], stories: null, adBaseline: 0.01, speakerTagged: false, titleMs: [5, 6, 7], warnings: ['w'] },
     };
     const published = snapWiring.toChapterPipelineResult(result, true);
     eq(published.chapters.map((c) => [c.timestamp, c.title, c.isPromo === true]), [['0:00', 'The opening claim', false], ['5:00', 'A word from the host', true], ['5:30', 'The verdict', false]], 'the chapters:');

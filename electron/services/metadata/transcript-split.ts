@@ -8,7 +8,7 @@
  * quoted start phrases, mapped by fuzzy match, a single "Full transcript" chapter when nothing
  * mapped) is deleted with everything only it called.
  *
- * BOUNDARIES ONLY, declared: the candidates are labelled with the stream outline's own items and
+ * BOUNDARIES ONLY, declared: the candidates are labelled with each story's opening line, quoted, and
  * no title call is made. The menu is for choosing cut points; each piece the operator commits
  * gets its own metadata run, titles and chapters included, and a thinking title per candidate
  * would cost minutes each for a label the operator renames anyway.
@@ -22,6 +22,7 @@ import type { SRTSegment } from './whisper.service';
 import { TimeUtils } from './chapter-generator.service';
 import { chapter } from './chaptering/chaptering.service';
 import type { ChapteringProgress, ChatFn, DecideFn } from './chaptering/types';
+import type { StoryStats } from './chaptering/stories';
 
 /** One candidate of the menu (frontend TranscriptChapter). */
 export interface TranscriptSplitCandidate {
@@ -32,11 +33,11 @@ export interface TranscriptSplitCandidate {
   endSeconds: number;
   /** H:MM:SS mirror of startSeconds. */
   timestamp: string;
-  /** The stream outline's item for this stretch. */
+  /** The story's opening line, quoted (the stories grain names nothing without a title call). */
   label: string;
   /** Snap reads no verbal cue; kept for the dialog's shape. */
   verbalCue: boolean;
-  /** The ad check confirmed this stretch as a plug: a piece the operator will usually leave out. */
+  /** Always false at the stories grain, which runs no ad check (a plug is a chapter of its piece's own run). */
   isAd: boolean;
 }
 
@@ -44,7 +45,7 @@ export async function splitCandidates(
   srtSegments: SRTSegment[],
   totalDurationSeconds: number,
   options: { chat: ChatFn; decide: DecideFn; signal?: AbortSignal; onProgress?: (p: ChapteringProgress) => void },
-): Promise<{ candidates: TranscriptSplitCandidate[]; warnings: string[] }> {
+): Promise<{ candidates: TranscriptSplitCandidate[]; warnings: string[]; stories: StoryStats | null }> {
   if (!srtSegments || srtSegments.length === 0) throw new Error('Transcript has no segments to analyze.');
   // The segment's speaker and label together: the string every engine reads a HOST/CLIP side from.
   const captions = srtSegments.map((seg) => {
@@ -69,5 +70,5 @@ export async function splitCandidates(
     verbalCue: false,
     isAd: c.isAd,
   }));
-  return { candidates, warnings: result.stats.warnings };
+  return { candidates, warnings: result.stats.warnings, stories: result.stats.stories };
 }

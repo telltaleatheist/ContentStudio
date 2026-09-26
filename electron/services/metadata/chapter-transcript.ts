@@ -28,6 +28,7 @@
 
 import { SRTSegment } from './whisper.service';
 import { Chapter, TimeUtils } from './chapter-generator.service';
+import type { StoryStats } from './chaptering/stories';
 
 /** YouTube refuses a chapter list with fewer than 3 entries. */
 export const MIN_CHAPTERS = 3;
@@ -187,12 +188,14 @@ export interface ChapterRunStats {
   /** What the snap engine did (snap only; chaptering/types.ts ChapteringStats, summarised). */
   snap?: {
     granularity: string;
-    switchCost: number;
+    /** Null at stories, which runs no Viterbi. */
+    switchCost: number | null;
     units: number;
     chunks: number;
     refinedSections: number;
     decideCalls: number;
-    streamOutline: string[] | null;
+    /** The stories grain's junction method (chaptering/stories.ts); null at chapters. */
+    stories: StoryStats | null;
     adBaseline: number | null;
     plugVerdicts: Array<{ start: number; end: number; p: number; threshold: number; read: string; source: string }>;
     titleThinking: boolean;

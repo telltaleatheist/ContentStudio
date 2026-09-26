@@ -145,6 +145,10 @@ export class EditorHostAdapter implements EditorHost {
     return this.electron.analyzeStoryChapters(payload);
   }
 
+  chapterStory(payload: Parameters<ElectronService['chapterStory']>[0]): Promise<any> {
+    return this.electron.chapterStory(payload);
+  }
+
   suggestStoryTitle(payload: { name?: string; chapters: Array<{ label: string; detail?: string; startSeconds: number; endSeconds: number }> }): Promise<{ title: string }> {
     return this.electron.suggestStoryTitle(payload);
   }

@@ -56,6 +56,7 @@ const granularity = C('granularity');
 const prompts = C('prompts');
 const chunks = C('chunks');
 const service = C('chaptering.service');
+const stories = C('stories');
 
 const assert = require('assert');
 const L = (p) => Math.log(p);
@@ -261,7 +262,7 @@ check('parseOutline: one item is an answer; no usable item is refused by name', 
 });
 check('the detailed outline body, the assign question and the plug statement are segment.py verbatim', () => {
   assert.strictEqual(
-    prompts.SNAP_PROMPTS.outline('chapters', 'One.\nTwo.', 25, '1 minute'),
+    prompts.SNAP_PROMPTS.outline('One.\nTwo.', 25),
     'Here is a transcript of a video.\n\nOne.\nTwo.\n\nList the sections of this video in the order they happen. ' +
       'A new section starts wherever the video moves to a different subject, story, clip, ad or aside. ' +
       'Write one short, specific label per line (at most 25 lines), with no numbering and nothing else.',
@@ -290,7 +291,7 @@ check('the detailed outline body, the assign question and the plug statement are
   assert.ok(prompts.SNAP_PROMPTS.plugItem(['the Patreon', 'the merch shop']).includes('the Patreon; the merch shop'));
   assert.ok(prompts.SNAP_PROMPTS.plugItem(['the Patreon']).startsWith('An ad, sponsor read or self-promotion'));
   // A transcript holding a $-pattern or a brace survives the fill.
-  assert.ok(prompts.SNAP_PROMPTS.outline('stories', 'costs $& and {max_items}', 25, '').includes('costs $& and {max_items}'));
+  assert.ok(prompts.SNAP_PROMPTS.outline('costs $& and {max_items}', 25).includes('costs $& and {max_items}'));
 });
 check('assignQuestions quotes the sentence and the one before, "(start of the video)" first, keyed s<i>', () => {
   const wire = assign.wireOptions(['Intro', 'Main']);
@@ -462,61 +463,46 @@ check('planChunks: one chunk under the single limit, else overlapping cores that
 
 // ------------------------------------------------------------------- granularity
 
-check('two grains (LEDGER #208): each maps to a positive switch cost and a prompt body that exists; chapters is the measured 20', () => {
+check('two grains, two methods (LEDGER #208, #212): chapters is outline + assign at the measured 20, stories is junctions', () => {
   assert.deepStrictEqual([...granularity.GRANULARITIES], ['chapters', 'stories']);
-  for (const g of granularity.GRANULARITIES) {
-    const s = granularity.granularitySetting(g);
-    assert.ok(s.switchCost > 0);
-    assert.ok(prompts.SNAP_PROMPTS.outline(g, 'x', 25, '1 hour').length > 50, `${g} body`);
-    assert.strictEqual(s.refine, g === 'chapters');
-    // Stories merge the chunk outlines into one stream outline; chapters stitch per chunk.
-    assert.strictEqual(s.mergeKey !== null, g === 'stories');
-    // Owen's ad marks are a video's (5:00, 10:00), not a stream's.
-    assert.strictEqual(s.adPrior, g === 'chapters');
-  }
-  assert.strictEqual(granularity.GRANULARITY.chapters.switchCost, 20);
-  assert.strictEqual(granularity.GRANULARITY.chapters.provenance, 'measured');
-  assert.ok(granularity.GRANULARITY.stories.switchCost > granularity.GRANULARITY.chapters.switchCost);
-  assert.ok(prompts.SNAP_PROMPTS.outline('stories', 'x', 25, '3 hours 54 minutes').includes('runs 3 hours 54 minutes'));
-  // The segment.py body is the chapters grain's, and level 2's.
-  assert.strictEqual(prompts.SNAP_PROMPTS.subOutline('x', 25), prompts.SNAP_PROMPTS.outline('chapters', 'x', 25, ''));
-  const merge = prompts.SNAP_PROMPTS.streamMerge('snap_outline_stories_merge', [{ clock: '0:00-40:00', items: ['AI survey', 'Meta settlement'] }, { clock: '40:00-1:20:00', items: ['Pokemon book {max_items} $&'] }], 25, '1 hour 20 minutes');
-  assert.ok(merge.includes('Stretch 1 (0:00-40:00):\nAI survey\nMeta settlement') && merge.includes('Stretch 2 (40:00-1:20:00):\nPokemon book {max_items} $&'));
-  assert.ok(merge.includes('at most 25 lines') && merge.includes('runs 1 hour 20 minutes'));
-  // The retired names are gone, and the pipeline's per-run pick reads as a setting of the dial.
+  const c = granularity.granularitySetting('chapters');
+  assert.deepStrictEqual(c, { method: 'outline', switchCost: 20, outlineKey: 'snap_outline_chapters', refine: true, adPrior: true, provenance: 'measured' });
+  assert.deepStrictEqual(granularity.granularitySetting('stories'), { method: 'junctions', provenance: 'reference' });
+  assert.ok(prompts.SNAP_PROMPTS.outline('x', 25).length > 50);
   for (const retired of ['detailed', 'broad', 'episodes']) assert.throws(() => granularity.granularitySetting(retired), /unknown chaptering granularity/);
-  assert.deepStrictEqual(granularity.PIPELINE_DIAL.detailed, { granularity: 'chapters', switchCost: 20 });
-  assert.deepStrictEqual(granularity.PIPELINE_DIAL.broad.granularity, 'chapters');
-  assert.ok(granularity.PIPELINE_DIAL.broad.switchCost > 20);
-  assert.strictEqual(granularity.PIPELINE_DIAL.stories.granularity, 'stories');
   assert.throws(() => granularity.granularitySetting('fine'), /unknown chaptering granularity "fine"/);
   assert.strictEqual(service.runtimeWords(14040), '3 hours 54 minutes');
   assert.strictEqual(service.runtimeWords(600), '10 minutes');
   assert.strictEqual(service.formatClock(3723), '1:02:03');
 });
 
+check('the queue pick (LEDGER #213): chapters | stories; a retired detailed / broad reads as chapters, named; anything else refused', () => {
+  assert.deepStrictEqual([...granularity.CHAPTER_PICKS], ['chapters', 'stories']);
+  assert.deepStrictEqual(granularity.chapterPickOf('chapters'), { pick: 'chapters', migratedFrom: null });
+  assert.deepStrictEqual(granularity.chapterPickOf('stories'), { pick: 'stories', migratedFrom: null });
+  assert.deepStrictEqual(granularity.chapterPickOf('detailed'), { pick: 'chapters', migratedFrom: 'detailed' });
+  assert.deepStrictEqual(granularity.chapterPickOf('broad'), { pick: 'chapters', migratedFrom: 'broad' });
+  assert.throws(() => granularity.chapterPickOf('episodes'), /unknown chapter pick "episodes"/);
+  assert.throws(() => granularity.chapterPickOf(undefined), /unknown chapter pick/);
+});
+
 // ------------------------------------------------------------------- the service
 
+// Two sections with no sub-sections: at `chapters` level 2 asks a one-item outline and keeps them whole.
+const FLAT = [[0, 150, 'Alpha topic', null], [150, 300, 'Beta topic', null]];
 const SECTIONS = [
   [0, 150, 'Alpha topic', [{ from: 0, to: 70, label: 'Alpha one' }, { from: 70, to: 150, label: 'Alpha two' }]],
   [150, 300, 'Beta topic', [{ from: 150, to: 240, label: 'Beta one' }, { from: 240, to: 300, label: 'Beta two' }]],
 ];
 
-check('stories on one chunk: level 1 only, two chapters that tile the video, titled thinking ON at the declared budget', async () => {
-  const v = fakeVideo(300, SECTIONS);
-  const r = await service.chapter(v.captions, { granularity: 'stories', chat: v.chat, decide: v.decide, videoTitle: 'Fake', channelName: 'Ch' });
-  assert.strictEqual(r.stats.unitCount, 300);
-  assert.strictEqual(r.stats.chunkCount, 1);
-  assert.strictEqual(r.stats.refinedSections, 0);
-  // One chunk: its own outline is the whole video's, and no merge call is made.
-  assert.strictEqual(r.stats.streamOutline, null);
-  assert.ok(!v.calls.chat.some((c) => c.o.what.startsWith('stream outline')));
-  assert.deepStrictEqual(r.outline, ['Alpha topic', 'Beta topic']);
+check('chapters titles think ON at the declared budget; the outline stays thinking-off at temperature 0', async () => {
+  const v = fakeVideo(60, [[0, 30, 'Alpha topic', null], [30, 60, 'Beta topic', null]]);
+  const r = await service.chapter(v.captions, { granularity: 'chapters', chat: v.chat, decide: v.decide, videoTitle: 'Fake', channelName: 'Ch' });
+  assert.strictEqual(r.stats.stories, null);
   assert.deepStrictEqual(r.chapters.map((c) => [c.startSec, c.endSec, c.label, c.level, c.title, c.isAd]), [
-    [0, 1500, 'Alpha topic', 1, 'Title 1', false],
-    [1500, 3000, 'Beta topic', 1, 'Title 2', false],
+    [0, 300, 'Alpha topic', 1, 'Title 1', false],
+    [300, 600, 'Beta topic', 1, 'Title 2', false],
   ]);
-  assert.strictEqual(r.chapters[1].summary, 'Summary of chapter 2.');
   const summaries = v.calls.chat.filter((c) => c.o.role === 'summarize');
   assert.strictEqual(summaries.length, 2);
   assert.ok(summaries[1].prompt.includes('Previous chapter: "Summary of chapter 1."') && summaries[1].prompt.includes('titled "Title 1"'));
@@ -525,8 +511,7 @@ check('stories on one chunk: level 1 only, two chapters that tile the video, tit
   assert.ok(v.calls.chat[0].o.thinking === false && v.calls.chat[0].o.temperature === 0);
   assert.strictEqual(r.stats.titleMs.length, 2);
   assert.ok(!r.stats.warnings.some((w) => w.includes('thinking OFF')));
-  assert.strictEqual(r.switchCost, 45);
-  assert.strictEqual(r.stats.decideCalls, Math.ceil(300 / 64));
+  assert.strictEqual(r.switchCost, 20);
   assert.ok(v.calls.decide.every((d) => d.req.missing === 'report'));
 });
 
@@ -581,36 +566,10 @@ check('chapters on a long transcript: each chunk its own outline, stitched at th
     chunking: { maxSingleTokens: 2000, maxCoreTokens: 1200, overlapTokens: 200 },
   });
   assert.ok(r.stats.chunkCount > 1, `chunks ${r.stats.chunkCount}`);
-  assert.strictEqual(r.stats.streamOutline, null);
-  assert.ok(!v.calls.chat.some((c) => c.o.what.startsWith('stream outline')));
   assert.deepStrictEqual(r.outline, ['Alpha topic', 'Beta topic']);
   assert.strictEqual(r.chapters[0].unitRange[0], 0);
   assert.strictEqual(r.chapters[r.chapters.length - 1].unitRange[1], 300);
   assert.deepStrictEqual(r.chapters.map((c) => c.label), ['Alpha one', 'Alpha two', 'Beta one', 'Beta two']);
-});
-
-check('stories on a long transcript: the chunk outlines are MERGED into one stream outline, every sentence asked once, one pass', async () => {
-  const v = fakeVideo(300, SECTIONS);
-  const r = await service.chapter(v.captions, {
-    granularity: 'stories', chat: v.chat, decide: v.decide, summarize: false,
-    chunking: { maxSingleTokens: 2000, maxCoreTokens: 1200, overlapTokens: 200 },
-  });
-  assert.ok(r.stats.chunkCount > 1, `chunks ${r.stats.chunkCount}`);
-  const merges = v.calls.chat.filter((c) => c.o.what.startsWith('stream outline'));
-  assert.strictEqual(merges.length, 1);
-  // The merge reads every chunk's own outline, in order, each under its stretch's clock.
-  assert.ok(merges[0].prompt.includes('Stretch 1 (0:00-') && merges[0].prompt.includes(`Stretch ${r.stats.chunkCount} (`));
-  assert.ok(merges[0].o.thinking === false && merges[0].o.temperature === 0 && merges[0].o.role === 'outline');
-  assert.deepStrictEqual(r.stats.streamOutline, ['Alpha topic', 'Beta topic']);
-  assert.deepStrictEqual(r.outline, ['Alpha topic', 'Beta topic']);
-  // Every chunk offers the SAME options (the stream outline and the ad item)...
-  const optionSets = new Set(v.calls.decide.filter((d) => d.req.questions.s0 || Object.keys(d.req.questions)[0] !== 'q').map((d) => JSON.stringify(Object.values(Object.values(d.req.questions)[0].options))));
-  assert.strictEqual(optionSets.size, 1);
-  // ...and only the core a chunk owns is asked: 300 questions for 300 sentences, none twice.
-  const asked = v.calls.decide.flatMap((d) => Object.values(d.req.questions).filter((q) => q.type === 'choice').map((q) => unitOf(q.instructions)));
-  assert.strictEqual(asked.length, 300);
-  assert.strictEqual(new Set(asked).size, 300);
-  assert.deepStrictEqual(r.chapters.map((c) => [c.startSec, c.endSec, c.label]), [[0, 1500, 'Alpha topic'], [1500, 3000, 'Beta topic']]);
 });
 
 check('a prose outline is refused by name, naming the chunk (Law 1); prose lines are told from labels by a declared rule', async () => {
@@ -626,33 +585,27 @@ check('a prose outline is refused by name, naming the chunk (Law 1); prose lines
     outlineAnswer: (what) => (what.includes('chunk 2/') ? 'Analysis of the transcript reveals that it covers Alpha. The stream flows on.' : undefined),
   });
   await assert.rejects(
-    service.chapter(v.captions, { granularity: 'stories', chat: v.chat, decide: v.decide, summarize: false, chunking: { maxSingleTokens: 2000, maxCoreTokens: 1200, overlapTokens: 200 } }),
+    service.chapter(v.captions, { granularity: 'chapters', chat: v.chat, decide: v.decide, summarize: false, chunking: { maxSingleTokens: 2000, maxCoreTokens: 1200, overlapTokens: 200 } }),
     (e) => e.code === 'outline_prose' && e.message.includes('chunk 2/'),
-  );
-  // The merged stream outline is held to the same rule.
-  const w = fakeVideo(300, SECTIONS, { outlineAnswer: (what) => (what.startsWith('stream outline') ? 'Here is the merged outline:\nAlpha topic\nBeta topic' : undefined) });
-  await assert.rejects(
-    service.chapter(w.captions, { granularity: 'stories', chat: w.chat, decide: w.decide, summarize: false, chunking: { maxSingleTokens: 2000, maxCoreTokens: 1200, overlapTokens: 200 } }),
-    (e) => e.code === 'outline_prose' && e.message.includes('stream outline'),
   );
 });
 
 check('ad confirm: a confirmed stretch is an isAd chapter with its verdict; a rejected one is re-segmented away', async () => {
-  const yes = fakeVideo(300, SECTIONS, { ads: [100, 120], adVerdict: 0.9 });
-  const r1 = await service.chapter(yes.captions, { granularity: 'stories', chat: yes.chat, decide: yes.decide, summarize: false, promotedItems: ['the Patreon'] });
+  const yes = fakeVideo(300, FLAT, { ads: [100, 120], adVerdict: 0.9 });
+  const r1 = await service.chapter(yes.captions, { granularity: 'chapters', chat: yes.chat, decide: yes.decide, summarize: false, promotedItems: ['the Patreon'] });
   const ad = r1.chapters.find((c) => c.isAd);
   assert.ok(ad, 'an ad chapter');
   assert.deepStrictEqual(ad.unitRange, [100, 120]);
   assert.deepStrictEqual(r1.plugVerdicts, [{ start: 100, end: 120, p: 0.9, threshold: 0.5, read: 'answered', source: 'ad-option' }]);
   assert.ok(yes.calls.decide.some((d) => d.req.questions.q && d.req.questions.q.type === 'yesno' && d.req.questions.q.instructions.includes('(the Patreon)')));
   assert.ok(yes.calls.decide[0].req.questions.s0.options['section 3'].includes('the Patreon'));
-  const no = fakeVideo(300, SECTIONS, { ads: [100, 120], adVerdict: 0.2 });
-  const r2 = await service.chapter(no.captions, { granularity: 'stories', chat: no.chat, decide: no.decide, summarize: false });
+  const no = fakeVideo(300, FLAT, { ads: [100, 120], adVerdict: 0.2 });
+  const r2 = await service.chapter(no.captions, { granularity: 'chapters', chat: no.chat, decide: no.decide, summarize: false });
   assert.ok(!r2.chapters.some((c) => c.isAd));
   assert.deepStrictEqual(r2.chapters.map((c) => c.label), ['Alpha topic', 'Beta topic']);
   assert.deepStrictEqual(r2.plugVerdicts.map((v) => v.p), [0.2]);
-  const off = fakeVideo(300, SECTIONS, { ads: [100, 120] });
-  const r3 = await service.chapter(off.captions, { granularity: 'stories', chat: off.chat, decide: off.decide, summarize: false, detectAds: false });
+  const off = fakeVideo(300, FLAT, { ads: [100, 120] });
+  const r3 = await service.chapter(off.captions, { granularity: 'chapters', chat: off.chat, decide: off.decide, summarize: false, detectAds: false });
   assert.ok(!off.calls.decide[0].req.questions.s0.options['section 3'] && r3.plugVerdicts.length === 0);
   assert.strictEqual(r3.stats.adBaseline, null);
 });
@@ -669,8 +622,8 @@ check('the ad option is read against its per-video baseline: a lean all video lo
   assert.deepStrictEqual(plugs.baselineRow(row(0.4), -1, 0.3), row(0.4));
   // In a run: the ad option holds 0.45 on every sentence and the true section only 0.40 on the
   // first 100. Read raw, the ad option would win those; against the baseline it is nowhere.
-  const v = fakeVideo(300, SECTIONS, { perUnit: (i) => (i < 100 ? { chosenP: 0.4, adP: 0.45 } : { chosenP: 0.5, adP: 0.45 }) });
-  const r = await service.chapter(v.captions, { granularity: 'stories', chat: v.chat, decide: v.decide, summarize: false });
+  const v = fakeVideo(300, FLAT, { perUnit: (i) => (i < 100 ? { chosenP: 0.4, adP: 0.45 } : { chosenP: 0.5, adP: 0.45 }) });
+  const r = await service.chapter(v.captions, { granularity: 'chapters', chat: v.chat, decide: v.decide, summarize: false });
   assert.ok(Math.abs(r.stats.adBaseline - 0.45) < 1e-9, `baseline ${r.stats.adBaseline}`);
   assert.ok(!r.chapters.some((c) => c.isAd));
   assert.deepStrictEqual(r.plugVerdicts.filter((p) => p.source === 'ad-option'), []);
@@ -682,7 +635,7 @@ check('a plug the outline named as an ordinary item is flagged isAd when the yes
   // On the promotion's sentences the ad option is a close second; elsewhere it is nowhere.
   const perUnit = (i) => (i >= 100 && i < 120 ? { chosenP: 0.6, adP: 0.3 } : { chosenP: 0.97, adP: 0.004 });
   const yes = fakeVideo(300, sections, { perUnit, adVerdict: 0.8 });
-  const r = await service.chapter(yes.captions, { granularity: 'stories', chat: yes.chat, decide: yes.decide, summarize: false });
+  const r = await service.chapter(yes.captions, { granularity: 'chapters', chat: yes.chat, decide: yes.decide, summarize: false });
   assert.deepStrictEqual(r.chapters.map((c) => [c.label, c.isAd]), [['Alpha topic', false], ['Promotion of the book', true], ['Beta topic', false]]);
   assert.deepStrictEqual(r.plugVerdicts, [{ start: 100, end: 120, p: 0.8, threshold: 0.5, read: 'answered', source: 'outline-item', windows: 3 }]);
   // Only the candidate was asked, in windows that each fit the 700-character quote, so every one
@@ -695,7 +648,7 @@ check('a plug the outline named as an ordinary item is flagged isAd when the yes
   assert.deepStrictEqual(plugs.confirmWindows(['x'.repeat(300), 'y'.repeat(300), 'z'], 0, 3), [[0, 3]]);
   // A no keeps it content.
   const no = fakeVideo(300, sections, { perUnit, adVerdict: 0.1 });
-  const r2 = await service.chapter(no.captions, { granularity: 'stories', chat: no.chat, decide: no.decide, summarize: false });
+  const r2 = await service.chapter(no.captions, { granularity: 'chapters', chat: no.chat, decide: no.decide, summarize: false });
   assert.ok(!r2.chapters.some((c) => c.isAd));
   assert.deepStrictEqual(r2.plugVerdicts.map((p) => [p.source, p.p]), [['outline-item', 0.1]]);
   // One window saying no keeps the whole run content: a plug throughout, or not a plug.
@@ -706,7 +659,7 @@ check('a plug the outline named as an ordinary item is flagged isAd when the yes
     if (res.answers.q && req.questions.q.instructions.includes('Sentence 119 of')) res.answers.q = yesno(0.05);
     return res;
   };
-  const r3 = await service.chapter(mixed.captions, { granularity: 'stories', chat: mixed.chat, decide: oneNo, summarize: false });
+  const r3 = await service.chapter(mixed.captions, { granularity: 'chapters', chat: mixed.chat, decide: oneNo, summarize: false });
   assert.ok(!r3.chapters.some((c) => c.isAd));
   assert.strictEqual(r3.plugVerdicts[0].p, 0.05);
   // The rule itself: first or second on at least half the run's sentences.
@@ -734,7 +687,7 @@ check('a confirmed ad run keeps only its core, the sentences the ad option leads
   assert.deepStrictEqual(plugs.trimToCores(L, [...Array(10).fill(0), ...Array(5).fill(2), ...Array(20).fill(1)], 2, 20).trims, []);
 });
 
-check('the ad prior (Owen: ads at about 5:00 and 10:00) lowers the bar near those marks, at chapters only, and places nothing', async () => {
+check('the ad prior (Owen: ads at about 5:00 and 10:00) lowers the bar near those marks, and places nothing', async () => {
   assert.strictEqual(plugs.confirmThreshold(290, 330, true), 0.25);
   assert.strictEqual(plugs.confirmThreshold(640, 660, true), 0.25);
   assert.strictEqual(plugs.confirmThreshold(1200, 1230, true), 0.5);
@@ -745,10 +698,6 @@ check('the ad prior (Owen: ads at about 5:00 and 10:00) lowers the bar near thos
   const r1 = await service.chapter(vid.captions, { granularity: 'chapters', chat: vid.chat, decide: vid.decide, summarize: false });
   assert.deepStrictEqual(r1.plugVerdicts.map((p) => [p.start, p.end, p.p, p.threshold, p.source]), [[30, 45, 0.3, 0.25, 'ad-option']]);
   assert.ok(r1.chapters.some((c) => c.isAd && c.unitRange[0] === 30));
-  const str = fakeVideo(100, sections, { ads: [30, 45], adVerdict: 0.3 });
-  const r2 = await service.chapter(str.captions, { granularity: 'stories', chat: str.chat, decide: str.decide, summarize: false });
-  assert.deepStrictEqual(r2.plugVerdicts.map((p) => [p.threshold, p.source]), [[0.5, 'ad-option']]);
-  assert.ok(!r2.chapters.some((c) => c.isAd));
   // The same answer away from the marks is not an ad at chapters either.
   const far = fakeVideo(100, sections, { ads: [70, 85], adVerdict: 0.3 });
   const r3 = await service.chapter(far.captions, { granularity: 'chapters', chat: far.chat, decide: far.decide, summarize: false });
@@ -792,19 +741,19 @@ check('decide_not_served ends the run with a refusal naming the server, and no c
   const err = Object.assign(new Error('mlx-lm caps top_logprobs at 11; the question has 26 labels'), { code: 'decide_not_served', server: 'crucible@owens-mac-studio' });
   const v = fakeVideo(50, [[0, 25, 'One', null], [25, 50, 'Two', null]], { decideThrows: err });
   await assert.rejects(
-    service.chapter(v.captions, { granularity: 'stories', chat: v.chat, decide: v.decide }),
+    service.chapter(v.captions, { granularity: 'chapters', chat: v.chat, decide: v.decide }),
     (e) => e instanceof types.ChapteringError && e.code === 'decide_not_served' && e.message.includes('crucible@owens-mac-studio') && e.message.includes('top_logprobs at 11'),
   );
   // Any other transport failure passes through as itself.
   const other = fakeVideo(50, [[0, 25, 'One', null], [25, 50, 'Two', null]], { decideThrows: Object.assign(new Error('boom'), { code: 'engine_error' }) });
-  await assert.rejects(service.chapter(other.captions, { granularity: 'stories', chat: other.chat, decide: other.decide }), /boom/);
+  await assert.rejects(service.chapter(other.captions, { granularity: 'chapters', chat: other.chat, decide: other.decide }), /boom/);
 });
 
 check('a missing label is counted and a gated answer is a skipped unit, both reported, and the run completes', async () => {
   const v = fakeVideo(100, [[0, 50, 'One', null], [50, 100, 'Two', null]], {
     perUnit: (i) => (i === 10 ? { missing: ['section 2'] } : i === 20 || i === 21 ? { mass: 0.001 } : {}),
   });
-  const r = await service.chapter(v.captions, { granularity: 'stories', chat: v.chat, decide: v.decide, summarize: false });
+  const r = await service.chapter(v.captions, { granularity: 'chapters', chat: v.chat, decide: v.decide, summarize: false });
   assert.deepStrictEqual(r.stats.flooredUnits, [10]);
   assert.deepStrictEqual(r.stats.skippedUnits, [20, 21]);
   assert.deepStrictEqual(r.chapters.map((c) => c.label), ['One', 'Two']);
@@ -814,14 +763,14 @@ check('a missing label is counted and a gated answer is a skipped unit, both rep
 });
 
 check('an ad check with no evidence is not a confirmation: the stretch is chaptered without the ad item, and warned', async () => {
-  const v = fakeVideo(300, SECTIONS, { ads: [100, 120] });
+  const v = fakeVideo(300, FLAT, { ads: [100, 120] });
   const decide = v.decide;
   const gated = async (req, o) => {
     const res = await decide(req, o);
     if (res.answers.q) res.answers.q = { type: 'yesno', p: 0.99, labelMass: 0.002, missingLabels: [] };
     return res;
   };
-  const r = await service.chapter(v.captions, { granularity: 'stories', chat: v.chat, decide: gated, summarize: false });
+  const r = await service.chapter(v.captions, { granularity: 'chapters', chat: v.chat, decide: gated, summarize: false });
   assert.ok(!r.chapters.some((c) => c.isAd));
   assert.deepStrictEqual(r.plugVerdicts, [{ start: 100, end: 120, p: 0, threshold: 0.5, read: 'no-evidence', source: 'ad-option' }]);
   assert.ok(r.stats.warnings.some((w) => w.includes('sentences 100-120') && w.includes('not confirmed as an ad')));
@@ -829,12 +778,124 @@ check('an ad check with no evidence is not a confirmation: the stretch is chapte
 
 check('an empty transcript and a cancelled run are refused by name; a switch-cost override (the dial) is carried in the result', async () => {
   const v = fakeVideo(50, [[0, 25, 'One', null], [25, 50, 'Two', null]]);
-  await assert.rejects(service.chapter([], { granularity: 'stories', chat: v.chat, decide: v.decide }), (e) => e.code === 'empty_transcript');
+  await assert.rejects(service.chapter([], { granularity: 'chapters', chat: v.chat, decide: v.decide }), (e) => e.code === 'empty_transcript');
   const ac = new AbortController();
   ac.abort();
-  await assert.rejects(service.chapter(v.captions, { granularity: 'stories', chat: v.chat, decide: v.decide, signal: ac.signal }), (e) => e.code === 'cancelled');
-  const r = await service.chapter(v.captions, { granularity: 'stories', chat: v.chat, decide: v.decide, summarize: false, switchCost: 5 });
+  await assert.rejects(service.chapter(v.captions, { granularity: 'chapters', chat: v.chat, decide: v.decide, signal: ac.signal }), (e) => e.code === 'cancelled');
+  const r = await service.chapter(v.captions, { granularity: 'chapters', chat: v.chat, decide: v.decide, summarize: false, switchCost: 5 });
   assert.strictEqual(r.switchCost, 5);
+  await assert.rejects(service.chapter(v.captions, { granularity: 'stories', chat: v.chat, decide: v.decide, switchCost: 5 }), (e) => e.code === 'bad_request');
+});
+
+// ------------------------------------------------------------------- stories: 45-second junctions (LEDGER #212)
+
+/**
+ * A fake stream for the stories grain: 10 s units in `sections` ([from, to)). The fake reads the
+ * sentence numbers off the quoted text (its privilege, never the model's): a junction is a new
+ * subject when the stretches' touching sentences are in different sections, a placement picks the
+ * first line of the next section, a pair is one story when its parts touch inside one section.
+ */
+function fakeStream(n, sections, opts = {}) {
+  const captions = Array.from({ length: n }, (_, i) => ({ start: i * 10, end: i * 10 + 10, text: `Sentence ${i} of the fake stream says something about the topic at hand.` }));
+  const sec = (i) => sections.findIndex(([a, b]) => i >= a && i < b);
+  const nums = (text) => [...text.matchAll(/Sentence (\d+) of/g)].map((m) => Number(m[1]));
+  const calls = [];
+  const decide = async (req, o) => {
+    calls.push({ req, o });
+    const answers = {};
+    for (const [name, q] of Object.entries(req.questions)) {
+      if (name.startsWith('j')) {
+        const [before, after] = q.instructions.split('The stretch that comes straight after it:');
+        const last = nums(before).pop();
+        const first = nums(after)[0];
+        // Ranked, not thresholded: the non-boundaries carry distinct small values.
+        answers[name] = yesno(sec(last) !== sec(first) ? 0.9 : 0.05 + (Number(name.slice(1)) % 7) / 100);
+      } else if (name === 'place') {
+        const names = Object.keys(q.options);
+        const lines = names.map((k) => nums(q.options[k])[0]);
+        const k = lines.findIndex((u) => sec(u) !== sec(lines[0]));
+        answers[name] = opts.placeGated ? { type: 'choice', probabilities: Object.fromEntries(names.map((x) => [x, 1 / names.length])), labelMass: 0.001, missingLabels: [] } : choiceAnswer(names, names[Math.max(0, k)]);
+      } else if (name === 'same') {
+        const [a, b] = req.state.split('Part B, straight after it');
+        answers[name] = yesno(sec(nums(a).pop()) === sec(nums(b)[0]) ? 0.9 : 0.1);
+      } else throw new Error(`fake stream: unexpected question ${name}`);
+    }
+    return { answers };
+  };
+  const chat = async (prompt, o) => {
+    if (o.role !== 'summarize') throw new Error(`the stories grain made a ${o.role} call`);
+    const m = /Title chapter (\d+)/.exec(prompt);
+    return { text: `Story ${m[1]}\nSummary of story ${m[1]}.`, finishReason: 'stop' };
+  };
+  return { captions, decide, chat, calls };
+}
+
+check('stories pure: 45 s stretches end at sentence ends; the count and gap are the reference cadence; selection ranks, never thresholds', () => {
+  const us = Array.from({ length: 30 }, (_, i) => ({ index: i, start: i * 7, end: i * 7 + 7, text: `u${i}` }));
+  const st = stories.cutStretches(us);
+  assert.deepStrictEqual(st.map((x) => [x.start, x.end]), [[0, 7], [7, 14], [14, 21], [21, 28], [28, 30]]);
+  assert.strictEqual(stories.targetSecondsFor(5 * 60), 132);
+  assert.strictEqual(stories.targetSecondsFor(20 * 60), 210);
+  assert.strictEqual(stories.targetSecondsFor(45 * 60), 336);
+  assert.strictEqual(stories.targetSecondsFor(3 * 3600), 360);
+  assert.strictEqual(stories.boundaryCountFor(206.6 * 60), 33, 'the 2026-09-23 stream: 34 pieces before consolidation');
+  assert.strictEqual(stories.boundaryCountFor(60), 2, 'never under the 3-story floor');
+  const J = (at, p) => ({ index: at, unit: at, at, p });
+  // Rank order under the gap; an unrated junction is never taken; ties go farthest-first.
+  const picked = stories.selectJunctions([J(100, 0.2), J(150, 0.9), J(400, 0.9), J(420, 0.95), J(600, null), J(800, 0.3)], 3, 100);
+  assert.deepStrictEqual(picked.map((j) => j.at), [150, 420, 800]);
+  const tie = stories.selectJunctions([J(200, 0.5), J(900, 0.5)], 1, 100);
+  assert.deepStrictEqual(tie.map((j) => j.at), [900]);
+  assert.strictEqual(stories.clipTail('abcdef', 4), '…def');
+  // A window over the choice's 26 letters is trimmed to the lines nearest the junction.
+  const wide = [{ start: 0, end: 20 }, { start: 20, end: 40 }];
+  assert.deepStrictEqual(stories.placementWindow(wide, { index: 0, unit: 20, at: 200, p: 0.9 }), { start: 7, end: 33, trimmed: true });
+  assert.deepStrictEqual(stories.placementWindow([{ start: 0, end: 5 }, { start: 5, end: 9 }], { index: 0, unit: 5, at: 50, p: 0.9 }), { start: 0, end: 9, trimmed: false });
+});
+
+check('stories on a fake stream: junctions quote both stretches, the cut lands on the sentence, pairs consolidate to the true stories', async () => {
+  const f = fakeStream(300, [[0, 103], [103, 207], [207, 300]]);
+  const r = await service.chapter(f.captions, { granularity: 'stories', chat: f.chat, decide: f.decide, summarize: false });
+  assert.deepStrictEqual(r.chapters.map((c) => [c.startSec, c.endSec, c.isAd]), [[0, 1030, false], [1030, 2070, false], [2070, 3000, false]]);
+  assert.strictEqual(r.chapters[1].label, '"Sentence 103 of the fake stream says something about the topic at hand."');
+  assert.strictEqual(r.switchCost, null);
+  assert.deepStrictEqual(r.outline, []);
+  assert.deepStrictEqual(r.plugVerdicts, []);
+  const s = r.stats.stories;
+  assert.strictEqual(s.stretches, 60);
+  assert.strictEqual(s.junctions.length, 59);
+  assert.strictEqual(s.boundaryTarget, 8);
+  assert.strictEqual(s.selected.length, 8, 'over-segmented on purpose');
+  assert.ok(s.merges.length === 6 && s.merges.every((m) => m.p === 0.9));
+  assert.deepStrictEqual(s.finalPairs.map((p) => [p.at, p.p]), [[1030, 0.1], [2070, 0.1]]);
+  // Every junction is a yes/no quoting both stretches; the state is the chunk (one here).
+  const j = f.calls.find((c) => c.req.questions.j0).req;
+  assert.ok(j.questions.j0.type === 'yesno' && j.questions.j0.instructions.startsWith('A stretch of the transcript above: "Sentence 0 of'));
+  assert.ok(j.questions.j0.instructions.includes('The stretch that comes straight after it: "Sentence 5 of'));
+  assert.ok(j.state.startsWith('Sentence 0 of') && j.state.includes('\nSentence 299 of'));
+  assert.ok(f.calls.every((c) => c.req.missing === 'report'));
+  // The placement is a choice over the window's own lines, quoted; the pair quotes both parts.
+  const place = f.calls.find((c) => c.req.questions.place).req.questions.place;
+  assert.ok(place.type === 'choice' && Object.keys(place.options)[0] === 'line 1' && /^Sentence \d+ of/.test(Object.values(place.options)[0]));
+  const pair = f.calls.find((c) => c.req.questions.same).req;
+  assert.ok(pair.state.startsWith('Part A of a stream, 0:00-') && pair.state.includes('Part B, straight after it, '));
+  // No outline, no assign: the stories grain writes nothing but titles.
+  assert.ok(!f.calls.some((c) => Object.keys(c.req.questions).some((k) => /^s\d/.test(k))));
+});
+
+check('stories: titles come from the existing title path; the floor of 3 holds; a placement with no evidence stays at the junction, warned', async () => {
+  const f = fakeStream(300, [[0, 103], [103, 207], [207, 300]]);
+  const r = await service.chapter(f.captions, { granularity: 'stories', chat: f.chat, decide: f.decide, titleThinking: true });
+  assert.deepStrictEqual(r.chapters.map((c) => c.title), ['Story 1', 'Story 2', 'Story 3']);
+  // One story everywhere: consolidation stops at the reference's floor of 3.
+  const one = fakeStream(300, [[0, 300]]);
+  const r1 = await service.chapter(one.captions, { granularity: 'stories', chat: one.chat, decide: one.decide, summarize: false });
+  assert.strictEqual(r1.chapters.length, 3);
+  const g = fakeStream(300, [[0, 100], [100, 205], [205, 300]], { placeGated: true });
+  const r2 = await service.chapter(g.captions, { granularity: 'stories', chat: g.chat, decide: g.decide, summarize: false });
+  assert.ok(r2.stats.stories.unplaced === 8 && r2.stats.warnings.some((w) => w.includes('stays at the junction')));
+  // The cut stays at the junction, a stretch start: accurate to the 45 s stretch.
+  assert.deepStrictEqual(r2.chapters.map((c) => c.startSec), [0, 1000, 2050]);
 });
 
 // ------------------------------------------------------------------- parity with the reference

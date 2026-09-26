@@ -15,8 +15,9 @@
 
 import { promptAssets } from '../prompt-assets';
 import { formatPrompt } from '../system-prompts';
-import { granularitySetting } from './granularity';
-import { Granularity } from './types';
+import { GRANULARITY } from './granularity';
+/** segment.py's outline body: the chapters grain's, at both levels. */
+const OUTLINE_KEY_OF = () => GRANULARITY.chapters.outlineKey;
 
 const CHAPTERS_FILE = 'chapters.yml';
 
@@ -61,32 +62,38 @@ export function declaredPromotions(items: readonly string[] | undefined): string
 
 export const SNAP_PROMPTS = {
   /**
-   * The level-1 outline body for a granularity. Placeholders: {transcript}, {max_items},
-   * {duration} (the runtime in words, the episodes body reads it).
+   * The outline body of the chapters grain, segment.py's, at level 1 and inside a long section at
+   * level 2 (the stories grain writes no outline: stories.ts). Placeholders: {transcript}, {max_items}.
    */
-  outline(granularity: Granularity, transcript: string, maxItems: number, duration: string): string {
-    const body = promptAssets().pipeline(CHAPTERS_FILE, granularitySetting(granularity).outlineKey);
+  outline(transcript: string, maxItems: number): string {
+    const body = promptAssets().pipeline(CHAPTERS_FILE, OUTLINE_KEY_OF());
     // The transcript is filled LAST: formatPrompt fills one key at a time, and a transcript
     // holding a literal "{max_items}" would otherwise have it filled too.
-    return formatPrompt(body, { max_items: maxItems, duration, transcript });
-  },
-
-  /** The sub-outline body (level 2, inside one long section): segment.py's, over that section only. */
-  subOutline(transcript: string, maxItems: number): string {
-    const body = promptAssets().pipeline(CHAPTERS_FILE, 'snap_outline_chapters');
-    return formatPrompt(body, { max_items: maxItems, duration: '', transcript });
+    return formatPrompt(body, { max_items: maxItems, transcript });
   },
 
   /**
-   * The stream-level outline (LEDGER #208): the grain's merge body over every chunk's own
-   * outline, in order, each headed by its stretch's clock range. Placeholders: {outlines},
-   * {max_items}, {duration} (the whole transcript's runtime in words).
+   * The stories grain's junction question (LEDGER #212, stories.ts stage 2): a yes/no QUOTING the
+   * ~45 s stretch before the junction and the one after. P(yes) = the next stretch is a new subject.
    */
-  streamMerge(mergeKey: string, stretches: ReadonlyArray<{ clock: string; items: readonly string[] }>, maxItems: number, duration: string): string {
-    const body = promptAssets().pipeline(CHAPTERS_FILE, mergeKey);
-    const outlines = stretches.map((s, k) => `Stretch ${k + 1} (${s.clock}):\n${s.items.join('\n')}`).join('\n\n');
-    // The outlines are filled LAST, for the reason outline() gives.
-    return formatPrompt(body, { max_items: maxItems, duration, outlines });
+  storyJunction(before: string, after: string): string {
+    return formatPrompt(promptAssets().pipeline(CHAPTERS_FILE, 'snap_story_junction'), { before, after });
+  },
+
+  /** The stories grain's placement question (stories.ts stage 4): a choice over the window's own lines. */
+  storyPlace(): string {
+    return promptAssets().pipeline(CHAPTERS_FILE, 'snap_story_place');
+  },
+
+  /** The stories grain's consolidation statement (stories.ts stage 5): P(yes) = one story. */
+  storyPair(): string {
+    return promptAssets().pipeline(CHAPTERS_FILE, 'snap_story_pair');
+  },
+
+  /** The state that statement is asked of: part A's tail and part B's head, each under its clock. */
+  storyPairState(aClock: string, aText: string, bClock: string, bText: string): string {
+    // The texts are filled LAST, for the reason outline() gives.
+    return formatPrompt(promptAssets().pipeline(CHAPTERS_FILE, 'snap_story_pair_state'), { a_clock: aClock, b_clock: bClock, a_text: aText, b_text: bText });
   },
 
   /** segment.py:71-73 — the per-sentence assign question. Placeholders: {sentence}, {previous}. */
