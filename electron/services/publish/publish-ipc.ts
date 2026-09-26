@@ -58,10 +58,9 @@ import {
   findCarryForward,
 } from './carry-forward';
 import {
-  ThumbnailValidation,
-  deriveProposedThumbnailPaths,
   findUsableThumbnail,
-  validateThumbnailFile } from './thumbnail-validate';
+  fitThumbnailFile,
+  inspectThumbnailFile } from './thumbnail-validate';
 import {
   ThumbnailSource,
   TranscriptRef,
@@ -976,14 +975,16 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
         return ok({ selection: cleared, warnings: [] as string[] });
       }
 
-      // Throws with the file, the value and the rule when it fails. Nothing is stored.
-      const { meta, warnings }: ThumbnailValidation = validateThumbnailFile(absPath);
+      // Throws with the file, the value and the rule when the file is not an image. A real
+      // image outside YouTube's bounds is fitted (a copy beside it) and the COPY is what is
+      // stored, with the note saying so travelling with the warnings.
+      const fitted = fitThumbnailFile(absPath);
       const selection = await store.update(id, generated, {
-        thumbnailPath: absPath,
-        thumbnailMeta: meta,
+        thumbnailPath: fitted.path,
+        thumbnailMeta: fitted.meta,
         thumbnailSource: 'manual',
       });
-      return ok({ selection, warnings });
+      return ok({ selection, warnings: fitted.note ? [...fitted.warnings, fitted.note.trim()] : fitted.warnings });
     } catch (err: any) {
       return fail(err?.message || String(err));
     }
@@ -1043,12 +1044,21 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       const id = requireItemId(itemId, 'itemId');
       const generated = requireGenerated(id);
 
-      const candidates = deriveProposedThumbnailPaths(generated.sourcePath ?? null);
-      const found = candidates.find((c) => fs.existsSync(c.path));
-      if (!found) return ok(null);
-
-      const { meta, warnings } = validateThumbnailFile(found.path);
-      return ok({ path: found.path, meta, warnings });
+      // THE SAME resolver the automatic pass and the rescan use, so a proposal is never a
+      // file the pass would have refused, and an out-of-bounds export is proposed as its
+      // fitted copy. Nothing on disk to propose is null; a file that cannot be used fails
+      // with the reason.
+      const lookup = findUsableThumbnail(generated.sourcePath ?? null);
+      if (!lookup.ok) {
+        if (lookup.bucket === 'skipped') return ok(null);
+        return fail(lookup.detail);
+      }
+      const { pick } = lookup;
+      return ok({
+        path: pick.path,
+        meta: pick.meta,
+        warnings: pick.note ? [...pick.warnings, pick.note.trim()] : pick.warnings,
+      });
     } catch (err: any) {
       return fail(err?.message || String(err));
     }
@@ -1108,7 +1118,9 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
         );
       }
 
-      const { meta, warnings } = validateThumbnailFile(absPath);
+      // Measured, not judged: a preview shows whatever image is there. The bounds are
+      // enforced where bytes go to YouTube (fitThumbnailFile), not where they go to a screen.
+      const { meta, warnings } = inspectThumbnailFile(absPath);
       const { dataUrl, previewSize } = renderThumbnailPreview(absPath, maxPx);
 
       return ok({
@@ -1435,10 +1447,10 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
         }
 
         try {
-          // Re-validated on every read, exactly as the single-item preview is: the path was
+          // Re-measured on every read, exactly as the single-item preview is: the path was
           // checked when it was stored, which says nothing about the file now that the
           // volume it lives on can be unplugged or the image replaced.
-          validateThumbnailFile(record.thumbnailPath);
+          inspectThumbnailFile(record.thumbnailPath);
           const { dataUrl } = renderThumbnailPreview(record.thumbnailPath, maxPx);
           results.push({ itemId: id, dataUrl, fault: null });
         } catch (err: any) {

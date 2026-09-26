@@ -65,8 +65,9 @@ export type ThumbnailSource = 'auto' | 'manual';
  * Exactly what the main process's validateThumbnailFile accepts, and the reason this list
  * is here at all is that the renderer must not offer a file the validator is about to
  * refuse. It is a display filter, never a substitute for the check: the real validation
- * (magic bytes, ≤2 MiB, ≥640x360) happens in the main process on every set, because a
- * renderer knows a filename and nothing about the file.
+ * (magic bytes, then YouTube's bounds — ≤2 MiB, 640x360 to 1280x720 — with an
+ * out-of-bounds image fitted into them as a copy) happens in the main process on every
+ * set, because a renderer knows a filename and nothing about the file.
  */
 export const THUMBNAIL_EXTENSIONS: readonly string[] = ['.png', '.jpg', '.jpeg'];
 

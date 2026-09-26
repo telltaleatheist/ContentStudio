@@ -39,7 +39,7 @@ import {
   validateChosenTitles,
   composePublishedText,
 } from './publish-types';
-import { validateThumbnailFile } from './thumbnail-validate';
+import { fitThumbnailFile } from './thumbnail-validate';
 
 /** One item the extension can fill, with everything it needs to do it. */
 export interface PendingFillItem {
@@ -386,11 +386,14 @@ export class PublishBridge {
     const chosen = this.store.get(itemId);
     if (!chosen || !chosen.thumbnailPath) return null;
 
-    const { meta } = validateThumbnailFile(chosen.thumbnailPath);
-    const bytes = fs.readFileSync(chosen.thumbnailPath);
+    // Fitted, not merely validated: the extension is about to hand these bytes to YouTube,
+    // so a master outside the bounds is served as its fitted copy, the same as an upload.
+    const fitted = fitThumbnailFile(chosen.thumbnailPath);
+    const { meta } = fitted;
+    const bytes = fs.readFileSync(fitted.path);
     return {
       itemId,
-      filename: path.basename(chosen.thumbnailPath),
+      filename: path.basename(fitted.path),
       mime: meta.mime,
       bytes: bytes.length,
       base64: bytes.toString('base64'),

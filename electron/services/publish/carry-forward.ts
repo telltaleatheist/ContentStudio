@@ -57,7 +57,7 @@
 import { ChosenMetadata, ThumbnailMeta, TranscriptRef, isItemId } from './publish-types';
 import { GeneratedFallback, PrimaryAwareSummary, PublishStoreService } from './publish-store.service';
 import { FieldContext, FieldPatch, applyFieldValidator } from './field-validators';
-import { validateThumbnailFile } from './thumbnail-validate';
+import { fitThumbnailFile } from './thumbnail-validate';
 import { RoutableChannel } from './channel-routing';
 
 /**
@@ -457,20 +457,21 @@ export async function applyCarryForward(
       // stored here describes the file AS IT IS NOW; carrying the old measurements would
       // record a size and a shape nobody just verified. A file that has vanished throws,
       // naming the path, and lands in `refused` — never a dead link on the record.
-      const { meta, warnings: thumbWarnings } = validateThumbnailFile(source.thumbnailPath);
+      const fitted = fitThumbnailFile(source.thumbnailPath);
+      const { meta, warnings: thumbWarnings } = fitted;
       // 'manual', whatever it was on the earlier record. Carrying forward happens because
       // the operator CLICKED, so the thumbnail on the new item is his choice however it
       // reached the old one — and marking it 'auto' would let automatic discovery
       // overwrite a decision he just made. See ThumbnailSource.
       patch = {
         ...patch,
-        thumbnailPath: source.thumbnailPath,
+        thumbnailPath: fitted.path,
         thumbnailMeta: meta,
         thumbnailSource: 'manual',
       };
       applied.push({
         field: 'thumbnail',
-        detail: `${source.thumbnailPath} (${meta.width}×${meta.height}, ${meta.mime}).`,
+        detail: `${fitted.path} (${meta.width}×${meta.height}, ${meta.mime}).${fitted.note}`,
       });
       for (const warning of thumbWarnings) warnings.push(`thumbnail: ${warning}`);
     } catch (err: any) {
