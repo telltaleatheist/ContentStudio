@@ -252,6 +252,11 @@ export async function askToRewrite(
   return answer;
 }
 
+/** Both sides of a miscounted list, one numbered line each, so the log shows where they part. */
+function numbered(lines: string[]): string {
+  return lines.map((line, index) => `  ${index + 1}. ${line}`).join('\n');
+}
+
 /**
  * The answer, read in exactly the shape its prompt asked for.
  *
@@ -274,7 +279,8 @@ export function readRewrittenAnswer(
       throw new Error(
         `${named} on model "${model}" asked for ${plan.count} ` +
           `line(s) and got ${lines.length}. Nothing was applied — a list that does not line up ` +
-          `cannot be matched back to the entries it was read from.`
+          `cannot be matched back to the entries it was read from.\n` +
+          `Sent:\n${numbered(plan.text.split('\n'))}\nReturned:\n${numbered(lines)}`
       );
     }
     return { value: lines, warning: null };
