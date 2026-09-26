@@ -12,8 +12,11 @@ import { PythonService } from './python-service';
 import { BinaryResolver } from './binary-resolver';
 import { AlignmentAudioService } from './alignment-audio-service';
 import * as assetManager from './asset-manager';
-import * as ollamaService from './ollama-service';
-import { analyzeChapters, suggestTitle, Segment } from './chapter-splitter';
+import { setupStoryAnalysisHandlers, StoryIpcDeps } from './story-ipc';
+import { buildAsrContext } from '../transcription/asr-context';
+import { asrContextTemplate, editorTrackFacts } from '../transcription/asr-facts';
+import { separationProgress } from './separation-protocol';
+import type { CrucibleVoiceIsolator, VoiceIsolationDeps } from '../../crucible/denoise';
 import { ArchiveBusyError,
   ArchiveSync, comparablePath, destinationFor, DEFAULT_ARCHIVE_ROOT, DEFAULT_ARCHIVE_MOUNT_URL
 } from './archive-sync';
@@ -472,16 +475,23 @@ interface ProjectScanResult {
 }
 
 /**
+ * What the editor's channels need from the host beyond the store: the story handlers'
+ * prompt-assets directory (story-ipc.ts says why), and voice isolation on the selected
+ * Crucible (LEDGER #200; electron/crucible/denoise.ts).
+ */
+export type EditorIpcDeps = StoryIpcDeps & { voiceIsolation: VoiceIsolationDeps };
+
+/**
  * Register every editor channel. Called from setupIpcHandlers, following the
  * setupPublishIpc precedent.
  */
-export function setupEditorIpc(store: Store<any>): void {
-  setupEditorSessionHandlers();
-  setupStoryAnalysisHandlers();
+export function setupEditorIpc(store: Store<any>, deps: EditorIpcDeps): void {
+  setupEditorSessionHandlers(store);
+  setupStoryAnalysisHandlers(store, deps);
   setupTitleHandoffHandlers();
   setupMediaHandlers();
   setupEditorFileHandlers();
-  setupProcessingHandlers();
+  setupProcessingHandlers(deps.voiceIsolation);
   setupProjectHandlers();
   setupEditorConfigHandlers();
   setupArchiveHandlers(store);
@@ -507,7 +517,7 @@ export function setupEditorIpc(store: Store<any>): void {
  * timeline manifest; a Python failure rejects with the Python message VERBATIM —
  * a manifest is never fabricated.
  */
-function setupEditorSessionHandlers(): void {
+function setupEditorSessionHandlers(store: Store<any>): void {
   // Editor-scoped seed payload.
   let pendingEditorPayload: { zipPath: string } | null = null;
 
@@ -788,12 +798,12 @@ function setupEditorSessionHandlers(): void {
     return { removed };
   });
 
-  // Whisper-transcribe the session's source audio tracks. Returns { jobId }
-  // IMMEDIATELY; progress and completion are pushed to the WINDOW THAT INVOKED
+  // Transcribe the session's source audio tracks on Crucible (P5, LEDGER #206). Returns
+  // { jobId } IMMEDIATELY; progress and completion are pushed to the WINDOW THAT INVOKED
   // this (event.sender), matching execute-workflow. On completion the renderer
   // receives 'transcribe-complete' with result on success, or result:null +
   // errorMessage carrying the loud message on any failure (including a pre-spawn
-  // resolver failure — missing whisper-cli/model — surfaced via .catch).
+  // failure — no ffmpeg, an unreadable context template — surfaced via .catch).
   ipcMain.handle('editor:transcribe', async (event, payload: { zipPath: string }) => {
     const zipPath = payload?.zipPath;
     if (typeof zipPath !== 'string' || zipPath.trim() === '') {
@@ -806,7 +816,29 @@ function setupEditorSessionHandlers(): void {
     const jobId = `transcribe_${Date.now()}`;
     const sender = event.sender;
 
-    pythonService().transcribe(jobId, zipPath, {
+    // The session's asr context (LEDGER #206): the verbatim instruction, the session's
+    // story titles from its edits sidecar, and the ACTIVE channel's brand terms and promoted
+    // items (Settings' channel: the editor has no run of its own to name one). The session
+    // name follows the CLIs' rule: zip stem less a trailing `_compounds`.
+    let asrContext: string;
+    try {
+      let session = path.basename(zipPath, path.extname(zipPath));
+      if (session.endsWith('_compounds')) session = session.slice(0, -'_compounds'.length);
+      const promptSet = ((store as any).get('promptSet') as string | undefined) || null;
+      asrContext = buildAsrContext(
+        editorTrackFacts({ session, editsPath: path.join(path.dirname(zipPath), `${session}_edits.json`), promptSet }),
+        asrContextTemplate());
+      log.info(`[${jobId}] asr context (channel ${promptSet ?? 'none selected'}): ${JSON.stringify(asrContext)}`);
+    } catch (err: any) {
+      const message = `The transcription context could not be built: ${err?.message || String(err)}`;
+      log.error(`[${jobId}] ${message}`);
+      if (!sender.isDestroyed()) {
+        sender.send('transcribe-complete', { jobId, exitCode: -1, result: null, errorMessage: message });
+      }
+      return { jobId };
+    }
+
+    pythonService().transcribe(jobId, zipPath, asrContext, {
       onProgress: (progress, message, etaSeconds) => {
         if (sender.isDestroyed()) return;
         sender.send('transcribe-progress', { jobId, progress, message, etaSeconds });
@@ -821,7 +853,7 @@ function setupEditorSessionHandlers(): void {
         });
       },
     }).catch((err: any) => {
-      // Pre-spawn resolution failure (whisper-cli/model not found). Fail loud to
+      // Pre-spawn resolution failure (ffmpeg or the Python runtime not found). Fail loud to
       // the renderer via the same completion channel so the UI never spins.
       const message = err?.message || String(err);
       log.error(`[${jobId}] transcribe failed before spawn: ${message}`);
@@ -838,8 +870,8 @@ function setupEditorSessionHandlers(): void {
     return { jobId };
   });
 
-  // Cancel a running transcription. killProcess sends SIGTERM (its default
-  // signal), which transcribe.py handles as a clean cancel.
+  // Cancel a running transcription. killProcess DELETEs the Crucible job in flight and
+  // sends SIGTERM (its default signal), which transcribe.py handles as a clean cancel.
   ipcMain.handle('editor:transcribe-cancel', async (_event, payload: { jobId: string }) => {
     const jobId = payload?.jobId;
     if (typeof jobId !== 'string' || jobId.trim() === '') {
@@ -880,104 +912,6 @@ function setupEditorSessionHandlers(): void {
     } catch (err: any) {
       throw new Error(`Failed to parse transcript sidecar ${transcriptPath}: ${err.message}`);
     }
-  });
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Story analysis (local Ollama LLM)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Story-analysis handlers: local-LLM (Ollama) chapter splitting + title
- * suggestions for Story Mode. All synchronous request/response — the renderer
- * holds the transcript and passes the relevant segments in; the main process
- * only runs the LLM call + phrase→timestamp mapping. Failures reject with the
- * real error (Ollama down, empty response, unparseable) — never a fabricated
- * result.
- */
-function setupStoryAnalysisHandlers(): void {
-  // The single in-flight analysis (chapter split OR title suggestion). Only one runs at a time —
-  // the renderer gates on `analyzing`/`splitRunning` — so one controller is enough. 'story:cancel'
-  // aborts it, which kills the HTTP request and unwinds the pipeline loop on the next check.
-  let activeRun: AbortController | null = null;
-
-  // List locally-installed Ollama models (for the model picker).
-  ipcMain.handle('ollama:list-models', async (_event, payload?: { host?: string }) => {
-    return ollamaService.listModels(payload?.host);
-  });
-
-  // Stop whatever analysis is running. Safe to call when nothing is — returns `stopped: false`
-  // rather than throwing, so a stale click from a closed dialog is harmless.
-  ipcMain.handle('story:cancel', async () => {
-    if (!activeRun) return { stopped: false };
-    log.info('[Story] cancel requested — aborting the in-flight analysis');
-    activeRun.abort();
-    return { stopped: true };
-  });
-
-  // Split a span of transcript into consecutive subject chapters. The pipeline is many small
-  // single-question calls (~40 for a 12-minute video, ~390 for a 2-hour livestream), so step
-  // progress is streamed back to the calling renderer on 'story:analyze-progress'. The model is
-  // unloaded afterwards — a 14B left resident after a 25-minute run is memory nobody asked for.
-  ipcMain.handle(
-    'story:analyze-chapters',
-    async (event, payload: { segments: Segment[]; model: string; host?: string; consolidate?: boolean }) => {
-      const { segments, model, host, consolidate } = payload || ({} as any);
-      if (!Array.isArray(segments) || segments.length === 0) {
-        throw new Error('No transcript segments provided for chapter analysis.');
-      }
-      const controller = new AbortController();
-      activeRun = controller;
-      const generate = (prompt: string, opts?: ollamaService.GenerateOptions) =>
-        ollamaService.generate(model, prompt, { host, signal: controller.signal, ...opts });
-      const onProgress = (p: { phase: string; done: number; total: number }) => {
-        if (!event.sender.isDestroyed()) event.sender.send('story:analyze-progress', p);
-      };
-      try {
-        // `consolidate` is forwarded, NOT defaulted here — chapter-splitter owns the default (true).
-        // The renderer sends false when the span is a story it has already defined, where stage 5
-        // can only produce false merges. Defaulting in two places is how the two drift apart.
-        const chapters = await analyzeChapters(
-          segments, model, generate, onProgress, controller.signal, { consolidate }
-        );
-        return { chapters };
-      } finally {
-        if (activeRun === controller) activeRun = null;
-        // Unloaded on a stop too — a stopped run has no more claim on the memory than a finished
-        // one, and stopping is usually how a user reacts to the machine being busy.
-        await ollamaService.unload(model, host);
-      }
-    }
-  );
-
-  // Suggest a single title for a story's transcript text. NOT unloaded afterwards — titling runs
-  // once per story in a tight loop, and evicting between them would reload the model every time.
-  // The renderer unloads once when its loop ends (or is stopped) via 'story:unload-model'.
-  ipcMain.handle(
-    'story:suggest-title',
-    // `text` is either transcript text or a story's chapter labels. A subject list is the better
-    // input — no truncation, and it is the shape the eventual titling adapter conditions on — so
-    // the type must admit it rather than let an array cross a `string` boundary unremarked.
-    async (_event, payload: { text: string | string[]; model: string; host?: string }) => {
-      const { text, model, host } = payload || ({} as any);
-      const controller = new AbortController();
-      activeRun = controller;
-      const generate = (prompt: string, opts?: ollamaService.GenerateOptions) =>
-        ollamaService.generate(model, prompt, { host, signal: controller.signal, ...opts });
-      try {
-        const title = await suggestTitle(text, generate);
-        return { title };
-      } finally {
-        if (activeRun === controller) activeRun = null;
-      }
-    }
-  );
-
-  // Evict a model the renderer is done with (end of a titling loop, or a stop). Never throws.
-  ipcMain.handle('story:unload-model', async (_event, payload: { model: string; host?: string }) => {
-    const { model, host } = payload || ({} as any);
-    await ollamaService.unload(model, host);
-    return { ok: true };
   });
 }
 
@@ -1274,11 +1208,11 @@ function setupEditorFileHandlers(): void {
 // Processing: source auto-detection, assets, workflow execution
 // ─────────────────────────────────────────────────────────────────────────────
 
-function setupProcessingHandlers(): void {
+function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps): void {
   /**
-   * The downloadable environment: ffmpeg/ffprobe, the Python runtime, the Whisper model
-   * (all three REQUIRED) and voice isolation (optional, the Denoise toggle's gate). These four
-   * channels are AutoCutStudio's, verbatim in name and in handler body — `assets:list`,
+   * The downloadable environment: ffmpeg/ffprobe and the Python runtime, both REQUIRED (the
+   * whisper.cpp model and voice-separator-env left with P10: transcription and voice isolation
+   * run on Crucible, LEDGER #206/#200). These four channels are AutoCutStudio's, verbatim in name and in handler body — `assets:list`,
    * `assets:install`, `assets:cancel`, `assets:ensure-required` — because ContentStudio's own
    * component system is registered under `components:*` with the event `component-progress`, so
    * there is nothing here to collide with and nothing to rename.
@@ -1295,9 +1229,8 @@ function setupProcessingHandlers(): void {
   };
 
   /**
-   * Asset listing — the install state of the shared OwenMorgan components. The editor reads
-   * exactly one of these (`voice-separator-env`) to decide whether the Denoise toggle can be
-   * offered, but the whole list is returned because that is ACS's shape.
+   * Asset listing — the install state of the shared OwenMorgan components, for the environment
+   * modal. The Denoise toggle no longer reads it: voice isolation runs on a Crucible (below).
    */
   ipcMain.handle('assets:list', async () => {
     try {
@@ -1307,6 +1240,13 @@ function setupProcessingHandlers(): void {
       return { success: false, error: error?.message || String(error) };
     }
   });
+
+  /**
+   * Can the Denoise toggle be offered? Voice isolation is a Crucible `denoise` job (LEDGER #200),
+   * so the answer is the SELECTED server's `/v1/info` row for `vocals-roformer`, with the reason
+   * and the command that fixes it on every "no".
+   */
+  ipcMain.handle('editor:voice-isolation-status', async () => voiceIsolation.status());
 
   /** Install ONE component by id. Resolves with the InstallResult — `ok:false` carries the
    *  verbatim reason, which the environment modal prints as its own error line. */
@@ -1558,16 +1498,46 @@ function setupProcessingHandlers(): void {
     try {
       const jobId = `job_${Date.now()}`;
 
-      // Tell Python where the optional voice-isolation env lives (absolute path
-      // or null when not installed). The `denoiseMics` boolean already arrives in
-      // `options` from the frontend; this just supplies the env location Python
-      // needs to run core/voice_separation.py.
-      options.voiceSeparatorEnv = binaryResolver().getVoiceSeparatorEnvDir();
-
       log.info(`Starting workflow job: ${jobId}`, options);
 
       const sender = event.sender;
+      const sendProgress = (progress: number, message: string, subProgress?: number): void => {
+        if (sender.isDestroyed()) return;
+        sender.send('workflow-output', { jobId, type: 'progress', data: message, progress, sub_progress: subProgress });
+      };
+
+      // VOICE ISOLATION ON THE SELECTED CRUCIBLE (LEDGER #200). voice_separation.py asks for
+      // each chunk; the isolator is opened on the first request of a track (its /v1/info row is
+      // checked before anything is uploaded), holds the separator's lease across that track's
+      // chunks, and is disposed on the track's `separation_release` and again when the run ends.
+      let isolator: Promise<CrucibleVoiceIsolator> | null = null;
+      const isolatorLog = (line: string): void => log.info(`[${jobId}] [voice isolation] ${line}`);
+
       pythonService().executeWorkflow(jobId, {
+        onSeparationRequest: async (request, signal) => {
+          if (isolator === null) isolator = voiceIsolation.open(isolatorLog);
+          const running = await isolator;
+          const done = await running.separate(request.wav, request.out, {
+            signal,
+            // The row stays at the overall step voice isolation reports (30); the bar is the
+            // chunk's place in the track, moved by the job's own fraction.
+            onProgress: (p) => {
+              const line = separationProgress(request, p, running.server);
+              sendProgress(30, line.message, line.subProgress);
+            },
+          });
+          isolatorLog(`chunk ${request.chunk} of ${request.chunks} (${request.track}) done as job ${done.jobId}; `
+            + `load ${done.loadSeconds ?? '?'} s, separate ${done.separateSeconds ?? '?'} s`);
+          return done.stem;
+        },
+        onSeparationRelease: async () => {
+          const held = isolator;
+          isolator = null;
+          if (held === null) return;
+          // An isolator that never opened has nothing to give back.
+          const opened = await held.catch(() => null);
+          if (opened !== null) await opened.dispose();
+        },
         inputData: options,
         onOutput: (data) => {
           if (sender.isDestroyed()) return;
@@ -1580,9 +1550,8 @@ function setupProcessingHandlers(): void {
           sender.send('workflow-output', { jobId, type: 'stderr', data });
         },
         onProgress: (progress, message, subProgress) => {
-          if (sender.isDestroyed()) return;
           log.info(`[${jobId}] Sending workflow-output (progress) to renderer: ${progress}% - ${message}`);
-          sender.send('workflow-output', { jobId, type: 'progress', data: message, progress, sub_progress: subProgress });
+          sendProgress(progress, message, subProgress);
         },
         onComplete: (code, result) => {
           if (sender.isDestroyed()) {

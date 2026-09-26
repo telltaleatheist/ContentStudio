@@ -29,9 +29,9 @@ export class JobCancelledError extends Error {
  * Anthropic and OpenAI SDKs raise APIUserAbortError, and an aborted fetch raises a
  * DOMException named AbortError.
  *
- * Note this only works on the error as THROWN. The AI queue re-wraps every rejection as
- * a plain Error (queue-manager.service.ts), so anything that crosses that boundary has
- * to be classified by asking whether cancellation was requested, not by asking the error.
+ * Note this only works on the error as THROWN. makeRequest re-wraps every rejection as a
+ * plain Error (ai-manager.service.ts), so anything that crosses that boundary has to be
+ * classified by asking whether cancellation was requested, not by asking the error.
  */
 export function isAbortError(error: any): boolean {
   const name = error?.name;

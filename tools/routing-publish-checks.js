@@ -168,6 +168,73 @@ check('an empty / absent store is not a migration', () => {
   eq(routing.migrateStoredRouting({}).changed, false);
 });
 
+// ------------------------------------------------ the routing's server (LEDGER #222)
+/**
+ * "we can pick which crucible server we use (wsl or mac) in model routing" (Owen, 2026-09-26).
+ * The routing stores `server`, a registered server's name. A save naming one the registry
+ * does not have is refused BY NAME (Law 1: never quietly replaced by the selected server);
+ * a stored one the registry has since forgotten drops back to unset with one line, the way a
+ * removed option does; unset changes nothing for a store that predates the key.
+ */
+check('a saved routing server must be registered, and the refusal names it and the registry', () => {
+  const ok = routing.validateRoutingSelections({ titles: 'opus5', server: 'pc' }, ['mac', 'pc']);
+  eq(ok, { titles: 'opus5', server: 'pc' });
+  eq(routing.validateRoutingSelections({ titles: 'opus5' }, ['mac']), { titles: 'opus5' }, 'unset stays unset');
+  let message = null;
+  try { routing.validateRoutingSelections({ titles: 'opus5', server: 'wsl' }, ['mac', 'pc']); } catch (e) { message = e.message; }
+  if (message === null) throw new Error('an unregistered server must be refused, not saved');
+  if (!message.includes('"wsl"') || !message.includes('mac, pc')) throw new Error('the refusal must name the server and the registry: ' + message);
+  let typed = false;
+  try { routing.validateRoutingSelections({ server: 42 }, ['mac']); } catch { typed = true; }
+  if (!typed) throw new Error('a server that is not a name must be refused');
+});
+
+check('resolveMetadataRouting reads models only: a stored server is not refused as an unknown task', () => {
+  const resolved = routing.resolveMetadataRouting({ titles: 'sonnet5', server: 'pc' });
+  eq(resolved.titles, 'sonnet5');
+  eq('server' in resolved, false, 'the resolved routing is fields only');
+  eq(routing.describeRouting(resolved, 'pc').endsWith(', server=pc'), true, 'the log line names the server');
+});
+
+check('a stored routing server the registry forgot drops back to unset with one line; a registered one is kept', () => {
+  const kept = routing.migrateStoredRouting({ titles: 'opus5', server: 'pc' }, ['mac', 'pc']);
+  eq(kept.changed, false);
+  eq(kept.selections, { server: 'pc', titles: 'opus5' });
+  const forgotten = routing.migrateStoredRouting({ titles: 'opus5', server: 'pc' }, ['mac']);
+  eq(forgotten.changed, true, 'a drop is a recorded migration, written back by the caller');
+  eq(forgotten.selections, { titles: 'opus5' }, 'the server goes; the fields stay');
+  eq(forgotten.notices.length, 1);
+  if (!forgotten.notices[0].includes('"pc"') || !forgotten.notices[0].includes('no longer registered')) {
+    throw new Error('the notice must name the forgotten server: ' + forgotten.notices[0]);
+  }
+  // A model-only reader passes no registry: the entry is carried, type-checked, not judged.
+  eq(routing.migrateStoredRouting({ server: 'pc' }).selections, { server: 'pc' });
+  let typed = false;
+  try { routing.migrateStoredRouting({ server: '' }, ['mac']); } catch { typed = true; }
+  if (!typed) throw new Error('a stored server that is not a name must throw, not migrate');
+});
+
+check('the venue reader drops a forgotten server from the store once, leaving every field as it was', () => {
+  const data = { metadataRouting: { titles: 'opus5', tags: 'qwen35-9b', server: 'pc' } };
+  const writes = [];
+  const fakeStore = { get: (key) => data[key], set: (key, value) => { writes.push(key); data[key] = value; } };
+  eq(routing.readStoredRoutingServer(fakeStore, ['mac', 'pc']), 'pc');
+  eq(writes.length, 0, 'a registered server is read, never rewritten');
+  eq(routing.readStoredRoutingServer(fakeStore, ['mac']), null, 'forgotten: the selected server runs the job');
+  eq(data.metadataRouting, { titles: 'opus5', tags: 'qwen35-9b' });
+  eq(writes.length, 1);
+  eq(routing.readStoredRoutingServer(fakeStore, ['mac']), null);
+  eq(writes.length, 1, 'said once: the drop was written back');
+  eq(routing.readStoredRoutingServer({ get: () => undefined, set: () => { throw new Error('no write'); } }, ['mac']), null, 'no routing: unset');
+});
+
+check('the routing view carries the Runs on choice beside the fields', () => {
+  const view = routing.buildRoutingView({ server: 'pc' }, { server: 'pc', reachable: true, models: {}, anthropicConfigured: false },
+    { routingServer: 'pc', selectedServer: 'mac' });
+  eq(view.runsOn, { routingServer: 'pc', selectedServer: 'mac' });
+  eq(view.server.name, 'pc', 'options are judged against the server the jobs run on');
+});
+
 /**
  * THE WHOLE POINT OF THIS ONE: every default is local, and the big fields are all the SAME
  * local model, which is what keeps titles + thumbnail + pinned on one resident model whose
@@ -176,32 +243,40 @@ check('an empty / absent store is not a migration', () => {
  */
 check('the shipped defaults are all local, and the big fields share one model', () => {
   const resolved = routing.resolveMetadataRouting(undefined);
-  eq(routing.describeRouting(resolved),
-    'titles=qwen3.8:27b, description=qwen3.8:27b, chapters=qwen3.8:27b, tags=qwen3.5:9b, ' +
-    'thumbnail_text=qwen3.8:27b, pinned_comment=qwen3.8:27b');
+  eq(routing.describeRouting(resolved, null),
+    'titles=qwen3.8-27b-4bit, description=qwen3.8-27b-4bit, chapters=qwen3.8-27b-4bit, tags=qwen3.5-9b, ' +
+    'thumbnail_text=qwen3.8-27b-4bit, pinned_comment=qwen3.8-27b-4bit, server=(the selected server)');
   for (const task of Object.keys(resolved)) {
     const option = routing.METADATA_ROUTING_OPTIONS[resolved[task]];
     if (option.kind !== 'local') throw new Error(task + ' defaults to a ' + option.kind + ' model');
   }
-  const big = routing.METADATA_ROUTING_TASKS.filter((t) => t.modal).map((t) => resolved[t.id]);
+  // Tags is a modal row since #204 but keeps its own small default (the 9B), so the
+  // one-model rule is asserted over the big fields — the five that write prose.
+  const big = routing.METADATA_ROUTING_TASKS.filter((t) => t.modal && t.id !== 'tags').map((t) => resolved[t.id]);
   if (new Set(big).size !== 1) {
     throw new Error('the big fields default to ' + new Set(big).size + ' models; one model is the shipped state');
   }
 });
 
 /**
- * PER-FIELD ROUTING (2026-08-24). The modal is a field→model table: five big fields, each
+ * PER-FIELD ROUTING (2026-08-24). The modal is a field→model table: the big fields, each
  * settable to anything its task offers — every big field offers the 27B and all three cloud
- * rungs (Sonnet, Opus, Haiku). Tags are NOT a row ("if we use 9b for something then leave
- * it") and stay a stored-entry-only setting. Chapters are a routed task again, capable rungs
- * only — the 9B on chapters was half the measured 2026-08-23 failure stack.
+ * rungs (Sonnet, Opus, Haiku). Chapters are a routed task again, capable rungs only — the 9B
+ * on chapters was half the measured 2026-08-23 failure stack.
+ *
+ * TAGS IS A ROW TOO, since #204 (2026-09-24). It used to be hidden ("if we use 9b for
+ * something then leave it"), which meant a dialog showing every row on claude -p still ran
+ * the local 9B for tags on chapterless items. Owen: "it should not be using anything but
+ * claude -p for any ai calls ever if all routing is set to claude -p". It is not held to the
+ * big-rung rule: its options are the two small locals plus the capable rungs, and Haiku is
+ * not among them.
  */
-check('the modal is per-field: five big rows, tags row-less, cloud rungs everywhere', () => {
+check('the modal is per-field: five big rows plus tags, cloud rungs on every big row', () => {
   const modal = routing.METADATA_ROUTING_TASKS.filter((t) => t.modal).map((t) => t.id);
-  eq(modal.join(','), 'titles,description,chapters,thumbnail_text,pinned_comment');
+  eq(modal.join(','), 'titles,description,chapters,tags,thumbnail_text,pinned_comment');
   const tags = routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'tags');
-  eq(tags.modal, false, 'tags stay out of the modal');
-  for (const task of routing.METADATA_ROUTING_TASKS.filter((t) => t.modal)) {
+  eq(tags.modal, true, 'tags is a visible row (#204)');
+  for (const task of routing.METADATA_ROUTING_TASKS.filter((t) => t.modal && t.id !== 'tags')) {
     for (const rung of ['qwen38-27b', 'sonnet5', 'opus5', 'haiku45']) {
       if (!task.options.includes(rung)) {
         throw new Error(task.id + ' does not offer ' + rung + '; every big field offers every big rung');
@@ -216,17 +291,43 @@ check('chapter resolution reads the chapters entry, and the view carries the mod
   // The four call sites (both chapter runs, the two-model budget, the compilation
   // summarizer) all go through resolveChapterModelOption; it is now a plain table read.
   const cloud = routing.resolveMetadataRouting({ chapters: 'haiku45' });
-  eq(routing.resolveChapterModelOption(cloud).model, 'claude:claude-haiku-4-5');
+  // The dated id the old mapClaudeModelName sent, as a Crucible upstream id (plan 6.2).
+  eq(routing.resolveChapterModelOption(cloud).model, 'anthropic/claude-haiku-4-5-20251001');
   const stock = routing.resolveMetadataRouting(undefined);
-  eq(routing.resolveChapterModelOption(stock).model, 'qwen3.8:27b');
+  eq(routing.resolveChapterModelOption(stock).model, 'qwen3.8-27b-4bit');
 
-  const inventory = { host: 'http://localhost:11434', reachable: false, models: [] };
-  const view = routing.buildRoutingView({ titles: 'opus5' }, inventory);
+  const inventory = { server: 'mac', reachable: false, error: 'not answering', models: {}, anthropicConfigured: null };
+  const view = routing.buildRoutingView({ titles: 'opus5' }, inventory, { routingServer: null, selectedServer: 'mac' });
   eq(view.slots, undefined, 'the slot payload is gone');
   eq(view.tasks.find((t) => t.id === 'titles').selectedOptionId, 'opus5',
     'a hand-set entry survives in the payload the modal saves back whole');
   eq(view.tasks.find((t) => t.id === 'chapters').modal, true);
-  eq(view.tasks.find((t) => t.id === 'tags').modal, false);
+  eq(view.tasks.find((t) => t.id === 'tags').modal, true, 'the view carries the tags row (#204)');
+});
+
+/**
+ * COMPILATION PACKAGING IS ROUTED (2026-09-13).
+ *
+ * It used to read the Settings page's legacy "AI Model" field, so a routing table set
+ * entirely to `claude -p` still sent the one call a compilation makes to whatever Settings
+ * remembered — on 2026-09-13, the metered Sonnet API. This is the check that the selection
+ * an operator can actually see is the selection that runs, including through the
+ * bare-Ollama-name conversion that tripped the first draft of the fix.
+ */
+check('compilation packaging follows the titles selection, on the Crucible id', () => {
+  const cli = routing.resolveMetadataRouting({ titles: 'claude-cli' });
+  eq(routing.resolveCompilationPackagingOption(cli).model, 'claude-cli:opus');
+  eq(routing.routedModelString(routing.resolveCompilationPackagingOption(cli)), 'claude-cli:opus',
+    'a cloud option is already the string makeRequest routes on');
+
+  // The default titles rung is LOCAL, and since P2 its model IS the Crucible id the door
+  // sends (plan 6.2): no prefix to add, and never renamed.
+  const stock = routing.resolveMetadataRouting(undefined);
+  eq(routing.resolveCompilationPackagingOption(stock).model, 'qwen3.8-27b-4bit');
+  eq(routing.routedModelString(routing.resolveCompilationPackagingOption(stock)), 'qwen3.8-27b-4bit',
+    'a local option is the Crucible id, never renamed');
+  eq(routing.resolveCompilationPackagingOption(stock).crucibleModel, 'qwen3.8-27b-4bit');
+  eq(routing.resolveCompilationPackagingOption(cli).crucibleModel, null, 'claude -p is outside Crucible (#193)');
 });
 
 /**
@@ -515,7 +616,6 @@ function plan(channelId, options) {
   const o = options || {};
   return tasks.planMetadataUnits({
     routing: routing.resolveMetadataRouting(o.routing),
-    defaultHost: 'http://localhost:11434',
     aiManager: stubManager(channelId),
     hasInsights: Boolean(o.hasInsights),
     hasChapters: Boolean(o.hasChapters),
@@ -737,7 +837,7 @@ check('calls on the same model run consecutively, so each model loads once', () 
  * throws rather than sending a call that silently lost half its brief.
  */
 check('the titles reach the thumbnail call as input data, or the call refuses', () => {
-  const spec = { field: 'thumbnail_text', model: 'qwen3.8:27b', insights: false, inputFields: ['titles'] };
+  const spec = { field: 'thumbnail_text', model: 'qwen3.8-27b-4bit', insights: false, inputFields: ['titles'] };
   const ctx = { sourceLabel: 'x.mp4', generated: { titles: ['Alpha One', 'Beta Two'] } };
 
   const block = tasks.buildInputDataBlock(spec, ctx);
@@ -765,74 +865,22 @@ check('the titles reach the thumbnail call as input data, or the call refuses', 
 });
 
 /**
- * ONE num_ctx PER MODEL PER RUN (ollama-json trap 4).
- *
- * Ollama fully reloads a model on any num_ctx change, so two calls on one model that sized
- * themselves independently would reload a 17GB model in the middle of an item. The largest
- * prompt wins and everybody shares it.
+ * EVERY LOCAL CALL ASKS FOR ITS OWN STEP (P4, LEDGER #209). This replaced the per-model, per-run
+ * bucketed window (`ModelRunContextBudget`) and the job's context ratchet (`contextFloor`): a call
+ * asks for the smallest 8,192 step its own prompt and budget need, and the lease (not a floor)
+ * keeps reloads to growth. The boundary cases live in tools/p4-checks.js; this says the old
+ * machinery is gone, so nothing can carry a floor from another stage or job.
  */
-check('two calls on one model share ONE num_ctx, sized by the larger', () => {
-  const budget = new tasks.ModelRunContextBudget('qwen3.8:27b', new lifecycleModule.JobModelLifecycle());
-  budget.register('titles', () => 9000);
-  budget.register('pinned_comment', () => 4000);
-
-  const ctx = { sourceLabel: 'x.mp4' };
-  const first = budget.resolve(ctx);
-  const second = budget.resolve(ctx);
-  eq(first, second, 'the second call re-sized the window and would have reloaded the model');
-
-  const expected = tasks.runNumCtx({
-    model: 'qwen3.8:27b', needs: [9000, 4000], max: tasks.LOCAL_FIELD_CTX_MAX, what: 'the check',
-  });
-  eq(first, expected, 'the shared window is not the one the largest prompt needs');
-  if (first < 9000) throw new Error('the shared window is smaller than the largest prompt: ' + first);
-  // Bucketed to 4096 so two items whose transcripts differ slightly land on the same value.
-  eq(first % 4096, 0, 'the window is not on a 4096 bucket, so near-identical items reload the model');
-});
-
-/**
- * THE num_ctx RATCHET (model-lifecycle.ts).
- *
- * The unloads are gone, so a model stays resident across a job's stages — and a later stage that
- * sizes a SMALLER window reloads it anyway, for nothing. The floor is per job and per model, it
- * never shrinks, and it never pushes a call past the ceiling its own stage refuses at.
- */
-check('a stage never sizes below a window this job already made resident', () => {
+check('no call sizes its window from another call: the per-run budget and the ratchet are gone', () => {
+  eq(typeof tasks.ModelRunContextBudget, 'undefined', 'the per-model run budget still exists');
+  eq(typeof tasks.runNumCtx, 'undefined', 'the bucketed run window still exists');
+  eq(typeof lifecycleModule.contextFloor, 'undefined', 'the context floor still exists');
   const life = new lifecycleModule.JobModelLifecycle();
-  eq(life.contextFloor('qwen3.8:27b', 40960), 0, 'a model nothing has loaded is claimed to have a floor');
-
-  life.recordContext('qwen3.8:27b', 24576);
-  eq(life.contextFloor('qwen3.8:27b', 40960), 24576, 'the resident window is not the floor for the next call');
-  eq(life.contextFloor('qwen3.5:9b', 40960), 0, 'one model\'s window became another model\'s floor');
-
-  // Growth is a legitimate reload; the floor keeps the larger value from then on.
-  life.recordContext('qwen3.8:27b', 32768);
-  eq(life.contextFloor('qwen3.8:27b', 40960), 32768, 'a grown window did not raise the floor');
-  life.recordContext('qwen3.8:27b', 8192);
-  eq(life.contextFloor('qwen3.8:27b', 40960), 32768, 'a smaller later call lowered the floor');
-});
-
-check('the ratchet never pushes a call past its own stage ceiling', () => {
-  const life = new lifecycleModule.JobModelLifecycle();
-  life.recordContext('qwen3.8:27b', 40960);
-  // The chapter pipeline refuses above 32768; a floor it cannot ask for would turn into that
-  // refusal, so it is clamped and that stage reloads the model instead.
-  eq(life.contextFloor('qwen3.8:27b', 32768), 32768, 'the floor was allowed past the caller\'s ceiling');
-  eq(lifecycleModule.contextFloor(undefined, 32768), 0);
-  eq(lifecycleModule.contextFloor(4096, 32768), 4096);
-});
-
-check('a second item sizes to the window the first one left resident', () => {
-  const life = new lifecycleModule.JobModelLifecycle();
-  const first = new tasks.ModelRunContextBudget('qwen3.8:27b', life);
-  first.register('titles', () => 9000);
-  const firstCtx = first.resolve({ sourceLabel: 'long.mp4' });
-
-  // A shorter transcript: its own sizing is smaller, and pinning it would reload the model to
-  // make the window smaller than the one already loaded.
-  const second = new tasks.ModelRunContextBudget('qwen3.8:27b', life);
-  second.register('titles', () => 2000);
-  eq(second.resolve({ sourceLabel: 'short.mp4' }), firstCtx, 'item 2 shrank the window and reloaded the model');
+  eq(typeof life.contextFloor, 'undefined', 'the job still carries a context floor');
+  eq(typeof life.recordContext, 'undefined', 'the job still records a window for later calls to inherit');
+  const sizing = require(path.join(ROOT, 'services/metadata/context-sizing.js'));
+  eq(typeof sizing.bucketLoadContext, 'undefined', 'the 4096-bucket sizer still exists');
+  eq(sizing.loadContextFor(3500, 2048), 8192, 'a 1,000-token prompt with the field budget');
 });
 
 check('no metadata unit can release a model — the job does that, once', () => {
@@ -841,18 +889,6 @@ check('no metadata unit can release a model — the job does that, once', () => 
     if (typeof unit.unload === 'function') {
       throw new Error(`unit "${unit.label}" still unloads its own model when it finishes`);
     }
-  }
-});
-
-check('a prompt too big for any window this app will ask for is REFUSED, not truncated', () => {
-  let message = '';
-  try {
-    tasks.runNumCtx({ model: 'qwen3.8:27b', needs: [200000], max: tasks.LOCAL_FIELD_CTX_MAX, what: 'a huge call' });
-  } catch (e) {
-    message = e.message;
-  }
-  if (!/above the \d+ ceiling/.test(message)) {
-    throw new Error('an oversized prompt did not refuse: ' + (message || 'it returned a number'));
   }
 });
 
@@ -869,22 +905,88 @@ check('a prompt too big for any window this app will ask for is REFUSED, not tru
 check('the shipped defaults stay inside the two-model budget, chapters included', () => {
   const p = plan('youtube-telltale', {
     hasChapters: true,
-    alsoLoads: [{ model: routing.CHAPTER_PIPELINE_MODELS.generation, what: 'chapters' }],
+    alsoLoads: [{ model: routing.resolveChapterModelOption(routing.resolveMetadataRouting(undefined)).model, what: 'chapters' }],
   });
   if (p.roster.models.length > 2) throw new Error('the shipped run loads ' + p.roster.summary);
   eq(p.roster.overBudget, false, 'the shipped defaults are over their own budget');
   eq(p.warnings.length, 0, 'the shipped defaults declared a warning: ' + p.warnings.join('; '));
-  if (!p.roster.byModel['qwen3.8:27b'].includes('chapters')) {
+  if (!p.roster.byModel['qwen3.8-27b-4bit'].includes('chapters')) {
     throw new Error('the chapter pipeline is not counted against the budget it spends');
   }
 });
 
-check('the embedding model does not count against the budget', () => {
-  const roster = tasks.buildModelRoster([
-    { model: 'qwen3.8:27b', what: 'titles' },
-    { model: 'nomic-embed-text', what: 'key phrases' },
-  ], [routing.KEY_PHRASE_EMBEDDING_MODEL]);
-  eq(roster.models.length, 1, '274MB of embeddings was counted as a resident LLM');
+// ---------------------------------------------------------------- tags from the chapter list (#205)
+//
+// nomic-embed-text and key-phrase ranking are removed, not moved (LEDGER #205). A chaptered
+// item's tag pools are read off its chapter list, in the order the list carries, and kept only
+// where the transcript says them; a chapterless item has no phrase pool and its tags are the
+// Tags row's to write. `extractPools` is the generator's own entry point (private in TS only).
+const generatorModule = require(path.join(ROOT, 'services/metadata/metadata-generator.service.js'));
+const extractPools = (...args) => generatorModule.MetadataGeneratorService.extractPools(...args);
+
+const TAG_CONTENT =
+  'HOST Tonight we go to Jackson Parish, where the sheriff signs a prison labor contract. ' +
+  'HOST The prisoner exception in the Thirteenth Amendment is why this is legal. ' +
+  'CLIP Fox News said the prison labor contract saves money. ' +
+  'HOST The prisoner exception has to go.';
+const TAG_SUBJECTS = [
+  'Jackson Parish rents out its prisoners through prison labor',
+  'Fox News defends the prisoner exception on air',
+];
+const TAG_DETAILS = [
+  'The sheriff of Jackson Parish signs a prison labor contract for profit.',
+  'A Fox News segment praises the Thirteenth Amendment prisoner exception.',
+];
+
+check('a chaptered item\'s pools come off its chapter list, in chapter order, grounded', () => {
+  const warnings = [];
+  const pools = extractPools(TAG_CONTENT, TAG_SUBJECTS, TAG_DETAILS, 'fixture', warnings);
+  eq(pools.entities, ['Jackson Parish', 'Fox News', 'Thirteenth Amendment'], 'names, chapter 1 before chapter 2:');
+  // "prison labor" (the title) folds into "prison labor contract" (the detail) in its place.
+  eq(pools.phrases, ['jackson parish', 'prison labor contract', 'fox news', 'prisoner exception', 'thirteenth amendment'],
+    'phrases, folded to the longer form, chapter 1 before chapter 2:');
+  // "rents out" / "on air" are the chapter model's words, not the video's: never a pool entry.
+  for (const p of [...pools.entities, ...pools.phrases]) {
+    if (!entities.occursIn(TAG_CONTENT, p)) throw new Error(`"${p}" is not in the transcript`);
+  }
+  eq(warnings, [], 'a grounded pool declares nothing:');
+});
+
+check('tags on a chaptered item are exactly the chapter-derived pools, in that order', () => {
+  const pools = extractPools(TAG_CONTENT, TAG_SUBJECTS, TAG_DETAILS, 'fixture', []);
+  const assembled = tagsHashtags.assembleTags({
+    primaryPhrase: pools.phrases[0] || pools.entities[0] || '',
+    entities: pools.entities,
+    phrases: pools.phrases,
+    contentText: TAG_CONTENT.replace(/\b(HOST|CLIP) /g, ''),
+  });
+  const nonMisspelt = assembled.tags.filter((t) => entities.occursIn(TAG_CONTENT, t));
+  // The primary phrase is the chapter list's first phrase; the names follow; then the phrases
+  // not already taken, in chapter order.
+  eq(nonMisspelt, ['jackson parish', 'Fox News', 'Thirteenth Amendment', 'prison labor contract', 'prisoner exception'],
+    'the tags a chaptered item publishes:');
+  eq(assembled.notInContent, [], 'nothing ungrounded was even offered:');
+});
+
+check('a chapter list that shares nothing with the transcript is DECLARED, not filled from elsewhere', () => {
+  const warnings = [];
+  const pools = extractPools(TAG_CONTENT, ['An unrelated chapter about gardening'], [''], 'fixture', warnings);
+  eq(pools, { entities: [], phrases: [] }, 'no substitute pool:');
+  eq(warnings.length, 1, 'the empty pool is declared once:');
+});
+
+// That the Tags row writes a chapterless item's tags is asserted above ("an item WITHOUT
+// chapters plans the same routed units"); this is the pool half of the same item.
+check('a chapterless item has no phrase pool: no transcript n-grams stand in for a chapter list', () => {
+  const pools = extractPools(TAG_CONTENT, [], [], 'fixture', []);
+  eq(pools.phrases, [], 'the phrase pool:');
+});
+
+check('nomic-embed-text is gone from the routing module and the routing view', () => {
+  if ('KEY_PHRASE_EMBEDDING_MODEL' in routing) throw new Error('KEY_PHRASE_EMBEDDING_MODEL is still exported');
+  const view = routing.buildRoutingView(undefined, { server: 'mac', reachable: true, models: {}, anthropicConfigured: false }, { routingServer: null, selectedServer: 'mac' });
+  eq(Object.keys(view.chapters).sort(), ['generationAvailability', 'generationModel', 'scorerAvailability', 'scorerModel'], 'the chapters view:');
+  eq(view.chapters.scorerModel, 'qwen3.5-9b', 'the fixed snap scorer, reported beside the chapters row (P8b):');
 });
 
 check('a third model is a DECLARED warning naming the fields, and never a refusal', () => {
@@ -894,12 +996,12 @@ check('a third model is a DECLARED warning naming the fields, and never a refusa
   const p = plan('youtube-telltale', {
     hasChapters: true,
     routing: { description: 'qwen35-4b', pinned_comment: 'qwen35-9b' },
-    alsoLoads: [{ model: routing.CHAPTER_PIPELINE_MODELS.generation, what: 'chapters' }],
+    alsoLoads: [{ model: routing.resolveChapterModelOption(routing.resolveMetadataRouting(undefined)).model, what: 'chapters' }],
   });
   eq(p.roster.models.length, 3, 'expected three models, got ' + p.roster.summary);
   eq(p.roster.overBudget, true, 'three models did not register as over budget');
   eq(p.warnings.length, 1, 'the run did not declare exactly one warning');
-  if (!/qwen3\.5:4b \(description\)/.test(p.warnings[0])) {
+  if (!/qwen3\.5-4b \(description\)/.test(p.warnings[0])) {
     throw new Error('the warning does not name the field responsible:\n' + p.warnings[0]);
   }
   // Not blocked: the plan still runs, with every field it was asked for.
@@ -1322,5 +1424,324 @@ check('a source with no sets THROWS rather than answering', () => {
   if (!threw) throw new Error('decidePrimary answered for a source with no items');
 });
 
-console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+// ---------------------------------------------------------------- snap chaptering, wired (P8b)
+//
+// Stories, the in-queue split and the pipeline's chapter engine are the snap chaptering service
+// (LEDGER #199, #208). These drive the REAL handlers and wiring: story-ipc.js registers against a
+// recording ipcMain; the Crucible door is replaced by a recorder that answers the outline, the
+// decide questions and the local titles; the lanes by a pass-through with a stated venue; and
+// AIManagerService.runPlainRequest (the cloud title door: Anthropic through Crucible, or claude
+// -p) by a recorder. What is asserted is which model each role was sent to, with what shape, and
+// what the editor gets back. Nothing is sent anywhere.
+
+async function checkAsync(name, fn) {
+  try {
+    await fn();
+    console.log('PASS  ' + name);
+  } catch (e) {
+    failures++;
+    console.log('FAIL  ' + name + ' :: ' + e.message);
+  }
+}
+
+const storyStub = require(STUB);
+let storyChannels = {};
+storyStub.ipcMain = { handle: (channel, fn) => { storyChannels[channel] = fn; } };
+const storyIpc = require(path.join(ROOT, 'services/editor/story-ipc.js'));
+const lanesModule = require(path.join(ROOT, 'crucible/lanes.js'));
+const snapWiring = require(path.join(ROOT, 'services/metadata/snap-chapters.js'));
+const splitModule = require(path.join(ROOT, 'services/metadata/transcript-split.js'));
+const promoModule = require(path.join(ROOT, 'services/metadata/promo-chapters.js'));
+const userDataModule = require(path.join(ROOT, 'user-data-path.js'));
+
+/** Where a GPU step would run: 'mac', or none (the refusal case). */
+let venue = { server: 'mac' };
+lanesModule.installLanes({ aiCall: (route, name, fn) => fn(), gpuVenue: () => venue });
+
+/** Register the story handlers against a store holding `settings`; returns the channels. */
+function storyHandlersFor(settings) {
+  storyChannels = {};
+  const fakeStore = { get: (key) => settings[key] };
+  storyIpc.setupStoryAnalysisHandlers(fakeStore, {
+    promptSetsDir: path.join(__dirname, '..', 'electron', 'assets'),
+    venue: () => venue,
+  });
+  return storyChannels;
+}
+
+/** The cloud title door, recorded. */
+const storyCalls = [];
+let storyAnswer = () => 'The Working Title\nA summary of the story.';
+const realRunPlain = aiManager.AIManagerService.prototype.runPlainRequest;
+aiManager.AIManagerService.prototype.runPlainRequest = async function (prompt, model, what, shape) {
+  storyCalls.push({ model, what, prompt, shape });
+  return storyAnswer(prompt, model, what);
+};
+
+/** The Crucible door, recorded: the outline, the decide questions, the local titles, the leases. */
+const transportModule = require(path.join(ROOT, 'crucible/transport.js'));
+const door = { chats: [], decides: [], jobs: [], onChat: null };
+/** The quoted sentence of a decide question, never the one quoted before it. */
+const quoted = (instructions) => /Sentence from the transcript above: "([^"]*)"/.exec(instructions)[1];
+transportModule.installCrucibleTransport({
+  job: (what) => {
+    const job = { what, released: 0, releaseAll: async () => { job.released++; return []; } };
+    door.jobs.push(job);
+    return job;
+  },
+  chat: async (req) => {
+    door.chats.push(req);
+    if (door.onChat) door.onChat(req);
+    const text = req.model === 'qwen3.5-9b' ? 'Budget vote\nMayor walks out' : 'The council budget vote\nThe council voted on the budget.';
+    return { text, finishReason: 'stop', usage: null, server: 'mac', model: req.model, act: 'generate', sampling: { thinking: 'request', max_tokens: 'request' } };
+  },
+  decide: async (req) => {
+    door.decides.push(req);
+    const answers = {};
+    for (const [name, q] of Object.entries(req.questions)) {
+      // The stories grain (LEDGER #212): a junction is new when budget talk gives way to the mayor,
+      // a placement picks the first mayor line, a pair is one story when both parts are one subject.
+      if (/^j\d+$/.test(name)) {
+        const [before, after] = q.instructions.split('The stretch that comes straight after it:');
+        answers[name] = { type: 'yesno', p: /budget/.test(before) && /mayor/.test(after) ? 0.9 : 0.1, labelMass: 0.97, missingLabels: [] };
+        continue;
+      }
+      if (name === 'place') {
+        const names = Object.keys(q.options);
+        const pick = Math.max(0, names.findIndex((n) => /mayor/.test(q.options[n])));
+        answers[name] = { type: 'choice', probabilities: Object.fromEntries(names.map((n, i) => [n, i === pick ? 0.97 : 0.03 / (names.length - 1)])), labelMass: 0.98, missingLabels: [] };
+        continue;
+      }
+      if (name === 'same') {
+        const [a, b] = req.state.split('Part B, straight after it');
+        answers[name] = { type: 'yesno', p: /mayor/.test(a) === /mayor/.test(b) ? 0.9 : 0.1, labelMass: 0.97, missingLabels: [] };
+        continue;
+      }
+      if (q.type === 'yesno') {
+        answers[name] = { type: 'yesno', p: 0.05, labelMass: 0.97, missingLabels: [] };
+        continue;
+      }
+      const names = Object.keys(q.options);
+      const pick = /budget/.test(quoted(q.instructions)) ? 0 : 1;
+      answers[name] = { type: 'choice', probabilities: Object.fromEntries(names.map((n, i) => [n, i === pick ? 0.97 : 0.03 / (names.length - 1)])), labelMass: 0.98, missingLabels: [] };
+    }
+    return { answers };
+  },
+});
+const resetDoor = () => { door.chats.length = 0; door.decides.length = 0; door.jobs.length = 0; door.onChat = null; storyCalls.length = 0; };
+
+// A store key nothing reads any more (P2): kept in the fixtures so a handler that still read
+// it would be caught reaching for it.
+const NO_OLLAMA = 'http://127.0.0.1:9';
+const progressSent = [];
+const fakeEvent = { sender: { isDestroyed: () => false, send: (channel, p) => progressSent.push({ channel, p }) } };
+/** A two-subject span of the timeline, starting 1,000 s in: host lines and clip lines. */
+const storySegments = Array.from({ length: 24 }, (_, i) => ({
+  text: i < 12 ? `The council argued about the budget vote number ${i} tonight.` : `Then the mayor walked out of meeting number ${i} in a huff.`,
+  startSeconds: 1000 + i * 10,
+  endSeconds: 1000 + i * 10 + 10,
+  speaker: i % 4 === 3 ? 'clip' : 'host',
+}));
+
+async function rejects(promise) {
+  try { await promise; } catch (e) { return e; }
+  throw new Error('expected a refusal, got an answer');
+}
+
+(async () => {
+  await checkAsync('Stories at the stories grain: junction decides on the 9B, titles on a claude -p row through claude -p, the editor\'s shape', async () => {
+    resetDoor();
+    progressSent.length = 0;
+    const ch = storyHandlersFor({ metadataRouting: { chapters: 'claude-cli' }, ollamaHost: NO_OLLAMA });
+    eq(await ch['story:routed-model'](), { model: 'claude-cli:opus', label: 'claude -p (Opus, subscription)', kind: 'cloud' }, 'the read-only line:');
+    const res = await ch['story:analyze-chapters'](fakeEvent, { segments: storySegments });
+    eq(door.chats.length, 0, 'no outline: the stories grain writes none (LEDGER #212):');
+    eq(door.decides.every((d) => d.model === 'qwen3.5-9b' && d.loadContext === 8192 && d.missing === 'report'), true, 'every decide on the 9B at the smallest step that holds it (LEDGER #209):');
+    eq(door.decides.some((d) => Object.keys(d.questions).some((k) => /^j\d+$/.test(k))) && door.decides.some((d) => d.questions.place) && door.decides.some((d) => d.questions.same), true, 'junctions, a placement and a pair were asked:');
+    eq(storyCalls.map((c) => [c.model, c.shape.thinking]), [['claude-cli:opus', true], ['claude-cli:opus', true]], 'the titles, thinking on (LEDGER #208):');
+    // The titles read HOST:/CLIP: lines (the brief's decision 5).
+    eq(/\nCLIP: The council argued about the budget vote number 3/.test(storyCalls[0].prompt), true, 'the tagged title prompt:');
+    eq(res.chapters.map((c) => [c.index, c.startSeconds, c.endSeconds, c.label, c.verbalCue, c.subChapters.length]), [
+      [0, 1000, 1120, 'The Working Title', false, 1],
+      [1, 1120, 1240, 'The Working Title', false, 1],
+    ], 'the chapters, on timeline seconds:');
+    eq(res.chapters[0].detail, 'A summary of the story.', 'the detail:');
+    eq(door.jobs.length === 1 && door.jobs[0].released === 1, true, 'one job, released once:');
+    eq(progressSent.every((e) => e.channel === 'story:analyze-progress' && typeof e.p.fraction === 'number'), true, 'progress carries the fraction:');
+    eq(progressSent[progressSent.length - 1].p.fraction, 1, 'progress ends at 1:');
+  });
+
+  await checkAsync('a story\'s own chapters on a local chapters row (story:chapter-story): titles on the 27B at 24,576, thinking on at 16,384', async () => {
+    resetDoor();
+    const ch = storyHandlersFor({ metadataRouting: { chapters: 'qwen38-27b' }, ollamaHost: NO_OLLAMA });
+    const res = await ch['story:chapter-story'](fakeEvent, { segments: storySegments });
+    eq(door.chats.filter((c) => c.model === 'qwen3.5-9b').length, 1, 'the chapters grain writes its outline:');
+    const titles = door.chats.filter((c) => c.model === 'qwen3.8-27b-4bit');
+    eq(titles.map((c) => [c.thinking, c.maxTokens, c.loadContext]), [[true, 16384, 24576], [true, 16384, 24576]], 'the title calls:');
+    eq(storyCalls.length, 0, 'nothing went to the cloud door:');
+    eq(res.chapters.map((c) => c.label), ['The council budget vote', 'The council budget vote'], 'the labels are the titles:');
+  });
+
+  await checkAsync('the channel is the grain (LEDGER #213): a payload that names one, or has no segments, is refused before any call', async () => {
+    resetDoor();
+    const ch = storyHandlersFor({ metadataRouting: { chapters: 'claude-cli' }, ollamaHost: NO_OLLAMA });
+    for (const channel of ['story:analyze-chapters', 'story:chapter-story']) {
+      for (const grain of ['stories', 'chapters']) {
+        const err = await rejects(ch[channel](fakeEvent, { segments: storySegments, grain }));
+        eq(/takes no grain/.test(err.message), true, `${channel} with grain ${grain}:`);
+      }
+      const empty = await rejects(ch[channel](fakeEvent, { segments: [] }));
+      eq(/No transcript segments/.test(empty.message), true, `${channel} with no segments:`);
+    }
+    eq(door.chats.length + door.decides.length + storyCalls.length, 0, 'calls made:');
+  });
+
+  await checkAsync('with no Crucible server to put the 9B on, a snap run is refused by name even on a claude -p row, before any call', async () => {
+    resetDoor();
+    venue = { server: null, reason: 'no server is selected in Settings › Crucible Servers' };
+    try {
+      const ch = storyHandlersFor({ metadataRouting: { chapters: 'claude-cli' }, ollamaHost: NO_OLLAMA });
+      const err = await rejects(ch['story:analyze-chapters'](fakeEvent, { segments: storySegments }));
+      eq(err.name, 'SnapScorerUnavailableError', 'the refusal:');
+      eq(/qwen3\.5-9b/.test(err.message) && /no server is selected/.test(err.message) && /claude -p \(Opus, subscription\)/.test(err.message), true, 'it names the model, the reason and the row:');
+      eq(door.chats.length + door.decides.length + storyCalls.length, 0, 'calls made:');
+    } finally {
+      venue = { server: 'mac' };
+    }
+  });
+
+  await checkAsync('a stop mid-run ends it as a stop, and the job is released', async () => {
+    resetDoor();
+    const ch = storyHandlersFor({ metadataRouting: { chapters: 'claude-cli' }, ollamaHost: NO_OLLAMA });
+    // Stopped during the first title: the stories grain's first chat is a title (no outline).
+    const answer = storyAnswer;
+    storyAnswer = (...a) => { ch['story:cancel'](); return answer(...a); };
+    const err = await rejects(ch['story:analyze-chapters'](fakeEvent, { segments: storySegments }));
+    storyAnswer = answer;
+    eq(err.name, 'AnalysisCancelledError', 'a stop is reported as a stop:');
+    eq(door.jobs[0].released, 1, 'released on the stop:');
+  });
+
+  await checkAsync('a story is titled from its chapters (summarize_chapter_parts, thinking on); one lease across a local titling loop', async () => {
+    resetDoor();
+    const parts = [
+      { label: 'Budget vote', detail: 'The council argued about the budget.', startSeconds: 1000, endSeconds: 1130 },
+      { label: 'Mayor walks out', detail: 'The mayor left.', startSeconds: 1130, endSeconds: 1240 },
+    ];
+    const cli = storyHandlersFor({ metadataRouting: { chapters: 'claude-cli' }, ollamaHost: NO_OLLAMA });
+    eq(await cli['story:suggest-title'](null, { name: 'Story 2', chapters: parts }), { title: 'The Working Title' }, 'the title:');
+    eq(storyCalls.map((c) => [c.model, c.shape.thinking]), [['claude-cli:opus', true]], 'one call on the routed row:');
+    eq(/PARTS:\nPart 1 \(16:40-18:50\): Budget vote\nThe council argued about the budget\./.test(storyCalls[0].prompt), true, 'the parts prompt:');
+    eq(await cli['story:unload-model'](), { ok: true, released: null }, 'a cloud selection releases nothing:');
+    const empty = await rejects(cli['story:suggest-title'](null, { name: 'Story 3', chapters: [] }));
+    eq(/nothing to title/.test(empty.message), true, 'no chapters, no title:');
+
+    resetDoor();
+    const local = storyHandlersFor({ metadataRouting: { chapters: 'qwen38-27b' }, ollamaHost: NO_OLLAMA });
+    await local['story:suggest-title'](null, { name: 'Story 1', chapters: parts });
+    await local['story:suggest-title'](null, { name: 'Story 2', chapters: parts });
+    eq(door.chats.map((c) => [c.model, c.thinking, c.maxTokens]), [['qwen3.8-27b-4bit', true, 16384], ['qwen3.8-27b-4bit', true, 16384]], 'the local title calls:');
+    eq(door.jobs.length, 1, 'ONE lease across the titling loop:');
+    eq(await local['story:unload-model'](), { ok: true, released: 'qwen3.8-27b-4bit' }, 'the lease is what is released:');
+    eq(door.jobs[0].released, 1, 'released once:');
+  });
+
+  await checkAsync('an absent routing store runs Stories on the shipped chapters default, as every run does', async () => {
+    const ch = storyHandlersFor({ ollamaHost: NO_OLLAMA });
+    const shipped = routing.routingOption('chapters', routing.METADATA_ROUTING_TASKS.find((t) => t.id === 'chapters').defaultOptionId);
+    eq((await ch['story:routed-model']()).model, routing.routedModelString(shipped), 'the default:');
+  });
+
+  await checkAsync('a chapters routing this build cannot honour REFUSES by name, before any call', async () => {
+    resetDoor();
+    for (const metadataRouting of [{ chapters: 'cogito-14b-from-the-old-picker' }, 'not-an-object']) {
+      const ch = storyHandlersFor({ metadataRouting, ollamaHost: NO_OLLAMA });
+      const routedErr = await rejects(ch['story:routed-model']());
+      if (!/metadataRouting/.test(routedErr.message)) throw new Error(`the refusal does not name the setting: ${routedErr.message}`);
+      await rejects(ch['story:analyze-chapters'](fakeEvent, { segments: storySegments }));
+      await rejects(ch['story:suggest-title'](null, { name: 'x', chapters: [{ label: 'Budget vote', startSeconds: 0, endSeconds: 10 }] }));
+    }
+    eq(door.chats.length + door.decides.length + storyCalls.length, 0, 'calls sent on an unresolvable routing:');
+  });
+
+  await checkAsync('the scorer is a fixed role, not a dialog row; the chapters row keeps the titles', async () => {
+    eq(routing.CHAPTER_SCORER_MODEL, 'qwen3.5-9b', 'the scorer:');
+    eq(routing.METADATA_ROUTING_TASKS.some((t) => /outline|scorer|snap/.test(t.id)), false, 'no routing row for it:');
+    const resolved = routing.resolveMetadataRouting({ chapters: 'sonnet5' });
+    const models = routing.resolveSnapChapterModels(resolved, { server: 'owens-pc' });
+    eq([models.scorer, models.titles.model], [{ model: 'qwen3.5-9b', server: 'owens-pc' }, 'anthropic/claude-sonnet-5'], 'resolved:');
+    const err = (() => { try { routing.resolveSnapChapterModels(resolved, { server: null, reason: 'the registry is empty' }); } catch (e) { return e; } })();
+    eq([err && err.code, /the registry is empty/.test(err.message), /whole-transcript/.test(err.message)], ['snap_scorer_unavailable', true, true], 'the refusal:');
+  });
+
+  await checkAsync('the in-queue split is the stories grain: a candidate menu tiling the stream, boundaries only, no title call', async () => {
+    resetDoor();
+    const models = routing.resolveSnapChapterModels(routing.resolveMetadataRouting({ chapters: 'claude-cli' }), { server: 'mac' });
+    const job = transportModule.crucibleTransport().job('transcript split');
+    const t = snapWiring.snapTransports({ models, job, trace: null, laneName: 'split' });
+    const srt = storySegments.map((s, i) => ({ index: i + 1, start: s.startSeconds - 1000, end: s.endSeconds - 1000, text: s.text, speaker: s.speaker === 'host' ? 'mic' : 'screen' }));
+    const fmt = (sec) => new Date(sec * 1000).toISOString().slice(11, 23).replace('.', ',');
+    const { candidates } = await splitModule.splitCandidates(srt.map((s) => ({ ...s, start: fmt(s.start), end: fmt(s.end) })), 240, { chat: t.chat, decide: t.decide });
+    eq(candidates.map((c) => [c.index, c.startSeconds, c.endSeconds, c.timestamp, c.label, c.verbalCue, c.isAd]), [
+      [1, 0, 120, '0:00', '"The council argued about the budget vote number 0 tonight."', false, false],
+      [2, 120, 240, '2:00', '"Then the mayor walked out of meeting number 12 in a huff."', false, false],
+    ], 'the menu:');
+    eq(storyCalls.length + door.chats.length, 0, 'no title call and no outline:');
+    eq(['episode-splitter.service.ts', 'chapter-splitter.ts'].map((f) => require('fs').existsSync(path.join(__dirname, '..', 'electron', 'services', f.startsWith('chapter') ? 'editor' : 'metadata', f))), [false, false], 'the retired splitters are gone:');
+  });
+
+  await checkAsync('the pipeline\'s chapter engine is a declared setting: snap by default, whole-transcript by name, anything else refused', async () => {
+    const Gen = generatorModule.MetadataGeneratorService;
+    const item = { source: '/x/keeper.mp4', title: 'keeper', srtSegments: [{ index: 1, start: '00:00:00,000', end: '00:00:10,000', text: 'Hello there, this is a test.' }] };
+    const manager = { promptTrace: [], promotedItems: () => [], runPlainRequest: async () => null };
+    const lifecycle = { leases: {} };
+    const base = { metadataRouting: routing.resolveMetadataRouting({ chapters: 'claude-cli' }), promptSet: 'youtube-telltale' };
+    const bogus = await rejects(Gen.generateChapters(item, manager, { ...base, chapterEngine: 'rolling-window' }, 0, 1, lifecycle));
+    eq(/unknown chapter engine "rolling-window"/.test(bogus.message), true, 'an unknown engine:');
+    venue = { server: null, reason: 'nothing selected' };
+    try {
+      const snapDefault = await rejects(Gen.generateChapters(item, manager, base, 0, 1, lifecycle));
+      eq(snapDefault.name, 'SnapScorerUnavailableError', 'absent means snap (its scorer refusal proves which engine ran):');
+    } finally {
+      venue = { server: 'mac' };
+    }
+    storyCalls.length = 0;
+    await Gen.generateChapters(item, aiManager.AIManagerService.prototype, { ...base, chapterEngine: 'whole-transcript' }, 0, 1, lifecycle).catch(() => undefined);
+    eq(storyCalls.some((c) => /\(chapters\)$/.test(c.what)), true, 'whole-transcript, by name, reaches the whole-transcript call:');
+  });
+
+  await checkAsync('a snap result publishes in the pipeline\'s shape: an unnamed chapter keeps its label, an ad is typed out of the list', async () => {
+    const result = {
+      granularity: 'chapters', switchCost: 20, units: [], outline: ['A', 'B', 'C'], plugVerdicts: [],
+      chapters: [
+        { number: 1, startSec: 0, endSec: 300, unitRange: [0, 10], label: 'Opening', level: 1, title: 'The opening claim', summary: 'S1', isAd: false },
+        { number: 2, startSec: 300, endSec: 330, unitRange: [10, 12], label: 'Support the channel', level: 1, title: 'A word from the host', summary: 'S2', isAd: true },
+        { number: 3, startSec: 330, endSec: 700, unitRange: [12, 30], label: 'The verdict', level: 1, title: '', summary: '', isAd: false },
+      ],
+      stats: { unitCount: 30, chunkCount: 1, refinedSections: 0, outlineMs: 1, assignMs: 1, plugMs: 1, summarizeMs: 1, totalMs: 4, chatCalls: 4, decideCalls: 1, flooredUnits: [], skippedUnits: [], titledFromParts: [], stories: null, adBaseline: 0.01, speakerTagged: false, titleMs: [5, 6, 7], warnings: ['w'] },
+    };
+    const published = snapWiring.toChapterPipelineResult(result, true);
+    eq(published.chapters.map((c) => [c.timestamp, c.title, c.isPromo === true]), [['0:00', 'The opening claim', false], ['5:00', 'A word from the host', true], ['5:30', 'The verdict', false]], 'the chapters:');
+    eq([published.stats.engine, published.stats.approxStarts, published.stats.snap.adBaseline], ['snap', 0, 0.01], 'the stats:');
+    const partition = promoModule.excludePromoChapters(published.chapters, published.subjects, published.subjectDetails.map((s) => s.detail), 'keeper');
+    eq(partition.excluded.map((c) => c.title), ['A word from the host'], 'excluded by the typed ad check, not by its words:');
+  });
+
+  await checkAsync('CONTENTSTUDIO_USER_DATA moves a development run\'s userData, never a packaged one\'s, and only to an absolute path', async () => {
+    const r = userDataModule.resolveUserDataPath;
+    const appData = '/Users/owen/Library/Application Support';
+    eq(r({ env: {}, isPackaged: false, appData }).path, `${appData}/contentstudio`, 'unset:');
+    const dev = r({ env: { CONTENTSTUDIO_USER_DATA: '/tmp/cs-agent' }, isPackaged: false, appData });
+    eq([dev.path, dev.source, /from CONTENTSTUDIO_USER_DATA/.test(dev.line)], ['/tmp/cs-agent', 'env', true], 'a development run:');
+    const shipped = r({ env: { CONTENTSTUDIO_USER_DATA: '/tmp/cs-agent' }, isPackaged: true, appData });
+    eq([shipped.path, /IGNORED/.test(shipped.line)], [`${appData}/contentstudio`, true], 'a packaged run:');
+    const relative = (() => { try { r({ env: { CONTENTSTUDIO_USER_DATA: 'cs-agent' }, isPackaged: false, appData }); } catch (e) { return e; } })();
+    eq(/must be an absolute path/.test(relative && relative.message), true, 'a relative path:');
+  });
+
+  aiManager.AIManagerService.prototype.runPlainRequest = realRunPlain;
+  transportModule.installCrucibleTransport(null);
+  lanesModule.installLanes(null);
+  console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
+  process.exit(failures === 0 ? 0 : 1);
+})();

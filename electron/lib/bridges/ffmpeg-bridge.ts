@@ -158,7 +158,11 @@ export class FfmpegBridge extends EventEmitter {
   }
 
   /**
-   * Extract audio from video file
+   * Extract audio from video file.
+   *
+   * `codec: 'flac'` writes 16 kHz mono FLAC, what the Crucible asr upload sends (plan §8.1):
+   * lossless, so the server hears the same samples, at about half the bytes of the WAV. The
+   * default stays 16-bit PCM WAV, which speaker tagging reads sample by sample.
    */
   async extractAudio(
     inputPath: string,
@@ -167,18 +171,20 @@ export class FfmpegBridge extends EventEmitter {
       sampleRate?: number;
       channels?: number;
       format?: string;
+      codec?: 'pcm_s16le' | 'flac';
       processId?: string;
       duration?: number;
     }
   ): Promise<FfmpegResult> {
+    const codec = options?.codec ?? 'pcm_s16le';
     const args = [
       '-y',
       '-i', inputPath,
       '-vn',
-      '-acodec', 'pcm_s16le',
+      '-acodec', codec,
       '-ar', String(options?.sampleRate || 16000),
       '-ac', String(options?.channels || 1),
-      '-f', options?.format || 'wav',
+      '-f', options?.format || (codec === 'flac' ? 'flac' : 'wav'),
       outputPath,
     ];
 

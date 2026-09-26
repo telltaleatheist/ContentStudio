@@ -13,8 +13,8 @@
  * ── Why multipart is written out by hand ─────────────────────────────────────────────
  *
  * The episode audio is up to 300 MB. `FormData` + `fetch` would need the whole file as a
- * Blob or a Buffer in memory, and `form-data` is not a dependency of this app (deps:
- * anthropic, axios, electron-log, electron-store, js-yaml, openai). A multipart body is
+ * Blob or a Buffer in memory, and `form-data` is not a dependency of this app (deps: the
+ * vendored Crucible client, axios, electron-log, electron-store, js-yaml, sherpa-onnx-node). A multipart body is
  * a preamble, some bytes, and a closing delimiter — so the preamble and the closing are
  * built as Buffers, the file is a read STREAM piped between them, and Content-Length is
  * the arithmetic of the three. Constant memory, no dependency, and a body whose exact

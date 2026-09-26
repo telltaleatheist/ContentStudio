@@ -1,0 +1,12 @@
+instruction: |-
+  Verbatim transcript. Transcribe every disfluency exactly as spoken, including filler sounds: um, uh, ah, er, hmm, and false starts and repeated words. What is known about this recording is below: use it only for the spelling of names, places and terms, and write only what is actually said.
+
+labels:
+  title: "Title"
+  job: "Job"
+  also_titled: "Also titled"
+  names: "Names"
+  tags: "Names and topics"
+  promoted: "Also mentioned"
+  notes: "Notes"
+  description: "Description"

@@ -31,8 +31,8 @@ export interface WorkflowPayloadSpec {
   videoSources?: { [key: string]: string };
   autoDuck: boolean;
   denoiseMics: boolean;
-  /** The voice-separator asset gate: denoiseMics is only ever sent true when it is installed. */
-  separatorInstalled: boolean;
+  /** The Crucible gate: denoiseMics is only ever sent true when the selected server can isolate voice. */
+  voiceIsolationAvailable: boolean;
   useDownloadedStream: boolean;
   alignmentOverrides: AlignmentOverrides | null;
   /**
@@ -177,7 +177,7 @@ export function buildWorkflowOptions(spec: WorkflowPayloadSpec): WorkflowPayload
     // Same reasoning: voice isolation runs BEFORE sync, so it is already baked into (or
     // absent from) the file being adopted. Sending it true would describe work that cannot
     // happen on this path.
-    denoiseMics: !spec.reuseProcessedAudio && spec.separatorInstalled && spec.denoiseMics,
+    denoiseMics: !spec.reuseProcessedAudio && spec.voiceIsolationAvailable && spec.denoiseMics,
     useDownloadedStream: spec.useDownloadedStream,
     ...(spec.reuseProcessedAudio ? { reuseProcessedAudio: true } : {}),
     // Phase 1: carry manual overrides through untouched (null => full auto).

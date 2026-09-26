@@ -29,8 +29,9 @@
  * answering, while constraining a JUDGMENT task measurably destroys it. These two calls are
  * mechanical. Chapter summarization is not, and nothing here is copied there.
  *
- * WHAT THEY READ. The chapter titles and summaries, the entity pool, the key-phrase pool —
- * AND THE RAW TRANSCRIPT.
+ * WHAT THEY READ. The chapter titles and summaries, the entity pool, the phrase pool the
+ * chapter list yields (tags-hashtags.ts chapterPools; empty on a chapterless item) — AND THE
+ * RAW TRANSCRIPT.
  *
  * The transcript is new, and it SUPERSEDES the summaries-only input contract §2 laid down. That
  * contract was a context-window concession dressed as a design: it said the description layer
@@ -40,9 +41,9 @@
  * The chapter block STAYS beside it: it is a measured table of contents that says what the
  * video spends its time on, which a transcript does not, and the entity scaffold still applies.
  *
- * The cost is stated rather than hidden: these two calls now carry a transcript-sized prompt,
- * so they share their model's one pinned num_ctx with every other call on it (metadata-tasks.ts
- * ModelRunContextBudget) instead of sizing themselves against a small private ceiling.
+ * The cost is stated rather than hidden: these calls carry a transcript-sized prompt on the raw
+ * path, so each asks for the load context its own prompt needs (context-check.ts
+ * `loadContextFor`, LEDGER #209) rather than sizing itself against a small private ceiling.
  *
  * AND WHERE THERE ARE NO CHAPTERS. This unit used to be planned only for chaptered items;
  * everything else took a whole-metadata call on whatever the Settings page named, and got its
@@ -119,18 +120,15 @@
  * it means the model is not there, which is not a style question.
  */
 
-import axios, { AxiosInstance } from 'axios';
 import * as log from 'electron-log';
-import { estimateTokens } from './ollama-json';
-import { askOllamaPlain, parseLeadBody } from './plain-call';
+import { loadContextFor } from './context-sizing';
+import { parseLeadBody } from './plain-call';
 import { JobModelLifecycle } from './model-lifecycle';
 import { MetadataRoutingOption } from './metadata-routing';
-import { queueAITask } from '../queue-manager.service';
 import { JobCancelledError } from './cancellation';
 import { describerClauses } from './chapter-title-quality';
 import { promptAssets, ChannelData } from './prompt-assets';
 import type { MetadataFieldId, MetadataRunContext, MetadataUnit } from './metadata-tasks';
-import type { ModelRunContextBudget } from './metadata-tasks';
 import type { AIManagerService } from './ai-manager.service';
 
 /**
@@ -190,17 +188,21 @@ function bodyWordRange(channel: ChannelData): [number, number] {
  */
 
 /**
- * How many descriptions the operator gets to choose from, the primary included.
+ * How many descriptions the operator gets, the primary included.
+ *
+ * ONE (Owen, 2026-09-26: "i would rather make a single call to get a single description and do
+ * it right the first time"). The three-way pick of 2026-08-23 was built for models whose draws
+ * differ; the 27B on Crucible decodes deterministically (mlx-lm's server samples at temperature
+ * 0 unless asked otherwise, and the app asks for nothing), so its three candidates came back as
+ * the same text (734/734/734 and 837/837/837 characters, LEDGER #220) and two calls in three
+ * bought copies. A temperature on the local path was the other way out; Owen chose the single
+ * call. The loop below still reads this number, so the pick comes back by changing it.
  *
  * DATA, in the same spirit as the channel's `{titles_count}`: the number is stated once and the
  * loop reads it. It is a constant rather than channel YAML because unlike a title count it is
- * not an editorial property of a channel — every channel's operator curates the same way — and a
- * per-channel knob nobody would ever set differently is a knob to keep in step for nothing. If a
- * channel ever does want its own count, this is the line that moves into the YAML.
+ * not an editorial property of a channel.
  */
-const DESCRIPTION_CANDIDATES = 3;
-
-/* Option draws use the same provider-default sampling as everything else — see the ruling above. */
+const DESCRIPTION_CANDIDATES = 1;
 
 /**
  * How the body judge opens its word-count complaint.
@@ -235,20 +237,11 @@ const HOOK_MIN_WORDS = 5;
 const SHORT_HOOK_FAULT = 'it came back as ';
 
 /**
- * WHAT THE EXTRAS COST. Each candidate is a full pair — its own hook call, then its own body
- * call reading that hook — plus whatever judging re-asks. Two extras is therefore about four
- * more calls, ~80s on the 27b, against a job already measured at 163s. The operator's ruling
- * (2026-08-23) is that this is worth it: his loop is generate, read three, pick one, and a
- * second run to get a second opinion costs the whole pipeline again.
+ * WHAT EXTRAS WOULD COST, should DESCRIPTION_CANDIDATES ever go back up: each candidate is its
+ * own call plus whatever judging re-asks, about 40 s each on the 27B. The 2026-08-23 ruling that
+ * two extras were worth it is superseded by LEDGER #220: one description, one call.
  */
 
-/**
- * Output budget per call.
- *
- * A whole description is ~450 tokens, but these models reason first — the chapter work
- * measured 1,900-2,900 tokens of it — and `think: false` is not an option (ollama-json trap
- * 2). The ceiling is sized so that a model which reasons anyway still finishes.
- */
 /**
  * Thinking is OFF for descriptions (operator, 2026-08-30 evening: "turn thinking off, pack
  * and ship") — the 4-5 minutes of reasoning per call was the whole cost of the 20-minute
@@ -256,8 +249,15 @@ const SHORT_HOOK_FAULT = 'it came back as ';
  * the contract is now ONE paragraph whose first sentence is the hook, which thinking-off
  * produced in every measured run (~15-45s per call), parsed by parseLeadBody. 4096 is
  * answer-sized with a wide margin — there is no reasoning to carry any more.
+ *
+ * 2048 (LEDGER #220). P4's budget review had kept 4096 on one stored outlier, a 6,066-character
+ * keyword run-on from 2026-08-23; Owen read that as a malfunction, not an answer: "descriptions
+ * dont need to be long. we hit major keywords. one paragraph preferably, plus the one line
+ * explainer that appears in searches." Every other recorded answer is 145-400 tokens, so 2048
+ * is five times the largest real one. A description that runs past it stops as `length`, which
+ * LEDGER #112 makes a hard failure, and that is the correct verdict on a run-on.
  */
-const NUM_PREDICT = 4096;
+const NUM_PREDICT = 2048;
 
 /**
  * 600s, not 300: with thinking ON and the 8192 budget, the arithmetic of a spilled or long
@@ -267,7 +267,6 @@ const NUM_PREDICT = 4096;
  * used 600s all along for the same reason.
  */
 const CALL_TIMEOUT_MS = 600_000;
-const KEEP_ALIVE = '10m';
 
 /**
  * The candidate prompt, from prompts/shared/pipeline/description.yml.
@@ -303,9 +302,9 @@ export const DESCRIPTION_FIELDS: MetadataFieldId[] = ['description_hook', 'descr
  * ONE class for local and cloud rather than two, which is the opposite of how the prompt-set
  * groups are built (CloudGroupUnit / LocalGroupUnit) — and deliberately, because the
  * difference here is four lines rather than a prompt shape. The prompts are identical, the
- * inputs are identical, and the only divergence is the transport: the local branch decodes
- * under a JSON Schema grammar and sizes its own context window; the cloud branch sends the
- * same schema as structured outputs and sizes nothing.
+ * inputs are identical, and both go through the AI manager's plain door to Crucible (P2); the
+ * only divergence is the shape of the call: the local branch states an output budget, the
+ * run's pinned load context and the job's lease, and the cloud branch states none of them.
  */
 export class DescriptionUnit implements MetadataUnit {
   readonly label: string;
@@ -313,55 +312,33 @@ export class DescriptionUnit implements MetadataUnit {
   /** These two calls read the coverage block, the pools and the transcript — no other field. */
   readonly inputFields: MetadataFieldId[] = [];
 
-  private readonly client?: AxiosInstance;
-  private readonly host?: string;
+  private readonly local: boolean;
 
   constructor(
     private readonly aiManager: AIManagerService,
     private readonly option: MetadataRoutingOption,
-    defaultHost: string,
-    /**
-     * The ONE context budget every call on this model shares, on the local path.
-     *
-     * These two calls used to size a private num_ctx against their own small ceiling, which was
-     * safe while they read summaries and nothing else. They read the transcript now, and they
-     * routinely share the 9B with the tags call — and Ollama fully reloads a model on any
-     * num_ctx change, so a private value here would reload it between the description and the
-     * tags. Absent on the cloud path, where there is no window to pin.
-     */
-    private readonly budget: ModelRunContextBudget | undefined,
-    /**
-     * Where this unit DECLARES the model it made resident. It never releases one: these two
-     * calls share the 9B with the tags call, and unloading it here reloaded it for that call.
-     */
-    private readonly lifecycle: JobModelLifecycle,
-    private readonly abortSignal?: AbortSignal
+    /** The job's leases. This unit never releases one: its calls share a model with the tags call. */
+    private readonly lifecycle: JobModelLifecycle
   ) {
-    if (option.kind === 'local') {
-      if (!budget) {
-        throw new Error(
-          `The description unit for local model "${option.model}" was constructed with no context budget. ` +
-            `Every local call on a model shares one pinned num_ctx (metadata-tasks.ts) because changing it ` +
-            `reloads the model; there is no per-unit sizing to fall back on.`
-        );
-      }
-      this.host = defaultHost;
-      this.client = axios.create({ baseURL: this.host });
-      this.label = `description (local ${option.model} @ ${this.host})`;
-      budget.register('description', (ctx) =>
-        estimateTokens(this.buildPrompt(DESCRIPTION_PROMPTS.CANDIDATE, ctx, '').length) + NUM_PREDICT
-      );
+    this.local = option.kind === 'local';
+    if (this.local) {
+      this.label = `description (local ${option.model})`;
     } else {
       this.label = `description (cloud ${option.model})`;
     }
   }
 
   describePrompt(ctx: MetadataRunContext): string {
+    const header =
+      DESCRIPTION_CANDIDATES === 1
+        ? `# ONE DESCRIPTION IS WRITTEN FROM THIS PROMPT, in one call: one paragraph opening on its\n` +
+          `# hook sentence (LEDGER #220).\n\n`
+        : `# ${DESCRIPTION_CANDIDATES} DESCRIPTIONS ARE WRITTEN FROM THIS ONE PROMPT.\n` +
+          `# The primary and ${DESCRIPTION_CANDIDATES - 1} alternative(s), each one whole answer — the\n` +
+          `# paragraph opening on its hook sentence. The prompt is identical for all of them — every\n` +
+          `# draw runs at the provider's default sampling — so it is shown once.\n\n`;
     return (
-      `# ${DESCRIPTION_CANDIDATES} DESCRIPTIONS ARE WRITTEN FROM THIS ONE PROMPT.\n` +
-      `# The primary and ${DESCRIPTION_CANDIDATES - 1} alternative(s), each one whole answer — the\n` +
-      `# paragraph opening on its hook sentence. The prompt is identical for all of them — every\n` +
-      `# draw runs at the provider's default sampling — so it is shown once.\n\n` +
+      header +
       `# DESCRIPTION (${this.option.model}, plain text, provider default sampling)\n\n` +
       this.buildPrompt(DESCRIPTION_PROMPTS.CANDIDATE, ctx, '')
     );
@@ -574,51 +551,28 @@ export class DescriptionUnit implements MetadataUnit {
    */
   private async askPlain(prompt: string, what: string, ctx: MetadataRunContext): Promise<string> {
     const fullWhat = `the description ${what} for ${ctx.sourceLabel}`;
-    if (!this.client) {
-      const text = await this.aiManager.runPlainRequest(prompt, this.option.model, fullWhat);
-      if (!text) {
-        throw new Error(`${fullWhat} on "${this.option.model}" came back empty`);
-      }
-      return text;
-    }
-
-    // One num_ctx for the whole MODEL for the whole RUN (ollama-json trap 4) — not one per
-    // unit. Resolved by the first call on this model to run, from the largest prompt it will
-    // send, and shared from there.
-    const numCtx = this.budget!.resolve(ctx);
-
-    const result = await queueAITask(
-      `description-${this.option.model}-${ctx.sourceLabel}-${what}`,
-      `Metadata: ${this.label} — ${what}`,
-      async () => {
-        if (this.abortSignal?.aborted) throw new JobCancelledError('cancelled before the description call ran');
-        const answer = await askOllamaPlain(this.client!, {
-          model: this.option.model,
-          prompt,
-          numCtx,
-          numPredict: NUM_PREDICT,
-          keepAlive: KEEP_ALIVE,
-          // Thinking off (operator, 2026-08-30 evening). The old two-part layout needed the
-          // reasoning pass; the one-paragraph contract does not — see NUM_PREDICT above.
-          think: false,
-          timeoutMs: CALL_TIMEOUT_MS,
-          signal: this.abortSignal,
-          what: fullWhat,
-          logPrefix: `[Description] ${this.label}`,
-        });
-        this.lifecycle.holdOllamaModel(this.host!, this.option.model, 'the description calls');
-        return answer;
-      },
-      undefined,
-      CALL_TIMEOUT_MS + 60_000
+    // Thinking off on both kinds (operator, 2026-08-30 evening): the old two-part layout
+    // needed the reasoning pass, the one-paragraph contract does not (see NUM_PREDICT). The
+    // local shape adds the budget, the load context this call's own prompt needs (LEDGER #209)
+    // and the job's lease.
+    const text = await this.aiManager.runPlainRequest(
+      prompt,
+      this.option.model,
+      fullWhat,
+      this.local
+        ? {
+            thinking: false,
+            maxTokens: NUM_PREDICT,
+            loadContext: loadContextFor(prompt.length, NUM_PREDICT),
+            job: this.lifecycle.leases,
+            timeoutMs: CALL_TIMEOUT_MS,
+          }
+        : { thinking: false }
     );
-
-    if (!result.ok) {
-      throw new Error(
-        `${fullWhat} on "${this.option.model}" produced no usable answer (${result.reason}): ${result.detail}`
-      );
+    if (!text) {
+      throw new Error(`${fullWhat} on "${this.option.model}" came back empty`);
     }
-    return result.text;
+    return text;
   }
 
   // ----------------------------------------------------------------------------- prompting
@@ -634,7 +588,7 @@ export class DescriptionUnit implements MetadataUnit {
     const [min, max] = bodyWordRange(channel);
     const pools = [
       ctx.entities.length > 0 ? `Names: ${ctx.entities.join(', ')}` : '',
-      ctx.keyPhrases.length > 0 ? `Phrases: ${ctx.keyPhrases.join(', ')}` : '',
+      ctx.phrases.length > 0 ? `Phrases: ${ctx.phrases.join(', ')}` : '',
     ]
       .filter(Boolean)
       .join('\n');
@@ -862,9 +816,9 @@ function sameOpening(a: string, b: string): boolean {
  *                            re-asks rather than publishing it as a search snippet; an option
  *                            whose re-ask brings back the same thing is dropped here.
  *
- * The second is NOT the output ceiling being hit: ollama-json already fails a call outright on
- * `done_reason: "length"`, so these came back as completed answers that the model simply stopped
- * writing partway through a clause. Raising num_predict would not touch them, and a body that
+ * The second is NOT the output ceiling being hit: the Crucible door fails a call outright on
+ * `finish_reason: length` (LEDGER #112), so these came back as completed answers that the model
+ * simply stopped writing partway through a clause. Raising the budget would not touch them, and a body that
  * does not end on a terminator is a fact about the answer rather than an opinion about it.
  *
  * WHAT DOES NOT DROP AN OPTION: register. That is a taste call, taste is exactly what the

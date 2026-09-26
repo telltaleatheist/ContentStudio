@@ -137,15 +137,19 @@ export class EditorHostAdapter implements EditorHost {
 
   // ── Story analysis ──────────────────────────────────────────────────────────
 
-  ollamaListModels(host?: string): Promise<{ connected: boolean; models: Array<{ id: string; name: string }> }> {
-    return this.electron.ollamaListModels(host);
+  storyRoutedModel(): Promise<{ model: string; label: string; kind: 'local' | 'cloud' }> {
+    return this.electron.storyRoutedModel();
   }
 
   analyzeStoryChapters(payload: Parameters<ElectronService['analyzeStoryChapters']>[0]): Promise<any> {
     return this.electron.analyzeStoryChapters(payload);
   }
 
-  suggestStoryTitle(payload: { text: string | string[]; model: string; host?: string }): Promise<{ title: string }> {
+  chapterStory(payload: Parameters<ElectronService['chapterStory']>[0]): Promise<any> {
+    return this.electron.chapterStory(payload);
+  }
+
+  suggestStoryTitle(payload: { name?: string; chapters: Array<{ label: string; detail?: string; startSeconds: number; endSeconds: number }> }): Promise<{ title: string }> {
     return this.electron.suggestStoryTitle(payload);
   }
 
@@ -153,11 +157,11 @@ export class EditorHostAdapter implements EditorHost {
     return this.electron.cancelStoryAnalysis();
   }
 
-  unloadStoryModel(payload: { model: string; host?: string }): Promise<{ ok: boolean }> {
-    return this.electron.unloadStoryModel(payload);
+  unloadStoryModel(): Promise<{ ok: boolean; released: string | null }> {
+    return this.electron.unloadStoryModel();
   }
 
-  onStoryAnalyzeProgress(callback: (p: { phase: string; done: number; total: number }) => void): void {
+  onStoryAnalyzeProgress(callback: (p: { phase: string; done: number; total: number; fraction?: number }) => void): void {
     this.electron.onStoryAnalyzeProgress(callback);
   }
 
@@ -252,6 +256,10 @@ export class EditorHostAdapter implements EditorHost {
 
   listAssets(): Promise<{ success: boolean; components?: AssetComponentStatus[]; error?: string }> {
     return this.electron.listAssets();
+  }
+
+  voiceIsolationStatus(): Promise<{ available: boolean; reason: string }> {
+    return this.electron.voiceIsolationStatus();
   }
 
   // ── Installing the environment ──────────────────────────────────────────────

@@ -1,8 +1,8 @@
 /**
  * Asset/download system — shared contract for AutoCutStudio.
  *
- * AutoCut downloads its toolchain (ffmpeg/ffprobe, the Python runtime, optional
- * whisper model) from GitHub releases into the per-machine OwenMorgan shared
+ * AutoCut downloads its toolchain (ffmpeg/ffprobe, the Python runtime) from GitHub
+ * releases into the per-machine OwenMorgan shared
  * location on first run, so the assets are downloaded once and reused across all
  * OwenMorgan apps. See electron/shared-paths.ts.
  *
@@ -22,7 +22,7 @@ export type ArtifactKind =
 export type PostInstall = 'conda-unpack';
 
 /** Shared-dir category (sub-directory under the OwenMorgan base). */
-export type AssetCategory = 'managed-bins' | 'models' | 'runtime';
+export type AssetCategory = 'managed-bins' | 'runtime';
 
 export interface AssetArtifact {
   platform: Platform;
@@ -38,7 +38,7 @@ export interface AssetArtifact {
 }
 
 export interface AssetComponent {
-  id: string;                  // e.g. 'ffmpeg-tools', 'python-env', 'whisper-base'
+  id: string;                  // e.g. 'ffmpeg-tools', 'python-env'
   name: string;                // display name
   description: string;         // one or two lines for the UI
   category: AssetCategory;

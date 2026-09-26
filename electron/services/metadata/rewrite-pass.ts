@@ -14,12 +14,12 @@
  * They differ in what they ask for and where they land. They do not differ in the machinery,
  * so the machinery lives here rather than in two copies that drift: the prompt is assembled the
  * same way out of a YAML asset with the same block names, the shapes are read back the same way,
- * and both transports — cloud through `runPlainRequest`, local through `askOllamaPlain` — are
- * reached the same way.
+ * and every call goes through the one door (AIManagerService.runPlainRequest, then Crucible for
+ * a local or `anthropic/` model and `claude -p` outside it).
  *
- * THE LOCAL TRANSPORT DELIBERATELY DOES NOT GO THROUGH AIManagerService's Ollama route. That one
- * middle-truncates a prompt bigger than its fixed window, and a rewrite call whose data block
- * lost its middle would come back a different length than it went out.
+ * NOTHING IS CUT TO FIT. The old Ollama route middle-truncated a prompt bigger than its fixed
+ * window, which is why the local path used to bypass it; the Crucible door refuses a prompt
+ * over the loaded context BEFORE sending instead (plan 6.1), so there is one path again.
  *
  * SHAPES FAIL LOUDLY. A line list that comes back with a different number of lines THROWS,
  * naming the field, the model, the count asked for and the count that arrived; nothing is
@@ -31,22 +31,12 @@
  * where the result is written. Those are the passes themselves.
  */
 
-import axios from 'axios';
-
 import { AIManagerService } from './ai-manager.service';
-import { askOllamaPlain, parseLines } from './plain-call';
-import { estimateTokens } from './ollama-json';
-import {
-  LOCAL_FIELD_CTX_MAX,
-  LOCAL_FIELD_KEEP_ALIVE,
-  LOCAL_FIELD_NUM_PREDICT,
-  LOCAL_FIELD_TIMEOUT_MS,
-  normalizeTagLine,
-  runNumCtx,
-} from './metadata-tasks';
+import { parseLines } from './plain-call';
+import { loadContextFor } from './context-sizing';
+import { LOCAL_FIELD_TIMEOUT_MS, normalizeTagLine } from './metadata-tasks';
 import { MetadataRoutingOption } from './metadata-routing';
 import { promptAssets } from './prompt-assets';
-import { queueAITask } from '../queue-manager.service';
 
 /**
  * The output shapes a rewrite call can be asked for. One prompt block each, under `shapes:` in
@@ -113,9 +103,8 @@ export interface RewritePassIdentity {
 }
 
 export interface RewriteTransport {
-  /** Built by the caller, which is where the API keys and the Ollama host live. */
+  /** Built by the caller; its promptTrace records every call, with the server that ran it. */
   aiManager: AIManagerService;
-  ollamaHost: string;
 }
 
 /** A non-empty string, or null. Tells "the item has no such field" from "it has one". */
@@ -213,12 +202,27 @@ export function buildRewritePrompt(pass: RewritePassIdentity, plan: RewritePlan)
 // ---------------------------------------------------------------------------
 
 /**
+ * The output budget of a LOCAL rewrite call: 16,384, the thinking title's (P4; LEDGER #209, #214).
+ *
+ * A rewrite runs thinking-ON (plan 6.3), and thinking and the answer share one budget. Through P2
+ * it borrowed the field calls' 8,192, and the recorded runs came close to it: the scrub of one
+ * item's chapter titles spent 6,602 output tokens and an alternate description's scrub 4,807
+ * (Mac 27B, the acceptance logs, docs/crucible/P4.md "Budgets"). A run-out is a hard failure
+ * (`truncated`, LEDGER #112) and the scrub is always on (LEDGER #183), so an item whose rewrite
+ * thinks past 8,192 would lose its whole description. #214's rule is that metadata never gets
+ * cheaped out; the title's budget is the one Owen ruled on for a thinking call, so the scrub and
+ * Soften take the same. The load context follows from the prompt plus this budget
+ * (`loadContextFor`): a ~900-token scrub prompt loads at 24,576, as a thinking title does.
+ */
+export const REWRITE_NUM_PREDICT = 16384;
+
+/**
  * Send one field's prompt on the chosen model and read the answer.
  *
- * TWO TRANSPORTS, the same two every generation call has, reached the same way:
- *   cloud — AIManagerService.runPlainRequest
- *   local — askOllamaPlain over /api/generate
- * See the header for why the local path does not go through AIManagerService's Ollama route.
+ * ONE DOOR for every kind of model (P2). Thinking ON, as plan 6.3 states for scrub and Soften:
+ * a register rewrite that must carry every fact through was measured thinking-on. A local model
+ * states the rewrite budget ({@link REWRITE_NUM_PREDICT}) and the load context this prompt plus
+ * that budget needs; a one-call job leases it around the call.
  */
 export async function askToRewrite(
   pass: RewritePassIdentity,
@@ -229,48 +233,23 @@ export async function askToRewrite(
   prompt: string
 ): Promise<string> {
   const what = pass.callWhat(plan.field, sourceLabel);
-
-  if (option.kind === 'cloud') {
-    const answer = await transport.aiManager.runPlainRequest(prompt, option.model, what);
-    if (!answer) {
-      throw new Error(`The request for ${what} on "${option.model}" came back empty.`);
-    }
-    return answer;
-  }
-
-  // One call on one model, so the window is sized for this prompt alone — there is no run to
-  // share a pinned num_ctx with.
-  const numCtx = runNumCtx({
-    model: option.model,
-    needs: [estimateTokens(prompt.length) + LOCAL_FIELD_NUM_PREDICT],
-    max: LOCAL_FIELD_CTX_MAX,
+  const answer = await transport.aiManager.runPlainRequest(
+    prompt,
+    option.model,
     what,
-  });
-  const client = axios.create({ baseURL: transport.ollamaHost });
-  const result = await queueAITask(
-    `${pass.id}-${plan.field}-${option.model}-${sourceLabel}`,
-    `${pass.name}: ${plan.field} on ${option.model}`,
-    async () =>
-      askOllamaPlain(client, {
-        model: option.model,
-        prompt,
-        numCtx,
-        numPredict: LOCAL_FIELD_NUM_PREDICT,
-        keepAlive: LOCAL_FIELD_KEEP_ALIVE,
-        timeoutMs: LOCAL_FIELD_TIMEOUT_MS,
-        what,
-        logPrefix: `[${pass.name}] ${option.model}`,
-      }),
-    undefined,
-    LOCAL_FIELD_TIMEOUT_MS + 60_000
+    option.kind === 'local'
+      ? {
+          thinking: true,
+          maxTokens: REWRITE_NUM_PREDICT,
+          loadContext: loadContextFor(prompt.length, REWRITE_NUM_PREDICT),
+          timeoutMs: LOCAL_FIELD_TIMEOUT_MS,
+        }
+      : { thinking: true }
   );
-  if (!result.ok) {
-    throw new Error(
-      `The request for ${what} on "${option.model}" produced no usable answer ` +
-        `(${result.reason}): ${result.detail}`
-    );
+  if (!answer) {
+    throw new Error(`The request for ${what} on "${option.model}" came back empty.`);
   }
-  return result.text;
+  return answer;
 }
 
 /**

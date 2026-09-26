@@ -6,12 +6,12 @@
  * sha256 + bytes into the matching artifact below.
  *
  * Artifacts are hosted on the project's own GitHub releases under a single tag
- * (RELEASE_TAG). The Python env is app-specific; ffmpeg/ffprobe and models are
- * generic and land in the cross-app OwenMorgan shared dir, so if another app
+ * (RELEASE_TAG). The Python env is app-specific; ffmpeg/ffprobe are generic and
+ * land in the cross-app OwenMorgan shared dir, so if another app
  * already downloaded them this app reuses them (see asset-manager).
  */
 
-import type { AssetComponent, Platform, Arch } from './asset-types';
+import type { AssetComponent } from './asset-types';
 
 // Mirrored verbatim from telltaleatheist/autocutstudio's assets-v1 on 2026-08-17 —
 // that repo is retired; ContentStudio hosts its own copies now. Same artifacts,
@@ -114,108 +114,10 @@ const CATALOG: AssetComponent[] = [
     ],
   },
 
-  // ── Voice isolation (audio-separator conda env, optional) ──────────────────
-  // Chunked mel-band-roformer separator used to isolate the speaker's voice on
-  // mic1/mic2 before alignment. Conda-packed like python-env (postInstall:
-  // conda-unpack). The separator model is bundled INSIDE the env at
-  // audio-separator-models/vocals_mel_band_roformer.ckpt.
-  {
-    id: 'voice-separator-env',
-    name: 'Voice isolation',
-    description: 'Optional voice-isolation engine that removes background noise from mic 1 / mic 2 before alignment.',
-    category: 'runtime',
-    required: false,
-    installSubdir: 'voice-separator-env',
-    version: '2026.07.17',
-    entry: process.platform === 'win32' ? 'python.exe' : 'bin/python3',
-    postInstall: 'conda-unpack',
-    artifacts: [
-      {
-        platform: 'darwin',
-        arch: 'arm64',
-        kind: 'archive',
-        url: `${BASE}/autocut-separator-env-macos-arm64.tar.gz`,
-        sha256: '736c98213173c86d26b9f3669a0eab332ee8464cd83a1c77ea2dcc9627f9d3e8',
-        bytes: 1214161322,
-      },
-      // TODO Intel (osx-64): artifact not built/uploaded yet. Left unpublished
-      // (sha256:'' , bytes:0) so isPublished() is false and the app treats voice
-      // isolation as not-downloadable on Intel Macs until this is filled in.
-      {
-        platform: 'darwin',
-        arch: 'x64',
-        kind: 'archive',
-        url: `${BASE}/autocut-separator-env-macos-x64.tar.gz`,
-        sha256: '',
-        bytes: 0,
-      },
-    ],
-  },
-
-  // ── Whisper large-v3-turbo (REQUIRED; the app's transcription model) ────────
-  // The heavier-model swap the base entry's comment always promised (operator,
-  // 2026-08-24: the editor's transcribe step runs large-v3-turbo). ~1.6 GB, so the
-  // first-launch download is no longer small — accepted: transcription quality is
-  // the priority now, not iteration speed. Verified against the bundled Metal
-  // whisper-cli on this machine before the entry was written: loads, transcribes,
-  // ~1.2 s for a 4-second clip. The transcript sidecar records which model
-  // actually ran, and binary-resolver's transitional chain still runs an already-
-  // installed base where this is absent — loudly, never silently.
-  {
-    id: 'whisper-large-v3-turbo',
-    name: 'Whisper speech-recognition model (large-v3-turbo)',
-    description: 'Speech-to-text model used for transcription and story transcripts.',
-    category: 'models',
-    required: true,
-    installSubdir: 'whisper',
-    version: 'large-v3-turbo',
-    entry: 'ggml-large-v3-turbo.bin',
-    artifacts: [
-      // Cross-platform single file — same model on every OS. sha256/bytes computed
-      // from the file downloaded from this exact URL on 2026-08-24.
-      ...(['darwin', 'win32', 'linux'] as Platform[]).flatMap((platform) =>
-        (['arm64', 'x64'] as Arch[]).map((arch) => ({
-          platform,
-          arch,
-          kind: 'file' as const,
-          url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin',
-          sha256: '1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69',
-          bytes: 1624555275,
-          fileName: 'ggml-large-v3-turbo.bin',
-        }))
-      ),
-    ],
-  },
-
-  // ── Whisper base model (optional since 2026-08-24; superseded by large-v3-turbo
-  // above as the required default). Kept in the catalog so machines that installed
-  // it under the older required entry still resolve it — binary-resolver runs it
-  // only when turbo is absent, and logs which model ran.
-  {
-    id: 'whisper-base',
-    name: 'Whisper speech-recognition model (base)',
-    description: 'Smaller, faster speech-to-text model — superseded by large-v3-turbo.',
-    category: 'models',
-    required: false,
-    installSubdir: 'whisper',
-    version: 'base',
-    entry: 'ggml-base.bin',
-    artifacts: [
-      // Cross-platform single file — same model on every OS. sha256/bytes verified
-      // against the file downloaded from this exact URL.
-      ...(['darwin', 'win32', 'linux'] as Platform[]).flatMap((platform) =>
-        (['arm64', 'x64'] as Arch[]).map((arch) => ({
-          platform,
-          arch,
-          kind: 'file' as const,
-          url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin',
-          sha256: '60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe',
-          bytes: 147951465,
-          fileName: 'ggml-base.bin',
-        }))
-      ),
-    ],
-  },
+  // voice-separator-env and the whisper.cpp models (whisper-large-v3-turbo, whisper-base) left
+  // with P10: voice isolation is Crucible's denoise job (LEDGER #200) and every transcription is
+  // Crucible's asr job (#206). An install that still has them on disk loses them once to the
+  // retired-component cleanup (electron/retired-components.ts).
 ];
 
 export function getCatalog(): AssetComponent[] {

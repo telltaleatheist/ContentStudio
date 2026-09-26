@@ -1,4 +1,5 @@
 import { Injectable, NgZone } from '@angular/core';
+import type { ChapterPick } from './chapter-pick';
 import { Observable, Subject } from 'rxjs';
 import type {
   AudioFile,
@@ -35,6 +36,35 @@ import type {
   StoryScope,
   TranscriptLink,
 } from '../features/transcript-link/transcript-link.types';
+import type {
+  AddServerRequest,
+  ConnectCodeReading,
+  CopiedConnectCode,
+  CrucibleEnginePresence,
+  CrucibleInstallProgress,
+  CrucibleInstallStatus,
+  CrucibleIpcResult,
+  CrucibleLanesView,
+  CruciblePairingDecision,
+  CruciblePairingPrompt,
+  CrucibleProbeAnswer,
+  CrucibleReadinessView,
+  CrucibleReleaseCheck,
+  CrucibleServerRow,
+  CrucibleServersChangedPayload,
+  CrucibleServersView,
+  CrucibleSettingsPatch,
+  CrucibleSettingsView,
+  CrucibleSetupView,
+  KeyMigrationOutcome,
+  QueuePlan,
+  QueuePlanCandidate,
+  ResumeStage,
+  LocalConnectCodes,
+  RoutingView,
+  UpstreamName,
+  UpstreamTestAnswer,
+} from '../features/crucible/crucible.types';
 
 /**
  * The main process's answer to "does this video have a saved Whisper transcript?".
@@ -119,8 +149,6 @@ export interface StartupReadiness {
     ready: boolean;
     missingComponents: string[];
     missingRequiredTools: Array<{ id: string; name: string }>;
-    installedWhisperModels: Array<{ id: string; name: string }>;
-    selectedModelInstalled: boolean;
   };
 }
 
@@ -150,7 +178,8 @@ export interface TranscriptSplitBounds {
   maxSeconds: number;
 }
 
-// One AI-detected chapter (contiguous subject segment tiling the transcript).
+// One candidate piece of the stream: a story at snap's `stories` grain (LEDGER #208), tiling the
+// transcript in order. `label` is the stream outline's item; `isAd` is the ad check's verdict.
 export interface TranscriptChapter {
   index: number;
   startSeconds: number;
@@ -158,6 +187,7 @@ export interface TranscriptChapter {
   timestamp: string;
   label: string;
   verbalCue: boolean;
+  isAd?: boolean;
 }
 
 export interface AnalyzeTranscriptSplitResult {
@@ -165,8 +195,12 @@ export interface AnalyzeTranscriptSplitResult {
   title?: string;
   durationSeconds?: number;
   chapters?: TranscriptChapter[];
+  warnings?: string[];
   error?: string;
 }
+
+/** The split's progress: the phase with its own done/total, and the whole run's fraction by work. */
+export interface TranscriptSplitProgress { phase: string; done: number; total: number; fraction: number }
 
 export interface TranscriptSplitCut {
   startSeconds: number;
@@ -302,11 +336,12 @@ export interface YouTubeCollectorState {
 
 // Metadata model routing (which model generates which metadata task)
 /**
- * Whether the option's model is actually on the machine. `unknown` means it could not be
- * checked — Ollama did not answer, or the option is served by something Ollama does not
- * list — and is deliberately not the same as `not-installed`.
+ * Whether the SELECTED Crucible server can run the option (metadata-routing.ts, P2):
+ * installed there, pullable there (not downloaded yet), not here at all, a Claude model on
+ * that server's key, `claude -p` outside Crucible, or unknown because the server could not be
+ * read — which is deliberately not the same as `not-here`.
  */
-export type MetadataRoutingAvailability = 'cloud' | 'installed' | 'not-installed' | 'unknown';
+export type MetadataRoutingAvailability = 'installed' | 'pullable' | 'not-here' | 'upstream' | 'outside' | 'unknown';
 
 export interface MetadataRoutingOption {
   id: string;
@@ -314,10 +349,7 @@ export interface MetadataRoutingOption {
   /** The model name behind the label, so a missing one can be named. */
   model: string;
   availability: MetadataRoutingAvailability;
-  /**
-   * Why `unknown`, when the host banner does not already say it — or, on an option that
-   * needs more than one model, which of them is missing when it is `not-installed`.
-   */
+  /** The server's own sentence, when the option is shown although the server cannot run it. */
   availabilityNote?: string;
 }
 
@@ -413,28 +445,38 @@ export interface MetadataRoutingTask {
   modal: boolean;
 }
 
-/** The Ollama host every plain-local option was checked against. */
-export interface MetadataRoutingHost {
-  host: string;
-  reachable: boolean;
-  error?: string;
-  installedCount: number;
+/**
+ * What the editor's Stories analyzer will run on: the routing table's chapters row, as the
+ * main process resolves it on every story call (LEDGER #204, #205). Read-only in the editor —
+ * the picker it used to have is gone, and this is the line that took its place.
+ */
+export interface StoryRoutedModel {
+  model: string;
+  label: string;
+  kind: 'local' | 'cloud';
 }
 
 /**
- * The two models nobody picks, which still have to be reported.
+ * The Crucible server every option was judged against: the one this routing's jobs run on
+ * (the routing's own server when it names one, else the one Settings has selected).
+ */
+export interface MetadataRoutingServer {
+  name: string | null;
+  reachable: boolean;
+  error?: string;
+  /** Whether that server has an Anthropic key; null when its settings could not be read. */
+  anthropicConfigured: boolean | null;
+}
+
+/**
+ * The chapters row's model and whether it is installed, as the main process reports it.
  *
- * Chapters run on every item that has a timestamped transcript, on `generationModel`.
- * Key-phrase ranking runs on every item, on `keyPhraseModel`. The modal shows both because
- * the warning is the part that was worth keeping when the picker went: a missing chapter
- * model means no chapters at all, and a missing embedding model means measurably worse tags
- * on a run that declares it.
+ * `keyPhraseModel` / `keyPhraseAvailability` sat here for nomic-embed-text until key-phrase
+ * ranking was removed (LEDGER #205); the dialog's "not installed" note went with them.
  */
 export interface MetadataRoutingChapters {
   generationModel: string;
-  keyPhraseModel: string;
   generationAvailability: MetadataRoutingAvailability;
-  keyPhraseAvailability: MetadataRoutingAvailability;
 }
 
 /**
@@ -444,8 +486,22 @@ export interface MetadataRoutingChapters {
  */
 export interface MetadataRouting {
   tasks: MetadataRoutingTask[];
-  localModels: MetadataRoutingHost;
+  server: MetadataRoutingServer;
   chapters: MetadataRoutingChapters;
+  /**
+   * The "Runs on" row (LEDGER #222): the server stored with this routing (null: the selected
+   * server runs its jobs), and the server Settings has selected.
+   */
+  runsOn: { routingServer: string | null; selectedServer: string | null };
+}
+
+/**
+ * What the routing dialog asks main to judge before anything is saved: the selections on
+ * screen, on the server its "Runs on" row now names (null: the selected server).
+ */
+export interface MetadataRoutingPreview {
+  server: string | null;
+  selections: Record<string, string>;
 }
 
 /**
@@ -616,16 +672,18 @@ declare global {
       // Transcript import (AutoCutStudio)
       importTranscript: () => Promise<ImportTranscriptResult>;
       analyzeTranscriptSplit: (filePath: string) => Promise<AnalyzeTranscriptSplitResult>;
+      onTranscriptSplitProgress: (callback: (p: TranscriptSplitProgress) => void) => void;
+      removeTranscriptSplitProgressListener: () => void;
       commitTranscriptSplit: (filePath: string, cuts: TranscriptSplitCut[]) => Promise<CommitTranscriptSplitResult>;
 
       // Metadata generation
       generateMetadata: (params: any) => Promise<any>;
-      sendHeldPrompt: (jobId: string) => Promise<any>;
+      sendHeldPrompt: (request: { jobId: string; fast: boolean }) => Promise<any>;
       discardHeldPrompt: (jobId: string) => Promise<any>;
       cancelJob: (jobId: string) => Promise<{ success: boolean; error?: string }>;
 
       // Metadata model routing (rejects with a descriptive error)
-      getMetadataRouting: () => Promise<MetadataRouting>;
+      getMetadataRouting: (preview?: MetadataRoutingPreview) => Promise<MetadataRouting>;
       setMetadataRouting: (selections: Record<string, string>) => Promise<{ success: true }>;
 
       // Progress updates
@@ -659,14 +717,46 @@ declare global {
       // Logging
       saveLogs: (frontendLogs: string) => Promise<{ success: boolean; frontendPath?: string; backendPath?: string; error?: string }>;
 
-      // AI Setup
-      checkOllama: () => Promise<{ available: boolean; models: string[] }>;
-      getApiKeys: () => Promise<{ claudeApiKey?: string; openaiApiKey?: string }>;
-      saveApiKey: (provider: string, apiKey: string) => Promise<{ success: boolean; error?: string }>;
-      getAvailableModels: (provider: 'ollama' | 'openai' | 'claude', apiKey?: string, host?: string) => Promise<{ success: boolean; models: Array<{ id: string; name: string }>; error?: string }>;
-
       // External URLs
       openExternal: (url: string) => Promise<{ success: boolean; error?: string }>;
+
+      // Crucible (the inference servers; features/crucible/crucible.types.ts). Read through
+      // services/crucible.ts, which unwraps the envelope; nothing else calls these.
+      crucibleServers: () => Promise<CrucibleIpcResult<CrucibleServersView>>;
+      crucibleProbe: (name: string) => Promise<CrucibleIpcResult<CrucibleProbeAnswer>>;
+      crucibleTest: (name: string) => Promise<CrucibleIpcResult<CrucibleProbeAnswer>>;
+      crucibleAdd: (request: AddServerRequest) => Promise<CrucibleIpcResult<CrucibleServerRow>>;
+      crucibleRemove: (name: string) => Promise<CrucibleIpcResult<CrucibleServerRow>>;
+      crucibleSelect: (name: string) => Promise<CrucibleIpcResult<RoutingView>>;
+      crucibleSetFast: (name: string | null) => Promise<CrucibleIpcResult<RoutingView>>;
+      crucibleSetPaused: (name: string, paused: boolean) => Promise<CrucibleIpcResult<RoutingView>>;
+      cruciblePairStart: (address: string, name?: string) => Promise<CrucibleIpcResult<CruciblePairingPrompt>>;
+      cruciblePairPoll: (requestId: string) => Promise<CrucibleIpcResult<CruciblePairingDecision>>;
+      cruciblePairCancel: (requestId: string) => Promise<CrucibleIpcResult<{ cancelled: true }>>;
+      crucibleConnectCodeRead: (line: string) => Promise<CrucibleIpcResult<ConnectCodeReading>>;
+      crucibleConnectCodeCopy: (name: string) => Promise<CrucibleIpcResult<CopiedConnectCode>>;
+      crucibleConnectCodesLocal: () => Promise<CrucibleIpcResult<LocalConnectCodes>>;
+      crucibleConnectCodeCopyLocal: (url: string) => Promise<CrucibleIpcResult<CopiedConnectCode>>;
+      crucibleSettingsGet: (name: string) => Promise<CrucibleIpcResult<CrucibleSettingsView>>;
+      crucibleSettingsPut: (name: string, patch: CrucibleSettingsPatch) => Promise<CrucibleIpcResult<CrucibleSettingsView>>;
+      crucibleUpstreamTest: (name: string, upstream: UpstreamName, probe: { key?: string; url?: string }) => Promise<CrucibleIpcResult<UpstreamTestAnswer>>;
+      crucibleKeyMigration: () => Promise<CrucibleIpcResult<KeyMigrationOutcome | null>>;
+      crucibleKeyMigrationResolve: (choice: 'replace' | 'keep') => Promise<CrucibleIpcResult<KeyMigrationOutcome>>;
+      crucibleSetup: () => Promise<CrucibleIpcResult<CrucibleSetupView>>;
+      crucibleInstallStatus: () => Promise<CrucibleIpcResult<CrucibleInstallStatus>>;
+      crucibleInstallStart: () => Promise<CrucibleIpcResult<{ started: true; release: string }>>;
+      crucibleReleaseCheck: () => Promise<CrucibleIpcResult<CrucibleReleaseCheck>>;
+      crucibleLocalPresence: () => Promise<CrucibleIpcResult<CrucibleEnginePresence>>;
+      crucibleReadiness: () => Promise<CrucibleIpcResult<CrucibleReadinessView>>;
+      crucibleReadinessRefresh: () => Promise<CrucibleIpcResult<CrucibleReadinessView>>;
+      crucibleReadinessDecline: () => Promise<CrucibleIpcResult<CrucibleReadinessView>>;
+      crucibleReadinessStart: () => Promise<CrucibleIpcResult<CrucibleReadinessView>>;
+      crucibleLanes: () => Promise<CrucibleIpcResult<CrucibleLanesView>>;
+      crucibleQueuePlan: (candidates: QueuePlanCandidate[]) => Promise<CrucibleIpcResult<QueuePlan>>;
+      onCrucibleServersChanged: (callback: (change: CrucibleServersChangedPayload) => void) => () => void;
+      onCrucibleReadiness: (callback: (view: CrucibleReadinessView) => void) => () => void;
+      onCrucibleInstallProgress: (callback: (event: CrucibleInstallProgress) => void) => () => void;
+      onCrucibleLanes: (callback: (view: CrucibleLanesView) => void) => () => void;
 
       // Analytics (performance feedback loop)
       analyticsListChannels: () => Promise<{ success: boolean; channels?: AnalyticsChannel[]; error?: string }>;
@@ -816,20 +906,19 @@ declare global {
       removeTranscribeListeners: () => void;
       loadTranscript: (payload: { zipPath: string }) => Promise<any>;
 
-      // Story analysis (local Ollama)
-      ollamaListModels: (opts?: { host?: string }) =>
-        Promise<{ connected: boolean; models: Array<{ id: string; name: string }> }>;
+      // Story analysis. The model is the routing table's chapters row, resolved by the main
+      // process on every call (LEDGER #205); no payload names one.
+      storyRoutedModel: () => Promise<StoryRoutedModel>;
       analyzeStoryChapters: (payload: {
         segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
-        model: string;
-        host?: string;
-        consolidate?: boolean;
-      }) => Promise<{ chapters: any[] }>;
-      suggestStoryTitle: (payload: { text: string | string[]; model: string; host?: string }) =>
-        Promise<{ title: string }>;
+      }) => Promise<{ chapters: any[]; warnings?: string[] }>;
+      chapterStory: (payload: {
+        segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
+      }) => Promise<{ chapters: any[]; warnings?: string[] }>;
+      suggestStoryTitle: (payload: { name?: string; chapters: Array<{ label: string; detail?: string; startSeconds: number; endSeconds: number }> }) => Promise<{ title: string }>;
       cancelStoryAnalysis: () => Promise<{ stopped: boolean }>;
-      unloadStoryModel: (payload: { model: string; host?: string }) => Promise<{ ok: boolean }>;
-      onStoryAnalyzeProgress: (callback: (p: { phase: string; done: number; total: number }) => void) => void;
+      unloadStoryModel: () => Promise<{ ok: boolean; released: string | null }>;
+      onStoryAnalyzeProgress: (callback: (p: { phase: string; done: number; total: number; fraction?: number }) => void) => void;
       removeStoryAnalyzeProgressListener: () => void;
 
       // Media
@@ -877,11 +966,13 @@ declare global {
         error?: string;
       }>;
       /**
-       * The downloadable environment. `listAssets` backs both the Denoise gate and the
-       * environment modal; the other five are the install surface behind File ▸ Environment…
-       * Progress is sent to THIS window on 'asset-progress' by whichever install is running.
+       * The downloadable environment. `listAssets` backs the environment modal; the other five
+       * are the install surface behind File ▸ Environment… Progress is sent to THIS window on
+       * 'asset-progress' by whichever install is running.
        */
       listAssets: () => Promise<{ success: boolean; components?: AssetComponentStatus[]; error?: string }>;
+      /** The Denoise toggle's gate: can the selected Crucible isolate voice, and if not, why. */
+      editorVoiceIsolationStatus: () => Promise<{ available: boolean; reason: string }>;
       installAsset: (id: string) => Promise<AssetInstallResult>;
       cancelAsset: (id: string) => Promise<{ success: boolean }>;
       ensureRequiredAssets: () =>
@@ -967,8 +1058,6 @@ export class ElectronService {
           ready: true,
           missingComponents: [],
           missingRequiredTools: [],
-          installedWhisperModels: [],
-          selectedModelInstalled: true,
         },
       };
     }
@@ -1064,6 +1153,14 @@ export class ElectronService {
     return await this.ipcRenderer.analyzeTranscriptSplit(filePath);
   }
 
+  onTranscriptSplitProgress(callback: (p: TranscriptSplitProgress) => void): void {
+    this.ipcRenderer?.onTranscriptSplitProgress((p) => this.ngZone.run(() => callback(p)));
+  }
+
+  removeTranscriptSplitProgressListener(): void {
+    this.ipcRenderer?.removeTranscriptSplitProgressListener();
+  }
+
   async commitTranscriptSplit(filePath: string, cuts: TranscriptSplitCut[]): Promise<CommitTranscriptSplitResult> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.commitTranscriptSplit(filePath, cuts);
@@ -1114,8 +1211,8 @@ export class ElectronService {
     inputs: string[] | Array<{ path: string; notes?: string }>;
     promptSet: string;
     mode: string;
-    /** What the chapter pipeline detects for this run — the queue-time pick (LEDGER #170). */
-    chapterGrain?: 'detailed' | 'broad' | 'stories';
+    /** What the chapter pipeline detects for this run — the queue-time pick (LEDGER #213). */
+    chapterGrain?: ChapterPick;
     /** Required: the queue row's own id. The main process refuses a request without it. */
     jobId: string;
     jobName?: string;
@@ -1137,6 +1234,10 @@ export class ElectronService {
      */
     useSavedTranscripts?: { [path: string]: boolean };
     showPrompt?: boolean;
+    /** Required: whether the row is pinned "fast" (to the fast server; LEDGER #195). */
+    fast: boolean;
+    /** Where a parked or interrupted job picks up (plan section 13.2); absent on a first run. */
+    resumeFrom?: ResumeStage;
   }): Promise<any> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.generateMetadata(params);
@@ -1158,9 +1259,9 @@ export class ElectronService {
 
   // Run full generation reusing a transcript the backend is holding from a
   // prior showPrompt:true call (no re-transcription).
-  async sendHeldPrompt(jobId: string): Promise<any> {
+  async sendHeldPrompt(jobId: string, fast: boolean): Promise<any> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.sendHeldPrompt(jobId);
+    return await this.ipcRenderer.sendHeldPrompt({ jobId, fast });
   }
 
   // Free a held transcript when the user closes the prompt preview without sending.
@@ -1176,9 +1277,9 @@ export class ElectronService {
 
   // Metadata model routing — these reject rather than return a placeholder, so the
   // caller shows the real reason instead of an empty routing table.
-  async getMetadataRouting(): Promise<MetadataRouting> {
+  async getMetadataRouting(preview?: MetadataRoutingPreview): Promise<MetadataRouting> {
     if (!this.ipcRenderer) throw new Error('Model routing needs the Electron bridge, which is not available in this window.');
-    return await this.ipcRenderer.getMetadataRouting();
+    return await this.ipcRenderer.getMetadataRouting(preview);
   }
 
   async setMetadataRouting(selections: Record<string, string>): Promise<{ success: true }> {
@@ -1297,31 +1398,6 @@ export class ElectronService {
   async saveLogs(frontendLogs: string): Promise<{ success: boolean; frontendPath?: string; backendPath?: string; error?: string }> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.saveLogs(frontendLogs);
-  }
-
-  // AI Setup
-  async checkOllama(): Promise<{ available: boolean; models: string[] }> {
-    if (!this.ipcRenderer) return { available: false, models: [] };
-    return await this.ipcRenderer.checkOllama();
-  }
-
-  async getApiKeys(): Promise<{ claudeApiKey?: string; openaiApiKey?: string }> {
-    if (!this.ipcRenderer) return {};
-    return await this.ipcRenderer.getApiKeys();
-  }
-
-  async saveApiKey(provider: 'claude' | 'openai', apiKey: string): Promise<{ success: boolean; error?: string }> {
-    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
-    return await this.ipcRenderer.saveApiKey(provider, apiKey);
-  }
-
-  async getAvailableModels(
-    provider: 'ollama' | 'openai' | 'claude',
-    apiKey?: string,
-    host?: string
-  ): Promise<{ success: boolean; models: Array<{ id: string; name: string }>; error?: string }> {
-    if (!this.ipcRenderer) return { success: false, models: [], error: 'Electron not available' };
-    return await this.ipcRenderer.getAvailableModels(provider, apiKey, host);
   }
 
   async openExternal(url: string): Promise<{ success: boolean; error?: string }> {
@@ -1979,22 +2055,27 @@ export class ElectronService {
     return this.editorBridge.loadTranscript(payload);
   }
 
-  // ── Story analysis (local Ollama) ───────────────────────────────────────────
+  // ── Story analysis (the chapters routing) ───────────────────────────────────
 
-  async ollamaListModels(host?: string): Promise<{ connected: boolean; models: Array<{ id: string; name: string }> }> {
-    return this.editorBridge.ollamaListModels(host ? { host } : undefined);
+  async storyRoutedModel(): Promise<StoryRoutedModel> {
+    return this.editorBridge.storyRoutedModel();
   }
 
+  /** Split a span into stories (LEDGER #213: always the stories grain). */
   async analyzeStoryChapters(payload: {
     segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
-    model: string;
-    host?: string;
-    consolidate?: boolean;
-  }): Promise<{ chapters: any[] }> {
+  }): Promise<{ chapters: any[]; warnings?: string[] }> {
     return this.editorBridge.analyzeStoryChapters(payload);
   }
 
-  async suggestStoryTitle(payload: { text: string | string[]; model: string; host?: string }): Promise<{ title: string }> {
+  /** One story's own chapter list (the chapters grain). */
+  async chapterStory(payload: {
+    segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
+  }): Promise<{ chapters: any[]; warnings?: string[] }> {
+    return this.editorBridge.chapterStory(payload);
+  }
+
+  async suggestStoryTitle(payload: { name?: string; chapters: Array<{ label: string; detail?: string; startSeconds: number; endSeconds: number }> }): Promise<{ title: string }> {
     return this.editorBridge.suggestStoryTitle(payload);
   }
 
@@ -2002,11 +2083,11 @@ export class ElectronService {
     return this.editorBridge.cancelStoryAnalysis();
   }
 
-  async unloadStoryModel(payload: { model: string; host?: string }): Promise<{ ok: boolean }> {
-    return this.editorBridge.unloadStoryModel(payload);
+  async unloadStoryModel(): Promise<{ ok: boolean; released: string | null }> {
+    return this.editorBridge.unloadStoryModel();
   }
 
-  onStoryAnalyzeProgress(callback: (p: { phase: string; done: number; total: number }) => void): void {
+  onStoryAnalyzeProgress(callback: (p: { phase: string; done: number; total: number; fraction?: number }) => void): void {
     this.editorBridge.onStoryAnalyzeProgress((p) => this.ngZone.run(() => callback(p)));
   }
 
@@ -2113,12 +2194,17 @@ export class ElectronService {
     return this.editorBridge.autoDetectAudio(masterVideoPath);
   }
 
-  /**
-   * Install state of the editor backend's downloadable components. Read by the Denoise gate
-   * (one component) and by the environment modal (all of them).
-   */
+  /** Install state of the editor backend's downloadable components, for the environment modal. */
   async listAssets(): Promise<{ success: boolean; components?: AssetComponentStatus[]; error?: string }> {
     return this.editorBridge.listAssets();
+  }
+
+  /**
+   * Can the selected Crucible isolate voice (its `denoise` row offers `vocals-roformer`,
+   * installed)? The reason names what is missing and the command that supplies it.
+   */
+  async voiceIsolationStatus(): Promise<{ available: boolean; reason: string }> {
+    return this.editorBridge.editorVoiceIsolationStatus();
   }
 
   /**

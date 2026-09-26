@@ -840,6 +840,94 @@
         }
       }
 
+      // The lanes strip: one chip per Crucible server. Quiet by default — the dot carries the
+      // state, and only a server ContentStudio is running on is drawn in the theme orange.
+      .lanes-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin-top: 0.75rem;
+
+        .lane-chip {
+          display: flex;
+          align-items: center;
+          gap: 0.4rem;
+          padding: 0.2rem 0.25rem 0.2rem 0.6rem;
+          border-radius: 12px;
+          border: 1px solid var(--border-color);
+          background-color: var(--bg-secondary);
+          font-size: 0.85rem;
+          color: var(--text-secondary);
+          min-width: 0;
+
+          .lane-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            background-color: var(--text-muted);
+          }
+
+          .lane-name {
+            font-weight: 600;
+            color: var(--text-primary);
+          }
+
+          .lane-tag {
+            display: inline-flex;
+            align-items: center;
+            font-size: 0.75rem;
+            padding: 0 0.35rem;
+            border-radius: 8px;
+            background-color: var(--overlay-hover);
+
+            mat-icon {
+              font-size: 14px;
+              width: 14px;
+              height: 14px;
+            }
+          }
+
+          .lane-state {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 22rem;
+          }
+
+          .lane-resident {
+            font-family: var(--font-mono);
+            font-size: 0.78rem;
+            color: var(--text-muted);
+          }
+
+          .lane-parked {
+            color: var(--text-muted);
+          }
+
+          .lane-switch {
+            min-width: 0;
+            height: 24px;
+            line-height: 24px;
+            padding: 0 0.5rem;
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+          }
+
+          &.lane-running {
+            border-color: var(--primary-orange);
+            .lane-dot { background-color: var(--primary-orange); }
+          }
+          &.lane-idle .lane-dot { background-color: var(--success-solid); }
+          &.lane-busy .lane-dot { background-color: var(--text-secondary); }
+          &.lane-unreachable .lane-dot {
+            background-color: transparent;
+            border: 1px solid var(--text-muted);
+          }
+          &.paused { opacity: 0.75; }
+        }
+      }
+
       .global-progress {
         height: 8px;
         border-radius: 4px;
@@ -927,7 +1015,48 @@
                 color: var(--primary-orange);
               }
             }
+
+            // A parked job is WAITING on its server, not failing: grey, never the error red.
+            .job-parked-line {
+              color: var(--text-muted);
+              font-size: 0.85rem;
+              margin-top: 0.15rem;
+              overflow-wrap: anywhere;
+            }
           }
+        }
+
+        // The row's Fast pin, drawn like the inputs list's boxed toggles.
+        .fast-toggle {
+          flex-shrink: 0;
+          color: var(--text-primary);
+          background: var(--overlay-hover);
+          border-color: var(--border-color);
+          --mdc-outlined-button-label-text-color: var(--text-primary);
+          --mdc-outlined-button-outline-color: var(--border-color);
+
+          mat-icon {
+            font-size: 16px;
+            width: 16px;
+            height: 16px;
+            margin-right: 0.15rem;
+          }
+
+          &.active {
+            color: var(--on-accent);
+            background: var(--primary-orange);
+            border-color: var(--primary-orange);
+            --mdc-outlined-button-label-text-color: var(--on-accent);
+            --mdc-outlined-button-outline-color: var(--primary-orange);
+          }
+        }
+
+        .fast-mark {
+          flex-shrink: 0;
+          font-size: 18px;
+          width: 18px;
+          height: 18px;
+          color: var(--primary-orange);
         }
 
         .job-progress-badge {

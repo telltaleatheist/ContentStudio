@@ -56,7 +56,7 @@
 import * as fs from 'fs';
 import type { VideoParts } from '../youtube/youtube-api.service';
 import { PublishStoreService, GeneratedFallback, resolveChosenMetadata } from './publish-store.service';
-import { validateThumbnailFile } from './thumbnail-validate';
+import { fitThumbnailFile } from './thumbnail-validate';
 import {
   ChosenMetadata,
   MAX_TITLE_LENGTH,
@@ -323,16 +323,18 @@ export async function pushItemToYouTube(itemId: string, deps: PushDeps): Promise
   const resolved = resolveChosenMetadata(record, generated);
   const plan = planVideoUpdate({ record, resolved, video: await requireVideo(record, api) });
 
-  // The thumbnail is validated and READ FIRST — before any write — so a file that has
-  // moved, shrunk or been replaced stops the push instead of half-completing it.
+  // The thumbnail is fitted and READ FIRST — before any write — so a file that has moved
+  // or is no longer an image stops the push instead of half-completing it, and one that
+  // has grown outside YouTube's bounds since it was attached is fitted here rather than
+  // refused.
   let thumbnail: { path: string; bytes: Buffer; mime: 'image/png' | 'image/jpeg' } | null = null;
   let thumbnailSkipped: string | null = null;
   if (record.thumbnailPath) {
-    const { meta } = validateThumbnailFile(record.thumbnailPath);
+    const fitted = fitThumbnailFile(record.thumbnailPath);
     thumbnail = {
-      path: record.thumbnailPath,
-      bytes: fs.readFileSync(record.thumbnailPath),
-      mime: meta.mime,
+      path: fitted.path,
+      bytes: fs.readFileSync(fitted.path),
+      mime: fitted.meta.mime,
     };
   } else {
     thumbnailSkipped = 'No thumbnail is attached to this item, so none was uploaded.';

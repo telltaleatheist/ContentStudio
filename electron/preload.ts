@@ -24,7 +24,8 @@ const api = {
   },
 
   // Per-task model routing (the settings modal's whole contract)
-  getMetadataRouting: () => ipcRenderer.invoke('metadata-routing:get'),
+  getMetadataRouting: (preview?: { server: string | null; selections: Record<string, string> }) =>
+    ipcRenderer.invoke('metadata-routing:get', preview),
   setMetadataRouting: (selections: Record<string, string>) =>
     ipcRenderer.invoke('metadata-routing:set', selections),
 
@@ -60,6 +61,14 @@ const api = {
   importTranscript: () => ipcRenderer.invoke('import-transcript'),
   analyzeTranscriptSplit: (filePath: string) =>
     ipcRenderer.invoke('analyze-transcript-split', { filePath }),
+  // The split is snap chaptering at the stories grain: minutes on a long stream, so it reports
+  // its progress, weighted by work (P8b).
+  onTranscriptSplitProgress: (callback: (p: { phase: string; done: number; total: number; fraction: number }) => void) => {
+    ipcRenderer.on('transcript-split-progress', (_event, p) => callback(p));
+  },
+  removeTranscriptSplitProgressListener: () => {
+    ipcRenderer.removeAllListeners('transcript-split-progress');
+  },
   commitTranscriptSplit: (filePath: string, cuts: Array<{ startSeconds: number; endSeconds: number; title?: string }>) =>
     ipcRenderer.invoke('commit-transcript-split', { filePath, cuts }),
 
@@ -129,15 +138,71 @@ const api = {
   // Log export
   saveLogs: (frontendLogs: string) => ipcRenderer.invoke('save-logs', frontendLogs),
 
-  // AI Setup
-  checkOllama: () => ipcRenderer.invoke('check-ollama'),
-  getApiKeys: () => ipcRenderer.invoke('get-api-keys'),
-  saveApiKey: (provider: string, apiKey: string) => ipcRenderer.invoke('save-api-key', provider, apiKey),
-  getAvailableModels: (provider: 'ollama' | 'openai' | 'claude', apiKey?: string, host?: string) =>
-    ipcRenderer.invoke('get-available-models', provider, apiKey, host),
-
   // External URLs
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
+
+  // ==================== CRUCIBLE ====================
+  // The inference servers (CRUCIBLE-MIGRATION-PLAN.md P1). Every answer is a
+  // CrucibleIpcResult envelope: {success, data} or {success, code, error}. No answer carries
+  // a token; the three push channels carry masked rows, a readiness sentence and install
+  // progress. Adding a server takes a pasted connect code or {discovered: true}; a
+  // device-code pairing crosses as a request id and the short user code only.
+  crucibleServers: () => ipcRenderer.invoke('crucible:servers'),
+  crucibleProbe: (name: string) => ipcRenderer.invoke('crucible:probe', name),
+  crucibleTest: (name: string) => ipcRenderer.invoke('crucible:test', name),
+  crucibleAdd: (request: { connectCode: string; name?: string } | { discovered: true; name?: string }) =>
+    ipcRenderer.invoke('crucible:add', request),
+  crucibleRemove: (name: string) => ipcRenderer.invoke('crucible:remove', name),
+  crucibleSelect: (name: string) => ipcRenderer.invoke('crucible:select', name),
+  crucibleSetFast: (name: string | null) => ipcRenderer.invoke('crucible:set-fast', name),
+  crucibleSetPaused: (name: string, paused: boolean) => ipcRenderer.invoke('crucible:set-paused', name, paused),
+  cruciblePairStart: (address: string, name?: string) => ipcRenderer.invoke('crucible:pair-start', { address, name }),
+  cruciblePairPoll: (requestId: string) => ipcRenderer.invoke('crucible:pair-poll', requestId),
+  cruciblePairCancel: (requestId: string) => ipcRenderer.invoke('crucible:pair-cancel', requestId),
+  crucibleConnectCodeRead: (line: string) => ipcRenderer.invoke('crucible:connect-code-read', line),
+  crucibleConnectCodeCopy: (name: string) => ipcRenderer.invoke('crucible:connect-code-copy', name),
+  crucibleConnectCodesLocal: () => ipcRenderer.invoke('crucible:connect-codes-local'),
+  crucibleConnectCodeCopyLocal: (url: string) => ipcRenderer.invoke('crucible:connect-code-copy-local', url),
+  crucibleSettingsGet: (name: string) => ipcRenderer.invoke('crucible:settings-get', name),
+  crucibleSettingsPut: (name: string, patch: any) => ipcRenderer.invoke('crucible:settings-put', name, patch),
+  crucibleUpstreamTest: (name: string, upstream: string, probe: { key?: string; url?: string }) =>
+    ipcRenderer.invoke('crucible:upstream-test', name, upstream, probe),
+  // The api-keys.json move into this computer's Crucible (P2, plan 6.6): what it last said,
+  // and the pane's answer when the server already held a different key. No key crosses.
+  crucibleKeyMigration: () => ipcRenderer.invoke('crucible:key-migration'),
+  crucibleKeyMigrationResolve: (choice: 'replace' | 'keep') => ipcRenderer.invoke('crucible:key-migration-resolve', choice),
+  crucibleSetup: () => ipcRenderer.invoke('crucible:setup'),
+  crucibleInstallStatus: () => ipcRenderer.invoke('crucible:install-status'),
+  crucibleInstallStart: () => ipcRenderer.invoke('crucible:install-start'),
+  crucibleReleaseCheck: () => ipcRenderer.invoke('crucible:release-check'),
+  crucibleLocalPresence: () => ipcRenderer.invoke('crucible:local-presence'),
+  crucibleReadiness: () => ipcRenderer.invoke('crucible:readiness'),
+  crucibleReadinessRefresh: () => ipcRenderer.invoke('crucible:readiness-refresh'),
+  crucibleReadinessDecline: () => ipcRenderer.invoke('crucible:readiness-decline'),
+  crucibleReadinessStart: () => ipcRenderer.invoke('crucible:readiness-start'),
+  crucibleLanes: () => ipcRenderer.invoke('crucible:lanes'),
+  crucibleQueuePlan: (candidates: Array<{ jobId: string; fast: boolean }>) => ipcRenderer.invoke('crucible:queue-plan', candidates),
+  onCrucibleServersChanged: (callback: (change: any) => void) => {
+    const listener = (_event: any, change: any) => callback(change);
+    ipcRenderer.on('crucible:servers-changed', listener);
+    return () => ipcRenderer.removeListener('crucible:servers-changed', listener);
+  },
+  onCrucibleReadiness: (callback: (view: any) => void) => {
+    const listener = (_event: any, view: any) => callback(view);
+    ipcRenderer.on('crucible:readiness', listener);
+    return () => ipcRenderer.removeListener('crucible:readiness', listener);
+  },
+  onCrucibleInstallProgress: (callback: (event: any) => void) => {
+    const listener = (_event: any, progress: any) => callback(progress);
+    ipcRenderer.on('crucible:install-progress', listener);
+    return () => ipcRenderer.removeListener('crucible:install-progress', listener);
+  },
+  onCrucibleLanes: (callback: (view: any) => void) => {
+    const listener = (_event: any, view: any) => callback(view);
+    ipcRenderer.on('crucible:lanes', listener);
+    return () => ipcRenderer.removeListener('crucible:lanes', listener);
+  },
+  // ==================== END CRUCIBLE ====================
 
   // Analytics (performance feedback loop)
   analyticsListChannels: () => ipcRenderer.invoke('analytics-list-channels'),
@@ -399,7 +464,7 @@ const api = {
     muteMicDuringScreen?: boolean;
   }) => ipcRenderer.invoke('editor:export', payload),
 
-  // Transcription (whisper.cpp, word-level). Progress/completion arrive on this window.
+  // Transcription (Crucible asr, word-level). Progress/completion arrive on this window.
   transcribeSession: (payload: { zipPath: string }) => ipcRenderer.invoke('editor:transcribe', payload),
   cancelTranscription: (payload: { jobId: string }) => ipcRenderer.invoke('editor:transcribe-cancel', payload),
   loadTranscript: (payload: { zipPath: string }) => ipcRenderer.invoke('editor:transcript-load', payload),
@@ -414,20 +479,23 @@ const api = {
     ipcRenderer.removeAllListeners('transcribe-complete');
   },
 
-  // Story analysis (local Ollama LLM). `consolidate: false` says "this span is already ONE
-  // story"; the default (true) lives in chapter-splitter alone and is not repeated here.
-  ollamaListModels: (payload?: { host?: string }) => ipcRenderer.invoke('ollama:list-models', payload),
+  // Story analysis. The model is never in a payload: the main process resolves it from the
+  // metadata routing table's chapters row on every call (LEDGER #205), and `storyRoutedModel`
+  // is how the editor learns what that is for its read-only line. The CHANNEL is the grain
+  // (LEDGER #213): analyzeStoryChapters splits into stories (the timeline, or a story split in
+  // several), chapterStory draws one story's own chapter list.
+  storyRoutedModel: () => ipcRenderer.invoke('story:routed-model'),
   analyzeStoryChapters: (payload: {
     segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
-    model: string;
-    host?: string;
-    consolidate?: boolean;
   }) => ipcRenderer.invoke('story:analyze-chapters', payload),
-  suggestStoryTitle: (payload: { text: string | string[]; model: string; host?: string }) =>
+  chapterStory: (payload: {
+    segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
+  }) => ipcRenderer.invoke('story:chapter-story', payload),
+  suggestStoryTitle: (payload: { name?: string; chapters: Array<{ label: string; detail?: string; startSeconds: number; endSeconds: number }> }) =>
     ipcRenderer.invoke('story:suggest-title', payload),
   cancelStoryAnalysis: () => ipcRenderer.invoke('story:cancel'),
-  unloadStoryModel: (payload: { model: string; host?: string }) => ipcRenderer.invoke('story:unload-model', payload),
-  onStoryAnalyzeProgress: (callback: (p: { phase: string; done: number; total: number }) => void) => {
+  unloadStoryModel: () => ipcRenderer.invoke('story:unload-model'),
+  onStoryAnalyzeProgress: (callback: (p: { phase: string; done: number; total: number; fraction?: number }) => void) => {
     ipcRenderer.on('story:analyze-progress', (_event, p) => callback(p));
   },
   removeStoryAnalyzeProgressListener: () => {
@@ -477,12 +545,14 @@ const api = {
 
   // Processing: turning a raw project folder into an editable one.
   autoDetectAudio: (masterVideoPath: string) => ipcRenderer.invoke('auto-detect-audio', masterVideoPath),
-  // The downloadable environment: ffmpeg/ffprobe, the Python runtime and the Whisper model
-  // (required — the editor cannot open a project without them), plus voice isolation
-  // (optional, the Denoise toggle's gate). Channels are AutoCutStudio's verbatim; nothing here
-  // collides with ContentStudio's own component system, which lives on `components:*`.
-  // Progress arrives on 'asset-progress', sent to THIS window (the one that asked to install).
+  // The downloadable environment: ffmpeg/ffprobe and the Python runtime
+  // (required — the editor cannot open a project without them). Channels are AutoCutStudio's
+  // verbatim; nothing here collides with ContentStudio's own component system, which lives on
+  // `components:*`. Progress arrives on 'asset-progress', sent to THIS window (the one that
+  // asked to install).
   listAssets: () => ipcRenderer.invoke('assets:list'),
+  // The Denoise toggle's gate: can the selected Crucible isolate voice? (LEDGER #200)
+  editorVoiceIsolationStatus: () => ipcRenderer.invoke('editor:voice-isolation-status'),
   installAsset: (id: string) => ipcRenderer.invoke('assets:install', id),
   cancelAsset: (id: string) => ipcRenderer.invoke('assets:cancel', id),
   ensureRequiredAssets: () => ipcRenderer.invoke('assets:ensure-required'),

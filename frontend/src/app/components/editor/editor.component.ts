@@ -320,31 +320,33 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // editing) so ticking a box never disturbs what the timeline is showing.
   storyPickIds = new Set<string>();
 
-  // ── Story analysis (local Ollama LLM) ────────────────────────────────────────
-  // Chapter splitting + title suggestions. Ollama-only for now (no downloads); the model is the
-  // user's choice from their locally-pulled models.
-  ollamaModels: { id: string; name: string }[] = [];
-  ollamaConnected = false;
-  selectedOllamaModel = '';
-  // Key is versioned: v2 introduced the cogito:14b default, and a model saved under the old key
-  // would have silently outranked it forever. Bumping re-defaults everyone exactly once; the next
-  // pick they make sticks.
-  private readonly OLLAMA_MODEL_KEY = 'editor.ollamaModel.v2';
+  // ── Story analysis ───────────────────────────────────────────────────────────
+  // Chapter splitting + title suggestions. THE MODEL IS NOT CHOSEN HERE: it is the chapters row
+  // of the metadata routing table (Settings → Routing), resolved by the main process on every
+  // call (LEDGER #204, #205 — "it should never call something i didnt expect it to call"). The
+  // picker this pane used to have, and the model it saved in localStorage, are gone.
+  // `storyModel` is that resolution as last reported, for the read-only line in the picker's
+  // old slot; `storyModelError` is the main process's refusal when the stored routing cannot be
+  // honoured. Neither gates a button: a run that cannot resolve its model fails at the call,
+  // by name, exactly as a generation run would.
+  storyModel: { model: string; label: string; kind: 'local' | 'cloud' } | null = null;
+  storyModelError: string | null = null;
   analyzing = false;
   analyzeMessage = '';
   analyzeError: string | null = null;
   // Set by the stop button; checked between stories in the titling loop so a stop takes effect
   // immediately rather than after every remaining story has been titled.
   private analyzeStopRequested = false;
-  // Determinate progress for a running analysis (chapter split or auto-split). The chapter
-  // pipeline is many small single-question model calls — one per 45s stretch, per junction, per
-  // boundary, per chapter, per adjacent pair — so `total` runs into the hundreds on a long
-  // recording and is revised upward if consolidation merges (a merge adds a re-naming call).
-  // Shared — only one analysis runs at a time.
+  // Determinate progress for a running analysis (chapter split or auto-split). Snap chaptering
+  // reports the phase it is in with its own done/total (sentences while assigning, chapters while
+  // titling) and a `fraction` of the whole run weighted by work (plan §0a: assigning is most of the
+  // wall time), which is what the percentage reads. Shared — only one analysis runs at a time.
   aiProgressDone = 0;
   aiProgressTotal = 0;
+  aiProgressFraction: number | null = null;
   aiPhase = '';
   get aiProgressPct(): number {
+    if (this.aiProgressFraction !== null) return Math.min(100, Math.round(this.aiProgressFraction * 100));
     return this.aiProgressTotal > 0 ? Math.min(100, Math.round((this.aiProgressDone / this.aiProgressTotal) * 100)) : 0;
   }
 
@@ -537,9 +539,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // progress/completion (from a superseded session) can never touch live UI.
     this.host.onTranscribeProgress((d) => this.onTranscribeProgress(d));
     this.host.onTranscribeComplete((d) => this.onTranscribeComplete(d));
-    // Load the local Ollama model list for the Stories-tab analyzer (non-blocking; the picker
-    // shows "is Ollama running?" until it connects).
-    void this.refreshOllamaModels();
+    // Ask what the Stories analyzer is routed to, for its read-only line (non-blocking; the
+    // line shows an ellipsis until the answer lands, and re-asks at every run start).
+    void this.refreshStoryModel();
     // Is the backend this window runs on actually installed? A missing REQUIRED component opens
     // the environment dialog and starts the download there, visibly. Non-blocking: the window
     // still mounts, and everything that needs the backend fails loudly on its own until it lands.
@@ -548,6 +550,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.host.onStoryAnalyzeProgress((p) => {
       this.aiProgressDone = p.done;
       this.aiProgressTotal = p.total;
+      this.aiProgressFraction = typeof p.fraction === 'number' ? p.fraction : null;
       this.aiPhase = p.phase;
       this.cdr.detectChanges();
     });
@@ -3431,7 +3434,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (this.analyzing) return false;
     return (story.chapters?.length ?? 0) > 0
       || story.title.trim().length > 0
-      || (this.transcriptState === 'ready' && !!this.selectedOllamaModel && !this.isStoryEmpty(story));
+      || (this.transcriptState === 'ready' && !this.isStoryEmpty(story));
   }
 
   /**
@@ -3683,7 +3686,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     // without them is as unusable for a send as a stale one — re-derive it the same way.
     const undetailed = state === 'fresh' && story.chapters!.some(c => !(c.detail || '').trim());
     if (state === 'fresh' && !undetailed) return story.chapters!;
-    if (!this.selectedOllamaModel || this.transcriptState !== 'ready' || this.analyzing) {
+    if (this.transcriptState !== 'ready' || this.analyzing) {
       // STALE (or detail-less) and unable to re-derive is a refusal, not a shrug. Handing these
       // back would send markers that describe a span the user has since redrawn — and because a
       // subject list is what a title gets written from, the only symptom would be a confidently
@@ -3693,9 +3696,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
           `“${story.title || 'This story'}” has ` +
           (undetailed ? 'chapters without detail lines' : 'chapters from a different span') +
           ` and they cannot be re-derived right now — ` +
-          (this.analyzing ? 'an analysis is already running.'
-            : this.transcriptState !== 'ready' ? 'the session has no transcript yet.'
-            : 'no Ollama model is selected.')
+          (this.analyzing ? 'an analysis is already running.' : 'the session has no transcript yet.')
         );
       }
       // PRE-EXISTING FALLBACK (state === 'none'): returns [], and sendStoryToTitles then sends the
@@ -3708,12 +3709,13 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.analyzeError = null;
     this.aiProgressDone = 0;
     this.aiProgressTotal = 0;
+    this.aiProgressFraction = null;
     this.activityOpen = true;
     // A queue of one — the dock renders every analysis the same way, however it was started.
     this.activityQueueStart([{ id: story.id, label: story.title.trim() || `Story ${story.number}` }]);
     this.cdr.detectChanges();
     try {
-      return await this.deriveStoryChapters(story, this.selectedOllamaModel);
+      return await this.deriveStoryChapters(story);
     } catch (err: any) {
       // PRE-EXISTING FALLBACK: a failed derivation is reported into the activity dock and the
       // story's old (possibly stale, possibly absent) markers are handed back, so the caller
@@ -3722,7 +3724,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       if (!this.isStopError(err)) this.analyzeError = err?.message || String(err);
       return story.chapters ?? [];
     } finally {
-      await this.host.unloadStoryModel({ model: this.selectedOllamaModel }).catch(() => { /* housekeeping */ });
+      await this.host.unloadStoryModel().catch(() => { /* housekeeping */ });
       this.analyzing = false;
       this.analyzeStopRequested = false;
       this.analyzeMessage = '';
@@ -3739,24 +3741,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * a title is written from and what a description ships, so a derivation that quietly hands back
    * the previous list produces a wrong result nothing downstream can tell from a right one.
    *
-   * `consolidate: false` is the correctness switch, not an optimisation. Stage 5 exists to decide
-   * where one story ends and the next begins; inside a story the user has DECLARED there is no
-   * such seam, so every merge it makes is a false positive that flattens two real chapters into
-   * one — measured on a single-story span it turned 5 chapters into 3, and on an hour-long span in
-   * a stubbed harness 10 into 3. With it off the returned chapters ARE the chapter layer, and each
-   * carries itself as its only `subChapter`; more than one means stage 5 ran, which can only mean
-   * the flag never reached the pipeline. That is checked rather than compensated for: silently
-   * reading the sub-tier instead would hide broken wiring behind chapters cut at story cadence.
-   *
-   * The check is one-sided by nature: consolidation stops at a three-chapter floor, so a story that
-   * yields three or fewer chapters never merges and the flag being dropped costs nothing there —
-   * nothing to detect, and nothing lost.
+   * The grain is `chapters` (LEDGER #208): inside a story the user has DECLARED there is no story
+   * seam to find, only the subject changes that go to YouTube as this story's chapter list.
    *
    * The fingerprint is taken BEFORE the run: hundreds of model calls take minutes, the user can
    * move the story's edges while they run, and stamping the regions as they are afterwards would
    * mark chapters fresh for a span they never saw.
    */
-  private async deriveStoryChapters(story: Story, model: string): Promise<StoryChapter[]> {
+  private async deriveStoryChapters(story: Story): Promise<StoryChapter[]> {
     const name = story.title.trim() || `Story ${story.number}`;
     const regions = mergeRegions(story.regions);
     const segments = this.segmentsForRegions(regions);
@@ -3768,21 +3760,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.analyzeMessage = `Finding chapters in “${name}”…`;
     this.cdr.detectChanges();
 
-    const res = await this.host.analyzeStoryChapters({ segments, model, consolidate: false });
+    const res = await this.host.chapterStory({ segments });
     const returned = res.chapters || [];
-    if (returned.some(c => (c.subChapters?.length ?? 0) > 1)) {
-      // Marked as a WIRING fault, not a data one: it will fail identically for every story, so a
-      // bulk run must stop here rather than spend another full pipeline pass per story proving it.
-      throw Object.assign(
-        new Error(
-          `Chapter analysis consolidated “${name}” into stories when it was told not to: the ` +
-          `story:analyze-chapters IPC handler is dropping \`consolidate: false\`. Its chapters would ` +
-          `be cut at story cadence, merging real chapters away. Check the forwarding in ` +
-          `electron/ipc/ipc-handlers.ts and that the running build is current.`
-        ),
-        { wiringFault: true },
-      );
-    }
     const derived = returned
       .map(c => ({
         startSeconds: c.startSeconds, endSeconds: c.endSeconds, label: cleanChapterLabel(c.label),
@@ -4051,43 +4030,29 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     }
   }
 
-  // ── Story analysis (Ollama): model picker, chapter split, title suggestion ───
+  // ── Story analysis: the routed model line, chapter split, title suggestion ───
 
-  /** (Re)load the list of locally-installed Ollama models and reconcile the selection. */
-  async refreshOllamaModels(): Promise<void> {
+  /**
+   * Ask the main process what the chapters routing currently names, for the read-only line.
+   * A refusal (a stored selection this build cannot honour) is shown in that line rather than
+   * hidden: it is the same error the next run would stop on, said before the click.
+   */
+  async refreshStoryModel(): Promise<void> {
     if (!this.host.isElectron()) return;
     try {
-      const res = await this.host.ollamaListModels();
-      this.ollamaConnected = res.connected;
-      this.ollamaModels = res.models || [];
-      const saved = localStorage.getItem(this.OLLAMA_MODEL_KEY) || '';
-      const has = (id: string) => this.ollamaModels.some(m => m.id === id);
-      if (saved && has(saved)) this.selectedOllamaModel = saved;
-      else if (!has(this.selectedOllamaModel)) this.selectedOllamaModel = this.defaultOllamaModel();
-    } catch {
-      this.ollamaConnected = false;
-      this.ollamaModels = [];
+      this.storyModel = await this.host.storyRoutedModel();
+      this.storyModelError = null;
+    } catch (err: any) {
+      this.storyModel = null;
+      this.storyModelError = err?.message || String(err);
     }
     this.cdr.detectChanges();
   }
 
-  /**
-   * First-run model default: `cogito:14b` — the BASE model, and the eventual base for the YouTube
-   * metadata adapters, so everything downstream conditions on the same weights. Matching is exact
-   * (plus Ollama's implicit `:latest`) so a fine-tune built on it is never picked up by accident.
-   *
-   * Falls back to qwen2.5:14b (the validated rater), then any 14B, then whatever is installed.
-   * 14B is the floor — smaller models fail by MISSING boundaries, the one error a user cannot fix
-   * by joining chapters. Only applies when the user has never picked a model; their choice wins.
-   */
-  private defaultOllamaModel(): string {
-    const ids = this.ollamaModels.map(m => m.id);
-    const exact = (want: string) => ids.find(id => id === want || id === `${want}:latest`);
-    return exact('cogito:14b')
-        || exact('qwen2.5:14b')
-        || ids.find(id => /(^|:)14b($|:)/i.test(id))
-        || ids[0]
-        || '';
+  /** What the Stories toolbar and the Split dialog say in the picker's old slot. */
+  get storyModelLine(): string {
+    if (this.storyModelError) return `Stories cannot run: ${this.storyModelError}`;
+    return `Stories run on ${this.storyModel?.label || '…'}, from Settings → Routing`;
   }
 
   /**
@@ -4114,16 +4079,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   private isStopError(err: any): boolean {
     const name = err?.name || '';
     const msg = String(err?.message || err || '');
+    // Both story handlers rethrow a stop as story-ipc's AnalysisCancelledError, whose
+    // message is what survives the IPC boundary.
     return this.analyzeStopRequested
       || name === 'AnalysisCancelledError'
-      || name === 'OllamaCancelledError'
-      || /Analysis stopped\.|OllamaCancelledError|AnalysisCancelledError/.test(msg);
-  }
-
-  /** Model picker change — persist the choice. */
-  onOllamaModelChange(id: string): void {
-    this.selectedOllamaModel = id;
-    if (id) localStorage.setItem(this.OLLAMA_MODEL_KEY, id);
+      || /Analysis stopped\.|AnalysisCancelledError/.test(msg);
   }
 
   // Sentence-ish segmentation for the analyzer. A transcript GROUP is one timeline clip's worth of
@@ -4226,8 +4186,10 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * user typed, both cost nothing. Stoppable between stories as well as mid-call.
    */
   async analyzeTimeline(): Promise<void> {
-    if (this.analyzing || !this.selectedOllamaModel || this.transcriptState !== 'ready') return;
-    const model = this.selectedOllamaModel;
+    if (this.analyzing || this.transcriptState !== 'ready') return;
+    // The line is refreshed at every run start so a routing changed in Settings is named here
+    // before its first call lands; the main process resolves the model itself either way.
+    void this.refreshStoryModel();
     // The session this run belongs to. A run is hours of model calls, and everything it
     // writes — story objects, the edits sidecar via scheduleEditsSave() — targets whatever
     // session is loaded AT THE TIME OF THE WRITE. Switching projects mid-run would therefore
@@ -4239,6 +4201,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.analyzeError = null;
     this.aiProgressDone = 0;
     this.aiProgressTotal = 0;
+    this.aiProgressFraction = null;
     this.aiPhase = '';
     this.activityOpen = true;   // surface progress in the floating dock
     this.cdr.detectChanges();
@@ -4276,6 +4239,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
           // Story-level progress is the queue below it, not a second scale in the same bar.
           this.aiProgressDone = 0;
           this.aiProgressTotal = 0;
+          this.aiProgressFraction = null;
           this.aiPhase = '';
           this.analyzeMessage = '';
           const name = s.title.trim() || `Story ${s.number}`;
@@ -4286,19 +4250,21 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
             // matches these exact regions, so re-running could only reproduce it.
             const chapters = this.storyChapterState(s) === 'fresh'
               ? s.chapters!
-              : await this.deriveStoryChapters(s, model);
+              : await this.deriveStoryChapters(s);
             if (this.analyzeStopRequested) break;
             if (this.sessionChanged(generation)) break;
 
             // A title the user typed is left exactly as they typed it. They name stories between
             // run 1 and run 2, so overwriting here would destroy that work with no undo.
             if (!s.titleTouched) {
-              // The subject list, and only the subject list. There is no transcript path here: the
-              // chapters were just derived from this story's own span, so if they are unusable the
-              // answer is to report that, not to write a title from a 12k-char splice that
-              // discards its own middle.
-              const subjects = chapters.map(c => c.label.trim()).filter(l => l.length > 0);
-              if (subjects.length < 2) {
+              // The chapters, and only the chapters: their titles and summaries are the story's
+              // parts, and the title is written from them (summarize_chapter_parts). There is no
+              // transcript path here: the chapters were just derived from this story's own span,
+              // so if they are unusable the answer is to report that.
+              const parts = chapters
+                .filter(c => c.label.trim().length > 0)
+                .map(c => ({ label: c.label.trim(), detail: (c.detail || '').trim(), startSeconds: c.startSeconds, endSeconds: c.endSeconds }));
+              if (parts.length < 2) {
                 throw new Error('produced no usable chapter labels to title from');
               }
               this.analyzeMessage = `Titling “${name}”…`;
@@ -4306,8 +4272,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
               // freeze on the chapter run's finished tally, which would read as stalled work.
               this.aiProgressDone = 0;
               this.aiProgressTotal = 0;
+              this.aiProgressFraction = null;
               this.cdr.detectChanges();
-              const res = await this.host.suggestStoryTitle({ text: subjects, model });
+              const res = await this.host.suggestStoryTitle({ name, chapters: parts });
               if (this.sessionChanged(generation)) break;
               s.title = res.title;
               this.scheduleEditsSave();
@@ -4356,7 +4323,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         const dur = this.manifest?.timelineDuration || 0;
         const segments = this.segmentsForRegions([{ start: 0, end: dur > 0 ? dur : Number.MAX_SAFE_INTEGER }]);
         if (segments.length === 0) throw new Error('No transcript to analyze.');
-        const res = await this.host.analyzeStoryChapters({ segments, model: this.selectedOllamaModel });
+        const res = await this.host.analyzeStoryChapters({ segments });
         // The whole-timeline split is one long call: by the time it lands the user may be in a
         // different project, and these stories describe the previous one's timeline.
         if (this.sessionChanged(generation)) return;
@@ -4390,10 +4357,11 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       // A stop is not an error — the user asked for it.
       this.analyzeError = this.isStopError(err) ? null : (err?.message || String(err));
     } finally {
-      // Down the moment the run ends — finished, failed or stopped. Ollama would otherwise hold
-      // the weights for its own keep_alive (minutes), and nothing here needs them again.
-      // The chapter path also unloads in the main process; a second unload is a harmless no-op.
-      await this.host.unloadStoryModel({ model }).catch(() => { /* housekeeping only */ });
+      // Released the moment the run ends — finished, failed or stopped. The titling loop's
+      // Crucible lease would otherwise pin the local model until its ttl, and nothing here needs
+      // it again; a cloud selection holds nothing and the call is a no-op. The chapter path
+      // releases its own lease in the main process; a second release is harmless.
+      await this.host.unloadStoryModel().catch(() => { /* housekeeping only */ });
       this.analyzing = false;
       this.analyzeStopRequested = false;
       this.analyzeMessage = '';
@@ -4416,6 +4384,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.splitActiveBucket = 0;
     this.aiProgressDone = 0;
     this.aiProgressTotal = 0;
+    this.aiProgressFraction = null;
     this.aiPhase = '';
     const cache = story.split;
     if (cache && cache.chapters?.length) {
@@ -4465,12 +4434,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.splitError = null;
     this.splitChapters = [];
     this.splitAssign = [];
-    if (!this.selectedOllamaModel) {
-      this.splitError = 'Pick an Ollama model first (dropdown at the top of this dialog).';
-      this.splitRunning = false;
-      this.cdr.detectChanges();
-      return;
-    }
+    void this.refreshStoryModel();
     // Re-run re-detects the SAME section that was first analyzed (sticky span from the cache), so
     // reworking after an Apply doesn't silently re-scope to the story's shrunken leftover regions.
     // A first run (no cache yet) analyzes the story's current regions.
@@ -4480,12 +4444,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.splitFromCache = false;
     this.aiProgressDone = 0;
     this.aiProgressTotal = 0;
+    this.aiProgressFraction = null;
     this.aiPhase = 'Starting…';
     this.cdr.detectChanges();
     try {
       const segments = this.segmentsForRegions(regions);
       if (segments.length === 0) throw new Error('No transcript in this story to split. Transcribe first.');
-      const res = await this.host.analyzeStoryChapters({ segments, model: this.selectedOllamaModel });
+      // Splitting one story in several is finding the stories inside it (LEDGER #208, #213).
+      const res = await this.host.analyzeStoryChapters({ segments });
       this.splitChapters = (res.chapters || []).map(c => ({
         index: c.index, startSeconds: c.startSeconds, endSeconds: c.endSeconds,
         label: cleanChapterLabel(c.label),
@@ -4731,21 +4697,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   /**
-   * The Denoise toggle's "install it" link, from inside the project setup modal. Opens the same
-   * dialog ON TOP of the setup modal (nothing about the setup is lost), so the component can be
-   * installed where the user discovered it was missing.
-   */
-  onEnvironmentFromSetup(): void {
-    this.environmentBanner = null;
-    this.environmentAutoEnsure = false;
-    this.environmentOpen = true;
-  }
-
-  /**
    * The environment dialog dismissed itself. The setup modal (if it is open behind this one) is
-   * asked to re-read the voice-isolation component, because installing it is exactly why the
-   * user would have opened this from there and the Denoise toggle would otherwise stay hidden
-   * until the modal was closed and reopened.
+   * asked to re-read its Denoise gate, which is the selected Crucible's (LEDGER #200) and may
+   * have changed while the dialog was up.
    */
   onEnvironmentClosed(): void {
     this.environmentOpen = false;

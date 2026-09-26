@@ -322,53 +322,11 @@ function splitSentences(text: string): string[] {
     .filter((s) => s.length > 0);
 }
 
-/**
- * Candidate noun phrases for embedding-based key phrase ranking (spec §2, KeyBERT-style).
- *
- * Candidates are 1-4 word runs of content words taken from the text with the stopwords
- * stripped out, lowercased and deduped. This is the CANDIDATE half only — the ranking half
- * is an embedding call and lives in key-phrases.ts, because that half needs a model and this
- * half must stay testable from a string.
- */
-export function candidateKeyPhrases(text: string, options?: { maxWords?: number; minCount?: number }): string[] {
-  const maxWords = options?.maxWords ?? 4;
-  const minCount = options?.minCount ?? 2;
-  const counts = new Map<string, { text: string; count: number }>();
-
-  for (const sentence of splitSentences(text)) {
-    const tokens = (sentence.match(/[A-Za-z][A-Za-z'’-]*/g) || []).map((t) => t.replace(/['’-]+$/, ''));
-    let run: string[] = [];
-    const flush = () => {
-      for (let size = 1; size <= maxWords; size++) {
-        for (let i = 0; i + size <= run.length; i++) {
-          const phrase = run.slice(i, i + size);
-          // A phrase that is one short word is noise; two-plus words always earn their slot.
-          if (size === 1 && phrase[0].length < 5) continue;
-          const surface = phrase.join(' ');
-          const key = surface.toLowerCase();
-          const held = counts.get(key) || { text: surface.toLowerCase(), count: 0 };
-          held.count++;
-          counts.set(key, held);
-        }
-      }
-      run = [];
-    };
-    for (const token of tokens) {
-      if (COMMON_WORDS.has(token.toLowerCase())) {
-        flush();
-        continue;
-      }
-      run.push(token);
-      if (run.length > maxWords * 2) flush();
-    }
-    flush();
-  }
-
-  return Array.from(counts.values())
-    .filter((c) => c.count >= minCount)
-    .sort((a, b) => b.count - a.count || b.text.length - a.text.length)
-    .map((c) => c.text);
-}
+// `candidateKeyPhrases` stood here: the candidate half of the embedding-ranked key phrases
+// (n-grams of the whole transcript, counted and sorted by frequency). It went with the ranking
+// on 2026-09-25 (LEDGER #205). The phrase pool is read off the chapter list now
+// (tags-hashtags.ts chapterPools), and a frequency-sorted list of transcript n-grams is exactly
+// the fallback that ruling refused, so nothing here should grow one back.
 
 /**
  * Does this phrase actually occur in this text?

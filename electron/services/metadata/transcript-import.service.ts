@@ -15,7 +15,7 @@
  */
 
 import * as path from 'path';
-import type { SRTSegment } from './whisper.service';
+import type { SRTSegment } from './transcription.service';
 import type { ContentItem } from './input-handler.service';
 
 /** A suggested split point, in the story's own 0-based timeline. Used by the
@@ -395,9 +395,9 @@ export function segmentsCarrySpeakerAttribution(segments: SRTSegment[]): boolean
  * The same text with the screenplay labels taken back off.
  *
  * FOR THE CODE THAT MEASURES THE WORDS, never for the model. A speaker label is a fact ABOUT
- * the transcript, not part of it, and the two measurements this app makes over the content text
- * both read it as one flat stream: `extractProperNouns` walks runs of capitalized tokens, and
- * `rankKeyPhrases` scores n-grams.
+ * the transcript, not part of it, and the measurements this app makes over the content text
+ * all read it as one flat stream: `extractProperNouns` walks runs of capitalized tokens, and
+ * `chapterPools` tests every name and phrase the chapter list offers against it (`occursIn`).
  *
  * IT IS NOT HYPOTHETICAL. Run over the calibration transcript, the tagged text's entity pool
  * came back with "CLIP Debbie Wasserman Schultz", "HOST Wasserman Schultz" and "UNSURE Refugee

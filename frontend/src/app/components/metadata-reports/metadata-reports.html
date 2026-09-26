@@ -855,6 +855,10 @@
                      of a job that does not exist for it. -->
                 <h3>{{ publish.isPodcast() ? 'Title — Spreaker takes one' : 'A/B test — three variants' }}</h3>
                 <span class="cnt num">{{ metadata()!.titles.length }} generated</span>
+                @if (metadata()!.reroll_gate?.ranking) {
+                  <span class="cnt"
+                        title="#1 is the title the re-roll gate's snap ranking reads as most likely to be clicked and watched, from the order it asked the list in every rotation.">ranked by snap</span>
+                }
                 <span class="pane-head-spacer"></span>
                 <span class="ab-progress num"
                       [class.complete]="publish.isPodcast() ? publish.chosenCount() >= 1 : publish.chosenCount() === MAX_AB_VARIANTS">
@@ -952,6 +956,17 @@
                         {{ titleVariantNumber(title) ?? i + 1 }}
                       </span>
                       <span class="s-t">{{ getTitleText(title) }}</span>
+                      <!-- The re-roll gate's order (LEDGER #201): snap's rank for this title among
+                           the run's list, best = 1, and its share against an even split. A title
+                           still failing a rule after its re-rolls ships, marked, never hidden. -->
+                      @if (titleFlags(title).length > 0) {
+                        <span class="slot-tag flag"
+                              [title]="'The re-roll gate still reads this title as breaking: ' + titleFlags(title).join(', ') + '. It ships as the best of its attempts; nothing was withheld.'">{{ titleFlags(title).join(' · ') }}</span>
+                      }
+                      @if (titleRank(title); as r) {
+                        <span class="s-rank num" [class.top]="r.rank <= 3"
+                              [title]="'Ranked ' + r.rank + ' of ' + r.of + ' by the re-roll gate (snap, on the scorer model): ' + r.relative.toFixed(2) + '× an even share of the vote. Validated against the decided A/B tests; a guide, not a verdict.'">#{{ r.rank }}</span>
+                      }
                       @if (isTitleEdited(title)) {
                         <span class="slot-tag"
                               title="You edited this. Edit it back to the generated text to restore it — regenerating the item also clears edits.">edited</span>

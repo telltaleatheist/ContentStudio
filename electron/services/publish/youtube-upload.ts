@@ -47,7 +47,7 @@ import * as path from 'path';
 import { matchDraft, toFillCandidates } from './video-matcher';
 import type { UploadStatusEntry } from '../youtube/youtube-api.service';
 import { PublishStoreService, GeneratedFallback, resolveChosenMetadata } from './publish-store.service';
-import { validateThumbnailFile } from './thumbnail-validate';
+import { fitThumbnailFile } from './thumbnail-validate';
 import { ChosenMetadata, UploadReceipt } from './publish-types';
 import { firstLineOf, splitTags } from './youtube-push';
 
@@ -209,13 +209,14 @@ export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Pro
   }
   const sizeBytes = fs.statSync(sourcePath).size;
 
-  // Thumbnail validated and read BEFORE the upload — a bad file stops the run now,
-  // not after the gigabyte.
+  // Thumbnail fitted and read BEFORE the upload — a file that is not an image stops the
+  // run now, not after the gigabyte; one outside YouTube's bounds gets its fitted copy
+  // here, so a master replaced by a larger export since it was attached still uploads.
   let thumbnail: { path: string; bytes: Buffer; mime: 'image/png' | 'image/jpeg' } | null = null;
   let thumbnailSkipped: string | undefined;
   if (record.thumbnailPath) {
-    const { meta } = validateThumbnailFile(record.thumbnailPath);
-    thumbnail = { path: record.thumbnailPath, bytes: fs.readFileSync(record.thumbnailPath), mime: meta.mime };
+    const fitted = fitThumbnailFile(record.thumbnailPath);
+    thumbnail = { path: fitted.path, bytes: fs.readFileSync(fitted.path), mime: fitted.meta.mime };
   } else {
     thumbnailSkipped = 'No thumbnail is attached to this item, so none was uploaded.';
   }

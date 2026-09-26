@@ -30,9 +30,9 @@
  *
  * ONE SHAPE, and it is not local-vs-cloud. Every field call — local or cloud — is the
  * prompt-set shape: that field's yml section, its self-check, the transcript, and a plain-text
- * output contract. LocalFieldUnit posts to Ollama through plain-call.ts; CloudFieldUnit posts
- * through the AI manager's plain transport. They build their prompt with the same builder and
- * read their answer through the same parser. The only difference is transport.
+ * output contract. Both post through the AI manager's plain door to Crucible (P2); they build
+ * their prompt with the same builder and read their answer through the same parser. The only
+ * difference is the shape of the call: a local one states a budget, a load context and a lease.
  *
  * THERE USED TO BE A SECOND SHAPE: the trained adapters (`promptStyle: 'adapter'`), fine-tuned
  * models fed a terse `task:`/`format:` turn with the brief baked into their weights. They were
@@ -50,32 +50,30 @@
  * when it exceeds two. It does not block: which model writes which field is the operator's
  * choice, and a silently overridden routing selection would be worse than a slow run.
  *
- * ONE num_ctx PER MODEL PER RUN. Ollama FULLY RELOADS a model on any num_ctx change
- * (ollama-json.ts trap 4), so per-call sizing would reload the 27B between titles and
- * thumbnails and again before the pinned comment. Every unit on a model shares one
- * `ModelRunContextBudget`, sized from the LARGEST prompt that model will send this run, and the
- * budget cannot size BELOW a window the job has already made resident on that model
- * (model-lifecycle.ts's ratchet) — the chapter stage runs first on the same hardware.
+ * EACH CALL ASKS FOR ITS OWN LOAD CONTEXT (P4, LEDGER #209). A local call asks the door for the
+ * smallest 8,192 step that holds its own prompt and answer budget (context-check.ts
+ * `loadContextFor`). Loading a model at a different context is still a full reload (LEDGER #111),
+ * and it is bounded by the lease instead of by a shared per-model number: a call that needs more
+ * grows the load once, and a call that needs less runs on the window already loaded (lease.ts).
+ * What this replaced, `ModelRunContextBudget`, pinned one bucketed window per model per run from
+ * the largest prompt, with a floor carried from earlier stages, so a run whose chapter titles
+ * loaded the 27B at 24,576 asked 24,576 for every field call after them.
  *
  * NO UNIT RELEASES A MODEL. Every unit here used to unload its model as it finished, which
  * reloaded ~17GB of weights for the next call on the same model and froze the operator's
- * machine while it did. A unit DECLARES what it made resident to the job's `JobModelLifecycle`
- * and the JOB releases the set once, in a finally in metadata-generator.service.ts. That is why
- * there is no `unload()` on the unit seam any more: a per-stage release is the defect.
+ * machine while it did. A unit's calls hold the model under the JOB's Crucible lease
+ * (`JobModelLifecycle.leases`, plan 13.3) and the JOB releases it once, in a finally in
+ * metadata-generator.service.ts. That is why there is no `unload()` on the unit seam: a
+ * per-stage release is the defect.
  */
 
-import axios, { AxiosInstance } from 'axios';
 import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
-import { queueAITask } from '../queue-manager.service';
-import { JobCancelledError, isAbortError } from './cancellation';
-import { bucketNumCtx, estimateTokens } from './ollama-json';
-import { askOllamaPlain, parseLines } from './plain-call';
+import { loadContextFor } from './context-sizing';
+import { parseLines } from './plain-call';
 import { DigestChapter } from './chapter-digest';
 import { JobModelLifecycle } from './model-lifecycle';
 import {
-  CHAPTER_PIPELINE_MODELS,
-  KEY_PHRASE_EMBEDDING_MODEL,
   METADATA_ROUTING_OPTIONS,
   MetadataRoutingOption,
   MetadataRoutingTaskId,
@@ -104,8 +102,8 @@ import type { FieldContentMode } from './chapter-digest';
  * A metadata field a unit can be responsible for.
  *
  * `hashtags`, `tags` and `spoken_keywords` are not routable tasks in the chaptered path.
- * Hashtags and tags are ASSEMBLED IN CODE from the entity and key-phrase pools (spec §4,
- * §6.2, §6.3 — tags-hashtags.ts); spoken keywords exist only in the shorts prompt set and
+ * Hashtags and tags are ASSEMBLED IN CODE from the pools the chapter list yields (spec §4,
+ * §6.2, §6.3; LEDGER #205 — tags-hashtags.ts); spoken keywords exist only in the shorts prompt set and
  * ride with whichever group absorbs the sections no unit claimed.
  *
  * `description_hook` is the first ~150 characters of the description, generated as its own
@@ -191,14 +189,22 @@ export interface MetadataRunContext {
   /** The loaded prompt set, which in this app IS the channel. */
   promptSetName: string;
   /**
-   * Proper nouns measured out of the CONTENT text (entity-extraction.ts), best-first.
+   * The names the video is about. On a chaptered item, the proper nouns the CHAPTER LIST
+   * carries, kept where the content text says them, in chapter order (tags-hashtags.ts
+   * chapterPools, LEDGER #205); on a chapterless item, measured out of the content text
+   * (entity-extraction.ts), best-first.
    *
    * One extraction, three consumers — the description prompts, the assembled tags and the
    * derived hashtags — so those three cannot disagree about who the video is about.
    */
   entities: string[];
-  /** Key phrases ranked against the content text (key-phrases.ts), best-first. */
-  keyPhrases: string[];
+  /**
+   * The phrases the chapter list shares with the content text, in chapter order. EMPTY on a
+   * chapterless item: there is no chapter list to take them from, no ranking to put in its
+   * place (the embedding ranking went with nomic-embed-text, #205), and that item's tags are
+   * written by the Tags routing row instead.
+   */
+  phrases: string[];
   /**
    * The app's CONTENT text: the ad-free editor transcript when one is linked, the final
    * export's otherwise (`contentTextOf`). Tag assembly tests every candidate against it,
@@ -472,141 +478,31 @@ export function buildInputDataBlock(
 }
 
 // ---------------------------------------------------------------------------
-// One num_ctx per model per run
+// The local field call's budget
 // ---------------------------------------------------------------------------
 
 /**
- * Hard refusal point for a local call's context window.
+ * Output budget for a THINKING-OFF local field call: titles, thumbnail text, pinned comments,
+ * tags, and the operator's "ten more titles" replay (the titles call's shape again).
  *
- * Every field call carries the whole transcript now, and a long livestream transcript does not
- * fit in any local context this app is willing to ask for. Refusing names the model and the
- * call, because the actual fix is one of the two things above it: an item over the local
- * direct-pass ceiling reads the chapter digest instead (chapter-digest.ts), and a field routed
- * to the cloud gets the 400k ceiling.
- */
-export const LOCAL_FIELD_CTX_MAX = 40960;
-
-/**
- * Output budget for a local field call.
+ * 2048, down from 8192 in P4 (plan 7.2, LEDGER #214's rule: a budget goes down only where a
+ * measurement shows it is never needed, with at least a 2x margin). The evidence, in
+ * docs/crucible/P4.md "Budgets": across the 238 stored items under
+ * .contentstudio/metadata the longest answer any of these fields ever shipped is 1,369
+ * characters (a pinned-comment set; titles 1,270, tags 458, thumbnail text 246), ~392 tokens by
+ * this codebase's 3.5-characters estimate; the Crucible-era runs measured 49-121 output tokens a
+ * call. 2048 is over five times the largest. These calls run thinking-off (every field call
+ * has since 2026-08-30), so the budget holds the answer and nothing else; a `length` stop is a
+ * hard failure of the field (LEDGER #112), which is why the margin is wide.
  *
- * Sized for THINKING as much as for the answer. Ten titles are ~200 tokens, but these models
- * reason first and the chapter work measured ~1,900-2,900 tokens of reasoning per call.
- * `think: false` is not an option — it relocates the reasoning into `response` and breaks the
- * JSON (ollama-json.ts, trap 2) — so the budget has to hold both.
+ * The thinking-ON calls that used to share this number keep their own: the rewrite passes
+ * (rewrite-pass.ts REWRITE_NUM_PREDICT, 16,384) and the re-roll gate's revise
+ * (reroll.service.ts REVISE_NUM_PREDICT, 8,192).
  */
-export const LOCAL_FIELD_NUM_PREDICT = 8192;
-
-/**
- * Long enough for one item's calls to run back to back without the model being evicted.
- *
- * Exported because the operator's "ten more titles" replay is the same call on the same model
- * (more-titles.ts) and a second copy of these two numbers would be a second policy.
- */
-export const LOCAL_FIELD_KEEP_ALIVE = '10m';
+export const LOCAL_FIELD_NUM_PREDICT = 2048;
 
 /** A field call on a 27B carrying a full transcript; 10 minutes is generous, not tight. */
 export const LOCAL_FIELD_TIMEOUT_MS = 600_000;
-
-/**
- * Headroom for input data a sizing pass cannot see yet.
- *
- * The budget is resolved when the FIRST call on a model runs, and at that moment the thumbnail
- * call's prompt does not contain the titles — they have not been written. Ten titles plus the
- * block's framing is ~900 characters; 2,000 is that with room. It is added to every unit that
- * declares an input field, and the guard in `generate` below turns a wrong guess into a loud
- * failure rather than a silently truncated prompt.
- */
-const INPUT_DATA_ALLOWANCE_CHARS = 2000;
-
-/**
- * The bucketed num_ctx for one MODEL for one RUN.
- *
- * PURE, so the property that matters — several calls of different sizes on one model resolve to
- * ONE value — is testable without a model. `needs` are per-call token needs (prompt + that
- * call's own output budget); the largest wins, and `bucketNumCtx` rounds it up to a 4096 bucket
- * so two items whose transcripts differ by a few hundred words also land on the same value.
- */
-export function runNumCtx(options: {
-  model: string;
-  /** Per-call token needs on this model: estimated prompt tokens + that call's num_predict. */
-  needs: number[];
-  /** The window already resident on this model. Can only raise the computed value, never lower it. */
-  configured?: number;
-  max: number;
-  what: string;
-}): number {
-  if (options.needs.length === 0) {
-    throw new Error(`Nothing registered a prompt size for the "${options.model}" calls, so there is nothing to size`);
-  }
-  return bucketNumCtx({
-    promptTokens: Math.max(...options.needs),
-    // Already included per call in `needs` — the largest call's own output budget is what has
-    // to fit alongside its own prompt, not the sum of everybody's.
-    numPredict: 0,
-    configured: options.configured,
-    max: options.max,
-    logPrefix: `[MetadataTasks] ${options.model}`,
-    what: options.what,
-  });
-}
-
-/**
- * ONE num_ctx for one model for one run (ollama-json.ts trap 4).
- *
- * THE DEFECT THIS EXISTS TO PREVENT. Ollama fully reloads a model on ANY num_ctx change. Under
- * grouping that never bit — one call per model, so one value. One call per FIELD means four
- * calls on the 27B whose prompts differ by the length of their instruction sections, which
- * under per-call sizing is up to four full reloads of a 17GB model inside one item.
- *
- * So every unit on a model registers its sizer here, and the FIRST call to run resolves the
- * value from the LARGEST prompt that model will send this run — including the description
- * unit's two calls, which share the 9B with the tags call and have their own smaller output
- * budget.
- */
-export class ModelRunContextBudget {
-  private numCtx?: number;
-  private readonly sizers: Array<{ label: string; need: (ctx: MetadataRunContext) => number }> = [];
-
-  constructor(
-    readonly model: string,
-    /**
-     * The JOB's ratchet. A run's units are planned per ITEM, so without it item 2 would size
-     * its own window from its own transcript and reload the model to make it SMALLER than the
-     * one item 1 left resident — a reload that buys nothing.
-     */
-    private readonly lifecycle: JobModelLifecycle
-  ) {}
-
-  /** `need` returns estimated prompt tokens PLUS that call's own num_predict. */
-  register(label: string, need: (ctx: MetadataRunContext) => number): void {
-    this.sizers.push({ label, need });
-  }
-
-  resolve(ctx: MetadataRunContext): number {
-    if (this.numCtx !== undefined) return this.numCtx;
-    const measured = this.sizers.map((s) => ({ label: s.label, need: s.need(ctx) }));
-    const largest = measured.reduce((a, b) => (b.need > a.need ? b : a));
-    this.numCtx = runNumCtx({
-      model: this.model,
-      needs: measured.map((m) => m.need),
-      // Never below the window this job already made resident on this model — the chapter
-      // stage and the earlier items pinned theirs first. Clamped to LOCAL_FIELD_CTX_MAX by
-      // `contextFloor`, so the floor can never turn into this call's refusal.
-      configured: this.lifecycle.contextFloor(this.model, LOCAL_FIELD_CTX_MAX),
-      max: LOCAL_FIELD_CTX_MAX,
-      what:
-        `the "${largest.label}" call for ${ctx.sourceLabel}, which is the largest prompt "${this.model}" ` +
-        `sends this run (it carries the transcript)`,
-    });
-    this.lifecycle.recordContext(this.model, this.numCtx);
-    log.info(
-      `[MetadataTasks] "${this.model}": num_ctx pinned at ${this.numCtx} for this whole run, shared by ` +
-        `${measured.length} call(s) — ${measured.map((m) => `${m.label} ${m.need}t`).join(', ')} — so Ollama ` +
-        `loads it once instead of reloading between fields`
-    );
-    return this.numCtx;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // The model roster
@@ -642,16 +538,15 @@ export interface ModelRoster {
 /**
  * The roster, as a pure function so the count and the warning can be asserted without a model.
  *
- * Embedding models are EXCLUDED, and that is a real distinction rather than an exemption:
- * nomic-embed-text is 274MB and loads beside a generation model rather than instead of it, so
- * counting it against a budget that exists to stop multi-GB reloads would misreport the cost.
+ * It used to take an exclusion list for the embedding model, which loaded beside a generation
+ * model rather than instead of it. Key-phrase ranking and nomic-embed-text are gone (LEDGER
+ * #205), so every model a run loads counts.
  */
-export function buildModelRoster(entries: ModelRosterEntry[], excludeModels: string[] = []): ModelRoster {
-  const excluded = new Set(excludeModels);
+export function buildModelRoster(entries: ModelRosterEntry[]): ModelRoster {
   const byModel: Record<string, string[]> = {};
   const models: string[] = [];
   for (const entry of entries) {
-    if (!entry.model || excluded.has(entry.model)) continue;
+    if (!entry.model) continue;
     if (!byModel[entry.model]) {
       byModel[entry.model] = [];
       models.push(entry.model);
@@ -694,7 +589,10 @@ export class CloudFieldUnit implements MetadataUnit {
   async generate(ctx: MetadataRunContext): Promise<Record<string, unknown>> {
     const prompt = this.aiManager.buildMetadataFieldPrompt(this.spec, ctx);
     const what = `the ${this.spec.field} call for ${ctx.sourceLabel}`;
-    const text = await this.aiManager.runPlainRequest(prompt, this.spec.model, what);
+    // Thinking stated off, as the local unit states it (plan 6.3's first row). On an
+    // `anthropic/` model Crucible does not forward it and says so (X-Crucible-Sampling); on
+    // `claude -p` it is not read.
+    const text = await this.aiManager.runPlainRequest(prompt, this.spec.model, what, { thinking: false });
     if (!text) {
       throw new Error(`The "${this.spec.field}" call on ${this.spec.model} for ${ctx.sourceLabel} came back empty`);
     }
@@ -707,127 +605,63 @@ export class CloudFieldUnit implements MetadataUnit {
 // ---------------------------------------------------------------------------
 
 /**
- * ONE field, written by a local base model, as plain text in the field's declared shape.
+ * ONE field, written by a local model, as plain text in the field's declared shape.
  *
  * A base model knows nothing about this channel, so it gets EVERYTHING about the one field it
  * is writing: the editorial preamble, that field's `##` section from the shared field files,
  * the insights block where it belongs, the transcript, and the one-key output contract. That is
  * exactly CloudFieldUnit's prompt, built by exactly CloudFieldUnit's builder, and read back
- * through exactly CloudFieldUnit's normalizer. The only difference is the transport — and the
- * transport is where the local traps live, which is why it is one shared implementation
- * (ollama-json.ts) and not a second copy of the same four lessons.
+ * through exactly CloudFieldUnit's normalizer. Since P2 the transport is the same door too
+ * (AIManagerService.runPlainRequest, then Crucible); what is local about this unit is the
+ * shape of its call: an output budget, a load context sized for this call, and the job's lease.
  */
 export class LocalFieldUnit implements MetadataUnit {
   readonly label: string;
   readonly fields: MetadataFieldId[];
   readonly inputFields: MetadataFieldId[];
-  private readonly client: AxiosInstance;
-  private readonly host: string;
 
   constructor(
     private readonly aiManager: AIManagerService,
     private readonly spec: MetadataFieldUnitSpec,
     private readonly option: MetadataRoutingOption,
-    defaultHost: string,
-    /** Shared with every other unit on this model — one num_ctx, one load. */
-    private readonly budget: ModelRunContextBudget,
-    /** Where this unit DECLARES the model it made resident. It never releases one itself. */
-    private readonly lifecycle: JobModelLifecycle,
-    private readonly abortSignal?: AbortSignal
+    /** The job's leases. This unit never releases one itself. */
+    private readonly lifecycle: JobModelLifecycle
   ) {
     this.fields = [spec.field];
     this.inputFields = spec.inputFields;
-    this.host = defaultHost;
-    this.label = `${spec.field} (local ${option.model} @ ${this.host})`;
-    this.client = axios.create({ baseURL: this.host });
-    this.budget.register(spec.field, (ctx) => this.promptTokenNeed(ctx));
+    this.label = `${spec.field} (local ${option.model})`;
   }
 
   describePrompt(ctx: MetadataRunContext): string {
     return this.aiManager.buildMetadataFieldPrompt(this.spec, ctx, { pending: true });
   }
 
-  /**
-   * What this call needs of a context window: its prompt plus its own output budget.
-   *
-   * Measured on the PENDING form of the prompt, because sizing happens before the earlier
-   * fields have been written — hence the allowance for input data that is not there yet.
-   */
-  private promptTokenNeed(ctx: MetadataRunContext): number {
-    const chars =
-      this.aiManager.buildMetadataFieldPrompt(this.spec, ctx, { pending: true }).length +
-      (this.spec.inputFields.length > 0 ? INPUT_DATA_ALLOWANCE_CHARS : 0);
-    return estimateTokens(chars) + LOCAL_FIELD_NUM_PREDICT;
-  }
-
   async generate(ctx: MetadataRunContext): Promise<Record<string, unknown>> {
     const prompt = this.aiManager.buildMetadataFieldPrompt(this.spec, ctx);
     const what = `the ${this.spec.field} call for ${ctx.sourceLabel}`;
-    const numCtx = this.budget.resolve(ctx);
+    // This call's own step (LEDGER #209): its prompt, its answer budget, the margin. The door
+    // checks the call against the window actually loaded before sending (plan 6.1).
+    const loadContext = loadContextFor(prompt.length, LOCAL_FIELD_NUM_PREDICT);
 
-    // The sizing pass ran before this call's input data existed. If the real prompt is bigger
-    // than the window that was pinned for it, Ollama would silently drop the front of it and
-    // answer about the rest, so this says so instead. Raising the window here is not on the
-    // table — it would reload the model and invalidate every other call's pinned value.
-    const needed = estimateTokens(prompt.length) + LOCAL_FIELD_NUM_PREDICT + 512;
-    if (needed > numCtx) {
-      throw new Error(
-        `${what} assembled to ~${needed} tokens, past the ${numCtx}-token window pinned for "${this.option.model}" ` +
-          `this run. The window is pinned once per model because changing it reloads the model, so this call ` +
-          `cannot be widened: shorten the transcript this item carries, or route this field to another model.`
-      );
+    // A truncated answer throws out of the door (`truncated`, LEDGER #112) and is FATAL for
+    // this field, which is the opposite of the chapter pipeline's policy on the same result —
+    // deliberately: a chapter call cut off costs one chapter out of ten, a field call cut off
+    // costs the whole field, and there is no partial title list. Nothing retries at a smaller
+    // size and nothing reroutes: the operator chose this model for this field.
+    const text = await this.aiManager.runPlainRequest(prompt, this.option.model, what, {
+      // Thinking off for every field this unit carries. The local 27B's thinking pass reasoned
+      // entire output budgets away into truncated fragments four times on 2026-08-30, and the
+      // campaign measured these line-shaped outputs clean and fast thinking-off.
+      thinking: false,
+      maxTokens: LOCAL_FIELD_NUM_PREDICT,
+      loadContext,
+      job: this.lifecycle.leases,
+      timeoutMs: LOCAL_FIELD_TIMEOUT_MS,
+    });
+    if (!text) {
+      throw new Error(`The local "${this.spec.field}" call on ${this.option.model} for ${ctx.sourceLabel} returned no answer text`);
     }
-
-    const result = await queueAITask(
-      `metadata-local-${this.option.model}-${this.spec.field}-${ctx.sourceLabel}`,
-      `Metadata: ${this.label}`,
-      async () => {
-        if (this.abortSignal?.aborted) throw new JobCancelledError('cancelled before the local field call ran');
-        const answer = await askOllamaPlain(this.client, {
-          model: this.option.model,
-          prompt,
-          numCtx,
-          numPredict: LOCAL_FIELD_NUM_PREDICT,
-          keepAlive: LOCAL_FIELD_KEEP_ALIVE,
-          // Thinking off for every field this unit carries (the /api/chat transport in
-          // plain-call.ts). The local 27B's thinking pass reasoned entire output budgets away
-          // into truncated fragments four times on 2026-08-30 (stage-1 samples, the insights
-          // distiller, titles at 8192, the description at 4096), and the campaign measured
-          // these line-shaped outputs clean and fast thinking-off. The DESCRIPTION is not one
-          // of this unit's fields and is the deliberate exception — thinking off broke its
-          // hook/blank-line/body shape, so description-unit.ts keeps thinking and carries
-          // reasoning headroom in its budget instead.
-          think: false,
-          timeoutMs: LOCAL_FIELD_TIMEOUT_MS,
-          signal: this.abortSignal,
-          what,
-          logPrefix: `[MetadataTasks] ${this.label}`,
-        });
-        this.lifecycle.holdOllamaModel(this.host, this.option.model, `the ${this.spec.field} call`);
-        return answer;
-      },
-      undefined,
-      LOCAL_FIELD_TIMEOUT_MS + 60_000
-    );
-
-    // A field's unusable answer is FATAL for that field, which is the opposite of the chapter
-    // pipeline's policy on the same result — and deliberately so. A chapter call that comes
-    // back truncated costs one chapter out of ten; a field call that comes back truncated costs
-    // the whole field, and there is no partial version of a title list. Nothing retries at a
-    // smaller size and nothing reroutes to another model: the user chose this model for this
-    // field.
-    if (!result.ok) {
-      throw new Error(
-        `The local "${this.spec.field}" call on ${this.option.model} for ${ctx.sourceLabel} produced no usable ` +
-          `answer (${result.reason}): ${result.detail}` +
-          (result.reason === 'length'
-            ? ` — the ${LOCAL_FIELD_NUM_PREDICT}-token output budget was not enough for this prompt's reasoning ` +
-              `plus its answer. Route this field to a larger context or to the cloud.`
-            : '')
-      );
-    }
-
-    return readFieldAnswer(this.spec.field, result.text, this.option.model, ctx);
+    return readFieldAnswer(this.spec.field, text, this.option.model, ctx);
   }
 }
 
@@ -905,7 +739,7 @@ export interface MetadataRunPlan {
    *
    * Two properties the order carries, both load-bearing:
    *   - TITLES FIRST, because the thumbnail call reads them as input data.
-   *   - UNITS ON THE SAME MODEL RUN CONSECUTIVELY, so Ollama loads each model once. Splitting
+   *   - UNITS ON THE SAME MODEL RUN CONSECUTIVELY, so the server loads each model once. Splitting
    *     the 27B's four calls around the 9B's would evict and reload both.
    */
   units: MetadataUnit[];
@@ -946,7 +780,6 @@ export interface MetadataRunPlan {
  */
 export interface MetadataPlanRequest {
   routing: ResolvedMetadataRouting;
-  defaultHost: string;
   aiManager: AIManagerService;
   hasInsights: boolean;
   /**
@@ -974,8 +807,6 @@ export interface MetadataPlanRequest {
    * stop. The orchestrator makes one per job and releases it once.
    */
   lifecycle: JobModelLifecycle;
-  /** This run's cancel signal, threaded to the local units. */
-  abortSignal?: AbortSignal;
 }
 
 /**
@@ -991,8 +822,8 @@ export interface MetadataPlanRequest {
  *   - ORDER. Titles run first, always, and the thumbnail call is handed them as input data
  *     (`inputFields`). The self-check line about not repeating a core word from the top 3
  *     titles is emitted for the thumbnail call because that call can READ the titles.
- *   - RESIDENCE. Units on one model run consecutively under one pinned num_ctx and a 10-minute
- *     keep-alive, so four calls on the 27B cost one load, not four.
+ *   - RESIDENCE. Units on one model run consecutively under one pinned load context and the job's
+ *     lease, so four calls on the 27B cost one load, not four.
  *
  * Two things ride with exactly one call each, and this is where that is decided:
  *   the insights block — the TITLES call, else the first call, logged. Channel performance data
@@ -1016,8 +847,7 @@ export interface MetadataPlanRequest {
  * written by the model the routing names. Both are logged per item.
  */
 export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan {
-  const { routing, defaultHost, aiManager, hasInsights, hasChapters, alsoLoads, lifecycle, abortSignal } =
-    request;
+  const { routing, aiManager, hasInsights, hasChapters, alsoLoads, lifecycle } = request;
 
   // A field the PROMPT SET does not define is not generated at all, whatever the routing
   // says. The Spreaker podcast set has no "## THUMBNAIL_TEXT" and never did — that is the
@@ -1125,7 +955,7 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
     `[MetadataTasks] this item ${hasChapters ? 'HAS' : 'has NO'} chapters, so its tags are ` +
       (publishesTags
         ? hasChapters
-          ? 'assembled in code from the entity and key-phrase pools and no model writes them'
+          ? 'assembled in code from the pools its chapter list yields and no model writes them'
           : `written by the model the "Tags" routing selection names, because there is no chapter list for those pools to be measured against`
         : 'not published by this channel at all') +
       `; hashtags ${assemblesHashtags ? 'are' : 'are not'} derived in code`
@@ -1155,17 +985,6 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
     );
   }
 
-  /** model -> the ONE context budget every unit on it shares (ollama-json trap 4). */
-  const budgets = new Map<string, ModelRunContextBudget>();
-  const budgetFor = (model: string): ModelRunContextBudget => {
-    let budget = budgets.get(model);
-    if (!budget) {
-      budget = new ModelRunContextBudget(model, lifecycle);
-      budgets.set(model, budget);
-    }
-    return budget;
-  };
-
   /** field -> unit, built in FIELD order so `inputFields` can only ever point backwards. */
   const built: Array<{ field: MetadataFieldId; model: string; local: boolean; unit: MetadataUnit }> = [];
 
@@ -1185,15 +1004,7 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
       local: plan.option.kind === 'local',
       unit:
         plan.option.kind === 'local'
-          ? new LocalFieldUnit(
-              aiManager,
-              spec,
-              plan.option,
-              defaultHost,
-              budgetFor(plan.option.model),
-              lifecycle,
-              abortSignal
-            )
+          ? new LocalFieldUnit(aiManager, spec, plan.option, lifecycle)
           : new CloudFieldUnit(aiManager, spec),
     });
   }
@@ -1206,10 +1017,7 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
       unit: new DescriptionUnit(
         aiManager,
         descriptionOption,
-        defaultHost,
-        descriptionOption.kind === 'local' ? budgetFor(descriptionOption.model) : undefined,
-        lifecycle,
-        abortSignal
+        lifecycle
       ),
     });
   }
@@ -1240,15 +1048,12 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
    *
    * Everything that makes a local model resident inside this run counts: every field's call,
    * the chapter pipeline's generation model, the summarizer's if the transcript was long enough
-   * to need it. The embedding model does not — see buildModelRoster.
+   * to need it.
    */
-  const roster = buildModelRoster(
-    [
-      ...built.filter((b) => b.local).map((b) => ({ model: b.model, what: b.field })),
-      ...alsoLoads,
-    ],
-    [KEY_PHRASE_EMBEDDING_MODEL]
-  );
+  const roster = buildModelRoster([
+    ...built.filter((b) => b.local).map((b) => ({ model: b.model, what: b.field })),
+    ...alsoLoads,
+  ]);
   log.info(
     `[MetadataTasks] this run loads ${roster.models.length} local model(s): ${roster.summary}` +
       (roster.overBudget ? '' : ` (budget is ${LOCAL_MODEL_BUDGET})`)
@@ -1493,23 +1298,26 @@ async function usableTagsOrThrow(
 }
 
 /**
- * Tags and hashtags, built in code from the pools this run already measured.
+ * Tags and hashtags, built in code from the pools this run read off the chapter list.
  *
  * Spec §2's ownership ruling, applied: neither field is ever emitted by a model on the
  * chaptered path. What that buys, beyond a saved call, is a property no model can offer —
  * every tag published came out of the content text, tested by `occursIn`, because YouTube
  * treats a tag the video does not mention as a spam signal (§6.2).
  *
- * The PRIMARY PHRASE is the top-ranked key phrase, which is the phrase the embedding ranking
- * put closest to the whole document. The CATEGORY terms are the highest-ranked SINGLE WORDS in
- * the same ranking — one word is what makes a term broad, and being high in the ranking is what
- * makes it this video's broad term rather than any video's. (They were briefly taken from the
- * TAIL of the ranking, on the theory that the least document-specific phrase is the most
- * general one. It is not: the tail of a spoken transcript is "lies told" and "book titled".)
+ * THE POOLS COME FROM THE CHAPTER LIST (LEDGER #205; tags-hashtags.ts chapterPools), in the
+ * order the chapter list carries, which is the only ranking there is now. The embedding
+ * ranking that used to put a "primary phrase" at the top and take "category" words from the
+ * top of its single-word tail went with nomic-embed-text. So the PRIMARY PHRASE is the first
+ * grounded phrase of the first chapter — the first thing the video is about, said the way the
+ * video says it — and there are NO CATEGORY TERMS: a category was "the highest-ranked single
+ * word", and a chapter list carries no ranking to take one from. A word chosen by position
+ * would be a fabricated ranking wearing the old name (Law 1), so assembleTags no longer takes
+ * them and the budget goes unspent rather than filled.
  *
- * Nothing here throws on an empty pool: a video whose transcript yielded no rankable phrase
- * gets no tags and says so in the log. Manufacturing one from the filename would be inventing
- * an input.
+ * Nothing here throws on an empty pool: a video whose chapter list shares no grounded name or
+ * phrase with its transcript gets no tags, and the run's warnings say so (extractPools).
+ * Manufacturing one from the filename would be inventing an input.
  */
 function assembleCodeOwnedFields(
   aiManager: AIManagerService,
@@ -1520,10 +1328,9 @@ function assembleCodeOwnedFields(
 
   if (run.plan.assembleTags) {
     const assembled = assembleTags({
-      primaryPhrase: ctx.keyPhrases[0] || ctx.entities[0] || '',
+      primaryPhrase: ctx.phrases[0] || ctx.entities[0] || '',
       entities: ctx.entities,
-      keyPhrases: ctx.keyPhrases,
-      categories: ctx.keyPhrases.filter((p) => !p.includes(' ')).slice(0, 3),
+      phrases: ctx.phrases,
       // Without the speaker labels, for the same reason the entity pool is measured without
       // them: this is the "does the video actually say this?" test that keeps a tag off a video
       // it does not belong to, and HOST/CLIP/UNSURE are words the app wrote, not words the video
@@ -1545,7 +1352,7 @@ function assembleCodeOwnedFields(
     const titles = Array.isArray(merged.titles) ? (merged.titles as unknown[]) : [];
     const hashtags = buildHashtags({
       entities: ctx.entities,
-      keyPhrases: ctx.keyPhrases,
+      phrases: ctx.phrases,
       // Deduped against the FIRST title, which is the one the operator publishes by default.
       title: typeof titles[0] === 'string' ? (titles[0] as string) : ctx.videoTitle,
       // The channel's own brand tag, when the prompt set declares channel_tags. Never

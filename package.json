@@ -3,6 +3,8 @@
   "version": "1.1.0",
   "description": "AI-powered metadata generation for YouTube and Podcasts",
   "asar": true,
+  "//crucible-bootstrap": "Exact @crucible/bootstrap 1.0.34 LIBRARY tarball, vendored so a build is reproducible. It is the code that PERFORMS an install and never the release that GETS installed: which Crucible a machine should have is the release channel's answer, read at install time (crucible docs/INSTALL-UNINSTALL.md 6.5). Never replace with a directory dependency or repack these bytes.",
+  "//crucible-client": "CUT RELEASE 1.0.34: @crucible/client and @crucible/bootstrap are the vendored tarballs from crucible's v1.0.34 GitHub release (node tools/adopt-crucible-release.mjs <ver>, run from the repo root, fetches, repins and relinks). It is the LIBRARY this app is built against, NOT a statement about which server it needs: compatibility is the API version on X-Crucible-Api, and the SDK reads a field a server left out as null. Repin with the same tool, naming the version, never by hand (CRUCIBLE-MIGRATION-PLAN.md 3.1).",
   "main": "./dist/main/main.js",
   "scripts": {
     "clean": "rm -rf dist *.dmg *.dmg.blockmap",
@@ -18,15 +20,23 @@
     "build:all": "npm run build:electron && npm run build:preload && npm run build:frontend",
     "check:pure": "node tools/routing-publish-checks.js",
     "check:digest": "node tools/chapter-digest-smoke.js",
+    "check:crucible": "node tools/check-crucible.js",
+    "check:asr": "node tools/asr-checks.js",
+    "check:chaptering": "node tools/chaptering-checks.js",
+    "check:reroll": "node tools/reroll-checks.js",
+    "check:thumbnail": "node tools/thumbnail-checks.js && electron tools/thumbnail-fit-smoke.js",
+    "check:retired": "node tools/retired-components-checks.js",
+    "check:legacy-gone": "node tools/check-legacy-runtime-gone.js",
+    "check:p4": "node tools/p4-checks.js",
     "start:angular": "cd frontend && npm start",
     "start:electron": "npm run build:electron && npm run build:preload && wait-on http://localhost:4200 && cross-env NODE_ENV=development electron .",
     "electron:dev": "concurrently --kill-others \"npm run start:angular\" \"npm run start:electron\"",
     "electron": "npm run build:all && electron .",
-    "download:all:mac": "bash scripts/download-all.sh mac && npm run copy:ffmpeg",
-    "download:all:mac-arm64": "bash scripts/download-all.sh mac-arm64 && npm run copy:ffmpeg",
-    "download:all:mac-x64": "bash scripts/download-all.sh mac-x64 && npm run copy:ffmpeg",
-    "download:all:win": "bash scripts/download-all.sh win && npm run copy:ffmpeg",
-    "download:all:linux": "bash scripts/download-all.sh linux && npm run copy:ffmpeg",
+    "download:all:mac": "node scripts/copy-ffmpeg.js mac",
+    "download:all:mac-arm64": "node scripts/copy-ffmpeg.js mac-arm64",
+    "download:all:mac-x64": "node scripts/copy-ffmpeg.js mac-x64",
+    "download:all:win": "node scripts/copy-ffmpeg.js win",
+    "download:all:linux": "node scripts/copy-ffmpeg.js linux",
     "package": "npm run prepare:build-output && npm run clean && npm run build:all && electron-builder build",
     "package:mac": "npm run prepare:build-output && npm run build:all && electron-builder --mac",
     "package:mac-arm64": "npm run prepare:build-output && npm run build:all && electron-builder --mac --arm64",
@@ -44,7 +54,6 @@
     "youtube",
     "spreaker",
     "ai",
-    "ollama",
     "electron"
   ],
   "author": "Owen Morgan",
@@ -64,12 +73,12 @@
     "wait-on": "^9.0.1"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.71.1",
+    "@crucible/bootstrap": "file:vendor/crucible-bootstrap-1.0.34.tgz",
+    "@crucible/client": "file:vendor/crucible-client-1.0.34.tgz",
     "axios": "^1.13.2",
     "electron-log": "^5.3.3",
     "electron-store": "^8.2.0",
     "js-yaml": "^4.1.0",
-    "openai": "^6.10.0",
     "sherpa-onnx-node": "^1.13.6"
   },
   "build": {
@@ -85,6 +94,7 @@
       "dist/**/*",
       "frontend/dist/**/*",
       "electron/assets/**/*",
+      "shared/crucible/*.module.json",
       "!**/._*",
       "!**/*.map",
       "node_modules/**/*",
@@ -116,10 +126,6 @@
           "**/*",
           "!**/__pycache__/**"
         ]
-      },
-      {
-        "from": "editor-backend/utilities/bin",
-        "to": "editor-backend/utilities/bin"
       },
       {
         "from": "config",

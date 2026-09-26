@@ -1,20 +1,16 @@
 /**
  * Bridges - Process wrappers for external binaries
  *
- * Provides clean interfaces to ffmpeg, ffprobe, and whisper.cpp
- * with support for multiple concurrent processes and individualized feedback.
+ * Provides clean interfaces to ffmpeg and ffprobe with support for multiple concurrent
+ * processes and individualized feedback. (whisper.cpp's bridge left with P10: every
+ * transcription is Crucible's asr job, LEDGER #206.)
  *
  * Usage:
- *   import { getRuntimePaths, FfmpegBridge, FfprobeBridge, WhisperBridge } from '../lib/bridges';
+ *   import { getRuntimePaths, FfmpegBridge, FfprobeBridge } from '../lib/bridges';
  *
  *   const paths = getRuntimePaths();
  *   const ffmpeg = new FfmpegBridge(paths.ffmpeg);
  *   const ffprobe = new FfprobeBridge(paths.ffprobe);
- *   const whisper = new WhisperBridge({
- *     binaryPath: paths.whisper,
- *     modelsDir: paths.whisperModelsDir,
- *     libraryPath: getWhisperLibraryPath(),
- *   });
  */
 
 // Runtime path resolution
@@ -25,9 +21,6 @@ export {
   getPlatformFolder,
   getBinaryExtension,
   verifyBinary,
-  getWhisperLibraryPath,
-  getSelectedWhisperModel,
-  setSelectedWhisperModel,
   type RuntimePaths,
 } from './runtime-paths';
 
@@ -48,11 +41,3 @@ export {
   type MediaInfo,
 } from './ffprobe-bridge';
 
-// Whisper bridge
-export {
-  WhisperBridge,
-  type WhisperProgress,
-  type WhisperProcessInfo,
-  type WhisperResult,
-  type WhisperConfig,
-} from './whisper-bridge';

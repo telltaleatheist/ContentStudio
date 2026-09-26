@@ -5,7 +5,7 @@
  *
  * WHY THIS EXISTS, and how it differs from prompt-harness/run.js. The harness plans and runs
  * the routed FIELD units against a fixture transcript with no timings, so it deliberately never
- * touches the chapter pipeline, Whisper, the entity/key-phrase pools, the analytics insights
+ * touches the chapter pipeline, Whisper, the name/phrase pools, the analytics insights
  * block or the output writer. This drives the whole thing through the app's own two entry
  * points — `InputHandlerService.processMultipleInputs` then `MetadataGeneratorService.generate`
  * — which is exactly the split ipc-handlers makes between its transcription job and its AI job.
@@ -13,6 +13,16 @@
  * NOTHING IS REIMPLEMENTED HERE. Every prompt, model call and file write comes out of
  * electron/services/**; this file assembles parameter objects, caches what the app throws away,
  * and prints what came back.
+ *
+ * EVERY MODEL CALL GOES THROUGH CRUCIBLE (P2, LEDGER #193): the app's own registry and routing
+ * record are read out of the real userData (`crucible-servers.json`, `crucible-routing.json`),
+ * the app's one transport is built over them and installed, and the run goes where the app would
+ * send a metadata job: the model routing's server when it names one, else the server the app has
+ * selected (venue-decision.ts, LEDGER #222). `--server <name>` is this CLI's spelling of the
+ * routing's server, for THIS run only, without writing anything (it never picks one on its own:
+ * Q14, #205). Every lease the run
+ * takes is released on SIGINT/SIGTERM before the process exits 130/143 (plan 0a), so a Ctrl-C
+ * never leaves a card pinned until its ttl.
  *
  * FOUR DELIBERATE OVERRIDES, each printed loudly at startup (the fourth, --claude-cli, is
  * documented at its patch site below):
@@ -46,7 +56,9 @@
  *
  * PREREQ:
  *   npm run build:electron
- *   ollama serve   (qwen3.8:27b, qwen3.5:9b, nomic-embed-text)
+ *   a Crucible server registered and selected in the app (Settings › Crucible Servers), with
+ *   the routed local models on it (qwen3.8-27b-4bit, qwen3.5-9b) and, for a cloud route, its
+ *   own Anthropic key
  *
  * USAGE:
  *   node scripts/generate-metadata-cli.js --input "/path/video.mov" --channel youtube-telltale
@@ -83,6 +95,9 @@ const yaml = require(path.join(REPO_ROOT, 'node_modules', 'js-yaml'));
 // utilities/bin (whisper) and node_modules/@ffmpeg-installer. Stated rather than left to
 // process.cwd(), so the CLI works from any directory.
 process.env.CONTENTSTUDIO_PROJECT_ROOT = REPO_ROOT;
+
+/** This process's lanes (electron/crucible/cli-lanes.ts), opened at the top of main(). */
+let cli = null;
 
 function fail(msg) {
   console.error(`\n✖ ${msg}\n`);
@@ -122,8 +137,8 @@ Field selection (no flag = every field the channel publishes):
                        Granularity notes, printed again at run time:
                          - description = ONE unit that makes two calls (hook then body). The
                            hook and the body cannot be run separately.
-                         - tags on a chaptered item are assembled in CODE from the entity and
-                           key-phrase pools; no model writes them and no prompt is involved.
+                         - tags on a chaptered item are assembled in CODE from the pools its
+                           chapter list yields; no model writes them and no prompt is involved.
                          - hashtags are always derived in code from the tags and titles.
                          - thumbnail_text normally reads the titles as input data; without
                            --titles it runs with neither that block nor its cross-field check.
@@ -133,13 +148,28 @@ Everything else:
   --route <f>=<m>      Route one field to one model for THIS run (repeatable), validated
                        against the app's own option lists, e.g. --route description=qwen38-27b.
                        The stored routing is never modified.
-  --grain <g>          What the chapter pipeline detects (LEDGER #170): detailed (default —
-                       a standalone video's internal turns), broad (fewer, bigger pieces),
-                       or stories (compilations). An unknown value fails the run by name.
+  --grain <g>          What the chapter pipeline detects (LEDGER #213): chapters (default —
+                       every single video) or stories (a podcast compilation, 45 s junctions).
+                       An unknown value fails the run by name.
+  --chapter-engine <e> Which engine draws the chapters (P8b): snap (the declared default) or
+                       whole-transcript. Default: the app's 'chapterEngine' setting, else snap.
+  --title-thinking <on|off>
+                       Thinking on snap's chapter titles (LEDGER #208: on). Default: the app's
+                       'chapterTitleThinking' setting, else on.
+  --field-input <raw|digest>
+                       What the field calls read (P4, plan 7.2): raw (the declared default: the
+                       raw transcript until it is over the direct-pass ceiling, then the chapter
+                       digest) or digest (every chaptered item reads its chapter digest; a
+                       chapterless item keeps its transcript). Default: the app's 'fieldInput'
+                       setting, else raw. The plan 7.4 A/B's two arms are this flag.
   --assets <dir>       Prompt assets root. Default: <repo>/electron/assets/prompts.
+  --server <name>      The model routing's server for this run: send it to that registered
+                       Crucible server instead of the routing's (Model routing › Runs on) or,
+                       when the routing names none, the one the app has selected. Nothing
+                       stored is modified.
   --claude-cli         Send every Claude call through \`claude -p --model sonnet\` (the Claude
-                       Code subscription) instead of the metered API. ALWAYS sonnet, whatever
-                       the routing named. Test runs only; printed loudly.
+                       Code subscription) instead of Crucible's Anthropic upstream. ALWAYS
+                       sonnet, whatever the routing named. Test runs only; printed loudly.
   --output-dir <dir>   Where the job's report .txt/.json go. Default: the app's outputDirectory.
   --out <path>         Also write the assembled report text here.
   --no-insights        Run without the CHANNEL PERFORMANCE DATA block.
@@ -177,10 +207,23 @@ function parseArgs(argv) {
     else if (a === '--route') (args.routes = args.routes || []).push(argv[++i]);
     else if (a === '--grain') {
       args.grain = argv[++i];
-      if (!['detailed', 'broad', 'stories'].includes(args.grain)) {
-        console.error(`--grain must be detailed, broad, or stories (got "${args.grain}")`);
+      if (!['chapters', 'stories'].includes(args.grain)) {
+        console.error(`--grain must be chapters or stories (got "${args.grain}")`);
         process.exit(1);
       }
+    }
+    else if (a === '--chapter-engine') {
+      args.chapterEngine = argv[++i];
+      if (!['snap', 'whole-transcript'].includes(args.chapterEngine)) fail(`--chapter-engine must be snap or whole-transcript (got "${args.chapterEngine}")`);
+    }
+    else if (a === '--title-thinking') {
+      const v = argv[++i];
+      if (v !== 'on' && v !== 'off') fail(`--title-thinking must be on or off (got "${v}")`);
+      args.titleThinking = v === 'on';
+    }
+    else if (a === '--field-input') {
+      args.fieldInput = argv[++i];
+      if (!['raw', 'digest'].includes(args.fieldInput)) fail(`--field-input must be raw or digest (got "${args.fieldInput}")`);
     }
     else if (a === '--out') args.out = path.resolve(argv[++i]);
     else if (a === '--no-insights') args.noInsights = true;
@@ -189,6 +232,7 @@ function parseArgs(argv) {
     else if (a === '--chapters') args.freshChapters = true;
     else if (a === '--show-prompts') args.showPrompts = true;
     else if (a === '--claude-cli') args.claudeCli = true;
+    else if (a === '--server') args.server = argv[++i];
     else if (FIELD_FLAGS[a]) args.fields.push(FIELD_FLAGS[a]);
     else fail(`Unknown option: ${a}  (--help for usage)`);
   }
@@ -346,55 +390,112 @@ async function main() {
   const Store = require('electron-store');
   const store = new Store({});
   const settings = store.store;
-
-  const { setSelectedWhisperModel } = require(path.join(DIST, 'lib/bridges/runtime-paths.js'));
   const routing = require(path.join(DIST, 'services/metadata/metadata-routing.js'));
+
+  // ---- where this run goes: venue-decision.ts's rule, --server being the routing's server --
+  //
+  // The app runs a metadata job on the model routing's server when it names one, else on the
+  // selected server (LEDGER #222). `--server` is this CLI's spelling of that same choice, for
+  // this run only (the stored routing is not modified), exactly as --route is for a field. A
+  // routing server the registry has forgotten is dropped for this run with its line; the app
+  // writes that drop back the next time it reads the routing. The CLI has no fast pin.
+  const { CrucibleServers } = require(path.join(DIST, 'crucible/servers.js'));
+  const { intendedVenue } = require(path.join(DIST, 'crucible/venue-decision.js'));
+  const registry = new CrucibleServers(USER_DATA);
+  const registered = registry.names();
+  if (registered.length === 0) {
+    fail(`No Crucible server is registered in ${USER_DATA}. Start the app once (it adopts the Crucible on this ` +
+      `computer), or add one in Settings › Crucible Servers.`);
+  }
+  if (args.server !== undefined && !registered.includes(args.server)) {
+    fail(`--server "${args.server}" is not a registered Crucible server. Registered: ${registered.join(', ')}`);
+  }
+  const storedRouting = settings.metadataRouting;
+  const judgedServer = routing.judgeRoutingServer(
+    storedRouting && typeof storedRouting === 'object' ? storedRouting[routing.ROUTING_SERVER_KEY] : undefined,
+    registered
+  );
+  if (judgedServer.notice !== null) console.error(`ROUTING: ${judgedServer.notice}`);
+  let venue;
+  try {
+    venue = intendedVenue(false, {
+      selected: () => registry.selected(),
+      fastServer: () => registry.fastServer(),
+      routingServer: () => args.server ?? judgedServer.server,
+    });
+  } catch (err) {
+    fail(err.message);
+  }
+
+  // The lanes every local model call runs on (electron/crucible/lanes.ts), over the app's own
+  // registry and routing record, with this process's own in-flight ledger. Ctrl-C (SIGINT) and
+  // SIGTERM cancel this run's Crucible jobs and release its leases, then exit 130/143
+  // (CRUCIBLE-MIGRATION-PLAN.md sections 0a, 13.4).
+  const { openCliLanes } = require(path.join(DIST, 'crucible/cli-lanes.js'));
+  cli = openCliLanes({
+    stateDir: USER_DATA,
+    tool: 'generate-metadata-cli',
+    ...(venue.because === 'the selected server' ? {} : { server: venue.server }),
+  });
+
+  // Transcription is Crucible's asr job (P5, LEDGER #206), on the venue openCliLanes wired.
   const { AnalyticsStoreService } = require(path.join(DIST, 'services/analytics/analytics-store.service.js'));
   const { MetadataGeneratorService } = require(path.join(DIST, 'services/metadata/metadata-generator.service.js'));
-  const { WhisperService } = require(path.join(DIST, 'services/metadata/whisper.service.js'));
+  const { TranscriptionService } = require(path.join(DIST, 'services/metadata/transcription.service.js'));
   const { InputHandlerService } = require(path.join(DIST, 'services/metadata/input-handler.service.js'));
   const { resolveSpeakerTagging, announceSpeakerTagging, SpeakerTagger } =
     require(path.join(DIST, 'services/metadata/speaker-tagging.service.js'));
   const { getRuntimePaths } = require(path.join(DIST, 'lib/bridges/index.js'));
 
+  // ---- Crucible: the app's registry, the app's transport ------------------------------
+  //
+  // openCliLanes above built the app's own context over userData and installed its lanes and
+  // its one door (the transport), with the two things a CLI must not do left out: no background
+  // loops and no api-keys.json move (that is the app's, once, plan 6.6). The run goes to the
+  // server chosen above: `--server`, else the routing's server, else the app's selected one.
+  // Nothing here writes a choice.
+  const runServer = venue.server;
+  const transport = cli.context.transport;
+
   // ---- --claude-cli: the fourth deliberate override, printed loudly below --------------
   //
-  // Every Claude API call this run would make goes through `claude -p --model sonnet`
-  // instead — the operator's Claude Code subscription, not the metered API key (operator,
-  // 2026-08-24: "until we get this right, set it to claude -p so I'm not burning through
-  // API use on tests; just sonnet for now"). ONE patch point covers the whole pipeline:
-  // every cloud call — field units and both chapter stages — funnels through
-  // AIManagerService.makeClaudeRequest (runPlainRequest routes there, and the chapter
-  // service's cloudPlain IS runPlainRequest). The system prompt and the plain/JSON split
-  // are carried over exactly; the model is ALWAYS sonnet, whatever the routing named, and
-  // the banner says so. A failed spawn throws with the CLI's stderr — this is a transport
-  // swap for test runs, not a fallback, and it has no fallback of its own.
+  // Every Claude call this run would send to Crucible's Anthropic upstream goes through
+  // `claude -p --model sonnet` instead — the operator's Claude Code subscription, not the
+  // metered key (operator, 2026-08-24: "until we get this right, set it to claude -p so I'm
+  // not burning through API use on tests; just sonnet for now"). ONE patch point covers the
+  // whole pipeline, re-seated on the transport seam in P2 (plan 20): every cloud call — field
+  // units, both chapter stages, the distiller, the compilation package — reaches the one door
+  // as an `anthropic/` model, so the door's `chat` is wrapped and every `anthropic/` call is
+  // answered by `claude -p` with the same system turn. The model is ALWAYS sonnet, whatever the
+  // routing named, and the banner says so (LEDGER #158's semantics, kept). A failed spawn throws
+  // with the CLI's stderr — a transport swap for test runs, not a fallback, with none of its
+  // own. Local models are untouched.
   if (args.claudeCli) {
     const { AIManagerService } = require(path.join(DIST, 'services/metadata/ai-manager.service.js'));
-    const { SYSTEM_PROMPTS } = require(path.join(DIST, 'services/metadata/system-prompts.js'));
     const { spawn } = require('child_process');
-    const JSON_NUDGE =
-      'You are a helpful assistant. When asked to return JSON, output ONLY valid JSON with no ' +
-      'markdown, no commentary, and no extra text. Start your response with { and end with }.';
-    // The claude-cli: routing rung dispatches to its own transport method (ai-manager's
-    // makeClaudeCliRequest, which honours the routed alias — opus since the operator's
-    // switch). A test run must not silently run opus where its banner promises sonnet, so
-    // the override pins that method's alias too. Same transport, still subscription — the
-    // pin is about the banner telling the truth, not about billing.
+    // The claude-cli: routing rung has its own transport method (ai-manager's
+    // makeClaudeCliRequest, which honours the routed alias). A test run must not silently run
+    // opus where its banner promises sonnet, so the override pins that method's alias too.
     const realCliRequest = AIManagerService.prototype.makeClaudeCliRequest;
     AIManagerService.prototype.makeClaudeCliRequest = function (prompt, _cliModel, plain) {
       console.error(`  [claude-cli] routing named claude-cli:${_cliModel} -> pinned to sonnet for this test run`);
       return realCliRequest.call(this, prompt, 'sonnet', plain);
     };
-    AIManagerService.prototype.makeClaudeRequest = function (prompt, model, plain) {
-      const system = plain ? SYSTEM_PROMPTS.PLAIN_SYSTEM : JSON_NUDGE;
-      console.error(`  [claude-cli] ${model} -> claude -p --model sonnet (${prompt.length} chars)`);
-      return new Promise((resolve, reject) => {
+    const realChat = transport.chat.bind(transport);
+    transport.chat = async function (request) {
+      if (!request.model.startsWith('anthropic/')) return realChat(request);
+      console.error(`  [claude-cli] ${request.model} -> claude -p --model sonnet (${request.prompt.length} chars)`);
+      request.trace?.push({
+        what: request.what, model: request.model, chars: request.prompt.length, at: new Date().toISOString(),
+        prompt: request.prompt, server: 'claude -p (--claude-cli)',
+      });
+      const text = await new Promise((resolve, reject) => {
         // Hermetic cwd, same reason as the production transport: `claude -p` loads project
         // memory for its working directory, and this script runs from the repo.
         const hermeticCwd = require('path').join(require('os').tmpdir(), 'contentstudio-claude-cli');
         require('fs').mkdirSync(hermeticCwd, { recursive: true });
-        const child = spawn('claude', ['-p', '--model', 'sonnet', '--system-prompt', system], {
+        const cliArgs = ['-p', '--model', 'sonnet', ...(request.system ? ['--system-prompt', request.system] : [])];
+        const child = spawn('claude', cliArgs, {
           stdio: ['pipe', 'pipe', 'pipe'],
           cwd: hermeticCwd,
           // A nested `claude` must not inherit this session's entrypoint state.
@@ -406,46 +507,25 @@ async function main() {
         child.stderr.on('data', (d) => { err += d; });
         child.on('error', reject);
         child.on('close', (code) => {
-          if (code !== 0) {
-            reject(new Error(`claude -p exited ${code} for a ${model} call: ${err.trim() || '(no stderr)'}`));
-          } else {
-            resolve(out.trim());
-          }
+          if (code !== 0) reject(new Error(`claude -p exited ${code} for a ${request.model} call: ${err.trim() || '(no stderr)'}`));
+          else resolve(out.trim());
         });
-        child.stdin.end(prompt);
+        child.stdin.end(request.prompt);
       });
-    };
-    // initializeClaude's connection test is itself a billed API call; with the transport
-    // swapped it tests nothing this run will use. The client is still constructed so every
-    // "is Claude ready" check in the pipeline answers the same as a real run.
-    AIManagerService.prototype.initializeClaude = async function () {
-      const Anthropic = require(path.join(REPO_ROOT, 'node_modules', '@anthropic-ai', 'sdk'));
-      this.anthropicClient = new (Anthropic.default || Anthropic)({ apiKey: this.config.apiKey || 'claude-cli' });
-      console.error('  [claude-cli] initializeClaude: connection test skipped (transport is claude -p)');
-      return true;
+      return { text, finishReason: 'stop', usage: null, server: 'claude -p (--claude-cli)', model: request.model, act: 'generate' };
     };
   }
 
-  // ipc-handlers.ts:760 — the selected Whisper model comes from the store.
-  if (!settings.whisperModel) {
-    fail(`The app's settings name no whisperModel; the app would transcribe with a model this ` +
-         `CLI cannot guess. Set it in Settings → Transcription.`);
-  }
-  setSelectedWhisperModel(settings.whisperModel);
+  // The whisperModel setting no longer chooses anything (P5): every transcription is
+  // qwen3-asr-1.7b on Crucible, on the server this run's model calls go to. openCliLanes wired
+  // that venue (the registry's client and the in-flight ledger, P2); this is its server.
+  const asrVenue = { server: runServer };
 
   const channel = args.channel || settings.promptSet;
   if (!channel) fail('No channel: pass --channel, or set one in the app settings (promptSet).');
 
-  // ipc-handlers.ts:1146-1176 — provider/model/api key resolution, verbatim in shape.
-  const metaProvider = settings.metadataProvider || settings.aiProvider;
-  const apiKeysPath = path.join(USER_DATA, 'api-keys.json');
-  const apiKeys = fs.existsSync(apiKeysPath) ? JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8')) : {};
-  const aiModel = settings.metadataModel || settings.aiModel || settings.ollamaModel;
-  const aiProvider = settings.metadataProvider || settings.aiProvider || 'ollama';
-  const fullModel = aiModel ? `${aiProvider}:${aiModel}` : undefined;
-  let apiKey;
-  if (aiProvider === 'openai') apiKey = apiKeys.openaiApiKey;
-  else if (aiProvider === 'claude') apiKey = apiKeys.claudeApiKey;
+  // No provider, model or key is read from the settings any more (P2): the routing table
+  // picks every model and the selected Crucible server holds the key (LEDGER #193, #194).
 
   const analyticsStore = new AnalyticsStoreService(path.join(USER_DATA, 'analytics'));
   const guidelinesMod = require(path.join(DIST, 'services/analytics/insights-guidelines.js'));
@@ -524,8 +604,8 @@ async function main() {
     console.error('');
     console.error('  ** CLAUDE TRANSPORT OVERRIDE (--claude-cli) **');
     console.error('     Every Claude call goes through `claude -p --model sonnet` — the Claude Code');
-    console.error('     subscription, NOT the metered API key. ALWAYS sonnet, whatever the routing');
-    console.error('     named. Calls to other providers (ollama etc.) are untouched.');
+    console.error('     subscription, NOT Crucible\'s Anthropic upstream. ALWAYS sonnet, whatever the');
+    console.error('     routing named. Local models on Crucible are untouched.');
     console.error('');
   }
   console.error(`  input:       ${args.input}`);
@@ -556,12 +636,12 @@ async function main() {
     for (const note of granularityNotes(filter.selected)) console.error(`     - ${note}`);
     console.error('');
   }
-  console.error(`  whisper:     ${settings.whisperModel}`);
+  console.error(`  transcriber: crucible:${asrVenue.server}:qwen3-asr-1.7b`);
   console.error(`  routing:     ${Object.entries(resolvedRouting).map(([k, v]) => `${k}=${v}`).join(', ')}`);
   // Chapters route per-field since 2026-08-24 (the `chapters` entry above); the summarizer
   // follows the chapters selection, falling to SUMMARIZATION_MODEL only when chapters are local.
   console.error(`  summarizer:  follows chapters=${resolvedRouting.chapters}`);
-  console.error(`  packaging:   ${fullModel} (compilation only)`);
+  console.error(`  packaging:   follows titles=${resolvedRouting.titles} (compilation only)`);
   console.error(
     `  insights:    ${insights
       ? `evidence ${insights.rawBlock.length} chars, guidelines cache ` +
@@ -573,7 +653,7 @@ async function main() {
     console.error('  ** INSIGHTS RECOMPUTED IN MEMORY — see --help; nothing was written back **');
   }
   console.error(`  output dir:  ${outputDir}`);
-  console.error(`  ollama host: ${settings.ollamaHost || 'http://localhost:11434'}`);
+  console.error(`  crucible:    ${runServer} (${args.server !== undefined ? "--server, this run's routing server; the stored routing and the app's selection are not changed" : venue.because})`);
   console.error(`${bar}\n`);
 
   const started = Date.now();
@@ -597,14 +677,14 @@ async function main() {
     contentItems = cachedTranscript.contentItems;
     transcriptSource =
       `CACHE HIT — ${caches.transcript}\n` +
-      `                 cached ${cachedTranscript.cachedAt} from whisper "${cachedTranscript.whisperModel}", ` +
+      `                 cached ${cachedTranscript.cachedAt} from "${cachedTranscript.whisperModel}", ` +
       `${(contentItems[0].srtSegments || []).length} caption segment(s), ${contentItems[0].content.length} chars`;
     console.error(`  TRANSCRIPT: ${transcriptSource}`);
-    console.error('              Whisper was NOT run. Pass --transcribe to force a fresh transcription.\n');
+    console.error('              No transcription was run. Pass --transcribe to force a fresh one.\n');
   } else {
-    console.error(`  TRANSCRIPT: ${args.transcribe ? 'FRESH (--transcribe)' : 'no cache for this video'} — running Whisper\n`);
-    const whisperService = new WhisperService();
-    whisperService.on('progress', (p) => {
+    console.error(`  TRANSCRIPT: ${args.transcribe ? 'FRESH (--transcribe)' : 'no cache for this input'} — reading the input (a video is transcribed on Crucible; a transcript file is imported as it is)\n`);
+    const transcriptionService = new TranscriptionService();
+    transcriptionService.on('progress', (p) => {
       if (p.percent !== undefined) progressCallback('transcription', p.message, p.percent);
     });
     // Speaker tagging, resolved exactly as ipc-handlers' transcription job resolves it: once,
@@ -622,7 +702,7 @@ async function main() {
     const speakerTagger = speakerMode.enabled ? new SpeakerTagger(speakerMode) : undefined;
 
     const inputHandler = new InputHandlerService(
-      whisperService, outputDir, progressCallback, speakerTagger);
+      transcriptionService, outputDir, { jobName: path.basename(args.input), promptSet: channel }, progressCallback, speakerTagger);
     const inputFailures = [];
     contentItems = await inputHandler.processMultipleInputs([args.input], new Map(), inputFailures, new Map());
     if (contentItems.length === 0) {
@@ -631,6 +711,10 @@ async function main() {
     if (inputFailures.length > 0) {
       for (const f of inputFailures) console.error(`  ! input stage: ${f}`);
     }
+    // A transcript-file input is imported as it is and runs no ASR: its stamp and the summary
+    // say so, never "transcription" (the input handler's own type is the one fact read here).
+    const imported = contentItems.every((item) => item.contentType === 'transcript_file');
+    const transcriber = imported ? 'imported transcript file (no ASR)' : `crucible:${asrVenue.server}:qwen3-asr-1.7b`;
     writeCache(caches.transcript, {
       // 2: the ContentItem's segments may now carry speaker tags, and its `content` may be
       // screenplay-prefixed because of them. A version-1 cache is a transcript from before
@@ -640,10 +724,12 @@ async function main() {
       version: 2,
       video: videoStamp(args.input),
       cachedAt: new Date().toISOString(),
-      whisperModel: settings.whisperModel,
+      whisperModel: transcriber,
       contentItems,
     });
-    transcriptSource = `FRESH Whisper run ("${settings.whisperModel}"), cached to ${caches.transcript}`;
+    transcriptSource = imported
+      ? `IMPORTED transcript file, no ASR run, cached to ${caches.transcript}`
+      : `FRESH Crucible transcription (${transcriber}), cached to ${caches.transcript}`;
     console.error(`\n  TRANSCRIPT: ${transcriptSource}\n`);
     // A fresh transcript invalidates chapters measured against the old one.
     if (fs.existsSync(caches.chapters)) {
@@ -659,33 +745,36 @@ async function main() {
   const baseParams = {
     inputs: [args.input],
     mode: settings.defaultMode || 'individual',
-    aiProvider: metaProvider,
-    aiModel: fullModel,
     summarizationModel: routing.SUMMARIZATION_MODEL,
-    metadataModel: fullModel,
-    aiApiKey: apiKey,
-    aiHost: settings.ollamaHost || 'http://localhost:11434',
     outputPath: outputDir,
     promptSet: channel,
     promptSetsDir,
     jobId,
     jobName: path.basename(args.input),
     inputTranscripts: {},
-    chapterNumCtx: settings.chapterNumCtx || undefined,
     // What the chapter pipeline detects (LEDGER #170); absent = the declared default
     // ('detailed'), same as the app's queue page preselects.
     chapterGrain: args.grain,
+    // The engine and the titles' thinking (P8b, LEDGER #208), as ipc-handlers reads them from the
+    // store; a flag overrides for this run only, and the store is never written.
+    chapterEngine: args.chapterEngine !== undefined ? args.chapterEngine : settings.chapterEngine,
+    chapterTitleThinking: args.titleThinking !== undefined ? args.titleThinking : settings.chapterTitleThinking,
+    // What the field calls read (P4): the flag for this run only, else the store's `fieldInput`,
+    // else absent, which the generator states as the default ('raw') in the run's log.
+    fieldInput: args.fieldInput !== undefined ? args.fieldInput : settings.fieldInput,
     // Carried for parity with ipc-handlers' `generate-metadata`. It is a no-op on this call —
     // the generator only resolves a tagging mode when it is the one transcribing, and it is
     // handed `preTranscribedContent` here — but a params object that silently lacks a field the
     // real one has is how a CLI stops being the real pipeline.
     speakerEnrollmentAudio: settings.speakerEnrollmentAudio || undefined,
     metadataRouting: resolvedRouting,
-    cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
     inputNotes: {},
     insights: insights || undefined,
     preTranscribedContent: contentItems,
     progressCallback,
+    // Aborted by Ctrl-C/SIGTERM, so the call in flight stops rather than finishing unwatched.
+    cancelSignal: cli.signal,
+    cancelCallback: () => cli.signal.aborted,
   };
 
   // ---- STAGE 2: the chapters --------------------------------------------------------------
@@ -792,11 +881,13 @@ async function main() {
     console.error(`${bar}\nSHOW PROMPTS (--show-prompts): ${written.length} prompt(s) written, NO model was called.\n`);
     for (const f of written) console.error(`  ${f}`);
     console.error(`${bar}\n`);
+    await cli.close();
     process.exit(0);
   }
 
   if (chaptersOnly) {
     console.error(`${bar}\nCHAPTERS ONLY (--chapters with no field flag): nothing was generated and no report was written.\n${bar}\n`);
+    await cli.close();
     process.exit(0);
   }
 
@@ -844,6 +935,7 @@ async function main() {
     `channel:       ${channel}`,
     `transcript:    ${transcriptSource.replace(/\n\s+/g, ' ')}`,
     `chapters:      ${chapterSource}`,
+    `field input:   ${args.fieldInput !== undefined ? `${args.fieldInput} (--field-input)` : settings.fieldInput !== undefined ? `${settings.fieldInput} (the app's fieldInput setting)` : 'raw (the declared default)'}`,
     `insights:      ${insights ? `evidence ${insights.rawBlock.length} chars — ${insightsSource}` : insightsSource}`,
     `elapsed:       ${(result.processing_time || 0).toFixed(1)}s`,
     '',
@@ -856,7 +948,9 @@ async function main() {
     console.error(`  written: ${args.out}\n`);
   }
 
-  // The compiled services keep handles open (queue-manager timers); force a clean exit.
+  // Nothing should be held by now; close() gives back anything that is and removes this
+  // process's ledger file. Then force a clean exit (the compiled services keep handles open).
+  await cli.close();
   process.exit(0);
 }
 
@@ -890,4 +984,8 @@ function granularityNotes(selected) {
   return notes;
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch(async (e) => {
+  console.error(e);
+  if (cli) await cli.close();
+  process.exit(1);
+});

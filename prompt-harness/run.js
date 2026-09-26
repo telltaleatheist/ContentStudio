@@ -27,7 +27,9 @@
  *
  * PREREQ:
  *   npm run build:electron        # once, and after any change under electron/
- *   ollama pull qwen3.8:27b       # or pass --units none to only print prompts
+ *   a Crucible server registered and selected in the app, with the routed models on it
+ *   (--units none only prints prompts). The harness drives the app's own compiled transport
+ *   over the app's registry (openCliLanes installs both, P2/P3).
  */
 
 const path = require('path');
@@ -46,6 +48,9 @@ Module._resolveFilename = function (request, ...rest) {
   if (request === 'electron' || request === 'electron-log') return require.resolve(STUB);
   return originalResolve.call(this, request, ...rest);
 };
+
+/** This process's lanes (electron/crucible/cli-lanes.ts), opened at the top of main(). */
+let cli = null;
 
 function fail(msg) {
   console.error(`\n✖ ${msg}\n`);
@@ -124,6 +129,14 @@ async function main() {
   }
   const args = parseArgs(process.argv.slice(2));
 
+  // The lanes every local model call runs on (electron/crucible/lanes.ts), over the app's own
+  // registry and routing record in the real userData (the electron stub's /tmp is not where the
+  // app keeps them), with this process's own in-flight ledger. Ctrl-C (SIGINT) and SIGTERM
+  // cancel this run's Crucible jobs and release its leases, then exit 130/143 (plan section 0a).
+  const { USER_DATA } = require(path.join(REPO_ROOT, 'scripts', '_electron-shim-real-userdata.js'));
+  const { openCliLanes } = require(path.join(DIST, 'crucible/cli-lanes.js'));
+  cli = openCliLanes({ stateDir: USER_DATA, tool: 'prompt-harness' });
+
   const { AIManagerService } = require(path.join(DIST, 'services/metadata/ai-manager.service.js'));
   const tasks = require(path.join(DIST, 'services/metadata/metadata-tasks.js'));
   const routing = require(path.join(DIST, 'services/metadata/metadata-routing.js'));
@@ -148,7 +161,6 @@ async function main() {
    * `<promptSetsDir>/prompts` — exactly as it does against userData in the app.
    */
   const mgr = new AIManagerService({
-    provider: 'ollama',
     summarizationModel: routing.SUMMARIZATION_MODEL,
     promptSet: args.channel,
     promptSetsDir: path.dirname(args.assets),
@@ -164,11 +176,11 @@ async function main() {
   // only local models this process loads are the ones the units name.
   const plan = tasks.planMetadataUnits({
     routing: routing.resolveMetadataRouting(undefined),
-    defaultHost: 'http://localhost:11434',
     aiManager: mgr,
     hasInsights: Boolean(insightsBlock),
     hasChapters: false,
     alsoLoads: [],
+    lifecycle: new (require(path.join(DIST, 'services/metadata/model-lifecycle.js')).JobModelLifecycle)('the prompt harness'),
   });
 
   const warnings = [];
@@ -184,7 +196,10 @@ async function main() {
     videoTitle: args.source,
     promptSetName: args.channel,
     entities: entities.topEntities(transcript, 12),
-    keyPhrases: entities.candidateKeyPhrases(transcript).slice(0, 40),
+    // No phrase pool. The pool is read off the chapter list now (LEDGER #205), and the harness
+    // hands over a raw transcript with no chapters; a frequency-sorted n-gram list in its place
+    // would be the fallback that ruling removed, so the description runs without a Phrases line.
+    phrases: [],
     contentText: transcript,
     // Filled as each call returns, and read by the calls that take an earlier field as input
     // data. Reset per run below, so run 2 never reads run 1's titles.
@@ -287,8 +302,14 @@ async function main() {
   if (args.out) fs.writeFileSync(args.out, JSON.stringify(payload, null, 2));
   console.log(`\nFull output saved: ${path.relative(process.cwd(), path.join(outDir, `run-${stamp}.json`))}\n`);
 
-  // The compiled services keep handles open (queue manager timers); force a clean exit.
+  // Nothing should be held by now; close() gives back anything that is and removes this
+  // process's ledger file. Then force a clean exit (the compiled services keep handles open).
+  await cli.close();
   process.exit(0);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch(async (e) => {
+  console.error(e);
+  if (cli) await cli.close();
+  process.exit(1);
+});

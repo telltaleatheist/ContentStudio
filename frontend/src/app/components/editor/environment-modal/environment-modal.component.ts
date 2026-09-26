@@ -2,10 +2,10 @@
 //
 // File ▸ Environment…: what the editor's backend is made of, and whether it is on this machine.
 //
-// The editor does not carry its toolchain in the bundle. FFmpeg/FFprobe, the Python runtime and
-// the Whisper speech model are downloaded once into the shared OwenMorgan location and reused by
-// every app there; voice isolation is a fourth, optional component that only gates the Denoise
-// toggle. On a machine that has none of them, the editor can SEE what is missing and, without
+// The editor does not carry its toolchain in the bundle. FFmpeg/FFprobe and the Python runtime
+// are downloaded once into the shared OwenMorgan location and reused by every app there
+// (transcription and voice isolation run on Crucible, so no speech model or separator env is
+// downloaded any more). On a machine that has none of them, the editor can SEE what is missing and, without
 // this dialog, could do nothing about it — the binary resolver would simply throw the moment a
 // project was opened, naming a path that had never been downloaded.
 //

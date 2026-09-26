@@ -1122,6 +1122,14 @@ select.control { flex: 1; }
 }
 .s:hover .s-len,
 .s.picked .s-len { opacity: 1; }
+/* The re-roll gate's rank: quiet by default, the top three in ink. */
+.s-rank {
+  flex: none;
+  font-size: var(--rp-fs-cap);
+  color: var(--rp-ink-3);
+  &.top { color: var(--rp-ink-2); font-weight: 500; }
+}
+.slot-tag.flag { color: var(--rp-warn); border-color: var(--rp-warn-line); }
 .s-acts {
   display: flex;
   gap: 2px;

@@ -9,7 +9,9 @@ import * as yaml from 'js-yaml';
 import { AIManagerService, AIConfig } from '../services/metadata/ai-manager.service';
 import type { ContentItem } from '../services/metadata/input-handler.service';
 import { parseTranscriptImport, wordsToSegments, buildTranscriptSlices, TranscriptSliceCut } from '../services/metadata/transcript-import.service';
-import { EpisodeSplitterService } from '../services/metadata/episode-splitter.service';
+import { splitCandidates } from '../services/metadata/transcript-split';
+import { snapTransports } from '../services/metadata/snap-chapters';
+import { crucibleTransport } from '../crucible/transport';
 import { AnalyticsStoreService } from '../services/analytics/analytics-store.service';
 import { IngestServerService } from '../services/analytics/ingest-server.service';
 import { DistillationService } from '../services/analytics/distillation.service';
@@ -69,11 +71,13 @@ import {
   buildRoutingView,
   describeRouting,
   migrateStoredRouting,
-  probeOllamaInventory,
   resolveChapterModelOption,
   resolveMetadataRouting,
+  resolveSnapChapterModels,
+  routedModelString,
   validateRoutingSelections,
 } from '../services/metadata/metadata-routing';
+import { resolveRerollGateSettings } from '../services/metadata/reroll/settings';
 import { PROMPTS_SUBDIR, initPromptAssets, promptAssets, reloadPromptAssets } from '../services/metadata/prompt-assets';
 import { setupPublishIpc } from '../services/publish/publish-ipc';
 import { SpreakerConfigService } from '../services/spreaker/spreaker-config.service';
@@ -87,6 +91,12 @@ import { resolveRef } from '../services/metadata/editor-transcript-link';
 import type { TranscriptRef } from '../services/publish/publish-types';
 import type { TranscriptLink } from '../services/metadata/editor-transcript-link';
 import { getMainWindow } from '../main';
+import { setupCrucibleIpc } from '../crucible/crucible-ipc';
+import { crucibleVoiceIsolation } from '../crucible/denoise';
+import type { CrucibleContext } from '../crucible/context';
+import { catalogInventory } from '../crucible/catalog';
+import type { LaneRun } from '../crucible/lanes';
+import type { ResumeStage } from '../crucible/wire';
 
 /**
  * Analytics services created in main.ts at startup and shared with the IPC layer.
@@ -106,6 +116,12 @@ export interface AnalyticsServices {
    * only thing in the app that reads the token, and it hands publish/ a show WITHOUT it.
    */
   spreakerConfig: SpreakerConfigService;
+  /**
+   * The Crucible servers this machine knows, and everything that reaches them (registry,
+   * probe, pairing, the local engine, readiness). Built in main.ts over userData, like the
+   * rest of this struct, so the same wiring runs under a keeper over a temp directory.
+   */
+  crucible: CrucibleContext;
 }
 
 /**
@@ -591,20 +607,24 @@ function sendToRenderer(channel: string, payload: any): void {
   }
 }
 
-// ==================== TWO-PHASE PIPELINE ====================
-// Phase 1: Transcription pool — up to 5 concurrent (WhisperService supports concurrent jobs)
-// Phase 2: AI generation queue — 1 at a time, sequential (protects AI API rate limits)
+// ==================== THE PIPELINE, ON ITS LANE ====================
+// One job is transcription, then generation, run start to finish inside its Crucible server's
+// lane (electron/crucible/lanes.ts; CRUCIBLE-MIGRATION-PLAN.md section 13). This used to be two
+// queues: a 5-slot transcription pool and a 1-at-a-time AI generation queue shared by every job.
+// Both are gone. A job is admitted to ONE server (its fast pin's or the selected one, never
+// another: LEDGER #205), runs there alone, and the Mac's job and the PC's run side by side. The
+// renderer asks main which rows to start (`crucible:queue-plan`) and main answers at most one per
+// server, so what used to be the global queue is now the lanes.
 
 interface PipelineJob {
   jobId: string;
   metadataParams: any;
   progressCallback: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => void;
   contentItems?: ContentItem[];
-  resolve: (value: any) => void;
-  reject: (error: any) => void;
   cancelled: boolean;
   /**
-   * Fired by cancel(), alongside the `cancelled` flag.
+   * Fired by cancel(), alongside the `cancelled` flag — and by the lane, when the job parks,
+   * stalls or the app quits (the lane owns the same controller).
    *
    * The flag is polled — it can only be read BETWEEN stages, which is no help at all
    * during the one long model call a cancel is most likely to arrive in the middle of.
@@ -612,20 +632,19 @@ interface PipelineJob {
    * instead of running to completion and being billed.
    */
   abortController: AbortController;
+  /** The lane this job was admitted to: its stall clock's beat. */
+  run: LaneRun;
 }
 
-interface AiGenerationJob {
-  jobId: string;
-  execute: () => Promise<any>;
-  resolve: (value: any) => void;
-  reject: (error: any) => void;
+/**
+ * Did the LANE end this job (a park, a stall, quit) rather than the user or the job itself?
+ * Then the pipeline sends no terminal progress event of its own: the answer is the lane's
+ * (a typed `parked` result, or the stall's sentence), and a "cancelled" 'error' event sent
+ * first would have the renderer mark the row failed with the wrong reason.
+ */
+function endedByLane(job: PipelineJob): boolean {
+  return job.abortController.signal.aborted && !job.cancelled;
 }
-
-const MAX_CONCURRENT_TRANSCRIPTIONS = 5;
-let activeTranscriptions = 0;
-const transcriptionQueue: PipelineJob[] = [];
-const aiGenerationQueue: AiGenerationJob[] = [];
-let isAiGenerationRunning = false;
 
 // ==================== "SHOW PROMPT" HELD TRANSCRIPTS ====================
 // When a job runs with showPrompt=true we transcribe + assemble the prompt but STOP
@@ -647,43 +666,20 @@ const heldTranscripts = new Map<string, {
   computedChapters?: { [sourceLabel: string]: any };
 }>();
 
-function enqueuePipelineJob(job: PipelineJob): void {
-  const queuePosition = transcriptionQueue.length + activeTranscriptions;
-  log.info(`[Pipeline] Enqueueing job: ${job.jobId} (${queuePosition} jobs ahead)`);
-  transcriptionQueue.push(job);
-  processTranscriptionQueue();
-}
-
-function processTranscriptionQueue(): void {
-  while (activeTranscriptions < MAX_CONCURRENT_TRANSCRIPTIONS && transcriptionQueue.length > 0) {
-    const job = transcriptionQueue.shift()!;
-
-    if (job.cancelled) {
-      job.resolve({ success: false, error: 'Job cancelled by user' });
-      continue;
-    }
-
-    activeTranscriptions++;
-    log.info(`[Pipeline] Starting transcription for job: ${job.jobId} (${activeTranscriptions} active, ${transcriptionQueue.length} queued)`);
-
-    // Run transcription in background (don't await — allows multiple to run concurrently)
-    runTranscription(job).finally(() => {
-      activeTranscriptions--;
-      log.info(`[Pipeline] Transcription finished for job: ${job.jobId} (${activeTranscriptions} active)`);
-      processTranscriptionQueue();
-    });
-  }
-}
-
-async function runTranscription(job: PipelineJob): Promise<void> {
+/**
+ * Transcribe a job's inputs, then generate its metadata. Answers the job's result; throws only
+ * when generation itself throws. Runs inside the job's lane (generate-metadata below).
+ */
+async function runPipeline(job: PipelineJob): Promise<any> {
+  const inputFailures: string[] = [];
   try {
-    const { WhisperService } = require('../services/metadata/whisper.service');
+    const { TranscriptionService } = require('../services/metadata/transcription.service');
     const { InputHandlerService } = require('../services/metadata/input-handler.service');
     const { resolveSpeakerTagging, announceSpeakerTagging, SpeakerTagger } =
       require('../services/metadata/speaker-tagging.service');
     const { getRuntimePaths } = require('../lib/bridges');
 
-    const whisperService = new WhisperService();
+    const transcriptionService = new TranscriptionService();
     // The same directory the generator will write this job's report into, resolved the
     // same way — the saved transcripts sit beside it, and the "does this video have one?"
     // check the UI makes has to look in the directory the run will actually use.
@@ -698,8 +694,12 @@ async function runTranscription(job: PipelineJob): Promise<void> {
     announceSpeakerTagging(speakerMode);
     const speakerTagger = speakerMode.enabled ? new SpeakerTagger(speakerMode) : undefined;
 
+    // The run's facts for every video's asr context (LEDGER #206): the job's name and its
+    // channel, whose brand terms and promoted items can spell what the audio alone guesses at.
     const inputHandler = new InputHandlerService(
-      whisperService, outputDir, job.progressCallback, speakerTagger);
+      transcriptionService, outputDir,
+      { jobName: job.metadataParams.jobName ?? null, promptSet: job.metadataParams.promptSet ?? null },
+      job.progressCallback, speakerTagger);
 
     // Normalize inputs
     const normalizedInputs = job.metadataParams.inputs.map((input: any) => {
@@ -708,9 +708,11 @@ async function runTranscription(job: PipelineJob): Promise<void> {
       return String(input);
     });
 
-    // Set up whisper progress forwarding
-    whisperService.on('progress', (progress: any) => {
+    // Set up transcription progress forwarding
+    transcriptionService.on('progress', (progress: any) => {
       if (job.cancelled) return;
+      // Transcription progress is a sign of life for the job's stall clock (plan section 13.5).
+      job.run.beat();
       if (job.progressCallback && progress.videoPath) {
         const filename = progress.videoPath.split('/').pop() || progress.videoPath;
         let itemIndex: number | undefined = undefined;
@@ -759,13 +761,11 @@ async function runTranscription(job: PipelineJob): Promise<void> {
       useSavedTranscriptMap.set(inputPath, true);
     }
 
-    const inputFailures: string[] = [];
     const contentItems = await inputHandler.processMultipleInputs(
       normalizedInputs, customNotesMap, inputFailures, transcriptLinkMap, useSavedTranscriptMap);
 
-    if (job.cancelled) {
-      job.resolve({ success: false, error: 'Job cancelled by user' });
-      return;
+    if (job.cancelled || endedByLane(job)) {
+      return { success: false, error: 'Job cancelled by user' };
     }
 
     if (contentItems.length === 0) {
@@ -777,173 +777,131 @@ async function runTranscription(job: PipelineJob): Promise<void> {
         message: errorMessage,
         jobId: job.jobId
       });
-      job.resolve({ success: false, error: errorMessage });
-      return;
+      return { success: false, error: errorMessage };
     }
 
-    // Store content items and move to AI generation queue
     job.contentItems = contentItems;
-
-    // Send queued status if AI generation is busy
-    if (isAiGenerationRunning || aiGenerationQueue.length > 0) {
-      sendToRenderer('generation-progress', {
-        phase: 'queued',
-        message: 'Waiting for AI generation...',
-        jobId: job.jobId
-      });
-    }
-
-    // Enqueue AI generation for this job
-    enqueueAiGenerationJob(job.jobId, async () => {
-      if (job.cancelled) {
-        return { success: false, error: 'Job cancelled by user' };
-      }
-
-      const { MetadataGeneratorService } = require('../services/metadata/metadata-generator.service');
-
-      const paramsWithCallback = {
-        ...job.metadataParams,
-        preTranscribedContent: job.contentItems,
-        inputWarnings: inputFailures,
-        progressCallback: job.progressCallback,
-        cancelCallback: () => job.cancelled,
-        cancelSignal: job.abortController.signal
-      };
-
-      const jobResult = await MetadataGeneratorService.generate(paramsWithCallback);
-
-      // "Show prompt" flow: the transcript is done and the prompt is assembled, but
-      // NO metadata call happened. Hold the transcript so "Send to AI" can reuse it,
-      // and do NOT emit a terminal 'complete' — the frontend keys off the RESOLVED
-      // value here, not a progress event. On failure we still surface a terminal
-      // 'error' as usual. Warnings are forwarded because chapters DO run in this flow
-      // now, so "chapters failed, the prompt you are reading has no chapter subjects"
-      // has to reach the user while they are still deciding whether to send it.
-      if (job.metadataParams.showPrompt) {
-        if (jobResult.success) {
-          heldTranscripts.set(job.jobId, {
-            contentItems: job.contentItems!,
-            metadataParams: job.metadataParams,
-            computedChapters: jobResult.computedChapters,
-          });
-          return {
-            success: true,
-            prompts: jobResult.prompts,
-            jobId: job.jobId,
-            held: true,
-            warnings: jobResult.warnings,
-          };
-        }
-        sendToRenderer('generation-progress', {
-          phase: 'error',
-          message: jobResult.error || 'Unknown error'
-        });
-        return jobResult;
-      }
-
-      if (jobResult.success) {
-        sendToRenderer('generation-progress', {
-          phase: 'complete',
-          message: 'Metadata generation complete!'
-        });
-      } else {
-        sendToRenderer('generation-progress', {
-          phase: 'error',
-          message: jobResult.error || 'Unknown error'
-        });
-      }
-
-      return jobResult;
-    }).then(result => {
-      job.resolve(result);
-    }).catch(error => {
-      // Generation THREW (rather than returning success:false) — emit a terminal error
-      // event so progress-stream UIs don't hang on "generating".
+  } catch (error) {
+    log.error(`[Pipeline] Transcription failed for job ${job.jobId}:`, error);
+    if (!endedByLane(job)) {
       sendToRenderer('generation-progress', {
         phase: 'error',
         message: error instanceof Error ? error.message : String(error),
         jobId: job.jobId
       });
-      job.reject(error);
-    });
-
-  } catch (error) {
-    log.error(`[Pipeline] Transcription failed for job ${job.jobId}:`, error);
-    sendToRenderer('generation-progress', {
-      phase: 'error',
-      message: error instanceof Error ? error.message : String(error),
-      jobId: job.jobId
-    });
-    job.resolve({ success: false, error: error instanceof Error ? error.message : String(error) });
-  }
-}
-
-function enqueueAiGenerationJob(jobId: string, execute: () => Promise<any>): Promise<any> {
-  return new Promise((resolve, reject) => {
-    const queuePosition = aiGenerationQueue.length + (isAiGenerationRunning ? 1 : 0);
-    log.info(`[AiQueue] Enqueueing AI job: ${jobId} (position ${queuePosition})`);
-
-    aiGenerationQueue.push({ jobId, execute, resolve, reject });
-
-    // Send queue position to frontend for non-pipeline jobs
-    if (queuePosition > 0) {
-      sendToRenderer('generation-progress', {
-        phase: 'queued',
-        message: `Queued (position ${queuePosition})`,
-        jobId
-      });
     }
-
-    processAiGenerationQueue();
-  });
-}
-
-async function processAiGenerationQueue(): Promise<void> {
-  if (isAiGenerationRunning || aiGenerationQueue.length === 0) {
-    return;
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
-
-  isAiGenerationRunning = true;
-  const job = aiGenerationQueue.shift()!;
-
-  log.info(`[AiQueue] Starting AI job: ${job.jobId} (${aiGenerationQueue.length} remaining)`);
 
   try {
-    const result = await job.execute();
-    job.resolve(result);
+    const { MetadataGeneratorService } = require('../services/metadata/metadata-generator.service');
 
-    // THE completion site both generation entry points share. 'generate-metadata' reaches
-    // here through runTranscription and 'send-held-prompt' enqueues onto this same queue,
-    // so hooking here is one hook rather than two that could drift; and it is AFTER
-    // job.resolve, so the record-creation pass cannot delay the answer the renderer is
-    // waiting on.
-    //
-    // `json_file` is the positive evidence that a report was written. A show-prompt run
-    // returns success with prompts and no report — there are no items on disk to give
-    // publish records to — and a failed run wrote nothing either. Both are announced
-    // rather than passed over quietly.
-    if (result && result.success === true && typeof result.json_file === 'string') {
-      void attachPublishRecordsForJob(job.jobId).catch((error) => {
-        log.error(
-          `[Publish] could not create publish records for job ${job.jobId}: ` +
-          `${error instanceof Error ? error.message : String(error)}`
-        );
-      });
-    } else {
-      log.info(
-        `[Publish] job ${job.jobId} wrote no metadata report (${
-          result && result.success === true ? 'show-prompt run — nothing generated yet' : 'the run did not succeed'
-        }), so no publish records were created for it.`
-      );
+    const paramsWithCallback = {
+      ...job.metadataParams,
+      preTranscribedContent: job.contentItems,
+      inputWarnings: inputFailures,
+      progressCallback: job.progressCallback,
+      cancelCallback: () => job.cancelled,
+      cancelSignal: job.abortController.signal
+    };
+
+    const jobResult = await MetadataGeneratorService.generate(paramsWithCallback);
+
+    // "Show prompt" flow: the transcript is done and the prompt is assembled, but
+    // NO metadata call happened. Hold the transcript so "Send to AI" can reuse it,
+    // and do NOT emit a terminal 'complete' — the frontend keys off the RESOLVED
+    // value here, not a progress event. On failure we still surface a terminal
+    // 'error' as usual. Warnings are forwarded because chapters DO run in this flow
+    // now, so "chapters failed, the prompt you are reading has no chapter subjects"
+    // has to reach the user while they are still deciding whether to send it.
+    if (job.metadataParams.showPrompt) {
+      if (jobResult.success) {
+        heldTranscripts.set(job.jobId, {
+          contentItems: job.contentItems!,
+          metadataParams: job.metadataParams,
+          computedChapters: jobResult.computedChapters,
+        });
+        return {
+          success: true,
+          prompts: jobResult.prompts,
+          jobId: job.jobId,
+          held: true,
+          warnings: jobResult.warnings,
+        };
+      }
+      if (!endedByLane(job)) {
+        sendToRenderer('generation-progress', {
+          phase: 'error',
+          message: jobResult.error || 'Unknown error',
+          jobId: job.jobId
+        });
+      }
+      return jobResult;
     }
+
+    if (!endedByLane(job)) {
+      sendToRenderer('generation-progress', jobResult.success
+        ? { phase: 'complete', message: 'Metadata generation complete!', jobId: job.jobId }
+        : { phase: 'error', message: jobResult.error || 'Unknown error', jobId: job.jobId });
+    }
+    afterGeneration(job.jobId, jobResult);
+    return jobResult;
   } catch (error) {
-    log.error(`[AiQueue] AI job ${job.jobId} failed:`, error);
-    job.reject(error);
-  } finally {
-    isAiGenerationRunning = false;
-    log.info(`[AiQueue] AI job ${job.jobId} completed`);
-    processAiGenerationQueue();
+    // Generation THREW (rather than returning success:false) — emit a terminal error
+    // event so progress-stream UIs don't hang on "generating".
+    if (!endedByLane(job)) {
+      sendToRenderer('generation-progress', {
+        phase: 'error',
+        message: error instanceof Error ? error.message : String(error),
+        jobId: job.jobId
+      });
+    }
+    throw error;
   }
+}
+
+/**
+ * THE completion site both generation entry points share: 'generate-metadata' (runPipeline)
+ * and 'send-held-prompt'. One hook rather than two that could drift; called AFTER the result
+ * is known and never awaited, so the record-creation pass cannot delay the answer the
+ * renderer is waiting on.
+ *
+ * `json_file` is the positive evidence that a report was written. A show-prompt run
+ * returns success with prompts and no report — there are no items on disk to give
+ * publish records to — and a failed run wrote nothing either. Both are announced
+ * rather than passed over quietly.
+ */
+function afterGeneration(jobId: string, result: any): void {
+  if (result && result.success === true && typeof result.json_file === 'string') {
+    void attachPublishRecordsForJob(jobId).catch((error) => {
+      log.error(
+        `[Publish] could not create publish records for job ${jobId}: ` +
+        `${error instanceof Error ? error.message : String(error)}`
+      );
+    });
+  } else {
+    log.info(
+      `[Publish] job ${jobId} wrote no metadata report (${
+        result && result.success === true ? 'show-prompt run — nothing generated yet' : 'the run did not succeed'
+      }), so no publish records were created for it.`
+    );
+  }
+}
+
+/**
+ * The two job-shaped fields every generation request carries (plan section 13.2). `fast` is
+ * required: a renderer that did not say whether the row is pinned would have its job placed
+ * by a default nobody chose (Law 1). `resumeFrom` absent is the ordinary first run.
+ */
+function laneParams(params: any, firstStage: ResumeStage): { fast: boolean; resumeFrom: ResumeStage } {
+  if (typeof params?.fast !== 'boolean') {
+    throw new Error('A generation request must say whether the row is pinned fast (`fast: true|false`).');
+  }
+  const resumeFrom = params.resumeFrom ?? firstStage;
+  if (resumeFrom !== 'transcribe' && resumeFrom !== 'chapters' && resumeFrom !== 'fields') {
+    throw new Error(`resumeFrom is ${JSON.stringify(params.resumeFrom)}; it is one of transcribe, chapters, fields.`);
+  }
+  return { fast: params.fast, resumeFrom };
 }
 
 /**
@@ -1088,9 +1046,7 @@ async function clearStalePublishedSiblings(
 
 export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices) {
 
-  const { setSelectedWhisperModel } = require('../lib/bridges/runtime-paths');
   const componentManager = require('../components/component-manager');
-  setSelectedWhisperModel((store as any).get('whisperModel', 'small'));
 
   ipcMain.handle('components:list', async () => componentManager.listStatus());
   ipcMain.handle('components:install', async (event, id: string) =>
@@ -1100,71 +1056,31 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     return { success: true };
   });
   ipcMain.handle('components:uninstall', async (_event, id: string) => {
-    const selected = (store as any).get('whisperModel', 'small');
-    if (id === `whisper-${selected}`) {
-      return { success: false, error: 'Choose and save a different default Whisper model before removing this one.' };
-    }
     componentManager.uninstall(id);
     return { success: true };
   });
 
   ipcMain.handle('get-startup-readiness', async () => {
-    const settings = (store as any).store;
-    const provider = settings.metadataProvider || settings.aiProvider || 'openai';
-    const model = settings.metadataModel || settings.ollamaModel || '';
-    let aiReady = false;
-    let aiReason = '';
+    // THE AI HALF IS CRUCIBLE'S READINESS (P2, plan 5). It used to ask Ollama's /api/tags for
+    // the legacy Settings model, or look for a key in api-keys.json; every model call goes
+    // through the selected Crucible server now, so "is AI ready" is the question P1's
+    // readiness service already answers, in its own sentence, with its one door.
+    const crucibleReadiness = analytics.crucible.readiness.current();
+    const aiReady = crucibleReadiness.state === 'ready';
+    const aiReason = aiReady ? '' : crucibleReadiness.reason;
+    const provider = 'crucible';
+    const model = crucibleReadiness.server ?? '';
 
-    if (!model) {
-      aiReason = 'No AI model is selected.';
-    } else if (provider === 'openai' || provider === 'claude') {
-      const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-      let keys: any = {};
-      if (fs.existsSync(apiKeysPath)) {
-        keys = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
-      }
-      const key = provider === 'openai' ? keys.openaiApiKey : keys.claudeApiKey;
-      aiReady = typeof key === 'string' && key.trim().length > 0;
-      if (!aiReady) aiReason = `The selected ${provider === 'openai' ? 'OpenAI' : 'Claude'} provider has no API key.`;
-    } else if (provider === 'ollama') {
-      const host = String(settings.ollamaHost || 'http://localhost:11434').replace(/\/$/, '');
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 4000);
-      try {
-        const response = await fetch(`${host}/api/tags`, { signal: controller.signal });
-        if (response.ok) {
-          const data = await response.json() as any;
-          const models = Array.isArray(data.models) ? data.models.map((item: any) => item.name) : [];
-          aiReady = models.includes(model);
-          if (!aiReady) aiReason = `The selected Ollama model (${model}) is not installed.`;
-        } else {
-          aiReason = `Ollama returned HTTP ${response.status}.`;
-        }
-      } catch {
-        aiReason = `Ollama is not reachable at ${host}.`;
-      } finally {
-        clearTimeout(timeout);
-      }
-    } else {
-      aiReason = `Unsupported AI provider: ${provider}.`;
-    }
-
-    const whisperModel = settings.whisperModel || 'small';
-    const requiredToolIds = ['ffmpeg', 'whisper-engine'];
-    const selectedModelId = `whisper-${whisperModel}`;
+    // Transcription is Crucible's asr job (LEDGER #206: "no more local whisper"), so the local
+    // tool it needs is ffmpeg alone; whisper.cpp and its models left the catalog in P10.
+    // Whether Crucible can transcribe is P1's readiness to say.
+    const requiredToolIds = ['ffmpeg'];
     const componentStatuses = componentManager.listStatus();
     const missingRequiredTools = requiredToolIds.flatMap((id: string) => {
       const status = componentStatuses.find((item: any) => item.component.id === id);
       return status?.state === 'installed' ? [] : [{ id, name: status?.component?.name || id }];
     });
-    const installedWhisperModels = componentStatuses
-      .filter((status: any) => status.component.category === 'whisper' && status.state === 'installed')
-      .map((status: any) => ({ id: status.component.id, name: status.component.name }));
-    const selectedModelInstalled = installedWhisperModels.some((item: any) => item.id === selectedModelId);
-    const missingComponents = [
-      ...missingRequiredTools.map((item: any) => item.name),
-      ...(selectedModelInstalled ? [] : [componentStatuses.find((item: any) => item.component.id === selectedModelId)?.component.name || selectedModelId]),
-    ];
+    const missingComponents = missingRequiredTools.map((item: any) => item.name);
 
     return {
       ready: aiReady && missingComponents.length === 0,
@@ -1173,8 +1089,6 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         ready: missingComponents.length === 0,
         missingComponents,
         missingRequiredTools,
-        installedWhisperModels,
-        selectedModelInstalled,
       },
     };
   });
@@ -1210,7 +1124,6 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       Object.keys(settings).forEach(key => {
         (store as any).set(key, settings[key]);
       });
-      if (settings.whisperModel) setSelectedWhisperModel(settings.whisperModel);
       return { success: true };
     } catch (error) {
       log.error('Error updating settings:', error);
@@ -1227,15 +1140,17 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   // contents and never the shape.
   // ---------------------------------------------------------------------------
 
-  ipcMain.handle('metadata-routing:get', async () => {
+  ipcMain.handle('metadata-routing:get', async (_event, preview?: { server: string | null; selections: Record<string, string> }) => {
     // Not wrapped in a try/catch that returns a shape: a stored selection this build
     // cannot honour must reach the user as an error, because it is the same error their
     // next generation would fail with.
     // Migrated on the way out, and WRITTEN BACK when the migration changed anything, so
     // the notice is logged once on the first open after an upgrade rather than on every
     // open for the rest of the install's life. Without this the modal is the screen that
-    // throws on the very setting the user came here to fix.
-    const migration = migrateStoredRouting((store as any).get('metadataRouting'));
+    // throws on the very setting the user came here to fix. The routing's server is judged
+    // against the registry here too (LEDGER #222): a forgotten one is dropped the same way.
+    const registered = analytics.crucible.servers.names();
+    const migration = migrateStoredRouting((store as any).get('metadataRouting'), registered);
     if (migration.changed) {
       (store as any).set('metadataRouting', migration.selections);
       log.warn(
@@ -1243,23 +1158,35 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
           migration.notices.join(' | ')
       );
     }
-    const stored = migration.selections;
-    // Which local models are actually installed, read fresh on every open. The host is
-    // the one generation resolves against (passed down as aiHost), so what the modal
-    // marks installed is what a run would find.
-    const inventory = await probeOllamaInventory(
-      String((store as any).get('ollamaHost', 'http://localhost:11434'))
-    );
-    return buildRoutingView(stored, inventory);
+    // PREVIEW: the dialog's "Runs on" row changed and it asks what THAT server offers for the
+    // selections on screen, before anything is saved. Validated exactly as a save is (an
+    // unknown server is refused by name); nothing is written.
+    const shown = preview === undefined
+      ? migration.selections
+      : validateRoutingSelections({ ...preview.selections, ...(preview.server === null ? {} : { server: preview.server }) }, registered);
+    const routingServer = shown.server ?? null;
+    let selected: string | null;
+    try {
+      selected = analytics.crucible.servers.selected();
+    } catch {
+      // No server selected is an answer the inventory states in its own words.
+      selected = null;
+    }
+    // What the server these selections' jobs run on offers, read fresh on every open: its
+    // catalog, its models and whether it has an Anthropic key (plan 6.2, 0a). That is the
+    // routing's server when it names one, else the selected one (venue-decision.ts's rule for
+    // an unpinned job); the dialog lists only what it offers.
+    const inventory = await catalogInventory(analytics.crucible.factory, routingServer ?? selected);
+    return buildRoutingView(shown, inventory, { routingServer, selectedServer: selected });
   });
 
   ipcMain.handle('metadata-routing:set', async (_event, selections) => {
-    // Validated against the registry BEFORE it is written. A store holding an option this
-    // build does not know would fail every subsequent job, far from the click that caused
-    // it.
-    const validated = validateRoutingSelections(selections);
+    // Validated against the table and the registry BEFORE it is written. A store holding an
+    // option this build does not know, or a server nobody registered, would fail every
+    // subsequent job, far from the click that caused it.
+    const validated = validateRoutingSelections(selections, analytics.crucible.servers.names());
     (store as any).set('metadataRouting', validated);
-    log.info(`[IPC] Metadata routing saved: ${describeRouting(resolveMetadataRouting(validated))}`);
+    log.info(`[IPC] Metadata routing saved: ${describeRouting(resolveMetadataRouting(validated), validated.server ?? null)}`);
     return { success: true };
   });
 
@@ -1476,6 +1403,11 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       heldTranscripts.delete(jobId);
 
       const job = runningJobs.get(jobId);
+      if (!job) {
+        // Not running, but it may be PARKED on a server, or holding a lane `crucible:queue-plan`
+        // reserved for it: forget both, so a removed row cannot start later or count on a chip.
+        await analytics.crucible.lanes.stopJob(jobId, 'Removed from the queue');
+      }
       if (job) {
         job.cancel();
         runningJobs.delete(jobId);
@@ -1499,60 +1431,20 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     if (!params || typeof params.jobId !== 'string' || !params.jobId.trim()) {
       throw new Error('generate-metadata requires a non-empty jobId');
     }
+    // Whether the row is pinned fast, and where it resumes (plan section 13.2).
+    const { fast, resumeFrom } = laneParams(params, 'transcribe');
     try {
       log.info('Starting metadata generation with params:', JSON.stringify(params, null, 2));
 
       // Get settings using electron-store API
       const settings = (store as any).store;
 
-      // Determine AI provider from settings
-      // Try new separate provider fields first, fall back to legacy aiProvider field
-      const metaProvider = settings.metadataProvider || settings.aiProvider;
-
-      // Load API keys from api-keys.json
-      const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-      let apiKeys: any = {};
-      if (fs.existsSync(apiKeysPath)) {
-        apiKeys = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
-      }
-
-      // Reconstruct full model with provider prefix (e.g., "claude:claude-sonnet-4-5")
-      // Settings stores provider and model separately, but AIManagerService needs prefixed format
-      // Prefer newer metadataProvider/metadataModel fields over legacy aiProvider/aiModel
-      const aiModel = settings.metadataModel || settings.aiModel || settings.ollamaModel;
-      const aiProvider = settings.metadataProvider || settings.aiProvider || 'ollama';
-      const fullModel = aiModel ? `${aiProvider}:${aiModel}` : undefined;
-
-      // Get the API key strictly for the provider that fullModel is built from.
-      // (OR-ing meta/summ providers here would pick the wrong key when they differ —
-      // e.g. metadata=claude + summarization=openai must send Claude requests with the Claude key.)
-      let apiKey = undefined;
-      if (aiProvider === 'openai') {
-        apiKey = apiKeys.openaiApiKey;
-      } else if (aiProvider === 'claude') {
-        apiKey = apiKeys.claudeApiKey;
-      }
-
-      /**
-       * WHAT THE SETTINGS PAGE'S "AI MODEL" STILL GOVERNS, which is much less than it did.
-       *
-       * It used to be the model that wrote every field of every chapterless item (the legacy
-       * whole-metadata call) AND the model that summarized every transcript on every path. The
-       * first is gone: those items are routed like all the others, against the routing table
-       * the operator sets in the routing dialog. The second is gone too — summarization runs on
-       * SUMMARIZATION_MODEL, declared in metadata-routing.ts, so a transcript is not silently
-       * read by a cloud provider on a run whose every visible field is local; and as of
-       * 2026-08-23 it runs for COMPILATION ONLY.
-       *
-       * What is left is COMPILATION packaging, which is a declared mode the operator selects,
-       * and the provider clients this service constructs. That is why `fullModel` is still
-       * resolved and still passed — and why the log line now says which of the two it is for.
-       */
-      log.info(
-        `[IPC] Settings AI model ${fullModel} (provider: ${aiProvider}, model: ${aiModel}) is used for COMPILATION ` +
-          `packaging only; per-field metadata follows the routing table, and summarization — now ` +
-          `compilation's alone — runs on ${SUMMARIZATION_MODEL}`
-      );
+      // NO PROVIDER, MODEL OR KEY IS READ HERE ANY MORE (P2, LEDGER #193/#194/#204). The
+      // Settings "AI Model" fields (`metadataProvider`, `metadataModel`, `aiProvider`, `aiModel`,
+      // `ollamaModel`) governed nothing but which SDK client AIManagerService constructed once
+      // every generation call followed the routing table, and there are no SDK clients now:
+      // every call goes through the selected Crucible server on the routing table's choice, and
+      // the key is that server's (api-keys.json is moved into it once, crucible/key-migration.ts).
 
       // Performance-feedback loop: when the active prompt set maps to a
       // registered analytics channel that has computed insights, append the
@@ -1597,17 +1489,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       const summarizerOption = resolveChapterModelOption(resolvedRouting);
       const summarizationModel =
         summarizerOption.kind === 'cloud' ? summarizerOption.model : SUMMARIZATION_MODEL;
+      log.info(`[IPC] compilation summarization (compilation mode only) runs on ${summarizationModel}`);
 
       // Prepare metadata generation parameters
       const metadataParams = {
         inputs: params.inputs,
         mode: params.mode || settings.defaultMode,
-        aiProvider: metaProvider, // Use metadata provider as primary
-        aiModel: fullModel, // Full prefixed model (e.g., "claude:claude-sonnet-4-5")
         summarizationModel,
-        metadataModel: fullModel,
-        aiApiKey: apiKey,
-        aiHost: settings.ollamaHost || 'http://localhost:11434',
         outputPath: params.outputPath || settings.outputDirectory,
         promptSet: activePromptSet,
         promptSetsDir: getPromptSetsDirectory(),
@@ -1636,11 +1524,21 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // Not seeded in the store's `defaults` — there is no sensible default recording, and a
         // path nobody chose is worse than no path.
         speakerEnrollmentAudio: settings.speakerEnrollmentAudio || undefined,
-        chapterNumCtx: settings.chapterNumCtx || undefined,
         // What the chapter pipeline detects — the queue-time selector's pick, sent per run
-        // by the renderer (LEDGER #170). Absent (older renderer) means the declared
-        // default, applied at the construction site in metadata-generator.
+        // by the renderer: chapters | stories (LEDGER #213). Absent (older renderer) means the declared
+        // default, and a retired detailed / broad reads as chapters, logged, in metadata-generator.
         chapterGrain: params.chapterGrain,
+        // Which engine draws the chapters (P8b): 'snap' or 'whole-transcript', read from the store
+        // AT JOB TIME with no store default, like the routing: absent means the declared default
+        // (snap), stated at one site in metadata-generator, and a value this build does not know
+        // fails the job by name there. Same for the titles' thinking (LEDGER #208: on unless the
+        // store says false).
+        chapterEngine: settings.chapterEngine,
+        chapterTitleThinking: settings.chapterTitleThinking,
+        // What the field calls read (P4, plan 7.2): 'raw' (the declared default) or 'digest', read
+        // from the store AT JOB TIME with no store default, like the engine above. Not a Settings
+        // control (LEDGER #214); the default moves only on Owen's verdict from the plan 7.4 A/B.
+        fieldInput: settings.fieldInput,
         // Per-task model routing, read from the store AT JOB TIME. The registry supplies
         // the defaults at the read site (metadata-routing.ts), never the store's
         // `defaults` block: a seeded default freezes the shipped routing into every
@@ -1656,9 +1554,11 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         //
         // It does NOT decide the chapter models. Chapters are not a routed task any more.
         metadataRouting: resolveMetadataRouting(migrateStoredRouting(settings.metadataRouting).selections),
-        // Keys for whatever providers the routing reaches, which need not be the provider
-        // `aiApiKey` belongs to.
-        cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
+        // The re-roll gate (LEDGER #201), read from the store AT JOB TIME like the routing: an
+        // absent key is the declared, measured default (reroll/settings.ts, docs/crucible/P9.md),
+        // and a stored value the gate cannot read fails the job by name rather than running it
+        // under some other bar.
+        rerollGate: resolveRerollGateSettings({ rerollGate: settings.rerollGate, rerollGateTuning: settings.rerollGateTuning }),
         inputNotes: params.inputNotes || {},
         insights: insights || undefined,
         // "Show prompt": transcribe + assemble the prompt, then STOP (no AI call).
@@ -1668,7 +1568,6 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
 
       const safeMetadataParams = {
         ...metadataParams,
-        aiApiKey: metadataParams.aiApiKey ? '***' : undefined,
         // Summarized: the full block is several KB and would drown the log
         insights: insights
           ? `<prepared evidence for "${insights.channelName}", ${insights.rawBlock.length} chars, ` +
@@ -1676,67 +1575,69 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
           : undefined
       };
       log.info('Prepared metadata params:', JSON.stringify(safeMetadataParams, null, 2));
-      log.info(`[IPC] Metadata routing for this job: ${describeRouting(metadataParams.metadataRouting)}`);
+      log.info(`[IPC] Metadata routing for this job: ${describeRouting(metadataParams.metadataRouting, analytics.crucible.routingServer())} (a fast pin still sends it to the fast server; the admission line says where it went)`);
 
       // Send progress update
       sendToRenderer('generation-progress', {
         phase: 'starting',
-        message: 'Initializing metadata generation...'
+        message: 'Initializing metadata generation...',
+        jobId: params.jobId
       });
 
-      // Submit to two-phase pipeline (transcription pool → AI generation queue)
-      const result = await new Promise<any>((resolve, reject) => {
-        const progressCallback = (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => {
-          log.info(`[IPC] Progress event: phase=${phase}, message=${message}, percent=${percent}, filename=${filename}, itemIndex=${itemIndex}`);
-          sendToRenderer('generation-progress', {
-            phase,
-            message,
-            percent,
-            ...(filename && { filename }),
-            ...(itemIndex !== undefined && { itemIndex })
-          });
-        };
-
-        const pipelineJob: PipelineJob = {
-          // No `|| 'metadata-job'`. That default was unreachable — the single renderer caller
-          // always sends nextJob.id — and one new caller away from being reachable, at which
-          // point every such job would share one literal id AND skip the cancellation
-          // registration ten lines below, which is guarded on `params.jobId` being truthy.
-          // An uncancellable job whose id collides with every other uncancellable job is not
-          // a default worth having; the guard above makes the absence impossible instead.
+      // Every event carries its job id: the Mac's job and the PC's run at once now, and the
+      // renderer's listener for one row must not read the other's progress.
+      const progressCallback = (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => {
+        log.info(`[IPC] Progress event: job=${params.jobId}, phase=${phase}, message=${message}, percent=${percent}, filename=${filename}, itemIndex=${itemIndex}`);
+        sendToRenderer('generation-progress', {
+          phase,
+          message,
+          percent,
           jobId: params.jobId,
-          metadataParams,
-          progressCallback,
-          resolve,
-          reject,
-          cancelled: false,
-          abortController: new AbortController()
-        };
+          ...(filename && { filename }),
+          ...(itemIndex !== undefined && { itemIndex })
+        });
+      };
 
-        // Store cancellation callback
-        if (params.jobId) {
-          runningJobs.set(params.jobId, {
-            cancel: () => {
-              pipelineJob.cancelled = true;
-              // Aborts whatever provider call is in flight right now. This is the event
-              // the generator needed: nothing polls for it, and nothing waits for the
-              // current stage to end.
-              pipelineJob.abortController.abort();
-              log.info(`[Pipeline] Job ${params.jobId} marked as cancelled`);
-              // Remove from transcription queue if still waiting
-              const tIdx = transcriptionQueue.indexOf(pipelineJob);
-              if (tIdx !== -1) {
-                transcriptionQueue.splice(tIdx, 1);
-                resolve({ success: false, error: 'Job cancelled by user' });
-              }
-            }
-          });
+      // No `|| 'metadata-job'` for the id. That default was unreachable — the single renderer
+      // caller always sends nextJob.id — and one new caller away from being reachable, at which
+      // point every such job would share one literal id AND skip the cancellation registration.
+      // An uncancellable job whose id collides with every other uncancellable job is not a
+      // default worth having; the guard above makes the absence impossible instead.
+      const abortController = new AbortController();
+      let pipelineJob: PipelineJob | null = null;
+      runningJobs.set(params.jobId, {
+        cancel: () => {
+          if (pipelineJob !== null) pipelineJob.cancelled = true;
+          // Aborts whatever provider call is in flight right now (the generator needed an
+          // event, not a flag it polls between stages), and gives back what the job holds on
+          // its Crucible: its open jobs cancelled, its lease released (plan section 13.5).
+          void analytics.crucible.lanes.stopJob(params.jobId, 'Stopped by the user');
+          abortController.abort();
+          log.info(`[Pipeline] Job ${params.jobId} marked as cancelled`);
         }
-
-        enqueuePipelineJob(pipelineJob);
       });
 
-      return result;
+      // Admitted to ONE server's lane — the fast pin's or the selected one — and run there, or
+      // PARKED with that server's reason (LEDGER #195, #205). Waits for the startup sweep.
+      const outcome = await analytics.crucible.lanes.runJob(
+        { jobId: params.jobId, fast, stage: resumeFrom, controller: abortController },
+        (run) => {
+          pipelineJob = {
+            jobId: params.jobId,
+            metadataParams,
+            progressCallback,
+            cancelled: false,
+            abortController,
+            run,
+          };
+          return runPipeline(pipelineJob);
+        }
+      );
+      if (outcome.kind === 'parked') {
+        sendToRenderer('generation-progress', { phase: 'parked', message: outcome.result.holderLine, jobId: params.jobId });
+        return outcome.result;
+      }
+      return outcome.value;
 
     } catch (error) {
       log.error('Error generating metadata:', error);
@@ -1744,14 +1645,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       // when generation rejects rather than returning success:false.
       sendToRenderer('generation-progress', {
         phase: 'error',
-        message: error instanceof Error ? error.message : String(error)
+        message: error instanceof Error ? error.message : String(error),
+        jobId: params.jobId
       });
       throw error;
     } finally {
       // Always release the cancel closure — on rejection too, not just success.
-      if (params.jobId) {
-        runningJobs.delete(params.jobId);
-      }
+      runningJobs.delete(params.jobId);
     }
   });
 
@@ -1759,13 +1659,16 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   // transcript (NO re-transcription) and runs the full metadata + chapters + output
   // generation, wiring progress + a terminal 'complete'/'error' exactly like the
   // normal AI phase so the frontend's existing progress handling finalizes the job.
-  ipcMain.handle('send-held-prompt', async (_event, { jobId }: { jobId: string }) => {
-    const held = heldTranscripts.get(jobId);
+  ipcMain.handle('send-held-prompt', async (_event, request: { jobId: string; fast?: boolean }) => {
+    const jobId = request?.jobId;
+    const held = typeof jobId === 'string' ? heldTranscripts.get(jobId) : undefined;
     if (!held) {
       // No fallback: never silently re-transcribe. Fail loud so the UI can tell the
       // user the transcript is gone and the analysis must be re-run.
       return { success: false, error: `No held transcript for job ${jobId} (it may have expired)` };
     }
+    // The transcript and its chapters are both held: what is left is the fields.
+    const { fast } = laneParams(request, 'fields');
 
     // Same progress forwarding the normal AI phase uses (see generate-metadata).
     const progressCallback = (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => {
@@ -1773,38 +1676,51 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         phase,
         message,
         percent,
+        jobId,
         ...(filename && { filename }),
         ...(itemIndex !== undefined && { itemIndex })
       });
     };
 
+    const abortController = new AbortController();
+    runningJobs.set(jobId, {
+      cancel: () => {
+        void analytics.crucible.lanes.stopJob(jobId, 'Stopped by the user');
+        abortController.abort();
+      }
+    });
     try {
-      // Serialize through the AI generation queue (1-at-a-time) like every other AI run.
-      const result = await enqueueAiGenerationJob(jobId, async () => {
-        const { MetadataGeneratorService } = require('../services/metadata/metadata-generator.service');
+      // On its lane, like every other AI run: one job per server, parked when that server is busy.
+      const outcome = await analytics.crucible.lanes.runJob(
+        { jobId, fast, stage: 'fields', controller: abortController },
+        async () => {
+          const { MetadataGeneratorService } = require('../services/metadata/metadata-generator.service');
 
-        const jobResult = await MetadataGeneratorService.generate({
-          ...held.metadataParams,
-          showPrompt: false,
-          preTranscribedContent: held.contentItems,
-          preComputedChapters: held.computedChapters,
-          progressCallback,
-        });
+          const jobResult = await MetadataGeneratorService.generate({
+            ...held.metadataParams,
+            showPrompt: false,
+            preTranscribedContent: held.contentItems,
+            preComputedChapters: held.computedChapters,
+            progressCallback,
+            cancelSignal: abortController.signal,
+          });
 
-        if (jobResult.success) {
-          sendToRenderer('generation-progress', {
-            phase: 'complete',
-            message: 'Metadata generation complete!'
-          });
-        } else {
-          sendToRenderer('generation-progress', {
-            phase: 'error',
-            message: jobResult.error || 'Unknown error'
-          });
+          // A park or a stall aborted it: the lane's answer is the one the row shows.
+          if (!abortController.signal.aborted) {
+            sendToRenderer('generation-progress', jobResult.success
+              ? { phase: 'complete', message: 'Metadata generation complete!', jobId }
+              : { phase: 'error', message: jobResult.error || 'Unknown error', jobId });
+            afterGeneration(jobId, jobResult);
+          }
+          return jobResult;
         }
-
-        return jobResult;
-      });
+      );
+      // Parked: the held transcript stays, so the row resumes from it without transcribing again.
+      if (outcome.kind === 'parked') {
+        sendToRenderer('generation-progress', { phase: 'parked', message: outcome.result.holderLine, jobId });
+        return outcome.result;
+      }
+      const result = outcome.value;
 
       // Transcript consumed on success — drop it so it can't leak. On failure keep it
       // so the user can retry "Send to AI" without re-transcribing (cleared later by
@@ -1822,6 +1738,8 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         jobId
       });
       return { success: false, error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      runningJobs.delete(jobId);
     }
   });
 
@@ -2491,29 +2409,21 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         });
 
         // Built for THIS call only, and `initialize()` is deliberately not run: the prompt is
-        // already assembled, so there is no prompt set to load and no connection to test, and
-        // every client this call needs is created on demand by ensureProviderReady — which
-        // names a missing key rather than substituting a provider that has one.
+        // already assembled, so there is no prompt set to load and nothing to probe: the one
+        // Crucible door prepares the call on the model it names and refuses by name what the
+        // selected server cannot run (a missing key included), substituting nothing.
         //
         // `promptSetsDir` is still required. The constructor initialises the prompt assets
         // whatever the caller intends to ask for, and without a directory it resolves a
         // relative path and throws. Same value every other construction site passes.
-        const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-        const apiKeys: any = fs.existsSync(apiKeysPath)
-          ? JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'))
-          : {};
-        const ollamaHost = (store as any).store?.ollamaHost || 'http://localhost:11434';
         const aiConfig: AIConfig = {
-          provider: 'claude',
-          host: ollamaHost,
-          cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
           promptSetsDir: getPromptSetsDirectory(),
         };
         const aiManager = new AIManagerService(aiConfig);
 
         let result;
         try {
-          result = await askForMoreTitles(stored, existingTitles, option, { aiManager, ollamaHost });
+          result = await askForMoreTitles(stored, existingTitles, option, { aiManager });
         } finally {
           aiManager.cleanup();
         }
@@ -2629,27 +2539,18 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         const sourceLabel = softenSourceLabel(item);
 
         // Built for THIS pass only, and `initialize()` is deliberately not run — same reason
-        // the titles handler above gives: every client is created on demand by
-        // ensureProviderReady, which names a missing key rather than substituting a provider
-        // that has one. `promptSetsDir` is still required, because the constructor initialises
+        // the titles handler above gives: the Crucible door prepares every call and refuses by
+        // name what the server cannot run. `promptSetsDir` is still required, because the constructor initialises
         // the prompt assets whatever the caller intends to ask for — and this pass DOES ask
         // for one (shared/pipeline/soften.yml).
-        const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-        const apiKeys: any = fs.existsSync(apiKeysPath)
-          ? JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'))
-          : {};
-        const ollamaHost = (store as any).store?.ollamaHost || 'http://localhost:11434';
         const aiConfig: AIConfig = {
-          provider: 'claude',
-          host: ollamaHost,
-          cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
           promptSetsDir: getPromptSetsDirectory(),
         };
         const aiManager = new AIManagerService(aiConfig);
 
         let pass;
         try {
-          pass = await runSoftenPass(item, option, { aiManager, ollamaHost });
+          pass = await runSoftenPass(item, option, { aiManager });
         } finally {
           aiManager.cleanup();
         }
@@ -2845,19 +2746,10 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         working._prompt_trace = [];
 
         // Built for THIS pass only, and `initialize()` is deliberately not run — same reason
-        // the titles and softening handlers give: every client is created on demand by
-        // ensureProviderReady, which names a missing key rather than substituting a provider
-        // that has one. `promptSet` IS passed here, unlike softening: the link block above is
+        // the titles and softening handlers give: the Crucible door prepares every call and
+        // refuses by name what the server cannot run. `promptSet` IS passed here, unlike softening: the link block above is
         // the channel's, and `descriptionLinks()` is empty without it.
-        const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-        const apiKeys: any = fs.existsSync(apiKeysPath)
-          ? JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'))
-          : {};
-        const ollamaHost = (store as any).store?.ollamaHost || 'http://localhost:11434';
         const aiConfig: AIConfig = {
-          provider: 'claude',
-          host: ollamaHost,
-          cloudApiKeys: { claude: apiKeys.claudeApiKey, openai: apiKeys.openaiApiKey },
           promptSetsDir: getPromptSetsDirectory(),
           promptSet: job.prompt_set,
         };
@@ -2867,7 +2759,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         try {
           pass = await scrubGeneratedItem(working, {
             option,
-            transport: { aiManager, ollamaHost },
+            transport: { aiManager },
             origin: 'operator request',
           });
         } finally {
@@ -3125,103 +3017,10 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     }
   });
 
-  // AI Setup - Check Ollama availability and get models
-  ipcMain.handle('check-ollama', async () => {
-    try {
-      const host = String((store as any).get('ollamaHost', 'http://localhost:11434')).replace(/\/$/, '');
-      const response = await fetch(`${host}/api/tags`);
-      if (!response.ok) {
-        return { available: false, models: [] };
-      }
-      const data = await response.json() as any;
-      const models = data.models ? data.models.map((m: any) => m.name) : [];
-      return { available: true, models };
-    } catch (error) {
-      log.info('Ollama not available:', error);
-      return { available: false, models: [] };
-    }
-  });
-
-  // AI Setup - Get available models for a provider
-  // Reads API keys from stored file if not provided
-  ipcMain.handle('get-available-models', async (_event, provider: 'ollama' | 'openai' | 'claude', apiKey?: string, host?: string) => {
-    try {
-      log.info(`Getting available models for ${provider}`);
-
-      // If no API key provided, read from stored keys file
-      let key = apiKey;
-      if (!key && (provider === 'openai' || provider === 'claude')) {
-        const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-        if (fs.existsSync(apiKeysPath)) {
-          const data = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
-          if (provider === 'openai') {
-            key = data.openaiApiKey;
-          } else if (provider === 'claude') {
-            key = data.claudeApiKey;
-          }
-        }
-      }
-
-      const models = await AIManagerService.getAvailableModels(provider, key, host);
-      log.info(`Found ${models.length} models for ${provider}`);
-      return { success: true, models };
-    } catch (error) {
-      log.error(`Error getting models for ${provider}:`, error);
-      return { success: false, models: [], error: String(error) };
-    }
-  });
-
-  // AI Setup - Get API keys
-  ipcMain.handle('get-api-keys', async () => {
-    try {
-      const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-
-      if (!fs.existsSync(apiKeysPath)) {
-        return { claudeApiKey: undefined, openaiApiKey: undefined };
-      }
-
-      const data = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
-
-      // Return masked keys for security (frontend just needs to know if they exist)
-      return {
-        claudeApiKey: data.claudeApiKey ? '***' : undefined,
-        openaiApiKey: data.openaiApiKey ? '***' : undefined
-      };
-    } catch (error) {
-      log.error('Error getting API keys:', error);
-      return { claudeApiKey: undefined, openaiApiKey: undefined };
-    }
-  });
-
-  // AI Setup - Save API key
-  ipcMain.handle('save-api-key', async (event, provider: string, apiKey: string) => {
-    try {
-      const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-
-      let existingKeys: any = {};
-      if (fs.existsSync(apiKeysPath)) {
-        existingKeys = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
-      }
-
-      // Update the appropriate key
-      if (provider === 'claude') {
-        existingKeys.claudeApiKey = apiKey;
-      } else if (provider === 'openai') {
-        existingKeys.openaiApiKey = apiKey;
-      } else {
-        return { success: false, error: 'Invalid provider' };
-      }
-
-      // Save to file
-      fs.writeFileSync(apiKeysPath, JSON.stringify(existingKeys, null, 2), 'utf-8');
-
-      log.info(`API key saved for ${provider}`);
-      return { success: true };
-    } catch (error) {
-      log.error('Error saving API key:', error);
-      return { success: false, error: String(error) };
-    }
-  });
+  // The AI-setup channels (`check-ollama`, `get-available-models`, `get-api-keys`,
+  // `save-api-key`) are gone with P2 (plan 6.5): there is no Ollama to probe, the model lists
+  // are the selected Crucible server's catalog (the routing dialog reads it), and the app holds
+  // no key (keys are typed into a server's row in Settings › Crucible Servers, #194).
 
   // Open external URL
   ipcMain.handle('open-external', async (_event, url: string) => {
@@ -3280,9 +3079,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     }
   });
 
-  // Analyze an imported transcript for logical subject-change boundaries.
-  // Returns a chronological CANDIDATE menu; the user picks which become cuts.
-  ipcMain.handle('analyze-transcript-split', async (_event, params: { filePath: string }) => {
+  // The in-queue split of a stream: the `stories` grain of snap chaptering (LEDGER #199, #208;
+  // transcript-split.ts). Returns a chronological CANDIDATE menu; the user picks which become
+  // cuts. The outline and every decide question run on the fixed scorer (the 9B) on the selected
+  // Crucible server; with none, it is refused by name before anything is sent. No title is written
+  // (boundaries only, declared in transcript-split.ts), so the chapters row is not called at all.
+  // Progress goes to the dialog on 'transcript-split-progress', weighted by work.
+  ipcMain.handle('analyze-transcript-split', async (event, params: { filePath: string }) => {
     try {
       const { filePath } = params || ({} as any);
       if (!filePath) return { success: false, error: 'No transcript file provided.' };
@@ -3294,54 +3097,35 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       const srtSegments = wordsToSegments(parsed.data.words, parsed.data.meta.speakers);
       const totalDurationSeconds = parsed.data.summary.durationSeconds;
 
-      // Resolve AI provider/model/key from settings — identical to generate-metadata.
       const settings = (store as any).store;
-      const apiKeysPath = path.join(app.getPath('userData'), 'api-keys.json');
-      let apiKeys: any = {};
-      if (fs.existsSync(apiKeysPath)) apiKeys = JSON.parse(fs.readFileSync(apiKeysPath, 'utf-8'));
-      const aiModel = settings.metadataModel || settings.aiModel || settings.ollamaModel;
-      const aiProvider = (settings.metadataProvider || settings.aiProvider || 'ollama') as 'ollama' | 'openai' | 'claude';
-      const fullModel = aiModel ? `${aiProvider}:${aiModel}` : undefined;
-      let apiKey: string | undefined;
-      if (aiProvider === 'openai') apiKey = apiKeys.openaiApiKey;
-      else if (aiProvider === 'claude') apiKey = apiKeys.claudeApiKey;
-
-      const aiConfig: AIConfig = {
-        provider: aiProvider,
-        metadataModel: fullModel,
-        summarizationModel: fullModel,
-        apiKey,
-        host: settings.ollamaHost || 'http://localhost:11434',
-        // Where the prompt assets live. Every prompt is an asset now, including the
-        // episode-split one, so a service built without this has nowhere to read them from.
-        promptSetsDir: getPromptSetsDirectory(),
-      };
-      const aiService = new AIManagerService(aiConfig);
-      const initialized = await aiService.initialize();
-      if (!initialized) {
-        return {
-          success: false,
-          error: aiService.lastInitError
-            ? `Failed to initialize AI service: ${aiService.lastInitError}`
-            : 'Failed to initialize AI service',
-        };
-      }
-
+      const models = resolveSnapChapterModels(
+        resolveMetadataRouting(migrateStoredRouting(settings.metadataRouting).selections),
+        analytics.crucible.lanes.gpuVenue()
+      );
+      log.info(`[TranscriptSplit] stories on snap: outline and decide on ${models.scorer.model} on "${models.scorer.server}"`);
+      const job = crucibleTransport().job('transcript split');
       try {
-        const chapters = await EpisodeSplitterService.detectChapters({
-          srtSegments,
-          totalDurationSeconds,
-          aiService,
-          provider: aiProvider,
+        const transports = snapTransports({ models, job, trace: null, laneName: 'transcript split' });
+        const { candidates, warnings } = await splitCandidates(srtSegments, totalDurationSeconds, {
+          chat: transports.chat,
+          decide: transports.decide,
+          onProgress: (p) => {
+            if (!event.sender.isDestroyed()) {
+              event.sender.send('transcript-split-progress', { phase: p.phase, done: p.done, total: p.total, fraction: p.fraction });
+            }
+          },
         });
+        for (const w of warnings) log.warn(`[TranscriptSplit] ${w}`);
         return {
           success: true,
           title: parsed.data.meta.story.title,
           durationSeconds: totalDurationSeconds,
-          chapters,
+          chapters: candidates,
+          warnings,
         };
       } finally {
-        aiService.cleanup();
+        const lost = await job.releaseAll();
+        for (const line of lost) log.error(`[TranscriptSplit] the split lost its lease on ${line} before it ended`);
       }
     } catch (error) {
       log.error('Error analyzing transcript split:', error);
@@ -3918,8 +3702,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   // The ported AutoCutStudio timeline editor: its own BrowserWindow, its own Python
   // backend under editor-backend/, and its own channels. Registered as one seam, the
   // same way publish/ is. `store` is passed for the archive settings (archiveRoot,
-  // archiveMountUrl), whose defaults are resolved at the read site.
-  setupEditorIpc(store);
+  // archiveMountUrl), whose defaults are resolved at the read site, and for the metadata
+  // routing the Stories analyzer follows (#205). The prompt-sets directory goes with it
+  // because the analyzer's calls run through AIManagerService, whose constructor loads the
+  // prompt assets from there.
+  // Voice isolation runs on the selected Crucible (LEDGER #200, plan P7): the Denoise toggle
+  // reads that server's capability, and each chunk is a `denoise` job there.
+  setupEditorIpc(store, { promptSetsDir: getPromptSetsDirectory(), voiceIsolation: crucibleVoiceIsolation(analytics.crucible) });
   // ==================== END EDITOR ====================
 
   // ==================== TRANSCRIPT LINK ====================
@@ -3928,6 +3717,14 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   // operator confirms every link on the Inputs page.
   setupTranscriptLinkIpc();
   // ==================== END TRANSCRIPT LINK ====================
+
+  // ==================== CRUCIBLE ====================
+  // The inference servers every model call will go through (LEDGER #193): the registry,
+  // probes, pairing and connect codes, each server's keys, the local engine's doors and
+  // readiness. Registered as one seam like publish/ and editor/. P1 adds the servers only;
+  // the calls themselves move in P2.
+  setupCrucibleIpc(analytics.crucible);
+  // ==================== END CRUCIBLE ====================
 
   log.info('IPC handlers registered');
 }

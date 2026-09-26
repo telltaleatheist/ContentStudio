@@ -5,7 +5,7 @@
  */
 
 import { AIManagerService, AIConfig, DIRECT_PASS_MAX_CHARS, MetadataResult } from './ai-manager.service';
-import { WhisperService } from './whisper.service';
+import { TranscriptionService } from './transcription.service';
 import { InputHandlerService, ContentItem } from './input-handler.service';
 import { Chapter } from './chapter-generator.service';
 import { ChapterPipelineResult, MIN_CHAPTERS } from './chapter-transcript';
@@ -24,39 +24,54 @@ import {
   runMetadataTasks,
 } from './metadata-tasks';
 import {
-  KEY_PHRASE_EMBEDDING_MODEL,
   MetadataRoutingSelections,
   MetadataRoutingTaskId,
   METADATA_ROUTING_OPTIONS,
   ResolvedMetadataRouting,
   resolveChapterModelOption,
+  resolveCompilationPackagingOption,
   resolveMetadataRouting,
+  resolveSnapChapterModels,
+  routedModelString,
   routingOption,
 } from './metadata-routing';
 import type { ModelRosterEntry } from './metadata-tasks';
 import { JobModelLifecycle } from './model-lifecycle';
 import { excludePromoChapters } from './promo-chapters';
 import { SCRUB_ROUTING_TASK, scrubGeneratedItem } from './scrub';
-import { DigestChapter, FieldContentDecision, digestChaptersOf, resolveFieldContent } from './chapter-digest';
+import { rerollGateItem } from './reroll/reroll.service';
+import { RerollGateSettings, resolveRerollGateSettings } from './reroll/settings';
+import { DigestChapter, FieldContentDecision, FieldInputPolicy, digestChaptersOf, resolveFieldContent, resolveFieldInputPolicy } from './chapter-digest';
+import { contextAssertion } from './context-assertion';
 import { topEntities, transcriptCasing } from './entity-extraction';
-import { rankKeyPhrases } from './key-phrases';
-import { askOllamaPlain } from './plain-call';
-import { bucketNumCtx, estimateTokens } from './ollama-json';
+import { chapterPools } from './tags-hashtags';
+import { loadContextFor } from './context-sizing';
 import { SYSTEM_PROMPTS } from './system-prompts';
 import { PreparedChannelInsights, resolveGuidelinesBlock } from '../analytics/insights-guidelines';
 
-/** Lessons are 5-10 lines; the budget is sized for a local model's thinking, not the answer. */
+/**
+ * Lessons are 5-10 lines; the budget is sized for a local model's thinking, not the answer.
+ * KEPT by P4's budget review: no local distiller answer length is recorded anywhere P4 could
+ * read, and the call (a ~2,100-token prompt) already loads at the smallest step, 8,192, so a
+ * lower number would buy nothing (docs/crucible/P4.md "Budgets").
+ */
 const GUIDELINES_NUM_PREDICT = 2048;
-import axios from 'axios';
 import { JobCancelledError } from './cancellation';
 import type { TranscriptRef } from '../publish/publish-types';
-import { queueAITask } from '../queue-manager.service';
+import { gpuCall, queueAITask } from '../queue-manager.service';
+import { beatJob, installedLanes, setJobStage } from '../../crucible/lanes';
+import { chapter as chapterOnSnap } from './chaptering/chaptering.service';
+import { ChapterPick, chapterPickOf } from './chaptering/granularity';
+
+/** The queue's pick as the whole-transcript engine's grain (LEDGER #213). */
+const WHOLE_TRANSCRIPT_GRAIN: Readonly<Record<ChapterPick, ChapterGrain>> = { chapters: 'detailed', stories: 'stories' };
+import { snapTransports, toChapterPipelineResult } from './snap-chapters';
 import * as log from 'electron-log';
 import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * How many proper nouns and key phrases the description, tags and hashtags get to draw on.
+ * How many proper nouns and phrases the description, tags and hashtags get to draw on.
  *
  * Not a cap on what the video contains — a cap on what any one call is asked to hold in its
  * head. Twelve names is more than a 300-word body can name; forty phrases is more than a
@@ -64,22 +79,22 @@ import * as path from 'path';
  * downstream have something to choose from, and both are far short of "everything".
  */
 const ENTITY_POOL_SIZE = 12;
-const KEY_PHRASE_POOL_SIZE = 40;
+const PHRASE_POOL_SIZE = 40;
+
+/** The chapter engines a run may declare (GenerationParams.chapterEngine). */
+export type ChapterEngine = 'snap' | 'whole-transcript';
+export const CHAPTER_ENGINES: readonly ChapterEngine[] = ['snap', 'whole-transcript'];
 
 export interface GenerationParams {
   inputs: string[];
   mode?: 'individual' | 'compilation';
-  aiProvider: 'ollama' | 'openai' | 'claude';
-  aiModel?: string; // Legacy single model (backward compatibility)
-  summarizationModel?: string; // Model for fast summarization
-  metadataModel?: string; // Model for final metadata generation
-  aiApiKey?: string;
   /**
-   * Keys for the cloud providers the ROUTING may reach, which is not necessarily the
-   * provider `aiApiKey` belongs to (see AIConfig.cloudApiKeys).
+   * The compilation summarizer's model: the chapters row when it is cloud, else the declared
+   * SUMMARIZATION_MODEL (ipc-handlers). No provider, host, key or legacy model rides here any
+   * more (P2): the routing table picks every model (LEDGER #204), the selected Crucible server
+   * runs it, and the key is that server's (#194).
    */
-  cloudApiKeys?: { claude?: string; openai?: string };
-  aiHost?: string;
+  summarizationModel?: string;
   outputPath?: string;
   promptSet?: string;
   promptSetsDir?: string;
@@ -116,19 +131,44 @@ export interface GenerationParams {
    *
    * This is the ONLY input that decides which model writes which field — and, since
    * 2026-08-23, the chapter model with them: chapters are still not a routed task, but they
-   * run on the routing's own `chapters` entry (resolveChapterModelOption),
-   * falling back to CHAPTER_PIPELINE_MODELS when the slot's tasks disagree.
+   * run on the routing's own `chapters` entry (resolveChapterModelOption).
    */
   metadataRouting?: MetadataRoutingSelections;
-  /** Chapter context-window FLOOR. One value for the whole run (Ollama reloads on change). */
-  chapterNumCtx?: number;
   /**
-   * What the chapter pipeline detects (LEDGER #170): 'detailed' (a standalone video's
-   * internal turns — the default the UI preselects), 'broad' (larger pieces of one
-   * subject), or 'stories' (compilations). Absent means the renderer predates the
-   * selector; the declared default applies, stated once at the construction site.
+   * What the chapter pipeline detects (LEDGER #213): 'chapters' (every single video, the default)
+   * or 'stories' (a podcast compilation). A retired 'detailed' / 'broad' (#170) from a row queued
+   * before #213 reads as 'chapters', logged (granularity.ts chapterPickOf). Absent means the
+   * default, stated once at resolveChapterPick.
    */
-  chapterGrain?: ChapterGrain;
+  chapterGrain?: ChapterPick | 'detailed' | 'broad';
+  /**
+   * Which engine draws the chapters (P8b, a declared setting): 'snap', the outline + assign +
+   * Viterbi service (chaptering/, LEDGER #199, #208), or 'whole-transcript', the fifth
+   * architecture (chapter-whole-transcript.service.ts), kept selectable until P10 deletes it.
+   * Absent means the declared default, 'snap', applied at ONE site (generateChapters) and logged.
+   */
+  chapterEngine?: ChapterEngine;
+  /**
+   * Thinking on snap's chapter titles (LEDGER #208: ON, a judgment call). Absent = on; false is a
+   * declared setting of the run, stated in its warnings. The whole-transcript engine ignores it.
+   */
+  chapterTitleThinking?: boolean;
+  /**
+   * What each item's field calls READ (P4, plan 7.2; chapter-digest.ts's header): 'raw', today's
+   * rule and the declared default (the raw transcript until it is over the direct-pass ceiling),
+   * or 'digest' (every chaptered item reads its chapter digest). Read from the store's
+   * `fieldInput` at job time with no store default, or the test CLI's `--field-input`; absent
+   * means the default, stated once in the run's log. Not a Settings control (LEDGER #214): the
+   * default moves only on Owen's verdict from the plan 7.4 A/B.
+   */
+  fieldInput?: FieldInputPolicy;
+  /**
+   * The re-roll gate's settings for this run (reroll/settings.ts; LEDGER #201), resolved by the
+   * IPC layer from the `rerollGate` and `rerollGateTuning` settings AT JOB TIME. Absent (a caller
+   * that predates the gate, or the test CLI) means the declared defaults, resolved once at the top
+   * of the run and logged: the registry's default at the read site, as `metadataRouting` does it.
+   */
+  rerollGate?: RerollGateSettings;
   /**
    * Chapters already produced for these sources (keyed by source label), so a run
    * doesn't repeat the pipeline. This is what makes "Show prompt" honest: that flow
@@ -226,24 +266,31 @@ export class MetadataGeneratorService {
      * Every stage used to release its own model as it finished — the chapter pipeline, then
      * each field unit, then the description unit — and the next stage, usually on the SAME
      * model, re-streamed ~17GB of weights into unified memory and froze the operator's machine
-     * for the length of the load. The stages now DECLARE what they made resident here and
-     * nothing releases anything until the job is over, which is what the 10-minute keep-alive
-     * in ollama-json.ts was always for. It also carries the num_ctx ratchet, so two stages
-     * sharing a model cannot reload it by sizing their windows independently.
+     * for the length of the load. The stages now hold their model under this job's Crucible
+     * lease (plan 13.3) and nothing releases anything until the job is over. It also carries
+     * the load-context ratchet, so two stages sharing a model cannot reload it by sizing their
+     * windows independently.
      */
-    const lifecycle = new JobModelLifecycle();
+    const lifecycle = new JobModelLifecycle(`the metadata job ${params.jobId}`);
+
+    // The re-roll gate's settings, once for the whole run (so every item is judged by one bar).
+    const rerollGate = params.rerollGate ?? resolveRerollGateSettings({});
+    log.info(
+      `[MetadataGenerator] re-roll gate ${rerollGate.mode}` +
+        (params.rerollGate === undefined ? ' (the declared defaults: this caller passed no settings)' : '') +
+        (rerollGate.mode === 'on' ? `, at most ${rerollGate.maxRerolls} re-roll(s) per field` : '')
+    );
 
     console.log('[MetadataGenerator] Starting generation...');
     console.log('[MetadataGenerator] Inputs:', params.inputs.length);
-    console.log('[MetadataGenerator] AI Provider:', params.aiProvider);
     console.log('[MetadataGenerator] Prompt Set:', params.promptSet || 'default');
 
     try {
       // Initialize services
       log.info('[MetadataGenerator] Initializing services...');
-      log.info('[MetadataGenerator] Creating WhisperService...');
-      const whisperService = new WhisperService();
-      log.info('[MetadataGenerator] WhisperService created successfully');
+      log.info('[MetadataGenerator] Creating TranscriptionService...');
+      const transcriptionService = new TranscriptionService();
+      log.info('[MetadataGenerator] TranscriptionService created successfully');
 
       // Resolved once, up here, because two things need the SAME directory: the saved
       // transcripts the input stage reads and writes, and the job report written further
@@ -273,7 +320,9 @@ export class MetadataGeneratorService {
 
       // Progress callback passed through so the handler can send 'preparing' events.
       const inputHandler = new InputHandlerService(
-        whisperService, runOutputDir, params.progressCallback, speakerTagger);
+        transcriptionService, runOutputDir,
+        { jobName: params.jobName ?? null, promptSet: params.promptSet ?? null },
+        params.progressCallback, speakerTagger);
 
       /**
        * The transcript's direct-pass ceiling follows the ROUTED field models, not the legacy
@@ -290,21 +339,25 @@ export class MetadataGeneratorService {
           ? 'local'
           : 'cloud';
 
+      // The field input policy, once for the run (P4). Said either way (Law 8); an unknown value
+      // fails the job here, by name, before anything is transcribed or asked.
+      const fieldInput = resolveFieldInputPolicy(params.fieldInput, 'this run\'s settings (the `fieldInput` store key or --field-input)');
+      log.info(`[MetadataGenerator] ${fieldInput.line}`);
+
       // Initialize AI Manager
       const aiConfig: AIConfig = {
-        provider: params.aiProvider,
         transcriptCeiling,
-        model: params.aiModel, // Legacy support
         summarizationModel: params.summarizationModel,
-        metadataModel: params.metadataModel,
-        apiKey: params.aiApiKey,
-        cloudApiKeys: params.cloudApiKeys,
-        host: params.aiHost,
         promptSet: params.promptSet,
         promptSetsDir: params.promptSetsDir,
         // insightsBlock is NOT set here: it is resolved right after construction, below,
         // because resolving it may spend the one distillation call on a routed transport.
         abortSignal: params.cancelSignal,
+        // The compilation summarizer and packaging run under the job's lease like every other
+        // local call of this job (plan 13.3); made on first use, so an all-cloud run needs none.
+        get jobLeases() {
+          return lifecycle.leases;
+        },
       };
 
       log.info('[MetadataGenerator] Creating AIManagerService...');
@@ -348,10 +401,10 @@ export class MetadataGeneratorService {
       });
       log.info(`[MetadataGenerator] Normalized ${normalizedInputs.length} inputs`);
 
-      // Set up progress forwarding from WhisperService
+      // Set up progress forwarding from TranscriptionService
       // Progress events now include jobId and videoPath for multi-transcription support
-      whisperService.on('progress', (progress: any) => {
-        console.log(`[MetadataGenerator] Whisper progress [${progress.jobId}]:`, progress.percent, progress.message);
+      transcriptionService.on('progress', (progress: any) => {
+        console.log(`[MetadataGenerator] Transcription progress [${progress.jobId}]:`, progress.percent, progress.message);
         if (params.progressCallback && progress.videoPath) {
           // Extract filename from videoPath
           const filename = progress.videoPath.split('/').pop() || progress.videoPath;
@@ -419,6 +472,9 @@ export class MetadataGeneratorService {
       // Declared here rather than after job init because the show-prompt flow below
       // runs the chapter stage too and can raise the same warnings.
       const warnings: string[] = [...inputFailures];
+      // A non-default policy is a declared mode of the run, so its line rides in the warnings
+      // where the operator reads what happened to a run after the fact.
+      if (fieldInput.policy !== 'raw') warnings.push(fieldInput.line);
       // Chapters produced this run, keyed by source label — handed back to the caller
       // in show-prompt mode so "Send to AI" reuses them.
       const computedChapters: { [sourceLabel: string]: ChapterPipelineResult } = {};
@@ -486,6 +542,7 @@ export class MetadataGeneratorService {
               sourceLabel,
               ceiling: transcriptCeiling,
               chapters: digestChaptersOf(chapters),
+              policy: fieldInput.policy,
             });
             this.declareFieldContent(fieldContent, warnings);
 
@@ -578,13 +635,21 @@ export class MetadataGeneratorService {
 
         // Generate single metadata for compilation with hardcoded compilation instructions
         params.progressCallback?.('generating', 'Generating metadata for compilation...', 50);
+        // The packaging call is ROUTED, on the `titles` selection — see
+        // resolveCompilationPackagingOption for why that row and not another. Resolved here
+        // rather than inside AIManagerService for the same reason every other model is: the
+        // manager routes on a model string, it does not read the routing table.
+        const packagingOption = resolveCompilationPackagingOption(
+          resolveMetadataRouting(params.metadataRouting)
+        );
         const metadata = await aiManager.generateCompilationMetadata(
           summary,
           jobName,
           {
             sourceCount: contentItems.length,
             contentTypes: uniqueContentTypes
-          }
+          },
+          routedModelString(packagingOption)
         );
 
         // Add compilation info
@@ -665,6 +730,7 @@ export class MetadataGeneratorService {
             sourceLabel,
             ceiling: transcriptCeiling,
             chapters: digestChaptersOf(chapters),
+            policy: fieldInput.policy,
           });
           this.declareFieldContent(fieldContent, warnings);
 
@@ -722,11 +788,43 @@ export class MetadataGeneratorService {
           // check out throws, and this item fails the way any other field call failing fails it.
           await scrubGeneratedItem(metadata, {
             option: routingOption(SCRUB_ROUTING_TASK, this.routing(params)[SCRUB_ROUTING_TASK]),
-            transport: { aiManager, ollamaHost: params.aiHost || 'http://localhost:11434' },
+            transport: { aiManager },
             // The run's own scrub. The reports page's button passes 'operator request' through
             // the same function, and the trace entries say which of the two wrote them.
             origin: 'post-generation',
           });
+
+          // THE RE-ROLL GATE (reroll/, LEDGER #201, Law 3's one declared exception): every title,
+          // chapter title, description sentence, thumbnail text and pinned comment is checked
+          // against its field's rules by snap on the scorer; what fails goes back to its field's
+          // routed model with the failed rule named, at most three times, and the best-scoring
+          // attempt ships, flagged when it still fails. After the scrub, so it judges the text
+          // that would ship; before the save, so what lands on disk is what it judged. Its calls
+          // append to `_prompt_trace` after the slice, for the scrub's reason. With the gate off
+          // the item records that it was off.
+          await rerollGateItem(metadata, {
+            settings: rerollGate,
+            aiManager,
+            routing: this.routing(params),
+            lifecycle,
+            warnings,
+            sourceLabel,
+            signal: params.cancelSignal,
+          });
+
+          // WHAT THE FIELDS READ, and THE 16,384 ASSERTION (P4; plan 16 P4: "on the PC, every call
+          // of a 60-minute video fits under 16,384 (a log assertion)"). Written onto the item so
+          // the report says which policy wrote it and how big every local call was, and logged.
+          // A statement, never a block (Law 3): a call over the line is named, not refused.
+          (metadata as any)._field_input = {
+            policy: fieldContent.policy,
+            mode: fieldContent.mode,
+            content_chars: fieldContent.content.length,
+            transcript_chars: this.contentTextOf(item).text.length,
+          };
+          const assertion = contextAssertion((metadata as any)._prompt_trace ?? []);
+          (metadata as any)._context_stats = assertion.stats;
+          log.info(`[MetadataGenerator] ${sourceLabel}: ${assertion.line}`);
 
           const saveResult = await outputHandler.addItemToJob(
             jobInfo.jobId, metadata, this.itemSourceOf(item), this.itemProvenanceOf(item));
@@ -882,8 +980,8 @@ export class MetadataGeneratorService {
    * Is this error the run stopping because the user cancelled it?
    *
    * The error itself is only half the answer. An aborted provider call surfaces as that
-   * client's own transport error, and the AI queue re-wraps every rejection as a plain
-   * Error (queue-manager.service.ts), so the type and message do not survive the trip.
+   * client's own transport error, and makeRequest re-wraps every rejection as a plain
+   * Error (ai-manager.service.ts), so the type and message do not survive the trip.
    * What does survive is the fact that cancellation was requested — and once it has been,
    * whatever the run threw on the way down IS the cancellation.
    */
@@ -947,6 +1045,8 @@ export class MetadataGeneratorService {
     /** The digest form of this item's published chapters, for the calls that CHOOSE to read them. */
     digestChapters?: DigestChapter[]
   ): Promise<MetadataTaskRun> {
+    // A job that parks from here on resumes past its chapters (plan section 13.2).
+    setJobStage('fields');
     const subjects = chapterSubjects || [];
     const hasChapters = subjects.length > 0;
 
@@ -981,13 +1081,11 @@ export class MetadataGeneratorService {
 
     const plan = planMetadataUnits({
       routing: this.routing(params),
-      defaultHost: params.aiHost || 'http://localhost:11434',
       aiManager,
       hasInsights: aiManager.hasInsightsBlock(),
       hasChapters,
       alsoLoads,
       lifecycle,
-      abortSignal: params.cancelSignal,
     });
     console.log(
       `[MetadataGenerator] ${sourceLabel}: ` +
@@ -997,7 +1095,7 @@ export class MetadataGeneratorService {
         ` — ${plan.units.length} unit(s): ${plan.summary}`
     );
 
-    const pools = await this.extractPools(contentText, params, sourceLabel, warnings);
+    const pools = this.extractPools(contentText, subjects, chapterDetails || [], sourceLabel, warnings);
 
     return {
       plan,
@@ -1011,7 +1109,7 @@ export class MetadataGeneratorService {
         videoTitle: this.getCleanTitle(item),
         promptSetName: params.promptSet || 'unknown',
         entities: pools.entities,
-        keyPhrases: pools.keyPhrases,
+        phrases: pools.phrases,
         contentText,
         // Whether the two content slots above are screenplay-labelled. On the ordinary
         // direct-passed item `content` IS `contentText` and this describes both exactly. On an
@@ -1035,60 +1133,78 @@ export class MetadataGeneratorService {
   }
 
   /**
-   * The entity and key-phrase pools for one item.
+   * The entity and phrase pools for one item. Pure code, no model, cannot fail.
    *
-   * Entities are pure code (entity-extraction.ts) and cannot fail. Key phrases want ONE batched
-   * embedding call on nomic-embed-text (KEY_PHRASE_EMBEDDING_MODEL); when that model is
-   * absent or the host does not answer, the ranking falls to frequency and the run RECORDS it
-   * as a declared mode, exactly as the chapter pipeline declares a dropped chapter. The tags
-   * and hashtags that come out of a frequency ranking are worse, not wrong, and the report says
-   * which ranking produced them.
+   * A CHAPTERED ITEM reads both pools off its chapter list (tags-hashtags.ts chapterPools;
+   * LEDGER #205): the names and phrases the chapters carry, kept where the content text says
+   * them, in chapter order. This is where nomic-embed-text used to rank the transcript's
+   * candidate n-grams by similarity, with a frequency ranking when the model was missing.
+   * Both rankings are gone and nothing stands in for them.
    *
-   * A transcript that cannot be read for proper nouns at all is also declared: an uncased
-   * transcript makes the entity half of every pool empty, and "no names in this video" and "no
-   * capital letters in this transcript" must not look the same in the report.
+   * A CHAPTERLESS ITEM has no chapter list to read, so its names are measured out of the
+   * content text as before, and its phrase pool is EMPTY: a frequency-sorted list of transcript
+   * n-grams is exactly the fallback the ruling refused, and that item's tags are written by the
+   * Tags routing row rather than assembled (planMetadataUnits `hasChapters`). A transcript that
+   * cannot be read for proper nouns at all is declared on that path: an uncased transcript
+   * makes its entity pool empty, and "no names in this video" and "no capital letters in this
+   * transcript" must not look the same in the report. The chaptered path needs no such notice:
+   * its names come off the chapter list and are only TESTED against the transcript, and that
+   * test reads case-insensitively.
    *
-   * BOTH MEASUREMENTS READ THE WORDS WITHOUT THEIR SPEAKER LABELS. The labels are a fact about
-   * the transcript rather than part of it, and both of these read the text as one flat stream:
+   * EVERY MEASUREMENT READS THE WORDS WITHOUT THEIR SPEAKER LABELS. The labels are a fact about
+   * the transcript rather than part of it, and the code here reads the text as one flat stream:
    * measured on the calibration transcript, leaving them in put "CLIP Debbie Wasserman Schultz"
    * and "UNSURE Refugee Center" at the top of the entity pool that writes the tags. The model
-   * still sees the labels — the prompts explain them — but nothing that counts words does.
+   * still sees the labels — the prompts explain them — but nothing that measures words does.
    */
-  private static async extractPools(
+  private static extractPools(
     taggedContentText: string,
-    params: GenerationParams,
+    chapterSubjects: string[],
+    chapterDetails: string[],
     sourceLabel: string,
     warnings: string[]
-  ): Promise<{ entities: string[]; keyPhrases: string[] }> {
+  ): { entities: string[]; phrases: string[] } {
     const contentText = stripSpeakerPrefixes(taggedContentText);
+
+    if (chapterSubjects.length > 0) {
+      const pools = chapterPools({
+        subjects: chapterSubjects,
+        details: chapterDetails,
+        contentText,
+        entityLimit: ENTITY_POOL_SIZE,
+        phraseLimit: PHRASE_POOL_SIZE,
+      });
+      log.info(
+        `[MetadataGenerator] ${sourceLabel}: ${pools.entities.length} name(s) and ${pools.phrases.length} ` +
+          `phrase(s) read off the ${chapterSubjects.length}-chapter list, grounded in the content text, ` +
+          `feed the description, tags and hashtags`
+      );
+      // Declared, not just logged (Law 8): chapter titles are the model's paraphrase, so a list
+      // that shares nothing with the transcript is a real outcome, and it means no tags at all.
+      if (pools.entities.length === 0 && pools.phrases.length === 0) {
+        warnings.push(
+          `${sourceLabel}: none of the ${chapterSubjects.length} chapters names a person, place or phrase ` +
+            `the transcript also says, so the assembled tags and hashtags are empty`
+        );
+      }
+      return pools;
+    }
+
     const casing = transcriptCasing(contentText);
     if (!casing.usable) {
       const msg =
         `${sourceLabel}: the content transcript cannot be read for proper nouns — ${casing.reason} — so the ` +
-        `description, tags and hashtags were written with no entity list`;
+        `description and hashtags were written with no entity list`;
       console.warn(`[MetadataGenerator] ${msg}`);
       warnings.push(msg);
     }
-
     const entities = casing.usable ? topEntities(contentText, ENTITY_POOL_SIZE) : [];
-
-    const host = params.aiHost || 'http://localhost:11434';
-    const ranked = await rankKeyPhrases(contentText, {
-      client: axios.create({ baseURL: host }),
-      model: KEY_PHRASE_EMBEDDING_MODEL,
-      limit: KEY_PHRASE_POOL_SIZE,
-      signal: params.cancelSignal,
-      logPrefix: `[MetadataGenerator] ${sourceLabel}:`,
-    });
-    if (ranked.notice) {
-      warnings.push(`${sourceLabel}: ${ranked.notice}`);
-    }
-
     log.info(
-      `[MetadataGenerator] ${sourceLabel}: ${entities.length} entit(ies) and ${ranked.phrases.length} ` +
-        `key phrase(s) (${ranked.mode} ranking) feed the description, tags and hashtags`
+      `[MetadataGenerator] ${sourceLabel}: no chapter list, so ${entities.length} entit(ies) measured out of ` +
+        `the content text feed the description and hashtags; there is no phrase pool, and the tags are ` +
+        `written by the Tags routing row`
     );
-    return { entities, keyPhrases: ranked.phrases };
+    return { entities, phrases: [] };
   }
 
   /**
@@ -1104,9 +1220,9 @@ export class MetadataGeneratorService {
 
   /**
    * The distillation call's transport: the TITLES field's routed option, because the
-   * guidelines exist to serve the titles call. Cloud goes through the plain cloud request
-   * (which carries the plain system contract); a local model goes through the same plain
-   * Ollama shape the field calls use.
+   * guidelines exist to serve the titles call. Both kinds go through the plain door (cloud
+   * carries the plain system contract in its system turn); a local model states the budget and
+   * a load context the way the field calls do.
    *
    * There used to be a third case and a throw with it: a titles routing whose `promptStyle`
    * was 'adapter' could not take an instruction prompt at all. The adapters were retired
@@ -1122,44 +1238,27 @@ export class MetadataGeneratorService {
     if (!option) {
       throw new Error(`The titles routing names unknown option "${optionId}", so the guidelines distiller has no transport`);
     }
+    // Thinking OFF on both kinds (plan 6.3's distiller row). With it on, the local 27B reasons
+    // past the whole 2048-token budget and returns a truncated fragment (hit live on both
+    // channels on 2026-08-30); the lesson list is exactly the plain line output the campaign
+    // measured clean thinking-off. The cloud call carries the plain contract in its system
+    // turn; the local prompt carries it inline, as it always did.
     if (option.kind === 'cloud') {
       return {
         model: option.model,
-        distill: (prompt, what) => aiManager.runPlainRequest(prompt, option.model, what),
+        distill: (prompt, what) => aiManager.runPlainRequest(prompt, option.model, what, { thinking: false }),
       };
     }
-    const host = params.aiHost || 'http://localhost:11434';
     return {
       model: option.model,
       distill: async (prompt, what) => {
         const fullPrompt = `${SYSTEM_PROMPTS.PLAIN_SYSTEM}\n\n${prompt}`;
-        const result = await askOllamaPlain(axios.create({ baseURL: host }), {
-          model: option.model,
-          prompt: fullPrompt,
-          numCtx: bucketNumCtx({
-            promptTokens: estimateTokens(fullPrompt.length),
-            numPredict: GUIDELINES_NUM_PREDICT,
-            max: 32768,
-            logPrefix: '[InsightsGuidelines]',
-            what,
-          }),
-          numPredict: GUIDELINES_NUM_PREDICT,
-          // Thinking off (the /api/chat transport in plain-call.ts). With it on, the local
-          // 27B reasons past the whole 2048-token budget and returns a truncated fragment —
-          // hit live on both channels on 2026-08-30, and the second ask failed the same way
-          // because it was the same coin flipped twice. The lesson list is exactly the plain
-          // line output the 2026-08-30 campaign measured clean with thinking off.
-          think: false,
+        return aiManager.runPlainRequest(fullPrompt, option.model, what, {
+          thinking: false,
+          maxTokens: GUIDELINES_NUM_PREDICT,
+          loadContext: loadContextFor(fullPrompt.length, GUIDELINES_NUM_PREDICT),
           timeoutMs: 600_000,
-          signal: params.cancelSignal,
-          what,
-          logPrefix: '[InsightsGuidelines]',
         });
-        if (!result.ok) {
-          log.warn(`[InsightsGuidelines] ${what}: ${result.detail}`);
-          return null;
-        }
-        return result.text;
       },
     };
   }
@@ -1191,6 +1290,8 @@ export class MetadataGeneratorService {
     lifecycle: JobModelLifecycle,
     sink?: { [sourceLabel: string]: ChapterPipelineResult }
   ): Promise<ChapterOutcome> {
+    // Past transcription: a job that parks from here resumes from its saved transcript.
+    setJobStage('chapters');
     const sourceLabel = item.source || `item_${itemIndex + 1}`;
 
     if (!item.srtSegments || item.srtSegments.length === 0) {
@@ -1240,10 +1341,13 @@ export class MetadataGeneratorService {
         };
       }
 
+      const snap = result.stats.snap;
       console.log(
         `[MetadataGenerator] Generated ${result.chapters.length} chapters in ${result.stats.calls} model calls ` +
-          `(${result.stats.band} cadence band, ` +
-          `${result.stats.chaptersDropped} dropped for an unmeasurable opening sentence, ` +
+          (snap
+            ? `(snap ${snap.granularity} at switch cost ${snap.switchCost}, ${snap.units} sentences in ${snap.chunks} chunk(s), ` +
+              `titles thinking ${snap.titleThinking ? 'on' : 'off'}, `
+            : `(${result.stats.band} cadence band, ${result.stats.chaptersDropped} dropped for an unmeasurable opening sentence, `) +
           `details ${result.stats.speakerTagged ? 'speaker-tagged' : 'untagged'})`
       );
       // The sink holds the PIPELINE's result, promos included: it is what "Send to AI"
@@ -1318,7 +1422,166 @@ export class MetadataGeneratorService {
   }
 
   /**
-   * Generate chapters — with the whole-transcript call, which is now the only way.
+   * Generate chapters on the run's declared engine (P8b): snap by default, the whole-transcript
+   * call when the run says so. There is no switch between them at run time: an engine that fails
+   * fails the chapters, and resolveChapters records why (Law 1; plan §10.5).
+   */
+  private static async generateChapters(
+    item: ContentItem,
+    aiManager: AIManagerService,
+    params: GenerationParams,
+    itemIndex: number,
+    itemCount: number,
+    lifecycle: JobModelLifecycle
+  ): Promise<ChapterPipelineResult> {
+    // THE ONE SITE the engine's default is declared. Logged either way, so a run's log says which
+    // engine drew its chapters and whether anyone chose it.
+    const engine = params.chapterEngine ?? 'snap';
+    if (!CHAPTER_ENGINES.includes(engine)) {
+      throw new Error(`unknown chapter engine "${String(engine)}" — expected ${CHAPTER_ENGINES.join(' or ')}`);
+    }
+    log.info(`[MetadataGenerator] chapter engine: ${engine}${params.chapterEngine === undefined ? ' (the declared default)' : ''}`);
+    return engine === 'snap'
+      ? this.generateSnapChapters(item, aiManager, params, itemIndex, itemCount, lifecycle)
+      : this.generateWholeTranscriptChapters(item, aiManager, params, itemIndex, itemCount, lifecycle);
+  }
+
+  /**
+   * The queue's pick (LEDGER #213), 'chapters' when absent, declared at this one site; a retired
+   * 'detailed' / 'broad' reads as 'chapters' with one logged line.
+   */
+  private static resolveChapterPick(params: GenerationParams): ChapterPick {
+    const { pick, migratedFrom } = chapterPickOf(params.chapterGrain ?? 'chapters');
+    if (migratedFrom !== null) {
+      log.info(`[MetadataGenerator] the retired "${migratedFrom}" chapter pick reads as "chapters" (LEDGER #213)`);
+    }
+    return pick;
+  }
+
+  /**
+   * Chapters on snap (chaptering/, LEDGER #199, #208, #212) at the queue's pick: `chapters` (outline +
+   * assign + Viterbi at the measured switch cost, 20; nothing in the queue turns it, #213) or `stories`
+   * (45-second junctions). The 9B outlines, assigns and judges, the chapters row titles, times come
+   * from sentence units (Law 6).
+   *
+   * The scorer needs a Crucible server even when the chapters row is on claude -p; with none, the
+   * run is refused by name before anything is sent (resolveSnapChapterModels). Progress is
+   * weighted by work (plan §0a: assign is most of the wall time), and every progress event is a
+   * sign of life for the job's stall clock.
+   */
+  private static async generateSnapChapters(
+    item: ContentItem,
+    aiManager: AIManagerService,
+    params: GenerationParams,
+    itemIndex: number,
+    itemCount: number,
+    lifecycle: JobModelLifecycle
+  ): Promise<ChapterPipelineResult> {
+    if (!item.srtSegments || item.srtSegments.length === 0) {
+      throw new Error('Chapter generation needs a timestamped transcript');
+    }
+    const models = resolveSnapChapterModels(resolveMetadataRouting(params.metadataRouting), installedLanes().gpuVenue());
+    const pick = this.resolveChapterPick(params);
+    const titleThinking = params.chapterTitleThinking ?? true;
+    const label = item.source || `item_${itemIndex + 1}`;
+    log.info(
+      `[MetadataGenerator] Chaptering ${label} on snap at the ${pick} grain; ` +
+        `outline and decide on ${models.scorer.model} on "${models.scorer.server}", titles on ${models.titles.model} ` +
+        `(thinking ${titleThinking ? 'on' : 'off'})`
+    );
+
+    const transports = snapTransports({
+      models,
+      job: lifecycle.leases,
+      trace: aiManager.promptTrace,
+      ...(models.titles.kind === 'cloud'
+        ? { cloudPlain: (prompt: string, model: string, what: string, shape: { thinking: boolean }) => aiManager.runPlainRequest(prompt, model, what, shape) }
+        : {}),
+      ...(params.cancelSignal === undefined ? {} : { signal: params.cancelSignal }),
+      laneName: `chapters-${params.jobId || 'job'}-${itemIndex}`,
+    });
+
+    // Chapter work is 0-60% of this item's "generating" phase, as on the other engine.
+    const notice = this.chapterProgress(params, label, itemIndex, itemCount);
+    notice.arm();
+    try {
+      // The speaker id is the segment's speaker and label together, the string the whole-transcript
+      // engine reads its HOST/CLIP side from (chapter-transcript.ts speakerRoleOf), so the two
+      // engines tag the same transcript the same way.
+      const captions = item.srtSegments.map((seg) => {
+        const speaker = `${seg.speaker || ''} ${seg.speakerLabel || ''}`.trim();
+        return { start: seg.start, end: seg.end, text: seg.text, ...(speaker ? { speaker } : {}) };
+      });
+      const result = await chapterOnSnap(captions, {
+        granularity: pick,
+        chat: transports.chat,
+        decide: transports.decide,
+        promotedItems: aiManager.promotedItems(),
+        channelName: params.promptSet,
+        videoTitle: item.title || (item.source ? path.basename(item.source) : undefined),
+        titleThinking,
+        ...(params.cancelSignal === undefined ? {} : { signal: params.cancelSignal }),
+        onProgress: (p) => notice.report(p.phase, Math.round(60 * p.fraction), `${p.phase} ${p.done}/${p.total}`),
+      });
+      return toChapterPipelineResult(result, titleThinking);
+    } finally {
+      notice.disarm();
+    }
+  }
+
+  /**
+   * The chapter stage's progress line and its 60 s "no progress" notice, shared by both engines.
+   *
+   * A stage that reports every ~3s and then says nothing for minutes is indistinguishable, from
+   * the progress bar, from a hang. It usually is not one (a model load has been clocked at 516
+   * silent seconds, a thinking title at ~400) but only this code knows that, so it says so. A
+   * SIGNAL and nothing more: nothing is killed, retried or rerouted. What ends a genuinely wedged
+   * run is the job's stall clock (electron/crucible/stream-stall.ts), which this notice
+   * deliberately does NOT feed: only `report`, a real step done, beats it.
+   */
+  private static chapterProgress(params: GenerationParams, label: string, itemIndex: number, itemCount: number) {
+    const STALL_NOTICE_MS = 60_000;
+    let stallTimer: NodeJS.Timeout | undefined;
+    // Latched by the final disarm, so a closure still running after the job ended cannot re-arm it.
+    let stallDone = false;
+    let last: { stage: string; percent: number; at: number } = { stage: 'chapters', percent: 0, at: Date.now() };
+    const arm = () => {
+      if (stallDone) return;
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        const silentSec = Math.round((Date.now() - last.at) / 1000);
+        log.warn(`[MetadataGenerator] Chapter stage "${last.stage}" for ${label} has reported no progress for ${silentSec}s; the model call is still in flight`);
+        params.progressCallback?.(
+          'generating',
+          `Chapters (${last.stage}) ${itemIndex + 1}/${itemCount} — no progress for ${silentSec}s, model call still in flight`,
+          last.percent,
+          undefined,
+          itemIndex
+        );
+        // Re-armed rather than one-shot: a stall the user is watching should keep counting up.
+        arm();
+      }, STALL_NOTICE_MS);
+    };
+    return {
+      arm,
+      disarm: () => {
+        stallDone = true;
+        clearTimeout(stallTimer);
+        stallTimer = undefined;
+      },
+      report: (stage: string, percent: number, detail: string) => {
+        last = { stage, percent, at: Date.now() };
+        // A step of the chapter stage finished: a sign of life for the job's stall clock.
+        beatJob();
+        arm();
+        params.progressCallback?.('generating', `Chapters (${detail}) ${itemIndex + 1}/${itemCount}...`, percent, undefined, itemIndex);
+      },
+    };
+  }
+
+  /**
+   * Generate chapters — with the whole-transcript call (the fifth architecture), selectable under
+   * `chapterEngine: 'whole-transcript'` until P10 deletes it.
    *
    * There have been four architectures and three of them are deleted: the sealed 5-stage 14B
    * pipeline (~390 one-question calls a video), the 27B single call, and the embedding
@@ -1343,7 +1606,7 @@ export class MetadataGeneratorService {
    * separately: the method requires one model resident at a time, and that is exactly what
    * the 1-slot AI pool exists to guarantee.
    */
-  private static async generateChapters(
+  private static async generateWholeTranscriptChapters(
     item: ContentItem,
     aiManager: AIManagerService,
     params: GenerationParams,
@@ -1361,7 +1624,6 @@ export class MetadataGeneratorService {
     // defaults to the same capable local model the old slot projection defaulted to.
     const chapterOption = resolveChapterModelOption(resolveMetadataRouting(params.metadataRouting));
     const model = chapterOption.model;
-    const host = params.aiHost || 'http://localhost:11434';
     const label = item.source || `item_${itemIndex + 1}`;
 
     // Chapter work is 0-60% of this item's "generating" phase; the metadata call that
@@ -1377,78 +1639,26 @@ export class MetadataGeneratorService {
       detail: [30, 60],
     };
 
-    // A stage that reports every ~3s and then says nothing for minutes is
-    // indistinguishable, from the progress bar, from a hang. It usually is not one —
-    // Ollama loading a model or thrashing KV cache has been clocked here at 516 silent
-    // seconds — but only this code knows that, so it says so.
-    //
-    // A SIGNAL and nothing more: nothing is killed, retried or rerouted. The 4-hour task
-    // timeout below remains the only thing that ends a genuinely wedged run.
-    const STALL_NOTICE_MS = 60_000;
-    let stallTimer: NodeJS.Timeout | undefined;
-    // Latched by the final disarm. Without it, the watchdog case re-arms the timer: the
-    // queue rejects this promise while the closure is still running, and the closure's
-    // next onProgress would put a stall notice on a job that already ended.
-    let stallDone = false;
-    let lastProgress: { stage: string; percent: number; at: number } = {
-      stage: 'chapters',
-      percent: 0,
-      at: Date.now(),
-    };
-
-    const armStallNotice = () => {
-      if (stallDone) return;
-      clearTimeout(stallTimer);
-      stallTimer = setTimeout(() => {
-        const silentSec = Math.round((Date.now() - lastProgress.at) / 1000);
-        log.warn(
-          `[MetadataGenerator] Chapter stage "${lastProgress.stage}" for ${label} has reported no progress ` +
-            `for ${silentSec}s; the model call is still in flight`
-        );
-        params.progressCallback?.(
-          'generating',
-          `Chapters (${lastProgress.stage}) ${itemIndex + 1}/${itemCount} — no progress for ${silentSec}s, ` +
-            `model call still in flight`,
-          lastProgress.percent,
-          undefined,
-          itemIndex
-        );
-        // Re-armed rather than one-shot: a stall the user is watching should keep
-        // counting up, not report 60s once and go quiet again.
-        armStallNotice();
-      }, STALL_NOTICE_MS);
-    };
-
-    const disarmStallNotice = () => {
-      stallDone = true;
-      clearTimeout(stallTimer);
-      stallTimer = undefined;
-    };
-
+    // The progress line and the 60 s notice (chapterProgress says why each is what it is).
+    const notice = this.chapterProgress(params, label, itemIndex, itemCount);
+    const armStallNotice = notice.arm;
+    const disarmStallNotice = notice.disarm;
     const reportProgress = (stage: string, done: number, total: number) => {
       const [from, to] = stageWeights[stage];
-      const percent = Math.round(from + ((to - from) * done) / Math.max(1, total));
-      lastProgress = { stage, percent, at: Date.now() };
-      armStallNotice();
-      params.progressCallback?.(
-        'generating',
-        `Chapters (${stage} ${done}/${total}) ${itemIndex + 1}/${itemCount}...`,
-        percent,
-        undefined,
-        itemIndex
-      );
+      notice.report(stage, Math.round(from + ((to - from) * done) / Math.max(1, total)), `${stage} ${done}/${total}`);
     };
 
     const chapterer = new WholeTranscriptChapterService({
-      host,
       model,
-      // The cloud transport, exactly when the slot resolved to a cloud option. `model` is
-      // then the provider-prefixed string runPlainRequest routes on, and the service's
-      // local machinery (context sizing, residency) stands down — see the option's doc.
+      // Every local call records itself on the run's trace, with the server that ran it.
+      trace: aiManager.promptTrace,
+      // The cloud path, exactly when the row resolved to a cloud option. `model` is then the
+      // string runPlainRequest routes on, and the service's local machinery (context sizing,
+      // the lease) stands down — see the option's doc.
       cloudPlain:
         chapterOption.kind === 'cloud'
-          ? (prompt: string, cloudModel: string, what: string) =>
-              aiManager.runPlainRequest(prompt, cloudModel, what)
+          ? (prompt: string, cloudModel: string, what: string, shape: { thinking: boolean }) =>
+              aiManager.runPlainRequest(prompt, cloudModel, what, shape)
           : undefined,
       // The rolling window's cloud input ceiling — the same direct-pass ceiling every cloud
       // field call measures against.
@@ -1457,12 +1667,10 @@ export class MetadataGeneratorService {
       // calls that run next are routed to the same 27B on most channels, and reloading it
       // between the two stages is the freeze this job stopped paying for.
       lifecycle,
-      // Sizes its own context window from the largest prompt the run will send; a
-      // configured value can only raise that floor, never lower it.
-      numCtx: params.chapterNumCtx,
-      // The queue-time selector's pick; 'detailed' is the declared default for a renderer
-      // that did not send one.
-      grain: params.chapterGrain ?? 'broad',
+      // The queue-time pick (LEDGER #213) as this engine's own grains: `chapters` is the old
+      // `detailed` (the single-video turns snap's chapters grain draws at switch cost 20),
+      // `stories` is `stories`. This engine leaves in P10.
+      grain: WHOLE_TRANSCRIPT_GRAIN[this.resolveChapterPick(params)],
       // The detail call's second required context input: what the video IS. A filename like
       // "2026-08-19 jesse watters mocks democrat candidates" tells it who is speaking and
       // why, which is what grounds the names it writes.
@@ -1480,12 +1688,7 @@ export class MetadataGeneratorService {
       onProgress: reportProgress,
     });
 
-    log.info(`[MetadataGenerator] Chaptering starting for ${label} on ${model} @ ${host}`);
-
-    // The AI pool's default 30-minute watchdog is sized for ONE stalled request. A long
-    // livestream is a few dozen requests in a row on a big model, and on slower hardware
-    // that legitimately outruns the default. 4 hours still backstops a genuinely wedged run.
-    const CHAPTER_TASK_TIMEOUT_MS = 4 * 60 * 60 * 1000;
+    log.info(`[MetadataGenerator] Chaptering starting for ${label} on ${model}`);
 
     try {
       // On the CLOUD transport the pipeline must not hold the AI queue slot: every one of
@@ -1499,17 +1702,19 @@ export class MetadataGeneratorService {
         armStallNotice();
         return await chapterer.generate(item.srtSegments!);
       }
+      // The whole local chapter run holds its server's GPU slot, as it held the old 1-slot
+      // pool. It has no wall-clock cap any more (it had 4 hours): the job's stall clock ends
+      // it after 10 minutes with no step finished, and never for being long (plan section 13.5).
       return await queueAITask(
+        gpuCall(model),
         `chapters-${params.jobId || 'job'}-${itemIndex}`,
         `Chapters: ${label}`,
         () => {
-          // Armed only once the run actually starts. Time spent waiting for the AI
-          // queue slot is not a stall, and the UI already says the job is queued.
+          // Armed only once the run actually starts. Time spent waiting for the GPU
+          // slot is not a stall, and the UI already says the job is queued.
           armStallNotice();
           return chapterer.generate(item.srtSegments!);
-        },
-        undefined,
-        CHAPTER_TASK_TIMEOUT_MS
+        }
       );
     } finally {
       // Completion, failure, cancellation and the queue watchdog force-failing the task

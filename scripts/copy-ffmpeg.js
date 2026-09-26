@@ -83,24 +83,6 @@ function copyBinary(src, dest, description, platform) {
   return false;
 }
 
-/**
- * Copy an optional artifact (whisper binaries / dylibs). These are staged by
- * the download step and may legitimately be absent when copy:ffmpeg runs on
- * its own, so a miss is a warning, never a failure.
- */
-function copyOptional(src, dest, description) {
-  const srcFull = path.join(ROOT, src);
-  const destFull = path.join(ROOT, dest);
-  if (fs.existsSync(srcFull)) {
-    console.log(`Copying ${description}...`);
-    fs.copyFileSync(srcFull, destFull);
-    return true;
-  }
-  return false;
-}
-
-const binDir = path.join(ROOT, 'utilities/bin');
-
 // --- macOS ARM64 --------------------------------------------------------
 copyBinary(
   'node_modules/@ffmpeg-installer/darwin-arm64/ffmpeg',
@@ -114,22 +96,6 @@ copyBinary(
   'FFprobe (macOS ARM64)',
   'darwin-arm64'
 );
-copyOptional(
-  'utilities/bin/whisper-cli-arm64',
-  'utilities/bin/darwin-arm64/whisper-cli-arm64',
-  'Whisper (macOS ARM64)'
-);
-if (fs.existsSync(binDir)) {
-  fs.readdirSync(binDir).forEach(file => {
-    if (file.endsWith('-arm64.dylib')) {
-      copyOptional(
-        path.join('utilities/bin', file),
-        path.join('utilities/bin/darwin-arm64', file),
-        file
-      );
-    }
-  });
-}
 
 // --- macOS x64 ----------------------------------------------------------
 copyBinary(
@@ -144,22 +110,6 @@ copyBinary(
   'FFprobe (macOS x64)',
   'darwin-x64'
 );
-copyOptional(
-  'utilities/bin/whisper-cli-x64',
-  'utilities/bin/darwin-x64/whisper-cli-x64',
-  'Whisper (macOS x64)'
-);
-if (fs.existsSync(binDir)) {
-  fs.readdirSync(binDir).forEach(file => {
-    if (file.endsWith('-x64.dylib')) {
-      copyOptional(
-        path.join('utilities/bin', file),
-        path.join('utilities/bin/darwin-x64', file),
-        file
-      );
-    }
-  });
-}
 
 // --- Windows x64 --------------------------------------------------------
 copyBinary(

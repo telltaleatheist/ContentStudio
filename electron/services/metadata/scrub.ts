@@ -83,6 +83,7 @@ import {
   askToRewrite,
   buildRewritePrompt,
   readRewrittenAnswer,
+  REWRITE_NUM_PREDICT,
   rewriteSourceLabel,
   stringsOf,
   textOf,
@@ -503,6 +504,7 @@ export async function scrubGeneratedItem(
       chars: prompt.length,
       at: sentAt,
       prompt,
+      ...(option.kind === 'local' ? { maxTokens: REWRITE_NUM_PREDICT, act: 'generate' as const } : {}),
     });
   }
 

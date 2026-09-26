@@ -1,55 +1,71 @@
 /**
- * Thumbnail Validation
+ * Thumbnail Validation and Fitting
  *
  * Everything the app knows about a thumbnail FILE ON DISK: is it really the image it
  * claims to be, is it one YouTube will take, and — separately — where would the one for
  * this item be if it had been exported.
  *
- * Two properties this module is built around:
+ * Three properties this module is built around:
  *
- * 1. It NEVER fixes anything. No transcoding, no downscaling to fit, no "close enough".
- *    A file that fails a rule is refused with a message naming the actual value and the
- *    rule, because the fix is Owen re-exporting the image, and an app that silently
- *    re-encoded it would ship a thumbnail he never approved.
+ * 1. A file that is NOT AN IMAGE is refused with a message naming the file, the value and
+ *    the rule: missing, empty, not a PNG or JPEG, an extension that lies about the bytes.
+ *    Nothing can be made of such a file, so nothing is.
  *
- * 2. It is CHEAP AND RE-RUNNABLE, so it runs again at use time. thumbnailPath points at
+ * 2. A real image OUTSIDE YOUTUBE'S BOUNDS is FITTED, never refused (Owen, 2026-09-26:
+ *    "if a youtube thumbnail is too small or too big, i.e. its outside of the bounds
+ *    youtube sets, it's automatically resized to be within the bounds. under 2 mb, a
+ *    certain resolution, whatever"). The bounds are YouTube's own: at most 2 MiB, at least
+ *    640x360, and the 1280x720 frame YouTube stores a thumbnail at (anything larger is
+ *    thrown away on their side). A copy that fits is written BESIDE the original as
+ *    `<stem> (2).png` (or `.jpg` when PNG cannot get under the byte limit) and that copy
+ *    is what gets attached and uploaded. The original is the operator's master and is
+ *    never touched. This replaces the earlier rule that validators never fix (LEDGER #27),
+ *    which had already been bent once for oversized exports (bd559e3); the shape of an
+ *    image — its 16:9-ness — is still never changed, because a crop would change the
+ *    picture rather than its encoding.
+ *
+ * 3. It is CHEAP AND RE-RUNNABLE, so it runs again at use time. thumbnailPath points at
  *    Callisto, an external volume: "it validated when I picked it" says nothing about
- *    whether the file is there, or is still the same file, at upload.
+ *    whether the file is there, or is still the same file, at upload. Every path that hands
+ *    bytes to YouTube calls `fitThumbnailFile` on the stored path, so a master that was
+ *    replaced by a larger export since it was attached is fitted again at that moment.
  *
- * No image library. package.json has none (deps: anthropic, axios, electron-log,
- * electron-store, js-yaml, openai) and a thumbnail check is not worth a native
- * dependency in a packaged Electron app — the two formats YouTube accepts both put
- * their dimensions in the header, so we read the header. Downscaling for PREVIEW is a
- * different job and belongs to Electron's own nativeImage (see publish-ipc's
- * publish-read-thumbnail); this module only ever reads.
+ * No image library. Both formats YouTube accepts put their dimensions in the header, so
+ * measuring reads the header; fitting uses Electron's own nativeImage, which the main
+ * process already has, and is the one function here that needs the Electron runtime.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { ThumbnailMeta } from './publish-types';
 
-/** YouTube's hard limit. Rejected above this, never compressed to fit. */
+/** YouTube's hard limit on the file. A larger image gets a fitted copy (see the header). */
 export const MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024;
 
 /**
- * Dimension floors, split the way YouTube actually splits them.
+ * The dimension bounds, split the way YouTube actually splits them.
  *
- * The HARD pair is YouTube's own minimum (640 wide; 360 completes 16:9) — below it the
- * upload API refuses the image, so refusing it here is stating their rule early, not
- * inventing one. The RECOMMENDED pair (1280x720) is what survives their re-encode best;
- * below it the file is accepted and stored with a warning saying exactly that.
+ * The MINIMUM pair is YouTube's own (640 wide; 360 completes 16:9) — below it the upload
+ * API refuses the image. The RECOMMENDED pair (1280x720) is what survives their re-encode
+ * best, and it is also the size YouTube STORES: a larger upload is downscaled to 1280x720
+ * on their side, so the pixels above that never reach a viewer. That is why 1280x720 is
+ * also the MAXIMUM here — a 1920x1080 or 4K export is fitted into that frame before upload,
+ * losing nothing YouTube would have kept, and coming in well under the byte limit as a
+ * side effect. Below the minimum the image is scaled UP to reach it: blurry, but accepted,
+ * which is what was asked for; the warning about being under the recommended size still
+ * says so.
  *
- * MEASURED 2026-08-21: every one of the 28 thumbnails currently on Callisto
- * (/Volumes/Callisto/Movies/FCPX/<week>/thumbnails/) is 1200x675 — correct 16:9, 94% of
- * the recommended size. The spec's original "≥1280x720 hard" would have refused all of
- * them for a rule YouTube does not have, which is why the hard floor sits at YouTube's
- * number and 1200x675 passes with a warning. If the FCPX export template ever moves to
- * 1280x720, nothing here needs to change.
+ * MEASURED 2026-08-21: every one of the 28 thumbnails then on Callisto
+ * (/Volumes/Callisto/Movies/FCPX/<week>/thumbnails/) is 1200x675 — correct 16:9, inside
+ * every bound here, so none of them is ever copied. (LEDGER #164: the template exports
+ * 1200x675 whatever it claims.)
  */
 export const MIN_THUMBNAIL_WIDTH = 640;
 export const MIN_THUMBNAIL_HEIGHT = 360;
 export const RECOMMENDED_THUMBNAIL_WIDTH = 1280;
 export const RECOMMENDED_THUMBNAIL_HEIGHT = 720;
+export const MAX_THUMBNAIL_WIDTH = RECOMMENDED_THUMBNAIL_WIDTH;
+export const MAX_THUMBNAIL_HEIGHT = RECOMMENDED_THUMBNAIL_HEIGHT;
 
 /** How far from 16:9 an image may be before it is called out. 1% either way. */
 export const ASPECT_TOLERANCE = 0.01;
@@ -59,13 +75,16 @@ export const ASPECT_TOLERANCE = 0.01;
  *
  * PNG first because every one of the 28 thumbnails on Callisto is a PNG (measured
  * 2026-08-21, again 2026-08-23); the two JPEG spellings are here because they are the
- * other two formats validateThumbnailFile accepts, so a proposal that ignored them would
- * refuse to see a file this module would happily take.
+ * other two formats this module accepts, so a proposal that ignored them would refuse to
+ * see a file this module would happily take.
  */
 export const PROPOSED_THUMBNAIL_EXTENSIONS: readonly string[] = ['.png', '.jpg', '.jpeg'];
 
 /** The filename every exported thumbnail ended with, after the slot, until 2026-08-16. */
 const LEGACY_THUMBNAIL_SUFFIX = 'youtube-thumbnail.png';
+
+/** The encodings a fitted copy is written in, in the order they are tried (see fitThumbnailFile). */
+const FITTED_EXTENSIONS: readonly ('.png' | '.jpg')[] = ['.png', '.jpg'];
 
 /** The week-relative folders in the disk layout (see spec §1, "Disk layout"). */
 const EXPORTS_DIR = 'complete';
@@ -86,6 +105,15 @@ export interface ThumbnailValidation {
   warnings: string[];
 }
 
+/**
+ * A file measured and judged, with the judgement left to the caller: `refusals` are the
+ * bounds it breaks (each one fixable by fitting), `warnings` the things worth saying about
+ * an image inside the bounds. Empty `refusals` means YouTube takes the file as it is.
+ */
+export interface ThumbnailInspection extends ThumbnailValidation {
+  refusals: string[];
+}
+
 interface Dimensions {
   width: number;
   height: number;
@@ -98,6 +126,10 @@ function describeStat(st: fs.Stats): string {
   if (st.isSocket()) return 'a socket';
   if (st.isBlockDevice() || st.isCharacterDevice()) return 'a device';
   return 'not a regular file';
+}
+
+function mib(bytes: number): string {
+  return (bytes / (1024 * 1024)).toFixed(2);
 }
 
 /**
@@ -182,13 +214,11 @@ function jpegDimensions(buf: Buffer, file: string): Dimensions {
 }
 
 /**
- * Validate one thumbnail file, or throw naming the file, the value and the rule.
- *
- * Throws rather than returning an error union because every caller's honest response is
- * the same: refuse the write and show the message. A rejected thumbnail is never stored,
- * so there is no state to reconcile.
+ * Measure one image file: bytes, width, height and real format. Throws for everything
+ * that is not a PNG or JPEG image at an absolute path — the problems no fitting can mend.
+ * Says nothing about YouTube's bounds; that is `judgeThumbnail`'s job.
  */
-export function validateThumbnailFile(absPath: string): ThumbnailValidation {
+export function measureThumbnailFile(absPath: string): ThumbnailMeta {
   if (typeof absPath !== 'string' || !absPath.trim()) {
     throw new Error(`A thumbnail path is required; got ${JSON.stringify(absPath)}`);
   }
@@ -215,15 +245,6 @@ export function validateThumbnailFile(absPath: string): ThumbnailValidation {
   if (st.size === 0) {
     throw new Error(`Thumbnail ${absPath} is empty (0 bytes).`);
   }
-  if (st.size > MAX_THUMBNAIL_BYTES) {
-    const mib = (st.size / (1024 * 1024)).toFixed(2);
-    throw new Error(
-      `Thumbnail ${absPath} is ${mib} MiB (${st.size} bytes); YouTube's hard limit is 2 MiB ` +
-      `(${MAX_THUMBNAIL_BYTES} bytes). Choose or export a smaller image. (The automatic ` +
-      `pass shrinks an oversized EXPORT it finds beside the video itself; a file picked ` +
-      `by hand is used exactly as it is.)`
-    );
-  }
 
   const ext = path.extname(absPath).toLowerCase();
   const extMime =
@@ -235,8 +256,9 @@ export function validateThumbnailFile(absPath: string): ThumbnailValidation {
     );
   }
 
-  // Whole file: it is ≤2 MiB by the check above, and a JPEG's frame header can sit
-  // behind a large EXIF block, so a fixed-size prefix read would be a guess.
+  // Whole file: a JPEG's frame header can sit behind a large EXIF block, so a fixed-size
+  // prefix read would be a guess. An oversized master is read once to be measured and
+  // then decoded for its fitted copy anyway.
   const buf = fs.readFileSync(absPath);
 
   const isPng = buf.length >= 8 && buf.subarray(0, 8).equals(PNG_SIGNATURE);
@@ -264,16 +286,46 @@ export function validateThumbnailFile(absPath: string): ThumbnailValidation {
     ? pngDimensions(buf, absPath)
     : jpegDimensions(buf, absPath);
 
+  return { bytes: st.size, width, height, mime: actualMime };
+}
+
+/**
+ * YouTube's bounds applied to a measurement. PURE.
+ *
+ * `refusals` name each bound the image breaks, with the value and the rule; every one of
+ * them is something `fitThumbnailFile` can mend, which is why they are returned rather than
+ * thrown. `warnings` are the non-fatal notes on an image that is (or will be) inside the
+ * bounds: under the recommended size, or not 16:9.
+ */
+export function judgeThumbnail(meta: ThumbnailMeta, file: string): { refusals: string[]; warnings: string[] } {
+  const refusals: string[] = [];
+  const warnings: string[] = [];
+  const { bytes, width, height } = meta;
+
+  if (bytes > MAX_THUMBNAIL_BYTES) {
+    refusals.push(
+      `${file} is ${mib(bytes)} MiB (${bytes} bytes); YouTube's hard limit is 2 MiB ` +
+      `(${MAX_THUMBNAIL_BYTES} bytes).`
+    );
+  }
   if (width < MIN_THUMBNAIL_WIDTH || height < MIN_THUMBNAIL_HEIGHT) {
-    throw new Error(
-      `Thumbnail ${absPath} is ${width}x${height}; YouTube's minimum is ` +
-      `${MIN_THUMBNAIL_WIDTH}x${MIN_THUMBNAIL_HEIGHT}. Re-export it at least that large — ` +
-      `upscaling here would just blur it.`
+    refusals.push(
+      `${file} is ${width}x${height}; YouTube's minimum is ` +
+      `${MIN_THUMBNAIL_WIDTH}x${MIN_THUMBNAIL_HEIGHT}.`
+    );
+  }
+  if (width > MAX_THUMBNAIL_WIDTH || height > MAX_THUMBNAIL_HEIGHT) {
+    refusals.push(
+      `${file} is ${width}x${height}; YouTube stores thumbnails at ` +
+      `${MAX_THUMBNAIL_WIDTH}x${MAX_THUMBNAIL_HEIGHT}, so anything larger is fitted into that frame ` +
+      `before upload.`
     );
   }
 
-  const warnings: string[] = [];
-  if (width < RECOMMENDED_THUMBNAIL_WIDTH || height < RECOMMENDED_THUMBNAIL_HEIGHT) {
+  if (
+    width >= MIN_THUMBNAIL_WIDTH && height >= MIN_THUMBNAIL_HEIGHT &&
+    (width < RECOMMENDED_THUMBNAIL_WIDTH || height < RECOMMENDED_THUMBNAIL_HEIGHT)
+  ) {
     warnings.push(
       `${width}x${height} is below YouTube's recommended ` +
       `${RECOMMENDED_THUMBNAIL_WIDTH}x${RECOMMENDED_THUMBNAIL_HEIGHT}; it will be accepted ` +
@@ -290,10 +342,32 @@ export function validateThumbnailFile(absPath: string): ThumbnailValidation {
     );
   }
 
-  return {
-    meta: { bytes: st.size, width, height, mime: actualMime },
-    warnings,
-  };
+  return { refusals, warnings };
+}
+
+/** Measure and judge, throwing for nothing but a file that is not an image. */
+export function inspectThumbnailFile(absPath: string): ThumbnailInspection {
+  const meta = measureThumbnailFile(absPath);
+  const { refusals, warnings } = judgeThumbnail(meta, `Thumbnail ${absPath}`);
+  return { meta, refusals, warnings };
+}
+
+/**
+ * Validate one thumbnail file STRICTLY, or throw naming the file, the value and the rule.
+ *
+ * For a file that is expected to be inside the bounds already: a preview of a stored path,
+ * a check that a record still points at what it measured. A caller that is about to attach
+ * or upload a file calls `fitThumbnailFile` instead, which mends what this refuses.
+ */
+export function validateThumbnailFile(absPath: string): ThumbnailValidation {
+  const { meta, refusals, warnings } = inspectThumbnailFile(absPath);
+  if (refusals.length > 0) {
+    throw new Error(
+      `${refusals.join(' ')} The app fits such a file into YouTube's bounds when it is attached ` +
+      `or uploaded; this path was expected to be inside them already.`
+    );
+  }
+  return { meta, warnings };
 }
 
 /**
@@ -381,10 +455,14 @@ export function deriveProposedThumbnailPaths(
       candidates.push({ path: path.join(thumbsDir, `${stem}${ext}`), match: 'basename' });
       candidates.push({ path: path.join(thumbsDir, ` ${stem}${ext}`), match: 'basename' });
     }
-    // The shrunk copy, AFTER the export it was made from. The original is preferred while
-    // it is acceptable; this is reached when it is not — and offering it here means a
-    // later rescan finds the copy that already fits instead of encoding another one.
-    candidates.push({ path: path.join(thumbsDir, `${stem} (2).png`), match: 'basename' });
+    // The fitted copies, AFTER the export they were made from. The original is preferred
+    // while it is inside the bounds; these are reached when it is not — and offering them
+    // here means a later rescan finds the copy that already fits instead of encoding
+    // another one. Both encodings, because PNG is tried first and JPEG only when PNG
+    // cannot get under the byte limit (see fitThumbnailFile).
+    for (const ext of FITTED_EXTENSIONS) {
+      candidates.push({ path: path.join(thumbsDir, `${stem} (2)${ext}`), match: 'basename' });
+    }
   }
 
   // Slot: optional channel letter + number, then " - ". Anchored, so a file that does not
@@ -401,40 +479,99 @@ export function deriveProposedThumbnailPaths(
 }
 
 
-// ---------------------------------------------------------------- shrinking
-
-/** Widths tried, in order, when an exported thumbnail is over YouTube's byte limit. */
-const SHRINK_WIDTHS: readonly number[] = [1600, 1440, 1280, 1152, 1024, 854];
+// ---------------------------------------------------------------- fitting
 
 /**
- * The name a shrunk copy is written under: `<stem> (2).png`, beside the original.
- *
- * A NEW FILE, never a replacement. The oversized export is the operator's master and this
- * app has no business overwriting something it did not make — and a silent in-place
- * re-encode would also mean the next export of the same name looks already-handled.
+ * JPEG qualities tried, in order, when the PNG of a fitted image is still over the byte
+ * limit. PNG is lossless and is tried first; at 1280x720 a JPEG at any of these is a
+ * fraction of the limit, so the ladder is short and the last rung is never reached in
+ * practice — if it is, the image is refused rather than degraded further.
  */
-export function shrunkThumbnailPath(originalPath: string): string {
-  const dir = path.dirname(originalPath);
-  const stem = path.basename(originalPath, path.extname(originalPath));
-  return path.join(dir, `${stem} (2).png`);
+const FITTED_JPEG_QUALITIES: readonly number[] = [95, 90, 85, 80];
+
+/**
+ * The factor an image must be scaled by to sit inside YouTube's bounds, 1 when it does
+ * already. PURE, and the whole geometry of fitting: the shape is kept, only the size moves.
+ *
+ * Too big on either side → shrink until both fit the 1280x720 frame. Too small on either
+ * side → grow until both clear 640x360. An image that cannot do both — a portrait or a
+ * very wide strip, where clearing the floor on one side breaks the ceiling on the other —
+ * is refused with both numbers, because the fix is a crop and a crop is the operator's.
+ */
+export function fitScaleFor(width: number, height: number): number {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+    throw new Error(`An image's dimensions must be positive integers; got ${width}x${height}.`);
+  }
+  if (width > MAX_THUMBNAIL_WIDTH || height > MAX_THUMBNAIL_HEIGHT) {
+    const scale = Math.min(MAX_THUMBNAIL_WIDTH / width, MAX_THUMBNAIL_HEIGHT / height);
+    const w = Math.round(width * scale);
+    const h = Math.round(height * scale);
+    if (w < MIN_THUMBNAIL_WIDTH || h < MIN_THUMBNAIL_HEIGHT) {
+      throw new Error(
+        `A ${width}x${height} image cannot fit YouTube's bounds without cropping: inside the ` +
+        `${MAX_THUMBNAIL_WIDTH}x${MAX_THUMBNAIL_HEIGHT} frame it is ${w}x${h}, under the ` +
+        `${MIN_THUMBNAIL_WIDTH}x${MIN_THUMBNAIL_HEIGHT} minimum. Crop it nearer 16:9 first.`
+      );
+    }
+    return scale;
+  }
+  if (width < MIN_THUMBNAIL_WIDTH || height < MIN_THUMBNAIL_HEIGHT) {
+    const scale = Math.max(MIN_THUMBNAIL_WIDTH / width, MIN_THUMBNAIL_HEIGHT / height);
+    const w = Math.round(width * scale);
+    const h = Math.round(height * scale);
+    if (w > MAX_THUMBNAIL_WIDTH || h > MAX_THUMBNAIL_HEIGHT) {
+      throw new Error(
+        `A ${width}x${height} image cannot fit YouTube's bounds without cropping: grown to the ` +
+        `${MIN_THUMBNAIL_WIDTH}x${MIN_THUMBNAIL_HEIGHT} minimum it is ${w}x${h}, over the ` +
+        `${MAX_THUMBNAIL_WIDTH}x${MAX_THUMBNAIL_HEIGHT} frame. Crop it nearer 16:9 first.`
+      );
+    }
+    return scale;
+  }
+  return 1;
+}
+
+/** The size a fitted copy is written at. */
+export function fittedSizeFor(width: number, height: number): Dimensions {
+  const scale = fitScaleFor(width, height);
+  if (scale === 1) return { width, height };
+  // Clamp after rounding so a rounding error can never put the copy one pixel outside.
+  return {
+    width: Math.min(MAX_THUMBNAIL_WIDTH, Math.max(MIN_THUMBNAIL_WIDTH, Math.round(width * scale))),
+    height: Math.min(MAX_THUMBNAIL_HEIGHT, Math.max(MIN_THUMBNAIL_HEIGHT, Math.round(height * scale))),
+  };
 }
 
 /**
- * Write a copy of an oversized thumbnail that YouTube will accept, and return its path.
- *
- * YouTube's 2 MiB limit is arbitrary from the operator's side: an export that misses it by
- * forty kilobytes is not a different picture, and refusing it left a finished thumbnail
- * sitting on disk next to a video that could not use it. So the file is re-encoded at
- * progressively smaller widths until it fits.
- *
- * DOWNSCALING, not quality reduction, because the failure is a PNG byte count and PNG has
- * no quality dial — and because 1280x720 is YouTube's own recommended size, so the first
- * step down is usually into the shape it wanted anyway.
- *
- * Throws when even the smallest width will not fit, rather than writing something that
- * would be refused again on the next read. The caller reports that verbatim.
+ * The name a fitted copy is written under: `<stem> (2).png` or `<stem> (2).jpg`, beside
+ * the original. A NEW FILE, never a replacement: the original is the operator's master
+ * and this app has no business overwriting something it did not make — and a silent
+ * in-place re-encode would also mean the next export of the same name looks
+ * already-handled. A master that is itself a ` (2)` copy does not grow a ` (2) (2)`.
  */
-export function shrinkThumbnailToLimit(originalPath: string): { path: string; bytes: number; width: number } {
+export function fittedThumbnailPath(originalPath: string, ext: '.png' | '.jpg'): string {
+  const dir = path.dirname(originalPath);
+  const stem = path.basename(originalPath, path.extname(originalPath)).replace(/ \(2\)$/, '');
+  return path.join(dir, `${stem} (2)${ext}`);
+}
+
+/** A thumbnail inside YouTube's bounds, and how it got there. */
+export interface ThumbnailFit extends ThumbnailValidation {
+  /** The file to attach and upload: the original when it fit, else the copy beside it. */
+  path: string;
+  /** Non-empty only when a copy was written; says what was changed and why. */
+  note: string;
+}
+
+/**
+ * Write the copy of an image that sits inside YouTube's bounds, and return it measured.
+ *
+ * Scales by `fitScaleFor` (the shape is kept), encodes PNG first, and falls to the JPEG
+ * ladder only when the PNG is over the byte limit. Throws when the shape cannot fit, when
+ * the file cannot be decoded, or when even the last JPEG rung is over the limit — rather
+ * than writing something that would be refused again on the next read.
+ */
+function writeFittedThumbnail(originalPath: string, original: ThumbnailMeta): ThumbnailFit {
   // Imported here rather than at module scope: this file is read by tooling that has no
   // Electron runtime, and only this one function needs it.
   const { nativeImage } = require('electron') as typeof import('electron');
@@ -447,30 +584,73 @@ export function shrinkThumbnailToLimit(originalPath: string): { path: string; by
     );
   }
 
+  const size = fittedSizeFor(original.width, original.height);
   const image = nativeImage.createFromPath(originalPath);
   if (image.isEmpty()) {
     throw new Error(
-      `Thumbnail ${originalPath} could not be decoded, so no smaller copy could be made of it.`
+      `Thumbnail ${originalPath} could not be decoded, so no fitted copy could be made of it.`
+    );
+  }
+  const scaled =
+    size.width === original.width && size.height === original.height
+      ? image
+      : image.resize({ width: size.width, height: size.height, quality: 'best' });
+
+  const attempts: { ext: '.png' | '.jpg'; encoded: Buffer; how: string }[] = [];
+  attempts.push({ ext: '.png', encoded: scaled.toPNG(), how: 'PNG' });
+  for (const quality of FITTED_JPEG_QUALITIES) {
+    if (attempts[attempts.length - 1].encoded.length <= MAX_THUMBNAIL_BYTES) break;
+    attempts.push({ ext: '.jpg', encoded: scaled.toJPEG(quality), how: `JPEG at quality ${quality}` });
+  }
+  const chosen = attempts[attempts.length - 1];
+  if (chosen.encoded.length > MAX_THUMBNAIL_BYTES) {
+    throw new Error(
+      `Thumbnail ${originalPath} is ${mib(original.bytes)} MiB and could not be brought under ` +
+      `YouTube's 2 MiB limit even at ${size.width}x${size.height} as ${chosen.how} ` +
+      `(${mib(chosen.encoded.length)} MiB). Re-export it smaller.`
     );
   }
 
-  const target = shrunkThumbnailPath(originalPath);
-  const original = image.getSize();
+  const target = fittedThumbnailPath(originalPath, chosen.ext);
+  fs.writeFileSync(target, chosen.encoded);
 
-  for (const width of SHRINK_WIDTHS) {
-    if (width >= original.width) continue;
-    const encoded = image.resize({ width, quality: 'best' }).toPNG();
-    if (encoded.length <= MAX_THUMBNAIL_BYTES) {
-      fs.writeFileSync(target, encoded);
-      return { path: target, bytes: encoded.length, width };
-    }
+  const { meta, refusals, warnings } = inspectThumbnailFile(target);
+  if (refusals.length > 0) {
+    throw new Error(
+      `The fitted copy ${target} is still outside YouTube's bounds after it was written, which ` +
+      `the fitting arithmetic should make impossible: ${refusals.join(' ')}`
+    );
   }
 
-  throw new Error(
-    `Thumbnail ${originalPath} is ${(fs.statSync(originalPath).size / (1024 * 1024)).toFixed(2)} ` +
-    `MiB and could not be brought under YouTube's 2 MiB limit even at ` +
-    `${SHRINK_WIDTHS[SHRINK_WIDTHS.length - 1]}px wide. Re-export it smaller.`
-  );
+  const changes: string[] = [];
+  if (size.width !== original.width || size.height !== original.height) {
+    changes.push(
+      `${size.width > original.width ? 'enlarged' : 'reduced'} from ${original.width}x${original.height} ` +
+      `to ${size.width}x${size.height}`
+    );
+  }
+  if (chosen.ext === '.jpg' || original.bytes > MAX_THUMBNAIL_BYTES) {
+    changes.push(`re-encoded as ${chosen.how} (${mib(original.bytes)} MiB → ${mib(meta.bytes)} MiB)`);
+  }
+  const note =
+    ` ${path.basename(originalPath)} was outside YouTube's bounds, so a copy was ${changes.join(' and ')} ` +
+    `and written as ${path.basename(target)}; that copy is the one attached. The original is untouched.`;
+
+  return { path: target, meta, warnings, note };
+}
+
+/**
+ * The file YouTube can take for this image: the image itself when it is inside the
+ * bounds, otherwise a fitted copy written beside it. THE ONE DOOR for anything that is
+ * about to attach or upload a thumbnail. Throws only for what cannot be mended: not an
+ * image, a shape that would need cropping, or a copy that will not get under the limit.
+ */
+export function fitThumbnailFile(absPath: string): ThumbnailFit {
+  const inspection = inspectThumbnailFile(absPath);
+  if (inspection.refusals.length === 0) {
+    return { path: absPath, meta: inspection.meta, warnings: inspection.warnings, note: '' };
+  }
+  return writeFittedThumbnail(absPath, inspection.meta);
 }
 
 
@@ -480,7 +660,7 @@ export interface ThumbnailPick {
   match: ThumbnailCandidate['match'];
   meta: ThumbnailMeta;
   warnings: string[];
-  /** Non-empty only when a smaller copy had to be written to get under the byte limit. */
+  /** Non-empty only when a fitted copy had to be written to get inside the bounds. */
   note: string;
 }
 
@@ -496,9 +676,11 @@ export type ThumbnailLookup =
  * shrink an oversized file: the button kept refusing exports the automatic pass had
  * started accepting, which from the outside looked like the button doing nothing.
  *
- * Every candidate that EXISTS is tried, not just the first, so a usable file behind an
- * unusable one is reachable. If none validates and the only objection was the byte limit,
- * a smaller copy is written beside the original and used — see shrinkThumbnailToLimit.
+ * Two passes over the candidates that EXIST. First, any file already inside the bounds
+ * wins, in candidate order — which is what lets a fitted copy written on an earlier pass
+ * be found before its master is re-encoded again. Then the first real image outside the
+ * bounds is fitted (a copy beside it) and used. A candidate that is not an image at all
+ * is recorded and passed over, so a usable file behind an unusable one is reachable.
  */
 export function findUsableThumbnail(sourcePath: string | null | undefined): ThumbnailLookup {
   const candidates = deriveProposedThumbnailPaths(sourcePath ?? null);
@@ -526,50 +708,50 @@ export function findUsableThumbnail(sourcePath: string | null | undefined): Thum
   }
 
   const rejections: string[] = [];
+  const outOfBounds: { candidate: ThumbnailCandidate; inspection: ThumbnailInspection }[] = [];
   for (const candidate of present) {
     try {
-      const validation = validateThumbnailFile(candidate.path);
-      return {
-        ok: true,
-        pick: {
-          path: candidate.path,
-          match: candidate.match,
-          meta: validation.meta,
-          warnings: validation.warnings,
-          note: '',
-        },
-      };
+      const inspection = inspectThumbnailFile(candidate.path);
+      if (inspection.refusals.length === 0) {
+        return {
+          ok: true,
+          pick: {
+            path: candidate.path,
+            match: candidate.match,
+            meta: inspection.meta,
+            warnings: inspection.warnings,
+            note: '',
+          },
+        };
+      }
+      outOfBounds.push({ candidate, inspection });
     } catch (err) {
       rejections.push(err instanceof Error ? err.message : String(err));
     }
   }
 
-  const oversized = present.find((c) => fs.statSync(c.path).size > MAX_THUMBNAIL_BYTES);
-  if (!oversized) {
+  if (outOfBounds.length === 0) {
     return { ok: false, bucket: 'refused', detail: rejections.join(' ') };
   }
 
+  const { candidate, inspection } = outOfBounds[0];
   try {
-    const shrunk = shrinkThumbnailToLimit(oversized.path);
-    const validation = validateThumbnailFile(shrunk.path);
+    const fitted = writeFittedThumbnail(candidate.path, inspection.meta);
     return {
       ok: true,
       pick: {
-        path: shrunk.path,
-        match: oversized.match,
-        meta: validation.meta,
-        warnings: validation.warnings,
-        note:
-          ` ${path.basename(oversized.path)} was over YouTube's 2 MiB limit, so it was ` +
-          `re-encoded ${shrunk.width}px wide as ${path.basename(shrunk.path)} and that copy ` +
-          `was attached. The original is untouched.`,
+        path: fitted.path,
+        match: candidate.match,
+        meta: fitted.meta,
+        warnings: fitted.warnings,
+        note: fitted.note,
       },
     };
   } catch (err) {
     return {
       ok: false,
       bucket: 'refused',
-      detail: `${rejections.join(' ')} ${err instanceof Error ? err.message : String(err)}`,
+      detail: [...rejections, ...inspection.refusals, err instanceof Error ? err.message : String(err)].join(' '),
     };
   }
 }

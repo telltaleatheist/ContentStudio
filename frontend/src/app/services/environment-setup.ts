@@ -1,5 +1,7 @@
 import { computed, Injectable, signal } from '@angular/core';
 import { ElectronService, StartupReadiness } from './electron';
+import { CrucibleService } from './crucible';
+import type { CrucibleReadinessView } from '../features/crucible/crucible.types';
 
 export type SetupDownloadState = 'queued' | 'downloading' | 'done' | 'failed';
 
@@ -17,7 +19,7 @@ export interface DownloadableComponentStatus {
     id: string;
     name: string;
     description: string;
-    category: 'tool' | 'whisper';
+    category: 'tool';
     sizeBytes: number;
     recommended?: boolean;
   };
@@ -28,7 +30,16 @@ export interface DownloadableComponentStatus {
 export class EnvironmentSetupService {
   readonly readiness = signal<StartupReadiness | null>(null);
   readonly components = signal<DownloadableComponentStatus[]>([]);
-  readonly optionalDialogOpen = signal(false);
+  /**
+   * THE SETUP GATE (LEDGER #221). Open while no Crucible server is connected and ready; nothing
+   * closes it but readiness itself. There is no "set up later": every transcription and model
+   * call runs on Crucible, so an app without one has nothing to do (Owen, 2026-09-26: "it MUST
+   * have a crucible installed and set up before the user can use the app"). Once the app has
+   * been ready in this session, a later outage is the readiness banner's to report, not this
+   * gate's: a network blip must not lock the operator out of work already on screen.
+   */
+  readonly setupGateOpen = signal(false);
+  private gateSatisfied = false;
   readonly downloads = signal<Record<string, SetupDownload>>({});
   readonly dockDismissed = signal(false);
   readonly dockExpanded = signal(true);
@@ -37,14 +48,14 @@ export class EnvironmentSetupService {
   private readonly concurrency = 2;
 
   readonly downloadItems = computed(() => Object.values(this.downloads()));
-  readonly whisperModels = computed(() =>
-    this.components().filter((item) => item.component.category === 'whisper' && item.state !== 'incompatible')
-  );
   readonly running = computed(() =>
     this.downloadItems().some((item) => item.state === 'queued' || item.state === 'downloading')
   );
 
-  constructor(private electron: ElectronService) {
+  constructor(private electron: ElectronService, private crucible: CrucibleService) {
+    // Readiness is PUSHED by main whenever it changes (P1's readiness service). The gate reads
+    // every push, so the first real probe answer closes it the moment the server is reached.
+    this.crucible.onReadiness((view) => this.applyReadiness(view));
     this.electron.onComponentProgress((progress) => {
       const existing = this.downloads()[progress.id];
       if (!existing || existing.state === 'done' || existing.state === 'failed') return;
@@ -66,8 +77,39 @@ export class EnvironmentSetupService {
       this.enqueue(tool.id, tool.name, true);
     }
 
-    if (!readiness.ai.ready || !readiness.transcription.selectedModelInstalled) {
-      this.optionalDialogOpen.set(true);
+    // Transcription is Crucible's (LEDGER #206); the only local download is ffmpeg, above.
+    if (readiness.ai.ready) {
+      this.gateSatisfied = true;
+      return;
+    }
+    // The startup snapshot can be main's PROVISIONAL answer ("Checking Crucible on …"), read
+    // before the first probe has returned. The gate opens on it at once, so the app is never
+    // usable ahead of the check, and a real derivation is asked for; its push closes the gate
+    // if the server answers, or leaves it open with the pane's doors showing.
+    this.setupGateOpen.set(true);
+    try {
+      this.applyReadiness(await this.crucible.refreshReadiness());
+    } catch {
+      // The push will carry the next answer; the gate stays open until one says ready.
+    }
+  }
+
+  /** One readiness view from main, folded into the startup readiness and the gate. */
+  private applyReadiness(view: CrucibleReadinessView): void {
+    const ready = view.state === 'ready';
+    const current = this.readiness();
+    if (current) {
+      this.readiness.set({
+        ...current,
+        ready: ready && current.transcription.ready,
+        ai: { ready, provider: 'crucible', model: view.server ?? '', reason: ready ? '' : view.reason },
+      });
+    }
+    if (ready) {
+      this.gateSatisfied = true;
+      this.setupGateOpen.set(false);
+    } else if (!this.gateSatisfied) {
+      this.setupGateOpen.set(true);
     }
   }
 
@@ -89,21 +131,6 @@ export class EnvironmentSetupService {
     this.patch(id, { id, name, required, state: 'queued', pct: 0, message: 'Queued' });
     this.dockDismissed.set(false);
     this.runQueue();
-  }
-
-  async chooseWhisperModel(id: string): Promise<void> {
-    const component = this.components().find((item) => item.component.id === id);
-    if (!component || component.component.category !== 'whisper') {
-      throw new Error(`Unknown Whisper model: ${id}`);
-    }
-    const settings = await this.electron.getSettings();
-    await this.electron.updateSettings({ ...settings, whisperModel: id.replace(/^whisper-/, '') });
-    if (component.state !== 'installed') this.enqueue(id, component.component.name, false);
-    await this.refresh();
-  }
-
-  closeOptionalDialog(): void {
-    this.optionalDialogOpen.set(false);
   }
 
   private runQueue(): void {

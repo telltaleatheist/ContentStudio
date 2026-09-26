@@ -216,8 +216,9 @@ slot rather than a fixed line because of Unfiltered (above).
 
 ### `tags.yml` — the separator, the exemplar, and the register
 
-Read by exactly two paths. On the **chaptered** path tags are assembled in code from the entity
-and key-phrase pools with no model call at all, so this section is stripped out of every group's
+Read by exactly two paths. On the **chaptered** path tags are assembled in code from the names
+and phrases the chapter list shares with the transcript (LEDGER #205), with no model call at
+all, so this section is stripped out of every group's
 instructions. It is sent to a model on the **text-subject** path (no chapters, therefore no
 pools measured against a chapter list) and on the **compilation** call, and it is what declares
 that the channel publishes tags at all.
@@ -280,8 +281,9 @@ unfilled count slot.
 
 ### `hashtags.yml`
 
-Hashtags are **derived in code** on every routed path (`tags-hashtags.ts`: the entity and
-key-phrase pools, camel-cased, deduped against the published title), so this section is stripped
+Hashtags are **derived in code** on every routed path (`tags-hashtags.ts`: the name and phrase
+pools, camel-cased, deduped against the published title; on a chaptered item both come off the
+chapter list, on a chapterless one there are names only — LEDGER #205), so this section is stripped
 out of every group's instructions. It survives because it declares that the channel renders
 hashtags at all, and because the compilation call still reads it.
 
@@ -433,6 +435,50 @@ the model to infer it from an unexplained third label, and what it states is the
 is true of those lines: **the words were said, and nobody in particular said them.** Attributing
 them to whichever side is adjacent would be a guess printed as a fact — the failure the whole
 prompt exists to stop.
+
+**The `snap_*` keys (added 2026-09-25, P8a; LEDGER #199).** Chaptering on snap: the 9B writes
+an outline, snap assigns every sentence to one of its items, Viterbi keeps the sections at the
+granularity's switch cost (`electron/services/metadata/chaptering/granularity.ts`), and
+`summarize_chapter` on the 27B titles each finished chapter. What each key is:
+
+- **`snap_outline_chapters`, `snap_assign`, `snap_assign_start`, `snap_plug_item`,
+  `snap_plug_confirm` are segment.py's text verbatim** (`docs/crucible/reference/segment.py`).
+  They are part of the measured result (YTSeg F1@±1 0.72 at switch cost 20), so a rewording
+  has to be re-benchmarked, and `tools/chaptering-checks.js` pins them. The assign question
+  QUOTES the sentence and the one before it; it never names a sentence by number (Owen: "we
+  give it the thing it's judging"). The option names the model sees are `section 1`..`section n`,
+  segment.py's own, because Crucible shows each option as `A. section 1: <label>`.
+- **Two grains, two methods (LEDGER #208, #212).** `snap_outline_chapters` (segment.py's body,
+  above) draws the subject changes that go to YouTube. The stories grain writes NO outline since
+  #212: P8b's `snap_outline_stories` and its stream-level merge (`snap_outline_stories_merge`) were
+  deleted after the merged outline found 2 of Owen's 7 edges on the 2026-09-23 stream and lost the
+  Pokémon story (docs/crucible/P8b.md). What the merge body taught stays true of the 9B: asked to
+  list a stream's stories from chunk outlines it copied items back; asked to GROUP them it answered
+  a handful, but the handful was too coarse to place.
+- **The stories keys (`snap_story_*`, P8c, #212)** re-ask chapter-splitter.ts's questions
+  (docs/crucible/reference/chapter-splitter.ts) as snap decisions on the 9B, in positive form:
+  - `snap_story_junction`: a yes/no whose statement QUOTES the ~45 s stretch before a junction
+    (its tail, clipped at 1,400 characters) and the one after (its head), then states "the stretch
+    after it is on a new subject". Asked of the chunk state that holds the junction, 64 to a
+    request. P(yes) is ranked, never thresholded (the reference measured ranking doubling F1).
+  - `snap_story_place`: a choice over the lines of the junction's two stretches (options `line 1`..
+    `line n`, each the line quoted), "which line is the first line of the new subject: where the
+    speaker turns to it, announces it or closes off the old one" — the reference placement prompt's
+    order of preference in one sentence.
+  - `snap_story_pair` / `snap_story_pair_state`: consolidation. The state is part A's tail and part
+    B's head (≤5,000 tokens each) under their clocks; the statement "Part B carries on the same story
+    as part A … including a new angle on it or the reaction to it" names what stays inside a story,
+    where the reference's pair prompt said what does not.
+  Their measurements are in docs/crucible/P8c.md.
+- **`_promoted` variants** name the channel's own `promoted_items` in the ad item and in its
+  yes/no. A channel that declares none gets the measured text, not a sentence saying so.
+- **`summarize_chapter_parts`** titles a chapter too long for one title call (an hour-long
+  story of a stream is ~15k tokens; LEDGER #196 keeps a call under ~16k). It also titles an
+  editor story from the chapters already derived inside it (`story:suggest-title`): a story is a
+  `stories` chapter, and its parts are its chapters' titles and summaries. The chapter is read
+  in equal windows by `summarize_chapter` itself, and this body titles the whole from the parts'
+  titles and summaries. It is the one place a title is written from intermediate text rather
+  than the raw transcript, and it is declared in the run's warnings when it happens.
 
 ### `description.yml` (pipeline)
 
@@ -773,3 +819,58 @@ their framing ("Owen Morgan defines communism, socialism and Umberto Eco's fasci
 Crowder's claim"). There is no re-ask (law 3) and no second prompt; the operator curates. Facts
 were not touched in any of the 59 texts: zero numbers changed, zero URLs changed, and the only
 proper nouns lost were the creator's own.
+
+---
+
+## Part 11 — `shared/pipeline/transcription.yml` (added 2026-09-25, P5)
+
+Qwen3-ASR's `context`, the text it reads in its system turn before it hears the audio. It is
+sent on every Crucible `asr` job, from the pipeline and from the editor (LEDGER #206). Code
+assembles it (`services/transcription/asr-context.ts`): the `instruction`, then one
+`<label>: <facts>` line per known fact, most specific first. Over the 700-token estimate, the
+least specific field is cut first.
+
+- **`instruction`, first sentence and the disfluency list.** This is #203's measured prompt:
+  "Transcribe every disfluency exactly as spoken, including filler sounds: um, uh, ah, er, hmm,
+  and false starts and repeated words." Owen cuts on the fillers. On the 2026-09-23 stream's
+  1:00:00–1:10:00 window it took Qwen from 9 fillers to 19 in the package run the Crucible
+  manifest cites. "Verbatim transcript." replaces #203's "Verbatim transcript of a livestream.",
+  because most of what the pipeline transcribes is an edited export, not a livestream. On
+  Crucible the two gave the same 9 fillers on that window (docs/crucible/P5.md §4a).
+- **`instruction`, the last sentence** ("use it only for the spelling of names, places and
+  terms, and write only what is actually said"). This comes from Briefcase's context. Metadata
+  names people who may never speak, and a name in the context must never be written into the
+  transcript. Measured on `3 - hank kunneman.mov`: all 6 "Hank Kunneman" came out right with the
+  context, against 4 of 6 without it, and "an ammo dealer" became "an Amoco dealer" (the
+  father's hat the description names). The earlier report's misspelled tags ("Hank Cunhamon",
+  "Hank Kahneman") were in the context and were not copied. Side effects on that run: "ICE
+  Gestapo" became "ICE stopper", "graft" became "craft", and "going to" became "gonna" three
+  times. These are open for Owen's ear.
+- **`labels`.** These are plain field names, so the facts read as data under the instruction.
+  "Names and topics" carries an earlier run's tags, which are dense with names.
+
+## Part 12 — `shared/pipeline/reroll.yml` (added 2026-09-25, P9)
+
+The re-roll gate's text (LEDGER #201; docs/crucible/P9.md). Three kinds of block:
+
+- **`state` and `labels`.** The primed state of every rule check: what the text is, the channel,
+  and who made the video (the prompt set's `brand_terms`), then the text itself, one unit per line
+  for a list. The creator's names have to be in the state: "Owen" and "the host" are only a
+  violation when the model knows who the host is.
+- **`rules`.** Yes/no STATEMENTS a judge reads; Crucible asks "Is this statement true of the state
+  above?". Each quotes its unit (plan §0a: never an index). They name the WRONG form on purpose:
+  they are questions to a judge, not instructions to a writer, so Law 4 does not apply to them.
+  Measured on the 9B against 70 hand labels (P9.md): `creator` and `first_person` separate cleanly
+  as first written (violators 0.73–0.99, clean medians under 0.03). **`narrates` took four
+  wordings.** v1 ("reports what the video or its commentator does … instead of stating the subject
+  matter itself") put a median P(yes) of 0.73 on CLEAN chapter titles: the model reads nearly any
+  title as describing something. v2 ("is about the video itself or the person presenting it")
+  swung the other way (violators down to 0.01). v3 (a list of verbs) fired on every verb. v4, the
+  shipped one, asks who does the action and gives three short examples of the wrong form: clean
+  median 0.25, 44/50 chapter titles right. `sentence` measured 42/50 and does not gate (P9.md).
+- **`rank`.** The ranking question. The state deliberately does NOT list the titles: a list in the
+  state has an order, and the order would bias; the titles are only the options, rotated.
+- **`reroll`.** The revision call after a failure: the rule's WANTED form, positively (Law 4), the
+  keep clause, the lines shape, the failing entries (the one place a wrong form may appear: as the
+  input of a revision call). Not yet measured live: the calibration was stopped before a re-roll
+  was sent (P9.md).

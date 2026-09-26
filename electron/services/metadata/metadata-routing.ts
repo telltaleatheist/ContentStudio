@@ -27,6 +27,8 @@
  */
 
 import * as log from 'electron-log';
+import type { CatalogInventory } from '../../crucible/catalog';
+import { offerFor } from '../../crucible/catalog';
 
 export type MetadataRoutingTaskId =
   | 'titles'
@@ -37,15 +39,26 @@ export type MetadataRoutingTaskId =
   | 'pinned_comment';
 
 export interface MetadataRoutingOption {
-  /** 'cloud' goes through AIManagerService's provider clients; 'local' through Ollama. */
+  /**
+   * 'local' is a model a Crucible server holds on its card: loaded, leased, and checked
+   * against its loaded context (electron/crucible/transport.ts). 'cloud' is everything else:
+   * an Anthropic upstream the server forwards, or `claude -p` outside Crucible.
+   */
   kind: 'cloud' | 'local';
   /** What the modal shows. */
   label: string;
   /**
-   * Cloud: the provider-prefixed model AIManagerService.makeRequest routes on.
-   * Local: the bare Ollama model name, as `ollama list` prints it.
+   * The string AIManagerService.makeRequest routes on: the Crucible id for every option
+   * that runs through Crucible (`qwen3.8-27b-4bit`, `anthropic/claude-sonnet-5`), and
+   * `claude-cli:<alias>` for the `claude -p` rungs, which stay outside it (LEDGER #193).
    */
   model: string;
+  /**
+   * The Crucible model id this option runs as (plan 6.2), or null for the `claude -p` rungs.
+   * The routing dialog judges availability against the selected server's catalog by this id,
+   * and the transport sends exactly this id: nothing maps it to anything else downstream.
+   */
+  crucibleModel: string | null;
   /**
    * THERE IS NO PER-OPTION HOST, AND NO PROMPT SHAPE TO CHOOSE, as of 2026-08-25.
    *
@@ -59,25 +72,6 @@ export interface MetadataRoutingOption {
    */
 }
 
-/**
- * The model the ALWAYS-ON chapter pipeline runs, which is deliberately not a routing option
- * any more.
- *
- * Chapters used to be a routed task with six options across three architectures. As of
- * 2026-08-22 there is one — the whole-transcript call (chapter-whole-transcript.service.ts,
- * CHAPTERING.md's reversal section) — and it is not a choice: every run that has a
- * timestamped transcript chapters it this way. A picker with one entry is not a picker, and
- * the dead architectures it used to offer are deleted rather than left selectable.
- *
- * It is still DECLARED here rather than hidden inside the pipeline, because the routing modal
- * reports whether it is installed before a run spends an hour finding out.
- *
- * ONE MODEL, where this used to name two. `nomic-embed-text` was the chapter pipeline's
- * junction scorer and the chapter pipeline no longer scores junctions; it is still used, by
- * key-phrase ranking, and it is declared where THAT reads it (KEY_PHRASE_EMBEDDING_MODEL
- * below). Leaving it in a constant called CHAPTER_PIPELINE_MODELS would say a run's chapters
- * depend on a model they cannot even reach.
- */
 /**
  * The model that extracts evidence from a transcript, on the ONE path that still asks for it.
  *
@@ -99,34 +93,33 @@ export interface MetadataRoutingOption {
  * model was silently paying a cloud provider to read every transcript, on a run whose every
  * other field was local. That is the kind of divergence this build exists to remove: the
  * summarizer is a fixed, stated part of the compilation pipeline, exactly like
- * CHAPTER_PIPELINE_MODELS below, and it is stated in one place.
+ * the routing options below, and it is stated in one place.
  *
- * Provider-prefixed because AIManagerService's model strings are.
+ * A Crucible id (plan 6.2), because AIManagerService's model strings are.
  *
  * NOT a fallback for an absent setting — there is no setting. Anyone who wants a different
  * summarizer changes this line, and the change is visible in the diff and in the run's log.
  */
-export const SUMMARIZATION_MODEL = 'ollama:qwen3.8:27b';
-
-export const CHAPTER_PIPELINE_MODELS = {
-  /** Reads the whole transcript in one call, then writes each chapter's detail. */
-  generation: 'qwen3.8:27b',
-} as const;
+export const SUMMARIZATION_MODEL = 'qwen3.8-27b-4bit';
 
 /**
- * The embedding model key-phrase ranking uses (key-phrases.ts), declared for the same reason
- * the chapter model is: the routing modal can say it is missing before a run finds out.
+ * The model the re-roll gate reads its decisions from (P9; LEDGER #201): the rule checks and the
+ * title ranking, snap `decide` questions, never writing.
  *
- * Its absence is NOT a failure — the ranking falls to frequency and the run RECORDS that as a
- * declared mode in its warnings — so the modal reports it as a quality notice rather than a
- * blocker. It is also the one local model this app loads that does NOT count against the
- * two-model budget: 274MB loads beside a generation model rather than instead of it.
+ * A FIXED, DECLARED ROLE, like SUMMARIZATION_MODEL above and not a dialog row, for the reason the
+ * snap chaptering's scorer is one (#199: "9b -> outline, outline -> snap"): a decision is read off
+ * one forward pass's letter probabilities, the thresholds that act on them were MEASURED on this
+ * model (docs/crucible/P9.md), and a different model would need its own. A cloud model cannot
+ * answer one at all (`decide_needs_logprobs`). So there is nothing for an operator to pick; the
+ * re-roll CALLS that follow a failure run on each field's own routed row.
  */
-export const KEY_PHRASE_EMBEDDING_MODEL = 'nomic-embed-text';
+export const REROLL_SCORER_MODEL = 'qwen3.5-9b';
 
 export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
-  sonnet5: { kind: 'cloud', label: 'Claude Sonnet 5', model: 'claude:claude-sonnet-5' },
-  opus5: { kind: 'cloud', label: 'Claude Opus 5', model: 'claude:claude-opus-5' },
+  // Crucible upstream ids (plan 6.2): the server that runs the call forwards them to Anthropic
+  // on ITS key (LEDGER #194). Offered in the dialog only when that server has one configured.
+  sonnet5: { kind: 'cloud', label: 'Claude Sonnet 5', model: 'anthropic/claude-sonnet-5', crucibleModel: 'anthropic/claude-sonnet-5' },
+  opus5: { kind: 'cloud', label: 'Claude Opus 5', model: 'anthropic/claude-opus-5', crucibleModel: 'anthropic/claude-opus-5' },
   /**
    * The subscription rung (operator, 2026-08-24): the same Sonnet, reached through the
    * `claude -p` CLI on the operator's Claude Code plan instead of the metered API key.
@@ -138,20 +131,22 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    * API fallback, deliberately: falling back would silently bill the key this option
    * exists to protect.
    */
-  'claude-cli': { kind: 'cloud', label: 'claude -p (Opus, subscription)', model: 'claude-cli:opus' },
+  'claude-cli': { kind: 'cloud', label: 'claude -p (Opus, subscription)', model: 'claude-cli:opus', crucibleModel: null },
   /**
    * The Sonnet rung of the same transport, split out 2026-08-24 when the operator asked
    * the claude -p rung to run Opus for an in-app comparison. Same key-free spawn, same
    * no-fallback rule; only the CLI model alias differs.
    */
-  'claude-cli-sonnet': { kind: 'cloud', label: 'claude -p (Sonnet, subscription)', model: 'claude-cli:sonnet' },
+  'claude-cli-sonnet': { kind: 'cloud', label: 'claude -p (Sonnet, subscription)', model: 'claude-cli:sonnet', crucibleModel: null },
   /**
    * The cheap cloud rung, added 2026-08-24. The prompt harness ran the production prompts
    * against it (tools/prompt-tune, cycle 1): descriptions and chapter details held at n=2
    * with zero factual-check failures. Offered on every big field so the operator can run
    * that comparison for real; not a default anywhere until it earns one.
    */
-  haiku45: { kind: 'cloud', label: 'Claude Haiku 4.5', model: 'claude:claude-haiku-4-5' },
+  // The dated id the old mapClaudeModelName sent: the alias-less one the API is guaranteed
+  // to accept (plan 6.2).
+  haiku45: { kind: 'cloud', label: 'Claude Haiku 4.5', model: 'anthropic/claude-haiku-4-5-20251001', crucibleModel: 'anthropic/claude-haiku-4-5-20251001' },
   /**
    * The local default for the text fields as of 2026-08-22.
    *
@@ -161,7 +156,7 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    * selectable is the point — an option naming a model that cannot run is a job that fails
    * an hour in. Every remaining adapter followed them out on 2026-08-25.
    */
-  'qwen35-9b': { kind: 'local', label: 'Qwen3.5 9B', model: 'qwen3.5:9b' },
+  'qwen35-9b': { kind: 'local', label: 'Qwen3.5 9B', model: 'qwen3.5-9b', crucibleModel: 'qwen3.5-9b' },
   /**
    * The metadata spec's A/B candidate for the two MECHANICAL calls, offered on description
    * and tags and nowhere else.
@@ -178,7 +173,7 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    * reliably tell which is which. A default that changed on the strength of an untested
    * proposal would make that comparison retrospective.
    */
-  'qwen35-4b': { kind: 'local', label: 'Qwen3.5 4B', model: 'qwen3.5:4b' },
+  'qwen35-4b': { kind: 'local', label: 'Qwen3.5 4B', model: 'qwen3.5-4b', crucibleModel: 'qwen3.5-4b' },
   /**
    * A BASE model on fields that used to be cloud-only, which is a deliberate exception to
    * this file's own rule and the reason the note below METADATA_ROUTING_TASKS was rewritten.
@@ -197,20 +192,11 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    * `(descriptions)` label this table ever had marked a TRAINED ADAPTER, and this is a base
    * model appearing in six different dropdowns.
    *
-   * CHECKED, because it was expected to be a problem and is not: this model reasons by
-   * default, and on Ollama's /api/chat that reasoning lands in `message.thinking` while
-   * `message.content` comes back EMPTY unless the caller sends `think: false`. This app does
-   * not use /api/chat — the local client posts to /api/generate and reads `data.response`,
-   * and that endpoint returns `response` and `thinking` as SEPARATE fields. Probed with this
-   * app's exact options block (temperature 0.7, num_predict 4096, num_ctx 32768): 74
-   * characters of `response`, 566 of `thinking`, done_reason "stop". The content arrives and
-   * the reasoning is discarded, which is what we want. No think flag needed — but anyone
-   * moving this app to /api/chat must add one, or every local field silently becomes an
-   * empty string. The one shape that DOES bite is `format: "json"`, which constrains the
-   * whole stream and can leave the object in `thinking`; ollama-json.ts handles exactly that
-   * case and nothing wider.
+   * On Crucible it is the 4-bit build (`qwen3.8-27b-4bit`: mlx 4-bit on the Mac, AWQ-INT4 on
+   * the PC, plan 6.2). Its manifest states no thinking default, which is why every call on it
+   * states `thinking` (plan 1); the note about Ollama's generate endpoint went with Ollama.
    */
-  'qwen38-27b': { kind: 'local', label: 'Qwen 27B', model: 'qwen3.8:27b' },
+  'qwen38-27b': { kind: 'local', label: 'Qwen 27B', model: 'qwen3.8-27b-4bit', crucibleModel: 'qwen3.8-27b-4bit' },
 };
 
 export interface MetadataRoutingTask {
@@ -242,7 +228,7 @@ export interface MetadataRoutingTask {
  *
  *  - `chapters` is not in this table at all. It is not routed, because there is nothing
  *    left to route it to: the embedding pipeline is the only chaptering architecture and it
- *    always runs (CHAPTER_PIPELINE_MODELS above).
+ *    always runs (a routed task again since 2026-08-24; see its row below).
  *  - The adapter argument died with its base model. cogito:14b was deleted from this
  *    machine, so `headline-14b-descriptions` / `-tags` / `-titles` cannot load, and holding
  *    three fields at cloud-only to wait for adapters that no longer have a base is waiting
@@ -327,9 +313,10 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     /**
      * READ ON THE TEXT-SUBJECT PATH, not on the chaptered one.
      *
-     * An item WITH chapters has its tags assembled in code from the entity and key-phrase
-     * pools (metadata spec §4 and §6.2, tags-hashtags.ts): no model writes them, so this
-     * selection is not consulted for that item and the run's log says so per item.
+     * An item WITH chapters has its tags assembled in code from the pools its chapter list
+     * yields (metadata spec §4 and §6.2; LEDGER #205; tags-hashtags.ts chapterPools): no model
+     * writes them, so this selection is not consulted for that item and the run's log says so
+     * per item.
      *
      * An item WITHOUT chapters — a text subject the operator typed, an import whose chapter
      * pipeline came back short — has no chapter list for those pools to be measured against, so
@@ -345,9 +332,12 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
     label: 'Tags',
     options: ['qwen35-9b', 'qwen35-4b', 'qwen38-27b', 'sonnet5', 'opus5', 'claude-cli', 'claude-cli-sonnet'],
     defaultOptionId: 'qwen35-9b',
-    // NOT a modal row — the operator's "if we use 9b for something then leave it". The
-    // 9b/4b A/B stays a stored per-task entry set outside the modal, as it always was.
-    modal: false,
+    // A modal row since 2026-09-24. It used to be hidden (the 9b/4b A/B lived as a stored
+    // entry set outside the modal), which meant a routing dialog showing every row on
+    // claude -p still ran the local 9B for tags on chapterless items. Owen: "it should not be
+    // using anything but claude -p for any ai calls ever if all routing is set to claude -p".
+    // Every model a run can call is a row the operator can see.
+    modal: true,
   },
   {
     id: 'thumbnail_text',
@@ -388,6 +378,88 @@ export const METADATA_ROUTING_TASKS: MetadataRoutingTask[] = [
  */
 export function resolveChapterModelOption(resolved: ResolvedMetadataRouting): MetadataRoutingOption {
   return routingOption('chapters', resolved.chapters);
+}
+
+/**
+ * The model that writes snap's outline and answers its decide questions: a FIXED ROLE, declared
+ * here and not a dialog row (P8b's brief; Owen, LEDGER #199: "9b -> outline, outline -> snap, final
+ * chapter -> 27b -> chapter title"). The measured setup is the 9B at bf16 (plan §10.2, YTSeg F1@±1
+ * 0.72); the 4B reached ~90% of it and the 2B is not viable, so there is nothing to choose between
+ * that the operator would want. The chapters ROW still picks the model that writes the titles.
+ *
+ * A Crucible id, because decide needs a distribution and no upstream returns one: a run whose
+ * chapters row is on Claude or claude -p still needs this model on a Crucible server, and is
+ * refused by name when none is selected (resolveSnapChapterModels). NOT a fallback for a missing
+ * choice: there is no choice, and changing it is a diff to this line.
+ */
+export const CHAPTER_SCORER_MODEL = 'qwen3.5-9b';
+
+/** Snap chaptering's two roles, resolved: the fixed scorer on a named server, and the chapters row for the titles. */
+export interface SnapChapterModels {
+  scorer: { model: string; server: string };
+  titles: MetadataRoutingOption;
+}
+
+/** A snap run that cannot have its scorer: nothing is started (Law 1). Typed, so a caller reads the code (Law 10). */
+export class SnapScorerUnavailableError extends Error {
+  readonly code = 'snap_scorer_unavailable';
+  constructor(message: string) {
+    super(message);
+    this.name = 'SnapScorerUnavailableError';
+  }
+}
+
+/**
+ * The models a snap chapter run uses, or a refusal by name. `venue` is where a GPU step would run
+ * now (lanes.ts `gpuVenue`): the job's server, or the selected one, or none with the registry's
+ * sentence. The titles follow the chapters row whatever it is; the scorer needs a Crucible server
+ * whatever the row is, and that is the refusal a claude -p row cannot talk its way past.
+ */
+export function resolveSnapChapterModels(
+  resolved: ResolvedMetadataRouting,
+  venue: { server: string } | { server: null; reason: string },
+): SnapChapterModels {
+  const titles = resolveChapterModelOption(resolved);
+  if (venue.server === null) {
+    throw new SnapScorerUnavailableError(
+      `Chaptering on snap writes its outline and assigns every sentence on ${CHAPTER_SCORER_MODEL}, which runs on a ` +
+        `Crucible server, and none can take it (${venue.reason}). The chapters row (${titles.label}) writes only the ` +
+        `titles, so it does not change that: select a Crucible server in Settings › Crucible Servers, or set the chapter ` +
+        `engine to whole-transcript.`,
+    );
+  }
+  return { scorer: { model: CHAPTER_SCORER_MODEL, server: venue.server }, titles };
+}
+
+/**
+ * Which model writes a COMPILATION's package: the `titles` task's own selection.
+ *
+ * A compilation is the one surviving whole-metadata call (ai-manager's
+ * generateCompilationMetadata) — N unrelated items, one umbrella title, a bulleted
+ * description — so it is not a routed task and it writes several routed fields at once.
+ * That left it, until 2026-09-13, reading `metadataModel`: the Settings page's legacy "AI
+ * Model" picker, the same forgotten field the per-item legacy path was killed for. The
+ * result was exactly the divergence this module exists to remove — an operator who had
+ * routed every field to `claude -p` watched the run go out over the metered API to whatever
+ * Settings still said, and the run's only clue was one log line naming a model nobody had
+ * chosen. (It then failed, but that was a second bug; being unroutable was this one.)
+ *
+ * IT FOLLOWS `titles`, and that is a choice with a reason rather than an arbitrary pick of
+ * one row among five. The umbrella title is the field a compilation exists to produce and
+ * the hardest judgement in the call; titles is a modal row, so the selection is one the
+ * operator can actually see and change; and it is offered every rung this call could want.
+ * The alternative — a `compilation` row of its own — would put a task in the modal that most
+ * runs never touch, and would have to be answered by operators who never make compilations.
+ *
+ * Same shape as the compilation SUMMARIZER following `chapters` (ipc-handlers): a fixed,
+ * stated part of the compilation pipeline, declared in this module, resolved from the
+ * routing table, and logged by name at the call site. Not a fallback — there is no absent
+ * setting here, because `titles` always resolves.
+ */
+export function resolveCompilationPackagingOption(
+  resolved: ResolvedMetadataRouting
+): MetadataRoutingOption {
+  return routingOption('titles', resolved.titles);
 }
 
 /**
@@ -433,8 +505,21 @@ export const REMOVED_ROUTING_OPTIONS: Record<string, string> = {
     'them, so the 32B titles adapter, its MLX shim and adapters.yml are all gone from this build',
 };
 
-/** Stored shape: taskId -> optionId. Partial by design; absent entries take the default. */
-export type MetadataRoutingSelections = Partial<Record<MetadataRoutingTaskId, string>>;
+/**
+ * The one stored key that is not a task: the Crucible server this routing's jobs run on
+ * (Owen, 2026-09-26: "we can pick which crucible server we use (wsl or mac) in model
+ * routing"; LEDGER #222). A registered server's NAME. Absent means the server Settings ›
+ * Crucible Servers has selected, exactly as before the key existed, so a store written
+ * before it changes nothing. Where it takes effect is venue-decision.ts (`intendedVenue`),
+ * the one place the venue rule lives; this module only stores, validates and migrates it.
+ */
+export const ROUTING_SERVER_KEY = 'server';
+
+/**
+ * Stored shape: taskId -> optionId, plus the optional `server`. Partial by design; absent
+ * task entries take the default, and an absent server means the selected one.
+ */
+export type MetadataRoutingSelections = Partial<Record<MetadataRoutingTaskId, string>> & { server?: string };
 
 /** Every task resolved to an option id — what generation actually runs. */
 export type ResolvedMetadataRouting = Record<MetadataRoutingTaskId, string>;
@@ -472,13 +557,22 @@ export function validateRoutingSelection(taskId: string, optionId: string): void
   }
 }
 
-/** Validate a whole selections object, e.g. one arriving over IPC from the modal. */
-export function validateRoutingSelections(selections: unknown): MetadataRoutingSelections {
+/** The `server` entry's type, checked the way an option id's is: a non-empty string. */
+function storedServerName(value: unknown): string {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`metadataRouting.${ROUTING_SERVER_KEY} must be a Crucible server name (got ${JSON.stringify(value)})`);
+  }
+  return value;
+}
+
+/** The task entries of a selections object, validated. The `server` entry is not a task and is skipped. */
+function validateTaskSelections(selections: unknown): Partial<Record<MetadataRoutingTaskId, string>> {
   if (!selections || typeof selections !== 'object' || Array.isArray(selections)) {
     throw new Error(`metadataRouting must be an object of taskId -> optionId (got ${JSON.stringify(selections)})`);
   }
-  const validated: MetadataRoutingSelections = {};
+  const validated: Partial<Record<MetadataRoutingTaskId, string>> = {};
   for (const [taskId, optionId] of Object.entries(selections as Record<string, unknown>)) {
+    if (taskId === ROUTING_SERVER_KEY) continue;
     if (typeof optionId !== 'string' || optionId.trim().length === 0) {
       throw new Error(`metadataRouting.${taskId} must be an option id string (got ${JSON.stringify(optionId)})`);
     }
@@ -489,13 +583,84 @@ export function validateRoutingSelections(selections: unknown): MetadataRoutingS
 }
 
 /**
+ * Validate a whole selections object, e.g. one arriving over IPC from the modal, against the
+ * table AND the registry. A `server` that names no registered Crucible server is refused with
+ * the sentence naming it (Law 1: it is never replaced by the selected one). `registered` is
+ * the registry's names at the moment of the save.
+ */
+export function validateRoutingSelections(selections: unknown, registered: readonly string[]): MetadataRoutingSelections {
+  const validated: MetadataRoutingSelections = validateTaskSelections(selections);
+  const server = (selections as Record<string, unknown>)[ROUTING_SERVER_KEY];
+  if (server !== undefined && server !== null) {
+    const name = storedServerName(server);
+    if (!registered.includes(name)) {
+      throw new Error(
+        `metadataRouting.${ROUTING_SERVER_KEY} names "${name}", which is not a registered Crucible server ` +
+          `(registered: ${registered.length > 0 ? registered.join(', ') : 'none'}). Add it in Settings › Crucible Servers, or pick one that is.`
+      );
+    }
+    validated.server = name;
+  }
+  return validated;
+}
+
+/**
+ * The stored routing's server, judged against the registry as it is NOW (LEDGER #222).
+ *
+ * Absent is `null`: the selected server runs the job. A name the registry still has is
+ * returned as it is. A name the registry no longer has (the server was forgotten in Settings
+ * after the routing was saved) drops back to unset with a notice, in migrateStoredRouting's
+ * style: the user chose something legitimate and a later act took it away, so this is a
+ * recorded migration, and a caller that can write the store writes the drop back so the
+ * notice is said once. A value that is not a name at all (a hand-edited store) throws.
+ */
+export function judgeRoutingServer(value: unknown, registered: readonly string[]): { server: string | null; notice: string | null } {
+  if (value === undefined || value === null) return { server: null, notice: null };
+  const name = storedServerName(value);
+  if (registered.includes(name)) return { server: name, notice: null };
+  return {
+    server: null,
+    notice:
+      `dropped metadataRouting.${ROUTING_SERVER_KEY} = "${name}": that Crucible server is no longer registered ` +
+      `(registered: ${registered.length > 0 ? registered.join(', ') : 'none'}); jobs go to the server Settings has selected`,
+  };
+}
+
+/**
+ * The routing's server as the venue reads it from the settings store, at every plan and
+ * admission (main.ts hands this to the Crucible lanes). A forgotten server is dropped from the
+ * STORE, leaving every other entry as it was, with one logged line, so the line is said once.
+ * The store is only the `get`/`set` pair electron-store has, so a check drives it with a map.
+ */
+export function readStoredRoutingServer(
+  store: { get(key: string): unknown; set(key: string, value: unknown): void },
+  registered: readonly string[]
+): string | null {
+  const stored = store.get('metadataRouting');
+  if (stored === undefined || stored === null) return null;
+  if (typeof stored !== 'object' || Array.isArray(stored)) {
+    throw new Error(`metadataRouting must be an object of taskId -> optionId (got ${JSON.stringify(stored)})`);
+  }
+  const judged = judgeRoutingServer((stored as Record<string, unknown>)[ROUTING_SERVER_KEY], registered);
+  if (judged.notice !== null) {
+    const rest = { ...(stored as Record<string, unknown>) };
+    delete rest[ROUTING_SERVER_KEY];
+    store.set('metadataRouting', rest);
+    log.warn(`[MetadataRouting] settings migration: ${judged.notice}`);
+  }
+  return judged.server;
+}
+
+/**
  * Fill in the defaults and validate what the user chose.
  *
  * Called at job time from the store, so a setting edited between runs takes effect on the
- * next run without any coupling between the modal and the queue.
+ * next run without any coupling between the modal and the queue. It resolves MODELS: the
+ * stored `server` entry is not a model and is not read here (the venue reads it, through
+ * `judgeRoutingServer`), so it is skipped rather than refused as an unknown task.
  */
 export function resolveMetadataRouting(stored: unknown): ResolvedMetadataRouting {
-  const selections = stored === undefined || stored === null ? {} : validateRoutingSelections(stored);
+  const selections = stored === undefined || stored === null ? {} : validateTaskSelections(stored);
   const resolved = {} as ResolvedMetadataRouting;
   for (const task of METADATA_ROUTING_TASKS) {
     resolved[task.id] = selections[task.id] || task.defaultOptionId;
@@ -536,7 +701,7 @@ export interface MetadataRoutingMigration {
  * strictly — the modal can only offer what this build has, so a rejected id there is a bug
  * in the modal, not an upgrade.
  */
-export function migrateStoredRouting(stored: unknown): MetadataRoutingMigration {
+export function migrateStoredRouting(stored: unknown, registered?: readonly string[]): MetadataRoutingMigration {
   if (stored === undefined || stored === null) {
     return { selections: {}, changed: false, notices: [] };
   }
@@ -547,7 +712,23 @@ export function migrateStoredRouting(stored: unknown): MetadataRoutingMigration 
   const selections: MetadataRoutingSelections = {};
   const notices: string[] = [];
 
+  // The routing's server (LEDGER #222). Judged against the registry when the caller passes it
+  // (the dialog's read and the venue's, which write the drop back). A caller that reads only
+  // models passes no registry: the entry is carried through with its type checked and is not
+  // judged, because that caller never acts on it and never writes it back.
+  const storedServer = (stored as Record<string, unknown>)[ROUTING_SERVER_KEY];
+  if (storedServer !== undefined && storedServer !== null) {
+    if (registered === undefined) {
+      selections.server = storedServerName(storedServer);
+    } else {
+      const judged = judgeRoutingServer(storedServer, registered);
+      if (judged.server !== null) selections.server = judged.server;
+      if (judged.notice !== null) notices.push(judged.notice);
+    }
+  }
+
   for (const [taskId, optionId] of Object.entries(stored as Record<string, unknown>)) {
+    if (taskId === ROUTING_SERVER_KEY) continue;
     if (typeof optionId !== 'string' || optionId.trim().length === 0) {
       throw new Error(`metadataRouting.${taskId} must be an option id string (got ${JSON.stringify(optionId)})`);
     }
@@ -629,6 +810,19 @@ export function routingOption(taskId: MetadataRoutingTaskId, optionId: string): 
 }
 
 /**
+ * One option as the string AIManagerService.makeRequest routes on.
+ *
+ * Since P2 that IS the option's `model`: a Crucible id for everything Crucible runs, and
+ * `claude-cli:<alias>` for the two rungs outside it. It used to prefix a local option with
+ * `ollama:` because the Ollama name was stored bare; there is no prefix to add any more, and
+ * the function stays so its callers (compilation packaging, the story titles, the episode
+ * split) keep naming the one conversion that exists. It never picks a different model.
+ */
+export function routedModelString(option: MetadataRoutingOption): string {
+  return option.model;
+}
+
+/**
  * The option ids one task offers, in the order the routing modal lists them.
  *
  * Its own function because the OPERATOR-FACING pickers (the reports page's "10 more titles"
@@ -679,9 +873,13 @@ export function resolveOperatorOption(
   return option;
 }
 
-/** One line naming what this run will use, for the job log. */
-export function describeRouting(routing: ResolvedMetadataRouting): string {
-  return METADATA_ROUTING_TASKS.map((t) => `${t.id}=${METADATA_ROUTING_OPTIONS[routing[t.id]].model}`).join(', ');
+/**
+ * One line naming what this run will use, for the job log: every field's model, then the
+ * routing's server (LEDGER #222), or that it names none and the selected server runs the job.
+ */
+export function describeRouting(routing: ResolvedMetadataRouting, server: string | null): string {
+  const models = METADATA_ROUTING_TASKS.map((t) => `${t.id}=${METADATA_ROUTING_OPTIONS[routing[t.id]].model}`).join(', ');
+  return `${models}, server=${server === null ? '(the selected server)' : server}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -689,64 +887,18 @@ export function describeRouting(routing: ResolvedMetadataRouting): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Is this option's model actually there?
+ * Can the SELECTED Crucible server run this option? (plan 6.2, 0a)
  *
- * - `cloud` — the question does not apply; a Claude/OpenAI model is present by definition.
- * - `installed` / `not-installed` — Ollama answered and either does or does not list it.
- * - `unknown` — nobody can say: Ollama did not answer, so NOTHING it serves can be judged.
- *   Deliberately distinct from `not-installed`: "we could not check" and "it is not there"
- *   have different fixes, and collapsing them would be a guess.
+ * - `installed` — the server's catalog has its weights.
+ * - `pullable` — the server's backend can hold it and it is not downloaded there yet; a run
+ *   on it is refused by name (`model_not_installed`) until it is pulled on that server.
+ * - `not-here` — the server's catalog does not list it for its backend.
+ * - `upstream` — an `anthropic/` model, forwarded on the server's key.
+ * - `outside` — `claude -p`, which never reaches Crucible (LEDGER #193).
+ * - `unknown` — the server could not be read, so nothing it serves can be judged. Distinct
+ *   from `not-here`: "we could not ask" and "it is not there" have different fixes.
  */
-export type MetadataRoutingAvailability = 'cloud' | 'installed' | 'not-installed' | 'unknown';
-
-/** What one read of Ollama's GET /api/tags says. */
-export interface OllamaInventory {
-  host: string;
-  reachable: boolean;
-  /** Model names exactly as /api/tags lists them. Empty when the host did not answer. */
-  models: string[];
-  /** Why the host could not be read. Present only when `reachable` is false. */
-  error?: string;
-}
-
-/**
- * Ollama prints an untagged model as `name:latest`, and the registry has written bare names
- * before now. Comparing the two raw would report an installed model as missing.
- */
-function normalizeOllamaName(name: string): string {
-  return name.includes(':') ? name : `${name}:latest`;
-}
-
-/**
- * Read the installed model list off an Ollama host.
- *
- * A host that does not answer comes back as `reachable: false` WITH the reason, not as an
- * empty model list: an empty list would mark every local option "not installed", which is
- * a different claim than "we could not ask". This is a status query for the picker — it
- * changes no behaviour and substitutes no model, and generation still fails loudly on a
- * model that is not there.
- */
-export async function probeOllamaInventory(host: string): Promise<OllamaInventory> {
-  const base = host.replace(/\/$/, '');
-  try {
-    const response = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(4000) });
-    if (!response.ok) {
-      return { host: base, reachable: false, models: [], error: `Ollama at ${base} returned HTTP ${response.status}.` };
-    }
-    const data = (await response.json()) as { models?: Array<{ name?: string }> };
-    if (!Array.isArray(data.models)) {
-      // A 200 with no model list is not "nothing is installed" — it is something other
-      // than Ollama answering on that port, and calling it an empty inventory would mark
-      // every local option missing on the strength of a reply we did not understand.
-      return { host: base, reachable: false, models: [], error: `${base}/api/tags answered without a model list.` };
-    }
-    const models = data.models.map((m) => String(m.name || '')).filter((name) => name.length > 0);
-    return { host: base, reachable: true, models };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { host: base, reachable: false, models: [], error: `Ollama at ${base} could not be reached: ${message}` };
-  }
-}
+export type MetadataRoutingAvailability = 'installed' | 'pullable' | 'not-here' | 'upstream' | 'outside' | 'unknown';
 
 export interface MetadataRoutingOptionView {
   id: string;
@@ -754,124 +906,144 @@ export interface MetadataRoutingOptionView {
   /** The model this option names, so the modal can say which one is missing. */
   model: string;
   availability: MetadataRoutingAvailability;
+  /** The server's own sentence, when this option is shown although the server cannot run it. */
+  availabilityNote?: string;
 }
 
 export interface MetadataRoutingTaskView {
   id: string;
   label: string;
+  /**
+   * ONLY what the selected server offers (Owen: "if claude isnt available then it shouldnt be
+   * listed in the model list"), plus the task's stored choice when the server cannot run it:
+   * that one is shown with the server's sentence, never swapped for something else, and a run
+   * on it is refused by name.
+   */
   options: MetadataRoutingOptionView[];
   selectedOptionId: string;
-  /** Rendered as a row in the modal. False = stored-entry-only (tags). */
+  /** Rendered as a row in the modal. False = stored-entry-only. */
   modal: boolean;
 }
 
-/** The state of the Ollama host every plain-local option was judged against. */
-export interface MetadataRoutingHostView {
-  host: string;
+/**
+ * The Crucible server every option was judged against: the one this routing's jobs run on,
+ * which is the routing's own server when it names one, else the one Settings has selected.
+ */
+export interface MetadataRoutingServerView {
+  name: string | null;
   reachable: boolean;
   error?: string;
-  installedCount: number;
+  /** Whether that server has an Anthropic key; null when its settings could not be read. */
+  anthropicConfigured: boolean | null;
 }
 
 /**
- * The two models nobody chooses, which still have to be REPORTED.
- *
- * Chapters run on every item with a timestamped transcript, on CHAPTER_PIPELINE_MODELS.
- * Key-phrase ranking runs on every item, on KEY_PHRASE_EMBEDDING_MODEL. Nobody picks either,
- * so there is no row to hang a "not installed" warning off — but the warning is the part that
- * was worth having: a stored `cogito:14b` selection once cost a job its chapters an hour into
- * the run, and the probe exists so that is said BEFORE the run rather than after it.
- *
- * The two are separate fields because they are not the same failure. Without the chapter
- * model an item gets no chapters at all; without the embedding model the run continues with
- * frequency-ranked key phrases and declares it in its warnings, which the user should get to
- * decline in advance.
- *
- * `keyPhrase*` used to be `embedding*` on this same view, when the embedding model was the
- * chapter pipeline's junction scorer. It is renamed rather than repurposed: reporting it
- * under chapters would say a run's chapters depend on it, and since 2026-08-22 they do not.
+ * The chapter model, reported beside the rows, through the same function generation
+ * consults, so the modal can never say one model while the run uses another.
  */
 export interface MetadataRoutingChaptersView {
   generationModel: string;
-  keyPhraseModel: string;
   generationAvailability: MetadataRoutingAvailability;
-  keyPhraseAvailability: MetadataRoutingAvailability;
+  /** Snap's fixed outline and decide model (CHAPTER_SCORER_MODEL), judged against the same server. */
+  scorerModel: string;
+  scorerAvailability: MetadataRoutingAvailability;
+}
+
+/**
+ * The dialog's "Runs on" row (LEDGER #222): the server stored with this routing, and the one
+ * Settings has selected, which runs the job when the routing names none. The choices are the
+ * registered servers, which the dialog reads from the registry's own view (`crucible:servers`).
+ */
+export interface MetadataRoutingRunsOnView {
+  /** The routing's server, or null: the selected server runs its jobs. */
+  routingServer: string | null;
+  /** The server Settings has selected, or null when none is. */
+  selectedServer: string | null;
 }
 
 export interface MetadataRoutingView {
   tasks: MetadataRoutingTaskView[];
-  localModels: MetadataRoutingHostView;
+  /** The server every option was judged against: the routing's server when it names one, else the selected one. */
+  server: MetadataRoutingServerView;
   chapters: MetadataRoutingChaptersView;
+  runsOn: MetadataRoutingRunsOnView;
 }
 
-function optionView(id: string, inventory: OllamaInventory): MetadataRoutingOptionView {
-  const option = METADATA_ROUTING_OPTIONS[id];
-  const base = { id, label: option.label, model: option.model };
-
-  if (option.kind === 'cloud') {
-    return { ...base, availability: 'cloud' };
+/** One option judged against the selected server's inventory. */
+export function optionAvailability(
+  option: MetadataRoutingOption,
+  inventory: CatalogInventory
+): { availability: MetadataRoutingAvailability; note?: string } {
+  if (option.crucibleModel === null) return { availability: 'outside' };
+  if (!inventory.reachable) return { availability: 'unknown', note: inventory.error };
+  if (option.crucibleModel.includes('/')) {
+    return inventory.anthropicConfigured === true
+      ? { availability: 'upstream' }
+      : {
+          availability: 'not-here',
+          note: `"${inventory.server}" has no Anthropic key, so Claude cannot run there. Add one in Settings › Crucible Servers.`,
+        };
   }
-  if (!inventory.reachable) {
-    return { ...base, availability: 'unknown' };
+  const offer = offerFor(inventory, option.crucibleModel);
+  if (offer.offer === 'installed') return { availability: 'installed' };
+  if (offer.offer === 'pullable') {
+    return { availability: 'pullable', note: `${option.crucibleModel} is not downloaded on "${inventory.server}" yet.` };
   }
+  return { availability: 'not-here', note: offer.reason ?? `"${inventory.server}" does not offer ${option.crucibleModel}.` };
+}
 
-  const installed = inventory.models.some(
-    (name) => normalizeOllamaName(name) === normalizeOllamaName(option.model)
-  );
-  return { ...base, availability: installed ? 'installed' : 'not-installed' };
+/** Is this availability one the dialog LISTS? `pullable` is listed: the server can hold it. */
+function offered(availability: MetadataRoutingAvailability): boolean {
+  return availability === 'installed' || availability === 'pullable' || availability === 'upstream' || availability === 'outside';
 }
 
 /**
  * The whole table plus this store's selections, in the shape the modal consumes.
  *
- * FROZEN contract (metadata-routing:get). The frontend is written against exactly this,
- * so the registry may gain tasks and options without the payload changing shape.
- *
- * Each option carries whether its model is actually installed, because a routing that
- * names a model the machine does not have looks exactly like one that works until the
- * run reaches it — which is how a stored `cogito:14b` selection silently cost a job its
- * chapters. Nothing is hidden and nothing is substituted: a missing model stays
- * selectable and still fails loudly at generation time.
- *
- * A stored selection that fails validation is not quietly replaced by the default here
- * either — resolveMetadataRouting throws, the IPC call fails, and the modal shows the
- * user the same error a generation would have failed with.
+ * A stored selection that fails validation is not quietly replaced by the default here —
+ * resolveMetadataRouting throws, the IPC call fails, and the modal shows the user the same
+ * error a generation would have failed with. A VALID selection the selected server cannot run
+ * is kept and shown with the server's sentence (plan 0a): Briefcase replaced such a choice
+ * with the server's own pick, and here nothing is substituted, because the routing table is
+ * the only thing that picks a model (LEDGER #204).
  */
-export function buildRoutingView(stored: unknown, inventory: OllamaInventory): MetadataRoutingView {
+export function buildRoutingView(stored: unknown, inventory: CatalogInventory, runsOn: MetadataRoutingRunsOnView): MetadataRoutingView {
   const resolved = resolveMetadataRouting(stored);
-  const chapterModel = (name: string): MetadataRoutingAvailability => {
-    if (!inventory.reachable) return 'unknown';
-    return inventory.models.some((installed) => normalizeOllamaName(installed) === normalizeOllamaName(name))
-      ? 'installed'
-      : 'not-installed';
-  };
+  const chapterOption = resolveChapterModelOption(resolved);
   return {
     tasks: METADATA_ROUTING_TASKS.map((task) => ({
       id: task.id,
       label: task.label,
-      options: task.options.map((id) => optionView(id, inventory)),
+      options: task.options.flatMap((id) => {
+        const option = METADATA_ROUTING_OPTIONS[id];
+        const judged = optionAvailability(option, inventory);
+        if (!offered(judged.availability) && id !== resolved[task.id]) return [];
+        return [{
+          id,
+          label: option.label,
+          model: option.model,
+          availability: judged.availability,
+          ...(judged.note === undefined ? {} : { availabilityNote: judged.note }),
+        }];
+      }),
       selectedOptionId: resolved[task.id],
       modal: task.modal,
     })),
-    chapters: (() => {
-      // The model chapters will actually run on: the chapters row's selection, reported by
-      // the same function generation consults, so the modal can never say one model while
-      // the run uses another.
-      const chapterOption = resolveChapterModelOption(resolved);
-      return {
-        generationModel: chapterOption.model,
-        keyPhraseModel: KEY_PHRASE_EMBEDDING_MODEL,
-        generationAvailability:
-          chapterOption.kind === 'cloud' ? ('cloud' as const) : chapterModel(chapterOption.model),
-        keyPhraseAvailability: chapterModel(KEY_PHRASE_EMBEDDING_MODEL),
-      };
-    })(),
-    localModels: {
-      host: inventory.host,
-      reachable: inventory.reachable,
-      error: inventory.error,
-      installedCount: inventory.models.length,
+    chapters: {
+      generationModel: chapterOption.model,
+      generationAvailability: optionAvailability(chapterOption, inventory).availability,
+      scorerModel: CHAPTER_SCORER_MODEL,
+      scorerAvailability: optionAvailability(
+        { kind: 'local', label: 'snap scorer', model: CHAPTER_SCORER_MODEL, crucibleModel: CHAPTER_SCORER_MODEL },
+        inventory
+      ).availability,
     },
+    server: {
+      name: inventory.server,
+      reachable: inventory.reachable,
+      ...(inventory.error === undefined ? {} : { error: inventory.error }),
+      anthropicConfigured: inventory.anthropicConfigured,
+    },
+    runsOn,
   };
 }
-

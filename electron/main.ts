@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, clipboard, ipcMain } from 'electron';
+import * as fs from 'fs';
 import * as path from 'path';
 import * as log from 'electron-log';
 import Store from 'electron-store';
@@ -13,6 +14,14 @@ import { PublishStoreService } from './services/publish/publish-store.service';
 import { autoConfigure } from './services/publish/auto-config';
 import { SpreakerConfigService } from './services/spreaker/spreaker-config.service';
 import { stopArchiveSyncOnQuit } from './services/editor/editor-ipc';
+import { createCrucibleContext, type CrucibleContext } from './crucible/context';
+import { installCrucibleTransport } from './crucible/transport';
+import { installLanes } from './crucible/lanes';
+import { readStoredRoutingServer } from './services/metadata/metadata-routing';
+import { setAsrVenueResolver } from './services/transcription/crucible-transcription';
+import { resolveUserDataPath } from './user-data-path';
+import { retireOnce } from './retired-components';
+import { getSharedDir } from './services/editor/shared-paths';
 
 /**
  * ContentStudio - Main Electron Process
@@ -39,12 +48,19 @@ import { stopArchiveSyncOnQuit } from './services/editor/editor-ipc';
  * It must happen before ANY getPath('userData') call, which in practice means before
  * electron-store is constructed and before app.whenReady, because Electron caches the
  * resolved path on first use.
+ *
+ * A DEVELOPMENT run may name another folder with CONTENTSTUDIO_USER_DATA (user-data-path.ts), so
+ * an agent's or a test's launch never runs on Owen's real data; a packaged build ignores it.
  */
-app.setPath('userData', path.join(app.getPath('appData'), 'contentstudio'));
+const userDataChoice = resolveUserDataPath({ env: process.env, isPackaged: app.isPackaged, appData: app.getPath('appData') });
+app.setPath('userData', userDataChoice.path);
 
 // Configure logging with rotation
 log.transports.console.level = 'info';
 log.transports.file.level = 'debug';
+
+// Whose data this run is on, first thing in the log (Law 8).
+log.info(`[Boot] ${userDataChoice.line}`);
 
 // Log rotation settings
 log.transports.file.maxSize = 5 * 1024 * 1024; // 5 MB max file size
@@ -87,6 +103,20 @@ export function getMainWindow(): BrowserWindow | null {
 
 // Held so the scheduled collector loop can be stopped on quit.
 let apiCollector: ApiCollectorService | null = null;
+
+// Held so the Crucible background loops (auto-connect, readiness) can be stopped on quit.
+let crucible: CrucibleContext | null = null;
+
+/**
+ * Push one Crucible event to EVERY window: the Settings pane in the main window and the
+ * editor's own window both draw readiness, and a push aimed at getMainWindow() alone would
+ * leave the editor showing yesterday's answer.
+ */
+function pushToAllWindows(channel: string, payload: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(channel, payload);
+  }
+}
 
 // Note: Single instance lock would go here but causes issues with app.requestSingleInstanceLock
 // being called before app is ready. Skipping for now.
@@ -158,9 +188,12 @@ app.whenReady().then(async () => {
     // Initialize electron-store after app is ready
     store = new Store<any>({
       defaults: {
-        aiProvider: 'openai',
-        ollamaModel: 'gpt-4o', // Used for all providers (OpenAI, Claude, and Ollama)
-        ollamaHost: 'http://localhost:11434',
+        // NO PROVIDER, MODEL, HOST OR KEY DEFAULTS (P2, LEDGER #193/#194/#204). `aiProvider`,
+        // `ollamaModel`, `ollamaHost`, `openaiApiKey` and `claudeApiKey` were seeded here
+        // and governed nothing but client construction once routing existed; every model
+        // call now goes through Crucible on the routing table's choice, and keys live on the
+        // server. An existing store may still hold the old keys; nothing reads them.
+        //
         // NOTE: no metadataRouting default here, deliberately. Which model writes which
         // field is the `metadataRouting` setting, and its defaults come from the registry
         // at the READ site (metadata-routing.ts). Seeding them here would freeze today's
@@ -172,16 +205,13 @@ app.whenReady().then(async () => {
         // CHAPTER_PIPELINE_MODELS. `chapterStageModels` went with the sealed pipeline it
         // configured — an existing store may still hold the key and nothing reads it.
         //
-        // FLOOR for the chapter run's context window, never a ceiling: the run sizes its own
-        // from the whole transcript it has to read. One value for the whole run, because
-        // Ollama reloads the model whenever num_ctx changes.
-        chapterNumCtx: 16384,
-        openaiApiKey: '',
-        claudeApiKey: '',
+        // `chapterNumCtx` (a 16,384 FLOOR on the chapter run's load context) is gone with P4:
+        // every local call asks for the smallest 8,192 step its own prompt needs (LEDGER #209),
+        // and a floor is exactly what that rule forbids. An existing store may still hold the
+        // key; nothing reads it.
         defaultPlatform: 'youtube',
         defaultMode: 'individual',
         outputDirectory: path.join(app.getPath('documents'), 'ContentStudio Output'),
-        whisperModel: 'small',
         analyticsIngestPort: DEFAULT_INGEST_PORT
       }
     });
@@ -234,6 +264,64 @@ app.whenReady().then(async () => {
     // status call gives, not a startup failure.
     const spreakerConfig = new SpreakerConfigService(userDataPath);
 
+    // The Crucible servers this machine knows (CRUCIBLE-MIGRATION-PLAN.md P1, LEDGER #193).
+    // Constructed here, over userData, for the reason every other service in this block is.
+    // Nothing in it touches the network yet: the registry is a file, and the two background
+    // loops start after the window is up and are never awaited, so a missing, stopped or
+    // asleep Crucible cannot slow this boot (plan section 0a: everything non-AI works with
+    // no server at all). The token never leaves main; every push below carries masked rows
+    // or a readiness sentence, never a credential.
+    crucible = createCrucibleContext({
+      stateDir: userDataPath,
+      clipboard: (text) => clipboard.writeText(text),
+      // The old api-keys.json, moved ONCE into the Crucible on this computer and then deleted
+      // (plan 6.6, LEDGER #194); `keysMigratedTo` records where it went. Never pushed to a
+      // remote server on its own.
+      legacyKeys: {
+        file: path.join(userDataPath, 'api-keys.json'),
+        record: {
+          get: () => {
+            const value = (store as any).get('keysMigratedTo');
+            return typeof value === 'string' ? value : null;
+          },
+          set: (server: string) => (store as any).set('keysMigratedTo', server),
+        },
+      },
+      // The model routing's server (LEDGER #222), read from the store at every plan and
+      // admission: a metadata job runs there unless pinned fast (venue-decision.ts). A server
+      // forgotten since the routing was saved is dropped from the store with one logged line.
+      routingServer: (registered) => readStoredRoutingServer(store as any, registered),
+      push: {
+        serversChanged: (change) => pushToAllWindows('crucible:servers-changed', change),
+        readiness: (view) => pushToAllWindows('crucible:readiness', view),
+        installProgress: (event) => pushToAllWindows('crucible:install-progress', event),
+        lanes: (view) => pushToAllWindows('crucible:lanes', view),
+      },
+    });
+
+    // Give back what the last run left on a Crucible's card (a kill, a crash, a force-quit):
+    // the in-flight ledger names every job and lease this app held, and nothing else is
+    // touched (plan section 13.4). GPU admission — `generate-metadata`, `send-held-prompt`,
+    // the queue plan and every standalone local model call — waits for this to settle, so
+    // no new job can meet the old one's lease. It is NOT awaited here: a ledger row whose
+    // server is asleep would otherwise hold the window for the whole 15 s deadline on every
+    // launch, and nothing non-AI should wait for a Crucible (plan section 0a).
+    void crucible.sweepAtStartup().then((report) => {
+      if (report.rows.length > 0 || report.timedOut) {
+        log.info(`[crucible] Startup sweep: ${report.rows.length} hold(s) handled, ${report.kept.length} kept for the next start${report.timedOut ? ' (deadline hit)' : ''}`);
+      }
+    });
+    // The one set of lanes every model call in this process goes through (queueAITask).
+    installLanes(crucible.lanes);
+    // The one door every model call takes (plan 6.1). Installed process-wide because the
+    // callers are constructed per run all over the main process (IPC handlers, the metadata
+    // generator, the editor's Stories), and each would otherwise need the context threaded in.
+    installCrucibleTransport(crucible.transport);
+    // Where transcription runs (P5, LEDGER #206): the job's venue or the selected server, the
+    // SDK client for its engine, and the in-flight ledger. Until this runs every transcription
+    // is refused `crucible_not_connected`.
+    setAsrVenueResolver(crucible.asrVenue);
+
     // Set up IPC handlers
     setupIpcHandlers(store, {
       analyticsStore,
@@ -243,6 +331,7 @@ app.whenReady().then(async () => {
       apiCollector,
       publishStore,
       spreakerConfig,
+      crucible,
     });
 
     // Collection is manual (user clicks "Refresh data" on the Analytics page).
@@ -259,6 +348,25 @@ app.whenReady().then(async () => {
     // Create main window
     createMainWindow();
 
+    // Auto-connect the Crucible on this computer (only into an EMPTY registry, after its
+    // info() answers as itself) and begin deriving readiness. Fire-and-forget by design.
+    crucible.start();
+
+    // P10's one-time retired-component cleanup (electron/retired-components.ts): the app's own
+    // whisper.cpp binaries and models and the editor's voice-separator-env, in the background
+    // 15 s after boot, never awaited. It logs its whole plan (paths and sizes) before it removes
+    // anything; `keepRetiredComponents: true` in the store keeps them (the plan is still logged).
+    const retirementTimer = setTimeout(() => {
+      let sharedDir: string | null = null;
+      try {
+        sharedDir = getSharedDir();
+      } catch (err) {
+        log.warn(`[retire] the OwenMorgan shared dir is unavailable (${err instanceof Error ? err.message : String(err)}); only userData is checked`);
+      }
+      void retireOnce({ userData: app.getPath('userData'), sharedDir }, store as any, log);
+    }, RETIREMENT_DELAY_MS);
+    retirementTimer.unref?.();
+
     // macOS-specific behavior
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
@@ -272,6 +380,9 @@ app.whenReady().then(async () => {
   }
 });
 
+/** How long after boot the one-time retirement of P10's components starts (Briefcase's 15 s). */
+const RETIREMENT_DELAY_MS = 15_000;
+
 // Quit when all windows are closed, except on macOS
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
@@ -279,14 +390,43 @@ app.on('window-all-closed', () => {
   }
 });
 
-// Cleanup before quitting
-app.on('before-quit', () => {
+// Cleanup before quitting.
+//
+// The Crucible half is asynchronous and must finish before the process goes: the running
+// jobs are aborted, given ~2 s to release their own leases (a lease granted after quit began
+// is in no ledger row), and then the ledger is swept, all under a 30 s deadline (plan sections
+// 0a, 13.4). So the first before-quit is held with preventDefault, and the app quits for real
+// once that settles; the second pass through here finds `crucibleQuitDone` and lets it go.
+let crucibleQuitDone = false;
+let crucibleQuitting = false;
+app.on('before-quit', (event) => {
+  if (crucible !== null && !crucibleQuitDone) {
+    event.preventDefault();
+    if (crucibleQuitting) return;
+    crucibleQuitting = true;
+    log.info('Application is quitting: giving back what ContentStudio holds on Crucible first...');
+    void crucible.quit().then((report) => {
+      log.info(`[crucible] Quit sweep: ${report.rows.length} hold(s) handled, ${report.kept.length} kept for the next start${report.timedOut ? ' (deadline hit)' : ''}`);
+    }).finally(() => {
+      crucibleQuitDone = true;
+      app.quit();
+    });
+    return;
+  }
   log.info('Application is quitting...');
   // An rsync spawned by the archive sync is NOT killed when this process exits — on POSIX
   // it survives and is reparented to PID 1, and with --inplace a second rsync started on
   // the next launch would interleave its writes into the same destination files. Stopping
   // it here is what keeps "one at a time" true across a restart.
   stopArchiveSyncOnQuit();
+  // The Crucible loops hold unref'd timers only, so quitting does not wait on them; stopping
+  // them here is what keeps a retry from probing a server after the windows are gone. Nothing
+  // here stops the local Crucible itself: it is an OS service shared with BookForge, Foundry
+  // and Briefcase, and another app may be mid-run (plan section 5).
+  crucible?.stop();
+  // No separate lease release here: the held quit above aborts every running job, whose
+  // `finally` hands its leases back (JobModelLifecycle / the one-call job), and then sweeps
+  // whatever the ledger still lists (P3).
 });
 
 // Handle uncaught exceptions

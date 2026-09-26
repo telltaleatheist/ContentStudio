@@ -3,12 +3,13 @@
  *
  * The metadata spec's ruling (§2 ownership table, §4, §6.2, §6.3 of
  * /Volumes/Callisto/Projects/Briefcase/docs/youtube-metadata-spec.md): both of these are
- * assembled by code from the entity and key-phrase pools, and neither is ever emitted by a
- * model. Two reasons, and the second is the one that decided it.
+ * assembled by code from the pools the CHAPTER LIST yields (`chapterPools` below; LEDGER #205),
+ * and neither is ever emitted by a model. Two reasons, and the second is the one that decided
+ * it.
  *
- *  1. They are rules, not judgment. "Most specific first, entity names before key phrases,
- *     stop at ~400 characters, never truncate mid-tag" is a sort and a budget. A model asked
- *     to do that does it approximately and costs a call.
+ *  1. They are rules, not judgment. "Most specific first, entity names before phrases, stop at
+ *     ~400 characters, never truncate mid-tag" is a sort and a budget. A model asked to do
+ *     that does it approximately and costs a call.
  *  2. YouTube reads a tag that is not in the content as a SPAM SIGNAL (§6.2). A model writing
  *     tags from a summary will occasionally write a plausible one the video never mentions,
  *     and nothing downstream can tell that tag from a real one. Every tag this file emits came
@@ -24,26 +25,149 @@
  * PURE. No I/O, no model, no config.
  */
 
-import { occursIn } from './entity-extraction';
+import { COMMON_WORDS, extractProperNouns, occursIn } from './entity-extraction';
 
 /** Spec §4: stop adding at ~400 characters so the channel tags still fit under YouTube's 500. */
 export const GENERATED_TAG_BUDGET_CHARS = 400;
 
-/** How far down the key-phrase ranking a tag may come from. See assembleTags. */
-const KEY_PHRASE_TAG_LIMIT = 12;
+/** How far down the phrase pool a tag may come from. See assembleTags. */
+const PHRASE_TAG_LIMIT = 12;
+
+// ---------------------------------------------------------------------------
+// The pools, from the chapter list
+// ---------------------------------------------------------------------------
+
+/**
+ * What a CHAPTERED item's tags, hashtags and description read: what the chapter list says
+ * the video is about, kept only where the video actually says it.
+ *
+ * THE CHAPTER LIST IS THE SOURCE (Owen, 2026-09-25, LEDGER #205: "we're getting rid of the
+ * nomic embed model and using the new chapters logic"). Key phrases used to be candidate
+ * n-grams of the whole transcript ranked by embedding similarity on nomic-embed-text, with a
+ * frequency ranking when that model was missing. Both rankings are gone, and nothing replaces
+ * them: the chapter list is already the pipeline's statement of what the video is about, in
+ * the order the video says it, so that is the order the pools carry — chapter 1's names and
+ * phrases before chapter 2's. Nothing here counts or scores. The deterministic order the
+ * chapter list already carries is the ranking (Law 1: no frequency fallback, no substitute).
+ *
+ * Two pools, both GROUNDED — every entry must occur in the content text (`occursIn`). A name
+ * or phrase the chapter model wrote that the transcript never says is exactly the tag YouTube
+ * reads as spam (§6.2), and it is not this pool's to publish. That test is also what makes
+ * chapter text usable as a pool at all: a chapter title is a sentence the model wrote, never
+ * a phrase the video said, and only its set phrases ("prosperity gospel", "prisoner exception")
+ * survive into the transcript.
+ *
+ *  - `entities`: proper-noun runs in the chapter titles and details, folded so "Bailey"
+ *    inside "Gene Bailey" is one name. Chapter by chapter; WITHIN a chapter they come in
+ *    extractProperNouns' own order (most-mentioned, then longest, then alphabetical), which is
+ *    deterministic and, over one title and one detail, mostly "longest first". A single word that
+ *    only ever OPENS a chapter's sentence is not taken as a name: a title is one sentence in
+ *    sentence case, and "Passenger" at its start is a word, not a person. A multi-word run,
+ *    or a name the detail uses mid-sentence, is.
+ *  - `phrases`: runs of two to four content words from the same text, in order of appearance.
+ *    Single words are not phrases; the entity pool is where a one-word name lives.
+ *
+ * PURE. A chapterless item never reaches this: its tags are written by the Tags routing row.
+ */
+export interface ChapterPoolInputs {
+  /** Chapter titles, in chapter order. */
+  subjects: string[];
+  /** The chapters' details in the same order ('' where a chapter has none). */
+  details: string[];
+  /** The content text every entry must occur in, speaker labels already stripped. */
+  contentText: string;
+  /** How many names and how many phrases to keep — what one call is asked to hold in its head. */
+  entityLimit: number;
+  phraseLimit: number;
+}
+
+export interface ChapterPools {
+  entities: string[];
+  phrases: string[];
+}
+
+export function chapterPools(inputs: ChapterPoolInputs): ChapterPools {
+  const entities: string[] = [];
+  const phrases: string[] = [];
+  inputs.subjects.forEach((subject, i) => {
+    const text = `${(subject || '').trim()}. ${(inputs.details[i] || '').trim()}`;
+    for (const mention of extractProperNouns(text)) {
+      if (mention.sentenceInitialOnly && !mention.text.includes(' ')) continue;
+      if (!occursIn(inputs.contentText, mention.text)) continue;
+      foldInto(entities, mention.text);
+    }
+    for (const phrase of contentWordRuns(text)) {
+      if (!occursIn(inputs.contentText, phrase)) continue;
+      foldInto(phrases, phrase);
+    }
+  });
+  return { entities: entities.slice(0, inputs.entityLimit), phrases: phrases.slice(0, inputs.phraseLimit) };
+}
+
+/**
+ * Runs of two to four content words, in order of appearance. A run breaks at punctuation and
+ * at a common word, the same break the retired candidate generator used, so "separation of
+ * church and state" still does not survive as one phrase — that loss is known and unchanged.
+ * The same break cuts any phrase holding a COMMON_WORDS entry: "work" is one, so "work release
+ * program" survives only as "release program".
+ */
+function contentWordRuns(text: string): string[] {
+  const out: string[] = [];
+  for (const clause of text.split(/[.!?;:,()[\]"“”—–]+/)) {
+    const tokens = (clause.match(/[A-Za-z][A-Za-z'’-]*/g) || []).map((t) => t.replace(/['’-]+$/, ''));
+    let run: string[] = [];
+    const flush = () => {
+      for (let i = 0; i < run.length; i++) {
+        for (let size = 2; size <= 4 && i + size <= run.length; size++) {
+          out.push(run.slice(i, i + size).join(' ').toLowerCase());
+        }
+      }
+      run = [];
+    };
+    for (const token of tokens) {
+      if (COMMON_WORDS.has(token.toLowerCase())) {
+        flush();
+        continue;
+      }
+      run.push(token);
+    }
+    flush();
+  }
+  return out;
+}
+
+/**
+ * Keep `candidate` unless a kept entry already contains it; when it contains a kept entry, it
+ * takes that entry's place. "christian nationalist" and "christian nationalist action" are one
+ * phrase said two ways, and the longer, more specific one is kept because specificity is the
+ * whole point of the pool (spec §1.2). It takes the place of the FIRST entry it contains and
+ * the others it contains are removed, so the order stays the chapter list's and no shorter
+ * form survives beside the longer one.
+ */
+function foldInto(kept: string[], candidate: string): void {
+  if (kept.some((k) => occursIn(k, candidate))) return;
+  const first = kept.findIndex((k) => occursIn(candidate, k));
+  if (first === -1) {
+    kept.push(candidate);
+    return;
+  }
+  kept[first] = candidate;
+  for (let i = kept.length - 1; i > first; i--) {
+    if (occursIn(candidate, kept[i])) kept.splice(i, 1);
+  }
+}
 
 export interface TagInputs {
   /**
-   * The single most specific phrase for what this video is, first in the list. Usually the
-   * top-ranked key phrase; the video title's own subject when there is a better one.
+   * The single most specific phrase for what this video is, first in the list. The first
+   * grounded phrase of the first chapter; the video title's own subject when there is a
+   * better one.
    */
   primaryPhrase: string;
   /** Entity surfaces, people first, in the order they should be offered. */
   entities: string[];
-  /** Ranked key phrases. */
-  keyPhrases: string[];
-  /** One or two broad category terms for the channel's beat. */
-  categories: string[];
+  /** The chapter list's grounded phrases, in chapter order (`chapterPools`). */
+  phrases: string[];
   /**
    * The text every tag must occur in (spec §6.2). This is the app's CONTENT text —
    * `contentTextOf(item)`, the ad-free editor transcript when one is linked and the final
@@ -63,8 +187,11 @@ export interface TagAssembly {
 }
 
 /**
- * Spec §4's order, applied: exact primary phrase, entity names (people first), key phrases,
- * deliberate misspellings of distinctive names, 1-2 broad category terms.
+ * Spec §4's order, applied: exact primary phrase, entity names (people first), phrases,
+ * deliberate misspellings of distinctive names. Spec §4's last class, 1-2 broad category
+ * terms, is not offered: they were the highest-ranked single words of the embedding ranking,
+ * which went with nomic-embed-text (LEDGER #205), and a chapter list carries no ranking to take
+ * a "broad" word from. Choosing one by position would be a made-up ranking under the old name.
  *
  * Two filters run over that order:
  *
@@ -86,23 +213,23 @@ export function assembleTags(inputs: TagInputs): TagAssembly {
 
   push(inputs.primaryPhrase);
   for (const entity of inputs.entities) push(entity);
-  // Key phrases earn a tag slot only when they are PHRASES, and only the best of them.
+  // Phrases earn a tag slot only when they are PHRASES, and only the first of them.
   //
-  // One-word key phrases are bare frequent words — a real run offered "believes", "saying" and
+  // A one-word entry is a bare word — the retired ranking offered "believes", "saying" and
   // "heard" — and §6.2's rule is to skip single generic words; a single word that IS a name
   // reaches the list through the entity pool above, which is where names live.
   //
   // The LIMIT is the other half of the same lesson. The character budget is big enough to hold
-  // rank-30 candidates, and rank 30 on a spoken transcript is "book titled" and "lies told".
-  // §6.2 is explicit that tags are generated because they are free, never at the price of
-  // quality, so the budget is allowed to go unspent rather than be filled with noise.
-  for (const phrase of inputs.keyPhrases.slice(0, KEY_PHRASE_TAG_LIMIT)) {
+  // rank-30 candidates, and rank 30 of the retired transcript ranking was "book titled" and
+  // "lies told". The chapter pool's depth has not been measured the same way, so the limit is
+  // kept: §6.2 is explicit that tags are generated because they are free, never at the price
+  // of quality, so the budget is allowed to go unspent rather than be filled with noise.
+  for (const phrase of inputs.phrases.slice(0, PHRASE_TAG_LIMIT)) {
     if (phrase.trim().includes(' ')) push(phrase);
   }
   // Misspellings are the one class that is deliberately absent from the content (§4, §6.2):
   // they catch the search, not the transcript.
   for (const misspelling of misspellingsFor(inputs.entities)) push(misspelling, false);
-  for (const category of inputs.categories) push(category);
 
   const tags: string[] = [];
   const dropped: string[] = [];
@@ -247,8 +374,8 @@ export function misspellingsFor(entities: string[], limit = 2): string[] {
 export interface HashtagInputs {
   /** Entity surfaces, headline entity first. */
   entities: string[];
-  /** Ranked key phrases. */
-  keyPhrases: string[];
+  /** The chapter list's grounded phrases, in chapter order (`chapterPools`). */
+  phrases: string[];
   /** The chosen video title, or the working title — hashtags are deduped against its words. */
   title: string;
   /** The channel's brand tag, when the prompt set declares one. Optional and never invented. */
@@ -305,7 +432,7 @@ export function buildHashtags(inputs: HashtagInputs): string[] {
   }
 
   let topicCount = 0;
-  for (const phrase of inputs.keyPhrases) {
+  for (const phrase of inputs.phrases) {
     if (topicCount >= 2) break;
     if (offer(phrase)) topicCount++;
   }
@@ -314,7 +441,7 @@ export function buildHashtags(inputs: HashtagInputs): string[] {
 
   // Still short of three? Take more topics before giving up — the entity/topic mix is a
   // preference, and three hashtags is what actually displays.
-  for (const phrase of inputs.keyPhrases) {
+  for (const phrase of inputs.phrases) {
     if (chosen.length >= 3) break;
     offer(phrase);
   }
