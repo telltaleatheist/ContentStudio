@@ -97,19 +97,23 @@ snap_outline_chapters: |-
 
   List the sections of this video in the order they happen. A new section starts wherever the video moves to a different subject, story, clip, ad or aside. Write one short, specific label per line (at most {max_items} lines), with no numbering and nothing else.
 
-snap_outline_stories: |-
-  Here is a transcript of a stream or a long recording. This stretch of it runs {duration}.
+snap_story_junction: |-
+  A stretch of the transcript above: "{before}"
+  The stretch that comes straight after it: "{after}"
+  The stretch after it is on a new subject: a different story, person, organisation or topic from the stretch before it, where the stream has moved on rather than carried on with the same subject.
 
-  {transcript}
+snap_story_place: |-
+  The stream moves on to a new subject somewhere in the lines above. Which line is the first line of the new subject: the line where the speaker turns to it, announces it or closes off the old one?
 
-  List the separate stories in this stretch in the order they happen. A story is a stretch about a completely different subject from the one before it, one that could be published as a video of its own: one subject, one guest, one set of clips, one story followed to its end. The turns, claims and clips inside one subject belong to its story, and a stream has only a handful of stories. Write one short, specific label per line (at most {max_items} lines), with no numbering and nothing else.
+snap_story_pair: |-
+  Part B carries on the same story as part A: the same subject, case, clip, person or argument continued, including a new angle on it or the reaction to it.
 
-snap_outline_stories_merge: |-
-  Here are the outlines of consecutive stretches of one stream, in order, each written from its own stretch. Most of their items are turns inside a larger story, and a story that runs across two stretches is listed in both. The whole stream runs {duration}.
+snap_story_pair_state: |-
+  Part A of a stream, {a_clock}:
+  {a_text}
 
-  {outlines}
-
-  Group these items into the stories of the whole stream. A story is a stretch about one completely different subject, one that could be published as a video of its own; every turn, claim, clip and aside about that subject belongs to its one story. Write one short, specific label per story, in the order the stories happen, one per line (at most {max_items} lines), with no numbering and nothing else.
+  Part B, straight after it, {b_clock}:
+  {b_text}
 
 snap_assign: |-
   Sentence from the transcript above: "{sentence}"

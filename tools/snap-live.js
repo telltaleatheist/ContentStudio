@@ -45,6 +45,7 @@ function parseArgs(argv) {
     else if (k === '--out') a.out = argv[++i];
     else if (k === '--chapters') a.chapters = argv[++i];
     else if (k === '--title-thinking') a.titleThinking = argv[++i];
+    else if (k === '--decide-cache') a.decideCache = argv[++i];
     else throw new Error(`unknown flag ${k}`);
   }
   if (!['split', 'stories'].includes(a.mode) || !a.file) throw new Error('usage: snap-live.js split|stories <transcript.json> [...]');
@@ -121,6 +122,7 @@ async function main() {
   const t0 = Date.now();
   let starts;
   let rows;
+  let stories = null;
   try {
     if (args.mode === 'split') {
       const models = routing.resolveSnapChapterModels(routing.resolveMetadataRouting(selections), cli.lanes.gpuVenue());
@@ -131,12 +133,14 @@ async function main() {
       const job = load('crucible/transport.js').crucibleTransport().job('snap-live split');
       try {
         const t = load('services/metadata/snap-chapters.js').snapTransports({ models, job, trace: null, laneName: 'snap-live split', signal: cli.signal });
+        const decide = args.decideCache ? cachedDecide(t.decide, args.decideCache, log) : t.decide;
         let last = -1;
         const res = await load('services/metadata/transcript-split.js').splitCandidates(segments, words[words.length - 1].end, {
-          chat: t.chat, decide: t.decide, signal: cli.signal,
+          chat: t.chat, decide, signal: cli.signal,
           onProgress: (p) => { const pct = Math.floor(p.fraction * 20) * 5; if (pct !== last) { last = pct; log(`progress ${pct}% (${p.phase} ${p.done}/${p.total})`); } },
         });
         rows = res.candidates.map((c) => ({ start: c.startSeconds, end: c.endSeconds, label: c.label, isAd: c.isAd }));
+        stories = res.stories;
         for (const w of res.warnings) log(`warning: ${w}`);
       } finally {
         await job.releaseAll();
@@ -176,7 +180,39 @@ async function main() {
     for (const s of scored) console.log(`  ${s.at.padEnd(18)} ${s.edge.padEnd(60)} nearest boundary ${s.nearest.toFixed(0)} s`);
     console.log(`  ${scored.filter((s) => s.nearest <= 60).length} of ${scored.length} within 60 s`);
   }
-  if (args.out) fs.writeFileSync(args.out, JSON.stringify({ mode: args.mode, wallS, rows, scored }, null, 1));
+  if (stories) {
+    console.log(`\nstories: ${stories.stretches} stretches, cadence ${(stories.targetSeconds / 60).toFixed(1)} min -> ${stories.boundaryTarget} cuts (min gap ${Math.round(stories.minGapSeconds)} s); ` +
+      `junctions ${(stories.junctionMs / 1000).toFixed(0)} s, placement ${(stories.placeMs / 1000).toFixed(0)} s, consolidation ${(stories.consolidateMs / 1000).toFixed(0)} s (${stories.pairQuestions} pair questions)`);
+    console.log(`selected: ${stories.selected.map((s) => `${clock(s.at)}(${s.p.toFixed(2)})->${s.placedAt === null ? 'dropped' : clock(s.placedAt)}`).join(' ')}`);
+    console.log(`merges: ${stories.merges.map((m) => `${clock(m.at)}(${m.p.toFixed(2)})`).join(' ') || 'none'}`);
+    console.log(`kept pairs: ${stories.finalPairs.map((p) => `${clock(p.at)}(${p.p === null ? '-' : p.p.toFixed(2)})`).join(' ')}`);
+  }
+  if (args.out) fs.writeFileSync(args.out, JSON.stringify({ mode: args.mode, wallS, rows, scored, stories }, null, 1));
+}
+
+/**
+ * A measurement convenience (never app code): decide answers memoised in a JSON file by the request's
+ * own text, so a re-run that changes only selection or consolidation re-asks only the questions that
+ * changed. Every answer served from the file is counted in the log.
+ */
+function cachedDecide(decide, file, log) {
+  const crypto = require('crypto');
+  const cache = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+  let hits = 0;
+  let misses = 0;
+  return async (request, o) => {
+    const key = crypto.createHash('sha1').update(JSON.stringify(request)).digest('hex');
+    if (cache[key]) {
+      hits++;
+      if (hits % 20 === 1) log(`decide cache: ${hits} answers from ${file}, ${misses} asked`);
+      return cache[key];
+    }
+    misses++;
+    const answer = await decide(request, o);
+    cache[key] = answer;
+    fs.writeFileSync(file, JSON.stringify(cache));
+    return answer;
+  };
 }
 
 main().catch((e) => { console.error(`snap-live: ${e && e.stack ? e.stack : e}`); process.exit(1); });

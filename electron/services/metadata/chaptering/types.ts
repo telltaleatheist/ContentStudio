@@ -15,13 +15,15 @@
  * whatever order they were written in).
  */
 
+import type { StoryStats } from './stories';
+
 /**
  * The two grains the service serves (Owen, 2026-09-25, LEDGER #208): `chapters` are the subject
  * changes inside a video, the list that goes to YouTube (the metadata pipeline); `stories` are
  * stream-level splits into completely different subjects (the editor's Stories and the in-queue
  * split of a stream into standalone videos). "Episodes" is retired as a name and as a grain.
- * How finely either is drawn is the dial (granularity.ts): the outline instructions and the
- * switch cost (Law 6 as amended by #199).
+ * Chapters are drawn by outline + assign at a declared switch cost (Law 6 as amended by #199),
+ * stories by 45-second junctions (#212); granularity.ts says how.
  */
 export type Granularity = 'chapters' | 'stories';
 
@@ -243,11 +245,8 @@ export interface ChapteringStats {
   flooredUnits: number[];
   /** Chapters whose transcript was over the title call's budget and were titled from their parts (summarize.ts). */
   titledFromParts: number[];
-  /**
-   * The stream-level outline (LEDGER #208): the merged outline every chunk was assigned against,
-   * when the transcript was more than one chunk and the grain writes one. Null otherwise.
-   */
-  streamOutline: string[] | null;
+  /** What the stories grain's junction method did (stories.ts, LEDGER #212); null at `chapters`. */
+  stories: StoryStats | null;
   /**
    * The ad option's per-video baseline (plan §0a): the median of its probability over the
    * video's sentences, capped at 0.5. Every sentence's ad score was read as its rise above it.
@@ -269,11 +268,12 @@ export interface ChapteringStats {
 
 export interface ChapteringResult {
   granularity: Granularity;
-  switchCost: number;
+  /** Viterbi's switch cost at `chapters`; null at `stories`, which runs no Viterbi (stories.ts). */
+  switchCost: number | null;
   units: SentenceUnit[];
   /**
-   * The level-1 outline items in order, de-duplicated, without the ad item: the stream-level
-   * outline when one was written, else every chunk's items in the order they were written.
+   * The level-1 outline items in order, de-duplicated, without the ad item: every chunk's items in
+   * the order they were written. Empty at `stories`, which writes no outline.
    */
   outline: string[];
   chapters: Chapter[];
@@ -301,7 +301,7 @@ export interface ChunkDiagnostic {
   path: number[];
 }
 
-export type ChapteringPhase = 'units' | 'outline' | 'assign' | 'plugs' | 'refine' | 'summarize' | 'done';
+export type ChapteringPhase = 'units' | 'outline' | 'assign' | 'plugs' | 'refine' | 'junctions' | 'place' | 'consolidate' | 'summarize' | 'done';
 
 /** Which side of the commentary a unit's speaker is (chapter-transcript.ts SpeakerRole). */
 export type SpeakerRole = 'host' | 'clip' | 'unsure';

@@ -2,25 +2,26 @@
  * Chaptering at a chosen granularity — OUTLINE + ASSIGN + Viterbi on snap (LEDGER #199, #208).
  *
  * One service, two grains (plan §10.1 as renamed by #208): `chapters`, the subject changes inside
- * a video that go to YouTube (the metadata pipeline), and `stories`, the stream-level splits into
- * completely different subjects (the editor's Stories and the in-queue split of a stream). The
- * method, ported from segment.py (docs/crucible/reference/segment.py) by way of Briefcase's
- * TypeScript, measured on YTSeg at F1@±1 0.72:
+ * a video that go to YouTube (the metadata pipeline, every single video), and `stories`, the
+ * stream-level splits into completely different subjects (the editor's split of a master
+ * livestream, the in-queue split, and a podcast compilation through the pipeline, #213).
+ *
+ * STORIES are drawn by 45-second junctions judged one against the last (stories.ts, LEDGER #212),
+ * then titled by step 8 below; steps 2-7 are the chapters grain's. The chapters method, ported
+ * from segment.py (docs/crucible/reference/segment.py) by way of Briefcase's TypeScript, measured
+ * on YTSeg at F1@±1 0.72:
  *
  *   1. UNITS      the transcript cut into sentence units, times from the captions (units.ts).
- *   2. OUTLINE    the scorer model (the 9B) lists the sections as plain lines, at the grain's
- *                 prompt (outline.ts, prompts.ts). A long transcript is cut into chunks that
- *                 each fit one state under ~12k tokens (chunks.ts), and each chunk writes its
- *                 own outline. At `stories` those outlines are MERGED into one stream-level
- *                 outline (#208) that every chunk is assigned against; at `chapters` each chunk
- *                 is assigned against its own and the chunks are stitched at the seams.
+ *   2. OUTLINE    the scorer model (the 9B) lists the sections as plain lines (outline.ts,
+ *                 prompts.ts). A long transcript is cut into chunks that each fit one state under
+ *                 ~12k tokens (chunks.ts); each chunk writes its own outline, is assigned against
+ *                 it, and the chunks are stitched at the seams.
  *   3. ASSIGN     one snap choice per sentence, quoting the sentence and the one before it;
  *                 the options are the outline items plus the ad item (assign.ts).
  *   4. BASELINE   the ad option is read as its rise above its own median over the video
  *                 (plugs.ts, plan §0a), so its lean stops pulling sentences to it.
- *   5. VITERBI    the best item per sentence under the dial's flat switch cost (viterbi.ts,
- *                 granularity.ts): one pass over the whole stream with a stream outline, one per
- *                 chunk without. Boundaries are where the item changes.
+ *   5. VITERBI    the best item per sentence under the grain's flat switch cost (viterbi.ts,
+ *                 granularity.ts), one pass per chunk. Boundaries are where the item changes.
  *   6. ADS        every stretch assigned to the ad item is confirmed by a yes/no (at a lower bar
  *                 near Owen's usual ad marks at `chapters`); a rejected one is re-segmented
  *                 without it. A run the outline itself named, on which the ad option was a
@@ -41,7 +42,7 @@
  * WHAT IS DECLARED, NEVER SILENT (Laws 1 and 8): a `decide_not_served` from the transport is
  * a refusal by name (there is no fall back to the whole-transcript call); an outline answered in
  * prose is a refusal naming the call; a unit under the label-mass gate is recorded as skipped; a
- * floored label is counted; the ad baseline, the stream outline and every ad verdict with its
+ * floored label is counted; the ad baseline, the stories junctions and every ad verdict with its
  * threshold are in the result; an unreadable title costs one chapter its title, warned, never
  * re-asked (Law 3).
  */
@@ -49,6 +50,7 @@
 import * as log from 'electron-log';
 import { TranscriptInput, UnitOptions, captionsOf, sentenceUnits, speakerRolesOf } from './units';
 import { granularitySetting, isLongSection } from './granularity';
+import { storySpans } from './stories';
 import { BATCH, MAX_ITEMS, SNAP_PROMPTS } from './prompts';
 import { writeOutline } from './outline';
 import { assignQuestions, optionNames, questionName, readChoiceDistribution, readYesNo, wireOptions } from './assign';
@@ -140,8 +142,11 @@ export async function chapter(transcript: TranscriptInput, options: ChapterOptio
 export async function chapterUnits(units: SentenceUnit[], options: ChapterOptions): Promise<ChapteringResult> {
   const t0 = Date.now();
   const setting = granularitySetting(options.granularity);
-  const switchCost = options.switchCost ?? setting.switchCost;
-  const detectAds = options.detectAds ?? true;
+  if (setting.method === 'junctions' && options.switchCost !== undefined) {
+    throw new ChapteringError('bad_request', `the ${options.granularity} grain runs no Viterbi, so a switch cost (${options.switchCost}) means nothing to it`);
+  }
+  const switchCost = setting.method === 'outline' ? options.switchCost ?? setting.switchCost : null;
+  const detectAds = setting.method === 'outline' && (options.detectAds ?? true);
   const signal = options.signal;
   const stats: ChapteringStats = {
     unitCount: units.length,
@@ -157,7 +162,7 @@ export async function chapterUnits(units: SentenceUnit[], options: ChapterOption
     flooredUnits: [],
     skippedUnits: [],
     titledFromParts: [],
-    streamOutline: null,
+    stories: null,
     adBaseline: null,
     speakerTagged: false,
     titleMs: [],
@@ -170,12 +175,12 @@ export async function chapterUnits(units: SentenceUnit[], options: ChapterOption
   if (units.length === 0) {
     throw new ChapteringError('empty_transcript', 'the transcript has no words to chapter');
   }
-  if (options.switchCost !== undefined && options.switchCost !== setting.switchCost) {
+  if (setting.method === 'outline' && options.switchCost !== undefined && options.switchCost !== setting.switchCost) {
     log.info(`[Chaptering] switch cost ${options.switchCost} overrides the ${options.granularity} grain's ${setting.switchCost} for this run (the dial)`);
   }
   throwIfAborted(signal);
 
-  const refine = setting.refine;
+  const refine = setting.method === 'outline' && setting.refine;
   const summarize = options.summarize ?? true;
   const titleThinking = options.titleThinking ?? true;
   const titleMaxTokens = options.titleMaxTokens ?? TITLE_MAX_TOKENS;
@@ -208,24 +213,44 @@ export async function chapterUnits(units: SentenceUnit[], options: ChapterOption
   const ctx: LevelContext = { options, stats, warn, signal, detectAds, diagnostics: options.diagnostics ? diagnostics : null };
   const texts = units.map((u) => u.text);
 
-  // Level 1: the whole video at the grain's outline and the dial's switch cost.
-  progress('outline', 0, units.length, wLevel1, 0);
-  const level1 = await runLevel(ctx, units, 0, {
-    outlinePrompt: (text, seconds) => SNAP_PROMPTS.outline(options.granularity, text, MAX_ITEMS, runtimeWords(seconds)),
-    mergeKey: setting.mergeKey,
-    switchCost,
-    withAds: detectAds,
-    adPrior: setting.adPrior,
-    prevBefore: SNAP_PROMPTS.START_OF_VIDEO,
-    level: 1,
-    onProgress: (phase, done, total, within) => progress(phase, done, total, wLevel1, within),
-  });
-  stats.chunkCount = level1.chunkCount;
-  stats.streamOutline = level1.streamOutline;
-  stats.adBaseline = level1.adBaseline;
   const totalSeconds = options.totalSeconds ?? units[units.length - 1].end;
-  let spans: Array<Span & { level: number }> = piecesToSpans(level1.pieces, units, totalSeconds).map((s) => ({ ...s, level: 1 }));
-  base += wLevel1;
+  let spans: Array<Span & { level: number }>;
+  let outline: string[] = [];
+  let verdicts: PlugVerdict[] = [];
+  if (setting.method === 'junctions') {
+    // Stories: 45-second junctions (stories.ts, #212), then the titles below.
+    const story = await storySpans(units, {
+      decide: (request, what) => decideOrRefuse(ctx, request, what),
+      warn,
+      throwIfAborted: () => throwIfAborted(signal),
+      onProgress: (phase, done, total, within) => progress(phase, done, total, wLevel1, within),
+      ...(options.chunking ? { chunking: options.chunking } : {}),
+      ...(options.countTokens ? { countTokens: (text: string) => options.countTokens!(text, signal) } : {}),
+      totalSeconds,
+    });
+    stats.chunkCount = story.chunkCount;
+    stats.stories = story.stats;
+    spans = story.spans.map((s) => ({ ...s, level: 1 }));
+    base += wLevel1;
+  } else {
+    // Level 1: the whole video at the grain's outline and switch cost.
+    progress('outline', 0, units.length, wLevel1, 0);
+    const level1 = await runLevel(ctx, units, 0, {
+      outlinePrompt: (text) => SNAP_PROMPTS.outline(text, MAX_ITEMS),
+      switchCost: switchCost!,
+      withAds: detectAds,
+      adPrior: setting.adPrior,
+      prevBefore: SNAP_PROMPTS.START_OF_VIDEO,
+      level: 1,
+      onProgress: (phase, done, total, within) => progress(phase, done, total, wLevel1, within),
+    });
+    stats.chunkCount = level1.chunkCount;
+    stats.adBaseline = level1.adBaseline;
+    outline = level1.outline;
+    verdicts = level1.verdicts;
+    spans = piecesToSpans(level1.pieces, units, totalSeconds).map((s) => ({ ...s, level: 1 }));
+    base += wLevel1;
+  }
 
   // Level 2: a sub-outline inside every long level-1 section (chapters only), at the run's dial.
   if (refine) {
@@ -241,9 +266,8 @@ export async function chapterUnits(units: SentenceUnit[], options: ChapterOption
       let sub: LevelResult | null = null;
       try {
         sub = await runLevel(ctx, units.slice(a, b), a, {
-          outlinePrompt: (text) => SNAP_PROMPTS.subOutline(text, MAX_ITEMS),
-          mergeKey: null,
-          switchCost,
+          outlinePrompt: (text) => SNAP_PROMPTS.outline(text, MAX_ITEMS),
+          switchCost: switchCost!,
           withAds: false,
           adPrior: false,
           prevBefore: a > 0 ? texts[a - 1] : SNAP_PROMPTS.START_OF_VIDEO,
@@ -341,9 +365,9 @@ export async function chapterUnits(units: SentenceUnit[], options: ChapterOption
     granularity: options.granularity,
     switchCost,
     units,
-    outline: level1.outline,
+    outline,
     chapters,
-    plugVerdicts: level1.verdicts,
+    plugVerdicts: verdicts,
     stats,
     ...(options.diagnostics ? { diagnostics } : {}),
   };
@@ -362,9 +386,7 @@ interface LevelContext {
 }
 
 interface LevelSpec {
-  outlinePrompt: (text: string, seconds: number) => string;
-  /** The merge body for a stream-level outline, or null to assign each chunk against its own. */
-  mergeKey: string | null;
+  outlinePrompt: (text: string) => string;
   switchCost: number;
   withAds: boolean;
   /** Lower the confirm bar near the channel's usual ad marks (plugs.ts AD_PRIOR). */
@@ -378,7 +400,6 @@ interface LevelResult {
   /** Global unit pieces, contiguous over the level's units. */
   pieces: Piece[];
   outline: string[];
-  streamOutline: string[] | null;
   adBaseline: number | null;
   verdicts: PlugVerdict[];
   chunkCount: number;
@@ -404,21 +425,15 @@ const P_PLUGS = 0.02;
  * Outline, assign, Viterbi and (level 1) ad confirmation over `units` (global indices `offset` +
  * local), chunked when they do not fit one state. Returns contiguous pieces covering every unit.
  *
- * Two modes (granularity.ts):
- *   - PER CHUNK (`mergeKey` null, or one chunk): each chunk is assigned against its own outline,
- *     every unit of its state is asked, Viterbi runs per chunk, and the chunks are stitched where
- *     their overlaps agree (chunks.ts). This is P8a's path, unchanged but for the baseline.
- *   - STREAM (`mergeKey` set and more than one chunk, #208): the chunk outlines are merged into
- *     one, every chunk is assigned against it, only the units a chunk's CORE owns are asked (the
- *     overlap stays in the state as context: every unit is asked exactly once), and one Viterbi
- *     pass runs over the whole stream.
+ * Each chunk is assigned against its own outline, every unit of its state is asked, Viterbi runs
+ * per chunk, and the chunks are stitched where their overlaps agree (chunks.ts). P8b's STREAM mode
+ * (one merged outline for a stories run, #208) is gone with that grain's outline (#212).
  */
 async function runLevel(ctx: LevelContext, units: SentenceUnit[], offset: number, spec: LevelSpec): Promise<LevelResult> {
   const { options, stats, signal } = ctx;
   const texts = units.map((u) => u.text);
   const tokens = unitTokens(texts, options.countTokens ? await options.countTokens(texts.join('\n'), signal) : undefined);
   const chunks = planChunks(tokens, options.chunking);
-  const streamMode = spec.mergeKey !== null && chunks.length > 1;
   const where = (k: number) => `level ${spec.level}, chunk ${k + 1}/${chunks.length} (units ${offset + chunks[k].start}-${offset + chunks[k].end})`;
   const plugItem = spec.withAds ? SNAP_PROMPTS.plugItem(options.promotedItems) : null;
 
@@ -426,14 +441,13 @@ async function runLevel(ctx: LevelContext, units: SentenceUnit[], offset: number
   const outline: string[] = [];
   const seen = new Set<string>();
   const own: string[][] = [];
-  const outlineCalls = chunks.length + (streamMode ? 1 : 0);
+  const outlineCalls = chunks.length;
   for (let k = 0; k < chunks.length; k++) {
     throwIfAborted(signal);
     spec.onProgress('outline', k, outlineCalls, (P_OUTLINE * k) / outlineCalls);
     const chunk = chunks[k];
     const t = Date.now();
-    const seconds = units[chunk.end - 1].end - units[chunk.start].start;
-    const items = await writeOutline(options.chat, spec.outlinePrompt(texts.slice(chunk.start, chunk.end).join('\n'), seconds), `outline of ${where(k)}`, signal, ctx.warn);
+    const items = await writeOutline(options.chat, spec.outlinePrompt(texts.slice(chunk.start, chunk.end).join('\n')), `outline of ${where(k)}`, signal, ctx.warn);
     stats.chatCalls++;
     stats.outlineMs += Date.now() - t;
     own.push(items);
@@ -445,28 +459,10 @@ async function runLevel(ctx: LevelContext, units: SentenceUnit[], offset: number
     }
     log.info(`[Chaptering] ${where(k)}: outline of ${items.length}: ${items.map((i) => JSON.stringify(i)).join(', ')}`);
   }
-  let streamOutline: string[] | null = null;
-  if (streamMode) {
-    throwIfAborted(signal);
-    spec.onProgress('outline', chunks.length, outlineCalls, (P_OUTLINE * chunks.length) / outlineCalls);
-    const t = Date.now();
-    const whole = units[units.length - 1].end - units[0].start;
-    const stretches = chunks.map((c, k) => ({ clock: `${formatClock(units[c.coreStart].start)}-${formatClock(units[c.coreEnd - 1].end)}`, items: own[k] }));
-    streamOutline = await writeOutline(
-      options.chat,
-      SNAP_PROMPTS.streamMerge(spec.mergeKey!, stretches, MAX_ITEMS, runtimeWords(whole)),
-      `stream outline over ${chunks.length} chunk outlines (level ${spec.level})`,
-      signal,
-      ctx.warn,
-    );
-    stats.chatCalls++;
-    stats.outlineMs += Date.now() - t;
-    log.info(`[Chaptering] level ${spec.level}: stream outline of ${streamOutline.length} over ${chunks.length} chunks: ${streamOutline.map((i) => JSON.stringify(i)).join(', ')}`);
-  }
 
   // --- assign -----------------------------------------------------------------------
-  // Which units each chunk asks about: all of its state per chunk; only its core in stream mode.
-  const asked = chunks.map((c) => (streamMode ? [c.coreStart, c.coreEnd] : [c.start, c.end]) as [number, number]);
+  // Every unit of a chunk's state is asked; the overlaps are read twice and stitched (chunks.ts).
+  const asked = chunks.map((c) => [c.start, c.end] as [number, number]);
   const questionsTotal = asked.reduce((n, [a, b]) => n + (b - a), 0);
   let questionsDone = 0;
   const readings: ChunkReading[] = [];
@@ -474,7 +470,7 @@ async function runLevel(ctx: LevelContext, units: SentenceUnit[], offset: number
   for (let k = 0; k < chunks.length; k++) {
     const chunk = chunks[k];
     const text = texts.slice(chunk.start, chunk.end).join('\n');
-    let items = streamOutline ?? own[k];
+    let items = own[k];
     const rows = new Map<number, number[]>();
     // A one-item outline: nothing to choose between, so no assign and no ad pass. The chunk
     // is one run of that item.
@@ -576,71 +572,39 @@ async function runLevel(ctx: LevelContext, units: SentenceUnit[], offset: number
     return row ? { row, plug: readings[k].plug } : null;
   };
 
-  if (streamMode) {
-    const items = readings[0].items;
-    const plug = readings[0].plug;
-    const L: number[][] = [];
-    for (let u = 0; u < units.length; u++) {
-      const own = rowOf(u);
-      if (!own && items.length > 1) throw new Error(`stream assign: sentence ${offset + u} was asked by no chunk`);
-      L.push(own ? own.row : [0]);
+  const paths: ChunkPath[] = [];
+  for (let k = 0; k < readings.length; k++) {
+    const r = readings[k];
+    const n = r.chunk.end - r.chunk.start;
+    if (r.items.length === 1) {
+      paths.push({ chunk: shift(r.chunk, offset), path: Array.from({ length: n }, () => 0), items: r.items, plug: -1 });
+      continue;
     }
+    const L = Array.from({ length: n }, (_, i) => r.rows.get(r.chunk.start + i)!);
     let path: number[];
-    if (items.length === 1) path = units.map(() => 0);
-    else if (plug >= 0) {
+    if (r.plug >= 0) {
       const reads = new Map<string, PlugVerdict['read']>();
-      const confirmed = await confirmPlugs(L, plug, spec.switchCost, async (a, b) => {
-        const answer = await askPlug(ownerOf(Math.floor((a + b - 1) / 2)), a, b, 'ad-option');
+      const at = r.chunk.start;
+      const confirmed = await confirmPlugs(L, r.plug, spec.switchCost, async (a, b) => {
+        const answer = await askPlug(k, at + a, at + b, 'ad-option');
         reads.set(`${a}:${b}`, answer.read);
         return answer.p;
-      }, threshold);
-      const trimmed = trimToCores(confirmed.logProbs, confirmed.path, plug, spec.switchCost);
+      }, (a, b) => threshold(at + a, at + b));
+      const trimmed = trimToCores(confirmed.logProbs, confirmed.path, r.plug, spec.switchCost);
       path = trimmed.path;
       for (const v of confirmed.verdicts) {
         const trim = trimmed.trims.find((t) => t.start === v.start && t.end === v.end);
         verdicts.push({
-          start: offset + v.start, end: offset + v.end, p: v.p, threshold: v.threshold, read: reads.get(`${v.start}:${v.end}`)!, source: 'ad-option',
-          ...(trim ? { kept: [offset + trim.core[0], offset + trim.core[1]] as [number, number] } : {}),
+          start: offset + at + v.start, end: offset + at + v.end, p: v.p, threshold: v.threshold,
+          read: reads.get(`${v.start}:${v.end}`)!, source: 'ad-option',
+          ...(trim ? { kept: [offset + at + trim.core[0], offset + at + trim.core[1]] as [number, number] } : {}),
         });
       }
     } else path = viterbi(L, spec.switchCost);
-    pieces = pathPieces(path, items, plug, offset);
-    diagnose(ctx, spec.level, offset, 0, units.length, items, plug, L, path);
-  } else {
-    const paths: ChunkPath[] = [];
-    for (let k = 0; k < readings.length; k++) {
-      const r = readings[k];
-      const n = r.chunk.end - r.chunk.start;
-      if (r.items.length === 1) {
-        paths.push({ chunk: shift(r.chunk, offset), path: Array.from({ length: n }, () => 0), items: r.items, plug: -1 });
-        continue;
-      }
-      const L = Array.from({ length: n }, (_, i) => r.rows.get(r.chunk.start + i)!);
-      let path: number[];
-      if (r.plug >= 0) {
-        const reads = new Map<string, PlugVerdict['read']>();
-        const at = r.chunk.start;
-        const confirmed = await confirmPlugs(L, r.plug, spec.switchCost, async (a, b) => {
-          const answer = await askPlug(k, at + a, at + b, 'ad-option');
-          reads.set(`${a}:${b}`, answer.read);
-          return answer.p;
-        }, (a, b) => threshold(at + a, at + b));
-        const trimmed = trimToCores(confirmed.logProbs, confirmed.path, r.plug, spec.switchCost);
-        path = trimmed.path;
-        for (const v of confirmed.verdicts) {
-          const trim = trimmed.trims.find((t) => t.start === v.start && t.end === v.end);
-          verdicts.push({
-            start: offset + at + v.start, end: offset + at + v.end, p: v.p, threshold: v.threshold,
-            read: reads.get(`${v.start}:${v.end}`)!, source: 'ad-option',
-            ...(trim ? { kept: [offset + at + trim.core[0], offset + at + trim.core[1]] as [number, number] } : {}),
-          });
-        }
-      } else path = viterbi(L, spec.switchCost);
-      paths.push({ chunk: shift(r.chunk, offset), path, items: r.items, plug: r.plug });
-      diagnose(ctx, spec.level, offset, r.chunk.start, r.chunk.end, r.items, r.plug, L, path);
-    }
-    pieces = stitchChunks(paths).pieces;
+    paths.push({ chunk: shift(r.chunk, offset), path, items: r.items, plug: r.plug });
+    diagnose(ctx, spec.level, offset, r.chunk.start, r.chunk.end, r.items, r.plug, L, path);
   }
+  pieces = stitchChunks(paths).pieces;
 
   // --- a plug the outline named as an ordinary item (plugs.ts header, 3) ---------------
   if (plugItem !== null) {
@@ -679,7 +643,7 @@ async function runLevel(ctx: LevelContext, units: SentenceUnit[], offset: number
   }
   stats.plugMs += Date.now() - tPlugs;
   verdicts.sort((x, y) => x.start - y.start);
-  return { pieces, outline: streamOutline ?? outline, streamOutline, adBaseline: baseline, verdicts, chunkCount: chunks.length };
+  return { pieces, outline, adBaseline: baseline, verdicts, chunkCount: chunks.length };
 }
 
 /** Record one Viterbi pass's reading for a measurement run (never read by the pipeline). */

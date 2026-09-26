@@ -1,87 +1,70 @@
 /**
- * The grains, and the dial that draws them.
+ * The grains, and how each is drawn.
  *
- * Law 6 (amended, LEDGER #199): how finely the sections are kept is a DECLARED SETTING, never a
- * count derived from duration or computed in code. Owen, 2026-09-25 (LEDGER #208): there are two
- * grains, `chapters` ("what makes it to youtube - subject changes in videos") and `stories`
- * ("stream-level splits that are completely different subjects, not just small changes within
- * the same subjects"), and "in theory, we should be able to draw chapters out at any granularity
- * level". So a grain is a named setting of the dial, and the dial turns these things:
+ * Owen, 2026-09-25 (LEDGER #208): there are two grains, `chapters` ("what makes it to youtube -
+ * subject changes in videos") and `stories` ("stream-level splits that are completely different
+ * subjects, not just small changes within the same subjects"). Since #212 they are drawn by two
+ * METHODS:
  *
- *   1. the switch cost — Viterbi's flat penalty, in nats, for changing outline item between
- *      one sentence and the next (viterbi.ts). Higher = fewer, longer runs. 20 is the measured
- *      best on YTSeg for subject-change chapters (F1@±1 0.72, Pk 0.21-0.23; plan §10.2). A run
- *      may state another (the `switchCost` option, and the pipeline's coarser `broad` pick,
- *      PIPELINE_DIAL below): that is the dial, declared and reported in the result.
- *   2. the outline prompt — which `snap_outline_*` body of chapters.yml the scorer model writes
- *      the level-1 outline with. The body carries the grain in words; the model decides the
- *      count under `{max_items}`.
- *   3. whether level 2 runs — the plan's two-level outline (§10.2 step 1): a sub-outline per long
- *      level-1 section over that section only. `chapters` refines the long sections (a long
- *      video's level 1 is broad by construction); `stories` publishes level 1 as it is.
- *   4. whether a long transcript gets ONE stream-level outline (#208): every chunk writes its own
- *      outline, those are merged into one (`snap_outline_stories_merge`, the 9B, ≤25 items), and
- *      every chunk is assigned against that one list, so one Viterbi pass runs over the whole
- *      stream. Measured need (docs/crucible/P8a.md): with an outline per ~40-min chunk the 9B
- *      wrote 7-13 "episodes" each, and a 3.4 h stream came out as 27 where Owen made 5.
- *   5. whether the ad prior applies (plugs.ts AD_PRIOR): Owen places his ads at about 5:00 and
- *      10:00 of a VIDEO (#208), so the prior is a chapters-grain fact; a stream's 5:00 is not
- *      an ad slot.
+ *   chapters  OUTLINE + ASSIGN + Viterbi (chaptering.service.ts runLevel). Law 6 (amended, #199):
+ *             how finely the sections are kept is a DECLARED SETTING, the switch cost, never a
+ *             count derived from duration. The setting turns: the switch cost (Viterbi's flat
+ *             penalty, in nats; 20 is the measured best on YTSeg, F1@±1 0.72), the outline body
+ *             (`snap_outline_chapters`, segment.py's), level 2 (a sub-outline inside every long
+ *             level-1 section, plan §10.2) and the ad prior (Owen places his ads at about 5:00 and
+ *             10:00 of a VIDEO, #208; plugs.ts AD_PRIOR).
+ *   stories   45-second JUNCTIONS judged one against the last (stories.ts, #212): the editor's old
+ *             analyzer re-done on snap. Its constants are the reference's own (STORY_METHOD),
+ *             including the duration-derived over-segmentation #212 adopts for this grain ("the 45
+ *             second resolution trick we used before"); consolidation, not a count, says how many
+ *             stories stay. The merged stream outline (#208) is gone: it found 2 of Owen's 7 edges
+ *             on the 2026-09-23 stream (docs/crucible/P8b.md).
  *
- * The numbers are data about a measurement, so they are here, in one table, and nowhere else.
+ * #213: the metadata pipeline's per-run pick is `chapters` (the default) or `stories` and nothing
+ * else; the old detailed / broad values read as `chapters` (metadata-generator.service.ts). The
+ * chapters grain always runs at its measured switch cost, 20: nothing in the queue turns it.
  */
 
 import { Granularity } from './types';
 
-export interface GranularitySetting {
+export interface OutlineSetting {
+  method: 'outline';
   /** Viterbi's flat switch cost, in nats. */
   switchCost: number;
   /** The chapters.yml key of the level-1 outline body. */
   outlineKey: string;
   /** Run the second level (a sub-outline inside every long level-1 section). */
   refine: boolean;
-  /**
-   * The chapters.yml key of the body that merges the chunk outlines into one stream-level
-   * outline, or null for a grain that assigns each chunk against its own outline.
-   */
-  mergeKey: string | null;
   /** Apply the ad prior at the channel's usual ad marks (plugs.ts). */
   adPrior: boolean;
   /** Whether the number is measured (segment.py on YTSeg) or a default awaiting measurement. */
   provenance: 'measured' | 'default';
 }
 
-export const GRANULARITY: Readonly<Record<Granularity, GranularitySetting>> = {
+export interface JunctionSetting {
+  method: 'junctions';
+  /** The reference's method (docs/crucible/reference/chapter-splitter.ts); its constants are stories.ts STORY_METHOD. */
+  provenance: 'reference';
+}
+
+export type GranularitySetting = OutlineSetting | JunctionSetting;
+
+export const GRANULARITY: Readonly<{ chapters: OutlineSetting; stories: JunctionSetting }> = {
   // segment.py's own outline body and cost: the setup YTSeg measured (plan §10.2).
-  chapters: { switchCost: 20, outlineKey: 'snap_outline_chapters', refine: true, mergeKey: null, adPrior: true, provenance: 'measured' },
-  // 45 is P8a's episodes cost, the coarsest it ran (docs/crucible/P8a.md); P8b measures it with
-  // the stream-level outline on the 2026-09-23 stream against Owen's own story edges.
-  stories: { switchCost: 45, outlineKey: 'snap_outline_stories', refine: false, mergeKey: 'snap_outline_stories_merge', adPrior: false, provenance: 'default' },
+  chapters: { method: 'outline', switchCost: 20, outlineKey: 'snap_outline_chapters', refine: true, adPrior: true, provenance: 'measured' },
+  stories: { method: 'junctions', provenance: 'reference' },
 };
 
 export const GRANULARITIES: readonly Granularity[] = ['chapters', 'stories'];
 
 /** The setting for one grain; an unknown value throws (no quiet default grain). */
 export function granularitySetting(granularity: Granularity): GranularitySetting {
-  const setting = GRANULARITY[granularity];
+  const setting = (GRANULARITY as Readonly<Record<string, GranularitySetting>>)[granularity];
   if (!setting) {
     throw new Error(`unknown chaptering granularity "${granularity}" — expected one of ${GRANULARITIES.join(', ')}`);
   }
   return setting;
 }
-
-/**
- * The metadata pipeline's per-run pick (the queue's "Chapters detect" selector, LEDGER #170),
- * read as a setting of the dial when the chapter engine is snap. Owen's #208 retires
- * detailed/broad as grains: both are `chapters`, and the difference is the switch cost. `stories`
- * is the stream-level grain (a compilation or a stream run through the pipeline). `broad`'s 30 is
- * P8a's unmeasured broad default, kept as the coarser setting of the same grain.
- */
-export const PIPELINE_DIAL: Readonly<Record<'detailed' | 'broad' | 'stories', { granularity: Granularity; switchCost: number }>> = {
-  detailed: { granularity: 'chapters', switchCost: GRANULARITY.chapters.switchCost },
-  broad: { granularity: 'chapters', switchCost: 30 },
-  stories: { granularity: 'stories', switchCost: GRANULARITY.stories.switchCost },
-};
 
 /**
  * When a level-1 section is refined at `chapters` (Briefcase chapter-tree.ts TREE_DEFAULTS, the
@@ -93,4 +76,25 @@ export const REFINE = { longSeconds: 900, longUnits: 120, minUnits: 24 } as cons
 
 export function isLongSection(units: number, seconds: number): boolean {
   return units >= REFINE.minUnits && (units > REFINE.longUnits || seconds > REFINE.longSeconds);
+}
+
+/**
+ * The metadata pipeline's per-run pick (the inputs page's "Chapters detect" selector, LEDGER #213):
+ * `chapters` for every single video, however long, and `stories` for a weekly podcast compilation.
+ * Owen, 2026-09-25: "we'll generate stories for cases where i send a podcast episode through ... and
+ * for everything else, we'll use chapters."
+ */
+export type ChapterPick = 'chapters' | 'stories';
+
+export const CHAPTER_PICKS: readonly ChapterPick[] = ['chapters', 'stories'];
+
+/**
+ * A pick as stored or sent, read as #213's two values. The retired three-way selector's `detailed`
+ * and `broad` (#170) were both single-video chaptering, so they read as `chapters` and the caller
+ * logs the migration once (`migratedFrom`). Anything else is refused by name.
+ */
+export function chapterPickOf(value: unknown): { pick: ChapterPick; migratedFrom: 'detailed' | 'broad' | null } {
+  if (value === 'chapters' || value === 'stories') return { pick: value, migratedFrom: null };
+  if (value === 'detailed' || value === 'broad') return { pick: 'chapters', migratedFrom: value };
+  throw new Error(`unknown chapter pick ${JSON.stringify(value)} — expected ${CHAPTER_PICKS.join(' or ')}`);
 }

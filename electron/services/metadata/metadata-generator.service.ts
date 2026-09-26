@@ -55,7 +55,10 @@ import type { TranscriptRef } from '../publish/publish-types';
 import { gpuCall, queueAITask } from '../queue-manager.service';
 import { beatJob, installedLanes, setJobStage } from '../../crucible/lanes';
 import { chapter as chapterOnSnap } from './chaptering/chaptering.service';
-import { PIPELINE_DIAL } from './chaptering/granularity';
+import { ChapterPick, chapterPickOf } from './chaptering/granularity';
+
+/** The queue's pick as the whole-transcript engine's grain (LEDGER #213). */
+const WHOLE_TRANSCRIPT_GRAIN: Readonly<Record<ChapterPick, ChapterGrain>> = { chapters: 'detailed', stories: 'stories' };
 import { snapTransports, toChapterPipelineResult } from './snap-chapters';
 import * as log from 'electron-log';
 import * as fs from 'fs';
@@ -128,12 +131,12 @@ export interface GenerationParams {
   /** Chapter load-context FLOOR. One value for the whole run (a different context reloads, LEDGER #111). */
   chapterNumCtx?: number;
   /**
-   * What the chapter pipeline detects (LEDGER #170): 'detailed' (a standalone video's
-   * internal turns — the default the UI preselects), 'broad' (larger pieces of one
-   * subject), or 'stories' (compilations). Absent means the renderer predates the
-   * selector; the declared default applies, stated once at the construction site.
+   * What the chapter pipeline detects (LEDGER #213): 'chapters' (every single video, the default)
+   * or 'stories' (a podcast compilation). A retired 'detailed' / 'broad' (#170) from a row queued
+   * before #213 reads as 'chapters', logged (granularity.ts chapterPickOf). Absent means the
+   * default, stated once at resolveChapterPick.
    */
-  chapterGrain?: ChapterGrain;
+  chapterGrain?: ChapterPick | 'detailed' | 'broad';
   /**
    * Which engine draws the chapters (P8b, a declared setting): 'snap', the outline + assign +
    * Viterbi service (chaptering/, LEDGER #199, #208), or 'whole-transcript', the fifth
@@ -1413,9 +1416,22 @@ export class MetadataGeneratorService {
   }
 
   /**
-   * Chapters on snap (chaptering/, LEDGER #199, #208) at the `chapters` grain, the queue's pick
-   * read as a setting of the dial (granularity.ts PIPELINE_DIAL): the 9B outlines and assigns,
-   * the chapters row titles, times come from sentence units (Law 6).
+   * The queue's pick (LEDGER #213), 'chapters' when absent, declared at this one site; a retired
+   * 'detailed' / 'broad' reads as 'chapters' with one logged line.
+   */
+  private static resolveChapterPick(params: GenerationParams): ChapterPick {
+    const { pick, migratedFrom } = chapterPickOf(params.chapterGrain ?? 'chapters');
+    if (migratedFrom !== null) {
+      log.info(`[MetadataGenerator] the retired "${migratedFrom}" chapter pick reads as "chapters" (LEDGER #213)`);
+    }
+    return pick;
+  }
+
+  /**
+   * Chapters on snap (chaptering/, LEDGER #199, #208, #212) at the queue's pick: `chapters` (outline +
+   * assign + Viterbi at the measured switch cost, 20; nothing in the queue turns it, #213) or `stories`
+   * (45-second junctions). The 9B outlines, assigns and judges, the chapters row titles, times come
+   * from sentence units (Law 6).
    *
    * The scorer needs a Crucible server even when the chapters row is on claude -p; with none, the
    * run is refused by name before anything is sent (resolveSnapChapterModels). Progress is
@@ -1434,14 +1450,11 @@ export class MetadataGeneratorService {
       throw new Error('Chapter generation needs a timestamped transcript');
     }
     const models = resolveSnapChapterModels(resolveMetadataRouting(params.metadataRouting), installedLanes().gpuVenue());
-    // The queue's pick (LEDGER #170), declared default 'broad' at this one site as it always was.
-    const pick = params.chapterGrain ?? 'broad';
-    const dial = PIPELINE_DIAL[pick];
-    if (!dial) throw new Error(`unknown chapter grain "${String(pick)}" — expected detailed, broad or stories`);
+    const pick = this.resolveChapterPick(params);
     const titleThinking = params.chapterTitleThinking ?? true;
     const label = item.source || `item_${itemIndex + 1}`;
     log.info(
-      `[MetadataGenerator] Chaptering ${label} on snap: ${dial.granularity} at switch cost ${dial.switchCost} (the "${pick}" pick); ` +
+      `[MetadataGenerator] Chaptering ${label} on snap at the ${pick} grain; ` +
         `outline and decide on ${models.scorer.model} on "${models.scorer.server}", titles on ${models.titles.model} ` +
         `(thinking ${titleThinking ? 'on' : 'off'})`
     );
@@ -1469,8 +1482,7 @@ export class MetadataGeneratorService {
         return { start: seg.start, end: seg.end, text: seg.text, ...(speaker ? { speaker } : {}) };
       });
       const result = await chapterOnSnap(captions, {
-        granularity: dial.granularity,
-        switchCost: dial.switchCost,
+        granularity: pick,
         chat: transports.chat,
         decide: transports.decide,
         promotedItems: aiManager.promotedItems(),
@@ -1627,9 +1639,10 @@ export class MetadataGeneratorService {
       // Sizes its own context window from the largest prompt the run will send; a
       // configured value can only raise that floor, never lower it.
       numCtx: params.chapterNumCtx,
-      // The queue-time selector's pick; 'detailed' is the declared default for a renderer
-      // that did not send one.
-      grain: params.chapterGrain ?? 'broad',
+      // The queue-time pick (LEDGER #213) as this engine's own grains: `chapters` is the old
+      // `detailed` (the single-video turns snap's chapters grain draws at switch cost 20),
+      // `stories` is `stories`. This engine leaves in P10.
+      grain: WHOLE_TRANSCRIPT_GRAIN[this.resolveChapterPick(params)],
       // The detail call's second required context input: what the video IS. A filename like
       // "2026-08-19 jesse watters mocks democrat candidates" tells it who is speaking and
       // why, which is what grounds the names it writes.

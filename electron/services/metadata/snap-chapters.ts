@@ -238,7 +238,7 @@ export function toChapterPipelineResult(result: ChapteringResult, titleThinking:
         chunks: s.chunkCount,
         refinedSections: s.refinedSections,
         decideCalls: s.decideCalls,
-        streamOutline: s.streamOutline,
+        stories: s.stories,
         adBaseline: s.adBaseline,
         plugVerdicts: result.plugVerdicts.map((v) => ({ ...v })),
         titleThinking,
