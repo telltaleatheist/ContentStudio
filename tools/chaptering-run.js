@@ -3,11 +3,11 @@
  * Run the snap chaptering service (electron/services/metadata/chaptering/, LEDGER #199) over one
  * ContentStudio transcript file, outside the app.
  *
- *   node tools/chaptering-run.js <transcript.json> --granularity <detailed|broad|stories|episodes>
+ *   node tools/chaptering-run.js <transcript.json> --granularity <chapters|stories>
  *        [--fake | --live] [--server http://127.0.0.1:7100] [--token <t>]
  *        [--outline-model qwen3.5-9b] [--title-model qwen3.8-27b-4bit]
  *        [--channel youtube-unfiltered] [--video-title "..."] [--no-summarize] [--no-ads]
- *        [--title-thinking on|off] [--switch-cost N] [--out result.json]
+ *        [--title-thinking on|off] [--title-max-tokens N] [--switch-cost N] [--out result.json]
  *
  * TWO TRANSPORTS, the service's own seam (types.ts ChatFn / DecideFn):
  *
@@ -85,13 +85,14 @@ function parseArgs(argv) {
       a.titleThinking = v === 'on';
     }
     else if (k === '--switch-cost') a.switchCost = Number(val());
+    else if (k === '--title-max-tokens') a.titleMaxTokens = Number(val());
     else if (k === '--out') a.out = val();
     else if (k.startsWith('--')) throw new Error(`unknown flag ${k}`);
     else rest.push(k);
   }
   if (rest.length !== 1) throw new Error('give exactly one transcript file');
   a.transcript = rest[0];
-  if (!a.granularity) throw new Error('--granularity is required (detailed, broad, stories or episodes)');
+  if (!a.granularity) throw new Error('--granularity is required (chapters or stories, LEDGER #208)');
   if (!a.mode) throw new Error('say --fake or --live');
   return a;
 }
@@ -100,7 +101,7 @@ function parseArgs(argv) {
 
 /** The fake's privilege (never the model's): it knows each sentence's place in the unit list. */
 function fakeTransport(units, granularity) {
-  const perChunk = { detailed: 6, broad: 4, stories: 3, episodes: 2 }[granularity];
+  const perChunk = { chapters: 6, stories: 3 }[granularity];
   const byText = new Map();
   units.forEach((u, i) => {
     byText.set(prompts.clip(u.text, 300), i);
@@ -214,8 +215,12 @@ function request(base, token, method, route, body, headers = {}, signal) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const LEASE_TTL = 120;
 const HEARTBEAT_MS = 40_000;
-/** The 9B at its manifest default, the 27B held to the same low context (LEDGER #196). */
+/**
+ * The 9B at 16,384 (LEDGER #196). The 27B title model at 24,576: a 6,000-token chapter window +
+ * the ~1,000-token body + the 16,384 thinking budget (LEDGER #208, summarize.ts), as the app loads it.
+ */
 const LOAD_CONTEXT = 16384;
+const TITLE_LOAD_CONTEXT = 24576;
 const DECIDE_MIN_VERSION = [1, 0, 24];
 
 function versionAtLeast(v, min) {
@@ -318,20 +323,20 @@ async function liveTransport(args, log) {
       const job = (await call('POST', '/v1/jobs', {
         type: 'load-model',
         model,
-        params: { lease: { act, ttl_seconds: LEASE_TTL }, context: LOAD_CONTEXT },
+        params: { lease: { act, ttl_seconds: LEASE_TTL }, context: model === args.titleModel ? TITLE_LOAD_CONTEXT : LOAD_CONTEXT },
         inputs: {},
       })).json.job_id;
       const s = await followJob(job);
       if (!s.lease_id) throw new Error(`loading ${model} finished without the lease it asked for`);
       Object.assign(held, { model, leaseId: s.lease_id, loadedByUs: true });
       loadsByUs.push(model);
-      log(`loaded ${model} at ${LOAD_CONTEXT} tokens in ${((Date.now() - t) / 1000).toFixed(1)} s (lease ${s.lease_id})`);
+      log(`loaded ${model} at ${model === args.titleModel ? TITLE_LOAD_CONTEXT : LOAD_CONTEXT} tokens in ${((Date.now() - t) / 1000).toFixed(1)} s (lease ${s.lease_id})`);
     }
     startHeartbeat();
   }
 
   // --- the two calls ---------------------------------------------------------------
-  const counts = { chat: 0, decide: 0, queueFullWaits: 0, chatMs: 0, decideMs: 0 };
+  const counts = { chat: 0, decide: 0, queueFullWaits: 0, chatMs: 0, decideMs: 0, titles: [] };
 
   /** A full chat/decision door says how long to wait: that wait is the door's design, bounded. */
   async function withQueueWait(fn) {
@@ -371,8 +376,14 @@ async function liveTransport(args, log) {
     if (!choice || !choice.message) throw new Error(`${o.what}: the chat answer has no choices[0].message`);
     // §0a: a missing finish_reason is refused, never read as "stop".
     if (typeof choice.finish_reason !== 'string') throw new Error(`${o.what}: the chat answer states no finish_reason`);
-    const text = typeof choice.message.content === 'string' ? choice.message.content : '';
-    log(`chat ${o.what}: ${((Date.now() - t) / 1000).toFixed(1)} s, finish ${choice.finish_reason}, ${text.length} chars`);
+    // A thinking-on reply can carry its <think> block in the content (vLLM without a reasoning
+    // parser, the PC): stripped, an unclosed one included (plain-call.ts stripThinking).
+    const raw = typeof choice.message.content === 'string' ? choice.message.content : '';
+    const text = raw.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/<think>[\s\S]*$/, '').trim();
+    const tokens = res.json.usage ? res.json.usage.completion_tokens : null;
+    if (o.role === 'summarize') counts.titles.push({ what: o.what, ms: Date.now() - t, completionTokens: tokens, finish: choice.finish_reason, thinking: o.thinking, sampling: res.headers['x-crucible-sampling'] || null });
+    log(`chat ${o.what}: ${((Date.now() - t) / 1000).toFixed(1)} s, finish ${choice.finish_reason}, ${tokens} tokens, ${text.length} chars` +
+      (res.headers['x-crucible-sampling'] ? `, sampling ${res.headers['x-crucible-sampling']}` : ''));
     return { text, finishReason: choice.finish_reason };
   };
 
@@ -463,6 +474,7 @@ async function main() {
   try {
     result = await service.chapterUnits(units, {
       granularity: args.granularity,
+      speakerRoles: units_.speakerRolesOf(transcript),
       chat: transport.chat,
       decide: transport.decide,
       ...(transport.countTokens ? { countTokens: transport.countTokens } : {}),
@@ -473,6 +485,7 @@ async function main() {
       detectAds: args.ads,
       ...(args.titleThinking !== undefined ? { titleThinking: args.titleThinking } : {}),
       ...(args.switchCost !== undefined ? { switchCost: args.switchCost } : {}),
+      ...(args.titleMaxTokens !== undefined ? { titleMaxTokens: args.titleMaxTokens } : {}),
       signal: ac.signal,
       diagnostics: Boolean(args.out),
       onProgress: (p) => {
@@ -496,13 +509,15 @@ async function main() {
       `(outline ${(s.outlineMs / 1000).toFixed(1)}, assign ${(s.assignMs / 1000).toFixed(1)}, ads ${(s.plugMs / 1000).toFixed(1)}, titles ${(s.summarizeMs / 1000).toFixed(1)})`,
   );
   console.log(`calls: ${s.chatCalls} chat, ${s.decideCalls} decide | floored ${s.flooredUnits.length}, skipped ${s.skippedUnits.length}`);
+  console.log(`speaker-tagged titles: ${s.speakerTagged} | ad baseline: ${s.adBaseline === null ? 'none' : s.adBaseline.toFixed(3)} | title ms: ${s.titleMs.join(', ')}`);
+  if (s.streamOutline) console.log(`stream outline (${s.streamOutline.length}): ${s.streamOutline.join(' | ')}`);
   for (const c of result.chapters) {
     const tag = c.isAd ? ' [ad]' : c.level === 2 ? ' [2]' : '';
     console.log(`${clock(c.startSec).padStart(8)}  ${c.title || '(untitled)'}${tag}   <- ${c.label}`);
   }
   if (s.warnings.length) console.log(`\nwarnings:\n  ${s.warnings.join('\n  ')}`);
   if (result.plugVerdicts.length) {
-    console.log(`\nad verdicts: ${result.plugVerdicts.map((v) => `${clock(result.units[v.start].start)} ${v.start}-${v.end} p=${v.p.toFixed(2)} ${v.read}`).join('; ')}`);
+    console.log(`\nad verdicts: ${result.plugVerdicts.map((v) => `${clock(result.units[v.start].start)} ${v.start}-${v.end} ${v.source} p=${v.p.toFixed(2)}/${v.threshold} ${v.read}`).join('; ')}`);
   }
   if (args.out) {
     const { units: _u, ...rest } = result;

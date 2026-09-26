@@ -31,6 +31,7 @@ import {
   resolveChapterModelOption,
   resolveCompilationPackagingOption,
   resolveMetadataRouting,
+  resolveSnapChapterModels,
   routedModelString,
   routingOption,
 } from './metadata-routing';
@@ -52,7 +53,10 @@ const GUIDELINES_NUM_PREDICT = 2048;
 import { JobCancelledError } from './cancellation';
 import type { TranscriptRef } from '../publish/publish-types';
 import { gpuCall, queueAITask } from '../queue-manager.service';
-import { beatJob, setJobStage } from '../../crucible/lanes';
+import { beatJob, installedLanes, setJobStage } from '../../crucible/lanes';
+import { chapter as chapterOnSnap } from './chaptering/chaptering.service';
+import { PIPELINE_DIAL } from './chaptering/granularity';
+import { snapTransports, toChapterPipelineResult } from './snap-chapters';
 import * as log from 'electron-log';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -67,6 +71,10 @@ import * as path from 'path';
  */
 const ENTITY_POOL_SIZE = 12;
 const PHRASE_POOL_SIZE = 40;
+
+/** The chapter engines a run may declare (GenerationParams.chapterEngine). */
+export type ChapterEngine = 'snap' | 'whole-transcript';
+export const CHAPTER_ENGINES: readonly ChapterEngine[] = ['snap', 'whole-transcript'];
 
 export interface GenerationParams {
   inputs: string[];
@@ -126,6 +134,18 @@ export interface GenerationParams {
    * selector; the declared default applies, stated once at the construction site.
    */
   chapterGrain?: ChapterGrain;
+  /**
+   * Which engine draws the chapters (P8b, a declared setting): 'snap', the outline + assign +
+   * Viterbi service (chaptering/, LEDGER #199, #208), or 'whole-transcript', the fifth
+   * architecture (chapter-whole-transcript.service.ts), kept selectable until P10 deletes it.
+   * Absent means the declared default, 'snap', applied at ONE site (generateChapters) and logged.
+   */
+  chapterEngine?: ChapterEngine;
+  /**
+   * Thinking on snap's chapter titles (LEDGER #208: ON, a judgment call). Absent = on; false is a
+   * declared setting of the run, stated in its warnings. The whole-transcript engine ignores it.
+   */
+  chapterTitleThinking?: boolean;
   /**
    * The re-roll gate's settings for this run (reroll/settings.ts; LEDGER #201), resolved by the
    * IPC layer from the `rerollGate` and `rerollGateTuning` settings AT JOB TIME. Absent (a caller
@@ -1287,10 +1307,13 @@ export class MetadataGeneratorService {
         };
       }
 
+      const snap = result.stats.snap;
       console.log(
         `[MetadataGenerator] Generated ${result.chapters.length} chapters in ${result.stats.calls} model calls ` +
-          `(${result.stats.band} cadence band, ` +
-          `${result.stats.chaptersDropped} dropped for an unmeasurable opening sentence, ` +
+          (snap
+            ? `(snap ${snap.granularity} at switch cost ${snap.switchCost}, ${snap.units} sentences in ${snap.chunks} chunk(s), ` +
+              `titles thinking ${snap.titleThinking ? 'on' : 'off'}, `
+            : `(${result.stats.band} cadence band, ${result.stats.chaptersDropped} dropped for an unmeasurable opening sentence, `) +
           `details ${result.stats.speakerTagged ? 'speaker-tagged' : 'untagged'})`
       );
       // The sink holds the PIPELINE's result, promos included: it is what "Send to AI"
@@ -1365,7 +1388,157 @@ export class MetadataGeneratorService {
   }
 
   /**
-   * Generate chapters — with the whole-transcript call, which is now the only way.
+   * Generate chapters on the run's declared engine (P8b): snap by default, the whole-transcript
+   * call when the run says so. There is no switch between them at run time: an engine that fails
+   * fails the chapters, and resolveChapters records why (Law 1; plan §10.5).
+   */
+  private static async generateChapters(
+    item: ContentItem,
+    aiManager: AIManagerService,
+    params: GenerationParams,
+    itemIndex: number,
+    itemCount: number,
+    lifecycle: JobModelLifecycle
+  ): Promise<ChapterPipelineResult> {
+    // THE ONE SITE the engine's default is declared. Logged either way, so a run's log says which
+    // engine drew its chapters and whether anyone chose it.
+    const engine = params.chapterEngine ?? 'snap';
+    if (!CHAPTER_ENGINES.includes(engine)) {
+      throw new Error(`unknown chapter engine "${String(engine)}" — expected ${CHAPTER_ENGINES.join(' or ')}`);
+    }
+    log.info(`[MetadataGenerator] chapter engine: ${engine}${params.chapterEngine === undefined ? ' (the declared default)' : ''}`);
+    return engine === 'snap'
+      ? this.generateSnapChapters(item, aiManager, params, itemIndex, itemCount, lifecycle)
+      : this.generateWholeTranscriptChapters(item, aiManager, params, itemIndex, itemCount, lifecycle);
+  }
+
+  /**
+   * Chapters on snap (chaptering/, LEDGER #199, #208) at the `chapters` grain, the queue's pick
+   * read as a setting of the dial (granularity.ts PIPELINE_DIAL): the 9B outlines and assigns,
+   * the chapters row titles, times come from sentence units (Law 6).
+   *
+   * The scorer needs a Crucible server even when the chapters row is on claude -p; with none, the
+   * run is refused by name before anything is sent (resolveSnapChapterModels). Progress is
+   * weighted by work (plan §0a: assign is most of the wall time), and every progress event is a
+   * sign of life for the job's stall clock.
+   */
+  private static async generateSnapChapters(
+    item: ContentItem,
+    aiManager: AIManagerService,
+    params: GenerationParams,
+    itemIndex: number,
+    itemCount: number,
+    lifecycle: JobModelLifecycle
+  ): Promise<ChapterPipelineResult> {
+    if (!item.srtSegments || item.srtSegments.length === 0) {
+      throw new Error('Chapter generation needs a timestamped transcript');
+    }
+    const models = resolveSnapChapterModels(resolveMetadataRouting(params.metadataRouting), installedLanes().gpuVenue());
+    // The queue's pick (LEDGER #170), declared default 'broad' at this one site as it always was.
+    const pick = params.chapterGrain ?? 'broad';
+    const dial = PIPELINE_DIAL[pick];
+    if (!dial) throw new Error(`unknown chapter grain "${String(pick)}" — expected detailed, broad or stories`);
+    const titleThinking = params.chapterTitleThinking ?? true;
+    const label = item.source || `item_${itemIndex + 1}`;
+    log.info(
+      `[MetadataGenerator] Chaptering ${label} on snap: ${dial.granularity} at switch cost ${dial.switchCost} (the "${pick}" pick); ` +
+        `outline and decide on ${models.scorer.model} on "${models.scorer.server}", titles on ${models.titles.model} ` +
+        `(thinking ${titleThinking ? 'on' : 'off'})`
+    );
+
+    const transports = snapTransports({
+      models,
+      job: lifecycle.leases,
+      trace: aiManager.promptTrace,
+      ...(models.titles.kind === 'cloud'
+        ? { cloudPlain: (prompt: string, model: string, what: string, shape: { thinking: boolean }) => aiManager.runPlainRequest(prompt, model, what, shape) }
+        : {}),
+      ...(params.cancelSignal === undefined ? {} : { signal: params.cancelSignal }),
+      laneName: `chapters-${params.jobId || 'job'}-${itemIndex}`,
+    });
+
+    // Chapter work is 0-60% of this item's "generating" phase, as on the other engine.
+    const notice = this.chapterProgress(params, label, itemIndex, itemCount);
+    notice.arm();
+    try {
+      // The speaker id is the segment's speaker and label together, the string the whole-transcript
+      // engine reads its HOST/CLIP side from (chapter-transcript.ts speakerRoleOf), so the two
+      // engines tag the same transcript the same way.
+      const captions = item.srtSegments.map((seg) => {
+        const speaker = `${seg.speaker || ''} ${seg.speakerLabel || ''}`.trim();
+        return { start: seg.start, end: seg.end, text: seg.text, ...(speaker ? { speaker } : {}) };
+      });
+      const result = await chapterOnSnap(captions, {
+        granularity: dial.granularity,
+        switchCost: dial.switchCost,
+        chat: transports.chat,
+        decide: transports.decide,
+        promotedItems: aiManager.promotedItems(),
+        channelName: params.promptSet,
+        videoTitle: item.title || (item.source ? path.basename(item.source) : undefined),
+        titleThinking,
+        ...(params.cancelSignal === undefined ? {} : { signal: params.cancelSignal }),
+        onProgress: (p) => notice.report(p.phase, Math.round(60 * p.fraction), `${p.phase} ${p.done}/${p.total}`),
+      });
+      return toChapterPipelineResult(result, titleThinking);
+    } finally {
+      notice.disarm();
+    }
+  }
+
+  /**
+   * The chapter stage's progress line and its 60 s "no progress" notice, shared by both engines.
+   *
+   * A stage that reports every ~3s and then says nothing for minutes is indistinguishable, from
+   * the progress bar, from a hang. It usually is not one (a model load has been clocked at 516
+   * silent seconds, a thinking title at ~400) but only this code knows that, so it says so. A
+   * SIGNAL and nothing more: nothing is killed, retried or rerouted. What ends a genuinely wedged
+   * run is the job's stall clock (electron/crucible/stream-stall.ts), which this notice
+   * deliberately does NOT feed: only `report`, a real step done, beats it.
+   */
+  private static chapterProgress(params: GenerationParams, label: string, itemIndex: number, itemCount: number) {
+    const STALL_NOTICE_MS = 60_000;
+    let stallTimer: NodeJS.Timeout | undefined;
+    // Latched by the final disarm, so a closure still running after the job ended cannot re-arm it.
+    let stallDone = false;
+    let last: { stage: string; percent: number; at: number } = { stage: 'chapters', percent: 0, at: Date.now() };
+    const arm = () => {
+      if (stallDone) return;
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        const silentSec = Math.round((Date.now() - last.at) / 1000);
+        log.warn(`[MetadataGenerator] Chapter stage "${last.stage}" for ${label} has reported no progress for ${silentSec}s; the model call is still in flight`);
+        params.progressCallback?.(
+          'generating',
+          `Chapters (${last.stage}) ${itemIndex + 1}/${itemCount} — no progress for ${silentSec}s, model call still in flight`,
+          last.percent,
+          undefined,
+          itemIndex
+        );
+        // Re-armed rather than one-shot: a stall the user is watching should keep counting up.
+        arm();
+      }, STALL_NOTICE_MS);
+    };
+    return {
+      arm,
+      disarm: () => {
+        stallDone = true;
+        clearTimeout(stallTimer);
+        stallTimer = undefined;
+      },
+      report: (stage: string, percent: number, detail: string) => {
+        last = { stage, percent, at: Date.now() };
+        // A step of the chapter stage finished: a sign of life for the job's stall clock.
+        beatJob();
+        arm();
+        params.progressCallback?.('generating', `Chapters (${detail}) ${itemIndex + 1}/${itemCount}...`, percent, undefined, itemIndex);
+      },
+    };
+  }
+
+  /**
+   * Generate chapters — with the whole-transcript call (the fifth architecture), selectable under
+   * `chapterEngine: 'whole-transcript'` until P10 deletes it.
    *
    * There have been four architectures and three of them are deleted: the sealed 5-stage 14B
    * pipeline (~390 one-question calls a video), the 27B single call, and the embedding
@@ -1390,7 +1563,7 @@ export class MetadataGeneratorService {
    * separately: the method requires one model resident at a time, and that is exactly what
    * the 1-slot AI pool exists to guarantee.
    */
-  private static async generateChapters(
+  private static async generateWholeTranscriptChapters(
     item: ContentItem,
     aiManager: AIManagerService,
     params: GenerationParams,
@@ -1423,69 +1596,13 @@ export class MetadataGeneratorService {
       detail: [30, 60],
     };
 
-    // A stage that reports every ~3s and then says nothing for minutes is
-    // indistinguishable, from the progress bar, from a hang. It usually is not one —
-    // Ollama loading a model or thrashing KV cache has been clocked here at 516 silent
-    // seconds — but only this code knows that, so it says so.
-    //
-    // A SIGNAL and nothing more: nothing is killed, retried or rerouted. What ends a genuinely
-    // wedged run is the job's stall clock (electron/crucible/stream-stall.ts), which this
-    // notice deliberately does NOT feed: only reportProgress below, a real step done, beats it.
-    const STALL_NOTICE_MS = 60_000;
-    let stallTimer: NodeJS.Timeout | undefined;
-    // Latched by the final disarm. Without it, the watchdog case re-arms the timer: the
-    // queue rejects this promise while the closure is still running, and the closure's
-    // next onProgress would put a stall notice on a job that already ended.
-    let stallDone = false;
-    let lastProgress: { stage: string; percent: number; at: number } = {
-      stage: 'chapters',
-      percent: 0,
-      at: Date.now(),
-    };
-
-    const armStallNotice = () => {
-      if (stallDone) return;
-      clearTimeout(stallTimer);
-      stallTimer = setTimeout(() => {
-        const silentSec = Math.round((Date.now() - lastProgress.at) / 1000);
-        log.warn(
-          `[MetadataGenerator] Chapter stage "${lastProgress.stage}" for ${label} has reported no progress ` +
-            `for ${silentSec}s; the model call is still in flight`
-        );
-        params.progressCallback?.(
-          'generating',
-          `Chapters (${lastProgress.stage}) ${itemIndex + 1}/${itemCount} — no progress for ${silentSec}s, ` +
-            `model call still in flight`,
-          lastProgress.percent,
-          undefined,
-          itemIndex
-        );
-        // Re-armed rather than one-shot: a stall the user is watching should keep
-        // counting up, not report 60s once and go quiet again.
-        armStallNotice();
-      }, STALL_NOTICE_MS);
-    };
-
-    const disarmStallNotice = () => {
-      stallDone = true;
-      clearTimeout(stallTimer);
-      stallTimer = undefined;
-    };
-
+    // The progress line and the 60 s notice (chapterProgress says why each is what it is).
+    const notice = this.chapterProgress(params, label, itemIndex, itemCount);
+    const armStallNotice = notice.arm;
+    const disarmStallNotice = notice.disarm;
     const reportProgress = (stage: string, done: number, total: number) => {
       const [from, to] = stageWeights[stage];
-      const percent = Math.round(from + ((to - from) * done) / Math.max(1, total));
-      lastProgress = { stage, percent, at: Date.now() };
-      // A step of the chapter pipeline finished: a sign of life for the job's stall clock.
-      beatJob();
-      armStallNotice();
-      params.progressCallback?.(
-        'generating',
-        `Chapters (${stage} ${done}/${total}) ${itemIndex + 1}/${itemCount}...`,
-        percent,
-        undefined,
-        itemIndex
-      );
+      notice.report(stage, Math.round(from + ((to - from) * done) / Math.max(1, total)), `${stage} ${done}/${total}`);
     };
 
     const chapterer = new WholeTranscriptChapterService({

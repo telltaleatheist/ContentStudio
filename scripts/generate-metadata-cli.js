@@ -149,6 +149,11 @@ Everything else:
   --grain <g>          What the chapter pipeline detects (LEDGER #170): detailed (default —
                        a standalone video's internal turns), broad (fewer, bigger pieces),
                        or stories (compilations). An unknown value fails the run by name.
+  --chapter-engine <e> Which engine draws the chapters (P8b): snap (the declared default) or
+                       whole-transcript. Default: the app's 'chapterEngine' setting, else snap.
+  --title-thinking <on|off>
+                       Thinking on snap's chapter titles (LEDGER #208: on). Default: the app's
+                       'chapterTitleThinking' setting, else on.
   --assets <dir>       Prompt assets root. Default: <repo>/electron/assets/prompts.
   --server <name>      Send this run to that registered Crucible server instead of the one
                        the app has selected. The routing record is not modified.
@@ -196,6 +201,15 @@ function parseArgs(argv) {
         console.error(`--grain must be detailed, broad, or stories (got "${args.grain}")`);
         process.exit(1);
       }
+    }
+    else if (a === '--chapter-engine') {
+      args.chapterEngine = argv[++i];
+      if (!['snap', 'whole-transcript'].includes(args.chapterEngine)) fail(`--chapter-engine must be snap or whole-transcript (got "${args.chapterEngine}")`);
+    }
+    else if (a === '--title-thinking') {
+      const v = argv[++i];
+      if (v !== 'on' && v !== 'off') fail(`--title-thinking must be on or off (got "${v}")`);
+      args.titleThinking = v === 'on';
     }
     else if (a === '--out') args.out = path.resolve(argv[++i]);
     else if (a === '--no-insights') args.noInsights = true;
@@ -696,6 +710,10 @@ async function main() {
     // What the chapter pipeline detects (LEDGER #170); absent = the declared default
     // ('detailed'), same as the app's queue page preselects.
     chapterGrain: args.grain,
+    // The engine and the titles' thinking (P8b, LEDGER #208), as ipc-handlers reads them from the
+    // store; a flag overrides for this run only, and the store is never written.
+    chapterEngine: args.chapterEngine !== undefined ? args.chapterEngine : settings.chapterEngine,
+    chapterTitleThinking: args.titleThinking !== undefined ? args.titleThinking : settings.chapterTitleThinking,
     // Carried for parity with ipc-handlers' `generate-metadata`. It is a no-op on this call —
     // the generator only resolves a tagging mode when it is the one transcribing, and it is
     // handed `preTranscribedContent` here — but a params object that silently lacks a field the

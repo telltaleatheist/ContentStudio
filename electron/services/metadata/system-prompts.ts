@@ -109,11 +109,6 @@ export const SYSTEM_PROMPTS = {
   get TASK_TITLES_INPUT_PENDING(): string {
     return promptAssets().pipeline(SYSTEM_FILE, 'task_titles_input_pending');
   },
-
-  /** Episode boundaries in a multi-hour stream. Placeholders: {transcript}, {duration}, {episodeCount} */
-  get EPISODE_SPLIT_PROMPT(): string {
-    return promptAssets().pipeline(SYSTEM_FILE, 'episode_split');
-  },
 };
 
 /**

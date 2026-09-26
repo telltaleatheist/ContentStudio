@@ -62,7 +62,17 @@ export function normalizeWords(text: string): string[] {
 export type SpeakerRole = 'host' | 'clip' | 'unsure';
 
 function speakerRoleOf(segment: SRTSegment): SpeakerRole | null {
-  const id = `${segment.speaker || ''} ${segment.speakerLabel || ''}`.toLowerCase().trim();
+  return speakerRoleOfId(`${segment.speaker || ''} ${segment.speakerLabel || ''}`);
+}
+
+/**
+ * The same rule over a bare speaker or track name. Exported for the snap chaptering service
+ * (chaptering/units.ts `speakerRolesOf`), which reads the editor's word-level file, where a
+ * track's LABEL ("mic audio_processed", "screen audio_processed") says which side it is: one
+ * rule for every transcript shape, so the two engines can never tag the same stream differently.
+ */
+export function speakerRoleOfId(name: string): SpeakerRole | null {
+  const id = name.toLowerCase().trim();
   if (id.length === 0) return null;
   const host = /mic|host/.test(id);
   const clip = /screen|clip|footage/.test(id);
@@ -161,15 +171,37 @@ export interface ChapterPipelineResult {
 /**
  * What one chapter run actually did, in the numbers this architecture can measure.
  *
- * Every REQUIRED field is one the whole-transcript path writes. The optional block below it
- * is history: job JSON written before 2026-08-22 carries stretch/junction/scorer counts from
- * two architectures that no longer exist, and the report reader must not start throwing on
- * its own past. Nothing writes them any more, and nothing derives anything from them.
+ * Every REQUIRED field is one both engines write. `engine` says which ran (P8b's declared
+ * `chapterEngine` setting); `band` is the whole-transcript engine's alone, and `snap` is the snap
+ * engine's own numbers. The optional block at the end is history: job JSON written before
+ * 2026-08-22 carries stretch/junction/scorer counts from two architectures that no longer exist,
+ * and the report reader must not start throwing on its own past. Nothing writes them any more,
+ * and nothing derives anything from them.
  */
 export interface ChapterRunStats {
+  /** Which engine produced the list. Absent on job JSON written before P8b: that was whole-transcript. */
+  engine?: 'snap' | 'whole-transcript';
   durationSeconds: number;
-  /** Which rung of the prompt's cadence band this runtime landed on. */
-  band: CadenceBand;
+  /** Which rung of the prompt's cadence band this runtime landed on (whole-transcript only). */
+  band?: CadenceBand;
+  /** What the snap engine did (snap only; chaptering/types.ts ChapteringStats, summarised). */
+  snap?: {
+    granularity: string;
+    switchCost: number;
+    units: number;
+    chunks: number;
+    refinedSections: number;
+    decideCalls: number;
+    streamOutline: string[] | null;
+    adBaseline: number | null;
+    plugVerdicts: Array<{ start: number; end: number; p: number; threshold: number; read: string; source: string }>;
+    titleThinking: boolean;
+    titleMs: number[];
+    outlineMs: number;
+    assignMs: number;
+    plugMs: number;
+    summarizeMs: number;
+  };
   /**
    * Distinct boundary candidates stage 1 proposed. On a consensus run (local transport,
    * several samples — 2026-08-30 campaign) this is the count of vote clusters; on a

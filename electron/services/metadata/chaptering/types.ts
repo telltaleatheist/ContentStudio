@@ -15,8 +15,15 @@
  * whatever order they were written in).
  */
 
-/** How finely the sections are kept (Law 6 as amended by #199). */
-export type Granularity = 'detailed' | 'broad' | 'stories' | 'episodes';
+/**
+ * The two grains the service serves (Owen, 2026-09-25, LEDGER #208): `chapters` are the subject
+ * changes inside a video, the list that goes to YouTube (the metadata pipeline); `stories` are
+ * stream-level splits into completely different subjects (the editor's Stories and the in-queue
+ * split of a stream into standalone videos). "Episodes" is retired as a name and as a grain.
+ * How finely either is drawn is the dial (granularity.ts): the outline instructions and the
+ * switch cost (Law 6 as amended by #199).
+ */
+export type Granularity = 'chapters' | 'stories';
 
 /** One sentence-sized unit of the transcript: the thing every decide question quotes. */
 export interface SentenceUnit {
@@ -147,6 +154,7 @@ export type ChapteringErrorCode =
   | 'no_answer'
   | 'answer_shape'
   | 'outline_empty'
+  | 'outline_prose'
   | 'bad_request'
   | 'truncated'
   | 'cancelled'
@@ -178,6 +186,22 @@ export interface PlugVerdict {
    * rejection and is warned about.
    */
   read: 'answered' | 'floored' | 'no-evidence';
+  /**
+   * Which stretch was asked about (plan §0a, LEDGER #208): 'ad-option', a run Viterbi assigned to
+   * the fixed ad item; 'outline-item', a run the outline itself named as an ordinary item on which
+   * the ad item was a close second (plugs.ts `isOutlineItemCandidate`), so a plug the outline wrote
+   * as content is still flagged when the yes/no says so.
+   */
+  source: 'ad-option' | 'outline-item';
+  /** The P(yes) an answer needed here: 0.5, lowered near the channel's usual ad marks (the declared prior, plugs.ts). */
+  threshold: number;
+  /**
+   * A confirmed ad-option run kept only its core [start, end): the sentences on which the ad option
+   * leads (plugs.ts trimToCores). Absent when the whole run was kept.
+   */
+  kept?: [number, number];
+  /** An outline-item candidate read in this many windows, P(yes) the least of them (plugs.ts confirmWindows). */
+  windows?: number;
 }
 
 export interface Chapter {
@@ -220,6 +244,21 @@ export interface ChapteringStats {
   /** Chapters whose transcript was over the title call's budget and were titled from their parts (summarize.ts). */
   titledFromParts: number[];
   /**
+   * The stream-level outline (LEDGER #208): the merged outline every chunk was assigned against,
+   * when the transcript was more than one chunk and the grain writes one. Null otherwise.
+   */
+  streamOutline: string[] | null;
+  /**
+   * The ad option's per-video baseline (plan §0a): the median of its probability over the
+   * video's sentences, capped at 0.5. Every sentence's ad score was read as its rise above it.
+   * Null when the run had no ad option.
+   */
+  adBaseline: number | null;
+  /** The titles were written from HOST:/CLIP: tagged lines (every unit's speaker resolved to a side). */
+  speakerTagged: boolean;
+  /** Wall time of each title call, in ms, in chapter order (P8b records the cost of thinking). */
+  titleMs: number[];
+  /**
    * Units whose answer fell under the label-mass gate: the model put almost none of its mass on
    * any letter, so the unit carries no evidence and Viterbi's switch cost decides it. Recorded
    * and reported (Law 8), never silently floored.
@@ -232,7 +271,10 @@ export interface ChapteringResult {
   granularity: Granularity;
   switchCost: number;
   units: SentenceUnit[];
-  /** The level-1 outline items in order, de-duplicated, without the ad item. */
+  /**
+   * The level-1 outline items in order, de-duplicated, without the ad item: the stream-level
+   * outline when one was written, else every chunk's items in the order they were written.
+   */
   outline: string[];
   chapters: Chapter[];
   plugVerdicts: PlugVerdict[];
@@ -260,6 +302,9 @@ export interface ChunkDiagnostic {
 }
 
 export type ChapteringPhase = 'units' | 'outline' | 'assign' | 'plugs' | 'refine' | 'summarize' | 'done';
+
+/** Which side of the commentary a unit's speaker is (chapter-transcript.ts SpeakerRole). */
+export type SpeakerRole = 'host' | 'clip' | 'unsure';
 
 export interface ChapteringProgress {
   phase: ChapteringPhase;

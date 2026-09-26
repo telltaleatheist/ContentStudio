@@ -411,23 +411,24 @@ export interface EditorHost {
   storyRoutedModel(): Promise<{ model: string; label: string; kind: 'local' | 'cloud' }>;
 
   /**
-   * Split a span of transcript into chapters. `consolidate: false` when the span IS one
-   * story the user defined — consolidation exists to find the seam BETWEEN stories, so
-   * inside a declared story every merge it makes costs the user a marker.
+   * Chapter a span of transcript on snap at a grain (LEDGER #208): 'stories' finds the stories
+   * of the timeline (or splits one story in several); 'chapters' draws one story's own chapter
+   * list, the subject changes that go to YouTube. Times come from sentence units (Law 6).
    */
   analyzeStoryChapters(payload: {
     segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
-    consolidate?: boolean;
+    grain: 'stories' | 'chapters';
   }): Promise<{ chapters: Array<{
     index: number; startSeconds: number; endSeconds: number; label: string; detail: string; verbalCue: boolean;
-    /** This start is a raw ±45 s junction, not a mapped quote — no quote could be located. */
+    /** Snap's ad check confirmed this stretch as a plug. */
+    isAd?: boolean;
     startApprox?: boolean;
-    /** The pre-consolidation chapters this one was merged from. Length 1 = never merged. */
+    /** One grain per run: the chapter itself (length 1). */
     subChapters: Array<{ startSeconds: number; endSeconds: number; label: string; detail: string; startApprox?: boolean }>;
-  }> }>;
+  }>; warnings?: string[] }>;
 
-  /** Suggest one title from a story's subject list (preferred) or raw transcript text. */
-  suggestStoryTitle(payload: { text: string | string[] }): Promise<{ title: string }>;
+  /** Title one story from the chapters already derived inside it (their titles and summaries). */
+  suggestStoryTitle(payload: { name?: string; chapters: Array<{ label: string; detail?: string; startSeconds: number; endSeconds: number }> }): Promise<{ title: string }>;
 
   /** Abort the in-flight analysis at its next boundary. */
   cancelStoryAnalysis(): Promise<{ stopped: boolean }>;
@@ -439,7 +440,7 @@ export interface EditorHost {
   unloadStoryModel(): Promise<{ ok: boolean; released: string | null }>;
 
   /** Progress ticks for chapter analysis. */
-  onStoryAnalyzeProgress(callback: (p: { phase: string; done: number; total: number }) => void): void;
+  onStoryAnalyzeProgress(callback: (p: { phase: string; done: number; total: number; fraction?: number }) => void): void;
 
   /** Detach the analysis-progress listener. Called from ngOnDestroy. */
   removeStoryAnalyzeProgressListener(): void;

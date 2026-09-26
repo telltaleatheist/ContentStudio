@@ -139,6 +139,12 @@ export interface ChatResult {
   model: string;
   /** The act that crossed the wire: `generate`, or `analysis` on a pre-1.0.24 server. */
   act: ContentStudioAct;
+  /**
+   * `X-Crucible-Sampling`, parsed: where each sampling key the engine used came from (`request`,
+   * `manifest`, `engine`, `dropped`). Informational (plan 0a: read tolerantly), null when the
+   * server sent none or it does not parse; a caller that needs a key to be `request` checks it.
+   */
+  sampling: Record<string, string> | null;
 }
 
 export interface DecideRequest {
@@ -147,6 +153,12 @@ export interface DecideRequest {
   questions: Readonly<Record<string, DecideQuestion>>;
   /** Plan 0a, N7: `report` (null + missingLabels), with the floor the client's own rule. */
   missing?: 'refuse' | 'report';
+  /**
+   * The context to load the scorer at when this job loads it (snap's states run to ~12k tokens plus
+   * the questions, so the 9B loads at 16,384: plan 7.3's "Snap assign" row). Absent: the server's
+   * default, which on 1.0.24+ is 8k and refuses a snap state over it before sending.
+   */
+  loadContext?: number;
   job?: JobLeases;
   signal?: AbortSignal;
   what: string;
@@ -305,7 +317,7 @@ export class CrucibleTransport {
     request: ChatRequest,
     signal: AbortSignal | undefined,
     hooks: CrucibleStepHooks,
-  ): Promise<StreamedChat> {
+  ): Promise<StreamedChat & { sampling: Record<string, string> | null }> {
     const upstream = isUpstreamModelId(model);
     const clock = request.timeoutMs === undefined ? undefined : AbortSignal.timeout(request.timeoutMs);
     const combined = anySignal(signal, clock);
@@ -337,12 +349,13 @@ export class CrucibleTransport {
       });
       if (!response.ok) throw await refusalOf(response, url);
       let last = 0;
-      return await readChatStream(response, url, () => {
+      const streamed = await readChatStream(response, url, () => {
         const now = Date.now();
         if (now - last < BEAT_EVERY_MS) return;
         last = now;
         hooks.beat();
       });
+      return { ...streamed, sampling: samplingOf(response.headers.get('X-Crucible-Sampling')) };
     } catch (err) {
       if (clock?.aborted && !signal?.aborted) {
         throw new CrucibleCallError(
@@ -355,7 +368,7 @@ export class CrucibleTransport {
     }
   }
 
-  private readAnswer(answer: StreamedChat, server: string, model: string, act: ContentStudioAct, request: ChatRequest): ChatResult {
+  private readAnswer(answer: StreamedChat & { sampling: Record<string, string> | null }, server: string, model: string, act: ContentStudioAct, request: ChatRequest): ChatResult {
     const usage = answer.usage;
     if (answer.finishReason === 'length') {
       throw new CrucibleCallError(
@@ -371,7 +384,7 @@ export class CrucibleTransport {
       `[crucible] ${request.what}: ${model} on "${server}" (${act}) answered ${answer.text.length} chars, ` +
         `finish ${answer.finishReason}, tokens ${usage?.promptTokens ?? 'unstated'} in / ${usage?.completionTokens ?? 'unstated'} out`,
     );
-    return { text: answer.text, finishReason: answer.finishReason, usage, server, model, act };
+    return { text: answer.text, finishReason: answer.finishReason, usage, server, model, act, sampling: answer.sampling };
   }
 
   /** The check before sending, against what the server states the model is loaded with. */
@@ -440,7 +453,7 @@ export class CrucibleTransport {
       const need = estimateTokens(state.length);
       let reensured = false;
       for (;;) {
-        await job.hold(server, model, { act: 'decide', need, signal, hooks });
+        await job.hold(server, model, { act: 'decide', need, loadContext: request.loadContext, signal, hooks });
         job.assertHeld(server, model);
         const facts = job.contextFacts(server, model);
         checkBeforeSending({
@@ -571,6 +584,23 @@ export class CrucibleTransport {
       return new CrucibleCallError('protocol_error', `"${server}" answered ${what} in a shape ContentStudio cannot use: ${err.message}`, server, null, null, null, err);
     }
     return callRefusalOf(err, server);
+  }
+}
+
+/** `X-Crucible-Sampling` as a key -> source map, or null (absent, or not a JSON object of strings). */
+export function samplingOf(header: string | null): Record<string, string> | null {
+  if (header === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(header);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value === 'string') out[key] = value;
+      else if (value !== null && typeof value === 'object' && typeof (value as { source?: unknown }).source === 'string') out[key] = (value as { source: string }).source;
+    }
+    return out;
+  } catch {
+    return null;
   }
 }
 

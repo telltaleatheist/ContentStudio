@@ -12,6 +12,14 @@
  * ONE item is an answer, not an error: a single-topic stretch has a one-item outline and
  * becomes one chapter spanning it (chaptering.service.ts). NO usable item is refused — there
  * is nothing to name a chapter with, and inventing a label would be a fallback (Law 1).
+ *
+ * A PROSE ANSWER IS REFUSED, naming the call (P8b's brief, decision 4). Measured once in P8a
+ * (docs/crucible/P8a.md): one chunk of the 2026-09-23 stream answered "Analysis of the
+ * transcript reveals that…" and "The stream flows as follows:", and the parser, reading every
+ * line, made those sentences into options. Reading prose line by line under some guessed rule
+ * would be a fallback (Law 1), so an answer whose lines are not labels fails loudly. What is not
+ * a label is declared in `proseLine`: a lead-in ending in a colon, a line holding two sentences,
+ * or a line over PROSE_WORDS words (the longest label the 9B wrote across P8a's runs was 17).
  */
 
 import { ChatFn, ChapteringError } from './types';
@@ -33,10 +41,35 @@ function stripChars(s: string, chars: string): string {
   return s.slice(a, b);
 }
 
-export function parseOutline(content: string, maxItems: number = MAX_ITEMS): string[] {
+/** A line longer than this many words is a sentence of prose, not an outline label. */
+export const PROSE_WORDS = 30;
+
+/**
+ * Why a line is not an outline label, or null when it is one. The two-sentence rule wants a word
+ * of three or more letters, an all-capitals word ("AI.") or a number before the stop, so the
+ * short abbreviations of a label ("vs. Biden", "Dr. Phil") stay labels.
+ */
+export function proseLine(line: string): string | null {
+  const l = line.trim();
+  if (/:\s*$/.test(l)) return 'it is a lead-in ending in a colon';
+  if (/(?:[A-Za-z]{3,}|[A-Z]{2,}|\d+)[.!?]["')\]]*\s+["'(]?[A-Z0-9]/.test(l)) return 'it holds more than one sentence';
+  const words = l.split(/\s+/).filter((w) => w.length > 0).length;
+  if (words > PROSE_WORDS) return `it runs ${words} words (a label is at most ${PROSE_WORDS})`;
+  return null;
+}
+
+export function parseOutline(content: string, maxItems: number = MAX_ITEMS, what: string = 'the outline'): string[] {
   const items: string[] = [];
   const seen = new Set<string>();
   for (const raw of content.split(SPLITLINES)) {
+    const why = raw.trim() ? proseLine(stripChars(raw, STRIP)) : null;
+    if (why !== null) {
+      throw new ChapteringError(
+        'outline_prose',
+        `${what} was answered in prose, not as a list of labels: the line ${JSON.stringify(raw.trim().slice(0, 160))} ` +
+          `is not a label (${why}). Nothing is read from a prose outline under a guessed rule (Law 1).`,
+      );
+    }
     let l = stripChars(raw, STRIP);
     l = l.replace(/^\d+[.)]\s*/, '').replace(/\*\*/g, '');
     l = clip(stripChars(l, STRIP), MAX_LABEL_CHARS);
@@ -58,10 +91,23 @@ export function parseOutline(content: string, maxItems: number = MAX_ITEMS): str
  * 0, and the answer parsed. A truncated answer (`length`) is refused: an outline cut off
  * mid-list would silently drop the sections at the end of the video.
  */
-export async function writeOutline(chat: ChatFn, prompt: string, what: string, signal?: AbortSignal): Promise<string[]> {
+export async function writeOutline(
+  chat: ChatFn,
+  prompt: string,
+  what: string,
+  signal?: AbortSignal,
+  warn?: (message: string) => void,
+): Promise<string[]> {
   const result = await chat(prompt, { role: 'outline', maxTokens: OUTLINE_MAX_TOKENS, thinking: false, temperature: 0, what, signal });
   if (result.finishReason === 'length') {
     throw new ChapteringError('truncated', `${what}: the outline hit its ${OUTLINE_MAX_TOKENS}-token cap, so the list is cut off`);
   }
-  return parseOutline(result.text);
+  // segment.py's cap, kept, and SAID (Law 8): the items past it are the END of the stretch, so a
+  // list that overflows loses its last sections (P8b measured a merged stream outline of 37 lines
+  // whose last twelve were the second half of the stream).
+  const all = parseOutline(result.text, Number.MAX_SAFE_INTEGER, what);
+  if (all.length > MAX_ITEMS) {
+    warn?.(`${what} listed ${all.length} items; the first ${MAX_ITEMS} were kept (the letters A..Z hold ${MAX_ITEMS} and the ad item), and its last ${all.length - MAX_ITEMS} were dropped: ${all.slice(MAX_ITEMS).map((x) => JSON.stringify(x)).join(', ')}`);
+  }
+  return all.slice(0, MAX_ITEMS);
 }

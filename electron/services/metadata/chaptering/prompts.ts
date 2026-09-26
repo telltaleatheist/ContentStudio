@@ -4,7 +4,7 @@
  * They are the `snap_*` keys of electron/assets/prompts/shared/pipeline/chapters.yml, beside
  * the whole-transcript bodies they will replace (Law 2: code assembles, never authors; a
  * missing key throws naming the file and the key). What each body encodes and the
- * measurement behind it is in PROMPT-LEARNINGS.md, Part 5. The outline body for `detailed`,
+ * measurement behind it is in PROMPT-LEARNINGS.md, Part 5. The outline body for `chapters`,
  * the assign question and the plug statement are segment.py's VERBATIM (docs/crucible/
  * reference/segment.py) — they are part of the measured result (YTSeg F1@±1 0.72), and a
  * reworded one has to be re-benchmarked.
@@ -73,8 +73,20 @@ export const SNAP_PROMPTS = {
 
   /** The sub-outline body (level 2, inside one long section): segment.py's, over that section only. */
   subOutline(transcript: string, maxItems: number): string {
-    const body = promptAssets().pipeline(CHAPTERS_FILE, 'snap_outline_detailed');
+    const body = promptAssets().pipeline(CHAPTERS_FILE, 'snap_outline_chapters');
     return formatPrompt(body, { max_items: maxItems, duration: '', transcript });
+  },
+
+  /**
+   * The stream-level outline (LEDGER #208): the grain's merge body over every chunk's own
+   * outline, in order, each headed by its stretch's clock range. Placeholders: {outlines},
+   * {max_items}, {duration} (the whole transcript's runtime in words).
+   */
+  streamMerge(mergeKey: string, stretches: ReadonlyArray<{ clock: string; items: readonly string[] }>, maxItems: number, duration: string): string {
+    const body = promptAssets().pipeline(CHAPTERS_FILE, mergeKey);
+    const outlines = stretches.map((s, k) => `Stretch ${k + 1} (${s.clock}):\n${s.items.join('\n')}`).join('\n\n');
+    // The outlines are filled LAST, for the reason outline() gives.
+    return formatPrompt(body, { max_items: maxItems, duration, outlines });
   },
 
   /** segment.py:71-73 — the per-sentence assign question. Placeholders: {sentence}, {previous}. */

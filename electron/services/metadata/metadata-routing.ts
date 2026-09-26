@@ -381,6 +381,57 @@ export function resolveChapterModelOption(resolved: ResolvedMetadataRouting): Me
 }
 
 /**
+ * The model that writes snap's outline and answers its decide questions: a FIXED ROLE, declared
+ * here and not a dialog row (P8b's brief; Owen, LEDGER #199: "9b -> outline, outline -> snap, final
+ * chapter -> 27b -> chapter title"). The measured setup is the 9B at bf16 (plan §10.2, YTSeg F1@±1
+ * 0.72); the 4B reached ~90% of it and the 2B is not viable, so there is nothing to choose between
+ * that the operator would want. The chapters ROW still picks the model that writes the titles.
+ *
+ * A Crucible id, because decide needs a distribution and no upstream returns one: a run whose
+ * chapters row is on Claude or claude -p still needs this model on a Crucible server, and is
+ * refused by name when none is selected (resolveSnapChapterModels). NOT a fallback for a missing
+ * choice: there is no choice, and changing it is a diff to this line.
+ */
+export const CHAPTER_SCORER_MODEL = 'qwen3.5-9b';
+
+/** Snap chaptering's two roles, resolved: the fixed scorer on a named server, and the chapters row for the titles. */
+export interface SnapChapterModels {
+  scorer: { model: string; server: string };
+  titles: MetadataRoutingOption;
+}
+
+/** A snap run that cannot have its scorer: nothing is started (Law 1). Typed, so a caller reads the code (Law 10). */
+export class SnapScorerUnavailableError extends Error {
+  readonly code = 'snap_scorer_unavailable';
+  constructor(message: string) {
+    super(message);
+    this.name = 'SnapScorerUnavailableError';
+  }
+}
+
+/**
+ * The models a snap chapter run uses, or a refusal by name. `venue` is where a GPU step would run
+ * now (lanes.ts `gpuVenue`): the job's server, or the selected one, or none with the registry's
+ * sentence. The titles follow the chapters row whatever it is; the scorer needs a Crucible server
+ * whatever the row is, and that is the refusal a claude -p row cannot talk its way past.
+ */
+export function resolveSnapChapterModels(
+  resolved: ResolvedMetadataRouting,
+  venue: { server: string } | { server: null; reason: string },
+): SnapChapterModels {
+  const titles = resolveChapterModelOption(resolved);
+  if (venue.server === null) {
+    throw new SnapScorerUnavailableError(
+      `Chaptering on snap writes its outline and assigns every sentence on ${CHAPTER_SCORER_MODEL}, which runs on a ` +
+        `Crucible server, and none can take it (${venue.reason}). The chapters row (${titles.label}) writes only the ` +
+        `titles, so it does not change that: select a Crucible server in Settings › Crucible Servers, or set the chapter ` +
+        `engine to whole-transcript.`,
+    );
+  }
+  return { scorer: { model: CHAPTER_SCORER_MODEL, server: venue.server }, titles };
+}
+
+/**
  * Which model writes a COMPILATION's package: the `titles` task's own selection.
  *
  * A compilation is the one surviving whole-metadata call (ai-manager's
@@ -777,6 +828,9 @@ export interface MetadataRoutingServerView {
 export interface MetadataRoutingChaptersView {
   generationModel: string;
   generationAvailability: MetadataRoutingAvailability;
+  /** Snap's fixed outline and decide model (CHAPTER_SCORER_MODEL), judged against the same server. */
+  scorerModel: string;
+  scorerAvailability: MetadataRoutingAvailability;
 }
 
 export interface MetadataRoutingView {
@@ -848,6 +902,11 @@ export function buildRoutingView(stored: unknown, inventory: CatalogInventory): 
     chapters: {
       generationModel: chapterOption.model,
       generationAvailability: optionAvailability(chapterOption, inventory).availability,
+      scorerModel: CHAPTER_SCORER_MODEL,
+      scorerAvailability: optionAvailability(
+        { kind: 'local', label: 'snap scorer', model: CHAPTER_SCORER_MODEL, crucibleModel: CHAPTER_SCORER_MODEL },
+        inventory
+      ).availability,
     },
     server: {
       name: inventory.server,

@@ -60,6 +60,14 @@ const api = {
   importTranscript: () => ipcRenderer.invoke('import-transcript'),
   analyzeTranscriptSplit: (filePath: string) =>
     ipcRenderer.invoke('analyze-transcript-split', { filePath }),
+  // The split is snap chaptering at the stories grain: minutes on a long stream, so it reports
+  // its progress, weighted by work (P8b).
+  onTranscriptSplitProgress: (callback: (p: { phase: string; done: number; total: number; fraction: number }) => void) => {
+    ipcRenderer.on('transcript-split-progress', (_event, p) => callback(p));
+  },
+  removeTranscriptSplitProgressListener: () => {
+    ipcRenderer.removeAllListeners('transcript-split-progress');
+  },
   commitTranscriptSplit: (filePath: string, cuts: Array<{ startSeconds: number; endSeconds: number; title?: string }>) =>
     ipcRenderer.invoke('commit-transcript-split', { filePath, cuts }),
 
@@ -472,19 +480,19 @@ const api = {
 
   // Story analysis. The model is never in a payload: the main process resolves it from the
   // metadata routing table's chapters row on every call (LEDGER #205), and `storyRoutedModel`
-  // is how the editor learns what that is for its read-only line. `consolidate: false` says
-  // "this span is already ONE story"; the default (true) lives in chapter-splitter alone and
-  // is not repeated here.
+  // is how the editor learns what that is for its read-only line. `grain` is what the run
+  // detects: 'stories' (the timeline, or a story split in several) or 'chapters' (one story's
+  // own chapter list); it is required, never defaulted (LEDGER #208, P8b).
   storyRoutedModel: () => ipcRenderer.invoke('story:routed-model'),
   analyzeStoryChapters: (payload: {
     segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
-    consolidate?: boolean;
+    grain: 'stories' | 'chapters';
   }) => ipcRenderer.invoke('story:analyze-chapters', payload),
-  suggestStoryTitle: (payload: { text: string | string[] }) =>
+  suggestStoryTitle: (payload: { name?: string; chapters: Array<{ label: string; detail?: string; startSeconds: number; endSeconds: number }> }) =>
     ipcRenderer.invoke('story:suggest-title', payload),
   cancelStoryAnalysis: () => ipcRenderer.invoke('story:cancel'),
   unloadStoryModel: () => ipcRenderer.invoke('story:unload-model'),
-  onStoryAnalyzeProgress: (callback: (p: { phase: string; done: number; total: number }) => void) => {
+  onStoryAnalyzeProgress: (callback: (p: { phase: string; done: number; total: number; fraction?: number }) => void) => {
     ipcRenderer.on('story:analyze-progress', (_event, p) => callback(p));
   },
   removeStoryAnalyzeProgressListener: () => {
