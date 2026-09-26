@@ -295,7 +295,7 @@ def _master_only_tracks(zip_path, builder, master_file, frame_seconds):
 
 
 # ---------------------------------------------------------------------------
-# Word extraction (Crucible's words, or whisper.cpp's JSON) + noise filtering.
+# Word extraction (Crucible's words) + noise filtering.
 # ---------------------------------------------------------------------------
 
 
@@ -308,79 +308,32 @@ def _is_punct_noise(text):
     return False
 
 
-def parse_whisper_json(json_path):
-    """Read a words file into a list of raw words: [{text, file_start, file_end, prob?}].
+def parse_words_file(json_path):
+    """Read Crucible's words file into a list of raw words: [{text, file_start, file_end, prob?}].
 
-       TWO SHAPES, told apart by their top-level key, never guessed:
-         - {"words": [...]}         Crucible's (P5): read by _parse_crucible_words below.
-         - {"transcription": [...]} whisper-cli's full JSON (-ojf), read here. No code path
-                                    produces one since P5; the reader goes in P10.
-       Anything else fails naming the file.
+       The one shape is {"words": [...]} (P5); anything else fails naming the file. whisper-cli's
+       {"transcription": [...]} reader left with whisper.cpp in P10 (LEDGER #206).
 
-       whisper-cli's shape, as it was read:
-       [{text, file_start(s), file_end(s), prob(optional)}]. Offsets are MILLISECONDS.
-       NOTE: whisper now runs on the per-track COMPACT wav, so file_start/file_end here
-       are COMPACT-wav seconds; map_words shifts them back to real file/timeline time.
-       With -ml 1 -sow each transcription entry is one word; per-token 'p' values (from
-       -ojf) are averaged for the word probability, omitted when no tokens are present.
-
-       Non-speech annotations ([BLANK_AUDIO], [MUSIC], (upbeat music), ...) are dropped.
-       Because -sow splits on words, whisper emits a multi-word annotation as SEPARATE
-       tokens ("(upbeat", "music)"), so a per-token "starts-with-( ends-with-)" test
-       misses the interior/split pieces. We instead track bracket depth ACROSS tokens:
-       once a '(' or '[' opens, every token is suppressed until the matching close —
-       correctly dropping "(clears", "throat", "loudly)" as one unit. Real spoken words
-       never carry literal ()[] so this cannot swallow genuine speech."""
+       Non-speech annotations ([MUSIC], (upbeat music), ...) are dropped by bracket depth ACROSS
+       tokens: once a '(' or '[' opens, every token is suppressed until the matching close, so a
+       multi-word annotation split over several words drops as one unit. Real spoken words never
+       carry literal ()[] so this cannot swallow genuine speech."""
     with open(json_path, 'r') as fh:
         data = json.load(fh)
     if isinstance(data, dict) and 'words' in data:
         return _parse_crucible_words(data, json_path)
-    transcription = data.get('transcription') if isinstance(data, dict) else None
-    if transcription is None:
-        raise TranscribeError(
-            f"words file {json_path} has neither a 'words' list (Crucible) nor a "
-            f"'transcription' array (whisper-cli)")
-
-    words = []
-    bracket_depth = 0
-    for entry in transcription:
-        text = (entry.get('text') or '').strip()
-        opens = text.count('(') + text.count('[')
-        closes = text.count(')') + text.count(']')
-        was_inside = bracket_depth > 0
-        bracket_depth = max(0, bracket_depth + opens - closes)
-        # Skip this token if it is inside an open annotation or itself opens one
-        # (covers single-token [MUSIC] as well as split "(upbeat" / "music)").
-        if was_inside or opens > 0:
-            continue
-        if _is_punct_noise(text):
-            continue
-        offsets = entry.get('offsets') or {}
-        if 'from' not in offsets or 'to' not in offsets:
-            raise TranscribeError(
-                f"whisper JSON entry missing offsets: {entry!r}")
-        fs = offsets['from'] / 1000.0
-        fe = offsets['to'] / 1000.0
-        word = {'text': text, 'file_start': fs, 'file_end': fe}
-        tokens = entry.get('tokens')
-        if tokens:
-            ps = [t['p'] for t in tokens if 'p' in t]
-            if ps:
-                word['prob'] = sum(ps) / len(ps)
-        words.append(word)
-    return words
+    raise TranscribeError(f"words file {json_path} has no 'words' list (Crucible's words shape)")
 
 
 def _parse_crucible_words(data, json_path):
     """Crucible's words: {"words":[{"word","start","end","probability"}]} in seconds of the
-       WAV that was sent (compact-wav seconds, like whisper's offsets; map_words shifts them).
+       WAV that was sent (compact-wav seconds; map_words shifts them).
 
        `probability` is read TOLERANTLY: null (every Qwen word — the aligner places words, it
-       does not score them) means the word carries no 'prob', exactly as a whisper word with no
-       tokens did; a number is kept. Nothing downstream needs it: editor_export copies it as
+       does not score them) means the word carries no 'prob'; a number is kept. Nothing downstream needs it: editor_export copies it as
        'confidence' only when present. start/end are LOAD-BEARING and read strictly.
 
-       The same noise rules as whisper's: bracketed annotations and pure punctuation drop."""
+       Bracketed annotations and pure punctuation drop."""
     raw = data.get('words')
     if not isinstance(raw, list):
         raise TranscribeError(f"Crucible words file {json_path}: 'words' is not a list")
@@ -645,7 +598,7 @@ def extract_wav(ffmpeg, src_file, dst_wav, max_seconds):
 
 def _find_repetition_runs(texts, min_reps=10, max_unit=15):
     """Find consecutive repetitions of any phrase unit (2..max_unit words): the signature
-    of a whisper hallucination loop. Real speech repeats a few times; min_reps identical
+    of an ASR hallucination loop. Real speech repeats a few times; min_reps identical
     consecutive phrases is decoding pathology. Returns [(i0, i1_exclusive, phrase, reps)]
     over word indices."""
     runs = []
@@ -671,7 +624,7 @@ def _warn_repetition_loops(track_id, label, words, min_reps=10):
     for (i0, _i1, phrase, reps) in _find_repetition_runs(texts, min_reps):
         print(f"[transcribe] WARNING: track {track_id} ({label}) repeats {phrase!r} "
               f"{reps}x consecutively starting at file {words[i0]['fileStart']:.1f}s — "
-              f"possible whisper hallucination loop; review this region", file=sys.stderr)
+              f"possible ASR hallucination loop; review this region", file=sys.stderr)
 
 
 def _retry_loop_regions(raw, compact_wav, request_asr, temp_dir,
@@ -727,7 +680,7 @@ def _retry_loop_regions(raw, compact_wav, request_asr, temp_dir,
                 dst.writeframes(frames)
         try:
             json_path = request_asr(slice_wav, track_id, (s, e), lambda pct: None)
-            for w in parse_whisper_json(json_path):
+            for w in parse_words_file(json_path):
                 w['file_start'] += s
                 w['file_end'] += s
                 redecoded.append(w)
@@ -867,7 +820,7 @@ def transcribe(zip_path, ffmpeg, max_seconds, channel=None):
                     emit_progress(overall, f"Transcribing {_label} ({_i + 1}/{n})...")
 
                 json_path = asr.request(compact, track['id'], None, on_progress)
-                raw = parse_whisper_json(json_path)
+                raw = parse_words_file(json_path)
                 raw = _retry_loop_regions(raw, compact, asr.request, _temp_dir,
                                           track['id'], label)
                 mapped = map_words(track, raw, time_map)

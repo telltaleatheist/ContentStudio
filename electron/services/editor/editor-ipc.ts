@@ -1210,9 +1210,9 @@ function setupEditorFileHandlers(): void {
 
 function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps): void {
   /**
-   * The downloadable environment: ffmpeg/ffprobe, the Python runtime, the Whisper model
-   * (all three REQUIRED) and voice isolation (optional, the Denoise toggle's gate). These four
-   * channels are AutoCutStudio's, verbatim in name and in handler body — `assets:list`,
+   * The downloadable environment: ffmpeg/ffprobe and the Python runtime, both REQUIRED (the
+   * whisper.cpp model and voice-separator-env left with P10: transcription and voice isolation
+   * run on Crucible, LEDGER #206/#200). These four channels are AutoCutStudio's, verbatim in name and in handler body — `assets:list`,
    * `assets:install`, `assets:cancel`, `assets:ensure-required` — because ContentStudio's own
    * component system is registered under `components:*` with the event `component-progress`, so
    * there is nothing here to collide with and nothing to rename.
@@ -1244,8 +1244,7 @@ function setupProcessingHandlers(voiceIsolation: VoiceIsolationDeps): void {
   /**
    * Can the Denoise toggle be offered? Voice isolation is a Crucible `denoise` job (LEDGER #200),
    * so the answer is the SELECTED server's `/v1/info` row for `vocals-roformer`, with the reason
-   * and the command that fixes it on every "no". `voice-separator-env` is not consulted: it stays
-   * on disk until P10 removes it, and nothing reaches it.
+   * and the command that fixes it on every "no".
    */
   ipcMain.handle('editor:voice-isolation-status', async () => voiceIsolation.status());
 

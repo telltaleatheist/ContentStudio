@@ -100,7 +100,7 @@
   <app-editor-relink-modal *ngIf="relinkOpen"
     (closed)="onRelinkClosed()"></app-editor-relink-modal>
 
-  <!-- File ▸ Environment…: the downloadable backend (ffmpeg, Python, Whisper, voice isolation).
+  <!-- File ▸ Environment…: the downloadable backend (ffmpeg, Python).
        Opens itself on startup when a REQUIRED component is missing, with the reason as its
        banner and the install already running — never a silent background download. Declared
        AFTER the setup modal so it stacks above the one that can open it (the Denoise gate). -->

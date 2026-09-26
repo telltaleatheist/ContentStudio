@@ -209,7 +209,6 @@ app.whenReady().then(async () => {
         defaultPlatform: 'youtube',
         defaultMode: 'individual',
         outputDirectory: path.join(app.getPath('documents'), 'ContentStudio Output'),
-        whisperModel: 'small',
         analyticsIngestPort: DEFAULT_INGEST_PORT
       }
     });

@@ -1,4 +1,4 @@
-export type ComponentCategory = 'tool' | 'whisper';
+export type ComponentCategory = 'tool';
 export type ComponentState = 'available' | 'installed' | 'incompatible';
 export type InstallPhase = 'resolve' | 'download' | 'verify' | 'extract' | 'done' | 'error';
 

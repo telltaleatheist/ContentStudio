@@ -78,11 +78,6 @@ export class EditorPaths {
     return path.join(EditorPaths.rootPath, 'python', EditorPaths.platformDir());
   }
 
-  /** utilities/ — bin/ (whisper-cli + dylibs) and models/ (ggml-*.bin). */
-  static get utilitiesPath(): string {
-    return path.join(EditorPaths.rootPath, 'utilities');
-  }
-
   /**
    * The config directory exported to Python as AUTOCUT_CONFIG_DIR — keep that env var
    * NAME, `core/config.py` reads it.

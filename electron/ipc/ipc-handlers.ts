@@ -1046,9 +1046,7 @@ async function clearStalePublishedSiblings(
 
 export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices) {
 
-  const { setSelectedWhisperModel } = require('../lib/bridges/runtime-paths');
   const componentManager = require('../components/component-manager');
-  setSelectedWhisperModel((store as any).get('whisperModel', 'small'));
 
   ipcMain.handle('components:list', async () => componentManager.listStatus());
   ipcMain.handle('components:install', async (event, id: string) =>
@@ -1058,16 +1056,11 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     return { success: true };
   });
   ipcMain.handle('components:uninstall', async (_event, id: string) => {
-    const selected = (store as any).get('whisperModel', 'small');
-    if (id === `whisper-${selected}`) {
-      return { success: false, error: 'Choose and save a different default Whisper model before removing this one.' };
-    }
     componentManager.uninstall(id);
     return { success: true };
   });
 
   ipcMain.handle('get-startup-readiness', async () => {
-    const settings = (store as any).store;
     // THE AI HALF IS CRUCIBLE'S READINESS (P2, plan 5). It used to ask Ollama's /api/tags for
     // the legacy Settings model, or look for a key in api-keys.json; every model call goes
     // through the selected Crucible server now, so "is AI ready" is the question P1's
@@ -1078,22 +1071,15 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     const provider = 'crucible';
     const model = crucibleReadiness.server ?? '';
 
-    // Transcription is Crucible's asr job since P5 (LEDGER #206: "no more local whisper"), so
-    // the local tool it needs is ffmpeg alone. whisper-engine and the whisper models are no
-    // longer required, and startup no longer downloads or asks for them; the catalog entries
-    // stay until P10 removes them. Whether Crucible can transcribe is P1's readiness to say.
-    const whisperModel = settings.whisperModel || 'small';
+    // Transcription is Crucible's asr job (LEDGER #206: "no more local whisper"), so the local
+    // tool it needs is ffmpeg alone; whisper.cpp and its models left the catalog in P10.
+    // Whether Crucible can transcribe is P1's readiness to say.
     const requiredToolIds = ['ffmpeg'];
-    const selectedModelId = `whisper-${whisperModel}`;
     const componentStatuses = componentManager.listStatus();
     const missingRequiredTools = requiredToolIds.flatMap((id: string) => {
       const status = componentStatuses.find((item: any) => item.component.id === id);
       return status?.state === 'installed' ? [] : [{ id, name: status?.component?.name || id }];
     });
-    const installedWhisperModels = componentStatuses
-      .filter((status: any) => status.component.category === 'whisper' && status.state === 'installed')
-      .map((status: any) => ({ id: status.component.id, name: status.component.name }));
-    const selectedModelInstalled = installedWhisperModels.some((item: any) => item.id === selectedModelId);
     const missingComponents = missingRequiredTools.map((item: any) => item.name);
 
     return {
@@ -1103,8 +1089,6 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         ready: missingComponents.length === 0,
         missingComponents,
         missingRequiredTools,
-        installedWhisperModels,
-        selectedModelInstalled,
       },
     };
   });
@@ -1140,7 +1124,6 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       Object.keys(settings).forEach(key => {
         (store as any).set(key, settings[key]);
       });
-      if (settings.whisperModel) setSelectedWhisperModel(settings.whisperModel);
       return { success: true };
     } catch (error) {
       log.error('Error updating settings:', error);

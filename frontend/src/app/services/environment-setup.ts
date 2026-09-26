@@ -17,7 +17,7 @@ export interface DownloadableComponentStatus {
     id: string;
     name: string;
     description: string;
-    category: 'tool' | 'whisper';
+    category: 'tool';
     sizeBytes: number;
     recommended?: boolean;
   };
@@ -37,9 +37,6 @@ export class EnvironmentSetupService {
   private readonly concurrency = 2;
 
   readonly downloadItems = computed(() => Object.values(this.downloads()));
-  readonly whisperModels = computed(() =>
-    this.components().filter((item) => item.component.category === 'whisper' && item.state !== 'incompatible')
-  );
   readonly running = computed(() =>
     this.downloadItems().some((item) => item.state === 'queued' || item.state === 'downloading')
   );
@@ -66,8 +63,7 @@ export class EnvironmentSetupService {
       this.enqueue(tool.id, tool.name, true);
     }
 
-    // A missing Whisper model no longer opens the dialog: transcription is Crucible's since P5
-    // (LEDGER #206), and nothing runs a local Whisper model.
+    // Transcription is Crucible's (LEDGER #206); the only local download is ffmpeg, above.
     if (!readiness.ai.ready) {
       this.optionalDialogOpen.set(true);
     }
@@ -91,17 +87,6 @@ export class EnvironmentSetupService {
     this.patch(id, { id, name, required, state: 'queued', pct: 0, message: 'Queued' });
     this.dockDismissed.set(false);
     this.runQueue();
-  }
-
-  async chooseWhisperModel(id: string): Promise<void> {
-    const component = this.components().find((item) => item.component.id === id);
-    if (!component || component.component.category !== 'whisper') {
-      throw new Error(`Unknown Whisper model: ${id}`);
-    }
-    const settings = await this.electron.getSettings();
-    await this.electron.updateSettings({ ...settings, whisperModel: id.replace(/^whisper-/, '') });
-    if (component.state !== 'installed') this.enqueue(id, component.component.name, false);
-    await this.refresh();
   }
 
   closeOptionalDialog(): void {

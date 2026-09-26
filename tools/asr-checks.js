@@ -453,7 +453,7 @@ check('the words reader: probability null → no prob, a number kept, a missing 
   const { result } = await driveTranscribePy('reader', fakeClient());
   eq(result.words, [{ text: 'Hello,', file_start: 0.5, file_end: 0.9 }, { text: 'um', file_start: 1.0, file_end: 1.2, prob: 0.5 }]);
   ok(/words\[0\] has no numeric start\/end/.test(result.refused), result.refused);
-  ok(/neither a 'words' list/.test(result.refusedShape), result.refusedShape);
+  ok(/has no 'words' list/.test(result.refusedShape), result.refusedShape);
 });
 
 (async () => {

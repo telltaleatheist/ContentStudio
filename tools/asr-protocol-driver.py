@@ -6,7 +6,7 @@ P5 changed there, against the REAL main-side responder on the other end of its s
   loop     _retry_loop_regions on a synthetic compact WAV whose words hold a repetition run:
            one asr_request per region goes out with `region` set, the answer's words come back
            in the slice's seconds, and the splice shifts them by the region start.
-  reader   parse_whisper_json on Crucible's words shape: probability null is read as no
+  reader   parse_words_file on Crucible's words shape: probability null is read as no
            'prob', a number is kept, a word with no start is refused by name.
 
 Every result is ONE JSON line on stdout of type "result" (stdout is also the protocol channel,
@@ -57,12 +57,12 @@ def reader_case():
             {'word': '...', 'start': 1.2, 'end': 1.3, 'probability': None},
             {'word': '[MUSIC]', 'start': 2.0, 'end': 3.0, 'probability': None},
         ]}, fh)
-    words = T.parse_whisper_json(good)
+    words = T.parse_words_file(good)
     bad = os.path.join(tmp, 'bad.json')
     with open(bad, 'w') as fh:
         json.dump({'words': [{'word': 'x', 'end': 1.0, 'probability': None}]}, fh)
     try:
-        T.parse_whisper_json(bad)
+        T.parse_words_file(bad)
         refused = None
     except T.TranscribeError as e:
         refused = str(e)
@@ -70,7 +70,7 @@ def reader_case():
     with open(neither, 'w') as fh:
         json.dump({'segments': []}, fh)
     try:
-        T.parse_whisper_json(neither)
+        T.parse_words_file(neither)
         refused_shape = None
     except T.TranscribeError as e:
         refused_shape = str(e)

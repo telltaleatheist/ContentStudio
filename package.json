@@ -28,11 +28,11 @@
     "start:electron": "npm run build:electron && npm run build:preload && wait-on http://localhost:4200 && cross-env NODE_ENV=development electron .",
     "electron:dev": "concurrently --kill-others \"npm run start:angular\" \"npm run start:electron\"",
     "electron": "npm run build:all && electron .",
-    "download:all:mac": "bash scripts/download-all.sh mac && npm run copy:ffmpeg",
-    "download:all:mac-arm64": "bash scripts/download-all.sh mac-arm64 && npm run copy:ffmpeg",
-    "download:all:mac-x64": "bash scripts/download-all.sh mac-x64 && npm run copy:ffmpeg",
-    "download:all:win": "bash scripts/download-all.sh win && npm run copy:ffmpeg",
-    "download:all:linux": "bash scripts/download-all.sh linux && npm run copy:ffmpeg",
+    "download:all:mac": "node scripts/copy-ffmpeg.js mac",
+    "download:all:mac-arm64": "node scripts/copy-ffmpeg.js mac-arm64",
+    "download:all:mac-x64": "node scripts/copy-ffmpeg.js mac-x64",
+    "download:all:win": "node scripts/copy-ffmpeg.js win",
+    "download:all:linux": "node scripts/copy-ffmpeg.js linux",
     "package": "npm run prepare:build-output && npm run clean && npm run build:all && electron-builder build",
     "package:mac": "npm run prepare:build-output && npm run build:all && electron-builder --mac",
     "package:mac-arm64": "npm run prepare:build-output && npm run build:all && electron-builder --mac --arm64",
@@ -125,10 +125,6 @@
           "**/*",
           "!**/__pycache__/**"
         ]
-      },
-      {
-        "from": "editor-backend/utilities/bin",
-        "to": "editor-backend/utilities/bin"
       },
       {
         "from": "config",
