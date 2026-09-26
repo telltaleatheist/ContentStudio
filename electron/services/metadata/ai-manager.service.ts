@@ -316,7 +316,7 @@ export class AIManagerService {
    *
    * NOT LOWERED IN P4 (plan 7.3 said "the chunk size drops to <=12k per call"; the brief made it
    * conditional on a measurement). Measured offline (docs/crucible/P4.md "Offline measurements"):
-   * a full chunk's call needs ~21.9k tokens (prompt plus the 4,096 budget), loaded at the 24,576
+   * a full chunk's call needs ~21.8k tokens (a ~17.7k-token prompt plus the 4,096 budget), at the 24,576
    * step, which the Mac 27B's ceiling (131,072, mlx-darwin) and the PC 27B's (32,768,
    * cuda-linux) both hold. So it stays one chunk per 60,000 characters.
    */
