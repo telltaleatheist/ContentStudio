@@ -143,18 +143,18 @@ PAD = wm.MUTE_PAD_SECONDS
 def check_matcher():
     s = settings(customWords=['bs*', 'frick'], customMode='everywhere')
     cases = {
-        'fuck': ['f-word'], 'Fucking,': ['f-word'], 'MOTHERFUCKER!': ['f-word'], "fuckin'": ['f-word'],
-        'fucked.': ['f-word'], '“fuck”': ['f-word'], 'shit': ['swearing'], 'bullshit': ['swearing'],
+        'fuck': ['harsh'], 'Fucking,': ['harsh'], 'MOTHERFUCKER!': ['harsh'], "fuckin'": ['harsh'],
+        'fucked.': ['harsh'], '“fuck”': ['harsh'], 'shit': ['swearing'], 'bullshit': ['swearing'],
         'ass': ['swearing'], 'class': [], 'assess': [], 'dumb-ass': ['swearing'], 'Dickens': [],
         'raccoon': [], 'bsing': ['custom'], 'frick': ['custom'], 'fricking': [], 'um': [], 'uh': [],
         'hello': [],
     }
     bad = {w: (wm.match_groups(w, CATALOG, s), exp) for w, exp in cases.items()
            if wm.match_groups(w, CATALOG, s) != exp}
-    check('matcher: F-word family, whole-word swearing, hyphen parts, custom wildcards, no false hits',
+    check('matcher: F-word family in the harsh group, whole-word swearing, hyphen parts, custom wildcards, no false hits',
           not bad, bad)
     check('matcher: the harsh group is in the data file and matches by its own words',
-          any(g['id'] == 'harsh' for g in CATALOG) and wm.match_groups(CATALOG[1]['contains'][0] + 's', CATALOG, s) == ['harsh'])
+          any(g['id'] == 'harsh' for g in CATALOG) and wm.match_groups(next(g for g in CATALOG if g['id'] == 'harsh')['contains'][1] + 's', CATALOG, s) == ['harsh'])
     check('seam: um/uh are in no mute group (filler removal is a later, separate word set)',
           not wm.match_groups('um', CATALOG, s) and not wm.match_groups('uh', CATALOG, s))
 
@@ -163,19 +163,21 @@ def check_matcher():
 # 2. the rule (group modes + opening window, on master time)
 # ---------------------------------------------------------------------------
 def check_rule():
-    s = settings(groups={'f-word': 'everywhere', 'swearing': 'opening', 'harsh': 'off'},
+    s = settings(groups={'harsh': 'everywhere', 'swearing': 'opening'},
                  openingWindow={'allSwearing': False, 'minutes': 3})
-    check('rule: everywhere mutes at any time', wm.muted_at(['f-word'], 5000, s) and wm.muted_at(['f-word'], 1, s))
+    check('rule: everywhere mutes at any time', wm.muted_at(['harsh'], 5000, s) and wm.muted_at(['harsh'], 1, s))
     check('rule: opening-only mutes inside the window, not after',
           wm.muted_at(['swearing'], 179, s) and not wm.muted_at(['swearing'], 180, s))
+    s_off = settings(groups={'harsh': 'off', 'swearing': 'everywhere'},
+                     openingWindow={'allSwearing': False, 'minutes': 3})
     check('rule: an off group is not muted, even in the window, without "all swearing"',
-          not wm.muted_at(['harsh'], 10, s))
-    s2 = settings(groups={'f-word': 'everywhere'}, customWords=['heck'],
+          not wm.muted_at(['harsh'], 10, s_off))
+    s2 = settings(groups={'harsh': 'everywhere'}, customWords=['heck'],
                   openingWindow={'allSwearing': True, 'minutes': 3})
     check('rule: "all swearing in the first N minutes" mutes every group and the custom words inside the window',
           wm.muted_at(['harsh'], 10, s2) and wm.muted_at(['custom'], 10, s2) and wm.muted_at(['swearing'], 179.9, s2))
     check('rule: after the window only "everywhere" groups stay muted',
-          not wm.muted_at(['harsh'], 181, s2) and wm.muted_at(['f-word'], 181, s2))
+          not wm.muted_at(['swearing'], 181, s2) and wm.muted_at(['harsh'], 181, s2))
     s3 = settings(openingWindow={'allSwearing': True, 'minutes': 0.5})
     check('rule: the window length is the saved minutes value', wm.muted_at(['swearing'], 29, s3) and not wm.muted_at(['swearing'], 30, s3))
 
@@ -212,7 +214,7 @@ def fsec(fr):
 
 
 def check_mapping():
-    s = settings(groups={'f-word': 'everywhere', 'swearing': 'everywhere'})
+    s = settings(groups={'harsh': 'everywhere', 'swearing': 'everywhere'})
     w_plain = ('fuck', 't0', fsec(360), fsec(372))              # compound 360f..372f -> clip 1
     w_span = ('fucking', 't0', fsec(890), fsec(1210))           # starts before the removed stretch, ends after it
     w_gone = ('motherfucker', 't0', fsec(1000), fsec(1012))     # inside what auto-editor removed
@@ -349,7 +351,7 @@ def shape(el):
 def check_xml():
     # A ref-clip that already has a filter: the container goes after anchored clips, before filters.
     master = build_master(SEGS, with_filter=True)
-    s = settings(groups={'f-word': 'everywhere'})
+    s = settings(groups={'harsh': 'everywhere'})
     final = copy.deepcopy(master)
     wp.apply_word_mutes(final, wp.plan_word_mutes(master, 'master', sidecar([('fuck', 't0', fsec(360), fsec(372))]), s, CATALOG), s, 'plain')
     cam = [c for c in final.getroot().iter('ref-clip') if c.get('lane') == '-1'][0]
@@ -397,7 +399,7 @@ def check_end_to_end():
         zp = d / f"{clean}_compounds.zip"
         with zipfile.ZipFile(zp, 'w') as z:
             z.write(xml_path, f"{clean}/{clean} master.fcpxml")
-        s = settings(groups={'f-word': 'everywhere'})
+        s = settings(groups={'harsh': 'everywhere'})
         sc = sidecar([('fuck', 't0', fsec(360), fsec(372)), ('fucked', 't0', fsec(1300), fsec(1310))])
         (d / f"{clean}_transcript.json").write_text(json.dumps(sc))
 
