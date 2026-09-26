@@ -1,30 +1,25 @@
-@if (setup.optionalDialogOpen()) {
+@if (setup.setupGateOpen()) {
+  <!-- THE SETUP GATE (LEDGER #221): no close button, no "set up later". It opens when no Crucible
+       server is connected and ready, and only readiness closes it. The pane inside is the SAME
+       Settings › Crucible Servers pane, so the gate has every door that pane has: adopt the
+       Crucible found on this computer, start or install it, or add one on another computer by
+       pairing or connect code. -->
   <div class="setup-backdrop" role="presentation">
     <section class="setup-dialog" role="dialog" aria-modal="true" aria-labelledby="setup-title">
-      <button class="dialog-close" type="button" aria-label="Close setup" (click)="setup.closeOptionalDialog()">×</button>
       <header>
         <span class="eyebrow">ContentStudio setup</span>
-        <h2 id="setup-title">Choose what powers your workflow</h2>
-        <p>Connect ContentStudio to a Crucible server. You can change it later in Settings.</p>
+        <h2 id="setup-title">Connect a Crucible server to begin</h2>
+        <p>
+          Every transcription and every model call in ContentStudio runs on a Crucible server.
+          Connect the one on this computer, or add one on another computer. This closes by itself
+          the moment a server is connected and answering; you can change servers later in
+          Settings › Crucible Servers.
+        </p>
       </header>
 
-      @if (needsAI()) {
-        <div class="setup-section ai-section">
-          <div class="section-copy">
-            <span class="section-mark">AI</span>
-            <div>
-              <!-- Every model call goes through Crucible (P2): the one door to it is the
-                   readiness banner and Settings › Crucible Servers, not a provider wizard. -->
-              <h3>Connect to Crucible</h3>
-              <p>{{ setup.readiness()?.ai?.reason }} Set it up in Settings › Crucible Servers.</p>
-            </div>
-          </div>
-        </div>
-      }
-
-      <footer>
-        <button type="button" class="skip-action" (click)="setup.closeOptionalDialog()">Set up later</button>
-      </footer>
+      <div class="setup-pane">
+        <app-crucible-servers />
+      </div>
     </section>
   </div>
 }
