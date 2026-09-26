@@ -5,7 +5,8 @@ file per phase: `P1.md` (registry, probe, Servers pane), `P2.md` (the one transp
 (lanes, parking, the in-flight ledger), `P5.md` (ASR), `P7.md` (denoise), `P8a.md` (the pure
 chaptering service), `P8b.md` (chaptering wired into the pipeline, the editor's Stories and the
 in-queue split), `P8c.md` (stories by 45-second junctions, #212; the chapters | stories pick, #213),
-`stories-and-tags.md` (#205's two rulings), `P10.md` (removal: Ollama, whisper.cpp,
+`P4.md` (low context: one sizing rule, answer-sized budgets, the digest as a declared policy, the
+capability question before a load; #209, #214, #217), `stories-and-tags.md` (#205's two rulings), `P10.md` (removal: Ollama, whisper.cpp,
 voice-separator-env and the SDKs; the one-time retired-file cleanup). `reference/` holds the Python the snap chaptering port
 was checked against, and `chapter-splitter.ts`, the stories grain's method spec (read-only).
 

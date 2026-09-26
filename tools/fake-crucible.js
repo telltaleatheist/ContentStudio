@@ -1597,7 +1597,7 @@ async function startFakeCrucible(options = {}) {
         const url = new URL(req.url ?? '/', 'http://127.0.0.1');
         const method = req.method ?? 'GET';
         const path = url.pathname;
-        const record = { method, path, headers: req.headers, at: Date.now() };
+        const record = { method, path, query: url.search, headers: req.headers, at: Date.now() };
         requests.push(record);
         const raw = method === 'GET' || method === 'HEAD' ? Buffer.alloc(0) : await readBody(req);
         if (raw.length > 0 && path === '/v1/uploads') {

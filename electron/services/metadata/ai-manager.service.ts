@@ -35,7 +35,7 @@ import { Chapter } from './chapter-generator.service';
 import { queueAITask, routeOfModelId } from '../queue-manager.service';
 import { JobCancelledError } from './cancellation';
 import { stripThinking } from './plain-call';
-import { bucketLoadContext } from './context-sizing';
+import { loadContextFor } from './context-sizing';
 
 /**
  * How much raw transcript each transport reads BEFORE anything is condensed.
@@ -47,9 +47,10 @@ import { bucketLoadContext } from './context-sizing';
  *
  * cloud — unchanged. ~60k characters is roughly an hour of speech, and beyond it the
  *   evidence-extraction pass is cheaper than the tokens.
- * local — NEW, and derived rather than chosen. The per-field calls refuse above
- *   LOCAL_FIELD_CTX_MAX = 40960 tokens (metadata-tasks.ts), which is ~143,000 characters at
- *   this codebase's 3.5 chars/token estimate. Out of that comes the output budget
+ * local — NEW, and derived rather than chosen. The per-field calls refused above
+ *   LOCAL_FIELD_CTX_MAX = 40960 tokens (metadata-tasks.ts, retired in P4: each call now asks
+ *   for its own 8,192 step and the server refuses above its own ceiling), which is ~143,000
+ *   characters at this codebase's 3.5 chars/token estimate. Out of that comes the output budget
  *   (num_predict 8192 ≈ 29,000 characters) and the prompt assembled around the transcript
  *   (editorial core, field section, self-check, chapter block, insights ≈ 20,000 characters).
  *   143k - 29k - 20k ≈ 94k; 90,000 is that with the margin left in.
@@ -311,7 +312,13 @@ export class AIManagerService {
    * 8000 was a 14B-era number: 8k chunks spent fifteen calls on work that fits in two, and
    * each of those calls saw a fifteenth of the video with no idea what surrounded it. 60,000
    * characters is ~17k tokens plus the 4096 budget; the call is loaded at that size and checked
-   * against the loaded context before sending (plan 7.3 lowers it in P4).
+   * against the loaded context before sending.
+   *
+   * NOT LOWERED IN P4 (plan 7.3 said "the chunk size drops to <=12k per call"; the brief made it
+   * conditional on a measurement). Measured offline (docs/crucible/P4.md "Offline measurements"):
+   * a full chunk's call needs ~21.8k tokens (a ~17.7k-token prompt plus the 4,096 budget), at the 24,576
+   * step, which the Mac 27B's ceiling (131,072, mlx-darwin) and the PC 27B's (32,768,
+   * cuda-linux) both hold. So it stays one chunk per 60,000 characters.
    */
   private static readonly LOCAL_SUMMARIZE_CHUNK_CHARS = 60000;
 
@@ -614,29 +621,30 @@ export class AIManagerService {
 
   /**
    * The compilation condensation call's shape (plan 6.3): thinking off, a 4096-token answer,
-   * and on a local model the context its own prompt needs, bucketed the way every local call
-   * is sized. 600 s is the clock it always had.
+   * and on a local model the smallest context step its own prompt needs (LEDGER #209). 600 s is
+   * the clock it always had.
    */
   private summaryShape(prompt: string): PlainCallShape {
     return {
       thinking: false,
       maxTokens: AIManagerService.SUMMARY_MAX_TOKENS,
-      loadContext: bucketLoadContext({
-        promptChars: prompt.length,
-        maxTokens: AIManagerService.SUMMARY_MAX_TOKENS,
-        max: AIManagerService.LOCAL_PACKAGE_CTX_MAX,
-        what: `condensing a compilation item on ${this.summaryModel}`,
-      }),
+      loadContext: loadContextFor(prompt.length, AIManagerService.SUMMARY_MAX_TOKENS),
       timeoutMs: 600_000,
     };
   }
 
-  /** The condensation answer's budget (plan 6.3 row: 4096). */
+  /**
+   * The condensation answer's budget (plan 6.3 row: 4096). KEPT by P4's budget review: two
+   * recorded local answers (1,055 and 1,086 output tokens, Mac 27B) are too few to size a
+   * budget by, and lowering it would not change the step a full chunk loads at (24,576 either
+   * way). docs/crucible/P4.md "Budgets".
+   */
   private static readonly SUMMARY_MAX_TOKENS = 4096;
-  /** The compilation package's local budget (plan 6.3 row: 4096 local, 16000 cloud). */
+  /**
+   * The compilation package's local budget (plan 6.3 row: 4096 local, 16000 cloud). KEPT by P4's
+   * budget review: one recorded local answer (541 output tokens) is no evidence to size by.
+   */
   private static readonly PACKAGE_LOCAL_MAX_TOKENS = 4096;
-  /** The refusal point for either compilation call's local context: the field calls' ceiling. */
-  private static readonly LOCAL_PACKAGE_CTX_MAX = 40960;
 
   /**
    * The evidence-extraction prompt that runs before anything else reads a transcript.
@@ -1015,12 +1023,7 @@ export class AIManagerService {
     const shape: PlainCallShape = {
       thinking: false,
       maxTokens: AIManagerService.PACKAGE_LOCAL_MAX_TOKENS,
-      loadContext: bucketLoadContext({
-        promptChars: prompt.length,
-        maxTokens: AIManagerService.PACKAGE_LOCAL_MAX_TOKENS,
-        max: AIManagerService.LOCAL_PACKAGE_CTX_MAX,
-        what: `the compilation package on ${requestModel}`,
-      }),
+      loadContext: loadContextFor(prompt.length, AIManagerService.PACKAGE_LOCAL_MAX_TOKENS),
       timeoutMs: 300_000,
     };
 

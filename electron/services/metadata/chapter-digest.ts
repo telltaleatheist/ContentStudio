@@ -35,6 +35,21 @@
  *
  * WHAT STILL SUMMARIZES. Compilation mode, and only compilation mode — see
  * `AIManagerService.summarizeTranscript` and metadata-routing.ts SUMMARIZATION_MODEL.
+ *
+ * THE INPUT POLICY (P4, CRUCIBLE-MIGRATION-PLAN.md 7.2, LEDGER #196). Which of the two modes an
+ * item lands in is decided by a declared policy, stated per run:
+ *
+ *   raw     — the rule above, and the DEFAULT: the raw transcript until it is over the ceiling,
+ *             then the digest; chapterless AND over the ceiling fails naming both facts.
+ *   digest  — `digest-default`: every CHAPTERED item's field calls (titles, description, tags,
+ *             thumbnail text, pinned comment) read the chapter digest whatever the transcript's
+ *             length, so a local call stays near 8k instead of carrying the whole video. A
+ *             chapterless item keeps the raw transcript (there is nothing else to stand on), and
+ *             chapterless over the ceiling still fails naming both facts.
+ *
+ * The default switches to `digest` only on Owen's verdict from the plan 7.4 A/B (full transcript
+ * vs digest, blind, on his videos). Until then `digest` is a store key (`fieldInput`) and the
+ * test CLI's `--field-input digest`, never a Settings control (LEDGER #214).
  */
 
 // TYPE-ONLY, and deliberately: metadata-tasks.ts imports `FieldContentMode` from this file and
@@ -47,8 +62,48 @@ import { DIRECT_PASS_MAX_CHARS, directPassesRaw } from './ai-manager.service';
 /** Which of the two declared modes an item's content slot is in. */
 export type FieldContentMode = 'raw-transcript' | 'chapter-digest';
 
+/** The input policy a run states (see the header): today's rule, or the digest for every chaptered item. */
+export type FieldInputPolicy = 'raw' | 'digest';
+
+export const FIELD_INPUT_POLICIES: readonly FieldInputPolicy[] = ['raw', 'digest'];
+
+/** The default, stated once: today's rule. It moves only on Owen's verdict (plan 7.4). */
+export const DEFAULT_FIELD_INPUT_POLICY: FieldInputPolicy = 'raw';
+
+/**
+ * The run's policy from what the caller stated (the store's `fieldInput`, or the CLI flag), and
+ * the line that says which one ran and why (Law 8). Absent means the default, SAID; a value this
+ * build does not know is refused by name, never read as the default.
+ */
+export function resolveFieldInputPolicy(stated: unknown, source: string): { policy: FieldInputPolicy; line: string } {
+  if (stated === undefined || stated === null) {
+    return {
+      policy: DEFAULT_FIELD_INPUT_POLICY,
+      line:
+        `field input policy "${DEFAULT_FIELD_INPUT_POLICY}" (the declared default; ${source} states none): ` +
+        `each item's fields read its raw transcript unless it is over the direct-pass ceiling`,
+    };
+  }
+  if (stated !== 'raw' && stated !== 'digest') {
+    throw new Error(
+      `unknown field input policy ${JSON.stringify(stated)} from ${source} — expected ${FIELD_INPUT_POLICIES.join(' or ')}`
+    );
+  }
+  return {
+    policy: stated,
+    line:
+      stated === 'digest'
+        ? `field input policy "digest" (stated by ${source}): every chaptered item's fields read its chapter ` +
+          `digest; a chapterless item keeps its raw transcript`
+        : `field input policy "raw" (stated by ${source}): each item's fields read its raw transcript unless it ` +
+          `is over the direct-pass ceiling`,
+  };
+}
+
 export interface FieldContentDecision {
   mode: FieldContentMode;
+  /** The policy this decision was made under. */
+  policy: FieldInputPolicy;
   /** Exactly what goes into `MetadataRunContext.content`. */
   content: string;
   /**
@@ -107,21 +162,40 @@ export function renderChapterDigest(chapters: DigestChapter[]): string {
  * the chapter list under the video are the same list. Empty means the pipeline produced none:
  * no timestamped transcript, fewer than three chapters, all-promo, or a failure the item
  * already recorded in `chaptersSkipped`.
+ *
+ * `policy` is REQUIRED: the caller resolved it once for the run (resolveFieldInputPolicy) and
+ * said which; this function never assumes one.
  */
 export function resolveFieldContent(options: {
   transcript: string;
   sourceLabel: string;
   ceiling: 'local' | 'cloud';
   chapters: DigestChapter[];
+  policy: FieldInputPolicy;
 }): FieldContentDecision {
-  const { transcript, sourceLabel, ceiling, chapters } = options;
-  const max = DIRECT_PASS_MAX_CHARS[ceiling];
-
-  if (directPassesRaw({ chars: transcript.length, ceiling })) {
-    return { mode: 'raw-transcript', content: transcript, declaration: '' };
+  const { transcript, sourceLabel, ceiling, chapters, policy } = options;
+  if (policy !== 'raw' && policy !== 'digest') {
+    throw new Error(`resolveFieldContent for ${sourceLabel} was given the field input policy ${JSON.stringify(policy)}`);
   }
+  const max = DIRECT_PASS_MAX_CHARS[ceiling];
+  const fits = directPassesRaw({ chars: transcript.length, ceiling });
 
   if (chapters.length === 0) {
+    if (fits) {
+      // Both policies read a chapterless item raw: there is no digest to read. Under `digest` the
+      // run asked for something this item cannot give, so that is said; under `raw` it is the
+      // ordinary case and says nothing.
+      return {
+        mode: 'raw-transcript',
+        policy,
+        content: transcript,
+        declaration:
+          policy === 'digest'
+            ? `${sourceLabel}: field input policy "digest", and this item has no chapter list, so its content ` +
+              `fields read the raw transcript (${transcript.length} chars), as every chapterless item does`
+            : '',
+      };
+    }
     throw new Error(
       `${sourceLabel}: its transcript is ${transcript.length} characters, over the ${max}-character ` +
         `${ceiling} direct-pass ceiling, AND this item has no chapter list — so there is nothing to give ` +
@@ -132,14 +206,22 @@ export function resolveFieldContent(options: {
     );
   }
 
-  const content = renderChapterDigest(chapters);
-  const declaration =
-    `${sourceLabel}: the transcript is ${transcript.length} chars, over the ${max}-char ${ceiling} ` +
-    `direct-pass ceiling, so the content fields read the chapter digest ` +
-    `(${chapters.length} chapters, ${content.length} chars); verbatim phrasing is preserved inside ` +
-    `each chapter's own detail, which was written from that chapter's raw transcript`;
+  if (policy === 'raw' && fits) {
+    return { mode: 'raw-transcript', policy, content: transcript, declaration: '' };
+  }
 
-  return { mode: 'chapter-digest', content, declaration };
+  const content = renderChapterDigest(chapters);
+  const why = fits
+    ? `field input policy "digest": the content fields read the chapter digest in place of the ` +
+      `${transcript.length}-char transcript, which is under the ${max}-char ${ceiling} direct-pass ceiling`
+    : `the transcript is ${transcript.length} chars, over the ${max}-char ${ceiling} direct-pass ceiling, so ` +
+      `the content fields read the chapter digest` +
+      (policy === 'digest' ? ` (field input policy "digest" reads it either way)` : '');
+  const declaration =
+    `${sourceLabel}: ${why} (${chapters.length} chapters, ${content.length} chars); verbatim phrasing is ` +
+    `preserved inside each chapter's own detail, which was written from that chapter's raw transcript`;
+
+  return { mode: 'chapter-digest', policy, content, declaration };
 }
 
 /** The digest form of a pipeline `Chapter[]`, which carries more fields than the digest reads. */

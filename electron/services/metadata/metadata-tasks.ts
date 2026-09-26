@@ -50,13 +50,14 @@
  * when it exceeds two. It does not block: which model writes which field is the operator's
  * choice, and a silently overridden routing selection would be worse than a slow run.
  *
- * ONE LOAD CONTEXT PER MODEL PER RUN. Loading a model at a different context is a FULL
- * reload (LEDGER #111; `load-model`'s `params.context` on Crucible, num_ctx on the Ollama this
- * replaced), so per-call sizing would reload the 27B between titles and thumbnails and again
- * before the pinned comment. Every unit on a model shares one
- * `ModelRunContextBudget`, sized from the LARGEST prompt that model will send this run, and the
- * budget cannot size BELOW a window the job has already made resident on that model
- * (model-lifecycle.ts's ratchet) — the chapter stage runs first on the same hardware.
+ * EACH CALL ASKS FOR ITS OWN LOAD CONTEXT (P4, LEDGER #209). A local call asks the door for the
+ * smallest 8,192 step that holds its own prompt and answer budget (context-check.ts
+ * `loadContextFor`). Loading a model at a different context is still a full reload (LEDGER #111),
+ * and it is bounded by the lease instead of by a shared per-model number: a call that needs more
+ * grows the load once, and a call that needs less runs on the window already loaded (lease.ts).
+ * What this replaced, `ModelRunContextBudget`, pinned one bucketed window per model per run from
+ * the largest prompt, with a floor carried from earlier stages, so a run whose chapter titles
+ * loaded the 27B at 24,576 asked 24,576 for every field call after them.
  *
  * NO UNIT RELEASES A MODEL. Every unit here used to unload its model as it finished, which
  * reloaded ~17GB of weights for the next call on the same model and froze the operator's
@@ -68,7 +69,7 @@
 
 import * as log from 'electron-log';
 import { SYSTEM_PROMPTS, formatPrompt } from './system-prompts';
-import { bucketLoadContext, estimateTokens } from './context-sizing';
+import { loadContextFor } from './context-sizing';
 import { parseLines } from './plain-call';
 import { DigestChapter } from './chapter-digest';
 import { JobModelLifecycle } from './model-lifecycle';
@@ -477,135 +478,31 @@ export function buildInputDataBlock(
 }
 
 // ---------------------------------------------------------------------------
-// One load context per model per run
+// The local field call's budget
 // ---------------------------------------------------------------------------
 
 /**
- * Hard refusal point for a local call's context window.
+ * Output budget for a THINKING-OFF local field call: titles, thumbnail text, pinned comments,
+ * tags, and the operator's "ten more titles" replay (the titles call's shape again).
  *
- * Every field call carries the whole transcript now, and a long livestream transcript does not
- * fit in any local context this app is willing to ask for. Refusing names the model and the
- * call, because the actual fix is one of the two things above it: an item over the local
- * direct-pass ceiling reads the chapter digest instead (chapter-digest.ts), and a field routed
- * to the cloud gets the 400k ceiling.
- */
-export const LOCAL_FIELD_CTX_MAX = 40960;
-
-/**
- * Output budget for a local field call. Today's number, kept through P2 (plan 16: "budgets and
- * context in P2 are today's"); P4 sets answer-sized budgets from measured answers (plan 7.2).
+ * 2048, down from 8192 in P4 (plan 7.2, LEDGER #214's rule: a budget goes down only where a
+ * measurement shows it is never needed, with at least a 2x margin). The evidence, in
+ * docs/crucible/P4.md "Budgets": across the 238 stored items under
+ * .contentstudio/metadata the longest answer any of these fields ever shipped is 1,369
+ * characters (a pinned-comment set; titles 1,270, tags 458, thumbnail text 246), ~392 tokens by
+ * this codebase's 3.5-characters estimate; the Crucible-era runs measured 49-121 output tokens a
+ * call. 2048 is over five times the largest. These calls run thinking-off (every field call
+ * has since 2026-08-30), so the budget holds the answer and nothing else; a `length` stop is a
+ * hard failure of the field (LEDGER #112), which is why the margin is wide.
  *
- * Exported because the operator's "ten more titles" replay and the rewrite passes are the same
- * shape of call on the same model, and a second copy of this number would be a second policy.
- * (Its old comment said thinking-off "is not an option"; every field call has stated it off
- * since 2026-08-30, plan 21 item 10.)
+ * The thinking-ON calls that used to share this number keep their own: the rewrite passes
+ * (rewrite-pass.ts REWRITE_NUM_PREDICT, 16,384) and the re-roll gate's revise
+ * (reroll.service.ts REVISE_NUM_PREDICT, 8,192).
  */
-export const LOCAL_FIELD_NUM_PREDICT = 8192;
+export const LOCAL_FIELD_NUM_PREDICT = 2048;
 
 /** A field call on a 27B carrying a full transcript; 10 minutes is generous, not tight. */
 export const LOCAL_FIELD_TIMEOUT_MS = 600_000;
-
-/**
- * Headroom for input data a sizing pass cannot see yet.
- *
- * The budget is resolved when the FIRST call on a model runs, and at that moment the thumbnail
- * call's prompt does not contain the titles — they have not been written. Ten titles plus the
- * block's framing is ~900 characters; 2,000 is that with room. It is added to every unit that
- * declares an input field, and the guard in `generate` below turns a wrong guess into a loud
- * failure rather than a silently truncated prompt.
- */
-const INPUT_DATA_ALLOWANCE_CHARS = 2000;
-
-/**
- * The bucketed load context for one MODEL for one RUN.
- *
- * PURE, so the property that matters — several calls of different sizes on one model resolve to
- * ONE value — is testable without a model. `needs` are per-call token needs (prompt + that
- * call's own output budget); the largest wins, and `bucketLoadContext` rounds it up to a 4096 bucket
- * so two items whose transcripts differ by a few hundred words also land on the same value.
- */
-export function runNumCtx(options: {
-  model: string;
-  /** Per-call token needs on this model: estimated prompt tokens + that call's num_predict. */
-  needs: number[];
-  /** The window already resident on this model. Can only raise the computed value, never lower it. */
-  configured?: number;
-  max: number;
-  what: string;
-}): number {
-  if (options.needs.length === 0) {
-    throw new Error(`Nothing registered a prompt size for the "${options.model}" calls, so there is nothing to size`);
-  }
-  return bucketLoadContext({
-    promptTokens: Math.max(...options.needs),
-    // Already included per call in `needs` — the largest call's own output budget is what has
-    // to fit alongside its own prompt, not the sum of everybody's.
-    maxTokens: 0,
-    configured: options.configured,
-    max: options.max,
-    logPrefix: `[MetadataTasks] ${options.model}`,
-    what: options.what,
-  });
-}
-
-/**
- * ONE load context for one model for one run (LEDGER #111).
- *
- * THE DEFECT THIS EXISTS TO PREVENT. A model loaded at a different context is a full reload
- * (Ollama's num_ctx then, Crucible's `params.context` now). Under
- * grouping that never bit — one call per model, so one value. One call per FIELD means four
- * calls on the 27B whose prompts differ by the length of their instruction sections, which
- * under per-call sizing is up to four full reloads of a 17GB model inside one item.
- *
- * So every unit on a model registers its sizer here, and the FIRST call to run resolves the
- * value from the LARGEST prompt that model will send this run — including the description
- * unit's two calls, which share the 9B with the tags call and have their own smaller output
- * budget.
- */
-export class ModelRunContextBudget {
-  private numCtx?: number;
-  private readonly sizers: Array<{ label: string; need: (ctx: MetadataRunContext) => number }> = [];
-
-  constructor(
-    readonly model: string,
-    /**
-     * The JOB's ratchet. A run's units are planned per ITEM, so without it item 2 would size
-     * its own window from its own transcript and reload the model to make it SMALLER than the
-     * one item 1 left resident — a reload that buys nothing.
-     */
-    private readonly lifecycle: JobModelLifecycle
-  ) {}
-
-  /** `need` returns estimated prompt tokens PLUS that call's own num_predict. */
-  register(label: string, need: (ctx: MetadataRunContext) => number): void {
-    this.sizers.push({ label, need });
-  }
-
-  resolve(ctx: MetadataRunContext): number {
-    if (this.numCtx !== undefined) return this.numCtx;
-    const measured = this.sizers.map((s) => ({ label: s.label, need: s.need(ctx) }));
-    const largest = measured.reduce((a, b) => (b.need > a.need ? b : a));
-    this.numCtx = runNumCtx({
-      model: this.model,
-      needs: measured.map((m) => m.need),
-      // Never below the window this job already made resident on this model — the chapter
-      // stage and the earlier items pinned theirs first. Clamped to LOCAL_FIELD_CTX_MAX by
-      // `contextFloor`, so the floor can never turn into this call's refusal.
-      configured: this.lifecycle.contextFloor(this.model, LOCAL_FIELD_CTX_MAX),
-      max: LOCAL_FIELD_CTX_MAX,
-      what:
-        `the "${largest.label}" call for ${ctx.sourceLabel}, which is the largest prompt "${this.model}" ` +
-        `sends this run (it carries the transcript)`,
-    });
-    this.lifecycle.recordContext(this.model, this.numCtx);
-    log.info(
-      `[MetadataTasks] "${this.model}": load context pinned at ${this.numCtx} for this whole run, shared by ` +
-        `${measured.length} call(s) — ${measured.map((m) => `${m.label} ${m.need}t`).join(', ')} — so the ` +
-        `server loads it once instead of reloading between fields`
-    );
-    return this.numCtx;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // The model roster
@@ -716,7 +613,7 @@ export class CloudFieldUnit implements MetadataUnit {
  * exactly CloudFieldUnit's prompt, built by exactly CloudFieldUnit's builder, and read back
  * through exactly CloudFieldUnit's normalizer. Since P2 the transport is the same door too
  * (AIManagerService.runPlainRequest, then Crucible); what is local about this unit is the
- * shape of its call: an output budget, the run's pinned load context, and the job's lease.
+ * shape of its call: an output budget, a load context sized for this call, and the job's lease.
  */
 export class LocalFieldUnit implements MetadataUnit {
   readonly label: string;
@@ -727,51 +624,24 @@ export class LocalFieldUnit implements MetadataUnit {
     private readonly aiManager: AIManagerService,
     private readonly spec: MetadataFieldUnitSpec,
     private readonly option: MetadataRoutingOption,
-    /** Shared with every other unit on this model — one load context, one load. */
-    private readonly budget: ModelRunContextBudget,
     /** The job's leases. This unit never releases one itself. */
     private readonly lifecycle: JobModelLifecycle
   ) {
     this.fields = [spec.field];
     this.inputFields = spec.inputFields;
     this.label = `${spec.field} (local ${option.model})`;
-    this.budget.register(spec.field, (ctx) => this.promptTokenNeed(ctx));
   }
 
   describePrompt(ctx: MetadataRunContext): string {
     return this.aiManager.buildMetadataFieldPrompt(this.spec, ctx, { pending: true });
   }
 
-  /**
-   * What this call needs of a context window: its prompt plus its own output budget.
-   *
-   * Measured on the PENDING form of the prompt, because sizing happens before the earlier
-   * fields have been written — hence the allowance for input data that is not there yet.
-   */
-  private promptTokenNeed(ctx: MetadataRunContext): number {
-    const chars =
-      this.aiManager.buildMetadataFieldPrompt(this.spec, ctx, { pending: true }).length +
-      (this.spec.inputFields.length > 0 ? INPUT_DATA_ALLOWANCE_CHARS : 0);
-    return estimateTokens(chars) + LOCAL_FIELD_NUM_PREDICT;
-  }
-
   async generate(ctx: MetadataRunContext): Promise<Record<string, unknown>> {
     const prompt = this.aiManager.buildMetadataFieldPrompt(this.spec, ctx);
     const what = `the ${this.spec.field} call for ${ctx.sourceLabel}`;
-    const loadContext = this.budget.resolve(ctx);
-
-    // The sizing pass ran before this call's input data existed. If the real prompt is bigger
-    // than the window that was pinned for it, the door would refuse it anyway (it checks every
-    // call against the loaded context before sending); this says so here, in the terms of the
-    // pinning, which is the fix.
-    const needed = estimateTokens(prompt.length) + LOCAL_FIELD_NUM_PREDICT + 512;
-    if (needed > loadContext) {
-      throw new Error(
-        `${what} assembled to ~${needed} tokens, past the ${loadContext}-token window pinned for "${this.option.model}" ` +
-          `this run. The window is pinned once per model because changing it reloads the model, so this call ` +
-          `cannot be widened: shorten the transcript this item carries, or route this field to another model.`
-      );
-    }
+    // This call's own step (LEDGER #209): its prompt, its answer budget, the margin. The door
+    // checks the call against the window actually loaded before sending (plan 6.1).
+    const loadContext = loadContextFor(prompt.length, LOCAL_FIELD_NUM_PREDICT);
 
     // A truncated answer throws out of the door (`truncated`, LEDGER #112) and is FATAL for
     // this field, which is the opposite of the chapter pipeline's policy on the same result —
@@ -1115,17 +985,6 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
     );
   }
 
-  /** model -> the ONE context budget every unit on it shares (LEDGER #111). */
-  const budgets = new Map<string, ModelRunContextBudget>();
-  const budgetFor = (model: string): ModelRunContextBudget => {
-    let budget = budgets.get(model);
-    if (!budget) {
-      budget = new ModelRunContextBudget(model, lifecycle);
-      budgets.set(model, budget);
-    }
-    return budget;
-  };
-
   /** field -> unit, built in FIELD order so `inputFields` can only ever point backwards. */
   const built: Array<{ field: MetadataFieldId; model: string; local: boolean; unit: MetadataUnit }> = [];
 
@@ -1145,7 +1004,7 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
       local: plan.option.kind === 'local',
       unit:
         plan.option.kind === 'local'
-          ? new LocalFieldUnit(aiManager, spec, plan.option, budgetFor(plan.option.model), lifecycle)
+          ? new LocalFieldUnit(aiManager, spec, plan.option, lifecycle)
           : new CloudFieldUnit(aiManager, spec),
     });
   }
@@ -1158,7 +1017,6 @@ export function planMetadataUnits(request: MetadataPlanRequest): MetadataRunPlan
       unit: new DescriptionUnit(
         aiManager,
         descriptionOption,
-        descriptionOption.kind === 'local' ? budgetFor(descriptionOption.model) : undefined,
         lifecycle
       ),
     });

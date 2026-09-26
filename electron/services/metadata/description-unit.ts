@@ -41,9 +41,9 @@
  * The chapter block STAYS beside it: it is a measured table of contents that says what the
  * video spends its time on, which a transcript does not, and the entity scaffold still applies.
  *
- * The cost is stated rather than hidden: these two calls now carry a transcript-sized prompt,
- * so they share their model's one pinned num_ctx with every other call on it (metadata-tasks.ts
- * ModelRunContextBudget) instead of sizing themselves against a small private ceiling.
+ * The cost is stated rather than hidden: these calls carry a transcript-sized prompt on the raw
+ * path, so each asks for the load context its own prompt needs (context-check.ts
+ * `loadContextFor`, LEDGER #209) rather than sizing itself against a small private ceiling.
  *
  * AND WHERE THERE ARE NO CHAPTERS. This unit used to be planned only for chaptered items;
  * everything else took a whole-metadata call on whatever the Settings page named, and got its
@@ -121,7 +121,7 @@
  */
 
 import * as log from 'electron-log';
-import { estimateTokens } from './context-sizing';
+import { loadContextFor } from './context-sizing';
 import { parseLeadBody } from './plain-call';
 import { JobModelLifecycle } from './model-lifecycle';
 import { MetadataRoutingOption } from './metadata-routing';
@@ -129,7 +129,6 @@ import { JobCancelledError } from './cancellation';
 import { describerClauses } from './chapter-title-quality';
 import { promptAssets, ChannelData } from './prompt-assets';
 import type { MetadataFieldId, MetadataRunContext, MetadataUnit } from './metadata-tasks';
-import type { ModelRunContextBudget } from './metadata-tasks';
 import type { AIManagerService } from './ai-manager.service';
 
 /**
@@ -248,6 +247,11 @@ const SHORT_HOOK_FAULT = 'it came back as ';
  * the contract is now ONE paragraph whose first sentence is the hook, which thinking-off
  * produced in every measured run (~15-45s per call), parsed by parseLeadBody. 4096 is
  * answer-sized with a wide margin — there is no reasoning to carry any more.
+ *
+ * KEPT at 4096 by P4's budget review (docs/crucible/P4.md "Budgets"): the Crucible-era calls
+ * answered in 145-147 tokens, but the stored record holds a description body of 6,066 characters
+ * (~1,733 tokens, a keyword run-on on 2026-08-23), and a 2x margin over that is 3,466. The
+ * evidence does not show 2048 is never needed, so the number stays.
  */
 const NUM_PREDICT = 4096;
 
@@ -309,31 +313,12 @@ export class DescriptionUnit implements MetadataUnit {
   constructor(
     private readonly aiManager: AIManagerService,
     private readonly option: MetadataRoutingOption,
-    /**
-     * The ONE context budget every call on this model shares, on the local path.
-     *
-     * These two calls read the transcript, and they routinely share a model with the tags call
-     * — and loading a model at a different context reloads it (LEDGER #111), so a private value
-     * here would reload it between the description and the tags. Absent on the cloud path,
-     * where there is no window to pin.
-     */
-    private readonly budget: ModelRunContextBudget | undefined,
     /** The job's leases. This unit never releases one: its calls share a model with the tags call. */
     private readonly lifecycle: JobModelLifecycle
   ) {
     this.local = option.kind === 'local';
     if (this.local) {
-      if (!budget) {
-        throw new Error(
-          `The description unit for local model "${option.model}" was constructed with no context budget. ` +
-            `Every local call on a model shares one pinned load context (metadata-tasks.ts) because changing it ` +
-            `reloads the model; there is no per-unit sizing to fall back on.`
-        );
-      }
       this.label = `description (local ${option.model})`;
-      budget.register('description', (ctx) =>
-        estimateTokens(this.buildPrompt(DESCRIPTION_PROMPTS.CANDIDATE, ctx, '').length) + NUM_PREDICT
-      );
     } else {
       this.label = `description (cloud ${option.model})`;
     }
@@ -559,8 +544,8 @@ export class DescriptionUnit implements MetadataUnit {
     const fullWhat = `the description ${what} for ${ctx.sourceLabel}`;
     // Thinking off on both kinds (operator, 2026-08-30 evening): the old two-part layout
     // needed the reasoning pass, the one-paragraph contract does not (see NUM_PREDICT). The
-    // local shape adds the budget, the model's one pinned context for the whole run (resolved
-    // by the first call on the model, from the largest prompt it will send) and the job's lease.
+    // local shape adds the budget, the load context this call's own prompt needs (LEDGER #209)
+    // and the job's lease.
     const text = await this.aiManager.runPlainRequest(
       prompt,
       this.option.model,
@@ -569,7 +554,7 @@ export class DescriptionUnit implements MetadataUnit {
         ? {
             thinking: false,
             maxTokens: NUM_PREDICT,
-            loadContext: this.budget!.resolve(ctx),
+            loadContext: loadContextFor(prompt.length, NUM_PREDICT),
             job: this.lifecycle.leases,
             timeoutMs: CALL_TIMEOUT_MS,
           }

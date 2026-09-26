@@ -27,6 +27,7 @@
     "check:thumbnail": "node tools/thumbnail-checks.js && electron tools/thumbnail-fit-smoke.js",
     "check:retired": "node tools/retired-components-checks.js",
     "check:legacy-gone": "node tools/check-legacy-runtime-gone.js",
+    "check:p4": "node tools/p4-checks.js",
     "start:angular": "cd frontend && npm start",
     "start:electron": "npm run build:electron && npm run build:preload && wait-on http://localhost:4200 && cross-env NODE_ENV=development electron .",
     "electron:dev": "concurrently --kill-others \"npm run start:angular\" \"npm run start:electron\"",

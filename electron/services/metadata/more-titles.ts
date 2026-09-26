@@ -28,13 +28,8 @@ import log from 'electron-log';
 
 import { AIManagerService } from './ai-manager.service';
 import { parseLines } from './plain-call';
-import { estimateTokens } from './context-sizing';
-import {
-  LOCAL_FIELD_CTX_MAX,
-  LOCAL_FIELD_NUM_PREDICT,
-  LOCAL_FIELD_TIMEOUT_MS,
-  runNumCtx,
-} from './metadata-tasks';
+import { loadContextFor } from './context-sizing';
+import { LOCAL_FIELD_NUM_PREDICT, LOCAL_FIELD_TIMEOUT_MS } from './metadata-tasks';
 import { MetadataRoutingOption, resolveOperatorOption, taskOptionIds } from './metadata-routing';
 
 /** How many titles one operator request asks for. Stated once; it is in the prompt too. */
@@ -56,6 +51,9 @@ export interface PromptTraceEntry {
   chars: number;
   at: string;
   prompt: string;
+  /** P4: a local call's output budget and act, for the item's context assertion (context-assertion.ts). */
+  maxTokens?: number;
+  act?: 'generate' | 'decide';
 }
 
 /** The stored titles call, as the run recorded it. */
@@ -169,12 +167,7 @@ export async function askForMoreTitles(
       ? {
           thinking: false,
           maxTokens: LOCAL_FIELD_NUM_PREDICT,
-          loadContext: runNumCtx({
-            model: option.model,
-            needs: [estimateTokens(prompt.length) + LOCAL_FIELD_NUM_PREDICT],
-            max: LOCAL_FIELD_CTX_MAX,
-            what,
-          }),
+          loadContext: loadContextFor(prompt.length, LOCAL_FIELD_NUM_PREDICT),
           timeoutMs: LOCAL_FIELD_TIMEOUT_MS,
         }
       : { thinking: false }

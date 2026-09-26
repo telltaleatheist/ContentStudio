@@ -1,5 +1,5 @@
 /**
- * One job's model residence: its Crucible leases, and the context floor that protects them
+ * One job's model residence: its Crucible leases
  *
  * WHY THIS FILE EXISTS. Every stage of a metadata job used to release its model in its own
  * `finally`: the chapter pipeline when chaptering finished, each field unit and the description
@@ -18,32 +18,17 @@
  *
  * THE SECOND RELOAD TRIGGER IS THE CONTEXT. Loading a model at a different context is a full
  * reload (it was num_ctx on Ollama, LEDGER #111; it is `load-model`'s `params.context` on
- * Crucible), so two stages sharing a model and sizing their windows independently would reload
- * it between them. `contextFloor` is the ratchet: the largest window this job has asked a model
- * for is the floor for every later call on it. GROWTH still reloads and that is legitimate: a
- * prompt that does not fit needs a bigger window, and refusing to grow would send a prompt that
- * lies about what it covers. SHRINKAGE never is.
+ * Crucible). Until P4 this file kept a ratchet (`contextFloor` / `recordContext`): the largest
+ * window a job had asked a model for was the floor for every later call on it. P4 (LEDGER #209)
+ * moved every call to its own smallest step, and the protection the ratchet gave now lives in
+ * the lease itself (electron/crucible/lease.ts): a later call that needs more grows the load
+ * once, a later call that needs less runs on the window already loaded. GROWTH is legitimate;
+ * SHRINKAGE within a job never is. No floor is carried anywhere.
  */
 
 import * as log from 'electron-log';
 import { crucibleTransport } from '../../crucible/transport';
 import type { JobLeases } from '../../crucible/lease';
-
-/**
- * The context floor for a call on a model already loaded at `largestSoFar`, under that call's
- * own ceiling.
- *
- * PURE, so both properties are assertable without a model:
- *   - a later call never asks for a SMALLER window than one already loaded, which would
- *     reload the model for nothing;
- *   - the ratchet never pushes a call past the ceiling its own stage refuses at.
- *
- * Zero means "no floor": it is what `bucketLoadContext` reads as an absent `configured`.
- */
-export function contextFloor(largestSoFar: number | undefined, ceiling: number): number {
-  if (largestSoFar === undefined) return 0;
-  return Math.min(largestSoFar, ceiling);
-}
 
 /**
  * One job's model residence. Created by the orchestrator, threaded to the stages, released once.
@@ -52,8 +37,6 @@ export function contextFloor(largestSoFar: number | undefined, ceiling: number):
  * process-wide one would let a finishing job release the lease a running one is mid-call on.
  */
 export class JobModelLifecycle {
-  /** model -> the largest context this job has asked for on it. */
-  private readonly contexts = new Map<string, number>();
   private jobLeases: JobLeases | null = null;
 
   constructor(
@@ -68,23 +51,6 @@ export class JobModelLifecycle {
   get leases(): JobLeases {
     if (this.jobLeases === null) this.jobLeases = crucibleTransport().job(this.what);
     return this.jobLeases;
-  }
-
-  /** The floor a call on `model` must not size below, under that call's own hard ceiling. */
-  contextFloor(model: string, ceiling: number): number {
-    return contextFloor(this.contexts.get(model), ceiling);
-  }
-
-  /** Record what a stage actually sized, so the next stage on that model cannot go under it. */
-  recordContext(model: string, context: number): void {
-    const previous = this.contexts.get(model);
-    if (previous !== undefined && context > previous) {
-      log.info(
-        `[ModelLifecycle] "${model}" load context grows ${previous} -> ${context} for this call, which reloads it: ` +
-          `the prompt does not fit the loaded window, and a window that does not fit is a truncated prompt`
-      );
-    }
-    this.contexts.set(model, Math.max(previous ?? 0, context));
   }
 
   /**

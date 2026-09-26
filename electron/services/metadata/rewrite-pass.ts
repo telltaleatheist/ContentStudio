@@ -33,14 +33,8 @@
 
 import { AIManagerService } from './ai-manager.service';
 import { parseLines } from './plain-call';
-import { estimateTokens } from './context-sizing';
-import {
-  LOCAL_FIELD_CTX_MAX,
-  LOCAL_FIELD_NUM_PREDICT,
-  LOCAL_FIELD_TIMEOUT_MS,
-  normalizeTagLine,
-  runNumCtx,
-} from './metadata-tasks';
+import { loadContextFor } from './context-sizing';
+import { LOCAL_FIELD_TIMEOUT_MS, normalizeTagLine } from './metadata-tasks';
 import { MetadataRoutingOption } from './metadata-routing';
 import { promptAssets } from './prompt-assets';
 
@@ -208,12 +202,27 @@ export function buildRewritePrompt(pass: RewritePassIdentity, plan: RewritePlan)
 // ---------------------------------------------------------------------------
 
 /**
+ * The output budget of a LOCAL rewrite call: 16,384, the thinking title's (P4; LEDGER #209, #214).
+ *
+ * A rewrite runs thinking-ON (plan 6.3), and thinking and the answer share one budget. Through P2
+ * it borrowed the field calls' 8,192, and the recorded runs came close to it: the scrub of one
+ * item's chapter titles spent 6,602 output tokens and an alternate description's scrub 4,807
+ * (Mac 27B, the acceptance logs, docs/crucible/P4.md "Budgets"). A run-out is a hard failure
+ * (`truncated`, LEDGER #112) and the scrub is always on (LEDGER #183), so an item whose rewrite
+ * thinks past 8,192 would lose its whole description. #214's rule is that metadata never gets
+ * cheaped out; the title's budget is the one Owen ruled on for a thinking call, so the scrub and
+ * Soften take the same. The load context follows from the prompt plus this budget
+ * (`loadContextFor`): a ~900-token scrub prompt loads at 24,576, as a thinking title does.
+ */
+export const REWRITE_NUM_PREDICT = 16384;
+
+/**
  * Send one field's prompt on the chosen model and read the answer.
  *
  * ONE DOOR for every kind of model (P2). Thinking ON, as plan 6.3 states for scrub and Soften:
  * a register rewrite that must carry every fact through was measured thinking-on. A local model
- * states the field calls' budget and a load context sized for this one prompt (there is no run
- * to share a pinned context with); a one-call job leases it around the call.
+ * states the rewrite budget ({@link REWRITE_NUM_PREDICT}) and the load context this prompt plus
+ * that budget needs; a one-call job leases it around the call.
  */
 export async function askToRewrite(
   pass: RewritePassIdentity,
@@ -231,13 +240,8 @@ export async function askToRewrite(
     option.kind === 'local'
       ? {
           thinking: true,
-          maxTokens: LOCAL_FIELD_NUM_PREDICT,
-          loadContext: runNumCtx({
-            model: option.model,
-            needs: [estimateTokens(prompt.length) + LOCAL_FIELD_NUM_PREDICT],
-            max: LOCAL_FIELD_CTX_MAX,
-            what,
-          }),
+          maxTokens: REWRITE_NUM_PREDICT,
+          loadContext: loadContextFor(prompt.length, REWRITE_NUM_PREDICT),
           timeoutMs: LOCAL_FIELD_TIMEOUT_MS,
         }
       : { thinking: true }

@@ -31,8 +31,9 @@ import * as log from 'electron-log';
 import type { AIManagerService } from '../ai-manager.service';
 import type { Chapter } from '../chapter-generator.service';
 import { crucibleTransport } from '../../../crucible/transport';
-import { estimateTokens } from '../context-sizing';
-import { LOCAL_FIELD_CTX_MAX, LOCAL_FIELD_NUM_PREDICT, LOCAL_FIELD_TIMEOUT_MS, runNumCtx } from '../metadata-tasks';
+import { loadContextFor } from '../context-sizing';
+import { DECIDE_QUESTION_TOKENS } from '../../../crucible/context-check';
+import { LOCAL_FIELD_TIMEOUT_MS } from '../metadata-tasks';
 import { MetadataRoutingTaskId, REROLL_SCORER_MODEL, ResolvedMetadataRouting, routingOption } from '../metadata-routing';
 import type { JobModelLifecycle } from '../model-lifecycle';
 import { parseLines } from '../plain-call';
@@ -42,6 +43,16 @@ import { GateFieldInput, GateRecord, runGate } from './gate';
 import { channelFacts, joinSentences, splitSentences } from './rules';
 import { RerollGateSettings } from './settings';
 import { DecideFn, DecideRequest, GateError, GateField, ReviseFn } from './types';
+
+/**
+ * The revise call's output budget: 8,192, unchanged by P4. The revise runs thinking-ON (a unit
+ * rewritten against a named rule), and through P2 it borrowed the field calls' number; when the
+ * thinking-off field calls came down to 2,048 (metadata-tasks.ts LOCAL_FIELD_NUM_PREDICT) this
+ * kept the budget it was built with. No revise answer length appears in any log or stored record
+ * P4 could read (docs/crucible/P4.md "Budgets"), so there is no evidence to size it by and the
+ * number stays (LEDGER #214). Its load context is its own prompt plus this (LEDGER #209).
+ */
+export const REVISE_NUM_PREDICT = 8192;
 
 /** Which routing row writes each field's re-roll: its own. */
 const FIELD_TASK: Record<GateField, MetadataRoutingTaskId> = {
@@ -191,6 +202,9 @@ export async function rerollGateItem(item: any, run: RerollGateRun): Promise<voi
         state: request.state,
         questions: request.questions,
         missing: request.missing,
+        // Its own step (LEDGER #209), as snap's decide calls size theirs. Absent, the scorer
+        // loaded at the server's default, a size nobody stated for this call.
+        loadContext: loadContextFor(request.state.length, DECIDE_QUESTION_TOKENS),
         job: run.lifecycle.leases,
         ...(o.signal === undefined ? {} : { signal: o.signal }),
         what: o.what,
@@ -211,8 +225,8 @@ export async function rerollGateItem(item: any, run: RerollGateRun): Promise<voi
       option.kind === 'local'
         ? {
             thinking: true,
-            maxTokens: LOCAL_FIELD_NUM_PREDICT,
-            loadContext: runNumCtx({ model: option.model, needs: [estimateTokens(request.prompt.length) + LOCAL_FIELD_NUM_PREDICT], max: LOCAL_FIELD_CTX_MAX, what }),
+            maxTokens: REVISE_NUM_PREDICT,
+            loadContext: loadContextFor(request.prompt.length, REVISE_NUM_PREDICT),
             timeoutMs: LOCAL_FIELD_TIMEOUT_MS,
           }
         : { thinking: true },
@@ -241,15 +255,19 @@ export async function rerollGateItem(item: any, run: RerollGateRun): Promise<voi
   const trace = item._prompt_trace as Array<Record<string, unknown>>;
   for (const call of record.decideCalls) {
     const prompt = renderDecide(call.request);
-    trace.push({ what: call.what, model: REROLL_SCORER_MODEL, chars: prompt.length, at: call.at, prompt, answers: call.answers });
+    // `maxTokens`/`act` (P4) let the item's context assertion size the call (context-assertion.ts).
+    trace.push({ what: call.what, model: REROLL_SCORER_MODEL, chars: prompt.length, at: call.at, prompt, answers: call.answers, maxTokens: 0, act: 'decide' });
   }
   for (const call of record.rerollCalls) {
     const option = routingOption(FIELD_TASK[call.field], run.routing[FIELD_TASK[call.field]]);
-    trace.push({ what: `re-roll gate: ${call.field} re-roll ${call.attempt} (${call.rule})`, model: option.model, chars: call.prompt.length, at: call.at, prompt: call.prompt, answers: call.answers });
+    trace.push({
+      what: `re-roll gate: ${call.field} re-roll ${call.attempt} (${call.rule})`, model: option.model, chars: call.prompt.length, at: call.at,
+      prompt: call.prompt, answers: call.answers, ...(option.kind === 'local' ? { maxTokens: REVISE_NUM_PREDICT, act: 'generate' } : {}),
+    });
   }
   if (record.ranking) {
     const prompt = renderDecide(record.ranking.request);
-    trace.push({ what: `re-roll gate: title ranking for ${run.sourceLabel}`, model: REROLL_SCORER_MODEL, chars: prompt.length, at, prompt, answers: record.ranking.answers });
+    trace.push({ what: `re-roll gate: title ranking for ${run.sourceLabel}`, model: REROLL_SCORER_MODEL, chars: prompt.length, at, prompt, answers: record.ranking.answers, maxTokens: 0, act: 'decide' });
   }
 
   item.reroll_gate = {

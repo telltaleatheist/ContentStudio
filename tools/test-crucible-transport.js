@@ -92,14 +92,12 @@ check('6.3 rows, local: each call site states thinking, its budget and the act, 
   const ai = manager();
 
   const lifecycle = new JobModelLifecycle('the keeper job');
-  // titles (LocalFieldUnit, thinking off, 8192)
+  // titles (LocalFieldUnit, thinking off, 2048 since P4)
   ai.buildMetadataFieldPrompt = () => 'Write ten titles.';
-  const budget = new tasks.ModelRunContextBudget(local.model, lifecycle);
-  const titles = new tasks.LocalFieldUnit(ai, { field: 'titles', model: local.model, insights: false, inputFields: [] }, local, budget, lifecycle);
+  const titles = new tasks.LocalFieldUnit(ai, { field: 'titles', model: local.model, insights: false, inputFields: [] }, local, lifecycle);
   await titles.generate({ sourceLabel: 'keeper.mp4', promptSetName: 'youtube-telltale', warn: () => {} });
   // chapter detail (thinking ON) and a stage-1 consensus sample (thinking off, temperature 0.7)
   const chapterer = new WholeTranscriptChapterService({ model: local.model, trace: ai.promptTrace, lifecycle, grain: 'broad' });
-  chapterer.numCtx = 16384;
   // The chapter stage holds its lane for its whole run, as the generator's queueAITask does.
   await ctx_.lanes.aiCall(gpuCall(local.model), 'the chapter stage', async () => {
     await chapterer.ask('detail', 'Name this chapter.', 'chapter 1', 60_000, { thinking: true });
@@ -116,7 +114,14 @@ check('6.3 rows, local: each call site states thinking, its budget and the act, 
   assert.ok(bodies.every((b) => b.body.stream === true), 'every chat is streamed, so the stall clock hears it (P3)');
   const thinking = bodies.map((b) => b.body.chat_template_kwargs?.enable_thinking);
   assert.deepStrictEqual(thinking, [false, true, false, false, true], 'titles, detail, stage 1, more titles, soften');
-  assert.deepStrictEqual(bodies.map((b) => b.body.max_tokens), [8192, 8192, 8192, 8192, 8192]);
+  // P4: thinking-off field calls answer-sized (2048), the chapter calls and the whole-transcript
+  // engine keep 8192, a thinking-on rewrite takes the thinking title's 16384 (LEDGER #209, #214).
+  assert.deepStrictEqual(bodies.map((b) => b.body.max_tokens), [2048, 8192, 8192, 2048, 16384]);
+  // Every call was traced with its budget and the load it asked for, the smallest 8,192 step that
+  // holds it (context-check.ts loadContextFor): the context assertion reads these (P4).
+  const traced = ai.promptTrace.filter((e) => e.act === 'generate');
+  assert.ok(traced.length >= 5 && traced.every((e) => typeof e.maxTokens === 'number' && e.loadContext % 8192 === 0), JSON.stringify(traced.map((e) => [e.what, e.maxTokens, e.loadContext])));
+  assert.deepStrictEqual(traced.map((e) => e.loadContext), [8192, 16384, 16384, 8192, 24576], 'each call asks for its own step');
   assert.deepStrictEqual(bodies.map((b) => b.act), ['generate', 'generate', 'generate', 'generate', 'generate']);
   assert.deepStrictEqual(bodies.map((b) => 'temperature' in b.body), [false, false, true, false, false], 'only the consensus sample samples (LEDGER #159)');
   assert.strictEqual(bodies[2].body.temperature, 0.7);
