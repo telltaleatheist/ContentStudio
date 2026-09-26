@@ -48,6 +48,9 @@ import { ChosenMetadata } from './publish-types';
 import { PrimaryDecidedBy, PrimaryEntry, PrimarySetService } from './primary-set.service';
 import { GeneratedItemSummary } from './publish-store.service';
 
+/** Registry sources already reported as having no items, so the line is said once per launch. */
+const announcedOrphans = new Set<string>();
+
 /** How far along the publishing pipeline one set is, and the words for it. */
 export interface PublishProgress {
   /** 0-5. Higher wins. See the table at the top of this file. */
@@ -293,11 +296,14 @@ export function ensurePrimarySets(deps: PrimarySweepDeps): PrimarySweepReceipt {
   }
 
   // Sources the registry knows that the index no longer contains at all (every item of
-  // them deleted). Named once, and left: the entry is harmless and the operator may be
-  // mid-restore of an output volume.
+  // them deleted). Named ONCE PER PROCESS, and left: the entry is harmless and the operator
+  // may be mid-restore of an output volume. The sweep runs on every reports-page arrival and
+  // window focus (LEDGER #185), and before 2026-09-26 this line was written on each of them:
+  // three retired Killing America items produced 5,680 copies in one afternoon's log.
   for (const [sourceKey] of existing) {
-    if (!bySource.has(sourceKey)) {
-      log(`[Primary] "${sourceKey}" has a recorded primary but no items in the index.`);
+    if (!bySource.has(sourceKey) && !announcedOrphans.has(sourceKey)) {
+      announcedOrphans.add(sourceKey);
+      log(`[Primary] "${sourceKey}" has a recorded primary but no items in the index (said once per launch).`);
     }
   }
 
