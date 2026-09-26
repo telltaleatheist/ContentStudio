@@ -8,8 +8,8 @@
  * close-quote runaway, the `"..."`-as-whole-body bail-out, the repair ladder, the truncation
  * recovery. A paragraph asked for as a paragraph has none of those places to fail.
  *
- * THE TRANSPORT THAT LIVED HERE IS GONE (P2). `askOllamaPlain` posted to Ollama's
- * /api/generate and /api/chat; every model call now goes through the one Crucible door
+ * THE TRANSPORT THAT LIVED HERE IS GONE (P2). The Ollama plain-text transport posted to
+ * Ollama's generate and chat endpoints; every model call now goes through the one Crucible door
  * (electron/crucible/transport.ts), which states `thinking` on every call, refuses a
  * truncated answer (`finish_reason: length`, LEDGER #112) and checks the prompt against the
  * loaded context before sending. What stays here is what reads the answer.

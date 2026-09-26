@@ -194,7 +194,7 @@ export const METADATA_ROUTING_OPTIONS: Record<string, MetadataRoutingOption> = {
    *
    * On Crucible it is the 4-bit build (`qwen3.8-27b-4bit`: mlx 4-bit on the Mac, AWQ-INT4 on
    * the PC, plan 6.2). Its manifest states no thinking default, which is why every call on it
-   * states `thinking` (plan 1); the Ollama /api/generate note that stood here went with Ollama.
+   * states `thinking` (plan 1); the note about Ollama's generate endpoint went with Ollama.
    */
   'qwen38-27b': { kind: 'local', label: 'Qwen 27B', model: 'qwen3.8-27b-4bit', crucibleModel: 'qwen3.8-27b-4bit' },
 };

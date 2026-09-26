@@ -39,8 +39,9 @@ subagent with model override and this instruction shape:
 > fences. Write the raw completion to
 > tools/prompt-tune/out/outputs/<key>--<stage>--<model>.json and reply: done
 
-Local models use the same prompt files directly:
-`ollama run qwen3.8:27b < out/prompts/<file>` (ask the operator first — GPU rule).
+Local models use the same prompt files directly, as one chat to the routed model
+(`qwen3.8-27b-4bit`) on the selected Crucible server (ask the operator first — GPU rule).
+Ollama left the app in P10.
 
 **3. Score:**
 

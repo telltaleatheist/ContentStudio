@@ -50,7 +50,6 @@
     "youtube",
     "spreaker",
     "ai",
-    "ollama",
     "electron"
   ],
   "author": "Owen Morgan",
@@ -70,14 +69,12 @@
     "wait-on": "^9.0.1"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.71.1",
     "@crucible/bootstrap": "file:vendor/crucible-bootstrap-1.0.34.tgz",
     "@crucible/client": "file:vendor/crucible-client-1.0.34.tgz",
     "axios": "^1.13.2",
     "electron-log": "^5.3.3",
     "electron-store": "^8.2.0",
     "js-yaml": "^4.1.0",
-    "openai": "^6.10.0",
     "sherpa-onnx-node": "^1.13.6"
   },
   "build": {

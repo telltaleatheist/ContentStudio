@@ -57,23 +57,6 @@ else
     echo -e "${GREEN}✓${NC} FFmpeg installed"
 fi
 
-# Check Ollama
-if ! command -v ollama &> /dev/null; then
-    echo -e "${YELLOW}⚠️  Ollama is not installed (recommended)${NC}"
-    echo "   Download from: https://ollama.ai"
-    echo "   Then run: ollama pull cogito:70b"
-else
-    echo -e "${GREEN}✓${NC} Ollama installed"
-
-    # Check if cogito:70b is available
-    if ollama list | grep -q "cogito:70b"; then
-        echo -e "${GREEN}✓${NC} cogito:70b model available"
-    else
-        echo -e "${YELLOW}⚠️  cogito:70b model not found${NC}"
-        echo "   Run: ollama pull cogito:70b"
-    fi
-fi
-
 echo ""
 echo "📦 Installing dependencies..."
 
@@ -108,8 +91,8 @@ echo ""
 echo -e "${GREEN}✅ Setup complete!${NC}"
 echo ""
 echo "Next steps:"
-echo "1. Start Ollama (if not running): ollama serve"
-echo "2. Pull AI model (if not done): ollama pull cogito:70b"
-echo "3. Run LaunchPad: npm run electron:dev"
+echo "1. Connect a Crucible server in Settings › Crucible Servers (every AI call and every"
+echo "   transcription runs there; the app downloads no local model)"
+echo "2. Run ContentStudio: npm run electron:dev"
 echo ""
 echo "For more information, see README.md"

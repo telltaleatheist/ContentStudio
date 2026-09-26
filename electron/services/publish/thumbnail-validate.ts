@@ -16,8 +16,8 @@
  *    Callisto, an external volume: "it validated when I picked it" says nothing about
  *    whether the file is there, or is still the same file, at upload.
  *
- * No image library. package.json has none (deps: anthropic, axios, electron-log,
- * electron-store, js-yaml, openai) and a thumbnail check is not worth a native
+ * No image library. package.json has none (deps: the vendored Crucible client, axios,
+ * electron-log, electron-store, js-yaml, sherpa-onnx-node) and a thumbnail check is not worth a native
  * dependency in a packaged Electron app — the two formats YouTube accepts both put
  * their dimensions in the header, so we read the header. Downscaling for PREVIEW is a
  * different job and belongs to Electron's own nativeImage (see publish-ipc's
