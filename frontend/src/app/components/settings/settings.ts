@@ -14,7 +14,7 @@ import type { Subscription } from 'rxjs';
 import type { SpreakerStatus } from '../../features/publish/publish.types';
 
 interface DownloadComponent {
-  component: { id: string; name: string; description: string; category: 'tool' | 'whisper'; sizeBytes: number; recommended?: boolean };
+  component: { id: string; name: string; description: string; category: 'tool'; sizeBytes: number; recommended?: boolean };
   state: 'available' | 'installed' | 'incompatible';
   reason?: string;
 }
@@ -59,7 +59,6 @@ export class Settings implements OnInit, OnDestroy {
 
     downloadableComponents = signal<DownloadComponent[]>([]);
   componentProgress = signal<Record<string, number>>({});
-  whisperModel = signal('small');
 
   // Path to a clean solo recording of the operator's voice. Empty is a declared mode,
   // not an oversight: with nothing enrolled the pipeline skips speaker tagging entirely,
@@ -183,7 +182,6 @@ export class Settings implements OnInit, OnDestroy {
 
       if (settings.outputDirectory) this.outputDirectory.set(settings.outputDirectory);
       if (settings.promptSet) this.selectedPromptSet.set(settings.promptSet);
-      if (settings.whisperModel) this.whisperModel.set(settings.whisperModel);
       if (settings.speakerEnrollmentAudio) this.speakerEnrollmentAudio.set(settings.speakerEnrollmentAudio);
       await this.loadComponents();
 
@@ -248,10 +246,6 @@ export class Settings implements OnInit, OnDestroy {
 
   formatBytes(bytes: number): string {
     return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
-  }
-
-  installedWhisperModels(): DownloadComponent[] {
-    return this.downloadableComponents().filter((item) => item.component.category === 'whisper' && item.state === 'installed');
   }
 
   async loadPromptSets() {
@@ -485,7 +479,6 @@ export class Settings implements OnInit, OnDestroy {
     const settings = {
       outputDirectory: this.outputDirectory(),
       promptSet: this.selectedPromptSet(),
-      whisperModel: this.whisperModel(),
       speakerEnrollmentAudio: this.speakerEnrollmentAudio()
     };
 

@@ -120,22 +120,19 @@ def is_silent(ffmpeg, wav, thresh_db=-60.0):
     return v == "-inf" or float(v) <= thresh_db
 
 
-def ffprobe_codec(ffprobe, path):
-    r = run([ffprobe, "-v", "error", "-select_streams", "a:0", "-show_entries",
-             "stream=codec_name", "-of", "default=nk=1:nw=1", str(path)])
-    if r.returncode != 0 or not r.stdout.strip():
-        raise VoiceIsolationError(f"could not probe the codec of {path}: {r.stderr.strip()}")
-    return r.stdout.strip()
+# THE STEMS ARE 16-BIT PCM WAV. Crucible's denoise returns nothing else, and
+# electron/crucible/denoise.ts refuses any stem that is not (STEM_BITS_PER_SAMPLE)
+# before it answers here, so this file never probes a stem's codec.
+STEM_CODEC = "pcm_s16le"
 
 
-def to_silence_like(ffmpeg, src, out, codec):
-    """Re-encode an (all-silent) chunk in the stems' own PCM codec, so it
-    concatenates cleanly with them: the concat demuxer reads every file as the
-    first one's codec, and a 16-bit file read as 24-bit comes out two thirds as
-    long. The codec is the server's to choose, not this file's to assume (the
-    local separator happened to write 16-bit). Exact same length as src."""
+def to_silence_like(ffmpeg, src, out):
+    """Re-encode an (all-silent) chunk as the stems are (STEM_CODEC in a WAV), so
+    it concatenates cleanly with them: the concat demuxer reads every file as
+    the first one's codec, and a 24-bit file read as 16-bit comes out one and a
+    half times as long. Exact same length as src."""
     r = run([ffmpeg, "-nostdin", "-v", "error", "-i", str(src),
-             "-c:a", codec, "-y", str(out)])
+             "-c:a", STEM_CODEC, "-y", str(out)])
     if r.returncode != 0:
         raise VoiceIsolationError(f"could not build silent passthrough stem: {r.stderr[-400:]}")
 
@@ -236,7 +233,7 @@ def isolate_voice(input_path, output_path, *, ffmpeg="ffmpeg", ffprobe="ffprobe"
     tmp = Path(tempfile.mkdtemp(prefix="voicesep_"))
     stems = []
     # Silent chunks, as (index into stems, the chunk): their silence is written
-    # after the loop, in the codec the first real stem came back in.
+    # after the loop, as a STEM_CODEC WAV like every stem.
     silent = []
     try:
         for i, (t0, t1) in enumerate(chunks):
@@ -260,16 +257,9 @@ def isolate_voice(input_path, output_path, *, ffmpeg="ffmpeg", ffprobe="ffprobe"
             stems.append(stem)
             cw.unlink(missing_ok=True)  # free chunk input immediately
             say(f"CHUNK {i+1}/{len(chunks)} ({t0/60:.1f}-{t1/60:.1f}min) -> {stem.name}")
-        real = [stem for stem in stems if stem is not None]
-        # With no real stem there is nothing to match, and 16-bit silence is
-        # silence at any depth.
-        codec = ffprobe_codec(ffprobe, real[0]) if real else "pcm_s16le"
-        # The server's container too (1.0.38 publishes FLAC): a FLAC stream in a
-        # file named .wav is refused by ffmpeg's WAV muxer.
-        suffix = real[0].suffix if real else ".wav"
         for at, cw in silent:
-            stem = tmp / f"sil_{at:04d}{suffix}"
-            to_silence_like(ffmpeg, cw, stem, codec)
+            stem = tmp / f"sil_{at:04d}.wav"
+            to_silence_like(ffmpeg, cw, stem)
             stems[at] = stem
             cw.unlink(missing_ok=True)
         concat_resample(ffmpeg, stems, output_path, target_sr)

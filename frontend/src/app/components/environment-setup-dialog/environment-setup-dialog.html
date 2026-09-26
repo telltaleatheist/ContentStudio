@@ -5,7 +5,7 @@
       <header>
         <span class="eyebrow">ContentStudio setup</span>
         <h2 id="setup-title">Choose what powers your workflow</h2>
-        <p>Connect AI and choose a transcription model. You can change either later in Settings.</p>
+        <p>Connect ContentStudio to a Crucible server. You can change it later in Settings.</p>
       </header>
 
       @if (needsAI()) {
@@ -20,38 +20,6 @@
             </div>
           </div>
         </div>
-      }
-
-      @if (needsWhisper() && !whisperQueued()) {
-        <div class="setup-section whisper-section">
-          <div class="section-copy">
-            <span class="section-mark">TXT</span>
-            <div>
-              <h3>Choose a transcription model</h3>
-              <p>Larger models improve accuracy but take longer to download and transcribe.</p>
-            </div>
-          </div>
-
-          <div class="model-choices">
-            @for (item of setup.whisperModels(); track item.component.id) {
-              <label class="model-choice" [class.selected]="selectedWhisper() === item.component.id">
-                <input type="radio" name="whisper-model" [value]="item.component.id"
-                  [checked]="selectedWhisper() === item.component.id"
-                  (change)="selectedWhisper.set(item.component.id)">
-                <span class="choice-copy">
-                  <strong>{{ item.component.name }}</strong>
-                  <small>{{ item.component.description }}</small>
-                </span>
-                <span class="choice-size">{{ formatBytes(item.component.sizeBytes) }}</span>
-              </label>
-            }
-          </div>
-          <button class="primary-action" type="button" (click)="downloadWhisper()">Use this transcription model</button>
-        </div>
-      }
-
-      @if (whisperQueued()) {
-        <div class="queued-note">Your transcription model is downloading in the setup shelf.</div>
       }
 
       <footer>

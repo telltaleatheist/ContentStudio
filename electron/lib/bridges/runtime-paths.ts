@@ -82,28 +82,13 @@ export function getBinaryExtension(): string {
 }
 
 /**
- * Get whisper binary name for current platform/architecture
- */
-function getWhisperBinaryName(): string {
-  const platform = process.platform;
-  const arch = process.arch;
-
-  if (platform === 'win32') {
-    return 'whisper-cli.exe';
-  } else if (platform === 'darwin') {
-    return arch === 'arm64' ? 'whisper-cli-arm64' : 'whisper-cli-x64';
-  }
-  return 'whisper-cli';
-}
-
-/**
  * The speaker-embedding graph, by name.
  *
  * NeMo TitaNet-small, from the sherpa-onnx speaker-recognition release. It is the model
  * speaker tagging is calibrated against — see the model comparison in
  * services/metadata/speaker-embedding.ts, which measured three alternatives that do not
  * separate this material at all. The filename is here rather than in the tagger because it is
- * the same kind of fact as `ggml-<model>.bin`: what the installer put on disk.
+ * the same kind of fact as ffmpeg's entry path: what the installer put on disk.
  */
 const SPEAKER_MODEL_FILE = 'nemo_en_titanet_small.onnx';
 
@@ -113,29 +98,14 @@ const SPEAKER_MODEL_FILE = 'nemo_en_titanet_small.onnx';
 export interface RuntimePaths {
   ffmpeg: string;
   ffprobe: string;
-  whisper: string;
-  whisperModelsDir: string;
   /**
    * The speaker-embedding ONNX file, resolved whether or not it is installed.
    *
-   * A PATH, not a promise that the file is there — the same contract `whisperModelsDir` has.
+   * A PATH, not a promise that the file is there.
    * Speaker tagging is optional, so its consumer checks existence and says what to install;
    * nothing at startup fails over a model an operator may never turn on.
    */
   speakerModel: string;
-}
-
-let selectedWhisperModel = 'small';
-
-export function setSelectedWhisperModel(model: string): void {
-  if (!['tiny', 'base', 'small', 'large-v3', 'large-v3-turbo'].includes(model)) {
-    throw new Error(`Unsupported Whisper model: ${model}`);
-  }
-  selectedWhisperModel = model;
-}
-
-export function getSelectedWhisperModel(): string {
-  return selectedWhisperModel;
 }
 
 /**
@@ -148,14 +118,12 @@ export function getRuntimePaths(): RuntimePaths {
 
   let ffmpegPath: string;
   let ffprobePath: string;
-  let whisperPath: string;
 
   if (isPackaged()) {
     ffmpegPath = resolveEntry('ffmpeg') || expectedEntry('ffmpeg');
     ffprobePath = ffmpegPath ? path.join(path.dirname(ffmpegPath), `ffprobe${ext}`) : '';
-    whisperPath = resolveEntry('whisper-engine') || expectedEntry('whisper-engine');
   } else {
-    // Development: ffmpeg from npm package, whisper from utilities/bin
+    // Development: ffmpeg and ffprobe from their npm packages
     ffmpegPath = path.join(
       resourcesPath,
       'node_modules',
@@ -170,22 +138,16 @@ export function getRuntimePaths(): RuntimePaths {
       platformFolder,
       `ffprobe${ext}`
     );
-    whisperPath = path.join(resourcesPath, 'utilities', 'bin', getWhisperBinaryName());
   }
 
-  const installedModel = isPackaged()
-    ? (resolveEntry(`whisper-${selectedWhisperModel}`) || expectedEntry(`whisper-${selectedWhisperModel}`))
-    : null;
-  // Same two-arm resolution as the Whisper model, deliberately: installed component when
-  // packaged, utilities/models in development.
+  // Two-arm resolution, deliberately: installed component when packaged, utilities/models in
+  // development.
   const installedSpeakerModel = isPackaged()
     ? (resolveEntry('speaker-embedding') || expectedEntry('speaker-embedding'))
     : null;
   return {
     ffmpeg: ffmpegPath,
     ffprobe: ffprobePath,
-    whisper: whisperPath,
-    whisperModelsDir: installedModel ? path.dirname(installedModel) : path.join(resourcesPath, 'utilities', 'models'),
     speakerModel: installedSpeakerModel || path.join(resourcesPath, 'utilities', 'models', SPEAKER_MODEL_FILE),
   };
 }
@@ -221,16 +183,4 @@ export function verifyBinary(binaryPath: string, name: string): void {
       console.warn(`[RuntimePaths] Could not verify ${name} binary at ${binaryPath}:`, err?.message || err);
     }
   }
-}
-
-/**
- * Get DYLD_LIBRARY_PATH for whisper dylibs (macOS)
- */
-export function getWhisperLibraryPath(): string | undefined {
-  if (process.platform !== 'darwin') {
-    return undefined;
-  }
-
-  const whisper = getRuntimePaths().whisper;
-  return whisper ? path.dirname(whisper) : undefined;
 }

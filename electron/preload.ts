@@ -463,7 +463,7 @@ const api = {
     muteMicDuringScreen?: boolean;
   }) => ipcRenderer.invoke('editor:export', payload),
 
-  // Transcription (whisper.cpp, word-level). Progress/completion arrive on this window.
+  // Transcription (Crucible asr, word-level). Progress/completion arrive on this window.
   transcribeSession: (payload: { zipPath: string }) => ipcRenderer.invoke('editor:transcribe', payload),
   cancelTranscription: (payload: { jobId: string }) => ipcRenderer.invoke('editor:transcribe-cancel', payload),
   loadTranscript: (payload: { zipPath: string }) => ipcRenderer.invoke('editor:transcript-load', payload),
@@ -544,7 +544,7 @@ const api = {
 
   // Processing: turning a raw project folder into an editable one.
   autoDetectAudio: (masterVideoPath: string) => ipcRenderer.invoke('auto-detect-audio', masterVideoPath),
-  // The downloadable environment: ffmpeg/ffprobe, the Python runtime and the Whisper model
+  // The downloadable environment: ffmpeg/ffprobe and the Python runtime
   // (required — the editor cannot open a project without them). Channels are AutoCutStudio's
   // verbatim; nothing here collides with ContentStudio's own component system, which lives on
   // `components:*`. Progress arrives on 'asset-progress', sent to THIS window (the one that

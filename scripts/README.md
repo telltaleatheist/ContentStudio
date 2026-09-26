@@ -46,31 +46,13 @@ bash scripts/install-python-deps.sh [platform-arch]
 - Upgrades pip
 - Installs `numpy<2` (for torch compatibility)
 - Installs all packages from `python/requirements.txt`
-- Verifies key packages (whisper, torch, openai, anthropic)
+- Verifies key packages (torch)
 
-### `download-all.sh`
-Downloads all binaries for a platform in one command.
-
-```bash
-bash scripts/download-all.sh [mac|mac-arm64|mac-x64|win|linux]
-```
-
-**What it does:**
-- Calls `download-ffmpeg.sh` for the platform
-- Calls `download-python.sh` for each required architecture
-- Shows summary of what was downloaded
-
-**Examples:**
-```bash
-# Universal macOS (both architectures)
-bash scripts/download-all.sh mac
-
-# Apple Silicon only
-bash scripts/download-all.sh mac-arm64
-
-# Windows
-bash scripts/download-all.sh win
-```
+### `npm run download:all:<target>`
+Stages ffmpeg/ffprobe from their npm packages into `utilities/bin` for the target
+(`scripts/copy-ffmpeg.js <target>`). It downloads no speech model: `download-all.sh` and
+`download-whisper-cpp.js` left with whisper.cpp in P10 (transcription is Crucible's asr job,
+LEDGER #206).
 
 ### `bundle-python.sh` (Legacy)
 Old script for setting up development Python venv. Still works but not used for production builds.

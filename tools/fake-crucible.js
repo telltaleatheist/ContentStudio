@@ -1140,6 +1140,50 @@ async function startFakeCrucible(options = {}) {
         }
         return null;
     }
+    /**
+     * The stem as the real worker writes it: a 16-bit PCM WAV of the input, same rate, channels
+     * and frames (Crucible 1.0.40 jobs/denoise: OUTPUT_FORMAT "WAV"; audio-separator's
+     * write_audio_pydub casts to int16). A 24-bit input keeps each sample's top two bytes.
+     */
+    function pcm16StemOf(bytes) {
+        if (bytes.length < 12 || bytes.toString('ascii', 8, 12) !== 'WAVE')
+            return bytes;
+        let at = 12;
+        let fmt = null;
+        while (at + 8 <= bytes.length) {
+            const id = bytes.toString('ascii', at, at + 4);
+            const length = bytes.readUInt32LE(at + 4);
+            if (id === 'fmt ')
+                fmt = { channels: bytes.readUInt16LE(at + 10), rate: bytes.readUInt32LE(at + 12), bits: bytes.readUInt16LE(at + 22) };
+            else if (id === 'data' && fmt !== null) {
+                const data = bytes.subarray(at + 8, Math.min(bytes.length, at + 8 + length));
+                const width = fmt.bits / 8;
+                const samples = Math.floor(data.length / width);
+                const out = Buffer.alloc(samples * 2);
+                for (let i = 0; i < samples; i += 1) {
+                    if (width === 2) out.writeInt16LE(data.readInt16LE(i * 2), i * 2);
+                    else out.writeInt16LE(data.readIntLE(i * width + width - 2, 2), i * 2);
+                }
+                const head = Buffer.alloc(44);
+                head.write('RIFF', 0, 'ascii');
+                head.writeUInt32LE(36 + out.length, 4);
+                head.write('WAVE', 8, 'ascii');
+                head.write('fmt ', 12, 'ascii');
+                head.writeUInt32LE(16, 16);
+                head.writeUInt16LE(1, 20);
+                head.writeUInt16LE(fmt.channels, 22);
+                head.writeUInt32LE(fmt.rate, 24);
+                head.writeUInt32LE(fmt.rate * fmt.channels * 2, 28);
+                head.writeUInt16LE(fmt.channels * 2, 32);
+                head.writeUInt16LE(16, 34);
+                head.write('data', 36, 'ascii');
+                head.writeUInt32LE(out.length, 40);
+                return Buffer.concat([head, out]);
+            }
+            at += 8 + length + (length % 2);
+        }
+        return bytes;
+    }
     function postDenoise(req, res, body) {
         if (!installedJobTypes.includes('denoise')) {
             refusal(res, 400, 'job_type_disabled', 'denoise is not enabled on this server');
@@ -1209,8 +1253,9 @@ async function startFakeCrucible(options = {}) {
         const stepMs = script.stepMs ?? 5;
         const wav = wavRateOf(bytes);
         const base = name.replace(/\.[^.]+$/, '');
-        // `stemAs: {ext, bytes}` plays a server that publishes another container:
-        // the Mac's 1.0.38 publishes FLAC where 1.0.34 published WAV.
+        // `stemAs: {ext, bytes}` plays a server that publishes something other than the
+        // 16-bit PCM WAV Crucible's denoise returns (the Mac's 1.0.38 published FLAC), so
+        // the door's refusal of it can be checked.
         const stem = `${base}_(vocals)_vocals_mel_band_roformer${script.stemAs?.ext ?? '.wav'}`;
         const steps = [
             () => {
@@ -1232,20 +1277,7 @@ async function startFakeCrucible(options = {}) {
                 const loaded = resident === job.model ? 0.0 : 1.5;
                 resident = job.model;
                 residentCtx = null;
-                // `stemAs.transcode`: the input re-encoded as `ext` with ffmpeg, so a
-                // multi-chunk run gets a stem of the right length per chunk.
-                // Through a file, as the server writes one: FLAC written to a pipe
-                // cannot seek back to state its length.
-                const transcoded = script.stemAs?.transcode ? (() => {
-                    const fs = require('fs'), os = require('os'), p = require('path');
-                    const dir = fs.mkdtempSync(p.join(os.tmpdir(), 'fake-stem-'));
-                    const into = p.join(dir, `stem${script.stemAs.ext}`);
-                    require('child_process').spawnSync('ffmpeg', ['-nostdin', '-v', 'error', '-f', 'wav', '-i', 'pipe:0', '-y', into], { input: bytes });
-                    const out = fs.readFileSync(into);
-                    fs.rmSync(dir, { recursive: true, force: true });
-                    return out;
-                })() : null;
-                job.artifacts = { [stem]: Buffer.from(transcoded ?? script.stemAs?.bytes ?? bytes) };
+                job.artifacts = { [stem]: Buffer.from(script.stemAs?.bytes ?? pcm16StemOf(bytes)) };
                 pushJobEvent(job, 'artifact', { name: stem });
                 pushJobEvent(job, 'progress', { fraction: 1, message: `2 stem(s) from ${name}`, stage: 'separating' });
                 job.status = 'done';

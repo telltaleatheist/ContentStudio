@@ -18,7 +18,7 @@
  * (always false: snap reads no verbal cue). Times come from sentence units (Law 6).
  */
 
-import type { SRTSegment } from './whisper.service';
+import type { SRTSegment } from './transcription.service';
 import { TimeUtils } from './chapter-generator.service';
 import { chapter } from './chaptering/chaptering.service';
 import type { ChapteringProgress, ChatFn, DecideFn } from './chaptering/types';

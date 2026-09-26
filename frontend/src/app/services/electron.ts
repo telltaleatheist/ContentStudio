@@ -149,8 +149,6 @@ export interface StartupReadiness {
     ready: boolean;
     missingComponents: string[];
     missingRequiredTools: Array<{ id: string; name: string }>;
-    installedWhisperModels: Array<{ id: string; name: string }>;
-    selectedModelInstalled: boolean;
   };
 }
 
@@ -1043,8 +1041,6 @@ export class ElectronService {
           ready: true,
           missingComponents: [],
           missingRequiredTools: [],
-          installedWhisperModels: [],
-          selectedModelInstalled: true,
         },
       };
     }

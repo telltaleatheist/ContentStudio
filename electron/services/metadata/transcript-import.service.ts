@@ -15,7 +15,7 @@
  */
 
 import * as path from 'path';
-import type { SRTSegment } from './whisper.service';
+import type { SRTSegment } from './transcription.service';
 import type { ContentItem } from './input-handler.service';
 
 /** A suggested split point, in the story's own 0-based timeline. Used by the

@@ -11,7 +11,7 @@
  *               [--edits <session>_edits.json] [--channel <prompt set>]
  *             `bare` is the instruction alone (what #203 measured); `editor` adds the session's
  *             facts as editor:transcribe builds them.
- *   pipeline  one video through InputHandlerService → WhisperService (extract, context, job,
+ *   pipeline  one video through InputHandlerService → TranscriptionService (extract, context, job,
  *             captions, the saved transcript) with a scratch output dir seeded with copies of
  *             --report <job.json> (an earlier run's report):
  *               --input <video> --out <dir> [--report <job.json>]... [--channel <id>] [--job-name <s>]
@@ -140,14 +140,14 @@ async function pipelineMode(a) {
   const out = path.resolve(a.out);
   fs.mkdirSync(path.join(out, '.contentstudio', 'metadata'), { recursive: true });
   for (const r of a.report) fs.copyFileSync(r, path.join(out, '.contentstudio', 'metadata', path.basename(r)));
-  const { WhisperService } = require(path.join(DIST, 'services/metadata/whisper.service.js'));
+  const { TranscriptionService } = require(path.join(DIST, 'services/metadata/transcription.service.js'));
   const { InputHandlerService } = require(path.join(DIST, 'services/metadata/input-handler.service.js'));
   const { resolveSpeakerTagging, SpeakerTagger } = require(path.join(DIST, 'services/metadata/speaker-tagging.service.js'));
   const { getRuntimePaths } = require(path.join(DIST, 'lib/bridges/index.js'));
   const enrollment = a.enrollment || null;
   const mode = await resolveSpeakerTagging(enrollment || undefined, getRuntimePaths().speakerModel);
   const tagger = mode.enabled ? new SpeakerTagger(mode) : undefined;
-  const whisper = new WhisperService();
+  const whisper = new TranscriptionService();
   let last = -1;
   whisper.on('progress', (p) => {
     if (p.percent !== last) process.stderr.write(`\r  ${String(p.percent).padStart(3)}% ${p.message.slice(0, 90).padEnd(90)}`);

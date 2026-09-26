@@ -73,7 +73,7 @@ const CHAT_CONTROL = /<\|[^|]*\|>|<asr_text>/g;
 const MEDIA_EXTENSION = /\.(mp4|m4v|mov|mkv|webm|avi|flv|wmv|mpg|mpeg|ts|mts|m2ts|3gp|mp3|m4a|wav|aac|flac|ogg|opus)$/i;
 /**
  * The queue's slot prefix ("u2 - ", "3 - "), which names a position on the week's list, not the
- * recording. whisper.service.ts stripped it from the seed before P5 with `^[a-z]?\d+\s*-\s*`,
+ * recording. whisper.service.ts (now transcription.service.ts) stripped it from the seed before P5 with `^[a-z]?\d+\s*-\s*`,
  * which also ate the year off a dated name ("2026-09-23 master" → "09-23 master"); a slot is
  * one or two digits with spaces around its dash.
  */
