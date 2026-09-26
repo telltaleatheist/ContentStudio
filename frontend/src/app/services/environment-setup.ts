@@ -26,17 +26,29 @@ export interface DownloadableComponentStatus {
   state: 'available' | 'installed' | 'incompatible';
 }
 
+/**
+ * Nothing installed on this computer and nothing registered: the only state the gate opens on.
+ * A derived answer of that kind always names its repair (`install` or `connect`); main's
+ * provisional "Checking for Crucible..." names none, and is not yet an answer.
+ */
+function noCrucibleAtAll(view: CrucibleReadinessView): boolean {
+  return (view.state === 'not-installed' || view.state === 'not-configured') && view.action !== null;
+}
+
 @Injectable({ providedIn: 'root' })
 export class EnvironmentSetupService {
   readonly readiness = signal<StartupReadiness | null>(null);
   readonly components = signal<DownloadableComponentStatus[]>([]);
   /**
-   * THE SETUP GATE (LEDGER #221). Open while no Crucible server is connected and ready; nothing
-   * closes it but readiness itself. There is no "set up later": every transcription and model
-   * call runs on Crucible, so an app without one has nothing to do (Owen, 2026-09-26: "it MUST
-   * have a crucible installed and set up before the user can use the app"). Once the app has
-   * been ready in this session, a later outage is the readiness banner's to report, not this
-   * gate's: a network blip must not lock the operator out of work already on screen.
+   * THE SETUP GATE (LEDGER #221, narrowed by #224). Open only while there is NO Crucible to use:
+   * none is installed on this computer and none is registered (`not-installed`,
+   * `not-configured`). There is no "set up later" for that case: every transcription and model
+   * call runs on Crucible (Owen, 2026-09-26: "it MUST have a crucible installed and set up
+   * before the user can use the app"). A server that exists but has not answered yet
+   * (`starting`, `unreachable`, main's provisional "Checking Crucible on …") is NOT a reason to
+   * open it — that is the readiness banner's to report (Owen, 2026-09-26: "it shouldnt pop it up
+   * unless theres no crucible server installed"). Once the app has been ready in this session,
+   * nothing reopens it.
    */
   readonly setupGateOpen = signal(false);
   private gateSatisfied = false;
@@ -83,14 +95,13 @@ export class EnvironmentSetupService {
       return;
     }
     // The startup snapshot can be main's PROVISIONAL answer ("Checking Crucible on …"), read
-    // before the first probe has returned. The gate opens on it at once, so the app is never
-    // usable ahead of the check, and a real derivation is asked for; its push closes the gate
-    // if the server answers, or leaves it open with the pane's doors showing.
-    this.setupGateOpen.set(true);
+    // before the first probe has returned. That is not a missing server, so the gate stays shut
+    // and a real derivation is asked for; only an answer that says nothing is installed or
+    // registered opens it.
     try {
       this.applyReadiness(await this.crucible.refreshReadiness());
     } catch {
-      // The push will carry the next answer; the gate stays open until one says ready.
+      // The push will carry the next answer.
     }
   }
 
@@ -108,7 +119,7 @@ export class EnvironmentSetupService {
     if (ready) {
       this.gateSatisfied = true;
       this.setupGateOpen.set(false);
-    } else if (!this.gateSatisfied) {
+    } else if (!this.gateSatisfied && noCrucibleAtAll(view)) {
       this.setupGateOpen.set(true);
     }
   }
