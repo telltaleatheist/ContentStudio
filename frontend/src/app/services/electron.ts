@@ -710,6 +710,7 @@ declare global {
       sendHeldPrompt: (request: { jobId: string; fast: boolean }) => Promise<any>;
       discardHeldPrompt: (jobId: string) => Promise<any>;
       cancelJob: (jobId: string) => Promise<{ success: boolean; error?: string }>;
+      runningMetadataJobs: () => Promise<Array<{ jobId: string; startedAt: number }>>;
 
       // Metadata model routing (rejects with a descriptive error)
       getMetadataRouting: (preview?: MetadataRoutingPreview) => Promise<MetadataRouting>;
@@ -1304,6 +1305,12 @@ export class ElectronService {
   async cancelJob(jobId: string): Promise<{ success: boolean; error?: string }> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.cancelJob(jobId);
+  }
+
+  /** The metadata jobs main is running now, with when each started. Rejects without the bridge. */
+  async runningMetadataJobs(): Promise<Array<{ jobId: string; startedAt: number }>> {
+    if (!this.ipcRenderer) throw new Error('Electron not available');
+    return await this.ipcRenderer.runningMetadataJobs();
   }
 
   // Metadata model routing — these reject rather than return a placeholder, so the

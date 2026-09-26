@@ -78,6 +78,8 @@ const api = {
   // "Use saved transcript" checkbox, which only exists for videos that answer yes.
   hasSavedTranscript: (videoPath: string) => ipcRenderer.invoke('has-saved-transcript', videoPath),
   cancelJob: (jobId: string) => ipcRenderer.invoke('cancel-job', jobId),
+  // The metadata jobs main is running now, so a reloaded window can show them running again.
+  runningMetadataJobs: () => ipcRenderer.invoke('metadata:running-jobs'),
 
   // "Show prompt" flow: send-to-AI / discard a held (already-transcribed) prompt
   sendHeldPrompt: (jobId: string) => ipcRenderer.invoke('send-held-prompt', { jobId }),

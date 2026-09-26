@@ -1023,6 +1023,26 @@
               margin-top: 0.15rem;
               overflow-wrap: anywhere;
             }
+
+            // A running row: its stage in plain words, and a clock that ticks every second.
+            .job-activity-line {
+              display: flex;
+              align-items: baseline;
+              gap: 0.5rem;
+              margin-top: 0.15rem;
+              font-size: 0.85rem;
+              color: var(--text-primary, inherit);
+
+              .job-activity-text {
+                overflow-wrap: anywhere;
+              }
+
+              .job-activity-clock {
+                flex: none;
+                color: var(--text-muted);
+                font-variant-numeric: tabular-nums;
+              }
+            }
           }
         }
 
@@ -1363,6 +1383,19 @@
           }
         }
       }
+    }
+
+    // Where the Start button was while the queue runs: says it is running, and what waits.
+    .queue-running-note {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      min-height: 56px;
+      padding: 0 1rem;
+      border-radius: 8px;
+      border: 1px dashed color-mix(in srgb, var(--primary-orange) 45%, transparent);
+      color: var(--text-primary);
+      font-size: 0.95rem;
     }
 
     .start-queue-button {
