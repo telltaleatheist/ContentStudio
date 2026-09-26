@@ -17,6 +17,7 @@ import { stopArchiveSyncOnQuit } from './services/editor/editor-ipc';
 import { createCrucibleContext, type CrucibleContext } from './crucible/context';
 import { installCrucibleTransport } from './crucible/transport';
 import { installLanes } from './crucible/lanes';
+import { readStoredRoutingServer } from './services/metadata/metadata-routing';
 import { setAsrVenueResolver } from './services/transcription/crucible-transcription';
 import { resolveUserDataPath } from './user-data-path';
 import { retireOnce } from './retired-components';
@@ -286,6 +287,10 @@ app.whenReady().then(async () => {
           set: (server: string) => (store as any).set('keysMigratedTo', server),
         },
       },
+      // The model routing's server (LEDGER #222), read from the store at every plan and
+      // admission: a metadata job runs there unless pinned fast (venue-decision.ts). A server
+      // forgotten since the routing was saved is dropped from the store with one logged line.
+      routingServer: (registered) => readStoredRoutingServer(store as any, registered),
       push: {
         serversChanged: (change) => pushToAllWindows('crucible:servers-changed', change),
         readiness: (view) => pushToAllWindows('crucible:readiness', view),

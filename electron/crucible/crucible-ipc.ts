@@ -78,7 +78,7 @@ export function setupCrucibleIpc(context: CrucibleContext): void {
 
   ipcMain.handle('crucible:servers', () => guard('list', () => {
     const rows = servers.list();
-    return { servers: rows, routing: servers.routingView(), discovered: discoveredRow(rows, pairingHost) };
+    return { servers: rows, routing: servers.routingView(), discovered: discoveredRow(rows, pairingHost), routingServer: context.routingServer() };
   }));
 
   /** A probe at most 15 s old (the pane's first paint). */

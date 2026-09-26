@@ -11,6 +11,8 @@ import {
   MetadataRoutingServer,
   MetadataRoutingTask,
 } from '../../services/electron';
+import { CrucibleService } from '../../services/crucible';
+import { reachIsProblem, reachWord } from '../../features/crucible/crucible-words';
 
 type Phase = 'loading' | 'ready' | 'error';
 
@@ -53,9 +55,44 @@ export type ModelRoutingDialogResult = boolean | undefined;
       }
 
       @if (phase() === 'ready') {
-        <!-- The models listed are the ones the SELECTED Crucible server offers (P2): its
-             catalog, plus Claude only when that server has an Anthropic key. A stored choice
-             it cannot run is still shown on its row, with the server's own sentence. -->
+        <!-- Runs on (LEDGER #222): the Crucible server this routing's jobs run on. The choices
+             are the registered servers (Settings › Crucible Servers is the registry); the first
+             one is "whatever Settings has selected", which is also what a routing saved before
+             this row existed means. A Fast item still goes to the fast server. -->
+        <div class="routing-row runs-on-row">
+          <div class="field-label">
+            <span class="task-label">Runs on</span>
+            <span class="task-sub">The Crucible server these jobs run on. A Fast item still goes to the fast server.</span>
+          </div>
+          <mat-form-field appearance="outline" subscriptSizing="dynamic" class="task-select">
+            <mat-select
+              [value]="runsOn() ?? SELECTED"
+              (selectionChange)="selectServer($event.value)"
+              [disabled]="previewing()"
+              aria-label="Runs on">
+              <mat-option [value]="SELECTED">
+                The selected server{{ selectedServer() ? ' (' + selectedServer() + ')' : '' }}
+                @if (!selectedServer()) {
+                  <span class="option-flag missing">— none selected</span>
+                }
+              </mat-option>
+              @for (choice of serverChoices(); track choice.name) {
+                <mat-option [value]="choice.name">
+                  {{ choice.name }}
+                  @if (choice.paused) {
+                    <span class="option-flag unknown">— Paused</span>
+                  } @else if (choice.reach) {
+                    <span class="option-flag" [class.missing]="choice.problem" [class.unknown]="!choice.problem">— {{ choice.reach }}</span>
+                  }
+                </mat-option>
+              }
+            </mat-select>
+          </mat-form-field>
+        </div>
+
+        <!-- The models listed are the ones the server above offers (P2): its catalog, plus
+             Claude only when that server has an Anthropic key. A stored choice it cannot run
+             is still shown on its row, with the server's own sentence. -->
         @if (server(); as host) {
           @if (!host.reachable) {
             <div class="host-banner">
@@ -168,7 +205,7 @@ export type ModelRoutingDialogResult = boolean | undefined;
     <mat-dialog-actions align="end">
       <button mat-button (click)="onCancel()" [disabled]="saving()">Cancel</button>
       <button mat-flat-button color="primary"
-              [disabled]="!hasChanges() || saving()"
+              [disabled]="!hasChanges() || saving() || previewing()"
               (click)="onSave()">
         Save
       </button>
@@ -225,6 +262,12 @@ export type ModelRoutingDialogResult = boolean | undefined;
     .task-sub {
       color: var(--text-secondary);
       font-size: 12px;
+    }
+
+    .runs-on-row {
+      border-bottom: 1px solid var(--border-color, rgba(128, 128, 128, 0.3));
+      padding-bottom: 12px;
+      margin-bottom: 12px;
     }
 
     .change-all-row {
@@ -306,7 +349,20 @@ export class ModelRoutingDialog implements OnInit {
   /** Selections as they were when the payload loaded — Save stays off until this differs. */
   private initialSelections: Record<string, string> = {};
 
+  /** The "Runs on" select's value for "no routing server": a server name is never empty. */
+  readonly SELECTED = '';
+  /** The routing's server on screen (LEDGER #222); null means the server Settings has selected. */
+  readonly runsOn = signal<string | null>(null);
+  /** The server Settings has selected, named on the unset choice. */
+  readonly selectedServer = signal<string | null>(null);
+  /** The registered servers, each with its reach word from the Settings pane's own probe. */
+  readonly serverChoices = signal<Array<{ name: string; paused: boolean; reach: string | null; problem: boolean }>>([]);
+  /** True while main judges the on-screen selections against a newly chosen server. */
+  readonly previewing = signal(false);
+  private initialRunsOn: string | null = null;
+
   readonly hasChanges = computed(() => {
+    if (this.runsOn() !== this.initialRunsOn) return true;
     const current = this.selections();
     const initial = this.initialSelections;
     const keys = Object.keys(initial);
@@ -323,7 +379,8 @@ export class ModelRoutingDialog implements OnInit {
 
   constructor(
     private dialogRef: MatDialogRef<ModelRoutingDialog, ModelRoutingDialogResult>,
-    private electron: ElectronService
+    private electron: ElectronService,
+    private crucible: CrucibleService
   ) {}
 
   ngOnInit(): void {
@@ -337,7 +394,10 @@ export class ModelRoutingDialog implements OnInit {
     this.saveError.set('');
 
     try {
-      const routing = await this.electron.getMetadataRouting();
+      // The routing, and the registry the "Runs on" choices come from (the same view the
+      // Settings pane draws). Either failing is the dialog's error: a Runs on row with no
+      // servers to offer would be a choice that silently is not one.
+      const [routing, registry] = await Promise.all([this.electron.getMetadataRouting(), this.crucible.servers()]);
       const selections: Record<string, string> = {};
       for (const task of routing.tasks) {
         selections[task.id] = task.selectedOptionId;
@@ -345,13 +405,57 @@ export class ModelRoutingDialog implements OnInit {
 
       // Baseline first: hasChanges() must never see new selections against a stale baseline.
       this.initialSelections = { ...selections };
+      this.initialRunsOn = routing.runsOn.routingServer;
+      this.runsOn.set(routing.runsOn.routingServer);
+      this.selectedServer.set(routing.runsOn.selectedServer);
+      this.serverChoices.set(registry.routing.servers.map(row => ({ name: row.name, paused: row.paused, reach: null, problem: false })));
       this.server.set(routing.server);
       this.tasks.set(routing.tasks);
       this.selections.set(selections);
       this.phase.set('ready');
+      for (const row of registry.routing.servers) void this.readReach(row.name);
     } catch (err) {
       this.error.set(this.describe(err));
       this.phase.set('error');
+    }
+  }
+
+  /** One server's reach word, from the probe the Settings pane reads (at most 15 s old). */
+  private async readReach(name: string): Promise<void> {
+    let reach: string;
+    let problem: boolean;
+    try {
+      const answer = await this.crucible.probe(name);
+      reach = reachWord(answer.reach);
+      problem = reachIsProblem(answer.reach);
+    } catch (err) {
+      reach = this.describe(err);
+      problem = true;
+    }
+    this.serverChoices.update(rows => rows.map(row => (row.name === name ? { ...row, reach, problem } : row)));
+  }
+
+  /**
+   * The "Runs on" pick. Main judges the selections on screen against that server (what it
+   * offers, and whether each chosen model can run there) before anything is saved; the
+   * selections themselves are never changed by the pick, so a model the new server lacks stays
+   * chosen and its row says so, exactly as for a stored choice.
+   */
+  async selectServer(value: string): Promise<void> {
+    const server = value === this.SELECTED ? null : value;
+    const before = this.runsOn();
+    this.runsOn.set(server);
+    this.saveError.set('');
+    this.previewing.set(true);
+    try {
+      const routing = await this.electron.getMetadataRouting({ server, selections: this.selections() });
+      this.server.set(routing.server);
+      this.tasks.set(routing.tasks);
+    } catch (err) {
+      this.runsOn.set(before);
+      this.saveError.set(this.describe(err));
+    } finally {
+      this.previewing.set(false);
     }
   }
 
@@ -405,7 +509,8 @@ export class ModelRoutingDialog implements OnInit {
     this.saveError.set('');
 
     try {
-      await this.electron.setMetadataRouting(this.selections());
+      const server = this.runsOn();
+      await this.electron.setMetadataRouting({ ...this.selections(), ...(server === null ? {} : { server }) });
       this.dialogRef.close(true);
     } catch (err) {
       this.saveError.set(this.describe(err));

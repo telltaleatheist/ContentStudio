@@ -69,6 +69,7 @@ import type { CrucibleClientFactory } from './client-factory';
 import { checkBeforeSending, estimateTokens, loadedContextOf, tokensNeeded } from './context-check';
 import { CrucibleCallError } from './errors';
 import { crucibleStepHooks, type CrucibleStepHooks } from './lanes';
+import { upstreamServerFor } from './venue-decision';
 import { JobLeases, callRefusalOf, withJobLeases, type LeaseHost, type LeaseTimings } from './lease';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -290,7 +291,9 @@ export class CrucibleTransport {
     const oneCall = request.job === undefined;
     const job = request.job ?? this.job(request.what);
     try {
-      const server = upstream ? this.host.servers.selected() : this.gpuServer(hooks, job, request.what);
+      // An upstream call takes no lane: it goes to the job's routing server, else the selected one
+      // (venue-decision.ts, LEDGER #222; plan section 0 #20).
+      const server = upstream ? upstreamServerFor(hooks.routingServer ?? null, this.host.servers) : this.gpuServer(hooks, job, request.what);
       const venue = await this.venue(server, 'generate');
       if (!upstream) job.server ??= server;
       request.trace?.push({

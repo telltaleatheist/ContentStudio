@@ -1140,15 +1140,17 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
   // contents and never the shape.
   // ---------------------------------------------------------------------------
 
-  ipcMain.handle('metadata-routing:get', async () => {
+  ipcMain.handle('metadata-routing:get', async (_event, preview?: { server: string | null; selections: Record<string, string> }) => {
     // Not wrapped in a try/catch that returns a shape: a stored selection this build
     // cannot honour must reach the user as an error, because it is the same error their
     // next generation would fail with.
     // Migrated on the way out, and WRITTEN BACK when the migration changed anything, so
     // the notice is logged once on the first open after an upgrade rather than on every
     // open for the rest of the install's life. Without this the modal is the screen that
-    // throws on the very setting the user came here to fix.
-    const migration = migrateStoredRouting((store as any).get('metadataRouting'));
+    // throws on the very setting the user came here to fix. The routing's server is judged
+    // against the registry here too (LEDGER #222): a forgotten one is dropped the same way.
+    const registered = analytics.crucible.servers.names();
+    const migration = migrateStoredRouting((store as any).get('metadataRouting'), registered);
     if (migration.changed) {
       (store as any).set('metadataRouting', migration.selections);
       log.warn(
@@ -1156,10 +1158,13 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
           migration.notices.join(' | ')
       );
     }
-    const stored = migration.selections;
-    // What the SELECTED Crucible server offers, read fresh on every open: its catalog, its
-    // models and whether it has an Anthropic key (plan 6.2, 0a). The dialog lists only that,
-    // and the server it names is the one a run on these selections would go to.
+    // PREVIEW: the dialog's "Runs on" row changed and it asks what THAT server offers for the
+    // selections on screen, before anything is saved. Validated exactly as a save is (an
+    // unknown server is refused by name); nothing is written.
+    const shown = preview === undefined
+      ? migration.selections
+      : validateRoutingSelections({ ...preview.selections, ...(preview.server === null ? {} : { server: preview.server }) }, registered);
+    const routingServer = shown.server ?? null;
     let selected: string | null;
     try {
       selected = analytics.crucible.servers.selected();
@@ -1167,17 +1172,21 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       // No server selected is an answer the inventory states in its own words.
       selected = null;
     }
-    const inventory = await catalogInventory(analytics.crucible.factory, selected);
-    return buildRoutingView(stored, inventory);
+    // What the server these selections' jobs run on offers, read fresh on every open: its
+    // catalog, its models and whether it has an Anthropic key (plan 6.2, 0a). That is the
+    // routing's server when it names one, else the selected one (venue-decision.ts's rule for
+    // an unpinned job); the dialog lists only what it offers.
+    const inventory = await catalogInventory(analytics.crucible.factory, routingServer ?? selected);
+    return buildRoutingView(shown, inventory, { routingServer, selectedServer: selected });
   });
 
   ipcMain.handle('metadata-routing:set', async (_event, selections) => {
-    // Validated against the registry BEFORE it is written. A store holding an option this
-    // build does not know would fail every subsequent job, far from the click that caused
-    // it.
-    const validated = validateRoutingSelections(selections);
+    // Validated against the table and the registry BEFORE it is written. A store holding an
+    // option this build does not know, or a server nobody registered, would fail every
+    // subsequent job, far from the click that caused it.
+    const validated = validateRoutingSelections(selections, analytics.crucible.servers.names());
     (store as any).set('metadataRouting', validated);
-    log.info(`[IPC] Metadata routing saved: ${describeRouting(resolveMetadataRouting(validated))}`);
+    log.info(`[IPC] Metadata routing saved: ${describeRouting(resolveMetadataRouting(validated), validated.server ?? null)}`);
     return { success: true };
   });
 
@@ -1566,7 +1575,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
           : undefined
       };
       log.info('Prepared metadata params:', JSON.stringify(safeMetadataParams, null, 2));
-      log.info(`[IPC] Metadata routing for this job: ${describeRouting(metadataParams.metadataRouting)}`);
+      log.info(`[IPC] Metadata routing for this job: ${describeRouting(metadataParams.metadataRouting, analytics.crucible.routingServer())} (a fast pin still sends it to the fast server; the admission line says where it went)`);
 
       // Send progress update
       sendToRenderer('generation-progress', {

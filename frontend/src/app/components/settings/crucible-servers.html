@@ -57,6 +57,9 @@
         All AI work goes to the selected server, and waits for it while it is busy or paused. Work never moves to
         another server unless you select that one; work already running finishes where it started.
       </p>
+      @if (view()?.routingServer; as routed) {
+        <p class="cru-hint">Model routing sends metadata jobs to "{{ routed }}", which overrides this selection for them (a Fast item still goes to the fast server).</p>
+      }
       @if (missing(); as name) {
         <p class="cru-warn">The selected server "{{ name }}" isn't connected any more. Select a server to run AI work.</p>
       } @else if (noneSelected()) {
