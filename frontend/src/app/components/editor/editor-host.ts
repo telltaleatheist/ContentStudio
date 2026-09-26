@@ -411,13 +411,24 @@ export interface EditorHost {
   storyRoutedModel(): Promise<{ model: string; label: string; kind: 'local' | 'cloud' }>;
 
   /**
-   * Chapter a span of transcript on snap at a grain (LEDGER #208): 'stories' finds the stories
-   * of the timeline (or splits one story in several); 'chapters' draws one story's own chapter
-   * list, the subject changes that go to YouTube. Times come from sentence units (Law 6).
+   * Split a span of transcript into stories on snap (LEDGER #212, #213: splitting a master
+   * livestream is always stories): the stories of the timeline, or one story split in several.
+   * Times come from sentence units (Law 6).
    */
   analyzeStoryChapters(payload: {
     segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
-    grain: 'stories' | 'chapters';
+  }): Promise<{ chapters: Array<{
+    index: number; startSeconds: number; endSeconds: number; label: string; detail: string; verbalCue: boolean;
+    /** Snap's ad check confirmed this stretch as a plug. */
+    isAd?: boolean;
+    startApprox?: boolean;
+    /** One grain per run: the chapter itself (length 1). */
+    subChapters: Array<{ startSeconds: number; endSeconds: number; label: string; detail: string; startApprox?: boolean }>;
+  }>; warnings?: string[] }>;
+
+  /** One story's own chapter list on snap, the subject changes that go to YouTube (the chapters grain). */
+  chapterStory(payload: {
+    segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
   }): Promise<{ chapters: Array<{
     index: number; startSeconds: number; endSeconds: number; label: string; detail: string; verbalCue: boolean;
     /** Snap's ad check confirmed this stretch as a plug. */

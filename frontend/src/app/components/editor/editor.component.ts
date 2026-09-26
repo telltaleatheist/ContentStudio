@@ -3278,7 +3278,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.analyzeMessage = `Finding chapters in “${name}”…`;
     this.cdr.detectChanges();
 
-    const res = await this.host.analyzeStoryChapters({ segments, grain: 'chapters' });
+    const res = await this.host.chapterStory({ segments });
     const returned = res.chapters || [];
     const derived = returned
       .map(c => ({
@@ -3835,7 +3835,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
         const dur = this.manifest?.timelineDuration || 0;
         const segments = this.segmentsForRegions([{ start: 0, end: dur > 0 ? dur : Number.MAX_SAFE_INTEGER }]);
         if (segments.length === 0) throw new Error('No transcript to analyze.');
-        const res = await this.host.analyzeStoryChapters({ segments, grain: 'stories' });
+        const res = await this.host.analyzeStoryChapters({ segments });
         // The whole-timeline split is one long call: by the time it lands the user may be in a
         // different project, and these stories describe the previous one's timeline.
         if (this.sessionChanged(generation)) return;
@@ -3957,8 +3957,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     try {
       const segments = this.segmentsForRegions(regions);
       if (segments.length === 0) throw new Error('No transcript in this story to split. Transcribe first.');
-      // Splitting one story in several is finding the stories inside it (LEDGER #208).
-      const res = await this.host.analyzeStoryChapters({ segments, grain: 'stories' });
+      // Splitting one story in several is finding the stories inside it (LEDGER #208, #213).
+      const res = await this.host.analyzeStoryChapters({ segments });
       this.splitChapters = (res.chapters || []).map(c => ({
         index: c.index, startSeconds: c.startSeconds, endSeconds: c.endSeconds,
         label: cleanChapterLabel(c.label),

@@ -157,7 +157,7 @@ async function main() {
       log(`stories: ${segments.length} editor segments; titles on ${JSON.stringify(await channels['story:routed-model']())}`);
       let last = -1;
       const event = { sender: { isDestroyed: () => false, send: (ch, p) => { const pct = Math.floor(p.fraction * 20) * 5; if (pct !== last) { last = pct; log(`${ch} ${pct}% (${p.phase} ${p.done}/${p.total})`); } } } };
-      const res = await channels['story:analyze-chapters'](event, { segments, grain: 'stories' });
+      const res = await channels['story:analyze-chapters'](event, { segments });
       rows = res.chapters.map((c) => ({ start: c.startSeconds, end: c.endSeconds, label: c.label, detail: c.detail, isAd: c.isAd }));
       for (const w of res.warnings || []) log(`warning: ${w}`);
     }

@@ -480,14 +480,16 @@ const api = {
 
   // Story analysis. The model is never in a payload: the main process resolves it from the
   // metadata routing table's chapters row on every call (LEDGER #205), and `storyRoutedModel`
-  // is how the editor learns what that is for its read-only line. `grain` is what the run
-  // detects: 'stories' (the timeline, or a story split in several) or 'chapters' (one story's
-  // own chapter list); it is required, never defaulted (LEDGER #208, P8b).
+  // is how the editor learns what that is for its read-only line. The CHANNEL is the grain
+  // (LEDGER #213): analyzeStoryChapters splits into stories (the timeline, or a story split in
+  // several), chapterStory draws one story's own chapter list.
   storyRoutedModel: () => ipcRenderer.invoke('story:routed-model'),
   analyzeStoryChapters: (payload: {
     segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
-    grain: 'stories' | 'chapters';
   }) => ipcRenderer.invoke('story:analyze-chapters', payload),
+  chapterStory: (payload: {
+    segments: Array<{ text: string; startSeconds: number; endSeconds: number; speaker: 'host' | 'clip' }>;
+  }) => ipcRenderer.invoke('story:chapter-story', payload),
   suggestStoryTitle: (payload: { name?: string; chapters: Array<{ label: string; detail?: string; startSeconds: number; endSeconds: number }> }) =>
     ipcRenderer.invoke('story:suggest-title', payload),
   cancelStoryAnalysis: () => ipcRenderer.invoke('story:cancel'),

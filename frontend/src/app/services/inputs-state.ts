@@ -1,5 +1,6 @@
 import { Injectable, signal, effect } from '@angular/core';
 import type { TranscriptChoice } from '../features/transcript-link/transcript-link.types';
+import { ChapterPick, migrateChapterPick } from './chapter-pick';
 
 export interface InputItem {
   type: string; // 'subject', 'video', 'transcript_file', 'master-report', 'text-subject'
@@ -72,13 +73,12 @@ export class InputsStateService {
    */
   masterPromptSet = signal('');
   /**
-   * What the chapter pipeline detects for every job queued from this page (LEDGER #170).
-   * 'detailed' is the default — a standalone video's internal turns; 'broad' groups the
-   * same subject into larger pieces; 'stories' is for compilations (podcast merges,
-   * streams), where the chapters are the separate stories. Persisted like the prompt set:
+   * What the chapter pipeline detects for every job queued from this page (LEDGER #213).
+   * 'chapters' is the default — every single video, however long; 'stories' is for a podcast
+   * compilation, where the pieces are the separate stories. Persisted like the prompt set:
    * the operator's last pick carries to the next batch.
    */
-  chapterGrain = signal<'detailed' | 'broad' | 'stories'>('broad');
+  chapterGrain = signal<ChapterPick>('chapters');
   /**
    * Pin the jobs queued from here "fast": they run on the fast server (Settings › Crucible
    * Servers) and only there (LEDGER #195: the pin is the only way work reaches the PC).
@@ -123,9 +123,7 @@ export class InputsStateService {
         if (state.inputItems) this.inputItems.set(state.inputItems);
         if (state.compilationMode !== undefined) this.compilationMode.set(state.compilationMode);
         if (state.masterPromptSet) this.masterPromptSet.set(state.masterPromptSet);
-        if (state.chapterGrain === 'detailed' || state.chapterGrain === 'broad' || state.chapterGrain === 'stories') {
-          this.chapterGrain.set(state.chapterGrain);
-        }
+        if (state.chapterGrain !== undefined) this.chapterGrain.set(migrateChapterPick(state.chapterGrain, 'the inputs page'));
         if (state.fast === true) this.fast.set(true);
       }
     } catch (error) {

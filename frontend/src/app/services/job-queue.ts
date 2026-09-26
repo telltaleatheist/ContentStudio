@@ -1,5 +1,6 @@
 import { Injectable, signal, effect } from '@angular/core';
 import { InputItem } from './inputs-state';
+import { ChapterPick, migrateChapterPick } from './chapter-pick';
 import type { ResumeStage } from '../features/crucible/crucible.types';
 
 export type ItemStatus = 'pending' | 'transcribing' | 'transcribed' | 'generating' | 'completed' | 'failed';
@@ -15,8 +16,8 @@ export interface QueuedJob {
   inputs: InputItem[];
   promptSet: string; // ID of the prompt set to use
   mode: 'individual' | 'compilation';
-  /** What the chapter pipeline detects for this job — stamped at queue time (LEDGER #170). */
-  chapterGrain: 'detailed' | 'broad' | 'stories';
+  /** What the chapter pipeline detects for this job — stamped at queue time (LEDGER #213). */
+  chapterGrain: ChapterPick;
   // 'held' = transcribed and the prompt is assembled, waiting for the user to send
   // it to the AI (the "Transcribe only" two-stage flow). The backend holds the
   // transcript so sending reuses it without re-transcribing.
@@ -84,7 +85,8 @@ export class JobQueueService {
           // Reset interrupted 'processing' jobs to pending. Also reset 'held' jobs:
           // their transcript lived only in the (now-restarted) main process, so the
           // prompt can't be sent anymore — they must be re-transcribed.
-          chapterGrain: job.chapterGrain ?? 'broad',
+          // A row saved before the pick existed was the old default, broad: chapters (#213).
+          chapterGrain: migrateChapterPick(job.chapterGrain ?? 'broad', `queued job "${job.name}"`),
           // A row saved before the fast pin existed was never pinned.
           fast: job.fast ?? false,
           status: (job.status === 'processing' || job.status === 'held') ? 'pending' as const : job.status,
@@ -98,7 +100,7 @@ export class JobQueueService {
     }
   }
 
-  addJob(name: string, inputs: InputItem[], promptSet: string, mode: 'individual' | 'compilation', chapterGrain: 'detailed' | 'broad' | 'stories', fast: boolean): string {
+  addJob(name: string, inputs: InputItem[], promptSet: string, mode: 'individual' | 'compilation', chapterGrain: ChapterPick, fast: boolean): string {
     const jobId = `job-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const newJob: QueuedJob = {
       id: jobId,

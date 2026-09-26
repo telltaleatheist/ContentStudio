@@ -1534,8 +1534,8 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         speakerEnrollmentAudio: settings.speakerEnrollmentAudio || undefined,
         chapterNumCtx: settings.chapterNumCtx || undefined,
         // What the chapter pipeline detects — the queue-time selector's pick, sent per run
-        // by the renderer (LEDGER #170). Absent (older renderer) means the declared
-        // default, applied at the construction site in metadata-generator.
+        // by the renderer: chapters | stories (LEDGER #213). Absent (older renderer) means the declared
+        // default, and a retired detailed / broad reads as chapters, logged, in metadata-generator.
         chapterGrain: params.chapterGrain,
         // Which engine draws the chapters (P8b): 'snap' or 'whole-transcript', read from the store
         // AT JOB TIME with no store default, like the routing: absent means the declared default
