@@ -293,7 +293,7 @@ check('the field prompt states what the video covers ONCE, not twice', () => {
 check("the description's transcript slot is EMPTY on the digest path", () => {
   const unit = new descriptionUnit.DescriptionUnit(
     manager, { kind: 'cloud', id: 'sonnet5', label: 'Sonnet', model: 'anthropic/claude-sonnet-5', crucibleModel: 'anthropic/claude-sonnet-5' },
-    undefined, new lifecycle.JobModelLifecycle('the digest smoke'));
+    new lifecycle.JobModelLifecycle('the digest smoke'));
 
   const digestPrompt = unit.describePrompt(ctxFor(overDecision));
   hasNot(digestPrompt, 'The transcript of the video, in full', 'no condensation is labelled as the transcript');

@@ -47,6 +47,7 @@ import {
   CrucibleProtocolError,
   CrucibleRefused,
   CrucibleServerError,
+  type CapabilityRecord,
   type CrucibleClient,
   type JobEvent,
   type ModelInfo,
@@ -374,6 +375,66 @@ export class JobLeases {
     return this.load(client, server, model, request, hold);
   }
 
+  /**
+   * THE CAPABILITY QUESTION BEFORE A LOAD (plan 7.2, "After 1.0.24"; P4): `GET
+   * /v1/capability?class=generate&context_tokens=<this load>&concurrency=1` asks the server
+   * whether the model fits the card at the size this job's call needs, BEFORE the load reserves
+   * the card (a load evicts whatever is resident, and takes the lease). A size the host cannot
+   * serve comes back as the server's own `context_over_limit`, or as the model's ceiling row
+   * below the size; either way the job fails `over_context` with the server's words and nothing
+   * is loaded or evicted.
+   *
+   * WHERE, AND WHY HERE (a deviation from the plan's wording, docs/crucible/P4.md). The plan put
+   * the question at the lane, before the queue reserves a server. At admission no prompt exists
+   * yet (transcription and chapters come first), so the only "run's real max context" the lane
+   * could state would be a guess. The load is the first moment the size is a fact, and it is still
+   * before the card is reserved. Concurrency is 1: the app runs one job on a card at a time.
+   *
+   * NOT A PARK, NOT ANOTHER SERVER. The ceiling is the host's memory at one request in flight,
+   * which waiting does not change, so a no-fit is a failure that names the fact, not a park; and
+   * no work moves to another server on its own (LEDGER #205). A server that predates the sized
+   * query (the `analysis` act, before 1.0.24) is not asked, and says so; its load still refuses
+   * above its ceiling by name.
+   */
+  private async fitsOnHost(client: CrucibleClient, server: string, model: string, request: HoldRequest): Promise<void> {
+    if (request.loadContext === undefined) return;
+    if (request.act === 'analysis') {
+      log.info(
+        `[crucible] ${this.what}: "${server}" predates the sized capability query (act analysis), so the ` +
+          `${request.loadContext}-token load of ${model} is not asked about first; the load refuses by name if it cannot fit`,
+      );
+      return;
+    }
+    let record: CapabilityRecord;
+    try {
+      record = await client.capability({}, { class: 'generate', contextTokens: request.loadContext, concurrency: 1 });
+    } catch (err) {
+      if (err instanceof CrucibleRefused && err.code === 'context_over_limit') {
+        throw new CrucibleCallError(
+          'over_context',
+          `"${server}" cannot serve ${model} at the ${request.loadContext} tokens ${this.what} needs, one request in ` +
+            `flight: ${err.serverMessage}. Nothing was loaded and nothing was evicted.`,
+          server, err.status, err.code, null, err,
+        );
+      }
+      throw callRefusalOf(err, server);
+    }
+    const row = record.classes.find((c) => c.capability === 'generate')?.contextCeilings?.find((c) => c.model === model);
+    if (row?.tokens !== null && row?.tokens !== undefined && row.tokens < request.loadContext) {
+      throw new CrucibleCallError(
+        'over_context',
+        `"${server}" serves ${model} at most ${row.tokens} tokens at one request in flight` +
+          `${row.boundBy ? ` (bound by ${row.boundBy})` : ''}, and ${this.what} needs a ${request.loadContext}-token ` +
+          `load. Nothing was loaded and nothing was evicted.`,
+        server,
+      );
+    }
+    log.info(
+      `[crucible] ${this.what}: "${server}" can serve ${model} at ${request.loadContext} tokens, one request in flight` +
+        (row?.tokens != null ? ` (its ceiling there: ${row.tokens})` : ' (it states no ceiling row for this model; the load is the judge)'),
+    );
+  }
+
   private async load(
     client: CrucibleClient,
     server: string,
@@ -381,6 +442,7 @@ export class JobLeases {
     request: HoldRequest,
     hold: (fields: Partial<Hold>) => Hold,
   ): Promise<Hold> {
+    await this.fitsOnHost(client, server, model, request);
     let jobId: string;
     try {
       jobId = await client.loadModel(model, {
