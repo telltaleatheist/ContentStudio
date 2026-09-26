@@ -106,6 +106,8 @@
     [resultPath]="exportResultPath"
     [error]="exportError"
     [micMuteBlocks]="exportMicMuteBlocks"
+    [wordMutes]="exportWordMutes"
+    [muteSummary]="exportMuteSummary"
     [transcripts]="exportTranscripts"
     [transcriptsDir]="exportTranscriptsDir"
     [cutCount]="cuts.length"
@@ -118,6 +120,17 @@
     (choice)="onExportChoice($event)"
     (showInFolder)="onShowExport()"
     (dismissed)="closeExportModal()"></app-editor-export-modals>
+
+  <!-- Right-click ▸ Mute words… on a project (LEDGER #226). Save keeps the choice for the
+       project; "Save and apply" re-mutes a master timeline it already exported. -->
+  <app-mute-words-modal *ngIf="muteWordsEntry && muteWordsEntry.scan?.cleanName"
+    mode="project"
+    [folder]="muteWordsEntry.path"
+    [cleanName]="muteWordsEntry.scan!.cleanName!"
+    [projectName]="muteWordsEntry.name"
+    [zipPath]="muteWordsEntry.scan?.zipPath || null"
+    [hasTranscript]="!!muteWordsEntry.scan?.hasTranscript"
+    (closed)="onMuteWordsClosed()"></app-mute-words-modal>
 
   <!-- Process a raw project without leaving the editor. Closing it does not stop the run —
        the pane keeps showing the progress, and clicking that project reopens onto it. -->
@@ -262,7 +275,8 @@
         [busyPath]="projectBusyPath"
         [busyPercent]="projectBusyPercent"
         (openRequested)="onProjectOpen($event)"
-        (processRequested)="onProjectProcess($event)"></app-project-sidebar>
+        (processRequested)="onProjectProcess($event)"
+        (muteWordsRequested)="onProjectMuteWords($event)"></app-project-sidebar>
     </aside>
 
     <div class="splitter splitter-v splitter-p"

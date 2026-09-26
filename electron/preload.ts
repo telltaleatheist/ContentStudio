@@ -475,6 +475,13 @@ const api = {
     muteMicDuringScreen?: boolean;
   }) => ipcRenderer.invoke('editor:export', payload),
 
+  // Mute words (LEDGER #226): the word list, a project's choice, and Apply to an exported master.
+  muteWordsCatalog: () => ipcRenderer.invoke('editor:mute-words-catalog'),
+  loadMuteWords: (payload: { folder: string; cleanName: string }) => ipcRenderer.invoke('editor:mute-words-load', payload),
+  saveMuteWords: (payload: { folder: string; cleanName: string; settings: any }) => ipcRenderer.invoke('editor:mute-words-save', payload),
+  ensureMuteWords: (payload: { folder: string; cleanName: string }) => ipcRenderer.invoke('editor:mute-words-ensure', payload),
+  applyMuteWords: (payload: { zipPath: string }) => ipcRenderer.invoke('editor:mute-words-apply', payload),
+
   // Transcription (Crucible asr, word-level). Progress/completion arrive on this window.
   transcribeSession: (payload: { zipPath: string }) => ipcRenderer.invoke('editor:transcribe', payload),
   cancelTranscription: (payload: { jobId: string }) => ipcRenderer.invoke('editor:transcribe-cancel', payload),

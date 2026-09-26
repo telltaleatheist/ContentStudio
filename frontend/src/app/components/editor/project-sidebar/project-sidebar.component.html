@@ -183,6 +183,8 @@
      [style.left.px]="contextMenu.x" [style.top.px]="contextMenu.y">
   <button class="pp-menu-item" *ngIf="menuCanProcess"
           (click)="onContextMenuProcess()">{{ processMenuLabel() }}</button>
+  <button class="pp-menu-item" *ngIf="menuCanMuteWords"
+          (click)="onContextMenuMuteWords()">Mute words…</button>
   <div class="pp-menu-sep" *ngIf="menuCanProcess && menuCanSync"></div>
   <button class="pp-menu-item" *ngIf="menuCanSync"
           (click)="onContextMenuSync()">{{ contextMenuLabel() }}</button>

@@ -199,7 +199,33 @@
               </span>
             </span>
           </label>
+
+          <!-- Mute words (LEDGER #226): the choice is saved per project by its own modal; the
+               mutes go into the master timeline when it is exported, once there is a transcript. -->
+          <div class="psm-toggle psm-mute">
+            <span class="psm-toggle-text">
+              <span class="psm-toggle-title">Mute words</span>
+              <span class="psm-toggle-desc" *ngIf="muteSummaryText">
+                {{ muteSummaryText }}<ng-container *ngIf="!muteSaved"> (the choice you saved last time — kept for this project when you press Process)</ng-container>
+              </span>
+              <span class="psm-toggle-desc psm-mute-error" *ngIf="muteError">{{ muteError }}</span>
+              <span class="psm-toggle-desc">
+                Muted on the master timeline when you export it, from the transcript's word times.
+              </span>
+            </span>
+            <button class="psm-btn" [disabled]="!muteCleanName" (click)="muteOpen = true">Mute words…</button>
+          </div>
         </div>
+
+        <app-mute-words-modal *ngIf="muteOpen && entry && muteCleanName"
+          mode="setup"
+          [folder]="entry.path"
+          [cleanName]="muteCleanName"
+          [projectName]="entry.name"
+          [zipPath]="entry.scan?.zipPath || null"
+          [hasTranscript]="!!entry.scan?.hasTranscript"
+          (saved)="onMuteSaved()"
+          (closed)="muteOpen = false"></app-mute-words-modal>
 
         <div class="psm-note">
           Alignment is automatic: every source's offset and clock drift are measured against

@@ -800,13 +800,15 @@ export class PythonService {
           // renderer only if it is named here. `micMuteBlocks` and `transcripts` are as
           // load-bearing as the path — the modal reports both — so they are copied on
           // every branch that can carry them.
+          // `wordMutes` is the Mute words report (cli/word_mute_pass.py) — the modal shows it.
           finish(() => resolve(
             result.type === 'story_export_result'
               ? { path: result.path, storiesEmitted: result.storiesEmitted, stories: result.stories,
                   transcripts: result.transcripts, transcriptsDir: result.transcriptsDir,
-                  micMuteBlocks: result.micMuteBlocks }
+                  micMuteBlocks: result.micMuteBlocks, wordMutes: result.wordMutes }
               : { path: result.path, cutsApplied: result.cutsApplied,
-                  newDurationSeconds: result.newDurationSeconds, micMuteBlocks: result.micMuteBlocks }
+                  newDurationSeconds: result.newDurationSeconds, micMuteBlocks: result.micMuteBlocks,
+                  wordMutes: result.wordMutes }
           ));
         } else {
           const stderrSuffix = stderrTail.trim() ? `: ${stderrTail.trim()}` : '';
@@ -822,6 +824,54 @@ export class PythonService {
 
       pythonProcess.on('error', (error) => {
         log.error(`[${jobId}] Editor export process error:`, error);
+        finish(() => reject(error));
+      });
+    });
+  }
+
+  /**
+   * Re-apply the project's Mute words choice to the master timeline it already exported
+   * (cli/mute_words.py, LEDGER #226). Resolves with { path, wordMutes }; REJECTS with Python's
+   * own message (no export yet, export older than the zip, no transcript, …) — never a guess.
+   */
+  muteWordsApply(zipPath: string): Promise<{ path: string; wordMutes: any }> {
+    const jobId = `mute_words_${Date.now()}`;
+    log.info(`Mute words: applying to the exported master of ${zipPath} [${jobId}]`);
+    const pythonProcess = spawn(this.getPythonPath(),
+      [path.join(EditorPaths.cliPath, 'mute_words.py'), '--zip', zipPath],
+      { env: this.getPythonEnv(), cwd: EditorPaths.rootPath });
+    this.runningProcesses.set(jobId, pythonProcess);
+    return new Promise((resolve, reject) => {
+      let stdout = '';
+      let stderrTail = '';
+      pythonProcess.stdout.on('data', (d) => { stdout += d.toString(); });
+      pythonProcess.stderr.on('data', (d) => {
+        const chunk = d.toString();
+        stderrTail = (stderrTail + chunk).slice(-2000);
+        log.info(`[${jobId}] stderr:`, chunk);
+      });
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        this.runningProcesses.delete(jobId);
+        fn();
+      };
+      pythonProcess.on('close', (code) => {
+        const line = stdout.trim().split('\n').filter(Boolean).pop() || '';
+        let msg: any = null;
+        try { msg = JSON.parse(line); } catch { msg = null; }
+        if (code === 0 && msg?.type === 'mute_result') {
+          finish(() => resolve({ path: msg.path, wordMutes: msg.wordMutes }));
+          return;
+        }
+        const tail = stderrTail.trim() ? `: ${stderrTail.trim()}` : '';
+        const reason = msg?.type === 'error' ? String(msg.message) : `mute_words.py exited with code ${code}${tail}`;
+        log.error(`[${jobId}] Mute words failed: ${reason}`);
+        finish(() => reject(new Error(reason)));
+      });
+      pythonProcess.on('error', (error) => {
+        log.error(`[${jobId}] Mute words process error:`, error);
         finish(() => reject(error));
       });
     });

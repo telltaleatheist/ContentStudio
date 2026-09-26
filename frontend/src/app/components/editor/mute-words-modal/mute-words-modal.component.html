@@ -1,0 +1,85 @@
+<!-- Mute words (LEDGER #226). Every outcome is a line inside this card; no native dialogs. -->
+<div class="modal-backdrop mwm-backdrop" (click)="onClose()">
+  <div class="mwm" (click)="$event.stopPropagation()">
+
+    <header class="mwm-header">
+      <div class="mwm-heading">
+        <div class="mwm-title">Mute words</div>
+        <div class="mwm-sub">{{ projectName }} — muted on the master timeline's own audio clips each time it is exported</div>
+      </div>
+      <button class="mwm-close" (click)="onClose()" [disabled]="busy" title="Close" aria-label="Close">✕</button>
+    </header>
+
+    <div class="mwm-body">
+      <div class="mwm-error" *ngIf="error">{{ error }}</div>
+
+      <ng-container *ngIf="settings && catalog">
+        <div class="mwm-note" *ngIf="source === 'remembered'">
+          Not saved for this project yet — this is the choice you saved last time. Save to keep it here.
+        </div>
+        <div class="mwm-note" *ngIf="source === 'blank'">Not saved for this project yet.</div>
+
+        <div class="mwm-group" *ngFor="let g of catalog.groups">
+          <div class="mwm-group-head">
+            <span class="mwm-group-name">{{ g.label }}</span>
+            <button class="mwm-link" (click)="toggleWords(g.id)">
+              {{ shown.has(g.id) ? 'Hide words' : 'Show words (' + wordCount(g) + ')' }}
+            </button>
+            <span class="mwm-seg">
+              <button *ngFor="let m of modes" [class.on]="settings.groups[g.id] === m"
+                      (click)="settings.groups[g.id] = m">{{ modeLabel(m) }}</button>
+            </span>
+          </div>
+          <div class="mwm-words" *ngIf="shown.has(g.id)">
+            <div *ngIf="g.contains.length">Any word containing: {{ g.contains.join(', ') }}</div>
+            <div *ngIf="g.exact.length">These words exactly: {{ g.exact.join(', ') }}</div>
+          </div>
+        </div>
+
+        <div class="mwm-group">
+          <div class="mwm-group-head">
+            <span class="mwm-group-name">Your words</span>
+            <span class="mwm-seg">
+              <button *ngFor="let m of modes" [class.on]="settings.customMode === m"
+                      (click)="settings.customMode = m">{{ modeLabel(m) }}</button>
+            </span>
+          </div>
+          <textarea class="mwm-custom" rows="2" [(ngModel)]="customText" name="customText"
+                    placeholder="Separate words with commas. A * matches the rest of a word: bs* mutes bs, bsing…"></textarea>
+        </div>
+
+        <label class="mwm-window">
+          <input type="checkbox" [(ngModel)]="settings.openingWindow.allSwearing" name="allSwearing" />
+          <span>Mute all swearing in the first</span>
+          <input class="mwm-minutes" type="number" min="0.5" [max]="catalog.maxMinutes" step="0.5"
+                 [(ngModel)]="settings.openingWindow.minutes" name="minutes" />
+          <span>minutes</span>
+        </label>
+        <div class="mwm-desc">
+          Measured on the master timeline — what viewers hear from 0:00, after your cuts (each story
+          counts from its own start). Inside it, every word in every group and your own words is
+          muted, even groups set to Off; after it, only groups set to Everywhere. The same minutes
+          are used by “First {{ windowText }} only”.
+        </div>
+        <div class="mwm-desc">
+          Each muted word gets {{ catalog.padMs }} ms of extra silence on each side.
+        </div>
+
+        <div class="mwm-summary">Will mute: {{ summary }}</div>
+
+        <ng-container *ngIf="appliedPath">
+          <div class="mwm-note">Applied to {{ appliedPath }}</div>
+          <app-word-mute-report [report]="report"></app-word-mute-report>
+        </ng-container>
+      </ng-container>
+    </div>
+
+    <div class="mwm-actions">
+      <span class="mwm-blocked" *ngIf="applyBlocked">{{ applyBlocked }}</span>
+      <button class="mwm-btn" (click)="onClose()" [disabled]="busy">{{ appliedPath ? 'Done' : 'Cancel' }}</button>
+      <button class="mwm-btn" *ngIf="mode === 'project' && !applyBlocked" [disabled]="busy || !settings"
+              (click)="save(true)">{{ busy ? 'Working…' : 'Save and apply to the exported timeline' }}</button>
+      <button class="mwm-btn primary" [disabled]="busy || !settings" (click)="save(false)">Save</button>
+    </div>
+  </div>
+</div>
