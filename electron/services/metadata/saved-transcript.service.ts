@@ -29,7 +29,7 @@ import * as path from 'path';
 import * as log from 'electron-log';
 
 import { sourceKeyOf, type SavedTranscriptReuse } from './item-identity';
-import type { SRTSegment } from './whisper.service';
+import type { SRTSegment } from './transcription.service';
 
 /**
  * Bumped when the on-disk shape changes. A record written by another version is REFUSED

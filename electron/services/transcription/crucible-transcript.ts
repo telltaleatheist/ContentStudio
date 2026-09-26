@@ -21,7 +21,7 @@
  * (Law 8). It keeps every word at its time; it is not a guess.
  */
 
-import type { SRTSegment } from '../metadata/whisper.service';
+import type { SRTSegment } from '../metadata/transcription.service';
 
 export interface TranscriptWord {
   readonly start: number;
@@ -305,7 +305,7 @@ export function transcriptTokens(transcript: CrucibleTranscript): TranscriptWord
  * `transcript.json` (parsed) → captions, words and the facts a log line needs.
  *
  * A transcript with no speech is an empty caption list, not a refusal HERE: whether "no
- * speech" fails an item is the pipeline's call (whisper.service.ts says it does).
+ * speech" fails an item is the pipeline's call (transcription.service.ts says it does).
  */
 export function transcriptToSegments(parsed: unknown): {
   segments: SRTSegment[];

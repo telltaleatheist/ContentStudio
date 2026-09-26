@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as log from 'electron-log';
-import { WhisperService, SRTSegment } from './whisper.service';
+import { TranscriptionService, SRTSegment } from './transcription.service';
 
 /** What a run knows about all of its videos, for the asr context (LEDGER #206). null = the run has none. */
 export interface TranscriptionRunFacts {
@@ -281,7 +281,7 @@ export class InputDetector {
 }
 
 export class InputHandlerService {
-  private whisperService: WhisperService;
+  private transcriptionService: TranscriptionService;
   /**
    * The run's output directory — where `.contentstudio/transcripts/` lives.
    *
@@ -314,7 +314,7 @@ export class InputHandlerService {
   public currentItemIndex: number = -1;
 
   constructor(
-    whisperService: WhisperService,
+    transcriptionService: TranscriptionService,
     outputDir: string,
     runFacts: TranscriptionRunFacts,
     progressCallback?: (phase: string, message: string, percent?: number, filename?: string, itemIndex?: number) => void,
@@ -326,7 +326,7 @@ export class InputHandlerService {
     if (!runFacts || typeof runFacts !== 'object' || !('jobName' in runFacts) || !('promptSet' in runFacts)) {
       throw new Error('InputHandlerService requires the run facts { jobName, promptSet } (null where the run has none) for the transcription context');
     }
-    this.whisperService = whisperService;
+    this.transcriptionService = transcriptionService;
     this.outputDir = outputDir;
     this.runFacts = runFacts;
     this.progressCallback = progressCallback;
@@ -476,7 +476,7 @@ export class InputHandlerService {
     customNotes: string | undefined,
     storyTitle: string | null
   ): Promise<VideoTranscript> {
-    let result: Awaited<ReturnType<WhisperService['transcribeVideo']>>;
+    let result: Awaited<ReturnType<TranscriptionService['transcribeVideo']>>;
     try {
       // Send 'preparing' event before transcription starts. The item index is
       // threaded in per-call (not read from a shared instance field) so concurrent
@@ -489,12 +489,12 @@ export class InputHandlerService {
       }
 
       // Transcribe video (returns jobId along with result)
-      log.info(`[InputHandler] Calling whisperService.transcribeVideo...`);
+      log.info(`[InputHandler] Calling transcriptionService.transcribeVideo...`);
       // The tagger goes IN, rather than tagging out here, because the audio it scores is the WAV
       // transcribeVideo extracted and deletes on the way out. The facts go in for the asr
       // context (LEDGER #206): the run's job name and channel, where earlier reports live, the
       // operator's notes on this input, and a linked story's title.
-      result = await this.whisperService.transcribeVideo(videoPath, {
+      result = await this.transcriptionService.transcribeVideo(videoPath, {
         speakerTagger: this.speakerTagger,
         facts: {
           jobName: this.runFacts.jobName,

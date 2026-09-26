@@ -673,13 +673,13 @@ const heldTranscripts = new Map<string, {
 async function runPipeline(job: PipelineJob): Promise<any> {
   const inputFailures: string[] = [];
   try {
-    const { WhisperService } = require('../services/metadata/whisper.service');
+    const { TranscriptionService } = require('../services/metadata/transcription.service');
     const { InputHandlerService } = require('../services/metadata/input-handler.service');
     const { resolveSpeakerTagging, announceSpeakerTagging, SpeakerTagger } =
       require('../services/metadata/speaker-tagging.service');
     const { getRuntimePaths } = require('../lib/bridges');
 
-    const whisperService = new WhisperService();
+    const transcriptionService = new TranscriptionService();
     // The same directory the generator will write this job's report into, resolved the
     // same way — the saved transcripts sit beside it, and the "does this video have one?"
     // check the UI makes has to look in the directory the run will actually use.
@@ -697,7 +697,7 @@ async function runPipeline(job: PipelineJob): Promise<any> {
     // The run's facts for every video's asr context (LEDGER #206): the job's name and its
     // channel, whose brand terms and promoted items can spell what the audio alone guesses at.
     const inputHandler = new InputHandlerService(
-      whisperService, outputDir,
+      transcriptionService, outputDir,
       { jobName: job.metadataParams.jobName ?? null, promptSet: job.metadataParams.promptSet ?? null },
       job.progressCallback, speakerTagger);
 
@@ -708,8 +708,8 @@ async function runPipeline(job: PipelineJob): Promise<any> {
       return String(input);
     });
 
-    // Set up whisper progress forwarding
-    whisperService.on('progress', (progress: any) => {
+    // Set up transcription progress forwarding
+    transcriptionService.on('progress', (progress: any) => {
       if (job.cancelled) return;
       // Transcription progress is a sign of life for the job's stall clock (plan section 13.5).
       job.run.beat();

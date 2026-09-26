@@ -26,7 +26,7 @@
  * the model's back, which is exactly the design the measurement rejected.
  */
 
-import { SRTSegment } from './whisper.service';
+import { SRTSegment } from './transcription.service';
 import { Chapter, TimeUtils } from './chapter-generator.service';
 import type { StoryStats } from './chaptering/stories';
 

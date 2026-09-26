@@ -51,7 +51,7 @@ import {
   verdictLabel,
 } from './speaker-embedding';
 import { loadSpeakerEnrollment, type SpeakerEnrollment } from './speaker-enrollment';
-import type { SRTSegment } from './whisper.service';
+import type { SRTSegment } from './transcription.service';
 
 /**
  * What one run decided about speaker tagging, before any video is touched.

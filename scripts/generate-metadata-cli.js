@@ -388,7 +388,7 @@ async function main() {
   const routing = require(path.join(DIST, 'services/metadata/metadata-routing.js'));
   const { AnalyticsStoreService } = require(path.join(DIST, 'services/analytics/analytics-store.service.js'));
   const { MetadataGeneratorService } = require(path.join(DIST, 'services/metadata/metadata-generator.service.js'));
-  const { WhisperService } = require(path.join(DIST, 'services/metadata/whisper.service.js'));
+  const { TranscriptionService } = require(path.join(DIST, 'services/metadata/transcription.service.js'));
   const { InputHandlerService } = require(path.join(DIST, 'services/metadata/input-handler.service.js'));
   const { resolveSpeakerTagging, announceSpeakerTagging, SpeakerTagger } =
     require(path.join(DIST, 'services/metadata/speaker-tagging.service.js'));
@@ -637,8 +637,8 @@ async function main() {
     console.error('              No transcription was run. Pass --transcribe to force a fresh one.\n');
   } else {
     console.error(`  TRANSCRIPT: ${args.transcribe ? 'FRESH (--transcribe)' : 'no cache for this input'} — reading the input (a video is transcribed on Crucible; a transcript file is imported as it is)\n`);
-    const whisperService = new WhisperService();
-    whisperService.on('progress', (p) => {
+    const transcriptionService = new TranscriptionService();
+    transcriptionService.on('progress', (p) => {
       if (p.percent !== undefined) progressCallback('transcription', p.message, p.percent);
     });
     // Speaker tagging, resolved exactly as ipc-handlers' transcription job resolves it: once,
@@ -656,7 +656,7 @@ async function main() {
     const speakerTagger = speakerMode.enabled ? new SpeakerTagger(speakerMode) : undefined;
 
     const inputHandler = new InputHandlerService(
-      whisperService, outputDir, { jobName: path.basename(args.input), promptSet: channel }, progressCallback, speakerTagger);
+      transcriptionService, outputDir, { jobName: path.basename(args.input), promptSet: channel }, progressCallback, speakerTagger);
     const inputFailures = [];
     contentItems = await inputHandler.processMultipleInputs([args.input], new Map(), inputFailures, new Map());
     if (contentItems.length === 0) {
