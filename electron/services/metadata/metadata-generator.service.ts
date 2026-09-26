@@ -44,7 +44,7 @@ import { RerollGateSettings, resolveRerollGateSettings } from './reroll/settings
 import { DigestChapter, FieldContentDecision, FieldInputPolicy, digestChaptersOf, resolveFieldContent, resolveFieldInputPolicy } from './chapter-digest';
 import { contextAssertion } from './context-assertion';
 import { topEntities, transcriptCasing } from './entity-extraction';
-import { chapterPools } from './tags-hashtags';
+import { ENTITY_POOL_SIZE, PHRASE_POOL_SIZE, chapterPools } from './tags-hashtags';
 import { loadContextFor } from './context-sizing';
 import { SYSTEM_PROMPTS } from './system-prompts';
 import { PreparedChannelInsights, resolveGuidelinesBlock } from '../analytics/insights-guidelines';
@@ -70,16 +70,8 @@ import * as log from 'electron-log';
 import * as fs from 'fs';
 import * as path from 'path';
 
-/**
- * How many proper nouns and phrases the description, tags and hashtags get to draw on.
- *
- * Not a cap on what the video contains — a cap on what any one call is asked to hold in its
- * head. Twelve names is more than a 300-word body can name; forty phrases is more than a
- * 400-character tag list can spend. Both are generous on purpose so the assembly rules
- * downstream have something to choose from, and both are far short of "everything".
- */
-const ENTITY_POOL_SIZE = 12;
-const PHRASE_POOL_SIZE = 40;
+// ENTITY_POOL_SIZE and PHRASE_POOL_SIZE live in tags-hashtags.ts (LEDGER #223): the chapter
+// re-roll rebuilds the same pools from the same two numbers.
 
 /** The chapter engines a run may declare (GenerationParams.chapterEngine). */
 export type ChapterEngine = 'snap' | 'whole-transcript';
@@ -784,15 +776,21 @@ export class MetadataGeneratorService {
           // after the trace slice, before the save — because the entries it appends to
           // `_prompt_trace` are its own, and a cloud call records itself on the AI manager's
           // running trace as it goes out, so slicing afterwards would count them twice. One
-          // line, one function: this pass is removed by deleting it. A shape that does not
-          // check out throws, and this item fails the way any other field call failing fails it.
-          await scrubGeneratedItem(metadata, {
+          // line, one function: this pass is removed by deleting it. A FIELD IT CANNOT CLEAN UP
+          // NEVER FAILS THE ITEM (LEDGER #223): that field stays exactly as generated, the others
+          // are applied, and the item carries `scrubbed.failed` — each one also a run warning
+          // here, so the job's report says it as well as the item. Only a cancel stops it.
+          const scrub = await scrubGeneratedItem(metadata, {
             option: routingOption(SCRUB_ROUTING_TASK, this.routing(params)[SCRUB_ROUTING_TASK]),
             transport: { aiManager },
             // The run's own scrub. The reports page's button passes 'operator request' through
             // the same function, and the trace entries say which of the two wrote them.
             origin: 'post-generation',
+            ...(params.cancelSignal === undefined ? {} : { signal: params.cancelSignal }),
           });
+          for (const failure of scrub.failed) {
+            warnings.push(`${sourceLabel}: ${failure.reason} It was kept exactly as generated.`);
+          }
 
           // THE RE-ROLL GATE (reroll/, LEDGER #201, Law 3's one declared exception): every title,
           // chapter title, description sentence, thumbnail text and pinned comment is checked

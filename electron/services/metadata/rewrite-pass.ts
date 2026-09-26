@@ -9,7 +9,7 @@
  *   soften.ts — the operator's monetization rewrite, run from the reports page on a finished
  *               item, writing a NEW SET (ledger #180).
  *   scrub.ts  — the narrator-framing rewrite, run INSIDE generation on the item being made
- *               (ledger #183).
+ *               (ledger #183), field by field (#223).
  *
  * They differ in what they ask for and where they land. They do not differ in the machinery,
  * so the machinery lives here rather than in two copies that drift: the prompt is assembled the
@@ -21,11 +21,18 @@
  * window, which is why the local path used to bypass it; the Crucible door refuses a prompt
  * over the loaded context BEFORE sending instead (plan 6.1), so there is one path again.
  *
- * SHAPES FAIL LOUDLY. A line list that comes back with a different number of lines THROWS,
- * naming the field, the model, the count asked for and the count that arrived; nothing is
- * partially applied and nothing re-asks. N entries that come back as N-1 cannot be matched to
- * the N they were read off, and writing the N-1 that arrived would silently drop one and
- * renumber the rest.
+ * SHAPES FAIL LOUDLY. A line list that comes back with a different number of lines THROWS a
+ * RewriteShapeError, naming the field, the model, the count asked for and the count that
+ * arrived; nothing of that field is partially applied and nothing re-asks. N entries that come
+ * back as N-1 cannot be matched to the N they were read off, and writing the N-1 that arrived
+ * would silently drop one and renumber the rest.
+ *
+ * WHAT A THROW COSTS is each pass's own policy, not this file's. Soften (#180) writes nothing
+ * when one field fails, because a half-softened set is indistinguishable from a whole one. The
+ * scrub (#183, amended by LEDGER #223) is applied PLAN BY PLAN: a field whose call or read
+ * throws stays exactly as generated, the others are applied, and the item records which field
+ * was not cleaned up and why. The error is typed (Law 10) so the scrub can say it in plain
+ * words without reading this sentence back.
  *
  * WHAT IS NOT SHARED, on purpose: which fields a pass reads, what it does with the answer, and
  * where the result is written. Those are the passes themselves.
@@ -253,10 +260,39 @@ export async function askToRewrite(
 }
 
 /**
+ * A rewrite answer that did not come back in the shape its prompt asked for.
+ *
+ * Typed rather than a plain Error so a caller that reports it to the operator reads the counts
+ * off the fields and never parses this message (Law 10). The message keeps the numbered
+ * Sent/Returned diagnostic for the log.
+ */
+export class RewriteShapeError extends Error {
+  constructor(
+    message: string,
+    /** The plan's field, as the operator reads it: `chapter titles`, `description hook`. */
+    readonly field: string,
+    readonly shape: RewriteShape,
+    readonly model: string,
+    /** Lines asked for (1 for one_line). */
+    readonly asked: number,
+    /** Lines that arrived. */
+    readonly got: number
+  ) {
+    super(message);
+    this.name = 'RewriteShapeError';
+  }
+}
+
+/** Both sides of a miscounted list, one numbered line each, so the log shows where they part. */
+function numbered(lines: string[]): string {
+  return lines.map((line, index) => `  ${index + 1}. ${line}`).join('\n');
+}
+
+/**
  * The answer, read in exactly the shape its prompt asked for.
  *
- * A `lines` answer whose count does not match THROWS. There is no partial application and no
- * re-ask — see the header.
+ * A `lines` answer whose count does not match THROWS a RewriteShapeError. Nothing of that field
+ * is applied and nothing re-asks — see the header for what each pass does with the throw.
  */
 export function readRewrittenAnswer(
   pass: RewritePassIdentity,
@@ -271,10 +307,16 @@ export function readRewrittenAnswer(
   if (plan.shape === 'lines') {
     const lines = parseLines(text, what);
     if (lines.length !== plan.count) {
-      throw new Error(
+      throw new RewriteShapeError(
         `${named} on model "${model}" asked for ${plan.count} ` +
-          `line(s) and got ${lines.length}. Nothing was applied — a list that does not line up ` +
-          `cannot be matched back to the entries it was read from.`
+          `line(s) and got ${lines.length}. Nothing of this field was applied — a list that does ` +
+          `not line up cannot be matched back to the entries it was read from.\n` +
+          `Sent:\n${numbered(plan.text.split('\n'))}\nReturned:\n${numbered(lines)}`,
+        plan.field,
+        plan.shape,
+        model,
+        plan.count ?? 0,
+        lines.length
       );
     }
     return { value: lines, warning: null };
@@ -291,8 +333,13 @@ export function readRewrittenAnswer(
   if (plan.shape === 'one_line') {
     const lines = parseLines(text, what);
     if (lines.length !== 1) {
-      throw new Error(
-        `${named} on model "${model}" asked for one line and got ${lines.length}.`
+      throw new RewriteShapeError(
+        `${named} on model "${model}" asked for one line and got ${lines.length}.`,
+        plan.field,
+        plan.shape,
+        model,
+        1,
+        lines.length
       );
     }
     return { value: lines[0], warning: null };
