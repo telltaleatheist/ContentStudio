@@ -100,7 +100,7 @@ snap_outline_chapters: |-
 snap_story_junction: |-
   A stretch of the transcript above: "{before}"
   The stretch that comes straight after it: "{after}"
-  The stretch after it is on a new subject: a different story, person, organisation or topic from the stretch before it, where the stream has moved on rather than carried on with the same subject.
+  The stretch after it starts a completely different story from the stretch before it: the stream has finished with one subject and taken up an unrelated one, the way the next video in a playlist would start.
 
 snap_story_place: |-
   The stream moves on to a new subject somewhere in the lines above. Which line is the first line of the new subject: the line where the speaker turns to it, announces it or closes off the old one?
