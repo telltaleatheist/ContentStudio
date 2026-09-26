@@ -129,19 +129,39 @@ check('the stem path round trip: the stem lands at the path asked for, the same 
   }
 });
 
-check('a FLAC stem (the Mac\'s 1.0.38) is read, checked and kept under the server\'s extension', async () => {
-  const dir = tempDir('cs-p7-flac-');
+check('a FLAC stem (what the Mac\'s 1.0.38 published) is refused by name before its bytes are fetched', async () => {
+  const dir = tempDir('cs-p10-flac-');
   const chunk = writeWav(path.join(dir, 'chunk_0003.wav'), { seconds: 2 });
-  const flac = path.join(dir, 'stem.flac');
-  const made = spawnSync('ffmpeg', ['-nostdin', '-v', 'error', '-i', chunk, '-c:a', 'flac', '-y', flac]);
-  assert.strictEqual(made.status, 0, String(made.stderr));
-  const t = await setup({ denoise: { stemAs: { ext: '.flac', bytes: fs.readFileSync(flac) } } });
+  const t = await setup({ denoise: { stemAs: { ext: '.flac', bytes: Buffer.from('fLaC') } } });
   try {
     await t.isolator.start();
-    const done = await t.isolator.separate(chunk, path.join(t.dir, 'out_0003.wav'));
-    assert.strictEqual(done.stem, path.join(t.dir, 'out_0003.flac'));
+    const err = await rejection(t.isolator.separate(chunk, path.join(t.dir, 'out_0003.wav')));
+    assert.strictEqual(err.name, 'VoiceIsolationRefused');
+    assert.strictEqual(err.code, 'voice_isolation_stem_not_wav');
+    assert.match(err.message, /reads only a 16-bit PCM WAV stem/);
     assert.ok(!fs.existsSync(path.join(t.dir, 'out_0003.wav')));
-    assert.deepStrictEqual(denoise.readAudioFormat(done.stem), { sampleRate: 44100, channels: 2, frames: 88200 });
+    assert.ok(!fs.existsSync(path.join(t.dir, 'out_0003.flac')));
+    assert.ok(!t.server.requests.some((r) => r.path.includes('/artifacts/')), 'the stem was never fetched');
+  } finally {
+    await t.server.close();
+  }
+});
+
+check('a 24-bit WAV stem is refused by name and nothing is left at the path asked for', async () => {
+  const dir = tempDir('cs-p10-24-');
+  const chunk = writeWav(path.join(dir, 'chunk_0004.wav'), { seconds: 1 });
+  const wide = path.join(dir, 'wide.wav');
+  const made = spawnSync('ffmpeg', ['-nostdin', '-v', 'error', '-i', chunk, '-c:a', 'pcm_s24le', '-y', wide]);
+  assert.strictEqual(made.status, 0, String(made.stderr));
+  const t = await setup({ denoise: { stemAs: { ext: '.wav', bytes: fs.readFileSync(wide) } } });
+  try {
+    await t.isolator.start();
+    const out = path.join(t.dir, 'out_0004.wav');
+    const err = await rejection(t.isolator.separate(chunk, out));
+    assert.strictEqual(err.code, 'voice_isolation_stem_not_pcm16');
+    assert.match(err.message, /at 24 bits; this side reads only 16-bit integer PCM/);
+    assert.ok(!fs.existsSync(out));
+    assert.ok(!fs.existsSync(`${out}.partial`));
   } finally {
     await t.server.close();
   }
@@ -354,7 +374,7 @@ check('the protocol answers every request: a malformed one and a missing handler
   assert.deepStrictEqual(line, { message: 'Isolating voice on mic 1 — section 2 of 4: separating', subProgress: 37.5 });
 });
 
-for (const [label, denoiseScript] of [['WAV stems (1.0.34)', {}], ['FLAC stems (the Mac\'s 1.0.38)', { stemAs: { ext: '.flac', transcode: true } }]]) check(`voice_separation.py end to end with ${label}: chunked in Python, each chunk a job on the fake, the stems reassembled`, async () => {
+for (const [label, denoiseScript] of [['16-bit WAV stems (Crucible 1.0.39+)', {}]]) check(`voice_separation.py end to end with ${label}: chunked in Python, each chunk a job on the fake, the stems reassembled`, async () => {
   for (const tool of ['ffmpeg', 'ffprobe', 'python3']) {
     const found = spawnSync('which', [tool]);
     if (found.status !== 0) throw new Error(`${tool} is not on PATH; this check runs the real Python side`);
@@ -426,7 +446,7 @@ check('voice_separation.py fails loud on an error answer: non-zero exit, and no 
   assert.ok(!fs.existsSync(output));
 });
 
-check('nothing reaches voice-separator-env: no code path names it outside the asset catalog', () => {
+check('nothing reaches voice-separator-env: no code path names it but the cleanup that deletes it', () => {
   const offenders = [];
   const walk = (dir) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -439,8 +459,9 @@ check('nothing reaches voice-separator-env: no code path names it outside the as
     }
   };
   for (const root of ['electron', 'editor-backend', path.join('frontend', 'src')]) walk(path.join(REPO, root));
-  // The catalog entry is P10's to delete (plan section 15): it describes the download, it runs nothing.
-  assert.deepStrictEqual(offenders.filter((f) => f !== path.join('electron', 'services', 'editor', 'asset-catalog.ts')), []);
+  // P10 deleted the catalog entry too. The one file left that names the env is the cleanup that
+  // deletes it from existing installs (electron/retired-components.ts); it runs nothing.
+  assert.deepStrictEqual(offenders.filter((f) => f !== path.join('electron', 'retired-components.ts')), []);
 });
 
 run('test-crucible-denoise (P7: voice isolation on Crucible)');

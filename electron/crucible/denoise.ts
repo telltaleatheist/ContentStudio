@@ -213,6 +213,11 @@ export function voiceIsolationAvailability(info: ServerInfo, server: string): Vo
 export interface WavFormat {
   readonly sampleRate: number;
   readonly channels: number;
+  /** The `fmt ` chunk's format tag: 1 is integer PCM; 0xFFFE (extensible) carries the real one in {@link subFormat}. */
+  readonly formatTag: number;
+  /** WAVE_FORMAT_EXTENSIBLE's sub-format tag (the first two bytes of its GUID), or null for a plain `fmt `. */
+  readonly subFormat: number | null;
+  readonly bitsPerSample: number;
   readonly blockAlign: number;
   readonly dataBytes: number;
   /** Sample frames: `dataBytes / blockAlign`. */
@@ -238,7 +243,7 @@ export function readWavFormat(file: string): WavFormat {
       throw new Error(`${file} is not a WAVE file (it starts "${head.toString('latin1', 0, 4)}")`);
     }
     let at = 12;
-    let fmt: { sampleRate: number; channels: number; blockAlign: number } | null = null;
+    let fmt: { sampleRate: number; channels: number; formatTag: number; subFormat: number | null; bitsPerSample: number; blockAlign: number } | null = null;
     let rf64DataBytes: number | null = null;
     const chunk = Buffer.alloc(8);
     while (at + 8 <= size) {
@@ -250,9 +255,18 @@ export function readWavFormat(file: string): WavFormat {
         fs.readSync(fd, ds64, 0, 16, at + 8);
         rf64DataBytes = Number(ds64.readBigUInt64LE(8));
       } else if (id === 'fmt ') {
-        const body = Buffer.alloc(16);
-        fs.readSync(fd, body, 0, 16, at + 8);
-        fmt = { channels: body.readUInt16LE(2), sampleRate: body.readUInt32LE(4), blockAlign: body.readUInt16LE(12) };
+        const body = Buffer.alloc(Math.max(16, Math.min(length, 40)));
+        fs.readSync(fd, body, 0, body.length, at + 8);
+        const formatTag = body.readUInt16LE(0);
+        fmt = {
+          formatTag,
+          channels: body.readUInt16LE(2),
+          sampleRate: body.readUInt32LE(4),
+          blockAlign: body.readUInt16LE(12),
+          bitsPerSample: body.readUInt16LE(14),
+          // WAVE_FORMAT_EXTENSIBLE: cbSize at 16, then valid bits, channel mask, the GUID at 24.
+          subFormat: formatTag === 0xfffe && length >= 40 ? body.readUInt16LE(24) : null,
+        };
       } else if (id === 'data') {
         if (fmt === null) throw new Error(`${file} has its data before its fmt chunk`);
         // RF64 writes 0xFFFFFFFF here and the real size in ds64.
@@ -268,51 +282,20 @@ export function readWavFormat(file: string): WavFormat {
   }
 }
 
-/** What the stem check needs, whichever container the server chose. */
-export interface AudioFormat {
-  readonly sampleRate: number;
-  readonly channels: number;
-  readonly frames: number;
-}
-
 /**
- * A FLAC file's rate, channels and length, from its STREAMINFO block (the
- * first metadata block, which the format requires). A stream that does not
- * state its total samples (0) is refused: the length is the whole check.
+ * THE STEM IS A 16-BIT PCM WAV, and nothing else is read. Crucible's `denoise` worker asks the
+ * separator for WAV (`OUTPUT_FORMAT = "WAV"`, jobs/denoise/__init__.py) and refuses to publish
+ * any other container; audio-separator writes it as int16 (`write_audio_pydub`). That is the
+ * Mac's installed 1.0.40, read in its source during P10: the FLAC stems 1.0.38 published were
+ * the bug its worker fixed (the model instance kept the load's format). voice_separation.py
+ * writes its silent passthrough in the same pcm_s16le, so every stem it concatenates is one
+ * format. A stem in any other container or depth is refused by name (Law 1): nothing converts.
  */
-export function readFlacFormat(file: string): AudioFormat {
-  const fd = fs.openSync(file, 'r');
-  try {
-    const head = Buffer.alloc(42);
-    if (fs.readSync(fd, head, 0, 42, 0) !== 42 || head.toString('latin1', 0, 4) !== 'fLaC') {
-      throw new Error(`${file} is not a FLAC file`);
-    }
-    if ((head[4] & 0x7f) !== 0) throw new Error(`${file}'s first metadata block is not STREAMINFO`);
-    const info = head.subarray(8);
-    // Bytes 10..17 of STREAMINFO: rate (20 bits), channels-1 (3), bits-1 (5), total samples (36).
-    const sampleRate = (info[10] << 12) | (info[11] << 4) | (info[12] >> 4);
-    const channels = ((info[12] >> 1) & 0x07) + 1;
-    const frames = (info[13] & 0x0f) * 2 ** 32 + info.readUInt32BE(14);
-    if (frames === 0) throw new Error(`${file} does not state its length`);
-    return { sampleRate, channels, frames };
-  } finally {
-    fs.closeSync(fd);
-  }
-}
+export const STEM_BITS_PER_SAMPLE = 16;
 
-/** A WAV (RIFF or RF64) or FLAC file's rate, channels and length, by its magic bytes. */
-export function readAudioFormat(file: string): AudioFormat {
-  const fd = fs.openSync(file, 'r');
-  const magic = Buffer.alloc(4);
-  try {
-    fs.readSync(fd, magic, 0, 4, 0);
-  } finally {
-    fs.closeSync(fd);
-  }
-  const kind = magic.toString('latin1');
-  if (kind === 'fLaC') return readFlacFormat(file);
-  if (kind === 'RIFF' || kind === 'RF64') return readWavFormat(file);
-  throw new Error(`${file} starts "${kind}", which is neither WAV nor FLAC`);
+/** True when a WAV's samples are integer PCM (plain, or WAVE_FORMAT_EXTENSIBLE with the PCM sub-format). */
+function isIntegerPcm(format: WavFormat): boolean {
+  return format.formatTag === 1 || (format.formatTag === 0xfffe && format.subFormat === 1);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -370,7 +353,7 @@ export interface SeparateOptions {
 }
 
 export interface SeparatedChunk {
-  /** Where the vocal stem was written: the caller's `out`, with the server's extension (`.wav`, `.flac`). */
+  /** Where the vocal stem was written: the caller's `out`, exactly (a 16-bit PCM WAV). */
   readonly stem: string;
   readonly jobId: string;
   /** `done.extra.load_seconds`: the load on the chunk that paid it, 0 on the rest while the lease holds. */
@@ -523,29 +506,37 @@ export class CrucibleVoiceIsolator {
         `crucible "${server}" job ${jobId} named "${primary}" as its stem and published `
         + `${(done.artifacts ?? []).join(', ') || 'nothing'}`);
     }
+    // A 16-BIT PCM WAV, AT THE PATH PYTHON ASKED FOR (STEM_BITS_PER_SAMPLE above). A
+    // primary stem named anything but .wav is refused before its bytes are fetched.
+    if (path.extname(primary).toLowerCase() !== '.wav') {
+      throw new VoiceIsolationRefused('voice_isolation_stem_not_wav', server,
+        `crucible "${server}" job ${jobId} published its stem as "${primary}"; this side reads only a `
+        + `${STEM_BITS_PER_SAMPLE}-bit PCM WAV stem, which Crucible's denoise has returned since 1.0.39`);
+    }
     let bytes: Uint8Array;
     try {
       bytes = await this.client.artifact(jobId, primary);
     } catch (err) {
       throw describeRefusal(err, server, `the stem of job ${jobId}`);
     }
-    // THE CONTAINER IS THE SERVER'S. 1.0.34 published WAV stems; the 1.0.38 on
-    // the Mac publishes FLAC (found live, 2026-09-25). The stem keeps the
-    // server's extension beside the path Python asked for, and the answer
-    // names the file actually written, so ffmpeg on the Python side reads it
-    // by what it is.
-    const target = path.join(path.dirname(out), `${path.basename(out, path.extname(out))}${path.extname(primary) || path.extname(out)}`);
+    const target = out;
     // Written beside, then renamed: a half-written stem must never be the one
     // voice_separation.py concatenates.
     const partial = `${target}.partial`;
     fs.writeFileSync(partial, bytes);
-    let stem: AudioFormat;
+    let stem: WavFormat;
     try {
-      stem = readAudioFormat(partial);
+      stem = readWavFormat(partial);
     } catch (err) {
       fs.rmSync(partial, { force: true });
       throw new VoiceIsolationRefused('voice_isolation_stem_unreadable', server,
-        `the stem of job ${jobId} is neither a WAV nor a FLAC this side can read: ${err instanceof Error ? err.message : String(err)}`);
+        `the stem of job ${jobId} is not a WAV this side can read: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!isIntegerPcm(stem) || stem.bitsPerSample !== STEM_BITS_PER_SAMPLE) {
+      fs.rmSync(partial, { force: true });
+      throw new VoiceIsolationRefused('voice_isolation_stem_not_pcm16', server,
+        `the stem of job ${jobId} is a WAV of format ${stem.formatTag}${stem.subFormat === null ? '' : `/${stem.subFormat}`} `
+        + `at ${stem.bitsPerSample} bits; this side reads only ${STEM_BITS_PER_SAMPLE}-bit integer PCM`);
     }
     // THE SERVER'S TWO INVARIANTS, ASSERTED ON ARRIVAL (PHASE4-AUDIO.md 4.2:
     // "The app asserts the same thing"). voice_separation.py concatenates the

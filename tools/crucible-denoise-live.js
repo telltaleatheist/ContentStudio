@@ -155,7 +155,7 @@ async function main() {
         residentAfter: a.resident ? `${a.resident.kind}:${a.resident.id}` : null,
         leaseAfter: a.lease ? `${a.lease.client}:${a.lease.act}:${a.lease.kind}` : null,
         stem: path.basename(done.stem),
-        stemFormat: denoise.readAudioFormat(done.stem),
+        stemFormat: denoise.readWavFormat(done.stem),
       };
       result.chunks.push(row);
       console.log(`  chunk ${at}s: ${wall.toFixed(1)} s wall, load ${done.loadSeconds} s, separate ${done.separateSeconds} s, resident ${row.residentAfter}`);
