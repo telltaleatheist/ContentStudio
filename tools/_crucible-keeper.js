@@ -145,6 +145,8 @@ function context(options = {}) {
     // P3: the lanes' clocks, so a keeper drives the preflight and the stall clock itself.
     ...(options.lanes === undefined ? {} : { lanes: options.lanes }),
     ...(options.ledgerFile === undefined ? {} : { ledgerFile: options.ledgerFile }),
+    // The model routing's server (LEDGER #222): a keeper that routes nothing names none.
+    routingServer: options.routingServer ?? (() => null),
   });
   return { ctx, dir, pushed, clipboard, scripted };
 }

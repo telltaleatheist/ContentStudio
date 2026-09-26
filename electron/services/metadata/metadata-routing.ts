@@ -505,8 +505,21 @@ export const REMOVED_ROUTING_OPTIONS: Record<string, string> = {
     'them, so the 32B titles adapter, its MLX shim and adapters.yml are all gone from this build',
 };
 
-/** Stored shape: taskId -> optionId. Partial by design; absent entries take the default. */
-export type MetadataRoutingSelections = Partial<Record<MetadataRoutingTaskId, string>>;
+/**
+ * The one stored key that is not a task: the Crucible server this routing's jobs run on
+ * (Owen, 2026-09-26: "we can pick which crucible server we use (wsl or mac) in model
+ * routing"; LEDGER #222). A registered server's NAME. Absent means the server Settings ›
+ * Crucible Servers has selected, exactly as before the key existed, so a store written
+ * before it changes nothing. Where it takes effect is venue-decision.ts (`intendedVenue`),
+ * the one place the venue rule lives; this module only stores, validates and migrates it.
+ */
+export const ROUTING_SERVER_KEY = 'server';
+
+/**
+ * Stored shape: taskId -> optionId, plus the optional `server`. Partial by design; absent
+ * task entries take the default, and an absent server means the selected one.
+ */
+export type MetadataRoutingSelections = Partial<Record<MetadataRoutingTaskId, string>> & { server?: string };
 
 /** Every task resolved to an option id — what generation actually runs. */
 export type ResolvedMetadataRouting = Record<MetadataRoutingTaskId, string>;
@@ -544,13 +557,22 @@ export function validateRoutingSelection(taskId: string, optionId: string): void
   }
 }
 
-/** Validate a whole selections object, e.g. one arriving over IPC from the modal. */
-export function validateRoutingSelections(selections: unknown): MetadataRoutingSelections {
+/** The `server` entry's type, checked the way an option id's is: a non-empty string. */
+function storedServerName(value: unknown): string {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`metadataRouting.${ROUTING_SERVER_KEY} must be a Crucible server name (got ${JSON.stringify(value)})`);
+  }
+  return value;
+}
+
+/** The task entries of a selections object, validated. The `server` entry is not a task and is skipped. */
+function validateTaskSelections(selections: unknown): Partial<Record<MetadataRoutingTaskId, string>> {
   if (!selections || typeof selections !== 'object' || Array.isArray(selections)) {
     throw new Error(`metadataRouting must be an object of taskId -> optionId (got ${JSON.stringify(selections)})`);
   }
-  const validated: MetadataRoutingSelections = {};
+  const validated: Partial<Record<MetadataRoutingTaskId, string>> = {};
   for (const [taskId, optionId] of Object.entries(selections as Record<string, unknown>)) {
+    if (taskId === ROUTING_SERVER_KEY) continue;
     if (typeof optionId !== 'string' || optionId.trim().length === 0) {
       throw new Error(`metadataRouting.${taskId} must be an option id string (got ${JSON.stringify(optionId)})`);
     }
@@ -561,13 +583,84 @@ export function validateRoutingSelections(selections: unknown): MetadataRoutingS
 }
 
 /**
+ * Validate a whole selections object, e.g. one arriving over IPC from the modal, against the
+ * table AND the registry. A `server` that names no registered Crucible server is refused with
+ * the sentence naming it (Law 1: it is never replaced by the selected one). `registered` is
+ * the registry's names at the moment of the save.
+ */
+export function validateRoutingSelections(selections: unknown, registered: readonly string[]): MetadataRoutingSelections {
+  const validated: MetadataRoutingSelections = validateTaskSelections(selections);
+  const server = (selections as Record<string, unknown>)[ROUTING_SERVER_KEY];
+  if (server !== undefined && server !== null) {
+    const name = storedServerName(server);
+    if (!registered.includes(name)) {
+      throw new Error(
+        `metadataRouting.${ROUTING_SERVER_KEY} names "${name}", which is not a registered Crucible server ` +
+          `(registered: ${registered.length > 0 ? registered.join(', ') : 'none'}). Add it in Settings › Crucible Servers, or pick one that is.`
+      );
+    }
+    validated.server = name;
+  }
+  return validated;
+}
+
+/**
+ * The stored routing's server, judged against the registry as it is NOW (LEDGER #222).
+ *
+ * Absent is `null`: the selected server runs the job. A name the registry still has is
+ * returned as it is. A name the registry no longer has (the server was forgotten in Settings
+ * after the routing was saved) drops back to unset with a notice, in migrateStoredRouting's
+ * style: the user chose something legitimate and a later act took it away, so this is a
+ * recorded migration, and a caller that can write the store writes the drop back so the
+ * notice is said once. A value that is not a name at all (a hand-edited store) throws.
+ */
+export function judgeRoutingServer(value: unknown, registered: readonly string[]): { server: string | null; notice: string | null } {
+  if (value === undefined || value === null) return { server: null, notice: null };
+  const name = storedServerName(value);
+  if (registered.includes(name)) return { server: name, notice: null };
+  return {
+    server: null,
+    notice:
+      `dropped metadataRouting.${ROUTING_SERVER_KEY} = "${name}": that Crucible server is no longer registered ` +
+      `(registered: ${registered.length > 0 ? registered.join(', ') : 'none'}); jobs go to the server Settings has selected`,
+  };
+}
+
+/**
+ * The routing's server as the venue reads it from the settings store, at every plan and
+ * admission (main.ts hands this to the Crucible lanes). A forgotten server is dropped from the
+ * STORE, leaving every other entry as it was, with one logged line, so the line is said once.
+ * The store is only the `get`/`set` pair electron-store has, so a check drives it with a map.
+ */
+export function readStoredRoutingServer(
+  store: { get(key: string): unknown; set(key: string, value: unknown): void },
+  registered: readonly string[]
+): string | null {
+  const stored = store.get('metadataRouting');
+  if (stored === undefined || stored === null) return null;
+  if (typeof stored !== 'object' || Array.isArray(stored)) {
+    throw new Error(`metadataRouting must be an object of taskId -> optionId (got ${JSON.stringify(stored)})`);
+  }
+  const judged = judgeRoutingServer((stored as Record<string, unknown>)[ROUTING_SERVER_KEY], registered);
+  if (judged.notice !== null) {
+    const rest = { ...(stored as Record<string, unknown>) };
+    delete rest[ROUTING_SERVER_KEY];
+    store.set('metadataRouting', rest);
+    log.warn(`[MetadataRouting] settings migration: ${judged.notice}`);
+  }
+  return judged.server;
+}
+
+/**
  * Fill in the defaults and validate what the user chose.
  *
  * Called at job time from the store, so a setting edited between runs takes effect on the
- * next run without any coupling between the modal and the queue.
+ * next run without any coupling between the modal and the queue. It resolves MODELS: the
+ * stored `server` entry is not a model and is not read here (the venue reads it, through
+ * `judgeRoutingServer`), so it is skipped rather than refused as an unknown task.
  */
 export function resolveMetadataRouting(stored: unknown): ResolvedMetadataRouting {
-  const selections = stored === undefined || stored === null ? {} : validateRoutingSelections(stored);
+  const selections = stored === undefined || stored === null ? {} : validateTaskSelections(stored);
   const resolved = {} as ResolvedMetadataRouting;
   for (const task of METADATA_ROUTING_TASKS) {
     resolved[task.id] = selections[task.id] || task.defaultOptionId;
@@ -608,7 +701,7 @@ export interface MetadataRoutingMigration {
  * strictly — the modal can only offer what this build has, so a rejected id there is a bug
  * in the modal, not an upgrade.
  */
-export function migrateStoredRouting(stored: unknown): MetadataRoutingMigration {
+export function migrateStoredRouting(stored: unknown, registered?: readonly string[]): MetadataRoutingMigration {
   if (stored === undefined || stored === null) {
     return { selections: {}, changed: false, notices: [] };
   }
@@ -619,7 +712,23 @@ export function migrateStoredRouting(stored: unknown): MetadataRoutingMigration 
   const selections: MetadataRoutingSelections = {};
   const notices: string[] = [];
 
+  // The routing's server (LEDGER #222). Judged against the registry when the caller passes it
+  // (the dialog's read and the venue's, which write the drop back). A caller that reads only
+  // models passes no registry: the entry is carried through with its type checked and is not
+  // judged, because that caller never acts on it and never writes it back.
+  const storedServer = (stored as Record<string, unknown>)[ROUTING_SERVER_KEY];
+  if (storedServer !== undefined && storedServer !== null) {
+    if (registered === undefined) {
+      selections.server = storedServerName(storedServer);
+    } else {
+      const judged = judgeRoutingServer(storedServer, registered);
+      if (judged.server !== null) selections.server = judged.server;
+      if (judged.notice !== null) notices.push(judged.notice);
+    }
+  }
+
   for (const [taskId, optionId] of Object.entries(stored as Record<string, unknown>)) {
+    if (taskId === ROUTING_SERVER_KEY) continue;
     if (typeof optionId !== 'string' || optionId.trim().length === 0) {
       throw new Error(`metadataRouting.${taskId} must be an option id string (got ${JSON.stringify(optionId)})`);
     }
@@ -764,9 +873,13 @@ export function resolveOperatorOption(
   return option;
 }
 
-/** One line naming what this run will use, for the job log. */
-export function describeRouting(routing: ResolvedMetadataRouting): string {
-  return METADATA_ROUTING_TASKS.map((t) => `${t.id}=${METADATA_ROUTING_OPTIONS[routing[t.id]].model}`).join(', ');
+/**
+ * One line naming what this run will use, for the job log: every field's model, then the
+ * routing's server (LEDGER #222), or that it names none and the selected server runs the job.
+ */
+export function describeRouting(routing: ResolvedMetadataRouting, server: string | null): string {
+  const models = METADATA_ROUTING_TASKS.map((t) => `${t.id}=${METADATA_ROUTING_OPTIONS[routing[t.id]].model}`).join(', ');
+  return `${models}, server=${server === null ? '(the selected server)' : server}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -812,7 +925,10 @@ export interface MetadataRoutingTaskView {
   modal: boolean;
 }
 
-/** The Crucible server every option was judged against: the one Settings has selected. */
+/**
+ * The Crucible server every option was judged against: the one this routing's jobs run on,
+ * which is the routing's own server when it names one, else the one Settings has selected.
+ */
 export interface MetadataRoutingServerView {
   name: string | null;
   reachable: boolean;
@@ -833,10 +949,24 @@ export interface MetadataRoutingChaptersView {
   scorerAvailability: MetadataRoutingAvailability;
 }
 
+/**
+ * The dialog's "Runs on" row (LEDGER #222): the server stored with this routing, and the one
+ * Settings has selected, which runs the job when the routing names none. The choices are the
+ * registered servers, which the dialog reads from the registry's own view (`crucible:servers`).
+ */
+export interface MetadataRoutingRunsOnView {
+  /** The routing's server, or null: the selected server runs its jobs. */
+  routingServer: string | null;
+  /** The server Settings has selected, or null when none is. */
+  selectedServer: string | null;
+}
+
 export interface MetadataRoutingView {
   tasks: MetadataRoutingTaskView[];
+  /** The server every option was judged against: the routing's server when it names one, else the selected one. */
   server: MetadataRoutingServerView;
   chapters: MetadataRoutingChaptersView;
+  runsOn: MetadataRoutingRunsOnView;
 }
 
 /** One option judged against the selected server's inventory. */
@@ -877,7 +1007,7 @@ function offered(availability: MetadataRoutingAvailability): boolean {
  * with the server's own pick, and here nothing is substituted, because the routing table is
  * the only thing that picks a model (LEDGER #204).
  */
-export function buildRoutingView(stored: unknown, inventory: CatalogInventory): MetadataRoutingView {
+export function buildRoutingView(stored: unknown, inventory: CatalogInventory, runsOn: MetadataRoutingRunsOnView): MetadataRoutingView {
   const resolved = resolveMetadataRouting(stored);
   const chapterOption = resolveChapterModelOption(resolved);
   return {
@@ -914,5 +1044,6 @@ export function buildRoutingView(stored: unknown, inventory: CatalogInventory): 
       ...(inventory.error === undefined ? {} : { error: inventory.error }),
       anthropicConfigured: inventory.anthropicConfigured,
     },
+    runsOn,
   };
 }

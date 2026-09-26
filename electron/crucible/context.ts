@@ -71,6 +71,14 @@ export interface CrucibleContextDeps {
    * selected one, and the routing record is never written. Refused by name when unregistered.
    */
   serverOverride?: string;
+  /**
+   * The server the model routing names (`metadataRouting.server`, LEDGER #222), judged against
+   * this registry, or null when it names none. Given the registry's names so the reader can drop
+   * a forgotten one with its line. Required, so no process can leave it out by accident: main.ts
+   * reads the store; a CLI and a keeper that route nothing say `() => null` (a CLI's own choice
+   * of server arrives as `serverOverride`, computed by the same rule, venue-decision.ts).
+   */
+  routingServer: (registered: readonly string[]) => string | null;
   /** The ledger's file name under `stateDir`. Default `crucible-in-flight.json`; a CLI names its own. */
   ledgerFile?: string;
   /** The lanes' clocks, replaceable by a keeper. */
@@ -100,6 +108,8 @@ export interface CrucibleContext {
   pairingHost: PairingFileHost;
   ledger: InFlightLedger;
   lanes: CrucibleLanes;
+  /** The model routing's server as the lanes read it (LEDGER #222), for the Settings pane's view. */
+  routingServer(): string | null;
   /**
    * Give back every hold the ledger lists (what a kill left behind), under the
    * startup deadline. GPU admission waits for it; call it once, at boot.
@@ -221,8 +231,10 @@ export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContex
   );
   const readiness = new CrucibleReadiness(servers, probes, local, push.readiness);
   const ledger = InFlightLedger.inDir(deps.stateDir, (line) => log.warn(`[crucible] ${line}`), deps.ledgerFile);
+  const routingServer = (): string | null => deps.routingServer(servers.names());
   const lanes = new CrucibleLanes({
     servers: choice,
+    routingServer,
     clientFor: (name, options) => factory.clientFor(name, options),
     reach: async (name) => {
       const answer = await probes.reach(name);
@@ -250,6 +262,7 @@ export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContex
     pairingHost,
     ledger,
     lanes,
+    routingServer,
     sweepAtStartup() {
       const swept = sweep('startup: what the last run left behind', STARTUP_SWEEP_DEADLINE_MS);
       lanes.setAdmissionGate(swept);

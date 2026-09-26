@@ -16,9 +16,11 @@
  *
  * EVERY MODEL CALL GOES THROUGH CRUCIBLE (P2, LEDGER #193): the app's own registry and routing
  * record are read out of the real userData (`crucible-servers.json`, `crucible-routing.json`),
- * the app's one transport is built over them and installed, and the run goes to the server the
- * app has selected. `--server <name>` sends THIS run to another registered server without
- * writing the routing record (it never picks one on its own: Q14, #205). Every lease the run
+ * the app's one transport is built over them and installed, and the run goes where the app would
+ * send a metadata job: the model routing's server when it names one, else the server the app has
+ * selected (venue-decision.ts, LEDGER #222). `--server <name>` is this CLI's spelling of the
+ * routing's server, for THIS run only, without writing anything (it never picks one on its own:
+ * Q14, #205). Every lease the run
  * takes is released on SIGINT/SIGTERM before the process exits 130/143 (plan 0a), so a Ctrl-C
  * never leaves a card pinned until its ttl.
  *
@@ -161,8 +163,10 @@ Everything else:
                        chapterless item keeps its transcript). Default: the app's 'fieldInput'
                        setting, else raw. The plan 7.4 A/B's two arms are this flag.
   --assets <dir>       Prompt assets root. Default: <repo>/electron/assets/prompts.
-  --server <name>      Send this run to that registered Crucible server instead of the one
-                       the app has selected. The routing record is not modified.
+  --server <name>      The model routing's server for this run: send it to that registered
+                       Crucible server instead of the routing's (Model routing › Runs on) or,
+                       when the routing names none, the one the app has selected. Nothing
+                       stored is modified.
   --claude-cli         Send every Claude call through \`claude -p --model sonnet\` (the Claude
                        Code subscription) instead of Crucible's Anthropic upstream. ALWAYS
                        sonnet, whatever the routing named. Test runs only; printed loudly.
@@ -382,20 +386,59 @@ async function main() {
   if (!fs.existsSync(args.input)) fail(`Input not found: ${args.input}`);
   if (!fs.existsSync(args.assets)) fail(`Prompt assets not found: ${args.assets}`);
 
+  // ---- the app's real settings, read the way the app reads them ------------------------
+  const Store = require('electron-store');
+  const store = new Store({});
+  const settings = store.store;
+  const routing = require(path.join(DIST, 'services/metadata/metadata-routing.js'));
+
+  // ---- where this run goes: venue-decision.ts's rule, --server being the routing's server --
+  //
+  // The app runs a metadata job on the model routing's server when it names one, else on the
+  // selected server (LEDGER #222). `--server` is this CLI's spelling of that same choice, for
+  // this run only (the stored routing is not modified), exactly as --route is for a field. A
+  // routing server the registry has forgotten is dropped for this run with its line; the app
+  // writes that drop back the next time it reads the routing. The CLI has no fast pin.
+  const { CrucibleServers } = require(path.join(DIST, 'crucible/servers.js'));
+  const { intendedVenue } = require(path.join(DIST, 'crucible/venue-decision.js'));
+  const registry = new CrucibleServers(USER_DATA);
+  const registered = registry.names();
+  if (registered.length === 0) {
+    fail(`No Crucible server is registered in ${USER_DATA}. Start the app once (it adopts the Crucible on this ` +
+      `computer), or add one in Settings › Crucible Servers.`);
+  }
+  if (args.server !== undefined && !registered.includes(args.server)) {
+    fail(`--server "${args.server}" is not a registered Crucible server. Registered: ${registered.join(', ')}`);
+  }
+  const storedRouting = settings.metadataRouting;
+  const judgedServer = routing.judgeRoutingServer(
+    storedRouting && typeof storedRouting === 'object' ? storedRouting[routing.ROUTING_SERVER_KEY] : undefined,
+    registered
+  );
+  if (judgedServer.notice !== null) console.error(`ROUTING: ${judgedServer.notice}`);
+  let venue;
+  try {
+    venue = intendedVenue(false, {
+      selected: () => registry.selected(),
+      fastServer: () => registry.fastServer(),
+      routingServer: () => args.server ?? judgedServer.server,
+    });
+  } catch (err) {
+    fail(err.message);
+  }
+
   // The lanes every local model call runs on (electron/crucible/lanes.ts), over the app's own
   // registry and routing record, with this process's own in-flight ledger. Ctrl-C (SIGINT) and
   // SIGTERM cancel this run's Crucible jobs and release its leases, then exit 130/143
   // (CRUCIBLE-MIGRATION-PLAN.md sections 0a, 13.4).
   const { openCliLanes } = require(path.join(DIST, 'crucible/cli-lanes.js'));
-  cli = openCliLanes({ stateDir: USER_DATA, tool: 'generate-metadata-cli', ...(args.server === undefined ? {} : { server: args.server }) });
-
-  // ---- the app's real settings, read the way the app reads them ------------------------
-  const Store = require('electron-store');
-  const store = new Store({});
-  const settings = store.store;
+  cli = openCliLanes({
+    stateDir: USER_DATA,
+    tool: 'generate-metadata-cli',
+    ...(venue.because === 'the selected server' ? {} : { server: venue.server }),
+  });
 
   // Transcription is Crucible's asr job (P5, LEDGER #206), on the venue openCliLanes wired.
-  const routing = require(path.join(DIST, 'services/metadata/metadata-routing.js'));
   const { AnalyticsStoreService } = require(path.join(DIST, 'services/analytics/analytics-store.service.js'));
   const { MetadataGeneratorService } = require(path.join(DIST, 'services/metadata/metadata-generator.service.js'));
   const { TranscriptionService } = require(path.join(DIST, 'services/metadata/transcription.service.js'));
@@ -409,16 +452,9 @@ async function main() {
   // openCliLanes above built the app's own context over userData and installed its lanes and
   // its one door (the transport), with the two things a CLI must not do left out: no background
   // loops and no api-keys.json move (that is the app's, once, plan 6.6). The run goes to the
-  // server the app has selected, or `--server`, which never writes the choice.
-  const registered = cli.context.servers.names();
-  if (registered.length === 0) {
-    fail(`No Crucible server is registered in ${USER_DATA}. Start the app once (it adopts the Crucible on this ` +
-      `computer), or add one in Settings › Crucible Servers.`);
-  }
-  if (args.server !== undefined && !registered.includes(args.server)) {
-    fail(`--server "${args.server}" is not a registered Crucible server. Registered: ${registered.join(', ')}`);
-  }
-  const runServer = args.server ?? cli.context.servers.selected();
+  // server chosen above: `--server`, else the routing's server, else the app's selected one.
+  // Nothing here writes a choice.
+  const runServer = venue.server;
   const transport = cli.context.transport;
 
   // ---- --claude-cli: the fourth deliberate override, printed loudly below --------------
@@ -617,7 +653,7 @@ async function main() {
     console.error('  ** INSIGHTS RECOMPUTED IN MEMORY — see --help; nothing was written back **');
   }
   console.error(`  output dir:  ${outputDir}`);
-  console.error(`  crucible:    ${runServer}${args.server !== undefined ? ' (--server; the app\'s selection is not changed)' : ' (the app\'s selected server)'}`);
+  console.error(`  crucible:    ${runServer} (${args.server !== undefined ? "--server, this run's routing server; the stored routing and the app's selection are not changed" : venue.because})`);
   console.error(`${bar}\n`);
 
   const started = Date.now();

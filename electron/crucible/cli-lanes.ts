@@ -53,9 +53,10 @@ export function openCliLanes(options: {
   tool: string;
   say?: (line: string) => void;
   /**
-   * Send THIS run to another registered server than the one the app has selected
-   * (`--server`), without writing the routing record (P2). Refused by name when it is
-   * not registered.
+   * Send THIS run to another registered server than the one the app has selected, without
+   * writing the registry's choice (P2). Refused by name when it is not registered. The
+   * metadata CLI computes it with venue-decision.ts's rule from `--server` and the stored
+   * routing's server (LEDGER #222), so it is the CLI's spelling of the routing's server.
    */
   server?: string;
 }): CliLanes {
@@ -69,6 +70,9 @@ export function openCliLanes(options: {
     clipboard: () => { throw new Error(`${options.tool} does not write the clipboard.`); },
     ledgerFile,
     ...(options.server === undefined ? {} : { serverOverride: options.server }),
+    // A CLI's calls run outside a queue job, so no admission reads a routing server: the
+    // CLI's choice of server, routing included, is `server` above.
+    routingServer: () => null,
   });
   const clientFor = (server: string) => context.factory.clientFor(server);
 

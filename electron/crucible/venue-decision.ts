@@ -7,11 +7,19 @@
  * another server"):
  *
  *   an item pinned FAST goes to the fast server (LEDGER #195: the pin is the
- *   only way work reaches the PC); every other item goes to the SELECTED
- *   server. Nothing else. There is no rank order, no "first that answers" and
- *   no `newJobsWaitFor: 'any'`: an unpinned item stays on the selected server
- *   even when another one is idle, and a fast item waits for the fast server
- *   even when the selected one is idle.
+ *   only way work reaches the PC); every other item goes to THE ROUTING'S
+ *   SERVER when the model routing names one (LEDGER #222, Owen 2026-09-26: "we
+ *   can pick which crucible server we use (wsl or mac) in model routing"),
+ *   else to the SELECTED server. Nothing else. There is no rank order, no
+ *   "first that answers" and no `newJobsWaitFor: 'any'`: an unpinned item stays
+ *   on its server even when another one is idle, and a fast item waits for the
+ *   fast server even when the other one is idle. The routing's server is a
+ *   choice like Select, not a preference: paused or not answering, it parks the
+ *   item exactly as the selected server does, and nothing moves.
+ *
+ *   An UPSTREAM (cloud) call takes no lane and goes to the server that holds the
+ *   key (plan section 0 #20): inside a job, the routing's server, else the
+ *   selected one ({@link upstreamServerFor}). The fast pin does not move it.
  *
  * "Who is free right now" is NOT asked here. That is the door's question: a
  * `409 server_busy`/`leased` at submit, or a load refused for free VRAM, parks
@@ -32,8 +40,11 @@ import type { ServerReach } from './wire';
 /** Why an item is not running, when the answer is to wait. The renderer shows it grey, not red. */
 export type VenueWait = 'no_server' | 'paused' | 'unreachable';
 
+/** Why an item goes where it goes; the admission line says it ("admitted to "pc" (the routing's server)"). */
+export type VenueBecause = 'the fast pin' | "the routing's server" | 'the selected server';
+
 export type VenueAnswer =
-  | { kind: 'venue'; server: string; because: 'the fast pin' | 'the selected server' }
+  | { kind: 'venue'; server: string; because: VenueBecause }
   | { kind: 'wait'; server: string | null; wait: VenueWait; line: string }
   | { kind: 'fail'; server: string; reason: string };
 
@@ -43,6 +54,11 @@ export interface VenueHost {
   selected(): string;
   /** The fast pin's server. Throws routing's own sentence (`no_fast_server`) when none is pinned. */
   fastServer(): string;
+  /**
+   * The server the model routing names (`metadataRouting.server`), already judged against the
+   * registry (a forgotten one is dropped by the reader with its line), or null when it names none.
+   */
+  routingServer(): string | null;
   isPaused(server: string): boolean;
   /** The probe's answer, at most 15 s old. */
   reach(server: string): Promise<{ reach: ServerReach; message: string | null }>;
@@ -50,15 +66,42 @@ export interface VenueHost {
 
 const MISCONFIGURED: ReadonlySet<ServerReach> = new Set<ServerReach>(['bad_token', 'not_crucible', 'version_mismatch']);
 
-/** The server this item is FOR, without asking it anything: the pin or the selection. Throws routing's sentence. */
-export function intendedServer(fast: boolean, host: Pick<VenueHost, 'selected' | 'fastServer'>): string {
-  return fast ? host.fastServer() : host.selected();
+/**
+ * THE RULE: the server this item is FOR, and why, without asking it anything. The pin, else
+ * the routing's server, else the selection. Throws routing's sentence when the one it lands
+ * on does not exist (nothing pinned, nothing selected).
+ */
+export function intendedVenue(
+  fast: boolean,
+  host: Pick<VenueHost, 'selected' | 'fastServer' | 'routingServer'>,
+): { server: string; because: VenueBecause } {
+  if (fast) return { server: host.fastServer(), because: 'the fast pin' };
+  const routed = host.routingServer();
+  if (routed !== null) return { server: routed, because: "the routing's server" };
+  return { server: host.selected(), because: 'the selected server' };
+}
+
+/** The server this item is FOR: {@link intendedVenue}'s server. Throws routing's sentence. */
+export function intendedServer(fast: boolean, host: Pick<VenueHost, 'selected' | 'fastServer' | 'routingServer'>): string {
+  return intendedVenue(fast, host).server;
+}
+
+/**
+ * Where an upstream (cloud) call goes: the job's routing server when it has one, else the
+ * selected server (plan section 0 #20: the server that holds the key). `routingServer` is the
+ * one the job was admitted with (null outside a job, or when the routing names none), so a
+ * job's cloud calls never change server mid-job. Throws routing's sentence when it lands on
+ * the selection and nothing is selected.
+ */
+export function upstreamServerFor(routingServer: string | null, host: Pick<VenueHost, 'selected'>): string {
+  return routingServer ?? host.selected();
 }
 
 export async function decideVenue(fast: boolean, host: VenueHost): Promise<VenueAnswer> {
   let server: string;
+  let because: VenueBecause;
   try {
-    server = intendedServer(fast, host);
+    ({ server, because } = intendedVenue(fast, host));
   } catch (err) {
     return { kind: 'wait', server: null, wait: 'no_server', line: (err as Error).message };
   }
@@ -69,7 +112,7 @@ export async function decideVenue(fast: boolean, host: VenueHost): Promise<Venue
   // Busy is not a reason to wait HERE: the door decides, and a 409 parks with
   // the holder's own sentence. The probe's busy line is display only.
   if (answer.reach === 'ready' || answer.reach === 'busy') {
-    return { kind: 'venue', server, because: fast ? 'the fast pin' : 'the selected server' };
+    return { kind: 'venue', server, because };
   }
   const said = answer.message ? `${server}: ${answer.message}` : `${server} (${answer.reach.replace(/_/g, ' ')})`;
   if (MISCONFIGURED.has(answer.reach)) {

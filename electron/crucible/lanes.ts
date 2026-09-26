@@ -28,8 +28,10 @@
  *               running job call by call exactly as they did with the old pool.
  *               The chapter stage holds it for its whole run, as it held the pool.
  *
- * WHERE A JOB GOES is venue-decision.ts's rule: the fast pin's server or the
- * selected one, never another (LEDGER #205). WHAT A BUSY ANSWER DOES is
+ * WHERE A JOB GOES is venue-decision.ts's rule: the fast pin's server, else the
+ * model routing's server (#222), else the selected one, never another (LEDGER
+ * #205). This layer passes the routing's server in; it decides nothing about
+ * it. A standalone call (no job) stays on the selected server. WHAT A BUSY ANSWER DOES is
  * parking.ts's. The preflight (`activity()` every 15 s per running server) is
  * display and preflight, NEVER permission: a job is always submitted, and the
  * door's 409 is what parks it. The preflight only says when a PARKED job may be
@@ -110,6 +112,12 @@ export interface CrucibleStepHooks {
   readonly lane: 'gpu' | 'cloud';
   /** The server a GPU step must run on (the job's venue, or the selected server for a standalone call); null for cloud. */
   readonly server: string | null;
+  /**
+   * The routing's server the job was admitted with (LEDGER #222), or null outside a job or when
+   * the routing names none. An upstream (cloud) step hands it to venue-decision.ts's
+   * `upstreamServerFor`, so a job's cloud calls go to the server it chose, never another mid-job.
+   */
+  readonly routingServer: string | null;
   /** The ContentStudio job id, or '' for a standalone call. */
   readonly jobId: string;
   /** Aborted by Stop, a park, a stall or quit. Hand it to every fetch. */
@@ -149,6 +157,8 @@ export interface LaneRun {
   readonly jobId: string;
   readonly server: string;
   readonly fast: boolean;
+  /** The routing's server read at admission (null: the routing names none). Cloud steps go there. */
+  readonly routingServer: string | null;
   /** Where the job is, for `resumeFrom` when it parks. */
   stage: ResumeStage;
   /** Aborted by Stop, a park, a stall or quit. The pipeline hands it to the generator. */
@@ -251,6 +261,13 @@ export interface LanesDeps {
     fastServer(): string;
     onChange(listener: (change: { server: string | null }) => void): () => void;
   };
+  /**
+   * The server the model routing names (`metadataRouting.server`, LEDGER #222), judged against
+   * the registry, or null when it names none. Read live at every plan and admission, like the
+   * selection, so a routing saved between runs takes effect on the next job. A job is admitted
+   * to it (unless pinned fast) through venue-decision.ts; nothing else here reads it.
+   */
+  routingServer(): string | null;
   /** A client on the engine behind a registered server. */
   clientFor(server: string, options?: { timeoutMs?: number }): Promise<CrucibleClient>;
   /** The probe's answer, at most 15 s old (probe.ts `reach`). */
@@ -444,7 +461,10 @@ export class CrucibleLanes {
   ): Promise<RunJobOutcome<T>> {
     await this.gate;
     if (this.quitting) throw new Error(`ContentStudio is quitting; ${options.jobId} was not started.`);
-    const venue = await decideVenue(options.fast, this.venueHost());
+    // Read ONCE for this admission: the venue and the job's cloud calls see the same answer. A
+    // stored value that is not a server name at all throws here and fails the job by name.
+    const routingServer = this.deps.routingServer();
+    const venue = await decideVenue(options.fast, { ...this.venueHost(), routingServer: () => routingServer });
     if (venue.kind === 'fail') throw new CrucibleVenueRefused(venue.server, venue.reason);
     if (venue.kind === 'wait') {
       this.parks.set(options.jobId, {
@@ -464,6 +484,7 @@ export class CrucibleLanes {
       jobId: options.jobId,
       server,
       fast: options.fast,
+      routingServer,
       stage: options.stage,
       controller,
       park: null,
@@ -611,6 +632,7 @@ export class CrucibleLanes {
     return {
       lane,
       server,
+      routingServer: run?.routingServer ?? null,
       jobId,
       signal: run?.controller.signal ?? null,
       submitted: (row) => { ledger.record({ server: row.server, kind: 'job', id: row.id, jobType: row.jobType, model: row.model, jobId }); },
@@ -703,6 +725,7 @@ export class CrucibleLanes {
     return {
       selected: () => servers.selected(),
       fastServer: () => servers.fastServer(),
+      routingServer: () => this.deps.routingServer(),
       isPaused: (server) => servers.routingView().servers.some((row) => row.name === server && row.paused),
       reach: (server) => this.deps.reach(server),
     };

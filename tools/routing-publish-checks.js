@@ -168,6 +168,73 @@ check('an empty / absent store is not a migration', () => {
   eq(routing.migrateStoredRouting({}).changed, false);
 });
 
+// ------------------------------------------------ the routing's server (LEDGER #222)
+/**
+ * "we can pick which crucible server we use (wsl or mac) in model routing" (Owen, 2026-09-26).
+ * The routing stores `server`, a registered server's name. A save naming one the registry
+ * does not have is refused BY NAME (Law 1: never quietly replaced by the selected server);
+ * a stored one the registry has since forgotten drops back to unset with one line, the way a
+ * removed option does; unset changes nothing for a store that predates the key.
+ */
+check('a saved routing server must be registered, and the refusal names it and the registry', () => {
+  const ok = routing.validateRoutingSelections({ titles: 'opus5', server: 'pc' }, ['mac', 'pc']);
+  eq(ok, { titles: 'opus5', server: 'pc' });
+  eq(routing.validateRoutingSelections({ titles: 'opus5' }, ['mac']), { titles: 'opus5' }, 'unset stays unset');
+  let message = null;
+  try { routing.validateRoutingSelections({ titles: 'opus5', server: 'wsl' }, ['mac', 'pc']); } catch (e) { message = e.message; }
+  if (message === null) throw new Error('an unregistered server must be refused, not saved');
+  if (!message.includes('"wsl"') || !message.includes('mac, pc')) throw new Error('the refusal must name the server and the registry: ' + message);
+  let typed = false;
+  try { routing.validateRoutingSelections({ server: 42 }, ['mac']); } catch { typed = true; }
+  if (!typed) throw new Error('a server that is not a name must be refused');
+});
+
+check('resolveMetadataRouting reads models only: a stored server is not refused as an unknown task', () => {
+  const resolved = routing.resolveMetadataRouting({ titles: 'sonnet5', server: 'pc' });
+  eq(resolved.titles, 'sonnet5');
+  eq('server' in resolved, false, 'the resolved routing is fields only');
+  eq(routing.describeRouting(resolved, 'pc').endsWith(', server=pc'), true, 'the log line names the server');
+});
+
+check('a stored routing server the registry forgot drops back to unset with one line; a registered one is kept', () => {
+  const kept = routing.migrateStoredRouting({ titles: 'opus5', server: 'pc' }, ['mac', 'pc']);
+  eq(kept.changed, false);
+  eq(kept.selections, { server: 'pc', titles: 'opus5' });
+  const forgotten = routing.migrateStoredRouting({ titles: 'opus5', server: 'pc' }, ['mac']);
+  eq(forgotten.changed, true, 'a drop is a recorded migration, written back by the caller');
+  eq(forgotten.selections, { titles: 'opus5' }, 'the server goes; the fields stay');
+  eq(forgotten.notices.length, 1);
+  if (!forgotten.notices[0].includes('"pc"') || !forgotten.notices[0].includes('no longer registered')) {
+    throw new Error('the notice must name the forgotten server: ' + forgotten.notices[0]);
+  }
+  // A model-only reader passes no registry: the entry is carried, type-checked, not judged.
+  eq(routing.migrateStoredRouting({ server: 'pc' }).selections, { server: 'pc' });
+  let typed = false;
+  try { routing.migrateStoredRouting({ server: '' }, ['mac']); } catch { typed = true; }
+  if (!typed) throw new Error('a stored server that is not a name must throw, not migrate');
+});
+
+check('the venue reader drops a forgotten server from the store once, leaving every field as it was', () => {
+  const data = { metadataRouting: { titles: 'opus5', tags: 'qwen35-9b', server: 'pc' } };
+  const writes = [];
+  const fakeStore = { get: (key) => data[key], set: (key, value) => { writes.push(key); data[key] = value; } };
+  eq(routing.readStoredRoutingServer(fakeStore, ['mac', 'pc']), 'pc');
+  eq(writes.length, 0, 'a registered server is read, never rewritten');
+  eq(routing.readStoredRoutingServer(fakeStore, ['mac']), null, 'forgotten: the selected server runs the job');
+  eq(data.metadataRouting, { titles: 'opus5', tags: 'qwen35-9b' });
+  eq(writes.length, 1);
+  eq(routing.readStoredRoutingServer(fakeStore, ['mac']), null);
+  eq(writes.length, 1, 'said once: the drop was written back');
+  eq(routing.readStoredRoutingServer({ get: () => undefined, set: () => { throw new Error('no write'); } }, ['mac']), null, 'no routing: unset');
+});
+
+check('the routing view carries the Runs on choice beside the fields', () => {
+  const view = routing.buildRoutingView({ server: 'pc' }, { server: 'pc', reachable: true, models: {}, anthropicConfigured: false },
+    { routingServer: 'pc', selectedServer: 'mac' });
+  eq(view.runsOn, { routingServer: 'pc', selectedServer: 'mac' });
+  eq(view.server.name, 'pc', 'options are judged against the server the jobs run on');
+});
+
 /**
  * THE WHOLE POINT OF THIS ONE: every default is local, and the big fields are all the SAME
  * local model, which is what keeps titles + thumbnail + pinned on one resident model whose
@@ -176,9 +243,9 @@ check('an empty / absent store is not a migration', () => {
  */
 check('the shipped defaults are all local, and the big fields share one model', () => {
   const resolved = routing.resolveMetadataRouting(undefined);
-  eq(routing.describeRouting(resolved),
+  eq(routing.describeRouting(resolved, null),
     'titles=qwen3.8-27b-4bit, description=qwen3.8-27b-4bit, chapters=qwen3.8-27b-4bit, tags=qwen3.5-9b, ' +
-    'thumbnail_text=qwen3.8-27b-4bit, pinned_comment=qwen3.8-27b-4bit');
+    'thumbnail_text=qwen3.8-27b-4bit, pinned_comment=qwen3.8-27b-4bit, server=(the selected server)');
   for (const task of Object.keys(resolved)) {
     const option = routing.METADATA_ROUTING_OPTIONS[resolved[task]];
     if (option.kind !== 'local') throw new Error(task + ' defaults to a ' + option.kind + ' model');
@@ -230,7 +297,7 @@ check('chapter resolution reads the chapters entry, and the view carries the mod
   eq(routing.resolveChapterModelOption(stock).model, 'qwen3.8-27b-4bit');
 
   const inventory = { server: 'mac', reachable: false, error: 'not answering', models: {}, anthropicConfigured: null };
-  const view = routing.buildRoutingView({ titles: 'opus5' }, inventory);
+  const view = routing.buildRoutingView({ titles: 'opus5' }, inventory, { routingServer: null, selectedServer: 'mac' });
   eq(view.slots, undefined, 'the slot payload is gone');
   eq(view.tasks.find((t) => t.id === 'titles').selectedOptionId, 'opus5',
     'a hand-set entry survives in the payload the modal saves back whole');
@@ -917,7 +984,7 @@ check('a chapterless item has no phrase pool: no transcript n-grams stand in for
 
 check('nomic-embed-text is gone from the routing module and the routing view', () => {
   if ('KEY_PHRASE_EMBEDDING_MODEL' in routing) throw new Error('KEY_PHRASE_EMBEDDING_MODEL is still exported');
-  const view = routing.buildRoutingView(undefined, { server: 'mac', reachable: true, models: {}, anthropicConfigured: false });
+  const view = routing.buildRoutingView(undefined, { server: 'mac', reachable: true, models: {}, anthropicConfigured: false }, { routingServer: null, selectedServer: 'mac' });
   eq(Object.keys(view.chapters).sort(), ['generationAvailability', 'generationModel', 'scorerAvailability', 'scorerModel'], 'the chapters view:');
   eq(view.chapters.scorerModel, 'qwen3.5-9b', 'the fixed snap scorer, reported beside the chapters row (P8b):');
 });

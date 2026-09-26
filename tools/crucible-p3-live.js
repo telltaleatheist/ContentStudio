@@ -61,7 +61,7 @@ function args() {
 
 function open(state, serverName) {
   fs.mkdirSync(state, { recursive: true });
-  const ctx = createCrucibleContext({ stateDir: state, clipboard: () => {}, legacyClaudeKey: () => undefined });
+  const ctx = createCrucibleContext({ stateDir: state, clipboard: () => {}, legacyClaudeKey: () => undefined, routingServer: () => null });
   if (!ctx.servers.names().includes(serverName)) {
     const found = readCruciblePairingFile(processPairingFileHost());
     if (found === null) throw new Error('no Crucible pairing file on this computer');
