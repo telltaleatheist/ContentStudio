@@ -19,6 +19,8 @@ import { installCrucibleTransport } from './crucible/transport';
 import { installLanes } from './crucible/lanes';
 import { setAsrVenueResolver } from './services/transcription/crucible-transcription';
 import { resolveUserDataPath } from './user-data-path';
+import { retireOnce } from './retired-components';
+import { getSharedDir } from './services/editor/shared-paths';
 
 /**
  * ContentStudio - Main Electron Process
@@ -345,6 +347,21 @@ app.whenReady().then(async () => {
     // info() answers as itself) and begin deriving readiness. Fire-and-forget by design.
     crucible.start();
 
+    // P10's one-time retired-component cleanup (electron/retired-components.ts): the app's own
+    // whisper.cpp binaries and models and the editor's voice-separator-env, in the background
+    // 15 s after boot, never awaited. It logs its whole plan (paths and sizes) before it removes
+    // anything; `keepRetiredComponents: true` in the store keeps them (the plan is still logged).
+    const retirementTimer = setTimeout(() => {
+      let sharedDir: string | null = null;
+      try {
+        sharedDir = getSharedDir();
+      } catch (err) {
+        log.warn(`[retire] the OwenMorgan shared dir is unavailable (${err instanceof Error ? err.message : String(err)}); only userData is checked`);
+      }
+      void retireOnce({ userData: app.getPath('userData'), sharedDir }, store as any, log);
+    }, RETIREMENT_DELAY_MS);
+    retirementTimer.unref?.();
+
     // macOS-specific behavior
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
@@ -357,6 +374,9 @@ app.whenReady().then(async () => {
     app.quit();
   }
 });
+
+/** How long after boot the one-time retirement of P10's components starts (Briefcase's 15 s). */
+const RETIREMENT_DELAY_MS = 15_000;
 
 // Quit when all windows are closed, except on macOS
 app.on('window-all-closed', () => {
