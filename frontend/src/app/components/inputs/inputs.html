@@ -422,11 +422,15 @@
           <mat-card class="job-card" [class.selected]="job.status === 'processing'">
             <mat-card-content>
               <div class="input-row" (click)="toggleJobExpansion(job.id)">
-                <!-- Status Icon -->
-                <mat-icon [style.color]="job.status === 'processing' ? '#ff6b35' : job.status === 'held' ? '#ffb300' : job.status === 'completed' ? '#4caf50' : job.status === 'failed' ? '#f44336' : '#999'"
-                  [matTooltip]="job.status === 'failed' && job.error ? job.error : ''">
-                  {{ getJobStatusIcon(job.status) }}
-                </mat-icon>
+                <!-- Status: a running job spins, from Start until it ends (LEDGER #225). -->
+                @if (job.status === 'processing') {
+                  <mat-spinner class="job-running-spinner" diameter="20" mode="indeterminate" matTooltip="Running"></mat-spinner>
+                } @else {
+                  <mat-icon [style.color]="job.status === 'held' ? '#ffb300' : job.status === 'completed' ? '#4caf50' : job.status === 'failed' ? '#f44336' : '#999'"
+                    [matTooltip]="job.status === 'failed' && job.error ? job.error : ''">
+                    {{ getJobStatusIcon(job.status) }}
+                  </mat-icon>
+                }
 
                 <!-- Job Info -->
                 <div class="input-info">
@@ -442,9 +446,20 @@
                         · {{ job.processingTime?.toFixed(1) }}s
                       }
                     </div>
-                    <!-- Waiting on its server, not failed: grey, with the holder's own sentence. -->
+                    <!-- Running: what it is doing now, in plain words, and how long it has been going.
+                         The clock ticks every second whether or not main has said anything new. -->
+                    @if (job.status === 'processing') {
+                      <div class="job-activity-line">
+                        <span class="job-activity-text">{{ job.activity }}</span>
+                        <span class="job-activity-clock">{{ elapsedFor(job) }}</span>
+                      </div>
+                    }
+                    <!-- Waiting on its server, not failed: grey, with what it waits for and why. -->
                     @if (job.status === 'parked') {
-                      <div class="job-parked-line">parked — {{ job.parkedLine }}</div>
+                      <div class="job-parked-line">{{ parkedTextFor(job) }}</div>
+                    }
+                    @if (job.status === 'pending' && job.waitingLine) {
+                      <div class="job-parked-line">{{ job.waitingLine }}</div>
                     }
                   </div>
                 </div>
@@ -493,10 +508,11 @@
                   </button>
                 }
 
-                <!-- Cancel Button (for processing jobs) -->
+                <!-- Stop (for running jobs): a running row always has it, so it never looks idle. -->
                 @if (job.status === 'processing') {
-                  <button mat-icon-button (click)="cancelJob(job.id); $event.stopPropagation()" matTooltip="Cancel Job" color="warn">
-                    <mat-icon>cancel</mat-icon>
+                  <button mat-stroked-button class="job-stop-button" color="warn" (click)="cancelJob(job.id); $event.stopPropagation()" matTooltip="Stop this job">
+                    <mat-icon>stop</mat-icon>
+                    Stop
                   </button>
                 }
 
@@ -573,7 +589,15 @@
 
         <!-- Start Queue Button as part of the list. Two stages: transcribe pending
              jobs first; once only held jobs remain, a press sends them to the AI. -->
-        @if (!jobQueue.isProcessing()) {
+        @if (jobQueue.queueStarted() || jobQueue.hasProcessingJob()) {
+          <!-- The queue is running: say so where the Start button was, so its absence explains itself.
+               Shown whenever the run is on or any job runs, so Start is never offered beside a
+               running job (only a queue run starts one, and a reloaded window resumes it). -->
+          <div class="queue-running-note">
+            <mat-spinner diameter="16" mode="indeterminate"></mat-spinner>
+            <span>{{ queueRunningText() }}</span>
+          </div>
+        } @else {
           <button
             mat-raised-button
             color="primary"

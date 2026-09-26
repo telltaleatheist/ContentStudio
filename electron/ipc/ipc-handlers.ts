@@ -587,7 +587,7 @@ function ensurePromptSetsDirectory(): void {
 }
 
 // Track running jobs and their cancellation callbacks
-const runningJobs = new Map<string, { cancel: () => void }>();
+const runningJobs = new Map<string, { cancel: () => void; startedAt: number }>();
 
 /**
  * Send an IPC message to the MAIN window's renderer, re-fetching it on every call.
@@ -1421,8 +1421,18 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
     }
   });
 
+  // The metadata jobs running now. A reloaded window restores its queue with running rows set
+  // back to pending while the jobs go on here; it asks this to show them running again.
+  ipcMain.handle('metadata:running-jobs', async () =>
+    [...runningJobs.entries()].map(([jobId, job]) => ({ jobId, startedAt: job.startedAt })));
+
   // Generate metadata
   ipcMain.handle('generate-metadata', async (_event, params) => {
+    // A second start of a job that is running here is refused by name: a reloaded window that
+    // lost track of its running row must never run the same video twice (LEDGER #225).
+    if (params && typeof params.jobId === 'string' && runningJobs.has(params.jobId)) {
+      throw new Error(`Job ${params.jobId} is already running; it was not started a second time.`);
+    }
     // A job id is required. It is what the report file is named after, what the publish
     // selections are keyed by, what cancellation is registered under, and what the renderer's
     // queue row matches on — so a job without one is unnameable, uncancellable and
@@ -1606,6 +1616,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
       const abortController = new AbortController();
       let pipelineJob: PipelineJob | null = null;
       runningJobs.set(params.jobId, {
+        startedAt: Date.now(),
         cancel: () => {
           if (pipelineJob !== null) pipelineJob.cancelled = true;
           // Aborts whatever provider call is in flight right now (the generator needed an
@@ -1684,6 +1695,7 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
 
     const abortController = new AbortController();
     runningJobs.set(jobId, {
+      startedAt: Date.now(),
       cancel: () => {
         void analytics.crucible.lanes.stopJob(jobId, 'Stopped by the user');
         abortController.abort();

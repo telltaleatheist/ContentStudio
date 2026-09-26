@@ -1424,6 +1424,87 @@ check('a source with no sets THROWS rather than answering', () => {
   if (!threw) throw new Error('decidePrimary answered for a source with no items');
 });
 
+// ---------------------------------------------------------------- the running queue row (LEDGER #225)
+//
+// What a running row SAYS, read off main's real progress events: the stage line, each item's
+// status, the clock, the parked line, and the ready sentence. The events below are copied from
+// Owen's log of 2026-09-26, when a job worked for minutes and the row showed none of it.
+// job-activity.ts lives in the RENDERER, so it is transpiled from its own source, like the
+// release-cadence rules above.
+const jobActivity = (() => {
+  const fs = require('fs');
+  const ts = require('typescript');
+  const src = path.join(__dirname, '..', 'frontend/src/app/services/job-activity.ts');
+  const out = ts.transpileModule(fs.readFileSync(src, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+    fileName: src,
+  });
+  const mod = { exports: {} };
+  new Function('exports', 'module', 'require', out.outputText)(mod.exports, mod, require);
+  return mod.exports;
+})();
+const readinessModule = require(path.join(ROOT, 'crucible/readiness.js'));
+
+check('the row says each stage of Owen\'s 2026-09-26 run in plain words', () => {
+  const line = (phase, message, extra = {}) => jobActivity.stageLine({ jobId: 'j', phase, message, ...extra });
+  eq(line('starting', 'Initializing metadata generation...'), 'Starting');
+  eq(line('preparing', 'Preparing u7 - pokemon chapter 11.mov'), 'Getting the video ready');
+  eq(line('preparing', 'Reading saved transcript for u7 - pokemon chapter 11.mov'), 'Reading the saved transcript');
+  eq(line('transcription', 'Reused saved transcript for u7 - pokemon chapter 11.mov', { percent: 100 }), 'Using the saved transcript');
+  eq(line('transcription', 'Extracting audio...', { percent: 2 }), 'Taking the audio out of the video');
+  eq(line('transcription', 'Uploading the audio to Crucible on crucible@owens-mac-studio... 0.0 MB of 86.5 MB'), 'Sending the audio to crucible@owens-mac-studio: 0.0 MB of 86.5 MB');
+  eq(line('transcription', 'Queued on Crucible on crucible@owens-mac-studio (position 1)...'), 'In line for transcription on crucible@owens-mac-studio (number 1)');
+  eq(line('transcription', 'Crucible on crucible@owens-mac-studio: loading qwen3-asr-1.7b on qwen-asr at bfloat16; log /x.log'), 'Loading the transcription model on crucible@owens-mac-studio');
+  eq(line('transcription', 'Crucible on crucible@owens-mac-studio: qwen3-asr-1.7b ready on mps:0 at bfloat16 in 9s; context 184 token(s)'), 'Transcription model ready on crucible@owens-mac-studio');
+  eq(line('transcription', 'Crucible on crucible@owens-mac-studio: 41.0 GiB of 64.0 GiB unified memory available (free + inactive + speculative + purgeable)'), 'Getting transcription ready on crucible@owens-mac-studio');
+  eq(line('transcription', 'Transcribing on crucible@owens-mac-studio... 40:33 of 45:46', { percent: 63 }), 'Transcribing: 40:33 of 45:46');
+  eq(line('transcription', 'Timing the words on crucible@owens-mac-studio... 2:59 of 45:46'), 'Timing the words: 2:59 of 45:46');
+  eq(line('transcription', 'Transcription complete', { percent: 100 }), 'Transcription done');
+  eq(line('lessons', 'Preparing channel lessons...'), 'Preparing channel lessons');
+  eq(line('generating', 'Finding chapters 1/1...', { percent: 0 }), 'Finding chapters');
+  eq(line('generating', 'Chapters (outline 0/469) 1/1...', { percent: 0 }), 'Finding chapters · outlining the topics');
+  eq(line('generating', 'Chapters (assign 128/469) 1/1...', { percent: 7 }), 'Finding chapters · sorting sentences 128 of 469');
+  eq(line('generating', 'Chapters (outline) 1/1 — no progress for 60s, model call still in flight', { percent: 0 }), 'Finding chapters · outlining the topics · still on one step after 1:00');
+  eq(line('generating', 'Chapters (summarize 3/27) 2/3...', { percent: 40 }), 'Finding chapters (video 2 of 3) · naming the chapters 3 of 27');
+  eq(line('generating', 'Analyzing content 1/1...', { percent: 60 }), 'Reading the content');
+  eq(line('generating', 'Generating metadata 1/1...', { percent: 80 }), 'Writing titles, description and tags');
+  eq(line('generating', 'Completed 1/1', { percent: 100 }), 'Finishing up');
+  eq(line('generating', 'Analyzing combined content...', { percent: 0 }), 'Analyzing combined content', 'a sentence with no words here is main\'s own, dots trimmed:');
+  eq([line('complete', 'Metadata generation complete!'), line('error', 'x'), line('parked', 'busy')], [null, null, null], 'the ends and a park say nothing on the line:');
+});
+
+check('a reused saved transcript moves the item straight to generating; a fresh one walks transcribing → transcribed → generating', () => {
+  const after = (current, phase, message, percent) => jobActivity.itemAfter({ jobId: 'j', phase, message, percent, itemIndex: 0 }, current);
+  const pending = { status: 'pending', progress: 0 };
+  // Session 2 of Owen's log: the saved transcript was read at 18:45:27 and chapters began 22 s later.
+  const reading = after(pending, 'preparing', 'Reading saved transcript for u7.mov', 0);
+  eq(reading, { status: 'generating', progress: 50 }, 'reading the saved transcript:');
+  eq(after(reading, 'transcription', 'Reused saved transcript for u7.mov', 100), { status: 'generating', progress: 50 }, 'the reuse event:');
+  eq(after({ status: 'generating', progress: 50 }, 'transcription', 'Transcription complete', 100), null, 'never steps back to Transcribed:');
+  // Session 1: a real transcription.
+  eq(after(pending, 'preparing', 'Preparing u7.mov', 0), { status: 'transcribing', progress: 0 });
+  eq(after(pending, 'transcription', 'Transcribing on m... 40:33 of 45:46', 63), { status: 'transcribing', progress: 31 });
+  eq(after(pending, 'transcription', 'Transcription complete', 100), { status: 'transcribed', progress: 50 });
+  eq(after(pending, 'generating', 'Chapters (assign 128/469) 1/1...', 7), { status: 'generating', progress: 53 });
+  eq(after(pending, 'generating', 'Completed 1/1', 100), { status: 'completed', progress: 100 });
+  eq([after(pending, 'lessons', 'Preparing channel lessons...'), after(pending, 'starting', 'x')], [null, null], 'job-wide events leave the items alone:');
+});
+
+check('the running row\'s clock, and what a parked row and a lane chip say', () => {
+  eq([0, 999, 1000, 65000, 3599000, 3723000, -5, NaN].map(jobActivity.elapsedClock), ['0:00', '0:00', '0:01', '1:05', '59:59', '1:02:03', '0:00', '0:00']);
+  eq(jobActivity.parkedText('crucible@owens-pc', 'busy: the card is held by bookforge'), 'Waiting for crucible@owens-pc — busy: the card is held by bookforge');
+  eq(jobActivity.parkedText(null, 'No Crucible server is selected.'), 'Waiting — No Crucible server is selected.');
+  eq(jobActivity.laneBusyText('busy: contentstudio, asr 100% done'), 'Busy with other ContentStudio work (transcription 100% done)');
+  eq(jobActivity.laneBusyText('busy: bookforge, tts 62% done'), 'busy: bookforge, tts 62% done');
+});
+
+check('a card busy with ContentStudio\'s own work is not "AI work waits its turn"; another app\'s is', () => {
+  const r = readinessModule.readyReason;
+  eq(r('crucible@owens-mac-studio', null), 'Crucible on crucible@owens-mac-studio is ready.');
+  eq(r('crucible@owens-mac-studio', 'busy: contentstudio, asr 76% done'), 'Crucible on crucible@owens-mac-studio is ready (busy with ContentStudio\'s own work: transcription 76% done).');
+  eq(r('crucible@owens-pc', 'busy: bookforge, tts 62% done'), 'Crucible on crucible@owens-pc is ready (busy: bookforge, tts 62% done; AI work waits its turn).');
+});
+
 // ---------------------------------------------------------------- snap chaptering, wired (P8b)
 //
 // Stories, the in-queue split and the pipeline's chapter engine are the snap chaptering service
