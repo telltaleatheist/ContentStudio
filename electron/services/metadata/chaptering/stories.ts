@@ -11,7 +11,8 @@
  *
  *   1  STRETCHES    the sentence units cut into ~45 s stretches, each ending at a sentence end.
  *   2  JUNCTIONS    one yes/no per junction QUOTING the stretch before and the stretch after:
- *                   "the stretch after it is on a new subject". P(yes) is read, never thresholded.
+ *                   "the stretch after it starts a completely different story". P(yes) is read and
+ *                   ranked, never thresholded.
  *   3  SELECT       code only: the reference's duration-derived count (its cadence table), taken
  *                   in rank order of P(yes) with a minimum gap of 0.6 × the cadence, ties
  *                   farthest-first. It deliberately OVER-segments: an over-split is one click for
