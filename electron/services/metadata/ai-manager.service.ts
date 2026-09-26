@@ -1424,7 +1424,13 @@ export class AIManagerService {
       }
     }
 
-    // Ensure hashtags are space-separated (not comma-separated)
+    AIManagerService.spaceHashtags(metadata);
+
+    return metadata;
+  }
+
+  /** Hashtags are space-separated (not comma-separated), single spaces, trimmed. */
+  private static spaceHashtags(metadata: MetadataResult): void {
     if (metadata.hashtags) {
       // Remove commas and extra spaces, ensure single spaces between hashtags
       metadata.hashtags = metadata.hashtags
@@ -1432,8 +1438,23 @@ export class AIManagerService {
         .replace(/\s+/g, ' ')   // Normalize multiple spaces to single space
         .trim();
     }
+  }
 
-    return metadata;
+  /**
+   * The post-processing finalizeMetadata gives the TAG fields, and only those: the prompt set's
+   * channel tags appended, the hashtags spaced. For the reports page's chapter re-roll, which
+   * rebuilds tags and hashtags from the re-written chapter list and must finish them exactly as
+   * the run finished the ones they replace — without touching the description, which already
+   * carries its link block (LEDGER #223).
+   */
+  finalizeTagFields(fields: { tags?: string; hashtags?: string }): { tags?: string; hashtags?: string } {
+    const metadata = { ...fields } as MetadataResult;
+    this.appendChannelTags(metadata);
+    AIManagerService.spaceHashtags(metadata);
+    return {
+      ...(fields.tags === undefined ? {} : { tags: metadata.tags }),
+      ...(fields.hashtags === undefined ? {} : { hashtags: metadata.hashtags }),
+    };
   }
 
   /**

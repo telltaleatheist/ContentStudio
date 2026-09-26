@@ -8,7 +8,18 @@ import * as path from 'path';
 import { MetadataResult } from './ai-manager.service';
 import { Chapter } from './chapter-generator.service';
 import { METADATA_FIELDS } from './metadata-fields';
-import type { ScrubRecord } from './scrub';
+import type { ScrubFailure, ScrubRecord } from './scrub';
+import {
+  putBackPrevious,
+  recordReplacement,
+  sameSnapshot,
+  snapshotOf,
+  historyOf,
+  REROLL_FIELD_NAMES,
+  type RerollField,
+  type RerollHistoryEntry,
+  type RerollSnapshot,
+} from './section-reroll';
 import {
   ItemIdentity,
   ItemProvenance,
@@ -76,6 +87,12 @@ export interface ScrubWrite {
   record: ScrubRecord;
   /** The calls this pass made, appended to the item's `_prompt_trace`. */
   trace: Array<{ what: string; model: string; chars: number; at: string; prompt: string }>;
+  /**
+   * The item keys this pass was ASKED to correct, when it was not all of them (the page's "clean
+   * up again" beside one section). The earlier receipt's failures for the OTHER keys are carried
+   * onto the new one, so re-running one section never hides another section's warning.
+   */
+  only?: string[];
 }
 
 /** What the write actually did, for the caller's log and the page's one-line result. */
@@ -86,6 +103,53 @@ export interface ScrubWriteReceipt {
   unchanged: string[];
   /** How many earlier scrubs `scrubbed_earlier` holds now. */
   earlierScrubs: number;
+  /** Fields the cleanup has NOT corrected, as the item now records them (LEDGER #223). */
+  failed: ScrubFailure[];
+}
+
+/** One section re-roll, ready to write (section-reroll.ts, LEDGER #223). */
+export interface RerollWrite {
+  field: RerollField;
+  /** The section as the re-roll READ it. The write refuses if the record no longer holds it. */
+  expected: RerollSnapshot;
+  /** What goes in its place: the re-rolled text, scrubbed, and for chapters the rebuilt tags. */
+  next: RerollSnapshot;
+  model: string;
+  at: string;
+  /** Everything the re-roll did differently from the plan, in plain words. */
+  notes: string[];
+  /** The cleanup's receipt over the new text, when it ran; merged like a partial scrub. */
+  scrub?: { record: ScrubRecord; only: string[] };
+  /** Every call the re-roll and its cleanup made, appended to `_prompt_trace`. */
+  trace: Array<{ what: string; model: string; chars: number; at: string; prompt: string }>;
+}
+
+export interface RerollWriteReceipt {
+  entry: RerollHistoryEntry;
+  /** How many earlier versions of this section the item keeps now. */
+  kept: number;
+  /** The cleanup failures the item records now. */
+  scrubFailed: ScrubFailure[];
+}
+
+/**
+ * The new cleanup receipt onto the item: the one it replaces goes onto `scrubbed_earlier`, and
+ * when the pass covered only some keys, the earlier receipt's failures for the others are
+ * carried forward (LEDGER #223). Shared by the scrub button and the section re-roll.
+ */
+function mergeScrubReceipt(item: any, record: ScrubRecord, only: string[] | undefined): ScrubFailure[] {
+  const previous = item.scrubbed;
+  let failed: ScrubFailure[] = Array.isArray(record.failed) ? record.failed.slice() : [];
+  if (only !== undefined && previous && Array.isArray(previous.failed)) {
+    const carried = (previous.failed as ScrubFailure[]).filter((f) => !only.includes(f.item_key));
+    failed = [...carried, ...failed];
+  }
+  if (previous) {
+    const earlier = Array.isArray(item.scrubbed_earlier) ? item.scrubbed_earlier : [];
+    item.scrubbed_earlier = [...earlier, previous];
+  }
+  item.scrubbed = { ...record, failed };
+  return failed;
 }
 
 export interface DeleteItemHooks {
@@ -450,12 +514,7 @@ export class OutputHandlerService {
       }));
     }
 
-    const previous = item.scrubbed;
-    if (previous) {
-      const earlier = Array.isArray(item.scrubbed_earlier) ? item.scrubbed_earlier : [];
-      item.scrubbed_earlier = [...earlier, previous];
-    }
-    item.scrubbed = write.record;
+    const failed = mergeScrubReceipt(item, write.record, write.only);
 
     const existingTrace = item._prompt_trace;
     item._prompt_trace = Array.isArray(existingTrace)
@@ -477,7 +536,98 @@ export class OutputHandlerService {
         `${earlierScrubs ? `; ${earlierScrubs} earlier scrub(s) kept` : ''}`
     );
 
-    return { changed, unchanged, earlierScrubs };
+    return { changed, unchanged, earlierScrubs, failed };
+  }
+
+  /**
+   * Write one section re-roll onto the item it was read off (LEDGER #223).
+   *
+   * IN PLACE, like the scrub button, and for the same reason: the re-rolled text is what the
+   * model wrote for this item, so it goes on the record, and the version it replaces goes onto
+   * `reroll_history` so nothing is lost. The publish record (the operator's overrides) and the
+   * .txt are not touched.
+   *
+   * On the write queue, and REFUSED when the section on disk is no longer the one the re-roll
+   * read — a put-back or a scrub landing while the calls were out would otherwise be written
+   * away. Every refusal happens before the first assignment.
+   */
+  applyRerollToItem(jobId: string, itemId: string, write: RerollWrite): Promise<RerollWriteReceipt> {
+    const run = this.writeQueue.then(() => this.runApplyRerollToItem(jobId, itemId, write));
+    this.writeQueue = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  /** "Put back": the newest kept version of one section swapped onto it (section-reroll.ts). */
+  putBackRerollVersion(jobId: string, itemId: string, field: RerollField): Promise<RerollWriteReceipt> {
+    const run = this.writeQueue.then(() => this.runPutBackRerollVersion(jobId, itemId, field));
+    this.writeQueue = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private findItemForWrite(jobId: string, itemId: string, what: string): { job: any; item: any } {
+    if (typeof jobId !== 'string' || !jobId.trim()) {
+      throw new Error(`${what} requires a non-empty jobId`);
+    }
+    if (!isItemId(itemId)) {
+      throw new Error(`${what} requires a valid item id; got ${JSON.stringify(itemId)}`);
+    }
+    const job = this.getJobMetadata(jobId);
+    if (!job) throw new Error(`Job not found: ${jobId}`);
+    if (!Array.isArray(job.items)) {
+      throw new Error(`Job ${jobId} has no items array — the report file is corrupt.`);
+    }
+    const item = job.items.find((entry) => entry && (entry as StoredItem).item_id === itemId) as any;
+    if (!item) throw new Error(`Item ${itemId} is not in job ${jobId}`);
+    return { job, item };
+  }
+
+  private runApplyRerollToItem(jobId: string, itemId: string, write: RerollWrite): RerollWriteReceipt {
+    const { job, item } = this.findItemForWrite(jobId, itemId, 'applyRerollToItem');
+    const name = REROLL_FIELD_NAMES[write.field];
+    if (!sameSnapshot(snapshotOf(item, write.field), write.expected)) {
+      throw new Error(
+        `The ${name} on this report changed while the re-roll was out, so the new one was not ` +
+          `written over it. Nothing was changed; re-roll again if you still want a new one.`
+      );
+    }
+    // On a copy first: a replacement that cannot be applied (a chapter count that moved) throws
+    // here and the record is untouched.
+    const trial = structuredClone(item);
+    recordReplacement(trial, write.field, write.next, {
+      at: write.at,
+      kind: 're-roll',
+      model: write.model,
+      notes: write.notes,
+    });
+    const entry = recordReplacement(item, write.field, write.next, {
+      at: write.at,
+      kind: 're-roll',
+      model: write.model,
+      notes: write.notes,
+    });
+    let scrubFailed: ScrubFailure[] = Array.isArray(item.scrubbed?.failed) ? item.scrubbed.failed : [];
+    if (write.scrub) scrubFailed = mergeScrubReceipt(item, write.scrub.record, write.scrub.only);
+    const existingTrace = item._prompt_trace;
+    item._prompt_trace = Array.isArray(existingTrace) ? [...existingTrace, ...write.trace] : [...write.trace];
+
+    this.saveJson(job, path.join(this.metadataDir, `${jobId}.json`));
+    const kept = historyOf(item, write.field).length;
+    console.log(
+      `[OutputHandler] Re-rolled the ${name} of item ${itemId} in job ${jobId} on "${write.model}"; ` +
+        `${kept} earlier version(s) kept`
+    );
+    return { entry, kept, scrubFailed };
+  }
+
+  private runPutBackRerollVersion(jobId: string, itemId: string, field: RerollField): RerollWriteReceipt {
+    const { job, item } = this.findItemForWrite(jobId, itemId, 'putBackRerollVersion');
+    const trial = structuredClone(item);
+    putBackPrevious(trial, field, new Date().toISOString());
+    const entry = putBackPrevious(item, field, new Date().toISOString());
+    this.saveJson(job, path.join(this.metadataDir, `${jobId}.json`));
+    const kept = historyOf(item, field).length;
+    console.log(`[OutputHandler] Put back the earlier ${REROLL_FIELD_NAMES[field]} of item ${itemId} in job ${jobId}`);
+    return { entry, kept, scrubFailed: Array.isArray(item.scrubbed?.failed) ? item.scrubbed.failed : [] };
   }
 
   private runAppendGeneratedTitles(

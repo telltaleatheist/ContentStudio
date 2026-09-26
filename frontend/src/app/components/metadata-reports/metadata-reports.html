@@ -1140,6 +1140,19 @@
                           (click)="copyToClipboard(descriptionValue(), 'description')">
                     {{ isCopied('description') ? '✓ Copied' : 'Copy' }}
                   </button>
+                  <button class="ghost reroll" [class.armed]="rerollArmed() === 'description'"
+                          [disabled]="rerollBusy() !== '' || scrubBusy()"
+                          (click)="rerollSection('description')"
+                          (mouseleave)="rerollArmed() === 'description' && disarmReroll()"
+                          title="Write the description and its opening line again: this item's own prompt for it goes to the model the routing table names for it, and the answer replaces what is here. The version it replaces is kept.">
+                    {{ rerollBusy() === 'description' ? 'Re-rolling…' : rerollArmed() === 'description' ? rerollArmedLabel('description') : 'Re-roll' }}
+                  </button>
+                  @if (keptVersions('description') > 0) {
+                    <button class="ghost"
+                            [disabled]="rerollBusy() !== '' || scrubBusy()"
+                            (click)="putBackSection('description')"
+                            [title]="'Swap in the description and its opening line this one replaced. The one here now is kept, so pressing it again swaps back. ' + keptVersions('description') + ' earlier version(s) kept.'">Put back</button>
+                  }
                 }
               </div>
             </div>
@@ -1158,6 +1171,28 @@
                 <div class="resolving">Reading the composed description…</div>
               }
             </div>
+            @if (scrubFailuresFor(DESC_SCRUB_KEYS).length > 0) {
+              <!-- A cleanup that could not correct this part (LEDGER #223). The text is exactly as
+                   it was written; the button runs the cleanup again on just this part, on the
+                   model in the "Scrub narration" picker, and a clean run clears the warning. -->
+              <div class="banner scrub-failed">
+                <mat-icon>info_outline</mat-icon>
+                <span>
+                  @for (f of scrubFailuresFor(DESC_SCRUB_KEYS); track $index) { <b>{{ f.reason }}</b> }
+                  It is left exactly as it was written.
+                </span>
+                <button class="ghost"
+                        [disabled]="scrubBusy() || rerollBusy() !== '' || scrubOptions().length === 0"
+                        (click)="cleanUpAgain(DESC_SCRUB_KEYS)">{{ scrubBusy() ? 'Cleaning up…' : 'Clean up again' }}</button>
+              </div>
+            }
+            @if (rerollMessage(); as m) {
+              @if (m.field === 'description') {
+                <div class="reroll-msg" [class.err]="m.error">
+                  @for (line of m.lines; track $index) { <p>{{ line }}</p> }
+                </div>
+              }
+            }
 
             @if (publish.hasResolved() && chapterRows().length > 0) {
               <div class="desc-sub">
@@ -1169,7 +1204,45 @@
                       −{{ publish.chapterDrops().length }}
                     </span>
                   }
+                  <span class="pane-head-spacer"></span>
+                  <div class="acts">
+                  <button class="ghost reroll" [class.armed]="rerollArmed() === 'chapters'"
+                          [disabled]="rerollBusy() !== '' || scrubBusy()"
+                          (click)="rerollSection('chapters')"
+                          (mouseleave)="rerollArmed() === 'chapters' && disarmReroll()"
+                          title="Write the chapter titles and summaries on the same chapter times, then rebuild the tags and hashtags from them; again: this item's own prompt for it goes to the model the routing table names for it, and the answer replaces what is here. The version it replaces is kept.">
+                    {{ rerollBusy() === 'chapters' ? 'Re-rolling…' : rerollArmed() === 'chapters' ? rerollArmedLabel('chapters') : 'Re-roll' }}
+                  </button>
+                  @if (keptVersions('chapters') > 0) {
+                    <button class="ghost"
+                            [disabled]="rerollBusy() !== '' || scrubBusy()"
+                            (click)="putBackSection('chapters')"
+                            [title]="'Swap in the chapter titles and summaries on the same chapter times, then rebuild the tags and hashtags from them; this one replaced. The one here now is kept, so pressing it again swaps back. ' + keptVersions('chapters') + ' earlier version(s) kept.'">Put back</button>
+                  }
+                  </div>
                 </div>
+                @if (scrubFailuresFor(CHAPTER_SCRUB_KEYS).length > 0) {
+              <!-- A cleanup that could not correct this part (LEDGER #223). The text is exactly as
+                   it was written; the button runs the cleanup again on just this part, on the
+                   model in the "Scrub narration" picker, and a clean run clears the warning. -->
+              <div class="banner scrub-failed">
+                <mat-icon>info_outline</mat-icon>
+                <span>
+                  @for (f of scrubFailuresFor(CHAPTER_SCRUB_KEYS); track $index) { <b>{{ f.reason }}</b> }
+                  It is left exactly as it was written.
+                </span>
+                <button class="ghost"
+                        [disabled]="scrubBusy() || rerollBusy() !== '' || scrubOptions().length === 0"
+                        (click)="cleanUpAgain(CHAPTER_SCRUB_KEYS)">{{ scrubBusy() ? 'Cleaning up…' : 'Clean up again' }}</button>
+              </div>
+            }
+                @if (rerollMessage(); as m) {
+              @if (m.field === 'chapters') {
+                <div class="reroll-msg" [class.err]="m.error">
+                  @for (line of m.lines; track $index) { <p>{{ line }}</p> }
+                </div>
+              }
+            }
                 <!-- Rename with the pencil, delete with ✕ (restore with ↩). A deleted 0:00
                      makes YouTube ignore the whole list; the row says so, nothing re-adds it. -->
                 @for (row of chapterRows(); track row.key) {
@@ -1324,6 +1397,28 @@
                   </button>
                   @if (isAssetOpen('thumbnail-text')) {
                     <div class="asset-body">
+                      <div class="asset-acts">
+                  <button class="ghost reroll" [class.armed]="rerollArmed() === 'thumbnail_text'"
+                          [disabled]="rerollBusy() !== '' || scrubBusy()"
+                          (click)="rerollSection('thumbnail_text')"
+                          (mouseleave)="rerollArmed() === 'thumbnail_text' && disarmReroll()"
+                          title="Write the thumbnail text options again: this item's own prompt for it goes to the model the routing table names for it, and the answer replaces what is here. The version it replaces is kept.">
+                    {{ rerollBusy() === 'thumbnail_text' ? 'Re-rolling…' : rerollArmed() === 'thumbnail_text' ? rerollArmedLabel('thumbnail_text') : 'Re-roll' }}
+                  </button>
+                  @if (keptVersions('thumbnail_text') > 0) {
+                    <button class="ghost"
+                            [disabled]="rerollBusy() !== '' || scrubBusy()"
+                            (click)="putBackSection('thumbnail_text')"
+                            [title]="'Swap in the thumbnail text options this one replaced. The one here now is kept, so pressing it again swaps back. ' + keptVersions('thumbnail_text') + ' earlier version(s) kept.'">Put back</button>
+                  }
+                      </div>
+                      @if (rerollMessage(); as m) {
+              @if (m.field === 'thumbnail_text') {
+                <div class="reroll-msg" [class.err]="m.error">
+                  @for (line of m.lines; track $index) { <p>{{ line }}</p> }
+                </div>
+              }
+            }
                       @for (text of metadata()!.thumbnail_text; track $index; let i = $index) {
                         <div class="asset-line"
                              [class.copied]="isCopied('thumb-' + i)"
@@ -1373,6 +1468,28 @@
                   </button>
                   @if (isAssetOpen('pinned-comment')) {
                     <div class="asset-body">
+                      <div class="asset-acts">
+                  <button class="ghost reroll" [class.armed]="rerollArmed() === 'pinned_comment'"
+                          [disabled]="rerollBusy() !== '' || scrubBusy()"
+                          (click)="rerollSection('pinned_comment')"
+                          (mouseleave)="rerollArmed() === 'pinned_comment' && disarmReroll()"
+                          title="Write the pinned comment options again: this item's own prompt for it goes to the model the routing table names for it, and the answer replaces what is here. The version it replaces is kept.">
+                    {{ rerollBusy() === 'pinned_comment' ? 'Re-rolling…' : rerollArmed() === 'pinned_comment' ? rerollArmedLabel('pinned_comment') : 'Re-roll' }}
+                  </button>
+                  @if (keptVersions('pinned_comment') > 0) {
+                    <button class="ghost"
+                            [disabled]="rerollBusy() !== '' || scrubBusy()"
+                            (click)="putBackSection('pinned_comment')"
+                            [title]="'Swap in the pinned comment options this one replaced. The one here now is kept, so pressing it again swaps back. ' + keptVersions('pinned_comment') + ' earlier version(s) kept.'">Put back</button>
+                  }
+                      </div>
+                      @if (rerollMessage(); as m) {
+              @if (m.field === 'pinned_comment') {
+                <div class="reroll-msg" [class.err]="m.error">
+                  @for (line of m.lines; track $index) { <p>{{ line }}</p> }
+                </div>
+              }
+            }
                       @for (comment of metadata()!.pinned_comment!; track $index; let i = $index) {
                         <div class="asset-line"
                              [class.copied]="isCopied('comment-' + i)"

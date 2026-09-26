@@ -48,11 +48,19 @@
  * the trace entry says: `(post-generation)` for the run's own, `(operator request)` for the
  * button's. Nothing else about the pass differs, because nothing else about it should.
  *
- * FAILURE IS THE ITEM'S FAILURE (laws 1 and 3). A chapter list that comes back with the wrong
- * number of lines throws naming the field, the model and both counts, and the item fails the way
- * any other field call failing fails it. Nothing continues unscrubbed, nothing re-asks, nothing
- * is partially applied — an item whose description was scrubbed and whose chapters were not is
- * indistinguishable on disk from one where both were.
+ * A FAILED FIELD NEVER COSTS THE ITEM (Owen, 2026-09-26, LEDGER #223; supersedes #183's "failure
+ * is the item's failure"). The incident: a 60-minute run finished every field, the scrub sent 26
+ * chapter titles to Opus, 27 lines came back, and the throw failed the whole item — twenty
+ * minutes of finished output discarded over a cleanup pass. So each plan (the hook, the
+ * description, each alternate, the chapter titles) is applied or not ON ITS OWN. A plan whose
+ * call or read fails leaves that field exactly as generated; the plans that succeeded are
+ * applied; nothing of the failed plan is applied (a miscounted list is still never matched back
+ * partially); nothing re-asks. The item is delivered as usual carrying `scrubbed.failed` — one
+ * plain sentence per field the cleanup did not correct ("Chapter titles were not cleaned up: the
+ * model returned 27 lines for 26 titles.") plus the full error for the log — and every failure
+ * is a warn line (law 8). The reports page shows it beside the section, with a button that runs
+ * the cleanup again on just that part. Cancellation is not a failed field: it still stops the
+ * run.
  *
  * CHAPTER TIMESTAMPS NEVER GO TO A MODEL and are never parsed back from one (standing law). The
  * titles go out alone, one per line, and are reattached by position onto the item's own chapter
@@ -76,6 +84,7 @@
 
 import log from 'electron-log';
 
+import { JobCancelledError, isAbortError } from './cancellation';
 import { Chapter } from './chapter-generator.service';
 import { linkBlockIndex } from './description-composer';
 import { MetadataRoutingOption, resolveOperatorOption } from './metadata-routing';
@@ -83,6 +92,7 @@ import {
   askToRewrite,
   buildRewritePrompt,
   readRewrittenAnswer,
+  RewriteShapeError,
   REWRITE_NUM_PREDICT,
   rewriteSourceLabel,
   stringsOf,
@@ -174,7 +184,7 @@ export function resolveScrubOption(optionId: unknown): MetadataRoutingOption {
  * A description with NO link block goes whole, which is what `splitLinkBlock` answers for it
  * everywhere else in the app.
  */
-interface HeldBackLinks {
+export interface HeldBackLinks {
   /** The prose the model is given. */
   prose: string;
   /** Exactly what is re-appended, blank line and all. '' when there is no block. */
@@ -183,7 +193,7 @@ interface HeldBackLinks {
   how: string;
 }
 
-function holdBackLinks(
+export function holdBackLinks(
   description: string,
   descriptionLinks: string,
   origin: ScrubOrigin,
@@ -235,6 +245,65 @@ export interface ScrubSkip {
 }
 
 /**
+ * One field the cleanup did NOT correct, and why (LEDGER #223).
+ *
+ * The field stays exactly as generated. `reason` is the sentence the operator reads on the
+ * reports page, in plain words; `detail` is the whole error, for the log and for anyone who
+ * opens the record.
+ */
+export interface ScrubFailure {
+  /** The plan's field, as the operator reads it: `chapter titles`, `alternate description 1 of 2`. */
+  field: string;
+  /** The ITEM key this field lives under — what the reports page and a re-run select on. */
+  item_key: string;
+  /** e.g. "Chapter titles were not cleaned up: the model returned 27 lines for 26 titles." */
+  reason: string;
+  /** The error exactly as it was raised, numbered Sent/Returned lists included. */
+  detail: string;
+}
+
+/** The item keys the scrub can correct — the only values a partial re-run may name. */
+export const SCRUB_ITEM_KEYS = ['description_hook', 'description', 'description_options', 'chapters'] as const;
+export type ScrubItemKey = (typeof SCRUB_ITEM_KEYS)[number];
+
+/** The operator's words for one plan's field, capitalised, and whether it takes "were". */
+function fieldNoun(field: string): { noun: string; plural: boolean } {
+  if (field === 'chapter titles') return { noun: 'Chapter titles', plural: true };
+  if (field === 'alternate descriptions') return { noun: 'The alternate descriptions', plural: true };
+  if (field === 'description hook') return { noun: "The description's opening line", plural: false };
+  if (field === 'description') return { noun: 'The description', plural: false };
+  if (field.startsWith('alternate description')) return { noun: `The ${field}`, plural: false };
+  return { noun: field.charAt(0).toUpperCase() + field.slice(1), plural: false };
+}
+
+/** What one entry of a lines plan is, in the operator's words: `titles`, `lines`. */
+function entryNoun(field: string): string {
+  return field === 'chapter titles' ? 'titles' : 'lines';
+}
+
+/**
+ * The plain sentence for one field the cleanup did not correct.
+ *
+ * A shape error is read off its typed fields (Law 10), so the sentence says the counts in the
+ * operator's words; anything else says what went wrong in the error's own first line, which is
+ * already a sentence naming the call.
+ */
+export function scrubFailureSentence(field: string, error: unknown): string {
+  const { noun, plural } = fieldNoun(field);
+  const head = `${noun} ${plural ? 'were' : 'was'} not cleaned up: `;
+  if (error instanceof RewriteShapeError) {
+    if (error.shape === 'lines') {
+      return `${head}the model returned ${error.got} line${error.got === 1 ? '' : 's'} for ${error.asked} ${entryNoun(field)}.`;
+    }
+    return `${head}the model returned ${error.got} lines where one was asked for.`;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  const firstLine = message.split('\n')[0].trim();
+  if (firstLine.length === 0) return `${head}the call failed and gave no reason.`;
+  return `${head}${firstLine}${/[.!?]$/.test(firstLine) ? '' : '.'}`;
+}
+
+/**
  * What the pass wrote onto the item, under `scrubbed`.
  *
  * `before` is present only on the fields whose text actually changed — a field recorded with
@@ -253,6 +322,11 @@ export interface ScrubRecord {
   /** Fields this item does not carry. */
   skipped: ScrubSkip[];
   /**
+   * Fields the cleanup did NOT correct, each left exactly as generated (LEDGER #223). Empty when
+   * every planned field was read back in its shape. Absent on records written before #223.
+   */
+  failed: ScrubFailure[];
+  /**
    * Which link block was held back out of the description, and how it was found (law 8).
    *
    * Recorded rather than only logged, because it is a decision this pass made about the
@@ -270,6 +344,8 @@ export interface ScrubRunResult {
   /** Item keys the model returned unchanged. */
   unchanged: string[];
   skipped: ScrubSkip[];
+  /** Fields left as generated because their call or read failed. The item carries them too. */
+  failed: ScrubFailure[];
 }
 
 export interface ScrubOptions {
@@ -282,6 +358,15 @@ export interface ScrubOptions {
    * was would write a trace nobody can read back.
    */
   origin: ScrubOrigin;
+  /**
+   * The item keys to correct, when only some of them are asked for — the reports page's "clean
+   * up again" beside one section re-runs just that section, and a section re-roll cleans up
+   * just the text it wrote. Absent means every field the item carries, which is what generation
+   * and the "Scrub narration" button ask for.
+   */
+  only?: readonly ScrubItemKey[];
+  /** The run's cancel signal. A cancelled call is NOT a failed field: it stops the pass. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -300,15 +385,37 @@ export function planScrub(
   /** The prompt set's `description_links`, trimmed. '' when the set declares none. */
   descriptionLinks: string,
   /** Which link-block rule applies — see holdBackLinks. */
-  origin: ScrubOrigin = 'post-generation'
-): { plans: RewritePlan[]; skipped: ScrubSkip[]; linksHeldBack: string | null } {
+  origin: ScrubOrigin = 'post-generation',
+  /** The item keys asked for; absent means all of them. */
+  only?: readonly ScrubItemKey[]
+): { plans: RewritePlan[]; skipped: ScrubSkip[]; failed: ScrubFailure[]; linksHeldBack: string | null } {
   const itemId = typeof item?.item_id === 'string' ? item.item_id : '(no item_id)';
   const plans: RewritePlan[] = [];
   const skipped: ScrubSkip[] = [];
+  const failed: ScrubFailure[] = [];
   let linksHeldBack: string | null = null;
+  const wanted = (key: ScrubItemKey) => only === undefined || only.includes(key);
 
-  const hook = textOf(item?.description_hook);
-  if (hook === null) {
+  // A field that cannot even be PLANNED (a description whose link block cannot be found, a
+  // chapter with no title text) is a failed field like any other (LEDGER #223): it stays as
+  // generated, it is recorded, and the other fields still go.
+  const planning = (field: string, key: ScrubItemKey, build: () => void) => {
+    try {
+      build();
+    } catch (error) {
+      failed.push({
+        field,
+        item_key: key,
+        reason: scrubFailureSentence(field, error),
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const hook = wanted('description_hook') ? textOf(item?.description_hook) : undefined;
+  if (hook === undefined) {
+    // Not asked for on this run.
+  } else if (hook === null) {
     skipped.push({ field: 'description hook', reason: 'the item carries no description hook.' });
   } else {
     plans.push({
@@ -323,37 +430,49 @@ export function planScrub(
     });
   }
 
-  const description = textOf(item?.description);
-  if (description === null) {
+  const description = wanted('description') ? textOf(item?.description) : undefined;
+  if (description === undefined) {
+    // Not asked for on this run.
+  } else if (description === null) {
     skipped.push({ field: 'description', reason: 'the item carries no description.' });
   } else {
-    // The link block, held back whole — see holdBackLinks for the two rules and why the
-    // operator's button gets the second one.
-    const held = holdBackLinks(description, descriptionLinks, origin, itemId);
-    const { prose, suffix } = held;
-    linksHeldBack = held.how;
-    plans.push({
-      field: 'description',
-      labelKey: 'description',
-      shape: 'prose',
-      text: prose,
-      count: null,
-      apply: (scrubbed, target) => {
-        target.description = `${scrubbed as string}${suffix}`;
-      },
+    planning('description', 'description', () => {
+      // The link block, held back whole — see holdBackLinks for the two rules and why the
+      // operator's button gets the second one.
+      const held = holdBackLinks(description, descriptionLinks, origin, itemId);
+      const { prose, suffix } = held;
+      linksHeldBack = held.how;
+      plans.push({
+        field: 'description',
+        labelKey: 'description',
+        shape: 'prose',
+        text: prose,
+        count: null,
+        apply: (scrubbed, target) => {
+          target.description = `${scrubbed as string}${suffix}`;
+        },
+      });
     });
   }
 
-  const options = stringsOf(item?.description_options, 'description_options', itemId, 'scrubbed');
-  if (options === null) {
+  let options: string[] | null | undefined;
+  if (wanted('description_options')) {
+    planning('alternate descriptions', 'description_options', () => {
+      options = stringsOf(item?.description_options, 'description_options', itemId, 'scrubbed');
+    });
+  }
+  if (options === undefined) {
+    // Not asked for on this run, or it could not be planned (recorded above).
+  } else if (options === null) {
     skipped.push({
       field: 'alternate descriptions',
       reason: 'the item carries no alternate descriptions.',
     });
   } else {
-    options.forEach((text, index) => {
+    const alternates: string[] = options;
+    alternates.forEach((text, index) => {
       plans.push({
-        field: `alternate description ${index + 1} of ${options.length}`,
+        field: `alternate description ${index + 1} of ${alternates.length}`,
         labelKey: 'description_options',
         shape: 'prose',
         text,
@@ -373,26 +492,35 @@ export function planScrub(
   // the narrator framing (46 of 1,124 against 13 of 159 descriptions), and the operator said it
   // in as many words when he asked for the button — "have the second pass always try to correct
   // chapters as well". There is no switch here and nothing conditional on the origin.
-  const chapters: Chapter[] = Array.isArray(item?.chapters) ? item.chapters : [];
-  const chapterTitles = chapters.map((chapter, index) => {
-    const title = textOf(chapter?.title);
-    if (title === null) {
-      throw new Error(
-        `Chapter ${index + 1} of ${chapters.length} on item ${itemId} has no title text, so the ` +
-          `chapter list cannot be scrubbed as ${chapters.length} lines.`
-      );
-    }
-    return title;
-  });
-  if (chapterTitles.length === 0) {
+  const chapters: Chapter[] = wanted('chapters') && Array.isArray(item?.chapters) ? item.chapters : [];
+  let chapterTitles: string[] | null = null;
+  if (wanted('chapters')) {
+    planning('chapter titles', 'chapters', () => {
+      chapterTitles = chapters.map((chapter, index) => {
+        const title = textOf(chapter?.title);
+        if (title === null) {
+          throw new Error(
+            `Chapter ${index + 1} of ${chapters.length} on item ${itemId} has no title text, so the ` +
+              `chapter list cannot be scrubbed as ${chapters.length} lines.`
+          );
+        }
+        return title;
+      });
+    });
+  }
+  // Widened on purpose: TypeScript cannot see the assignment inside the closure above.
+  const titlesIn = chapterTitles as string[] | null;
+  if (titlesIn === null) {
+    // Not asked for on this run, or it could not be planned (recorded above).
+  } else if (titlesIn.length === 0) {
     skipped.push({ field: 'chapter titles', reason: 'the item carries no chapters.' });
   } else {
     plans.push({
       field: 'chapter titles',
       labelKey: 'chapters',
       shape: 'lines',
-      text: chapterTitles.join('\n'),
-      count: chapterTitles.length,
+      text: titlesIn.join('\n'),
+      count: titlesIn.length,
       apply: (scrubbed, target) => {
         const titles = scrubbed as string[];
         target.chapters = (target.chapters as Chapter[]).map((chapter, index) => ({
@@ -403,7 +531,7 @@ export function planScrub(
     });
   }
 
-  return { plans, skipped, linksHeldBack };
+  return { plans, skipped, failed, linksHeldBack };
 }
 
 /**
@@ -454,9 +582,15 @@ function sameValue(a: string | string[], b: string | string[]): boolean {
  * generation loop's line is `await scrubGeneratedItem(metadata, …)` and removing the pass is
  * removing that line.
  *
- * SEQUENTIAL on purpose. The local transport serialises through queueAITask anyway (one slot,
- * for the Ollama OOM protection), and a cloud pass that fanned out would report its failures out
- * of the order the log reads them in.
+ * PLAN BY PLAN (LEDGER #223). Each plan's call and read are tried on their own: an answer in its
+ * shape is applied at once, and a plan that throws leaves its field exactly as generated and is
+ * recorded in `scrubbed.failed` with a plain sentence and the whole error, logged as a warn line.
+ * A failed plan never stops the next one and never fails the item. What still throws out of
+ * here: a cancelled run (a stopped job is not a failed field), and an item with no
+ * `_prompt_trace` array, which is the caller's bug rather than the model's answer.
+ *
+ * SEQUENTIAL on purpose. The local transport serialises through its lane anyway, and a cloud
+ * pass that fanned out would report its failures out of the order the log reads them in.
  *
  * `_prompt_trace` MUST ALREADY BE ON THE ITEM when this runs: the generation loop slices it off
  * the AI manager's running trace, and these entries are appended to that slice. Appending them
@@ -465,15 +599,16 @@ function sameValue(a: string | string[], b: string | string[]): boolean {
  */
 export async function scrubGeneratedItem(
   item: any,
-  { option, transport, origin }: ScrubOptions
+  { option, transport, origin, only, signal }: ScrubOptions
 ): Promise<ScrubRunResult> {
   const pass = scrubPass(origin);
   const sourceLabel = rewriteSourceLabel(item);
   const at = new Date().toISOString();
-  const { plans, skipped, linksHeldBack } = planScrub(
+  const { plans, skipped, failed, linksHeldBack } = planScrub(
     item,
     transport.aiManager.descriptionLinks(),
-    origin
+    origin,
+    only
   );
 
   if (!Array.isArray(item._prompt_trace)) {
@@ -492,27 +627,47 @@ export async function scrubGeneratedItem(
     if (!before.has(key)) before.set(key, beforeValueOf(item, key));
   }
 
+  // Item keys with at least one plan that was APPLIED. A key whose every plan failed is not
+  // reported as "unchanged" — nobody read it back — it is reported in `failed` instead.
+  const applied = new Set<string>();
+
   for (const plan of plans) {
     const prompt = buildScrubPrompt(plan, origin);
     const sentAt = new Date().toISOString();
-    const text = await askToRewrite(pass, plan, option, transport, sourceLabel, prompt);
-    const { value } = readRewrittenAnswer(pass, plan, text, option.model, sourceLabel);
-    plan.apply(value, item);
-    (item._prompt_trace as PromptTraceEntry[]).push({
-      what: pass.callWhat(plan.field, sourceLabel),
-      model: option.model,
-      chars: prompt.length,
-      at: sentAt,
-      prompt,
-      ...(option.kind === 'local' ? { maxTokens: REWRITE_NUM_PREDICT, act: 'generate' as const } : {}),
-    });
+    try {
+      const text = await askToRewrite(pass, plan, option, transport, sourceLabel, prompt);
+      const { value } = readRewrittenAnswer(pass, plan, text, option.model, sourceLabel);
+      plan.apply(value, item);
+      applied.add(itemKeyOf(plan));
+    } catch (error) {
+      if (error instanceof JobCancelledError || isAbortError(error) || signal?.aborted) throw error;
+      const failure: ScrubFailure = {
+        field: plan.field,
+        item_key: itemKeyOf(plan),
+        reason: scrubFailureSentence(plan.field, error),
+        detail: error instanceof Error ? error.message : String(error),
+      };
+      failed.push(failure);
+      log.warn(`[Scrub] (${origin}) ${sourceLabel}: ${failure.reason} It is kept exactly as generated.\n${failure.detail}`);
+    } finally {
+      // A call that was sent is a call on the record, answered in shape or not.
+      (item._prompt_trace as PromptTraceEntry[]).push({
+        what: pass.callWhat(plan.field, sourceLabel),
+        model: option.model,
+        chars: prompt.length,
+        at: sentAt,
+        prompt,
+        ...(option.kind === 'local' ? { maxTokens: REWRITE_NUM_PREDICT, act: 'generate' as const } : {}),
+      });
+    }
   }
 
-  const record: ScrubRecord = { model: option.model, at, fields: {}, skipped };
+  const record: ScrubRecord = { model: option.model, at, fields: {}, skipped, failed };
   if (linksHeldBack !== null) record.links_held_back = linksHeldBack;
   const changed: string[] = [];
   const unchanged: string[] = [];
   for (const [key, was] of before) {
+    if (!applied.has(key)) continue;
     if (sameValue(was, beforeValueOf(item, key))) {
       record.fields[key] = { changed: false };
       unchanged.push(key);
@@ -527,9 +682,16 @@ export async function scrubGeneratedItem(
     `[Scrub] (${origin}) ${sourceLabel} on "${option.model}": ` +
       `${changed.length ? `rewrote ${changed.join(', ')}` : 'nothing rewritten'}; ` +
       `${unchanged.length ? `${unchanged.join(', ')} came back unchanged` : 'nothing unchanged'}` +
-      (skipped.length ? `; not carried by this item: ${skipped.map((s) => s.field).join(', ')}` : '')
+      (skipped.length ? `; not carried by this item: ${skipped.map((s) => s.field).join(', ')}` : '') +
+      (failed.length ? `; NOT cleaned up, kept as generated: ${failed.map((f) => f.field).join(', ')}` : '')
   );
+  // A field that could not even be planned never reached the loop above; say it here too.
+  for (const failure of failed) {
+    if (!plans.some((plan) => plan.field === failure.field)) {
+      log.warn(`[Scrub] (${origin}) ${sourceLabel}: ${failure.reason} It is kept exactly as generated.\n${failure.detail}`);
+    }
+  }
   if (linksHeldBack !== null) log.info(`[Scrub] ${sourceLabel} held back ${linksHeldBack}`);
 
-  return { model: option.model, changed, unchanged, skipped };
+  return { model: option.model, changed, unchanged, skipped, failed };
 }

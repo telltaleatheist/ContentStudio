@@ -15,7 +15,13 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatChipsModule } from '@angular/material/chips';
 import { MatMenuModule } from '@angular/material/menu';
-import { AnalyticsChannel, ElectronService, MetadataRoutingOption } from '../../services/electron';
+import {
+  AnalyticsChannel,
+  ElectronService,
+  MetadataRoutingOption,
+  RerollSectionField,
+  ScrubFailureView,
+} from '../../services/electron';
 import { NotificationService } from '../../services/notification';
 import { PublishState } from '../../features/publish/publish-state';
 import {
@@ -393,6 +399,19 @@ interface ParsedMetadata {
    * 'off'` on a run with the gate switched off — the list then shows no rank rather than one
    * nobody measured.
    */
+  /**
+   * The cleanup's newest receipt (scrub.ts ScrubRecord). Only `failed` is read here: the fields
+   * the cleanup did NOT correct, each shown beside its section with a button to run it again
+   * (LEDGER #223). Absent on items that predate the cleanup; `failed` absent on receipts written
+   * before #223.
+   */
+  scrubbed?: { failed?: ScrubFailureView[] };
+  /**
+   * The versions each re-rolled section replaced, oldest first (section-reroll.ts). Only the
+   * count, the time, the model and the notes are read here; the text itself stays on the record
+   * and "Put back" swaps it in.
+   */
+  reroll_history?: Partial<Record<RerollSectionField, Array<{ at: string; kind: string; model: string | null; notes: string[] }>>>;
   reroll_gate?: {
     mode: 'on' | 'off';
     scorer: string;
@@ -499,6 +518,27 @@ export class MetadataReports implements OnInit, OnDestroy {
    * scrubbed, not about the page.
    */
   readonly scrubResultLine = signal<string>('');
+
+  // ------------------------------------------------------- re-roll one section (LEDGER #223)
+  //
+  // One button per model-written section that has no "more" button of its own: the description,
+  // the chapter titles, the thumbnail text and the pinned comment. Each sends that section's own
+  // stored prompt again on the model the ROUTING TABLE names for it — there is no picker here,
+  // because the routing table is the only thing that picks a model — and the answer replaces the
+  // section in place. The replaced version is kept on the item; "Put back" swaps it in again.
+  /** The section whose re-roll or put-back is out, or '' — one at a time per item. */
+  readonly rerollBusy = signal<RerollSectionField | ''>('');
+  /**
+   * A section whose re-roll was pressed once over a HAND EDIT and is waiting for the press that
+   * means it. The same two-press pattern as Clear on the thumbnail; it lapses on its own.
+   */
+  readonly rerollArmed = signal<RerollSectionField | ''>('');
+  private rerollArmTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The item keys the cleanup warnings beside the description and the chapter list read. */
+  readonly DESC_SCRUB_KEYS = ['description_hook', 'description', 'description_options'];
+  readonly CHAPTER_SCRUB_KEYS = ['chapters'];
+  /** The last re-roll's outcome, shown under its section until another item is opened. */
+  readonly rerollMessage = signal<{ field: RerollSectionField; error: boolean; lines: string[] } | null>(null);
 
   // ----------------------------------------------------------- versions of one source
   //
@@ -2799,7 +2839,7 @@ export class MetadataReports implements OnInit, OnDestroy {
    *
    * Every refusal is the main process's own sentence, shown as it was written.
    */
-  async scrubItem(): Promise<void> {
+  async scrubItem(onlyKeys?: string[]): Promise<void> {
     const report = this.selectedReport();
     if (!report) return;
     if (!report.jobId || !report.itemId) {
@@ -2820,7 +2860,7 @@ export class MetadataReports implements OnInit, OnDestroy {
     // Belt as well as braces: the button is disabled while a pass is out, and the main process
     // refuses a second concurrent pass on the same item by name. This is the third guard, and
     // it is the one that costs nothing.
-    if (this.scrubBusy()) return;
+    if (this.scrubBusy() || this.rerollBusy() !== '') return;
 
     // A half-finished description or title edit is about the text this pass is about to
     // rewrite, and saving it afterwards would write the pre-scrub words back.
@@ -2831,7 +2871,7 @@ export class MetadataReports implements OnInit, OnDestroy {
     this.scrubResultLine.set('');
     const itemId = report.itemId;
     try {
-      const result = await this.electron.scrubItem(report.jobId, itemId, optionId);
+      const result = await this.electron.scrubItem(report.jobId, itemId, optionId, onlyKeys);
       if (!result.success) {
         this.notificationService.error(
           'Nothing scrubbed',
@@ -2867,9 +2907,13 @@ export class MetadataReports implements OnInit, OnDestroy {
             'with the text they replaced.',
         );
       }
+      const failed = result.failed ?? [];
+      for (const failure of failed) parts.push(`${failure.reason} It was left as it was.`);
       const line = parts.join(' ');
       this.scrubResultLine.set(line);
-      if (changed.length > 0) {
+      if (failed.length > 0) {
+        this.notificationService.warning('Cleaned up, with parts left as they were', line);
+      } else if (changed.length > 0) {
         this.notificationService.success('Scrubbed in place', line);
       } else {
         this.notificationService.info('Nothing to correct', line);
@@ -2878,6 +2922,138 @@ export class MetadataReports implements OnInit, OnDestroy {
       this.notificationService.error('Nothing scrubbed', (error as Error).message);
     } finally {
       this.scrubBusy.set(false);
+    }
+  }
+
+  /**
+   * The fields the cleanup did NOT correct on the open item, for the keys one section shows —
+   * `['description_hook', 'description', 'description_options']` beside the description,
+   * `['chapters']` beside the chapter list. Read off the item's newest cleanup receipt.
+   */
+  scrubFailuresFor(keys: string[]): ScrubFailureView[] {
+    const failed = this.metadata()?.scrubbed?.failed;
+    return Array.isArray(failed) ? failed.filter((f) => keys.includes(f.item_key)) : [];
+  }
+
+  /** "Clean up again" beside a section: the cleanup on just the parts of it that failed. */
+  async cleanUpAgain(keys: string[]): Promise<void> {
+    const failing = [...new Set(this.scrubFailuresFor(keys).map((f) => f.item_key))];
+    if (failing.length === 0) return;
+    await this.scrubItem(failing);
+  }
+
+  /** How many earlier versions of one section the open item keeps. */
+  keptVersions(field: RerollSectionField): number {
+    const list = this.metadata()?.reroll_history?.[field];
+    return Array.isArray(list) ? list.length : 0;
+  }
+
+  /** Whether the operator has edited this section by hand, so a re-roll should ask first. */
+  private sectionHandEdited(field: RerollSectionField): boolean {
+    if (field === 'description') return this.publish.descriptionOverride() !== null;
+    if (field === 'chapters') return this.chapterRows().some((row) => row.edited || row.dropped);
+    return false;
+  }
+
+  /** What the armed button says: why a second press is asked for. */
+  rerollArmedLabel(field: RerollSectionField): string {
+    return field === 'chapters'
+      ? 'Your renames will not carry over — re-roll?'
+      : 'Your edit stays in front — re-roll?';
+  }
+
+  disarmReroll(): void {
+    this.rerollArmed.set('');
+    if (this.rerollArmTimer) {
+      clearTimeout(this.rerollArmTimer);
+      this.rerollArmTimer = null;
+    }
+  }
+
+  /**
+   * RE-ROLL ONE SECTION: its own stored prompt, sent again on its routed model, the answer in
+   * place of the section; then the cleanup, and for chapters the tags and hashtags rebuilt. The
+   * version it replaces is kept on the item (LEDGER #223).
+   *
+   * Over a hand edit it asks first, inline, with a second press — no dialog. A description edit
+   * stays in front of any re-roll until Revert; chapter renames are keyed to the titles they
+   * renamed, so they stop applying to new titles (Put back brings the old titles and the renames
+   * back together).
+   */
+  async rerollSection(field: RerollSectionField): Promise<void> {
+    const report = this.selectedReport();
+    if (!report) return;
+    if (!report.jobId || !report.itemId) {
+      this.rerollMessage.set({
+        field,
+        error: true,
+        lines: ['This report carries no job id or item id, so there is no record to re-roll.'],
+      });
+      return;
+    }
+    if (this.rerollBusy() !== '' || this.scrubBusy()) return;
+    if (this.sectionHandEdited(field) && this.rerollArmed() !== field) {
+      this.rerollArmed.set(field);
+      if (this.rerollArmTimer) clearTimeout(this.rerollArmTimer);
+      this.rerollArmTimer = setTimeout(() => this.rerollArmed.set(''), 4000);
+      return;
+    }
+    this.disarmReroll();
+    this.cancelEditTitle();
+    this.cancelEditDescription();
+    this.cancelEditChapter();
+    const itemId = report.itemId;
+    this.rerollBusy.set(field);
+    this.rerollMessage.set(null);
+    try {
+      const result = await this.electron.rerollSection(report.jobId, itemId, field);
+      if (!result.success) {
+        this.rerollMessage.set({
+          field,
+          error: true,
+          lines: [`Nothing was changed. ${result.error ?? 'The request gave no reason.'}`],
+        });
+        return;
+      }
+      await this.loadReports();
+      await this.selectByItemId(itemId);
+      const lines = [
+        `Re-rolled on ${result.model}. The version it replaced is kept — "Put back" swaps it in again.`,
+        ...(result.notes ?? []),
+      ];
+      // Set AFTER the reload, which clears it for a newly opened item.
+      this.rerollMessage.set({ field, error: false, lines });
+    } catch (error) {
+      this.rerollMessage.set({ field, error: true, lines: [`Nothing was changed. ${(error as Error).message}`] });
+    } finally {
+      this.rerollBusy.set('');
+    }
+  }
+
+  /** PUT BACK: the newest kept version of one section swapped onto it; the current one is kept. */
+  async putBackSection(field: RerollSectionField): Promise<void> {
+    const report = this.selectedReport();
+    if (!report?.jobId || !report.itemId) return;
+    if (this.rerollBusy() !== '' || this.scrubBusy()) return;
+    this.disarmReroll();
+    this.cancelEditDescription();
+    this.cancelEditChapter();
+    const itemId = report.itemId;
+    this.rerollBusy.set(field);
+    this.rerollMessage.set(null);
+    try {
+      const result = await this.electron.rerollPutBack(report.jobId, itemId, field);
+      if (!result.success) {
+        this.rerollMessage.set({ field, error: true, lines: [`Nothing was changed. ${result.error ?? 'The request gave no reason.'}`] });
+        return;
+      }
+      await this.loadReports();
+      await this.selectByItemId(itemId);
+      this.rerollMessage.set({ field, error: false, lines: result.notes ?? [] });
+    } catch (error) {
+      this.rerollMessage.set({ field, error: true, lines: [`Nothing was changed. ${(error as Error).message}`] });
+    } finally {
+      this.rerollBusy.set('');
     }
   }
 
@@ -3320,6 +3496,9 @@ export class MetadataReports implements OnInit, OnDestroy {
       // item after a pass re-runs this, so the line is written after the reload rather than
       // before it — see scrubItem().
       this.scrubResultLine.set('');
+      // The same for the last re-roll's outcome and a half-pressed re-roll confirm.
+      this.rerollMessage.set(null);
+      this.disarmReroll();
       // The setup accordion is about the item that was open: a Thumbnail row left
       // expanded belongs to that item.
       this.openFact.set(null);
@@ -3652,6 +3831,10 @@ export class MetadataReports implements OnInit, OnDestroy {
       _prompt_trace: raw._prompt_trace,
       // Verbatim, like the trace: the gate's record of this run, read by the titles list.
       reroll_gate: raw.reroll_gate,
+      // Verbatim: the cleanup's receipt (its failures are shown beside their sections) and the
+      // versions each re-rolled section replaced (LEDGER #223).
+      scrubbed: raw.scrubbed,
+      reroll_history: raw.reroll_history,
     };
   }
 
