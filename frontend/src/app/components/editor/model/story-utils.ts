@@ -17,8 +17,8 @@ export function storyColor(n: number): string {
 
 /**
  * Stories in export/project order (number ascending, creation order breaking ties), each
- * with its regions merged (overlapping/adjacent spans a user painted in separate drags
- * collapsed into one) and carrying its `id` so the ribbon/strip can flag the active story.
+ * with its regions merged (overlapping/adjacent spans saved in separate gestures collapsed into
+ * one) and carrying its `id` so the ribbon/strip can flag the selected and picked ones.
  * Internal — resolveStoryRegions() strips the id for the export payload. PURE.
  */
 export function storiesForDisplay(
@@ -37,8 +37,9 @@ export function isStoryEmpty(story: Story): boolean {
 
 /**
  * Extra material pulled on EACH side of every story region AT EXPORT TIME (seconds, ORIGINAL
- * base). Stories on the ribbon are disjoint — the paint/edge gestures push neighbors out of the
- * way — but the exported material deliberately overlaps: a transition drawn tight against the
+ * base). Stories on the ribbon are disjoint — saving a span makes every other story yield it,
+ * and the edge drag pushes neighbors out of the way — but the exported material
+ * deliberately overlaps: a transition drawn tight against the
  * next story must not lose its shoulder footage, and too much material beats too little. The
  * ribbon, the story list, and chapter DERIVATION all stay unpadded (they describe the story the
  * user drew); only the exported projects/transcripts and the chapter-timestamp rebase (which
@@ -66,15 +67,15 @@ export function padRegions(
  * is what "stale" means.
  *
  * This is a fingerprint and not an invalidate-on-edit call for one reason: regions are mutated
- * in a dozen places — the ribbon edge drag, Split ▸ Apply, merge, story delete, the timeline
+ * in a dozen places — the ribbon edge drag, Split ▸ Apply, Join, story delete, the timeline
  * move, auto-split — and every new one of those is another site that has to REMEMBER to
  * invalidate. That is the thing that gets forgotten quietly, and forgetting it leaves chapter
  * markers pointing at content the upload no longer contains. Comparing a fingerprint makes
  * staleness derived, so it cannot be forgotten; there are deliberately no invalidation calls at
  * the mutation sites.
  *
- * Merged and sorted first, so a span painted in two touching drags, or in the other order,
- * fingerprints identically to the same span painted in one. Rounded to milliseconds because
+ * Merged and sorted first, so a span saved in two touching pieces, or in the other order,
+ * fingerprints identically to the same span saved in one. Rounded to milliseconds because
  * region edges are arithmetic results and land an ULP either side of where they started —
  * float noise must never read as a redrawn story. `r1:` is the format's own version: change the
  * rounding or the layout below and every stored fingerprint must stop matching rather than be

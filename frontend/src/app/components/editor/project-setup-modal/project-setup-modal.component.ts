@@ -3,6 +3,7 @@ import { Subscription } from 'rxjs';
 import { EDITOR_HOST, EditorHost, ProcessingJob } from '../editor-host';
 import { ProjectEntry } from '../services/projects.service';
 import { buildWorkflowOptions } from '../host-data/workflow-payload';
+import { muteSummary } from '../model/mute-words';
 import {
   AudioSource, AudioSourceType, VideoSourceType, MediaSourceType,
   MEDIA_SOURCE_LABELS, VIDEO_CONTINUATION_PARTS, MASTER_QUADRANTS
@@ -104,10 +105,19 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
 
   /** The user dismissed the modal. The job (if any) keeps running. */
   @Output() closed = new EventEmitter<void>();
-  /** A job was started here — the host records which entry owns it. */
-  @Output() started = new EventEmitter<void>();
-  /** The run finished and produced a session. The host rescans, stamps and opens it. */
-  @Output() completed = new EventEmitter<{ zipPath: string }>();
+  /**
+   * A job was started here — the host records which entry owns it, and with it whether the
+   * run was asked to transcribe when it finishes. The flag rides the START event, not just
+   * the completion one, because this modal may well be gone by the time the run ends: the
+   * whole point of the option is that the user clicks once and walks away.
+   */
+  @Output() started = new EventEmitter<{ transcribe: boolean }>();
+  /**
+   * The run finished and produced a session. The host rescans, stamps and opens it. The
+   * transcribe answer is repeated here for completeness, but the host acts on the one it
+   * recorded at START — that is the copy that survives this modal being closed.
+   */
+  @Output() completed = new EventEmitter<{ zipPath: string; transcribe: boolean }>();
 
   state: ProjectSetupState = 'idle';
   /** Inline failure text for the CURRENT state (detection, payload, start, or the job). */
@@ -156,6 +166,23 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
    * same mix, since the automixer cannot be applied to only half a session.
    */
   reuseProcessed = false;
+  /**
+   * Queue the existing transcription step behind the run, so processing and transcribing are
+   * one click. Default on: a session is transcribed sooner or later in every workflow this
+   * editor supports, and the twelve minutes of processing are exactly when nobody is watching.
+   * Read once, when the run starts — the host owns the request from then on.
+   */
+  transcribeAfter = true;
+  /**
+   * Mute words (LEDGER #226): the one-line summary of this project's choice, shown next to the
+   * "Mute words…" button. The choice itself is saved per project by the Mute words modal; a
+   * project with none takes the remembered one when the run starts (onProcess), so what this
+   * line said is what the project keeps.
+   */
+  muteSummaryText: string | null = null;
+  muteSaved = false;
+  muteError: string | null = null;
+  muteOpen = false;
   /** Files in the project folder that are this pipeline's own derived audio. */
   private derivedFiles = new Set<string>();
   /** What clearing the previous session actually removed, once a run has started. */
@@ -181,6 +208,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
     this.attached = this.attachRunning;
     this.jobSub = this.host.getCurrentJob().subscribe(job => this.onJob(job));
     void this.refreshVoiceIsolationStatus();
+    void this.refreshMuteSummary();
     if (!this.attachRunning) {
       void this.detect();
     }
@@ -188,6 +216,37 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.jobSub?.unsubscribe();
+  }
+
+  // ── Mute words ──────────────────────────────────────────────────────────────
+
+  get muteCleanName(): string | null {
+    return this.entry?.scan?.cleanName || null;
+  }
+
+  async refreshMuteSummary(): Promise<void> {
+    const cleanName = this.muteCleanName;
+    if (!this.entry || !cleanName) {
+      this.muteSummaryText = null;
+      this.muteError = 'This project has no session name, so Mute words cannot be saved for it.';
+      this.cdr.detectChanges();
+      return;
+    }
+    try {
+      const catalog = await this.host.muteWordsCatalog();
+      const loaded = await this.host.loadMuteWords({ folder: this.entry.path, cleanName });
+      this.muteSummaryText = muteSummary(loaded.settings, catalog);
+      this.muteSaved = loaded.saved;
+      this.muteError = null;
+    } catch (err: any) {
+      this.muteSummaryText = null;
+      this.muteError = `Mute words: ${err?.message || String(err)}`;
+    }
+    this.cdr.detectChanges();
+  }
+
+  onMuteSaved(): void {
+    void this.refreshMuteSummary();
   }
 
   // ── Detection ───────────────────────────────────────────────────────────────
@@ -659,6 +718,19 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
         return;
       }
 
+      // Mute words: a project with no saved choice takes the remembered one now, so the run
+      // keeps what the summary line showed. A choice that cannot be saved stops the start —
+      // otherwise the export would mute something other than what this modal said.
+      const muteName = this.muteCleanName;
+      if (this.entry && muteName) {
+        try {
+          await this.host.ensureMuteWords({ folder: this.entry.path, cleanName: muteName });
+        } catch (err: any) {
+          this.error = `Mute words could not be saved for this project: ${err?.message || String(err)}`;
+          return;
+        }
+      }
+
       // Claim the job BEFORE starting: startWorkflow publishes the running job while we are
       // still awaiting it, and that first emission has to be recognised as ours.
       this.attached = true;
@@ -671,7 +743,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
         return;
       }
       this.state = 'running';
-      this.started.emit();
+      this.started.emit({ transcribe: this.transcribeAfter });
 
       // A re-process starts over: the previous session's edits and transcript are written in
       // timeline coordinates, and this run rebuilds the timeline, so they cannot survive it.
@@ -725,7 +797,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
       if (typeof zipPath === 'string' && zipPath) {
         this.state = 'done';
         this.error = null;
-        this.completed.emit({ zipPath });
+        this.completed.emit({ zipPath, transcribe: this.transcribeAfter });
       } else {
         // Exit code 0 but no session to open — a contradiction, said plainly.
         this.state = 'error';

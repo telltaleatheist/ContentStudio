@@ -67,7 +67,7 @@ export interface RecentSession {
 }
 
 /** Timeline pointer tool: Arrow (scrub/select) or Blade (drop section boundaries). */
-export type ToolMode = 'select' | 'blade' | 'story';
+export type ToolMode = 'select' | 'blade';
 
 /**
  * A cut is a half-open FRAME range in ORIGINAL timeline coordinates (the manifest's time
@@ -79,12 +79,11 @@ export interface Cut { startFrame: number; endFrame: number; }
 /**
  * A user-marked "story" as one or more disjoint spans (`regions`) in ORIGINAL timeline
  * seconds. A session covers ~5 stories; on export the fcpxml is split into one project per
- * story (that story's regions, minus the cuts, collapsed to 0). Stories are built in Story
- * Mode: each drag paints a region into the ACTIVE story, or — with none active — starts a
- * brand-new story (so consecutive drags make separate stories; to accumulate regions the
- * user clicks a story to make it active first). `number` is a user-facing ordering (auto =
- * max existing + 1, editable) that orders the exported projects. Not persisted across
- * sessions (v1); reset on session re-init.
+ * story (that story's regions, minus the cuts, collapsed to 0). Stories are built out of the
+ * ORDINARY timeline selection: highlight a span with the Arrow tool and Cmd+S saves it as a new
+ * story, or right-click ▸ Add to story appends it to an existing one. Either way every OTHER
+ * story yields the claimed span, so stories on the ribbon stay disjoint. `number` is a
+ * user-facing ordering (auto = max existing + 1, editable) that orders the exported projects.
  */
 export interface Story {
   id: string;
@@ -180,11 +179,19 @@ export interface StorySplitCache {
  */
 export interface KeptInterval { os: number; oe: number; es: number; ee: number; seq: number; }
 
-/** One undoable edit state. See editSnapshot() for why `sequence` has to ride along. */
+/** One undoable edit state. See editSnapshot() for why `sequence` and `stories` ride along. */
 export interface EditSnapshot {
   cuts: Cut[];
   blades: number[];
   sequence: { start: number; end: number }[] | null;
+  /**
+   * Every story, deep-copied. OPTIONAL because a sidecar written by a build from before stories
+   * were undoable has snapshots without it, and absence there means "this step says nothing about
+   * stories — leave them alone" (see applyEditSnapshot). Anything this build writes always sets it.
+   */
+  stories?: Story[];
+  /** The story-id source at snapshot time, so an undone-then-redone story keeps its own id. */
+  storyIdCounter?: number;
 }
 
 /**

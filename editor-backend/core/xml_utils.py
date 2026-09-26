@@ -362,7 +362,7 @@ class FCPXMLUtils:
         if audio_type in ['mic1', 'mic2', 'mic3', 'mic4']:
             volume.set('amount', '0.0471005dB')
         elif audio_type in ['screen', 'game', 'bluetooth']:
-            volume.set('amount', '-6dB')
+            volume.set('amount', '-3dB')
         elif audio_type == 'soundEffects':
             volume.set('amount', '-10dB')
         else:
@@ -540,7 +540,7 @@ class FCPXMLUtils:
                 volume.set('amount', '0.0471005dB')
             elif audio_type in ['screen', 'game', 'bluetooth']:
                 volume = ET.SubElement(clip, 'adjust-volume')
-                volume.set('amount', '-6dB')
+                volume.set('amount', '-3dB')
             elif audio_type == 'soundEffects':
                 volume = ET.SubElement(clip, 'adjust-volume')
                 volume.set('amount', '-15dB')

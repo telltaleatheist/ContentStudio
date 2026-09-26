@@ -330,6 +330,15 @@
   }
 }
 
+/* Mute words row: text on the left, its button on the right. Not a checkbox row, so not clickable. */
+.psm-toggle.psm-mute {
+  cursor: default;
+  align-items: center;
+  .psm-toggle-text { flex: 1 1 auto; min-width: 0; }
+  .psm-btn { flex: 0 0 auto; }
+  .psm-mute-error { color: #e6a597; }
+}
+
 /* The one inline link in this modal: "install it" on the un-installed Denoise row. Styled as
    text, not as a button — it sits mid-sentence in the description it belongs to. */
 .psm-link {

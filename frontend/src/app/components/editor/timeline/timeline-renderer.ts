@@ -113,10 +113,21 @@ export class TimelineRenderer {
       ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, H); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(x1 + 0.5, 0); ctx.lineTo(x1 + 0.5, H); ctx.stroke();
-      // 6px handles in the ruler band.
-      ctx.fillStyle = '#f5c518';
-      ctx.fillRect(x0 - 3, 0, 6, RULER_H);
-      ctx.fillRect(x1 - 3, 0, 6, RULER_H);
+      // Grab tabs on both ends, in the ruler band AND mirrored along the bottom edge. Both ends
+      // are draggable anywhere down the full height of the band, so the bottom tab is what says
+      // so in the track area, where the ruler tab is a long way from the pointer. 8px wide
+      // against a 7px grab radius: the handle is never smaller than the thing that catches it.
+      // A band too thin to have two distinguishable ends gets no tabs — its ends are not
+      // grabbable either (selectionEdgeAtX caps each end's reach at half the band), and a tab
+      // wider than the band it belongs to is a promise the hit-test does not keep.
+      const tabW = Math.min(8, x1 - x0);
+      if (tabW >= 2) {
+        ctx.fillStyle = '#f5c518';
+        ctx.fillRect(x0 - tabW / 2, 0, tabW, RULER_H);
+        ctx.fillRect(x1 - tabW / 2, 0, tabW, RULER_H);
+        ctx.fillRect(x0 - tabW / 2, H - 5, tabW, 5);
+        ctx.fillRect(x1 - tabW / 2, H - 5, tabW, 5);
+      }
       ctx.restore();
     }
 
@@ -404,11 +415,10 @@ export class TimelineRenderer {
   }
 
   /**
-   * Draw the stories ribbon in its band directly under the ruler. Each story's RESOLVED
-   * regions (from resolveStoryRegions — the same last-writer-wins paint the export will use)
-   * render as colored blocks, so nesting reads visually: the leftover pieces of an
-   * overpainted story and the block that covered it show the painted result, never the raw
-   * overlapping ranges. Region bounds are ORIGINAL seconds mapped through originalToEdited →
+   * Draw the stories ribbon in its band directly under the ruler. Stories are disjoint by
+   * construction (every save claims its span from the others), so each story's regions render as
+   * colored blocks with nothing to resolve between them: the leftover pieces of a story a later
+   * save cut into, and the block that claimed the middle, are already what the export will use. Region bounds are ORIGINAL seconds mapped through originalToEdited →
    * timeToX, exactly like clips, so the ribbon tracks cuts/scroll/zoom. No-op with zero
    * stories (the band collapses to nothing via ribbonHeight).
    */
@@ -431,8 +441,8 @@ export class TimelineRenderer {
     const bh = h - 2;
     for (const s of scene.stories) {
       const color = storyColor(s.number);
-      const isActive = s.id === scene.activeStoryId;
-      const isPicked = scene.mergePicked.has(s.id);
+      const isSelected = s.id === scene.selectedStoryId;
+      const isPicked = scene.pickedStoryIds.has(s.id);
       // A region draws as one block PER edited piece: reordering can scatter a single original
       // region across the edited timeline, and mapping only its two ends would give a
       // negative-width block that silently vanishes from the ribbon. One piece in source order.
@@ -448,17 +458,17 @@ export class TimelineRenderer {
         ctx.save();
         this.roundRectPath(ctx, bx0, by, bw, bh, 2);
         ctx.fillStyle = color;
-        // Picked-for-merge reads as bright as active: the user is about to act on it.
-        ctx.globalAlpha = (isActive || isPicked) ? 1 : 0.7;
+        // Picked-for-Join reads as bright as selected: the user is about to act on it.
+        ctx.globalAlpha = (isSelected || isPicked) ? 1 : 0.7;
         ctx.fill();
         ctx.globalAlpha = 1;
-        // Picked wins the outline over active — the pick is the pending action, and a story can
-        // be both. Blue matches the Merge button; white stays the "this is the paint target" cue.
+        // Picked wins the outline over selected — the pick is the pending action, and a story can
+        // be both. Blue matches the Join button; white says "this is the story you have selected".
         if (isPicked) {
           ctx.strokeStyle = '#4a9eff';
           ctx.lineWidth = 2.5;
           ctx.stroke();
-        } else if (isActive) {
+        } else if (isSelected) {
           ctx.strokeStyle = '#ffffff';
           ctx.lineWidth = 1.5;
           ctx.stroke();
