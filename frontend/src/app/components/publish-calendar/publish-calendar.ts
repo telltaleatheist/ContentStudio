@@ -744,6 +744,11 @@ export class PublishCalendar implements OnInit, OnDestroy {
 
     const active = this.activeTabId();
     return swept.scheduled
+      // A video YouTube has already made public is out, not booked: it keeps a leftover
+      // publishAt, but a published video has no place on this board (Owen, 2026-09-26: "if
+      // its marked published, it shouldnt be in the calendar"). Only private, still-waiting
+      // videos are mirrored.
+      .filter((video) => video.privacyStatus === 'private')
       .filter((video) => {
         const localAt = openAtByVideo.get(video.videoId);
         return localAt === undefined || !sameMoment(video.publishAt, localAt);
