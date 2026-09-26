@@ -37,29 +37,17 @@ import type { MetadataRoutingOption, SnapChapterModels } from './metadata-routin
 import type { ChapterPipelineResult } from './chapter-transcript';
 import type { Chapter as PublishedChapter } from './chapter-generator.service';
 import { TimeUtils } from './chapter-generator.service';
-import { estimateTokens } from '../../crucible/context-check';
+import { DECIDE_QUESTION_TOKENS, LOAD_CONTEXT_STEP, loadContextFor } from '../../crucible/context-check';
 import type { ChapteringResult, ChatFn, ChatOptions, DecideFn } from './chaptering/types';
 
 /**
- * The load context a call asks for (LEDGER #209, Owen: "we should only be using as much context
- * (8k vs 16k) as necessary"): the smallest step of LOAD_CONTEXT_STEP that holds the call's prompt
- * plus its answer budget plus a 512-token margin, by the transport's own estimate (context-check.ts).
+ * The load context a call asks for is the shared rule (context-check.ts `loadContextFor`, LEDGER
+ * #209): the smallest 8,192 step that holds the call's prompt, its answer budget and the margin.
  * A short video's outline and decide states fit 8,192; a stream chunk's (~12k tokens) takes 16,384;
- * a thinking title (prompt + the 16,384 budget) takes 24,576. A job whose later call needs more
- * grows the load once (lease.ts); nothing here is a floor carried from another job.
+ * a thinking title (prompt + the 16,384 budget) takes 24,576. Re-exported here because the snap
+ * keepers read it from this module.
  */
-export const LOAD_CONTEXT_STEP = 8192;
-
-export function loadContextFor(promptChars: number, answerTokens: number): number {
-  const need = estimateTokens(promptChars) + answerTokens + 512;
-  return Math.ceil(need / LOAD_CONTEXT_STEP) * LOAD_CONTEXT_STEP;
-}
-
-/**
- * What a decide call answers beyond its state: each question is the state plus one quoted sentence
- * and its options, scored for one letter, so the state plus this margin is the need.
- */
-export const DECIDE_QUESTION_TOKENS = 1024;
+export { DECIDE_QUESTION_TOKENS, LOAD_CONTEXT_STEP, loadContextFor };
 
 /** The shape of every cloud title call: the caller's door (AIManagerService.runPlainRequest). */
 export type CloudPlain = (prompt: string, model: string, what: string, shape: { thinking: boolean }) => Promise<string | null>;

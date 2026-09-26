@@ -798,74 +798,22 @@ check('the titles reach the thumbnail call as input data, or the call refuses', 
 });
 
 /**
- * ONE num_ctx PER MODEL PER RUN (ollama-json trap 4).
- *
- * Ollama fully reloads a model on any num_ctx change, so two calls on one model that sized
- * themselves independently would reload a 17GB model in the middle of an item. The largest
- * prompt wins and everybody shares it.
+ * EVERY LOCAL CALL ASKS FOR ITS OWN STEP (P4, LEDGER #209). This replaced the per-model, per-run
+ * bucketed window (`ModelRunContextBudget`) and the job's context ratchet (`contextFloor`): a call
+ * asks for the smallest 8,192 step its own prompt and budget need, and the lease (not a floor)
+ * keeps reloads to growth. The boundary cases live in tools/p4-checks.js; this says the old
+ * machinery is gone, so nothing can carry a floor from another stage or job.
  */
-check('two calls on one model share ONE num_ctx, sized by the larger', () => {
-  const budget = new tasks.ModelRunContextBudget('qwen3.8-27b-4bit', new lifecycleModule.JobModelLifecycle());
-  budget.register('titles', () => 9000);
-  budget.register('pinned_comment', () => 4000);
-
-  const ctx = { sourceLabel: 'x.mp4' };
-  const first = budget.resolve(ctx);
-  const second = budget.resolve(ctx);
-  eq(first, second, 'the second call re-sized the window and would have reloaded the model');
-
-  const expected = tasks.runNumCtx({
-    model: 'qwen3.8-27b-4bit', needs: [9000, 4000], max: tasks.LOCAL_FIELD_CTX_MAX, what: 'the check',
-  });
-  eq(first, expected, 'the shared window is not the one the largest prompt needs');
-  if (first < 9000) throw new Error('the shared window is smaller than the largest prompt: ' + first);
-  // Bucketed to 4096 so two items whose transcripts differ slightly land on the same value.
-  eq(first % 4096, 0, 'the window is not on a 4096 bucket, so near-identical items reload the model');
-});
-
-/**
- * THE num_ctx RATCHET (model-lifecycle.ts).
- *
- * The unloads are gone, so a model stays resident across a job's stages — and a later stage that
- * sizes a SMALLER window reloads it anyway, for nothing. The floor is per job and per model, it
- * never shrinks, and it never pushes a call past the ceiling its own stage refuses at.
- */
-check('a stage never sizes below a window this job already made resident', () => {
+check('no call sizes its window from another call: the per-run budget and the ratchet are gone', () => {
+  eq(typeof tasks.ModelRunContextBudget, 'undefined', 'the per-model run budget still exists');
+  eq(typeof tasks.runNumCtx, 'undefined', 'the bucketed run window still exists');
+  eq(typeof lifecycleModule.contextFloor, 'undefined', 'the context floor still exists');
   const life = new lifecycleModule.JobModelLifecycle();
-  eq(life.contextFloor('qwen3.8-27b-4bit', 40960), 0, 'a model nothing has loaded is claimed to have a floor');
-
-  life.recordContext('qwen3.8-27b-4bit', 24576);
-  eq(life.contextFloor('qwen3.8-27b-4bit', 40960), 24576, 'the resident window is not the floor for the next call');
-  eq(life.contextFloor('qwen3.5-9b', 40960), 0, 'one model\'s window became another model\'s floor');
-
-  // Growth is a legitimate reload; the floor keeps the larger value from then on.
-  life.recordContext('qwen3.8-27b-4bit', 32768);
-  eq(life.contextFloor('qwen3.8-27b-4bit', 40960), 32768, 'a grown window did not raise the floor');
-  life.recordContext('qwen3.8-27b-4bit', 8192);
-  eq(life.contextFloor('qwen3.8-27b-4bit', 40960), 32768, 'a smaller later call lowered the floor');
-});
-
-check('the ratchet never pushes a call past its own stage ceiling', () => {
-  const life = new lifecycleModule.JobModelLifecycle();
-  life.recordContext('qwen3.8-27b-4bit', 40960);
-  // The chapter pipeline refuses above 32768; a floor it cannot ask for would turn into that
-  // refusal, so it is clamped and that stage reloads the model instead.
-  eq(life.contextFloor('qwen3.8-27b-4bit', 32768), 32768, 'the floor was allowed past the caller\'s ceiling');
-  eq(lifecycleModule.contextFloor(undefined, 32768), 0);
-  eq(lifecycleModule.contextFloor(4096, 32768), 4096);
-});
-
-check('a second item sizes to the window the first one left resident', () => {
-  const life = new lifecycleModule.JobModelLifecycle();
-  const first = new tasks.ModelRunContextBudget('qwen3.8-27b-4bit', life);
-  first.register('titles', () => 9000);
-  const firstCtx = first.resolve({ sourceLabel: 'long.mp4' });
-
-  // A shorter transcript: its own sizing is smaller, and pinning it would reload the model to
-  // make the window smaller than the one already loaded.
-  const second = new tasks.ModelRunContextBudget('qwen3.8-27b-4bit', life);
-  second.register('titles', () => 2000);
-  eq(second.resolve({ sourceLabel: 'short.mp4' }), firstCtx, 'item 2 shrank the window and reloaded the model');
+  eq(typeof life.contextFloor, 'undefined', 'the job still carries a context floor');
+  eq(typeof life.recordContext, 'undefined', 'the job still records a window for later calls to inherit');
+  const sizing = require(path.join(ROOT, 'services/metadata/context-sizing.js'));
+  eq(typeof sizing.bucketLoadContext, 'undefined', 'the 4096-bucket sizer still exists');
+  eq(sizing.loadContextFor(3500, 2048), 8192, 'a 1,000-token prompt with the field budget');
 });
 
 check('no metadata unit can release a model — the job does that, once', () => {
@@ -874,18 +822,6 @@ check('no metadata unit can release a model — the job does that, once', () => 
     if (typeof unit.unload === 'function') {
       throw new Error(`unit "${unit.label}" still unloads its own model when it finishes`);
     }
-  }
-});
-
-check('a prompt too big for any window this app will ask for is REFUSED, not truncated', () => {
-  let message = '';
-  try {
-    tasks.runNumCtx({ model: 'qwen3.8-27b-4bit', needs: [200000], max: tasks.LOCAL_FIELD_CTX_MAX, what: 'a huge call' });
-  } catch (e) {
-    message = e.message;
-  }
-  if (!/above the \d+ ceiling/.test(message)) {
-    throw new Error('an oversized prompt did not refuse: ' + (message || 'it returned a number'));
   }
 });
 
@@ -1691,7 +1627,7 @@ async function rejects(promise) {
     const Gen = generatorModule.MetadataGeneratorService;
     const item = { source: '/x/keeper.mp4', title: 'keeper', srtSegments: [{ index: 1, start: '00:00:00,000', end: '00:00:10,000', text: 'Hello there, this is a test.' }] };
     const manager = { promptTrace: [], promotedItems: () => [], runPlainRequest: async () => null };
-    const lifecycle = { leases: {}, recordContext: () => undefined, contextFloor: () => 0 };
+    const lifecycle = { leases: {} };
     const base = { metadataRouting: routing.resolveMetadataRouting({ chapters: 'claude-cli' }), promptSet: 'youtube-telltale' };
     const bogus = await rejects(Gen.generateChapters(item, manager, { ...base, chapterEngine: 'rolling-window' }, 0, 1, lifecycle));
     eq(/unknown chapter engine "rolling-window"/.test(bogus.message), true, 'an unknown engine:');

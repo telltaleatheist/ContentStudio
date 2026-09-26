@@ -116,7 +116,7 @@ check('under the ceiling the transcript reaches the field calls byte for byte', 
   const transcript = transcriptOf(80000); // under local 90k and far under cloud 400k
   for (const ceiling of ['local', 'cloud']) {
     const decision = digest.resolveFieldContent({
-      transcript, sourceLabel: 'podcast 1.mov', ceiling, chapters: CHAPTERS,
+      transcript, sourceLabel: 'podcast 1.mov', ceiling, chapters: CHAPTERS, policy: 'raw',
     });
     eq(decision.mode, 'raw-transcript', `${ceiling}: the mode`);
     eq(decision.content === transcript, true, `${ceiling}: the content is the transcript object itself`);
@@ -128,7 +128,7 @@ check('under the ceiling the transcript reaches the field calls byte for byte', 
 check('having chapters does not condense an item that fits', () => {
   const transcript = transcriptOf(90000); // exactly AT the local ceiling
   const decision = digest.resolveFieldContent({
-    transcript, sourceLabel: 'at-the-line.mov', ceiling: 'local', chapters: CHAPTERS,
+    transcript, sourceLabel: 'at-the-line.mov', ceiling: 'local', chapters: CHAPTERS, policy: 'raw',
   });
   eq(decision.mode, 'raw-transcript', 'at the ceiling is under it');
   eq(decision.content, transcript, 'unchanged');
@@ -140,7 +140,7 @@ check('having chapters does not condense an item that fits', () => {
 
 const OVER = transcriptOf(140000); // over local 90k, under cloud 400k
 const overDecision = digest.resolveFieldContent({
-  transcript: OVER, sourceLabel: 'six-hour-stream.mov', ceiling: 'local', chapters: CHAPTERS,
+  transcript: OVER, sourceLabel: 'six-hour-stream.mov', ceiling: 'local', chapters: CHAPTERS, policy: 'raw',
 });
 
 check('over the ceiling with chapters, the content IS the chapter digest', () => {
@@ -180,7 +180,7 @@ check('the mode is DECLARED in the words the operator reads', () => {
 
 check('the same item is raw on a cloud-routed run — the ceiling is the whole difference', () => {
   const cloud = digest.resolveFieldContent({
-    transcript: OVER, sourceLabel: 'six-hour-stream.mov', ceiling: 'cloud', chapters: CHAPTERS,
+    transcript: OVER, sourceLabel: 'six-hour-stream.mov', ceiling: 'cloud', chapters: CHAPTERS, policy: 'raw',
   });
   eq(cloud.mode, 'raw-transcript', '140k is well under the 400k cloud ceiling');
   eq(cloud.content, OVER, 'and passes through untouched');
@@ -198,6 +198,7 @@ check('over the ceiling with NO chapters fails loudly, naming both facts', () =>
       sourceLabel: 'chapterless-podcast.mov',
       ceiling: 'cloud',
       chapters: [],
+      policy: 'raw',
     });
   } catch (error) {
     thrown = error;
@@ -213,10 +214,10 @@ check('over the ceiling with NO chapters fails loudly, naming both facts', () =>
 
 check('neither fact alone fails an item', () => {
   digest.resolveFieldContent({
-    transcript: transcriptOf(500000), sourceLabel: 'a.mov', ceiling: 'cloud', chapters: CHAPTERS,
+    transcript: transcriptOf(500000), sourceLabel: 'a.mov', ceiling: 'cloud', chapters: CHAPTERS, policy: 'raw',
   });
   digest.resolveFieldContent({
-    transcript: transcriptOf(2000), sourceLabel: 'b.mov', ceiling: 'local', chapters: [],
+    transcript: transcriptOf(2000), sourceLabel: 'b.mov', ceiling: 'local', chapters: [], policy: 'raw',
   });
 });
 
@@ -246,7 +247,7 @@ function ctxFor(decision) {
 }
 
 const rawDecision = digest.resolveFieldContent({
-  transcript: transcriptOf(50000), sourceLabel: 'six-hour-stream.mov', ceiling: 'local', chapters: CHAPTERS,
+  transcript: transcriptOf(50000), sourceLabel: 'six-hour-stream.mov', ceiling: 'local', chapters: CHAPTERS, policy: 'raw',
 });
 
 // Constructed, never initialized: `loadPrompts` is all the prompt assembly needs. No model

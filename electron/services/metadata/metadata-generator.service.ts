@@ -41,14 +41,20 @@ import { excludePromoChapters } from './promo-chapters';
 import { SCRUB_ROUTING_TASK, scrubGeneratedItem } from './scrub';
 import { rerollGateItem } from './reroll/reroll.service';
 import { RerollGateSettings, resolveRerollGateSettings } from './reroll/settings';
-import { DigestChapter, FieldContentDecision, digestChaptersOf, resolveFieldContent } from './chapter-digest';
+import { DigestChapter, FieldContentDecision, FieldInputPolicy, digestChaptersOf, resolveFieldContent, resolveFieldInputPolicy } from './chapter-digest';
+import { contextAssertion } from './context-assertion';
 import { topEntities, transcriptCasing } from './entity-extraction';
 import { chapterPools } from './tags-hashtags';
-import { bucketLoadContext } from './context-sizing';
+import { loadContextFor } from './context-sizing';
 import { SYSTEM_PROMPTS } from './system-prompts';
 import { PreparedChannelInsights, resolveGuidelinesBlock } from '../analytics/insights-guidelines';
 
-/** Lessons are 5-10 lines; the budget is sized for a local model's thinking, not the answer. */
+/**
+ * Lessons are 5-10 lines; the budget is sized for a local model's thinking, not the answer.
+ * KEPT by P4's budget review: no local distiller answer length is recorded anywhere P4 could
+ * read, and the call (a ~2,100-token prompt) already loads at the smallest step, 8,192, so a
+ * lower number would buy nothing (docs/crucible/P4.md "Budgets").
+ */
 const GUIDELINES_NUM_PREDICT = 2048;
 import { JobCancelledError } from './cancellation';
 import type { TranscriptRef } from '../publish/publish-types';
@@ -128,8 +134,6 @@ export interface GenerationParams {
    * run on the routing's own `chapters` entry (resolveChapterModelOption).
    */
   metadataRouting?: MetadataRoutingSelections;
-  /** Chapter load-context FLOOR. One value for the whole run (a different context reloads, LEDGER #111). */
-  chapterNumCtx?: number;
   /**
    * What the chapter pipeline detects (LEDGER #213): 'chapters' (every single video, the default)
    * or 'stories' (a podcast compilation). A retired 'detailed' / 'broad' (#170) from a row queued
@@ -149,6 +153,15 @@ export interface GenerationParams {
    * declared setting of the run, stated in its warnings. The whole-transcript engine ignores it.
    */
   chapterTitleThinking?: boolean;
+  /**
+   * What each item's field calls READ (P4, plan 7.2; chapter-digest.ts's header): 'raw', today's
+   * rule and the declared default (the raw transcript until it is over the direct-pass ceiling),
+   * or 'digest' (every chaptered item reads its chapter digest). Read from the store's
+   * `fieldInput` at job time with no store default, or the test CLI's `--field-input`; absent
+   * means the default, stated once in the run's log. Not a Settings control (LEDGER #214): the
+   * default moves only on Owen's verdict from the plan 7.4 A/B.
+   */
+  fieldInput?: FieldInputPolicy;
   /**
    * The re-roll gate's settings for this run (reroll/settings.ts; LEDGER #201), resolved by the
    * IPC layer from the `rerollGate` and `rerollGateTuning` settings AT JOB TIME. Absent (a caller
@@ -326,6 +339,11 @@ export class MetadataGeneratorService {
           ? 'local'
           : 'cloud';
 
+      // The field input policy, once for the run (P4). Said either way (Law 8); an unknown value
+      // fails the job here, by name, before anything is transcribed or asked.
+      const fieldInput = resolveFieldInputPolicy(params.fieldInput, 'this run\'s settings (the `fieldInput` store key or --field-input)');
+      log.info(`[MetadataGenerator] ${fieldInput.line}`);
+
       // Initialize AI Manager
       const aiConfig: AIConfig = {
         transcriptCeiling,
@@ -454,6 +472,9 @@ export class MetadataGeneratorService {
       // Declared here rather than after job init because the show-prompt flow below
       // runs the chapter stage too and can raise the same warnings.
       const warnings: string[] = [...inputFailures];
+      // A non-default policy is a declared mode of the run, so its line rides in the warnings
+      // where the operator reads what happened to a run after the fact.
+      if (fieldInput.policy !== 'raw') warnings.push(fieldInput.line);
       // Chapters produced this run, keyed by source label — handed back to the caller
       // in show-prompt mode so "Send to AI" reuses them.
       const computedChapters: { [sourceLabel: string]: ChapterPipelineResult } = {};
@@ -521,6 +542,7 @@ export class MetadataGeneratorService {
               sourceLabel,
               ceiling: transcriptCeiling,
               chapters: digestChaptersOf(chapters),
+              policy: fieldInput.policy,
             });
             this.declareFieldContent(fieldContent, warnings);
 
@@ -708,6 +730,7 @@ export class MetadataGeneratorService {
             sourceLabel,
             ceiling: transcriptCeiling,
             chapters: digestChaptersOf(chapters),
+            policy: fieldInput.policy,
           });
           this.declareFieldContent(fieldContent, warnings);
 
@@ -788,6 +811,20 @@ export class MetadataGeneratorService {
             sourceLabel,
             signal: params.cancelSignal,
           });
+
+          // WHAT THE FIELDS READ, and THE 16,384 ASSERTION (P4; plan 16 P4: "on the PC, every call
+          // of a 60-minute video fits under 16,384 (a log assertion)"). Written onto the item so
+          // the report says which policy wrote it and how big every local call was, and logged.
+          // A statement, never a block (Law 3): a call over the line is named, not refused.
+          (metadata as any)._field_input = {
+            policy: fieldContent.policy,
+            mode: fieldContent.mode,
+            content_chars: fieldContent.content.length,
+            transcript_chars: this.contentTextOf(item).text.length,
+          };
+          const assertion = contextAssertion((metadata as any)._prompt_trace ?? []);
+          (metadata as any)._context_stats = assertion.stats;
+          log.info(`[MetadataGenerator] ${sourceLabel}: ${assertion.line}`);
 
           const saveResult = await outputHandler.addItemToJob(
             jobInfo.jobId, metadata, this.itemSourceOf(item), this.itemProvenanceOf(item));
@@ -1219,13 +1256,7 @@ export class MetadataGeneratorService {
         return aiManager.runPlainRequest(fullPrompt, option.model, what, {
           thinking: false,
           maxTokens: GUIDELINES_NUM_PREDICT,
-          loadContext: bucketLoadContext({
-            promptChars: fullPrompt.length,
-            maxTokens: GUIDELINES_NUM_PREDICT,
-            max: 32768,
-            logPrefix: '[InsightsGuidelines]',
-            what,
-          }),
+          loadContext: loadContextFor(fullPrompt.length, GUIDELINES_NUM_PREDICT),
           timeoutMs: 600_000,
         });
       },
@@ -1636,9 +1667,6 @@ export class MetadataGeneratorService {
       // calls that run next are routed to the same 27B on most channels, and reloading it
       // between the two stages is the freeze this job stopped paying for.
       lifecycle,
-      // Sizes its own context window from the largest prompt the run will send; a
-      // configured value can only raise that floor, never lower it.
-      numCtx: params.chapterNumCtx,
       // The queue-time pick (LEDGER #213) as this engine's own grains: `chapters` is the old
       // `detailed` (the single-video turns snap's chapters grain draws at switch cost 20),
       // `stories` is `stories`. This engine leaves in P10.

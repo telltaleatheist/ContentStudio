@@ -60,6 +60,49 @@ export function tokensNeeded(promptChars: number, maxTokens: number): number {
 }
 
 /**
+ * The step every load context is a multiple of (LEDGER #209: 8,192 -> 16,384 -> 24,576 ...).
+ * Crucible 1.0.24+ loads a model at the context the load states (`params.context`); a coarse
+ * step means two calls of nearly the same size ask for the same load, so the lease's
+ * grow-only rule (lease.ts) reloads a model at most once per step crossed.
+ */
+export const LOAD_CONTEXT_STEP = 8192;
+
+/**
+ * Headroom on top of the estimate. `estimateTokens` is this codebase's 3.5 characters a
+ * token, not the model's tokenizer, and the chat template adds its own turn markers; 512 is
+ * the margin every sizing rule here has carried since LEDGER #111.
+ */
+export const LOAD_CONTEXT_MARGIN = 512;
+
+/**
+ * THE ONE SIZING RULE for a local call's load context (LEDGER #209, Owen: "we should only be
+ * using as much context (8k vs 16k) as necessary"): the smallest multiple of
+ * {@link LOAD_CONTEXT_STEP} that holds THIS call's prompt, its own answer budget and the
+ * margin, by the same estimate {@link checkBeforeSending} measures the call with, so a call
+ * sized here never fails that check on the window it asked for.
+ *
+ * Nothing here is a floor: no other call, stage or job raises it. A job whose later call needs
+ * more asks for more and the lease grows the load once (lease.ts, "growth is legitimate"); a
+ * later call that needs less runs on the larger window already loaded, because a smaller one
+ * would be a reload that buys nothing. The server refuses a size above its own ceiling by name
+ * (`context_over_limit`), so there is no app-side maximum to guess.
+ */
+/**
+ * What a decide call needs beyond its state, in the place of an answer budget: each question is
+ * the state plus one quoted unit and its options, scored for one letter. Snap's chaptering and
+ * the re-roll gate's scorer both size their decide loads as `loadContextFor(state, this)`.
+ */
+export const DECIDE_QUESTION_TOKENS = 1024;
+
+export function loadContextFor(promptChars: number, answerTokens: number): number {
+  if (!Number.isFinite(promptChars) || promptChars < 0 || !Number.isInteger(answerTokens) || answerTokens < 0) {
+    throw new Error(`loadContextFor was given ${promptChars} prompt chars and a ${answerTokens}-token answer budget`);
+  }
+  const need = tokensNeeded(promptChars, answerTokens) + LOAD_CONTEXT_MARGIN;
+  return Math.max(1, Math.ceil(need / LOAD_CONTEXT_STEP)) * LOAD_CONTEXT_STEP;
+}
+
+/**
  * Throw `over_context` (or `context_unstated`) BEFORE the call is sent.
  * Returns the need, for the log line that says it fit.
  */

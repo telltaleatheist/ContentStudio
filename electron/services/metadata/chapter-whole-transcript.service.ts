@@ -118,7 +118,8 @@ import {
   Cue,
 } from './chapter-transcript';
 import { CHAPTER_PROMPTS, ChapterGrain } from './chapter-prompts';
-import { bucketLoadContext, estimateTokens, TOKENS_PER_WORD } from './context-sizing';
+import { estimateTokens, loadContextFor, TOKENS_PER_WORD } from './context-sizing';
+import { CHARS_PER_TOKEN } from '../../crucible/context-check';
 import { parseLines, parseTitleDetail, stripThinking } from './plain-call';
 import { JobModelLifecycle } from './model-lifecycle';
 import { crucibleTransport, type PromptTraceRecord } from '../../crucible/transport';
@@ -245,12 +246,11 @@ export interface WholeTranscriptChapterOptions {
    * between two stages of one job is what froze the operator's machine. The job releases the
    * set once, at the end (model-lifecycle.ts): the job's Crucible lease on it.
    *
-   * It also carries the load-context ratchet, so a stage that shares this model with the field
-   * calls does not size a SMALLER window than the one already loaded and reload it for nothing.
+   * Every call on it asks for its own load context (LEDGER #209); the lease grows the load when
+   * a call needs more and never shrinks it within the job (lease.ts), so a stage sharing this
+   * model with the field calls is never reloaded to make its window smaller.
    */
   lifecycle: JobModelLifecycle;
-  /** Floor for the load context, never a ceiling. The run sizes its own. */
-  numCtx?: number;
   /** The video's title or filename — the detail call's second required context input. */
   videoTitle?: string;
   /**
@@ -353,7 +353,6 @@ export class WholeTranscriptChapterService {
   private calls = 0;
   /** The whole video, single-spaced — the grounding context judgeTitle checks names against. */
   private wholeTranscriptText = '';
-  private numCtx = 0;
   private speakerTagged = false;
   private groundingUsable = false;
   /** The whole-video name list (standard spellings), comma-joined. Empty when it could not be written. */
@@ -425,10 +424,9 @@ export class WholeTranscriptChapterService {
     );
 
     // ---- stage 1: the rolling window -------------------------------------------
-    // The load context is a local concern: sized, ratcheted and GPU-checked only on the local
-    // path. A cloud provider owns its own window and the sizing would record a residency for a
-    // model that never loads.
-    if (!this.options.cloudPlain) this.numCtx = this.runNumCtx(transcript);
+    // The load context is a local concern, declared and GPU-checked only on the local path. A
+    // cloud provider owns its own window. Each call sizes its own load (`ask`, LEDGER #209).
+    if (!this.options.cloudPlain) this.declareWindow(transcript);
     const windowed = await this.rollingWindows(cues);
     const starts = windowed.starts;
     const claimed = windowed.claimed;
@@ -1033,59 +1031,42 @@ export class WholeTranscriptChapterService {
   }
 
   /**
-   * ONE load context for the whole run (LEDGER #111: loading at a different context reloads).
+   * The run's largest load context, DECLARED (it used to be pinned as ONE load context for the
+   * whole run, LEDGER #111; P4 moved every call to its own step, LEDGER #209, and the lease keeps
+   * reloads to one per step crossed).
    *
-   * Sized from the whole-transcript call, which is the largest prompt this run can send by
-   * construction — every detail call reads a SLICE of the same transcript under a shorter
-   * instruction body, so nothing else can exceed it and no call is ever clamped.
-   *
-   * Exceeding the GPU ceiling costs speed and is DECLARED in the run's warnings rather than
-   * only logged; exceeding CTX_MAX refuses, because a truncated transcript would produce
-   * chapters for the first half of a video and no indication that is what happened.
+   * Sized from a stage-1 window call, the largest prompt this run can send by construction:
+   * every detail call reads a SLICE of the same transcript under a shorter instruction body.
+   * The window budget (windowWordBudget) keeps it inside CTX_MAX, so nothing here can ask for a
+   * window it would refuse. Exceeding the GPU ceiling costs speed and is DECLARED in the run's
+   * warnings rather than only logged.
    */
-  private runNumCtx(transcript: string): number {
+  private declareWindow(transcript: string): void {
     // Capped at one WINDOW's worth: a transcript past the budget runs as rolling windows
-    // (rollingWindows above), each of which fits by construction, so CTX_MAX is a sizing cap
-    // now and nothing here can ask for a window it would refuse.
+    // (rollingWindows above), each of which fits by construction.
     const words = Math.min(normalizeWords(transcript).length, this.windowWordBudget());
     const promptTokens =
       Math.ceil(words * TOKENS_PER_WORD) +
       estimateTokens(CHAPTER_PROMPTS.wholeTranscript(this.options.grain).length);
+    // The largest stage-1 call's step, by the one sizing rule (context-check.ts). No floor, no
+    // ratchet: every call asks for its own step and the lease grows the load when one needs more.
+    const largest = loadContextFor(promptTokens * CHARS_PER_TOKEN, NUM_PREDICT);
 
-    // The GPU ceiling is checked here rather than passed to bucketNumCtx, which only logs it:
-    // a run that will be slow for a stated reason is something the job report should carry.
-    //
-    // The floor is the LARGER of the configured one and whatever window this job has already
-    // made resident on this model (model-lifecycle.ts): sizing under a resident window reloads
-    // the model to make it smaller, which buys nothing and costs the operator a UI freeze.
-    // Clamped to CTX_MAX by `contextFloor`, so a floor can never turn into the refusal below.
-    const numCtx = bucketLoadContext({
-      promptTokens,
-      maxTokens: NUM_PREDICT,
-      configured: Math.max(
-        this.options.numCtx || 0,
-        this.options.lifecycle.contextFloor(this.options.model, CTX_MAX)
-      ),
-      max: CTX_MAX,
-      logPrefix: '[Chapters]',
-      what: `reading this ${Math.round(words / 1000)}k-word transcript in one call`,
-    });
-    this.options.lifecycle.recordContext(this.options.model, numCtx);
-
+    // The GPU ceiling is checked here, where the job report can carry it: a run that will be
+    // slow for a stated reason is something the operator should read.
     const ceiling = numCtxGpuCeiling(this.options.model);
-    if (numCtx > ceiling) {
+    if (largest > ceiling) {
       this.warn(
-        `this video's transcript needs a ${numCtx}-token context window, above the ${ceiling}-token size ` +
+        `this video's transcript needs a ${largest}-token context window, above the ${ceiling}-token size ` +
           `at which this model's KV cache still fits on the GPU — the run will be correct but slower ` +
           `(one spilled layer bottlenecks every token)`
       );
     }
 
     log.info(
-      `[Chapters] load context ${numCtx} for the whole run (${words} transcript words ~${promptTokens} prompt ` +
-        `tokens, output budget ${NUM_PREDICT})`
+      `[Chapters] largest stage-1 call loads at ${largest} (${words} transcript words ~${promptTokens} prompt ` +
+        `tokens, output budget ${NUM_PREDICT}); every call asks for its own step`
     );
-    return numCtx;
   }
 
   // -------------------------------------------------------------------- model calls
@@ -1177,7 +1158,8 @@ export class WholeTranscriptChapterService {
         thinking: shape.thinking,
         maxTokens: NUM_PREDICT,
         ...(shape.temperature === undefined ? {} : { temperature: shape.temperature }),
-        loadContext: this.numCtx,
+        // This call's own step (LEDGER #209): its prompt plus the output budget plus the margin.
+        loadContext: loadContextFor(prompt.length, NUM_PREDICT),
         // Held under the JOB's lease from here until the job ends: the next stage (the detail
         // calls, then the field calls when they are routed to the same model) finds it loaded.
         job: this.options.lifecycle.leases,

@@ -154,6 +154,12 @@ Everything else:
   --title-thinking <on|off>
                        Thinking on snap's chapter titles (LEDGER #208: on). Default: the app's
                        'chapterTitleThinking' setting, else on.
+  --field-input <raw|digest>
+                       What the field calls read (P4, plan 7.2): raw (the declared default: the
+                       raw transcript until it is over the direct-pass ceiling, then the chapter
+                       digest) or digest (every chaptered item reads its chapter digest; a
+                       chapterless item keeps its transcript). Default: the app's 'fieldInput'
+                       setting, else raw. The plan 7.4 A/B's two arms are this flag.
   --assets <dir>       Prompt assets root. Default: <repo>/electron/assets/prompts.
   --server <name>      Send this run to that registered Crucible server instead of the one
                        the app has selected. The routing record is not modified.
@@ -210,6 +216,10 @@ function parseArgs(argv) {
       const v = argv[++i];
       if (v !== 'on' && v !== 'off') fail(`--title-thinking must be on or off (got "${v}")`);
       args.titleThinking = v === 'on';
+    }
+    else if (a === '--field-input') {
+      args.fieldInput = argv[++i];
+      if (!['raw', 'digest'].includes(args.fieldInput)) fail(`--field-input must be raw or digest (got "${args.fieldInput}")`);
     }
     else if (a === '--out') args.out = path.resolve(argv[++i]);
     else if (a === '--no-insights') args.noInsights = true;
@@ -706,7 +716,6 @@ async function main() {
     jobId,
     jobName: path.basename(args.input),
     inputTranscripts: {},
-    chapterNumCtx: settings.chapterNumCtx || undefined,
     // What the chapter pipeline detects (LEDGER #170); absent = the declared default
     // ('detailed'), same as the app's queue page preselects.
     chapterGrain: args.grain,
@@ -714,6 +723,9 @@ async function main() {
     // store; a flag overrides for this run only, and the store is never written.
     chapterEngine: args.chapterEngine !== undefined ? args.chapterEngine : settings.chapterEngine,
     chapterTitleThinking: args.titleThinking !== undefined ? args.titleThinking : settings.chapterTitleThinking,
+    // What the field calls read (P4): the flag for this run only, else the store's `fieldInput`,
+    // else absent, which the generator states as the default ('raw') in the run's log.
+    fieldInput: args.fieldInput !== undefined ? args.fieldInput : settings.fieldInput,
     // Carried for parity with ipc-handlers' `generate-metadata`. It is a no-op on this call —
     // the generator only resolves a tagging mode when it is the one transcribing, and it is
     // handed `preTranscribedContent` here — but a params object that silently lacks a field the
@@ -887,6 +899,7 @@ async function main() {
     `channel:       ${channel}`,
     `transcript:    ${transcriptSource.replace(/\n\s+/g, ' ')}`,
     `chapters:      ${chapterSource}`,
+    `field input:   ${args.fieldInput !== undefined ? `${args.fieldInput} (--field-input)` : settings.fieldInput !== undefined ? `${settings.fieldInput} (the app's fieldInput setting)` : 'raw (the declared default)'}`,
     `insights:      ${insights ? `evidence ${insights.rawBlock.length} chars — ${insightsSource}` : insightsSource}`,
     `elapsed:       ${(result.processing_time || 0).toFixed(1)}s`,
     '',

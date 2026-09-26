@@ -202,10 +202,10 @@ app.whenReady().then(async () => {
         // CHAPTER_PIPELINE_MODELS. `chapterStageModels` went with the sealed pipeline it
         // configured — an existing store may still hold the key and nothing reads it.
         //
-        // FLOOR for the chapter run's load context, never a ceiling: the run sizes its own
-        // from the whole transcript it has to read. One value for the whole run, because
-        // loading the model at a different context is a full reload (LEDGER #111).
-        chapterNumCtx: 16384,
+        // `chapterNumCtx` (a 16,384 FLOOR on the chapter run's load context) is gone with P4:
+        // every local call asks for the smallest 8,192 step its own prompt needs (LEDGER #209),
+        // and a floor is exactly what that rule forbids. An existing store may still hold the
+        // key; nothing reads it.
         defaultPlatform: 'youtube',
         defaultMode: 'individual',
         outputDirectory: path.join(app.getPath('documents'), 'ContentStudio Output'),

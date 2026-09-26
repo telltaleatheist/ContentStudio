@@ -117,6 +117,14 @@ export interface PromptTraceRecord {
   prompt: string;
   /** The Crucible server that ran it, or `claude -p` for the outside transport (Law 8). */
   server: string;
+  /**
+   * P4: the call's output budget (0 on a decide, whose need is its state plus the questions) and
+   * the load context it asked for, so a finished item can say how big each local call was
+   * (context-assertion.ts). Absent on a claude -p entry and on a trace written before P4.
+   */
+  maxTokens?: number;
+  loadContext?: number | null;
+  act?: 'generate' | 'decide';
 }
 
 export interface ChatRequest {
@@ -292,14 +300,18 @@ export class CrucibleTransport {
         at: new Date().toISOString(),
         prompt: request.system === undefined ? request.prompt : `${request.system}\n\n${request.prompt}`,
         server,
+        maxTokens: request.maxTokens,
+        loadContext: upstream ? null : request.loadContext ?? null,
+        act: 'generate',
       });
 
       const need = tokensNeeded(request.prompt.length + (request.system?.length ?? 0), request.maxTokens);
       if (!upstream && request.loadContext !== undefined && need > request.loadContext) {
         throw new CrucibleCallError(
           'over_context',
-          `${request.what} needs ~${need} tokens and was sized to load ${model} at ${request.loadContext}. ` +
-            `Nothing was sent and nothing was cut.`,
+          `${request.what} needs ~${need} tokens (~${estimateTokens(request.prompt.length + (request.system?.length ?? 0))} ` +
+            `of prompt plus a ${request.maxTokens}-token output budget) and was sized to load ${model} at ` +
+            `${request.loadContext}. Nothing was sent and nothing was cut.`,
           server,
         );
       }
@@ -476,6 +488,9 @@ export class CrucibleTransport {
         at: new Date().toISOString(),
         prompt: `${state}\n\n[decide: ${Object.keys(request.questions).join(', ')}]`,
         server,
+        maxTokens: 0,
+        loadContext: request.loadContext ?? null,
+        act: 'decide',
       });
       const need = estimateTokens(state.length);
       let reensured = false;

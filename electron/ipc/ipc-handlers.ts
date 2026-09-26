@@ -1532,7 +1532,6 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // Not seeded in the store's `defaults` — there is no sensible default recording, and a
         // path nobody chose is worse than no path.
         speakerEnrollmentAudio: settings.speakerEnrollmentAudio || undefined,
-        chapterNumCtx: settings.chapterNumCtx || undefined,
         // What the chapter pipeline detects — the queue-time selector's pick, sent per run
         // by the renderer: chapters | stories (LEDGER #213). Absent (older renderer) means the declared
         // default, and a retired detailed / broad reads as chapters, logged, in metadata-generator.
@@ -1544,6 +1543,10 @@ export function setupIpcHandlers(store: Store<any>, analytics: AnalyticsServices
         // store says false).
         chapterEngine: settings.chapterEngine,
         chapterTitleThinking: settings.chapterTitleThinking,
+        // What the field calls read (P4, plan 7.2): 'raw' (the declared default) or 'digest', read
+        // from the store AT JOB TIME with no store default, like the engine above. Not a Settings
+        // control (LEDGER #214); the default moves only on Owen's verdict from the plan 7.4 A/B.
+        fieldInput: settings.fieldInput,
         // Per-task model routing, read from the store AT JOB TIME. The registry supplies
         // the defaults at the read site (metadata-routing.ts), never the store's
         // `defaults` block: a seeded default freezes the shipped routing into every
