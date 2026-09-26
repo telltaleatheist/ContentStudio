@@ -19,6 +19,7 @@ import { Observable } from 'rxjs';
 import { ElectronService } from './electron';
 import { EditorProcessingService } from './editor-processing.service';
 import type { EditorManifest } from '../components/editor/host-data/editor-manifest';
+import type { MuteCatalog, MuteSettings, MuteSettingsLoad, WordMuteReport } from '../components/editor/model/mute-words';
 import type {
   ArchiveCheck, ArchiveDeleteProgress, ArchiveProgress, ArchiveQueue, ArchiveResult, ArchiveStatus,
   ArchiveSyncedEntry,
@@ -105,6 +106,28 @@ export class EditorHostAdapter implements EditorHost {
 
   exportEditorCuts(payload: Parameters<ElectronService['exportEditorCuts']>[0]): Promise<any> {
     return this.electron.exportEditorCuts(payload);
+  }
+
+  // ── Mute words (LEDGER #226) ────────────────────────────────────────────────
+
+  muteWordsCatalog(): Promise<MuteCatalog> {
+    return this.electron.muteWordsCatalog();
+  }
+
+  loadMuteWords(payload: { folder: string; cleanName: string }): Promise<MuteSettingsLoad> {
+    return this.electron.loadMuteWords(payload);
+  }
+
+  saveMuteWords(payload: { folder: string; cleanName: string; settings: MuteSettings }): Promise<{ path: string }> {
+    return this.electron.saveMuteWords(payload);
+  }
+
+  ensureMuteWords(payload: { folder: string; cleanName: string }): Promise<{ settings: MuteSettings; wrote: boolean }> {
+    return this.electron.ensureMuteWords(payload);
+  }
+
+  applyMuteWords(payload: { zipPath: string }): Promise<{ path: string; wordMutes: WordMuteReport }> {
+    return this.electron.applyMuteWords(payload);
   }
 
   // ── Transcription ───────────────────────────────────────────────────────────

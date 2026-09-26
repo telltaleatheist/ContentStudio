@@ -3,6 +3,7 @@ import { Subscription } from 'rxjs';
 import { EDITOR_HOST, EditorHost, ProcessingJob } from '../editor-host';
 import { ProjectEntry } from '../services/projects.service';
 import { buildWorkflowOptions } from '../host-data/workflow-payload';
+import { muteSummary } from '../model/mute-words';
 import {
   AudioSource, AudioSourceType, VideoSourceType, MediaSourceType,
   MEDIA_SOURCE_LABELS, VIDEO_CONTINUATION_PARTS, MASTER_QUADRANTS
@@ -172,6 +173,16 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
    * Read once, when the run starts — the host owns the request from then on.
    */
   transcribeAfter = true;
+  /**
+   * Mute words (LEDGER #226): the one-line summary of this project's choice, shown next to the
+   * "Mute words…" button. The choice itself is saved per project by the Mute words modal; a
+   * project with none takes the remembered one when the run starts (onProcess), so what this
+   * line said is what the project keeps.
+   */
+  muteSummaryText: string | null = null;
+  muteSaved = false;
+  muteError: string | null = null;
+  muteOpen = false;
   /** Files in the project folder that are this pipeline's own derived audio. */
   private derivedFiles = new Set<string>();
   /** What clearing the previous session actually removed, once a run has started. */
@@ -197,6 +208,7 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
     this.attached = this.attachRunning;
     this.jobSub = this.host.getCurrentJob().subscribe(job => this.onJob(job));
     void this.refreshVoiceIsolationStatus();
+    void this.refreshMuteSummary();
     if (!this.attachRunning) {
       void this.detect();
     }
@@ -204,6 +216,37 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.jobSub?.unsubscribe();
+  }
+
+  // ── Mute words ──────────────────────────────────────────────────────────────
+
+  get muteCleanName(): string | null {
+    return this.entry?.scan?.cleanName || null;
+  }
+
+  async refreshMuteSummary(): Promise<void> {
+    const cleanName = this.muteCleanName;
+    if (!this.entry || !cleanName) {
+      this.muteSummaryText = null;
+      this.muteError = 'This project has no session name, so Mute words cannot be saved for it.';
+      this.cdr.detectChanges();
+      return;
+    }
+    try {
+      const catalog = await this.host.muteWordsCatalog();
+      const loaded = await this.host.loadMuteWords({ folder: this.entry.path, cleanName });
+      this.muteSummaryText = muteSummary(loaded.settings, catalog);
+      this.muteSaved = loaded.saved;
+      this.muteError = null;
+    } catch (err: any) {
+      this.muteSummaryText = null;
+      this.muteError = `Mute words: ${err?.message || String(err)}`;
+    }
+    this.cdr.detectChanges();
+  }
+
+  onMuteSaved(): void {
+    void this.refreshMuteSummary();
   }
 
   // ── Detection ───────────────────────────────────────────────────────────────
@@ -673,6 +716,19 @@ export class ProjectSetupModalComponent implements OnInit, OnDestroy {
       if (!options) {
         this.error = errors.join('\n');
         return;
+      }
+
+      // Mute words: a project with no saved choice takes the remembered one now, so the run
+      // keeps what the summary line showed. A choice that cannot be saved stops the start —
+      // otherwise the export would mute something other than what this modal said.
+      const muteName = this.muteCleanName;
+      if (this.entry && muteName) {
+        try {
+          await this.host.ensureMuteWords({ folder: this.entry.path, cleanName: muteName });
+        } catch (err: any) {
+          this.error = `Mute words could not be saved for this project: ${err?.message || String(err)}`;
+          return;
+        }
       }
 
       // Claim the job BEFORE starting: startWorkflow publishes the running job while we are

@@ -137,6 +137,7 @@ import type {
   ProjectsRegistry, RemoteWeekListing, TitleHandoff
 } from '../components/editor/editor-host';
 import type { EditorManifest } from '../components/editor/host-data/editor-manifest';
+import type { MuteCatalog, MuteSettings, MuteSettingsLoad, WordMuteReport } from '../components/editor/model/mute-words';
 
 // Re-exported for host code that talks about handoffs without importing the port directly.
 // `export type` (not a bare re-export) because isolatedModules cannot tell a type from a value.
@@ -926,6 +927,13 @@ declare global {
         output?: 'fcpxml' | 'transcripts';
         muteMicDuringScreen?: boolean;
       }) => Promise<any>;
+
+      // Mute words (LEDGER #226)
+      muteWordsCatalog: () => Promise<MuteCatalog>;
+      loadMuteWords: (payload: { folder: string; cleanName: string }) => Promise<MuteSettingsLoad>;
+      saveMuteWords: (payload: { folder: string; cleanName: string; settings: MuteSettings }) => Promise<{ path: string }>;
+      ensureMuteWords: (payload: { folder: string; cleanName: string }) => Promise<{ settings: MuteSettings; wrote: boolean }>;
+      applyMuteWords: (payload: { zipPath: string }) => Promise<{ path: string; wordMutes: WordMuteReport }>;
 
       // Transcription
       transcribeSession: (payload: { zipPath: string }) => Promise<{ jobId: string }>;
@@ -2071,6 +2079,28 @@ export class ElectronService {
     muteMicDuringScreen?: boolean;
   }): Promise<any> {
     return this.editorBridge.exportEditorCuts(payload);
+  }
+
+  // ── Mute words (LEDGER #226) ────────────────────────────────────────────────
+
+  async muteWordsCatalog(): Promise<MuteCatalog> {
+    return this.editorBridge.muteWordsCatalog();
+  }
+
+  async loadMuteWords(payload: { folder: string; cleanName: string }): Promise<MuteSettingsLoad> {
+    return this.editorBridge.loadMuteWords(payload);
+  }
+
+  async saveMuteWords(payload: { folder: string; cleanName: string; settings: MuteSettings }): Promise<{ path: string }> {
+    return this.editorBridge.saveMuteWords(payload);
+  }
+
+  async ensureMuteWords(payload: { folder: string; cleanName: string }): Promise<{ settings: MuteSettings; wrote: boolean }> {
+    return this.editorBridge.ensureMuteWords(payload);
+  }
+
+  async applyMuteWords(payload: { zipPath: string }): Promise<{ path: string; wordMutes: WordMuteReport }> {
+    return this.editorBridge.applyMuteWords(payload);
   }
 
   // ── Transcription ───────────────────────────────────────────────────────────

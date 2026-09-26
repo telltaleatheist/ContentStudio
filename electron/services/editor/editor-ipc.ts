@@ -21,6 +21,9 @@ import { ArchiveBusyError,
   ArchiveSync, comparablePath, destinationFor, DEFAULT_ARCHIVE_ROOT, DEFAULT_ARCHIVE_MOUNT_URL
 } from './archive-sync';
 import { readArchiveLedger, recordArchived, forgetArchivedUnder } from './archive-ledger';
+import {
+  readMuteCatalog, loadProjectMuteSettings, saveProjectMuteSettings, ensureProjectMuteSettings,
+} from './mute-words';
 import { createEditorWindow, getEditorWindow } from './editor-window';
 import { getMainWindow } from '../../main';
 
@@ -493,6 +496,7 @@ export function setupEditorIpc(store: Store<any>, deps: EditorIpcDeps): void {
   setupEditorFileHandlers();
   setupProcessingHandlers(deps.voiceIsolation);
   setupProjectHandlers();
+  setupMuteWordsHandlers();
   setupEditorConfigHandlers();
   setupArchiveHandlers(store);
   log.info(`[editor] IPC handlers registered (renamed channels: ${Object.values(EDITOR_CHANNEL_RENAMES).join(', ')})`);
@@ -1750,6 +1754,53 @@ function setupProjectHandlers(): void {
 
     base.state = hasEdits ? 'edited' : hasZip ? 'processed' : 'raw';
     return base;
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mute words (LEDGER #226)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The word list and each project's choice (mute-words.ts), plus Apply, which re-mutes a master
+ * timeline that is already exported (cli/mute_words.py). Every export runs the same pass itself.
+ * Each handler names what went wrong; nothing here substitutes a default for a broken file.
+ */
+function setupMuteWordsHandlers(): void {
+  const catalog = () => readMuteCatalog(path.join(EditorPaths.corePath, 'mute_words.json'));
+  const where = (p: any): { folder: string; cleanName: string } => {
+    if (!p || typeof p.folder !== 'string' || typeof p.cleanName !== 'string') {
+      throw new Error('Mute words needs { folder, cleanName } for the project');
+    }
+    return { folder: p.folder, cleanName: p.cleanName };
+  };
+
+  ipcMain.handle('editor:mute-words-catalog', async () => catalog());
+
+  ipcMain.handle('editor:mute-words-load', async (_event, payload: { folder: string; cleanName: string }) => {
+    const { folder, cleanName } = where(payload);
+    return loadProjectMuteSettings(catalog(), folder, cleanName, EditorPaths.configDir);
+  });
+
+  ipcMain.handle('editor:mute-words-save', async (_event, payload: { folder: string; cleanName: string; settings: unknown }) => {
+    const { folder, cleanName } = where(payload);
+    const out = saveProjectMuteSettings(catalog(), folder, cleanName, EditorPaths.configDir, payload.settings);
+    log.info(`[mute-words] saved ${out.path}`);
+    return out;
+  });
+
+  ipcMain.handle('editor:mute-words-ensure', async (_event, payload: { folder: string; cleanName: string }) => {
+    const { folder, cleanName } = where(payload);
+    const out = ensureProjectMuteSettings(catalog(), folder, cleanName, EditorPaths.configDir);
+    if (out.wrote) log.info(`[mute-words] ${cleanName}: took the remembered choice for this project`);
+    return out;
+  });
+
+  ipcMain.handle('editor:mute-words-apply', async (_event, payload: { zipPath: string }) => {
+    const zipPath = payload?.zipPath;
+    if (typeof zipPath !== 'string' || !zipPath.trim()) throw new Error('Mute words Apply needs the project zip path');
+    if (!fs.existsSync(zipPath)) throw new Error(`Mute words Apply: the project zip is not there: ${zipPath}`);
+    return await pythonService().muteWordsApply(zipPath);
   });
 }
 

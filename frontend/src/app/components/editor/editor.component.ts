@@ -6,6 +6,7 @@ import { EDITOR_HOST, EditorHost, ProcessingJob } from './editor-host';
 import { ProjectsService, ProjectEntry } from './services/projects.service';
 import { ProjectSidebarComponent } from './project-sidebar/project-sidebar.component';
 import { ProjectSetupModalComponent } from './project-setup-modal/project-setup-modal.component';
+import { WordMuteReport, muteSummary } from './model/mute-words';
 import { EditorManifest, EditorSegment } from './host-data/editor-manifest';
 import {
   TranscriptWord, Transcript, TranscriptGroup, TranscriptGroupView,
@@ -289,6 +290,14 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   // result JSON. null = a plain-cuts export, where they do not apply.
   exportTranscripts: 'exported' | 'no sidecar' | null = null;
   exportTranscriptsDir: string | null = null;
+  // The Mute words report from the export (cli/word_mute_pass.py), shown in the result modal.
+  // null only when the export produced no FCPXML (transcripts-only).
+  exportWordMutes: WordMuteReport | null = null;
+  // One line for the export chooser: what Mute words will do for this project, read fresh each
+  // time the chooser opens (the choice can change from the projects pane). Null until read.
+  exportMuteSummary: string | null = null;
+  // The project whose right-click "Mute words…" modal is open (LEDGER #226).
+  muteWordsEntry: ProjectEntry | null = null;
   // File ▸ Export… chooser modal (pick Master FCPXML vs Stories).
   exportChooserOpen = false;
   // Mute the mic wherever the SCREEN track is speaking and the mic is not. ON by default:
@@ -704,6 +713,8 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.exportMicMuteBlocks = null;
     this.exportTranscripts = null;
     this.exportTranscriptsDir = null;
+    this.exportWordMutes = null;
+    this.exportMuteSummary = null;
     // Back to the default (mute armed) — an "off" choice is per-session state and is
     // restored from the new session's sidecar, never carried over from the previous one.
     this.muteMicDuringScreen = true;
@@ -2612,6 +2623,39 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     if (!this.canExport()) return;
     this.menuOpen = false;
     this.exportChooserOpen = true;
+    void this.refreshExportMuteSummary();
+  }
+
+  /**
+   * The session's project folder and clean name, from its zip path
+   * (`<folder>/<cleanName>_compounds.zip` — the scanner's own naming).
+   */
+  private sessionProject(): { folder: string; cleanName: string } | null {
+    const zip = this.currentZipPath;
+    if (!zip) return null;
+    const cut = Math.max(zip.lastIndexOf('/'), zip.lastIndexOf('\\'));
+    const base = zip.slice(cut + 1);
+    if (!base.endsWith('_compounds.zip')) return null;
+    return { folder: zip.slice(0, cut), cleanName: base.slice(0, -'_compounds.zip'.length) };
+  }
+
+  /** Read this project's Mute words choice for the chooser's line. A failure is shown, not hidden. */
+  private async refreshExportMuteSummary(): Promise<void> {
+    const proj = this.sessionProject();
+    if (!proj) {
+      this.exportMuteSummary = 'Mute words: this session is not in a project folder, so none are muted';
+      this.cdr.detectChanges();
+      return;
+    }
+    try {
+      const [catalog, loaded] = await Promise.all([this.host.muteWordsCatalog(), this.host.loadMuteWords(proj)]);
+      this.exportMuteSummary = loaded.saved
+        ? `Mute words: ${muteSummary(loaded.settings, catalog)}`
+        : 'Mute words: none — nothing is saved for this project (right-click it in Projects ▸ Mute words…)';
+    } catch (err: any) {
+      this.exportMuteSummary = `Mute words: ${err?.message || String(err)}`;
+    }
+    this.cdr.detectChanges();
   }
 
   /**
@@ -2678,6 +2722,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
     this.exportMicMuteBlocks = null;
     this.exportTranscripts = null;
     this.exportTranscriptsDir = null;
+    this.exportWordMutes = null;
     this.cdr.detectChanges();
     try {
       const stories = this.hasStories() ? this.resolveStoryRegions() : undefined;
@@ -2706,6 +2751,9 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
       // away — the typeof check keeps 0 while turning an absent field into "did not run".
       this.exportMicMuteBlocks = typeof res?.micMuteBlocks === 'number' ? res.micMuteBlocks : null;
       this.exportTranscripts = tx ?? null;
+      // Present on every FCPXML export (Python always reports it); absent only on the
+      // transcripts-only export, which writes no timeline to mute.
+      this.exportWordMutes = res?.wordMutes ?? null;
       this.exportTranscriptsDir = tx === 'exported' ? res.transcriptsDir : null;
     } catch (err: any) {
       // Python's message is authoritative — show it verbatim.
@@ -2764,6 +2812,7 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
   closeExportModal(): void {
     this.exportResultPath = null;
     this.exportError = null;
+    this.exportWordMutes = null;
     this.exportMicMuteBlocks = null;
     this.exportTranscripts = null;
     this.exportTranscriptsDir = null;
@@ -4870,6 +4919,15 @@ export class EditorComponent implements OnInit, AfterViewInit, OnDestroy {
    * form. A raw project with no master video is a contradiction the scanner should never
    * produce; it is reported in the pane rather than opening an empty modal.
    */
+  /** Right-click ▸ Mute words… on a project: open the modal on it. */
+  onProjectMuteWords(entry: ProjectEntry): void {
+    this.muteWordsEntry = entry;
+  }
+
+  onMuteWordsClosed(): void {
+    this.muteWordsEntry = null;
+  }
+
   onProjectProcess(entry: ProjectEntry): void {
     if (!entry.scan?.masterVideo) {
       this.projectSidebar?.showError(

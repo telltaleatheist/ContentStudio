@@ -78,6 +78,8 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
   @Output() openRequested = new EventEmitter<ProjectEntry>();
   /** A raw project the user wants processed. The editor owns the processing UI. */
   @Output() processRequested = new EventEmitter<ProjectEntry>();
+  /** "Mute words…" from a project's right-click menu (LEDGER #226). The editor opens the modal. */
+  @Output() muteWordsRequested = new EventEmitter<ProjectEntry>();
 
   projects: ProjectEntry[] = [];
   /** The list as the template renders it: week dividers, each with its day projects. */
@@ -1289,6 +1291,19 @@ export class ProjectSidebarComponent implements OnInit, OnChanges, OnDestroy {
     if (!entry || !this.isActionable(entry)) return;
     this.inlineError = null;
     this.processRequested.emit(entry);
+  }
+
+  /** Whether the open menu offers "Mute words…" — any project with a session name to save it under. */
+  get menuCanMuteWords(): boolean {
+    const e = this.contextMenu?.entry;
+    return !!e && this.isActionable(e) && !!e.scan?.cleanName;
+  }
+
+  onContextMenuMuteWords(): void {
+    const entry = this.contextMenu?.entry;
+    this.closeContextMenu();
+    if (!entry || !this.isActionable(entry) || !entry.scan?.cleanName) return;
+    this.muteWordsRequested.emit(entry);
   }
 
   @HostListener('document:click')

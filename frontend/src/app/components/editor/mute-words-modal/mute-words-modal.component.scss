@@ -1,0 +1,93 @@
+/* FCPX-dark, the editor's own modal palette (see relink-modal). */
+@use '../styles/modal' as *;
+
+:host { display: contents; }
+
+/* Above the processing modal it can be opened from. */
+.mwm-backdrop { z-index: 200; }
+
+.mwm {
+  width: 100%;
+  max-width: 640px;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #26262a;
+  border: 1px solid #0d0d0e;
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+  color: #c4c4ca;
+  font-size: 12px;
+}
+
+.mwm-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid #1a1a1d;
+  .mwm-heading { flex: 1 1 auto; min-width: 0; }
+  .mwm-title { font-size: 15px; font-weight: 600; color: #f0f0f2; }
+  .mwm-sub { margin-top: 3px; color: #9a9aa2; }
+  .mwm-close { background: none; border: none; color: #9a9aa2; cursor: pointer; font-size: 13px; }
+}
+
+.mwm-body { padding: 12px 18px; overflow: auto; }
+
+.mwm-error { color: #e6a597; margin-bottom: 10px; white-space: pre-wrap; }
+.mwm-note { color: #e8a33d; margin-bottom: 10px; }
+
+.mwm-group {
+  padding: 8px 0;
+  border-bottom: 1px solid #1f1f23;
+  .mwm-group-head { display: flex; align-items: center; gap: 10px; }
+  .mwm-group-name { font-weight: 600; color: #e2e2e6; min-width: 120px; }
+  .mwm-words { margin-top: 6px; color: #9a9aa2; line-height: 1.5; }
+}
+
+.mwm-link {
+  background: none; border: none; padding: 0; color: #7fa7e0; cursor: pointer; font-size: 12px;
+}
+
+.mwm-seg {
+  margin-left: auto;
+  display: inline-flex;
+  border: 1px solid #0d0d0e;
+  border-radius: 5px;
+  overflow: hidden;
+  button {
+    font-size: 11px; color: #c4c4ca; background: #333338; border: none;
+    padding: 4px 9px; cursor: pointer;
+    & + button { border-left: 1px solid #0d0d0e; }
+    &.on { background: #3a7bd0; color: #fff; }
+  }
+}
+
+.mwm-custom {
+  width: 100%; margin-top: 6px; box-sizing: border-box; resize: vertical;
+  background: #1c1c1f; color: #e2e2e6; border: 1px solid #0d0d0e; border-radius: 5px;
+  padding: 6px 8px; font-size: 12px;
+}
+
+.mwm-window {
+  display: flex; align-items: center; gap: 6px; margin-top: 12px; color: #e2e2e6; font-weight: 600;
+}
+.mwm-minutes {
+  width: 56px; background: #1c1c1f; color: #e2e2e6; border: 1px solid #0d0d0e; border-radius: 4px;
+  padding: 2px 4px; font-size: 12px;
+}
+.mwm-desc { color: #9a9aa2; margin-top: 6px; line-height: 1.45; }
+.mwm-summary { margin-top: 12px; color: #e2e2e6; }
+
+.mwm-actions {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  padding: 12px 18px 16px; border-top: 1px solid #1a1a1d;
+  .mwm-blocked { margin-right: auto; color: #9a9aa2; }
+}
+.mwm-btn {
+  font-size: 12px; font-weight: 500; color: #e2e2e6; background: #3a3a40;
+  border: 1px solid #0d0d0e; border-radius: 5px; padding: 6px 14px; cursor: pointer;
+  &:hover:not(:disabled) { background: #47474e; }
+  &:disabled { opacity: 0.5; cursor: default; }
+  &.primary { background: #3a7bd0; border-color: #2b5ea0; color: #fff; }
+}

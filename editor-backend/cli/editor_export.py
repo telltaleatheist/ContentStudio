@@ -36,14 +36,16 @@
 #
 # Output (stdout, exactly one line):
 #     success: {"type":"export_result","path":"/abs/.../<name>_HYBRID_edited.fcpxml",
-#               "cutsApplied":N,"newDurationSeconds":float[,"micMuteBlocks":int]}
+#               "cutsApplied":N,"newDurationSeconds":float[,"micMuteBlocks":int],
+#               "wordMutes":{...}}   (the Mute words report, cli/word_mute_pass.py; always
+#                                     present on an FCPXML export, {"active":false,...} when off)
 #     failure: {"type":"error","message":"..."}  + exit code 1
 # With 'stories', instead:
 #     success: {"type":"story_export_result","path":"/abs/...","storiesEmitted":N,
 #               "stories":[{"number","title","slug","durationSeconds","emitted","scrap"
 #                           [,"transcriptPath","wordCount"]}, ...]
 #               [,"micMuteBlocks":int][,"transcripts":"exported"|"no sidecar"]
-#               [,"transcriptsDir":"/abs/.../<name>_stories_transcripts"]}
+#               [,"transcriptsDir":"/abs/.../<name>_stories_transcripts"],"wordMutes":{...}}
 # On output:'fcpxml' the story transcripts are written TOO whenever the session has a
 # <name>_transcript.json sidecar — 'transcripts' says which happened, and "no sidecar" is
 # the only reason they can be absent. output:'transcripts' writes them alone and REQUIRES
@@ -1661,6 +1663,12 @@ def apply_sequence(tree, entry_name, cuts_raw, sequence_raw):
     return total, len(cuts)
 
 
+STORIES_EVENT_SUFFIX = ' Stories'
+"""The story export names its event '<session> Stories'. cli/mute_words.py reads it back to know
+that an exported file holds one video per project (the opening window then starts at each
+project's own 0:00) — one constant so the writer and the reader cannot drift (Law 10)."""
+
+
 def _parse_master_tree(zip_path):
     """Open the zip, locate the master hybrid entry, and parse it. Shared by all exports."""
     zp = Path(zip_path)
@@ -1704,7 +1712,13 @@ def export_stories(zip_path, cuts_raw, stories_raw, sequence_raw=None,
     # an existing same-named event, so keeping the generators' 'Auto-Editor Media Group'
     # name would drop the stories next to previously imported part-projects — confusing.
     event = tree.getroot().find('.//event')
-    event.set('name', f"{_session_name(zip_path)} Stories")
+    event.set('name', f"{_session_name(zip_path)}{STORIES_EVENT_SUFFIX}")
+
+    # Mute words LAST among the tree edits, on the finished story projects: every clip's source
+    # range is final here, and the opening window is measured from each story's own 0:00.
+    # Before the transcripts and the fcpxml are written, so a refusal leaves nothing behind.
+    from cli import word_mute_pass
+    word_mutes = word_mute_pass.run_on_tree(zip_path, tree, 'stories')
 
     # Transcripts FIRST, before a byte of fcpxml is written: this call raises on anything
     # wrong with the sidecar, and an export that fails must not have left an fcpxml on disk
@@ -1726,6 +1740,7 @@ def export_stories(zip_path, cuts_raw, stories_raw, sequence_raw=None,
         'path': str(out_path),
         'storiesEmitted': emitted,
         'stories': results,
+        'wordMutes': word_mutes,
     }
     if mic_mute_blocks is not None:
         result['micMuteBlocks'] = mic_mute_blocks   # 0 is a real answer, not "nothing happened"
@@ -1871,6 +1886,11 @@ def export(zip_path, cuts_raw, sequence_raw=None, mute_mic_during_screen=False):
     else:
         new_total, cuts_applied = apply_sequence(tree, entry, cuts_raw, sequence_raw)
 
+    # Mute words last, on the finished timeline (see cli/word_mute_pass.py): the parts are one
+    # timeline laid end to end, so the opening window is measured across them from 0:00.
+    from cli import word_mute_pass
+    word_mutes = word_mute_pass.run_on_tree(zip_path, tree, 'plain')
+
     out_path = zp.parent / f"{_session_name(zip_path)} master edited.fcpxml"
     if out_path.exists():
         print(f"[editor_export] overwriting existing derived artifact: {out_path}", file=sys.stderr)
@@ -1883,6 +1903,7 @@ def export(zip_path, cuts_raw, sequence_raw=None, mute_mic_during_screen=False):
         'path': str(out_path),
         'cutsApplied': cuts_applied,
         'newDurationSeconds': float(new_total),
+        'wordMutes': word_mutes,
     }
     if mic_mute_blocks is not None:
         result['micMuteBlocks'] = mic_mute_blocks   # 0 is a real answer, not "nothing happened"

@@ -19,6 +19,7 @@
 import { InjectionToken } from '@angular/core';
 import { Observable } from 'rxjs';
 import { EditorManifest } from './host-data/editor-manifest';
+import type { MuteCatalog, MuteSettings, MuteSettingsLoad, WordMuteReport } from './model/mute-words';
 
 // ── Host data shapes ──────────────────────────────────────────────────────────
 
@@ -379,6 +380,23 @@ export interface EditorHost {
      */
     muteMicDuringScreen?: boolean;
   }): Promise<any>;
+
+  // ── Mute words (LEDGER #226) ────────────────────────────────────────────────
+
+  /** The word groups (from editor-backend/core/mute_words.json) and the pass's fixed numbers. */
+  muteWordsCatalog(): Promise<MuteCatalog>;
+
+  /** A project's saved choice, or the remembered default marked `saved: false`. Rejects on a broken file. */
+  loadMuteWords(payload: { folder: string; cleanName: string }): Promise<MuteSettingsLoad>;
+
+  /** Save a project's choice (and remember it for new projects). Rejects with the reason. */
+  saveMuteWords(payload: { folder: string; cleanName: string; settings: MuteSettings }): Promise<{ path: string }>;
+
+  /** Give a project the remembered choice if it has none yet (called when a run starts). */
+  ensureMuteWords(payload: { folder: string; cleanName: string }): Promise<{ settings: MuteSettings; wrote: boolean }>;
+
+  /** Re-mute the master timeline the project already exported. Rejects with Python's message. */
+  applyMuteWords(payload: { zipPath: string }): Promise<{ path: string; wordMutes: WordMuteReport }>;
 
   // ── Transcription ───────────────────────────────────────────────────────────
 

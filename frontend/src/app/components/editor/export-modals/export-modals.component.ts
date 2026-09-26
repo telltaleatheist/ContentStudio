@@ -1,4 +1,5 @@
 import { Component, EventEmitter, Input, Output } from '@angular/core';
+import { WordMuteReport } from '../model/mute-words';
 
 /**
  * The editor's two export dialogs: the chooser (pick what to export) and the result modal
@@ -26,6 +27,10 @@ export class ExportModalsComponent {
   @Input() error: string | null = null;
   /** Mic blocks disabled under screen audio; null when the pass did not run. 0 is meaningful. */
   @Input() micMuteBlocks: number | null = null;
+  /** The Mute words report for THIS export (LEDGER #226); null when no FCPXML was written. */
+  @Input() wordMutes: WordMuteReport | null = null;
+  /** One line in the chooser: what Mute words will do for this project on export. */
+  @Input() muteSummary: string | null = null;
   /**
    * What became of the per-story Content Studio transcripts on THIS export, straight from
    * Python. 'no sidecar' is a reported outcome, not a silent skip — the whole point of the
