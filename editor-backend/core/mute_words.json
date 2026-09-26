@@ -2,22 +2,78 @@
   "schemaVersion": 1,
   "muteGroups": [
     {
-      "id": "f-word",
-      "label": "F-word",
-      "contains": ["fuck"],
-      "exact": []
-    },
-    {
       "id": "harsh",
       "label": "Harsh words",
-      "contains": ["cunt", "nigger", "nigga", "faggot", "retard", "wetback", "kike"],
-      "exact": ["niggas", "niggaz", "fag", "fags", "faggy", "spic", "spics", "chink", "chinks", "tranny", "trannies", "coon", "coons", "gook", "gooks", "dyke", "dykes"]
+      "contains": [
+        "fuck",
+        "cunt",
+        "nigger",
+        "nigga",
+        "faggot",
+        "retard",
+        "wetback",
+        "kike"
+      ],
+      "exact": [
+        "niggas",
+        "niggaz",
+        "fag",
+        "fags",
+        "faggy",
+        "spic",
+        "spics",
+        "chink",
+        "chinks",
+        "tranny",
+        "trannies",
+        "coon",
+        "coons",
+        "gook",
+        "gooks",
+        "dyke",
+        "dykes"
+      ]
     },
     {
       "id": "swearing",
       "label": "General swearing",
-      "contains": ["shit", "bitch", "asshole", "bastard", "damn", "dickhead", "douche", "wanker", "bollock", "cocksucker", "jackass", "dumbass", "smartass", "badass", "piss"],
-      "exact": ["ass", "asses", "arse", "dick", "dicks", "cock", "cocks", "prick", "pricks", "twat", "twats", "tits", "titties", "whore", "whores", "slut", "sluts", "goddam"]
+      "contains": [
+        "shit",
+        "bitch",
+        "asshole",
+        "bastard",
+        "damn",
+        "dickhead",
+        "douche",
+        "wanker",
+        "bollock",
+        "cocksucker",
+        "jackass",
+        "dumbass",
+        "smartass",
+        "badass",
+        "piss"
+      ],
+      "exact": [
+        "ass",
+        "asses",
+        "arse",
+        "dick",
+        "dicks",
+        "cock",
+        "cocks",
+        "prick",
+        "pricks",
+        "twat",
+        "twats",
+        "tits",
+        "titties",
+        "whore",
+        "whores",
+        "slut",
+        "sluts",
+        "goddam"
+      ]
     }
   ]
 }

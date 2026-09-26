@@ -9,14 +9,14 @@ first 3 minutes of the video but leave some of the others."
 ## What Owen sees
 
 - **Processing modal** (click a new project): a **Mute words** row with a one-line summary
-  ("F-word everywhere; all swearing in the first 3:00") and a **Mute words…** button. If the
+  ("Harsh words everywhere; all swearing in the first 3:00") and a **Mute words…** button. If the
   project has no saved choice, the line shows the choice saved last time; pressing **Process**
   keeps that choice for this project.
 - **Right-click a project ▸ Mute words…**: the same modal. **Save** keeps the choice for the
   project. **Save and apply to the exported timeline** re-mutes the master timeline the project
   already exported (it needs a transcript and an existing export; otherwise the modal says which
   one is missing).
-- **The modal**: one row per word group (F-word, Harsh words, General swearing) plus **Your
+- **The modal**: one row per word group (Harsh words — which includes the F-word — and General swearing) plus **Your
   words** (typed, commas between them, `*` at either end is a wildcard). Each row is **Off /
   Everywhere / First m:ss only**, and **Show words** lists exactly what the group covers. Below:
   **Mute all swearing in the first [3] minutes**.

@@ -74,7 +74,7 @@ export function parseCustomWords(text: string): string[] {
 
 /**
  * The one-line summary shown next to the "Mute words…" buttons, e.g.
- * "F-word everywhere; all swearing in the first 3:00". "Nothing muted" when nothing is on.
+ * "Harsh words everywhere; all swearing in the first 3:00". "Nothing muted" when nothing is on.
  */
 export function muteSummary(settings: MuteSettings, catalog: MuteCatalog): string {
   const win = windowClock(settings.openingWindow.minutes);

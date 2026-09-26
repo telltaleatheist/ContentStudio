@@ -64,12 +64,12 @@ const blank = mw.blankMuteSettings(catalog);
 const variant = (f) => { const s = JSON.parse(JSON.stringify(blank)); f(s); return s; };
 const samples = [
   blank,
-  variant((s) => { s.groups['f-word'] = 'everywhere'; s.openingWindow = { allSwearing: true, minutes: 2.5 }; }),
+  variant((s) => { s.groups.harsh = 'everywhere'; s.openingWindow = { allSwearing: true, minutes: 2.5 }; }),
   variant((s) => { s.customWords = ['bs*', '*hole', 'frick']; s.customMode = 'opening'; }),
   variant((s) => { s.schemaVersion = 2; }),
   variant((s) => { delete s.groups.harsh; }),
   variant((s) => { s.groups.extra = 'off'; }),
-  variant((s) => { s.groups['f-word'] = 'sometimes'; }),
+  variant((s) => { s.groups.harsh = 'sometimes'; }),
   variant((s) => { s.customWords = ['***']; }),
   variant((s) => { s.customWords = 'fuck'; }),
   variant((s) => { s.customMode = 'on'; }),
@@ -99,15 +99,15 @@ const samples = [
     const first = mw.loadProjectMuteSettings(catalog, projA, 'a', conf);
     check('main: a project with nothing saved anywhere starts blank and says it is not saved',
       first.saved === false && first.source === 'blank' && Object.values(first.settings.groups).every((m) => m === 'off'));
-    const chosen = variant((s) => { s.groups['f-word'] = 'everywhere'; s.customWords = [' heck ', 'darn']; s.customMode = 'everywhere'; });
+    const chosen = variant((s) => { s.groups.harsh = 'everywhere'; s.customWords = [' heck ', 'darn']; s.customMode = 'everywhere'; });
     mw.saveProjectMuteSettings(catalog, projA, 'a', conf, chosen);
     const again = mw.loadProjectMuteSettings(catalog, projA, 'a', conf);
     check('main: save writes <cleanName>_mute-words.json in the project folder and reads back (words trimmed)',
-      again.saved && fs.existsSync(path.join(projA, 'a_mute-words.json')) && again.settings.groups['f-word'] === 'everywhere'
+      again.saved && fs.existsSync(path.join(projA, 'a_mute-words.json')) && again.settings.groups.harsh === 'everywhere'
       && JSON.stringify(again.settings.customWords) === '["heck","darn"]');
     const other = mw.loadProjectMuteSettings(catalog, projB, 'b', conf);
     check('main: a new project starts from the remembered choice, marked not saved yet',
-      other.saved === false && other.source === 'remembered' && other.settings.groups['f-word'] === 'everywhere');
+      other.saved === false && other.source === 'remembered' && other.settings.groups.harsh === 'everywhere');
     const ens = mw.ensureProjectMuteSettings(catalog, projB, 'b', conf);
     const ens2 = mw.ensureProjectMuteSettings(catalog, projB, 'b', conf);
     check('main: starting a run keeps the remembered choice for the project, once, never overwriting',
@@ -133,10 +133,10 @@ const samples = [
   const mod = { exports: {} };
   new Function('module', 'exports', js)(mod, mod.exports);
   const { muteSummary, parseCustomWords, windowClock } = mod.exports;
-  const s1 = variant((s) => { s.groups['f-word'] = 'everywhere'; s.openingWindow = { allSwearing: true, minutes: 3 }; });
+  const s1 = variant((s) => { s.groups.harsh = 'everywhere'; s.openingWindow = { allSwearing: true, minutes: 3 }; });
   const s2 = variant((s) => { s.groups['swearing'] = 'opening'; s.customWords = ['heck']; s.customMode = 'everywhere'; s.openingWindow.minutes = 2.5; });
-  check('summary: "F-word everywhere; all swearing in the first 3:00"',
-    muteSummary(s1, catalog) === 'F-word everywhere; all swearing in the first 3:00', muteSummary(s1, catalog));
+  check('summary: "Harsh words everywhere; all swearing in the first 3:00"',
+    muteSummary(s1, catalog) === 'Harsh words everywhere; all swearing in the first 3:00', muteSummary(s1, catalog));
   check('summary: group modes and your words read plainly; nothing on reads "Nothing muted"',
     muteSummary(s2, catalog) === 'your words everywhere; General swearing in the first 2:30' && muteSummary(blank, catalog) === 'Nothing muted',
     [muteSummary(s2, catalog), muteSummary(blank, catalog)]);
