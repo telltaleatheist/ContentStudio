@@ -362,6 +362,10 @@ export class MetadataGeneratorService {
         // rides: cached lessons on the common path, the placeholder on a dry run, or the
         // ONE distillation call — on the titles field's routed transport, because titles
         // are what the lessons serve.
+        //
+        // Said on screen first (LEDGER #225): when the evidence moved, the distillation is a
+        // ~20 s model call before chapters, and a row with nothing to say for it looks dead.
+        params.progressCallback?.('lessons', 'Preparing channel lessons...');
         aiManager.setInsightsBlock(
           await resolveGuidelinesBlock(params.insights, {
             dryRun: Boolean(params.showPrompt),

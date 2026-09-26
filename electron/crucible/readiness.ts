@@ -57,6 +57,23 @@ export class CrucibleRequiredError extends Error {
   }
 }
 
+/**
+ * The ready answer's sentence. A card held by ANOTHER app is named, and AI work waits its turn
+ * behind it. A card held by ContentStudio's own work (probe.ts `busyLineOf` names the client
+ * "contentstudio") is not something to wait for: it is the job on screen, transcribing or
+ * running its model calls, and "AI work waits its turn" there read as the job itself being
+ * stuck (Owen, 2026-09-26: "its waiting now"). It says whose work it is instead (LEDGER #225).
+ */
+export function readyReason(server: string, busy: string | null): string {
+  if (busy === null) return `Crucible on ${server} is ready.`;
+  const own = busy.match(/^busy: contentstudio\b,?\s*(.*)$/i);
+  if (own !== null) {
+    const what = own[1].replace(/^asr\b/, 'transcription').trim();
+    return `Crucible on ${server} is ready (busy with ContentStudio's own work${what ? `: ${what}` : ''}).`;
+  }
+  return `Crucible on ${server} is ready (${busy}; AI work waits its turn).`;
+}
+
 function sameView(a: CrucibleReadinessView, b: CrucibleReadinessView): boolean {
   const { at: _a, ...x } = a;
   const { at: _b, ...y } = b;
@@ -290,7 +307,7 @@ export class CrucibleReadiness {
       if (answer.reach === 'ready' || answer.reach === 'busy') {
         this.startFailure = null;
         const busy = answer.reach === 'busy' && answer.probe.outcome === 'ok' ? answer.probe.facts.busyLine : null;
-        return this.answer('ready', `Crucible on ${selected} is ready${busy ? ` (${busy}; AI work waits its turn)` : ''}.`, null, { server: selected, busy });
+        return this.answer('ready', readyReason(selected, busy), null, { server: selected, busy });
       }
       silent = answer.probe.outcome === 'ok' ? `Crucible on ${selected} isn't answering` : answer.probe.message.replace(/[.\s]+$/, '');
     }

@@ -8,6 +8,7 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatMenuModule } from '@angular/material/menu';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatCardModule } from '@angular/material/card';
 import { MatBadgeModule } from '@angular/material/badge';
@@ -37,6 +38,7 @@ import {
 } from '../../features/transcript-link/transcript-link.types';
 import { InputsStateService, InputItem } from '../../services/inputs-state';
 import { JobQueueService, QueuedJob } from '../../services/job-queue';
+import { elapsedClock, itemAfter, laneBusyText, parkedText, stageLine, type GenerationProgressEvent } from '../../services/job-activity';
 import { NotificationService } from '../../services/notification';
 import { CrucibleRefusal, CrucibleService } from '../../services/crucible';
 import type { CrucibleLanesView, LaneChip, ParkedJobResult } from '../../features/crucible/crucible.types';
@@ -61,6 +63,7 @@ interface PromptSetOption {
     MatDialogModule,
     MatMenuModule,
     MatProgressBarModule,
+    MatProgressSpinnerModule,
     MatCheckboxModule,
     MatCardModule,
     MatBadgeModule,
@@ -76,12 +79,14 @@ interface PromptSetOption {
 export class Inputs implements OnInit, OnDestroy {
   @ViewChild('scrollContainer') scrollContainer?: ElementRef;
 
-  private elapsedInterval: any;
-  private processingInterval: any;
+  /** Ticks `now` once a second, so a running row's clock moves even when main is quiet. */
+  private clockInterval: ReturnType<typeof setInterval> | null = null;
+  private processingInterval: ReturnType<typeof setInterval> | null = null;
+  /** The time a running row's clock reads against (job-activity.ts `elapsedClock`). */
+  now = signal(Date.now());
 
   completionMessage = signal<string>('');
   showCompletionMessage = signal(false);
-  queueStarted = signal(false);
   expandedJobIds = signal<Set<string>>(new Set());
 
   // Universal "Transcribe only" toggle at the top of the Job Queue. When ON,
@@ -90,9 +95,8 @@ export class Inputs implements OnInit, OnDestroy {
   // again (only held jobs remain) sends them. When OFF, Start Queue transcribes
   // AND sends in one stage (the original behavior).
   transcribeOnly = signal(false);
-  // Locked at each Start Queue press so a transcribe run never auto-sends the
-  // 'held' jobs it just produced: a run processes only jobs of this status.
-  private queueRunTarget: 'pending' | 'held' = 'pending';
+  // The run's target is locked at each Start Queue press (JobQueueService.runTarget) so a
+  // transcribe run never auto-sends the 'held' jobs it just produced.
 
   // Available prompt sets
   availablePromptSets = signal<PromptSetOption[]>([]);
@@ -103,8 +107,6 @@ export class Inputs implements OnInit, OnDestroy {
    */
   lanes = signal<LaneChip[]>([]);
   private offLanes: (() => void) | null = null;
-  /** A plan is being asked for: the 1 s tick never overlaps one. */
-  private planning = false;
   /** The last refusal the queue plan answered, said once rather than every second. */
   private lastPlanRefusal = '';
 
@@ -150,13 +152,22 @@ export class Inputs implements OnInit, OnDestroy {
   ngOnDestroy() {
     this.offLanes?.();
     this.offLanes = null;
-    this.stopElapsedTimer();
-    if (this.processingInterval) {
-      clearInterval(this.processingInterval);
-    }
+    if (this.clockInterval !== null) clearInterval(this.clockInterval);
+    this.clockInterval = null;
+    // The run itself goes on (its jobs live in main and in JobQueueService); only this page's
+    // tick stops. The next Inputs page takes it back over in ngOnInit.
+    this.stopQueueProcessor();
   }
 
   async ngOnInit() {
+    this.clockInterval = setInterval(() => this.now.set(Date.now()), 1000);
+    // Rows main is still running come back as running FIRST, so the tick below can never
+    // offer one of them to the plan as a job still to start.
+    await this.adoptRunningJobs();
+    // A run that was going when this page was last closed is still going: take its tick back,
+    // or its waiting jobs would never start and there would be no Start button to press.
+    if (this.jobQueue.queueStarted()) this.startQueueProcessor();
+
     // The lanes strip: main pushes every change; the first paint asks once.
     this.offLanes = this.crucible.onLanes((view: CrucibleLanesView) => this.lanes.set(view.lanes));
     this.crucible.lanes().then(
@@ -1095,8 +1106,8 @@ export class Inputs implements OnInit, OnDestroy {
   }
 
   async startQueue() {
-    console.log('[StartQueue] Button clicked, queueStarted:', this.queueStarted());
-    if (this.queueStarted()) {
+    console.log('[StartQueue] Button clicked, queueStarted:', this.jobQueue.queueStarted());
+    if (this.jobQueue.queueStarted()) {
       console.log('[StartQueue] Already started, returning');
       return;
     }
@@ -1104,7 +1115,7 @@ export class Inputs implements OnInit, OnDestroy {
     // Claim the guard immediately so a rapid double-click can't launch two
     // queue processor loops during the awaits below. Reset on early-return
     // error paths so the user can retry.
-    this.queueStarted.set(true);
+    this.jobQueue.queueStarted.set(true);
 
     // Validate output directory before starting
     try {
@@ -1116,7 +1127,7 @@ export class Inputs implements OnInit, OnDestroy {
       if (!outputDir) {
         console.log('[StartQueue] No output directory configured');
         this.notificationService.error('Configuration Error', 'No output directory configured. Please set one in Settings before processing.');
-        this.queueStarted.set(false);
+        this.jobQueue.queueStarted.set(false);
         return;
       }
 
@@ -1128,7 +1139,7 @@ export class Inputs implements OnInit, OnDestroy {
       if (!dirCheck.exists) {
         console.log('[StartQueue] Directory does not exist');
         this.notificationService.error('Directory Error', `Output directory does not exist: ${outputDir}\n\nPlease create the directory or choose a different one in Settings.`);
-        this.queueStarted.set(false);
+        this.jobQueue.queueStarted.set(false);
         return;
       }
 
@@ -1136,13 +1147,13 @@ export class Inputs implements OnInit, OnDestroy {
       if (!dirCheck.writable) {
         console.log('[StartQueue] Directory not writable');
         this.notificationService.error('Permission Error', `Output directory is not writable: ${outputDir}\n\nPlease check permissions or choose a different directory in Settings.`);
-        this.queueStarted.set(false);
+        this.jobQueue.queueStarted.set(false);
         return;
       }
     } catch (error) {
       console.error('[StartQueue] Error validating directory:', error);
       this.notificationService.error('Directory Error', 'Failed to validate output directory. Please check your settings.');
-      this.queueStarted.set(false);
+      this.jobQueue.queueStarted.set(false);
       return;
     }
 
@@ -1181,32 +1192,31 @@ export class Inputs implements OnInit, OnDestroy {
         `${stale.length} linked ${stale.length === 1 ? 'item' : 'items'} cannot run as ` +
         `declared. Re-confirm each link (or choose "Final export only") before starting:\n` +
         `${stale.join('\n')}`);
-      this.queueStarted.set(false);
+      this.jobQueue.queueStarted.set(false);
       return;
     }
 
     // Lock this run's target: if any pending jobs exist we transcribe them
     // (Stage 1 when "Transcribe only" is on; full run when off). Only once there
     // are no pending jobs does a Start Queue press send the held jobs (Stage 2).
-    this.queueRunTarget = this.jobQueue.getPendingJobs().length > 0 || this.jobQueue.getHeldJobs().length === 0 ? 'pending' : 'held';
+    this.jobQueue.runTarget = this.jobQueue.getPendingJobs().length > 0 || this.jobQueue.getHeldJobs().length === 0 ? 'pending' : 'held';
 
-    console.log('[StartQueue] Starting queue processor... target:', this.queueRunTarget);
+    console.log('[StartQueue] Starting queue processor... target:', this.jobQueue.runTarget);
     this.jobQueue.isProcessing.set(true);
     this.startQueueProcessor();
   }
 
-  private stopElapsedTimer() {
-    if (this.elapsedInterval) {
-      clearInterval(this.elapsedInterval);
-      this.elapsedInterval = null;
-    }
-  }
-
   private startQueueProcessor() {
+    if (this.processingInterval !== null) return;
     // Check for pending jobs every second
     this.processingInterval = setInterval(() => {
       this.processNextJob();
     }, 1000);
+  }
+
+  private stopQueueProcessor() {
+    if (this.processingInterval !== null) clearInterval(this.processingInterval);
+    this.processingInterval = null;
   }
 
   /**
@@ -1218,23 +1228,22 @@ export class Inputs implements OnInit, OnDestroy {
    * what it is told and decides nothing about where.
    */
   private async processNextJob() {
-    if (this.planning) return;
-    this.planning = true;
+    // Shared with every other Inputs page instance (a page closed mid-run still finishes the
+    // job it started and asks for the next one): one plan at a time, so no job starts twice.
+    if (this.jobQueue.planning) return;
+    this.jobQueue.planning = true;
     try {
       // A run processes only jobs matching the target locked at Start Queue time, so a
       // "transcribe" run never sweeps up the 'held' jobs it just created. Parked rows are
       // always candidates: they wait on a server, not on a run.
-      const candidates = this.jobQueue.getStartableJobs(this.queueRunTarget);
+      const candidates = this.jobQueue.getStartableJobs(this.jobQueue.runTarget);
 
       if (candidates.length === 0) {
         // Nothing left to start. Stop ticking once nothing is running either.
-        if (this.queueStarted() && !this.jobQueue.hasProcessingJob()) {
-          this.queueStarted.set(false);
+        if (!this.jobQueue.hasProcessingJob()) {
+          this.jobQueue.queueStarted.set(false);
           this.jobQueue.isProcessing.set(false);
-          if (this.processingInterval) {
-            clearInterval(this.processingInterval);
-            this.processingInterval = null;
-          }
+          this.stopQueueProcessor();
         }
         return;
       }
@@ -1259,14 +1268,15 @@ export class Inputs implements OnInit, OnDestroy {
         this.notificationService.error('Job Failed', failed.reason);
       }
       for (const waiting of plan.waiting) {
+        // Not parked: another job of this queue is on its server, and it starts when that one ends.
         this.jobQueue.updateJob(waiting.jobId, waiting.parked
-          ? { status: 'parked', parkedLine: waiting.line, venue: waiting.server }
-          : { currentlyProcessing: waiting.line, venue: waiting.server });
+          ? { status: 'parked', parkedLine: waiting.line, venue: waiting.server, waitingLine: undefined }
+          : { waitingLine: `Starts when ${waiting.server} is free: another job is running there`, venue: waiting.server });
       }
       for (const start of plan.start) {
         const job = this.jobQueue.getJob(start.jobId);
         if (!job) continue;
-        this.jobQueue.updateJob(job.id, { venue: start.server, parkedLine: undefined });
+        this.jobQueue.updateJob(job.id, { venue: start.server, parkedLine: undefined, waitingLine: undefined });
         // Not awaited: one job per server runs at once, and each finishes on its own.
         if (job.resumeHeld || job.status === 'held') {
           void this.sendHeldJob(job, { advanceQueue: true });
@@ -1275,8 +1285,173 @@ export class Inputs implements OnInit, OnDestroy {
         }
       }
     } finally {
-      this.planning = false;
+      this.jobQueue.planning = false;
     }
+  }
+
+  // ==================== Job Queue: what a running row shows ====================
+
+  /**
+   * Follow one job's `generation-progress` events: the row's stage line (job-activity.ts
+   * `stageLine`) and each item's status and bar (`itemAfter`). `onTerminal` gets the
+   * 'complete' or 'error' event. Returns the unsubscribe.
+   *
+   * Every event that has words moves the row's stage line, so the row always says what the
+   * job is doing now; the clock beside it ticks on its own (`now`), so a quiet minute of a
+   * model call still shows the job alive (LEDGER #225).
+   */
+  private watchJobProgress(
+    jobId: string,
+    onTerminal: (event: GenerationProgressEvent) => void,
+    onParked?: (event: GenerationProgressEvent) => void,
+  ): () => void {
+    return this.electron.onProgress((progress: GenerationProgressEvent) => {
+      // Several jobs run at once now (one per Crucible server): read only this one's events.
+      if (progress.jobId !== jobId) return;
+      const job = this.jobQueue.getJob(jobId);
+      if (!job) return;
+      if (progress.phase === 'complete' || progress.phase === 'error') {
+        onTerminal(progress);
+        return;
+      }
+      if (progress.phase === 'parked') {
+        onParked?.(progress);
+        return;
+      }
+
+      const line = stageLine(progress);
+      if (line !== null) this.jobQueue.updateJob(jobId, { activity: line, currentlyProcessing: line });
+
+      const index = this.itemIndexOf(job, progress);
+      if (index === null) return;
+      const next = itemAfter(progress, job.itemProgress[index]);
+      if (next === null) return;
+      // A new item starting generation means the one before it finished.
+      if (next.status === 'generating' && index > 0 && job.itemProgress[index - 1]?.status === 'generating') {
+        this.jobQueue.updateItemProgress(jobId, index - 1, 100, 'completed');
+      }
+      this.jobQueue.updateItemProgress(jobId, index, next.progress, next.status);
+      const after = this.jobQueue.getJob(jobId);
+      if (after) this.jobQueue.updateJob(jobId, { progress: Math.min(99, this.getJobProgress(after)) });
+    });
+  }
+
+  /**
+   * Which of the job's items an event is about: main's `itemIndex`, else the file it names.
+   * A compilation's generation events name no item; they move the item being generated, or
+   * the first transcribed one. Null when the event is about no item (the row's line still moves).
+   */
+  private itemIndexOf(job: QueuedJob, event: GenerationProgressEvent): number | null {
+    const count = job.inputs.length;
+    if (event.itemIndex !== undefined) return event.itemIndex >= 0 && event.itemIndex < count ? event.itemIndex : null;
+    if (event.filename) {
+      const base = event.filename.split('/').pop();
+      const found = job.inputs.findIndex(item => (item.path.split('/').pop() || '') === base);
+      return found >= 0 ? found : null;
+    }
+    if (event.phase === 'generating') {
+      const generating = job.itemProgress.findIndex(p => p.status === 'generating');
+      if (generating >= 0) return generating;
+      const transcribed = job.itemProgress.findIndex(p => p.status === 'transcribed');
+      return transcribed >= 0 ? transcribed : null;
+    }
+    return null;
+  }
+
+  /** Finish a job from main's terminal event: completed, or failed with main's reason. */
+  private finishFromEvent(job: QueuedJob, event: GenerationProgressEvent, startTime: number): void {
+    const cur = this.jobQueue.getJob(job.id);
+    if (!cur) return;
+    if (event.phase === 'complete') {
+      for (let i = 0; i < cur.inputs.length; i++) {
+        this.jobQueue.updateItemProgress(job.id, i, 100, 'completed');
+      }
+      const processingTime = (Date.now() - startTime) / 1000;
+      this.jobQueue.updateJob(job.id, {
+        status: 'completed', progress: 100, currentlyProcessing: 'Complete!',
+        completedAt: new Date(), processingTime
+      });
+      this.showCompletionMessageFor(`Job "${job.name}" completed in ${processingTime.toFixed(1)}s`);
+      this.notificationService.success('Job Completed', `"${job.name}" completed successfully in ${processingTime.toFixed(1)}s`);
+      return;
+    }
+    cur.itemProgress.forEach((item, i) => {
+      if (item.status !== 'completed' && item.status !== 'failed') {
+        this.jobQueue.updateItemProgress(job.id, i, 100, 'failed');
+      }
+    });
+    this.jobQueue.updateJob(job.id, {
+      status: 'failed', progress: 0, currentlyProcessing: 'Failed',
+      completedAt: new Date(), error: event.message
+    });
+    this.notificationService.error('Job Failed', `"${job.name}" failed: ${event.message || 'Unknown error'}`);
+  }
+
+  /**
+   * Jobs main is still running that this window lost track of. A reload of the window (not a
+   * quit: quitting stops every job) restores the queue from sessionStorage with its running
+   * rows set back to pending, while main goes on running them and sending their progress to
+   * nobody. Such a row is running again here, with its spinner, stage line, clock and Stop
+   * button, and it finishes on main's terminal event.
+   */
+  private async adoptRunningJobs(): Promise<void> {
+    let running: Array<{ jobId: string; startedAt: number }>;
+    try {
+      running = await this.electron.runningMetadataJobs();
+    } catch (error) {
+      this.notificationService.error('Job Queue', `Could not ask which jobs are still running: ${(error as Error).message}`);
+      return;
+    }
+    for (const { jobId, startedAt } of running) {
+      const job = this.jobQueue.getJob(jobId);
+      // Unknown here, or already followed (this page was only re-opened; its listener lives on).
+      if (!job || job.status === 'processing') continue;
+      this.jobQueue.updateJob(jobId, {
+        status: 'processing',
+        activity: 'Still running (this window was reloaded; the next step shows here)',
+        startedAt,
+        parkedLine: undefined,
+        waitingLine: undefined,
+      });
+      // Only a queue run starts a job, so the run was on: it goes on, and what waits behind
+      // this job starts by itself when it ends.
+      this.jobQueue.queueStarted.set(true);
+      this.jobQueue.isProcessing.set(true);
+      this.startQueueProcessor();
+      let unsubscribe: (() => void) | undefined;
+      unsubscribe = this.watchJobProgress(jobId, (terminal) => {
+        this.finishFromEvent(job, terminal, startedAt);
+        if (unsubscribe) { unsubscribe(); unsubscribe = undefined; }
+        this.processNextJob();
+      }, (parked) => {
+        // Its server became busy or paused: main parked it (the promise that says so went to the
+        // window before the reload). It waits there and the queue starts it again by itself.
+        this.jobQueue.updateJob(jobId, { status: 'parked', parkedLine: parked.message ?? '', currentlyProcessing: '' });
+        if (unsubscribe) { unsubscribe(); unsubscribe = undefined; }
+      });
+    }
+  }
+
+  /** The running row's clock: how long this run of the job has been going. */
+  elapsedFor(job: QueuedJob): string {
+    return job.startedAt === undefined ? '' : elapsedClock(this.now() - job.startedAt);
+  }
+
+  /** A parked row's line: what it waits for, in the holder's words. */
+  parkedTextFor(job: QueuedJob): string {
+    return parkedText(job.venue, job.parkedLine);
+  }
+
+  /** Where the Start button was, while the queue runs: how many jobs work, and how many wait. */
+  queueRunningText(): string {
+    const jobs = this.jobQueue.jobs();
+    const running = jobs.filter(job => job.status === 'processing').length;
+    const waiting = this.jobQueue.getStartableJobs(this.jobQueue.runTarget).length;
+    const count = (n: number) => (n === 1 ? '1 job' : `${n} jobs`);
+    const head = `The queue is running: ${count(running)} working`;
+    return waiting > 0
+      ? `${head}, ${count(waiting)} waiting. Waiting jobs start by themselves when their server is free.`
+      : this.jobQueue.runTarget === 'pending' ? `${head}. Jobs you add now start by themselves.` : `${head}.`;
   }
 
   /**
@@ -1321,7 +1496,7 @@ export class Inputs implements OnInit, OnDestroy {
     if (lane.paused) return lane.runningJobId ? 'Paused (finishing a job)' : 'Paused, work waits';
     switch (lane.state) {
       case 'running': return 'Running a job';
-      case 'busy': return lane.busyLine ?? 'Busy';
+      case 'busy': return laneBusyText(lane.busyLine);
       case 'idle': return 'Idle';
       case 'unreachable': return 'Not answering';
       default: return 'Not read yet';
@@ -1338,8 +1513,9 @@ export class Inputs implements OnInit, OnDestroy {
   }
 
   /**
-   * Runs a single job end-to-end: marks it processing, wires the elapsed timer
-   * and the Python progress listener, calls generateMetadata, and finalizes the
+   * Runs a single job end-to-end: marks it processing (the row's spinner, stage
+   * line and clock start here), follows its progress events (`watchJobProgress`),
+   * calls generateMetadata, and finalizes the
    * job (success/failure). Used both by the queue processor (advanceQueue:true)
    * and by the per-job "Analyze" / "Show prompt" buttons (advanceQueue:false).
    *
@@ -1356,15 +1532,17 @@ export class Inputs implements OnInit, OnDestroy {
   private async runJob(job: QueuedJob, opts: { showPrompt?: boolean; advanceQueue?: boolean }): Promise<void> {
     const nextJob = job;
 
-    // Mark job as processing
+    // Mark job as processing. The row shows its spinner, stage line and clock from here on.
+    const startTime = Date.now();
     this.jobQueue.updateJob(nextJob.id, {
       status: 'processing',
       progress: 0,
-      currentlyProcessing: 'Starting...'
+      currentlyProcessing: 'Starting',
+      activity: 'Starting',
+      startedAt: startTime,
+      waitingLine: undefined,
     });
 
-    const startTime = Date.now();
-    let elapsedInterval: any;
     let unsubscribe: (() => void) | undefined;
     // Guards against finalizing twice: the backend sends a terminal
     // 'complete'/'error' progress event AND the generateMetadata promise
@@ -1372,213 +1550,15 @@ export class Inputs implements OnInit, OnDestroy {
     let settled = false;
 
     try {
-      // Start elapsed time tracker for this job
-      elapsedInterval = setInterval(() => {
-        const job = this.jobQueue.getJob(nextJob.id);
-        if (!job) return;
-
-        const elapsed = Math.floor((Date.now() - startTime) / 1000);
-        let currentlyProcessing: string;
-        if (elapsed < 60) {
-          currentlyProcessing = `Processing... (${elapsed}s)`;
-        } else {
-          const minutes = Math.floor(elapsed / 60);
-          const seconds = elapsed % 60;
-          currentlyProcessing = `Processing... (${minutes}m ${seconds}s)`;
-        }
-        this.jobQueue.updateJob(nextJob.id, { currentlyProcessing });
-      }, 1000);
-
-      // Track progress from Python backend
-      const totalItems = nextJob.inputs.length;
-      let currentItemIndex = 0;
-
-      // Helper to find item index by filename
-      const findItemIndexByFilename = (filename: string): number => {
-        const job = this.jobQueue.getJob(nextJob.id);
-        if (!job) return -1;
-
-        // Extract just the filename from the full path in progress.filename
-        const baseFilename = filename.split('/').pop() || filename;
-
-        // Find matching item by comparing filenames
-        for (let i = 0; i < job.inputs.length; i++) {
-          const itemFilename = job.inputs[i].path.split('/').pop() || '';
-          if (itemFilename === baseFilename) {
-            return i;
-          }
-        }
-        return -1;
-      };
-
-      // Track which item is currently being generated (only one at a time for AI)
-      let generatingItemIndex = -1;
-
-      // Listen for progress updates from Python
-      unsubscribe = this.electron.onProgress((progress: any) => {
-        // Several jobs run at once now (one per Crucible server): read only this one's events.
-        if (progress.jobId !== nextJob.id) return;
-        const job = this.jobQueue.getJob(nextJob.id);
-        if (!job) return;
-
-        // Terminal events from the backend: finalize the job here so the UI can
-        // never hang on "generating" if the generateMetadata promise is delayed
-        // or lost. The post-await block below is skipped once `settled` is set.
-        if ((progress.phase === 'complete' || progress.phase === 'error') && !settled) {
-          settled = true;
-          if (progress.phase === 'complete') {
-            for (let i = 0; i < job.inputs.length; i++) {
-              this.jobQueue.updateItemProgress(nextJob.id, i, 100, 'completed');
-            }
-            const processingTime = (Date.now() - startTime) / 1000;
-            this.jobQueue.updateJob(nextJob.id, {
-              status: 'completed', progress: 100, currentlyProcessing: 'Complete!',
-              completedAt: new Date(), processingTime
-            });
-            this.showCompletionMessageFor(`Job "${nextJob.name}" completed in ${processingTime.toFixed(1)}s`);
-            this.notificationService.success('Job Completed', `"${nextJob.name}" completed successfully in ${processingTime.toFixed(1)}s`);
-          } else {
-            job.itemProgress.forEach((item, i) => {
-              if (item.status !== 'completed' && item.status !== 'failed') {
-                this.jobQueue.updateItemProgress(nextJob.id, i, 100, 'failed');
-              }
-            });
-            this.jobQueue.updateJob(nextJob.id, {
-              status: 'failed', progress: 0, currentlyProcessing: 'Failed',
-              completedAt: new Date(), error: progress.message
-            });
-            this.notificationService.error('Job Failed', `"${nextJob.name}" failed: ${progress.message || 'Unknown error'}`);
-          }
-          // Tear down this job's listener/timer and advance the queue now, rather
-          // than waiting on the (possibly stuck) promise's finally block.
-          if (unsubscribe) unsubscribe();
-          if (elapsedInterval) clearInterval(elapsedInterval);
-          if (opts.advanceQueue) this.processNextJob();
-          return;
-        }
-
-        // Handle preparing phase (when starting a new video for transcription)
-        if (progress.phase === 'preparing' && progress.filename) {
-          // Use itemIndex from backend if available, otherwise find by filename
-          let itemIndex = progress.itemIndex;
-          if (itemIndex === undefined) {
-            itemIndex = findItemIndexByFilename(progress.filename);
-          }
-
-          if (itemIndex !== undefined && itemIndex >= 0) {
-            currentItemIndex = itemIndex;
-            this.jobQueue.updateItemProgress(nextJob.id, itemIndex, 0, 'transcribing');
-          }
-          this.jobQueue.updateJob(nextJob.id, { currentlyProcessing: `Processing: ${progress.filename}` });
-        }
-
-        // Update current item progress based on transcription phase
-        if (progress.phase === 'transcription' && progress.percent !== undefined) {
-          // Use itemIndex from backend (supports concurrent transcriptions)
-          let itemIndex = progress.itemIndex;
-
-          // Fallback: find by filename if itemIndex not provided
-          if (itemIndex === undefined && progress.filename) {
-            itemIndex = findItemIndexByFilename(progress.filename);
-          }
-
-          // Update the specific item's progress (supports multiple concurrent transcriptions)
-          if (itemIndex !== undefined && itemIndex >= 0 && itemIndex < totalItems) {
-            const transcriptionProgress = Math.floor(progress.percent / 2); // Map 0-100 to 0-50
-
-            // Mark as transcribed when transcription hits 100%
-            if (progress.percent === 100) {
-              this.jobQueue.updateItemProgress(nextJob.id, itemIndex, 50, 'transcribed');
-            } else {
-              this.jobQueue.updateItemProgress(nextJob.id, itemIndex, transcriptionProgress, 'transcribing');
-            }
-
-            // Update job-level message with "Transcribing..."
-            const message = progress.message || `Transcribing: ${progress.filename || ''}`;
-            this.jobQueue.updateJob(nextJob.id, { currentlyProcessing: message });
-          }
-
-          // Calculate overall progress (transcription is first 50% of total job)
-          const transcribedItems = job.itemProgress.filter(p =>
-            p.status === 'transcribed' || p.status === 'generating' || p.status === 'completed'
-          ).length;
-
-          // Count items currently transcribing and sum their progress
-          const transcribingItems = job.itemProgress.filter(p => p.status === 'transcribing');
-          const transcribingProgress = transcribingItems.reduce((sum, item) => sum + (item.progress || 0), 0);
-
-          // Overall progress = (completed items + sum of in-progress items) / total items * 50%
-          const overallProgress = ((transcribedItems + (transcribingProgress / 50)) / totalItems) * 50;
-          this.jobQueue.updateJob(nextJob.id, { progress: Math.min(overallProgress, 49) });
-        }
-
-        // Handle metadata generation phase (AI summarization and generation)
-        if (progress.phase === 'generating' && progress.percent !== undefined) {
-          const job = this.jobQueue.getJob(nextJob.id);
-
-          // Use itemIndex from backend if provided, otherwise find first transcribed item
-          if (progress.itemIndex !== undefined) {
-            const itemIndex = progress.itemIndex;
-
-            // Update the specific item's progress
-            if (itemIndex >= 0 && itemIndex < totalItems) {
-              // If this is a new item starting (0%), mark the previous item as completed
-              if (progress.percent === 0 && itemIndex > 0 && job) {
-                const prevIndex = itemIndex - 1;
-                const prevStatus = job.itemProgress[prevIndex]?.status;
-                if (prevStatus === 'generating') {
-                  this.jobQueue.updateItemProgress(nextJob.id, prevIndex, 100, 'completed');
-                }
-              }
-
-              // Map AI progress from 0-100 to 50-100 (second half of item's progress bar)
-              const aiProgress = 50 + Math.floor(progress.percent / 2);
-              this.jobQueue.updateItemProgress(nextJob.id, itemIndex, aiProgress, 'generating');
-
-              generatingItemIndex = itemIndex;
-              currentItemIndex = itemIndex;
-            }
-
-            // If generation complete (100%), mark item as completed
-            if (progress.percent === 100 && itemIndex >= 0) {
-              this.jobQueue.updateItemProgress(nextJob.id, itemIndex, 100, 'completed');
-            }
-          } else {
-            // Fallback to old behavior if itemIndex not provided
-            if (job) {
-              const nextToGenerate = job.itemProgress.findIndex(p => p.status === 'transcribed');
-              if (nextToGenerate !== -1 && generatingItemIndex !== nextToGenerate) {
-                generatingItemIndex = nextToGenerate;
-                currentItemIndex = nextToGenerate;
-              }
-            }
-
-            if (generatingItemIndex >= 0 && generatingItemIndex < totalItems) {
-              const aiProgress = 50 + Math.floor(progress.percent / 2);
-              this.jobQueue.updateItemProgress(nextJob.id, generatingItemIndex, aiProgress, 'generating');
-            }
-
-            if (progress.percent === 100 && generatingItemIndex >= 0) {
-              this.jobQueue.updateItemProgress(nextJob.id, generatingItemIndex, 100, 'completed');
-              generatingItemIndex = -1;
-            }
-          }
-
-          // Update message to show what's happening in AI phase
-          const message = progress.message || 'Generating metadata...';
-          this.jobQueue.updateJob(nextJob.id, { currentlyProcessing: message });
-
-          // Calculate overall progress (50-100% for generation phase)
-          if (job) {
-            const completedItems = job.itemProgress.filter(p => p.status === 'completed').length;
-            const generatingItems = job.itemProgress.filter(p => p.status === 'generating').length;
-            const currentGenProgress = generatingItems > 0 ? (progress.percent || 0) / 100 : 0;
-            const overallProgress = 50 + ((completedItems + currentGenProgress) / totalItems) * 50;
-            this.jobQueue.updateJob(nextJob.id, { progress: Math.min(overallProgress, 99) });
-          }
-        }
+      unsubscribe = this.watchJobProgress(nextJob.id, (terminal) => {
+        if (settled) return;
+        settled = true;
+        this.finishFromEvent(nextJob, terminal, startTime);
+        // Tear down this job's listener and advance the queue now, rather
+        // than waiting on the (possibly stuck) promise's finally block.
+        if (unsubscribe) { unsubscribe(); unsubscribe = undefined; }
+        if (opts.advanceQueue) this.processNextJob();
       });
-
       // Extract inputs with notes
       // For text subjects, use textContent as the path (the actual content to analyze)
       const inputs = nextJob.inputs.map(item => ({
@@ -1673,7 +1653,6 @@ export class Inputs implements OnInit, OnDestroy {
       // listener/timer and pop the preview modal instead of completing the job.
       if (result?.held === true) {
         if (unsubscribe) { unsubscribe(); unsubscribe = undefined; }
-        if (elapsedInterval) { clearInterval(elapsedInterval); elapsedInterval = undefined; }
         // Chapters run during prompt assembly (they condition the prompt), so this
         // path can carry warnings too — surface them BEFORE the user decides whether
         // to send a prompt that may have been assembled without chapter subjects.
@@ -1783,10 +1762,9 @@ export class Inputs implements OnInit, OnDestroy {
         error: String(error)
       });
     } finally {
-      // Tear down the progress listener and timer on every path so a failed
+      // Tear down the progress listener on every path so a failed
       // job's listener can't rewrite its progress from later jobs' events
       if (unsubscribe) unsubscribe();
-      if (elapsedInterval) clearInterval(elapsedInterval);
       // After job completes (success or failure), process next job in queue —
       // but only when this run owns the queue (single-job button runs must not).
       if (opts.advanceQueue) this.processNextJob();
@@ -1823,7 +1801,10 @@ export class Inputs implements OnInit, OnDestroy {
     this.jobQueue.updateJob(job.id, {
       status: 'processing',
       progress: 50,
-      currentlyProcessing: 'Generating metadata...',
+      currentlyProcessing: 'Sending to the AI',
+      activity: 'Sending to the AI',
+      startedAt: startTime,
+      waitingLine: undefined,
       heldPrompt: undefined
     });
     const startJob = this.jobQueue.getJob(job.id);
@@ -1836,18 +1817,16 @@ export class Inputs implements OnInit, OnDestroy {
     let unsubscribe: (() => void) | undefined;
 
     try {
-      unsubscribe = this.electron.onProgress((progress: any) => {
+      unsubscribe = this.electron.onProgress((progress: GenerationProgressEvent) => {
         if (progress.jobId !== job.id) return;
         const cur = this.jobQueue.getJob(job.id);
         if (!cur) return;
         // Animate only; finalization happens from the resolved value below.
+        const line = stageLine(progress);
+        if (line !== null) this.jobQueue.updateJob(job.id, { activity: line, currentlyProcessing: line });
         if (progress.phase === 'generating' && progress.percent !== undefined) {
-          const message = progress.message || 'Generating metadata...';
           const overall = 50 + Math.floor((progress.percent || 0) / 2);
-          this.jobQueue.updateJob(job.id, {
-            currentlyProcessing: message,
-            progress: Math.min(overall, 99)
-          });
+          this.jobQueue.updateJob(job.id, { progress: Math.min(overall, 99) });
         }
       });
 
@@ -2031,7 +2010,7 @@ export class Inputs implements OnInit, OnDestroy {
   getJobStatusIcon(status: string): string {
     switch (status) {
       case 'pending': return 'schedule';
-      case 'processing': return 'hourglass_empty';
+      case 'processing': return 'sync';
       case 'held': return 'pause_circle';
       case 'parked': return 'local_parking';
       case 'completed': return 'check_circle';
@@ -2122,12 +2101,16 @@ export class Inputs implements OnInit, OnDestroy {
     const item = job.itemProgress[itemIndex];
     const status = item?.status;
     switch (status) {
-      case 'transcribing':
+      case 'transcribing': {
+        // The running job's stage line says where transcription is ("Transcribing: 40:33 of 45:46").
+        if (job.status === 'processing' && job.activity) return job.activity;
         // Progress is stored as 0-50 (half of total), multiply by 2 to get transcription %
         const transcribePercent = Math.min(100, (item?.progress || 0) * 2);
         return `Transcribing ${transcribePercent}%`;
+      }
       case 'transcribed': return 'Transcribed';
-      case 'generating': return 'Generating...';
+      case 'generating':
+        return job.status === 'processing' && job.activity ? `Generating: ${job.activity}` : 'Generating';
       case 'completed': return 'Completed';
       case 'failed': return 'Failed';
       default: return 'Pending';

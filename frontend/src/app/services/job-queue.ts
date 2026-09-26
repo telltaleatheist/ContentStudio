@@ -50,9 +50,17 @@ export interface QueuedJob {
   heldPrompt?: string; // Assembled prompt captured when the job reaches 'held' (view-only)
   itemProgress: ItemProgress[]; // Track progress for each individual item
   currentItemIndex: number; // Index of the currently processing item
+  /** When this run of the job started (ms), for the row's ticking clock. Set while it runs. */
+  startedAt?: number;
+  /** What the running job is doing now, in plain words (job-activity.ts `stageLine`). */
+  activity?: string;
+  /** Why a row that is not parked has not started yet (another job is on its server). */
+  waitingLine?: string;
 }
 
 const STORAGE_KEY = 'contentstudio-jobs';
+/** The queue run ({ started, target }), kept beside the jobs so a reloaded window keeps it. */
+const RUN_STORAGE_KEY = 'contentstudio-queue-run';
 
 @Injectable({
   providedIn: 'root'
@@ -60,6 +68,19 @@ const STORAGE_KEY = 'contentstudio-jobs';
 export class JobQueueService {
   jobs = signal<QueuedJob[]>([]);
   isProcessing = signal(false);
+  /**
+   * The queue run is on: Start was pressed and not everything has finished. Held HERE, not on
+   * the Inputs page, because the page is destroyed whenever Owen looks at another tab while
+   * the queue keeps running. A page made again reads this and takes the run back over (its
+   * 1 s tick), instead of showing no Start button and never starting what is waiting.
+   */
+  queueStarted = signal(false);
+  /** The run's target, locked at the Start press: 'pending' jobs, or the 'held' ones to send. */
+  runTargetSignal = signal<'pending' | 'held'>('pending');
+  get runTarget(): 'pending' | 'held' { return this.runTargetSignal(); }
+  set runTarget(target: 'pending' | 'held') { this.runTargetSignal.set(target); }
+  /** A plan is being asked for. Shared, so two page instances can never start one job twice. */
+  planning = false;
 
   constructor() {
     // Load persisted jobs from localStorage
@@ -69,6 +90,10 @@ export class JobQueueService {
     effect(() => {
       const jobs = this.jobs();
       sessionStorage.setItem(STORAGE_KEY, JSON.stringify(jobs));
+    });
+    // And the run: a window reloaded mid-run (⌘R) goes on running the queue it was running.
+    effect(() => {
+      sessionStorage.setItem(RUN_STORAGE_KEY, JSON.stringify({ started: this.queueStarted(), target: this.runTargetSignal() }));
     });
   }
 
@@ -91,9 +116,28 @@ export class JobQueueService {
           fast: job.fast ?? false,
           status: (job.status === 'processing' || job.status === 'held') ? 'pending' as const : job.status,
           currentlyProcessing: (job.status === 'processing' || job.status === 'held') ? '' : job.currentlyProcessing,
+          // A row that was running starts its items over: either it runs again from the top, or
+          // main is still running it and the Inputs page takes it back (adoptRunningJobs), where
+          // the next event sets each item. A half-run "Transcribed" left on a pending row is the
+          // screen Owen read as "nothing is happening" (2026-09-26, LEDGER #225).
+          itemProgress: job.status === 'processing'
+            ? job.itemProgress.map(() => ({ status: 'pending' as const, progress: 0 }))
+            : job.itemProgress,
+          progress: job.status === 'processing' ? 0 : job.progress,
+          activity: undefined,
+          startedAt: undefined,
+          waitingLine: undefined,
           heldPrompt: job.status === 'held' ? undefined : job.heldPrompt
         }));
         this.jobs.set(restoredJobs);
+      }
+      const run = sessionStorage.getItem(RUN_STORAGE_KEY);
+      if (run) {
+        const parsed = JSON.parse(run) as { started?: unknown; target?: unknown };
+        if (parsed.started === true) this.queueStarted.set(true);
+        if (parsed.target === 'pending' || parsed.target === 'held') this.runTargetSignal.set(parsed.target);
+        // isProcessing follows the run; a job still running in main sets it again when adopted.
+        if (parsed.started === true) this.isProcessing.set(true);
       }
     } catch (error) {
       console.error('Failed to load jobs from storage:', error);
