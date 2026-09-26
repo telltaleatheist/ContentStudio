@@ -188,17 +188,21 @@ function bodyWordRange(channel: ChannelData): [number, number] {
  */
 
 /**
- * How many descriptions the operator gets to choose from, the primary included.
+ * How many descriptions the operator gets, the primary included.
+ *
+ * ONE (Owen, 2026-09-26: "i would rather make a single call to get a single description and do
+ * it right the first time"). The three-way pick of 2026-08-23 was built for models whose draws
+ * differ; the 27B on Crucible decodes deterministically (mlx-lm's server samples at temperature
+ * 0 unless asked otherwise, and the app asks for nothing), so its three candidates came back as
+ * the same text (734/734/734 and 837/837/837 characters, LEDGER #220) and two calls in three
+ * bought copies. A temperature on the local path was the other way out; Owen chose the single
+ * call. The loop below still reads this number, so the pick comes back by changing it.
  *
  * DATA, in the same spirit as the channel's `{titles_count}`: the number is stated once and the
  * loop reads it. It is a constant rather than channel YAML because unlike a title count it is
- * not an editorial property of a channel — every channel's operator curates the same way — and a
- * per-channel knob nobody would ever set differently is a knob to keep in step for nothing. If a
- * channel ever does want its own count, this is the line that moves into the YAML.
+ * not an editorial property of a channel.
  */
-const DESCRIPTION_CANDIDATES = 3;
-
-/* Option draws use the same provider-default sampling as everything else — see the ruling above. */
+const DESCRIPTION_CANDIDATES = 1;
 
 /**
  * How the body judge opens its word-count complaint.
@@ -233,11 +237,9 @@ const HOOK_MIN_WORDS = 5;
 const SHORT_HOOK_FAULT = 'it came back as ';
 
 /**
- * WHAT THE EXTRAS COST. Each candidate is a full pair — its own hook call, then its own body
- * call reading that hook — plus whatever judging re-asks. Two extras is therefore about four
- * more calls, ~80s on the 27b, against a job already measured at 163s. The operator's ruling
- * (2026-08-23) is that this is worth it: his loop is generate, read three, pick one, and a
- * second run to get a second opinion costs the whole pipeline again.
+ * WHAT EXTRAS WOULD COST, should DESCRIPTION_CANDIDATES ever go back up: each candidate is its
+ * own call plus whatever judging re-asks, about 40 s each on the 27B. The 2026-08-23 ruling that
+ * two extras were worth it is superseded by LEDGER #220: one description, one call.
  */
 
 /**
@@ -248,12 +250,14 @@ const SHORT_HOOK_FAULT = 'it came back as ';
  * produced in every measured run (~15-45s per call), parsed by parseLeadBody. 4096 is
  * answer-sized with a wide margin — there is no reasoning to carry any more.
  *
- * KEPT at 4096 by P4's budget review (docs/crucible/P4.md "Budgets"): the Crucible-era calls
- * answered in 145-147 tokens, but the stored record holds a description body of 6,066 characters
- * (~1,733 tokens, a keyword run-on on 2026-08-23), and a 2x margin over that is 3,466. The
- * evidence does not show 2048 is never needed, so the number stays.
+ * 2048 (LEDGER #220). P4's budget review had kept 4096 on one stored outlier, a 6,066-character
+ * keyword run-on from 2026-08-23; Owen read that as a malfunction, not an answer: "descriptions
+ * dont need to be long. we hit major keywords. one paragraph preferably, plus the one line
+ * explainer that appears in searches." Every other recorded answer is 145-400 tokens, so 2048
+ * is five times the largest real one. A description that runs past it stops as `length`, which
+ * LEDGER #112 makes a hard failure, and that is the correct verdict on a run-on.
  */
-const NUM_PREDICT = 4096;
+const NUM_PREDICT = 2048;
 
 /**
  * 600s, not 300: with thinking ON and the 8192 budget, the arithmetic of a spilled or long
@@ -325,11 +329,16 @@ export class DescriptionUnit implements MetadataUnit {
   }
 
   describePrompt(ctx: MetadataRunContext): string {
+    const header =
+      DESCRIPTION_CANDIDATES === 1
+        ? `# ONE DESCRIPTION IS WRITTEN FROM THIS PROMPT, in one call: one paragraph opening on its\n` +
+          `# hook sentence (LEDGER #220).\n\n`
+        : `# ${DESCRIPTION_CANDIDATES} DESCRIPTIONS ARE WRITTEN FROM THIS ONE PROMPT.\n` +
+          `# The primary and ${DESCRIPTION_CANDIDATES - 1} alternative(s), each one whole answer — the\n` +
+          `# paragraph opening on its hook sentence. The prompt is identical for all of them — every\n` +
+          `# draw runs at the provider's default sampling — so it is shown once.\n\n`;
     return (
-      `# ${DESCRIPTION_CANDIDATES} DESCRIPTIONS ARE WRITTEN FROM THIS ONE PROMPT.\n` +
-      `# The primary and ${DESCRIPTION_CANDIDATES - 1} alternative(s), each one whole answer — the\n` +
-      `# paragraph opening on its hook sentence. The prompt is identical for all of them — every\n` +
-      `# draw runs at the provider's default sampling — so it is shown once.\n\n` +
+      header +
       `# DESCRIPTION (${this.option.model}, plain text, provider default sampling)\n\n` +
       this.buildPrompt(DESCRIPTION_PROMPTS.CANDIDATE, ctx, '')
     );

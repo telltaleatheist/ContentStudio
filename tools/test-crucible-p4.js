@@ -4,7 +4,7 @@
  *
  * What is held:
  *  - each call site states its own budget and asks for the smallest 8,192 step that holds its own
- *    prompt (context-check.ts loadContextFor, LEDGER #209): the description at 4,096, a rewrite
+ *    prompt (context-check.ts loadContextFor, LEDGER #209): the description at 2,048 (#220), a rewrite
  *    pass (the scrub, Soften) at 16,384 with a 24,576 load, the compilation summarizer at 4,096;
  *  - a job's second, larger call grows the load ONCE, and a later smaller call does not shrink it;
  *  - before a load, `GET /v1/capability?class=generate&context_tokens=<the load>&concurrency=1` is
@@ -61,7 +61,7 @@ function localOption() {
 
 // ── the call sites ───────────────────────────────────────────────────────────
 
-check('the description asks 4,096 and its own step; a rewrite pass asks 16,384 and loads at 24,576, growing the job\'s load once', () => withDoor({}, async (server) => {
+check('the description asks 2,048 and its own step; a rewrite pass asks 16,384 and loads at 24,576, growing the job\'s load once', () => withDoor({}, async (server) => {
   const { DescriptionUnit } = services('metadata/description-unit.js');
   const { JobModelLifecycle } = services('metadata/model-lifecycle.js');
   const rewrite = services('metadata/rewrite-pass.js');
@@ -84,11 +84,11 @@ check('the description asks 4,096 and its own step; a rewrite pass asks 16,384 a
   await lifecycle.releaseAll();
 
   const bodies = chatBodies(server);
-  assert.deepStrictEqual(bodies.map((b) => b.max_tokens), [4096, rewrite.REWRITE_NUM_PREDICT, 4096]);
+  assert.deepStrictEqual(bodies.map((b) => b.max_tokens), [2048, rewrite.REWRITE_NUM_PREDICT, 2048]);
   assert.strictEqual(rewrite.REWRITE_NUM_PREDICT, 16384, 'the rewrite passes take the thinking title\'s budget (#214)');
   assert.deepStrictEqual(bodies.map((b) => b.chat_template_kwargs.enable_thinking), [false, true, false]);
   const traced = ai.promptTrace.map((e) => [e.maxTokens, e.loadContext]);
-  assert.deepStrictEqual(traced, [[4096, 8192], [16384, 24576], [4096, 8192]], 'each call asked for its own step');
+  assert.deepStrictEqual(traced, [[2048, 8192], [16384, 24576], [2048, 8192]], 'each call asked for its own step');
   // One job: the description loaded the model at 8,192, the rewrite grew it once to 24,576, and
   // the last description ran on the larger window (no shrink, no floor asked for).
   assert.deepStrictEqual(loads(server).map((b) => [b.model, b.params.context]), [[MODEL, 8192], [MODEL, 24576]]);

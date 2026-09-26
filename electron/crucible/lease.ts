@@ -283,9 +283,11 @@ export class JobLeases {
       const grows = request.need !== null && window !== null && request.need > window
         && request.loadContext !== undefined && request.loadContext > window;
       if (!grows) return;
-      // GROWTH IS LEGITIMATE, SHRINKAGE NEVER IS (LEDGER #111): a later call that
-      // does not fit the window this job loaded reloads the model at its own
-      // context. Our own lease is handed back first; the reload takes a new one.
+      // WITHIN A JOB the window only grows (LEDGER #209: a job loads at the step its largest
+      // call needs, and a later smaller call runs in the window already open). A later call
+      // that does not fit the window this job loaded reloads the model at its own context.
+      // Our own lease is handed back first; the reload takes a new one. Shrinking happens
+      // BETWEEN jobs, in acquire() (#220).
       log.info(
         `[crucible] ${this.what}: ${model} on "${server}" is served at ${window} tokens and a call needs ` +
           `${request.need}; reloading it at ${request.loadContext}`,
@@ -326,7 +328,46 @@ export class JobLeases {
     if (row.resident) {
       const tooSmall = request.need !== null && window !== null && request.need > window
         && request.loadContext !== undefined && request.loadContext > window;
-      if (!tooSmall) {
+      // A model left resident by an EARLIER job at a larger context than this job asks for is
+      // reloaded at the smaller one (LEDGER #209, made unconditional by #220: "build it
+      // everywhere"). On the Mac the load context is admission only, so the reload buys no
+      // memory there and costs the reload; on the PC it frees KV. Owen chose one rule for both.
+      // The one thing a shrink never does is disturb another client's lease (P3): if the card
+      // is theirs, this job runs under their lease at their window, and says so.
+      const tooLarge = !tooSmall && window !== null && request.loadContext !== undefined && window > request.loadContext;
+      if (tooLarge) {
+        try {
+          const lease = await client.lease(model, { act: request.act, ttlSeconds: CRUCIBLE_LEASE_TTL_SECONDS });
+          request.hooks.leased({ server, id: lease.leaseId, model });
+          // Ours to reload. The lease that proved it is handed back first; the load takes a new one.
+          const released = await client.release(lease.leaseId).then(() => true, (err) => isUnknownLease(err));
+          if (!released) {
+            throw new CrucibleCallError(
+              'protocol_error',
+              `"${server}" would not take back the lease (${lease.leaseId}) this job took on ${model} to reload it smaller; ` +
+                `nothing was reloaded and nothing was sent.`,
+              server,
+            );
+          }
+          request.hooks.settled(server, 'lease', lease.leaseId);
+          log.info(
+            `[crucible] ${this.what}: ${model} is resident on "${server}" at ${window} tokens and this job needs only ` +
+              `${request.loadContext}; reloading it at ${request.loadContext} (a declared cost: the smaller load is #209's rule)`,
+          );
+          return this.load(client, server, model, request, hold);
+        } catch (err) {
+          if (err instanceof CrucibleLeased) {
+            log.warn(
+              `[crucible] ${this.what}: ${model} on "${server}" is resident at ${window} tokens and leased by ${stated(err.holder)} ` +
+                `(${err.leasedLine}); it is not reloaded smaller for this job (their lease is theirs), running under it without one of our own`,
+            );
+            return hold({ maxModelLen: window });
+          }
+          if (err instanceof CrucibleCallError) throw err;
+          // It left the card between the read and the lease: load it below.
+          if (!(err instanceof CrucibleRefused && err.code === 'not_resident')) throw callRefusalOf(err, server);
+        }
+      } else if (!tooSmall) {
         try {
           const lease = await client.lease(model, { act: request.act, ttlSeconds: CRUCIBLE_LEASE_TTL_SECONDS });
           // Recorded before the next await (P3): a kill from here on leaves a row the sweep reads.
