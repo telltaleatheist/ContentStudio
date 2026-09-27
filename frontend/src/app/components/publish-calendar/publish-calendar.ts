@@ -411,6 +411,13 @@ function sameMoment(a: string, b: string): boolean {
   return new Date(a).getTime() === new Date(b).getTime();
 }
 
+/** The record's linked video is out on YouTube: YouTube's own answer, not the record's. */
+function isLiveOnYouTube(facts: PublishFacts, linked: ReadonlyMap<string, LinkedVideo>): boolean {
+  if (facts.videoId === null) return false;
+  const remote = linked.get(facts.videoId);
+  return remote !== undefined && remote.privacyStatus !== 'private';
+}
+
 @Component({
   selector: 'app-publish-calendar',
   standalone: true,
@@ -1409,12 +1416,16 @@ export class PublishCalendar implements OnInit, OnDestroy {
    */
   readonly tray = computed<TrayItem[]>(() => {
     const active = this.activeTabId();
+    const linked = this.linkedByVideoId();
     return this.entries()
       .filter(
         (entry) =>
           entry.publish !== null &&
           entry.publish.publishAt === null &&
-          entry.publish.status !== 'published'
+          entry.publish.status !== 'published' &&
+          // Out on YouTube already (public or unlisted): published in fact, so not waiting
+          // for a date (Owen, 2026-09-26, "jw elder blames a dead woman..." sat here).
+          !isLiveOnYouTube(entry.publish, linked)
       )
       .map((entry) => {
         const facts = entry.publish as PublishFacts;

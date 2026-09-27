@@ -930,19 +930,44 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       if (published) {
         return ok(await store.update(id, generated, { status: 'published' }));
       }
+      // UNPUBLISHED means "not out yet, send it again" (Owen, 2026-09-26: "i should be able
+      // to reupload a video if i mark it as unpublished again. that can be the deciding
+      // factor if it shows up in the calendar and is uploadable"). So the record forgets
+      // the video it was linked to — id, upload and push receipts, fill time — and the
+      // item is back on the calendar as uploadable. What it forgot is kept in
+      // retiredUploads, never dropped.
       const record = store.get(id);
-      if (!record || record.status !== 'published') {
+      if (!record || (record.status !== 'published' && !record.videoId && !record.uploadReceipt)) {
         return fail(
-          `Item ${id} is not marked published (status "${record?.status ?? 'no record'}"), ` +
-          `so there is no mark to take back.`
+          `Item ${id} is not published or linked to a YouTube video (status ` +
+          `"${record?.status ?? 'no record'}"), so there is nothing to mark unpublished.`
         );
       }
-      const fallback = record.videoId
-        ? 'linked'
-        : record.chosenTitles.length > 0
-          ? 'ready'
-          : 'selecting';
-      return ok(await store.update(id, generated, { status: fallback }));
+      const retired = [...(record.retiredUploads ?? [])];
+      if (record.videoId || record.uploadReceipt) {
+        retired.push({
+          videoId: record.videoId,
+          channelId: record.channelId,
+          uploadReceipt: record.uploadReceipt,
+          pushedAt: record.pushedAt,
+          retiredAt: new Date().toISOString(),
+        });
+        log.info(
+          `[Publish] ${id} marked unpublished: forgot video ${record.videoId ?? '(none)'}; ` +
+            `kept in retiredUploads (${retired.length})`
+        );
+      }
+      return ok(
+        await store.update(id, generated, {
+          status: record.chosenTitles.length > 0 ? 'ready' : 'selecting',
+          videoId: null,
+          uploadReceipt: null,
+          pushedAt: null,
+          pushReceipt: null,
+          filledAt: null,
+          retiredUploads: retired,
+        })
+      );
     } catch (err: any) {
       return fail(err?.message || String(err));
     }
