@@ -1640,6 +1640,7 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
       activeUploads.set(id, controller);
       const sender = e.sender;
       let lastTickMs = 0;
+      log.info(`[Publish] YouTube upload of ${id}: starting`);
       try {
         const outcome = await uploadItemToYouTube(id, {
           store,
@@ -1658,11 +1659,16 @@ export function setupPublishIpc(deps: PublishIpcDeps): void {
             }
           },
         });
+        log.info(`[Publish] YouTube upload of ${id}: done as video ${outcome.receipt.videoId}`);
         return ok(outcome);
       } finally {
         activeUploads.delete(id);
       }
     } catch (err: any) {
+      // Every upload and its outcome is in the log, not only on the calendar's results
+      // panel — which is gone once the page is left (2026-09-26: a run's missing items
+      // could not be explained from the log because nothing here wrote one).
+      log.warn(`[Publish] YouTube upload of ${String(itemId)}: failed: ${err?.message || String(err)}`);
       return fail(err?.message || String(err));
     }
   });
