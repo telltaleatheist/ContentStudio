@@ -8,6 +8,7 @@ import type {
   CarryReceipt,
   ChannelResolution,
   ChosenMetadata,
+  FindDraftResult,
   PublishResult,
   PushOutcome,
   ReportIndexResponse,
@@ -26,6 +27,7 @@ import type {
   TranscriptRef,
   UploadOutcome,
   UploadProgress,
+  VideoSource,
 } from '../features/publish/publish.types';
 import type {
   CandidateScan,
@@ -829,6 +831,14 @@ declare global {
       publishProposeThumbnail: (itemId: string) => Promise<PublishResult<ThumbnailProposal | null>>;
       /** The native picker. Returns the chosen path, or null when the operator cancelled. */
       publishChooseThumbnail: () => Promise<PublishResult<string | null>>;
+      publishVideoSource: (itemId: string) => Promise<PublishResult<VideoSource>>;
+      publishFindDraft: (itemId: string, channelId: string) => Promise<PublishResult<FindDraftResult>>;
+      publishLinkVideo: (
+        itemId: string,
+        videoId: string,
+        channelId: string
+      ) => Promise<PublishResult<ChosenMetadata>>;
+      publishUnlinkVideo: (itemId: string) => Promise<PublishResult<ChosenMetadata>>;
       publishReadThumbnail: (
         itemId: string,
         maxPx: number,
@@ -1635,6 +1645,34 @@ export class ElectronService {
   async publishChooseThumbnail(): Promise<PublishResult<string | null>> {
     if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
     return await this.ipcRenderer.publishChooseThumbnail();
+  }
+
+  /** The video file this item's report was made from, as the run recorded it. */
+  async publishVideoSource(itemId: string): Promise<PublishResult<VideoSource>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishVideoSource(itemId);
+  }
+
+  /** The channel's recent uploads with a proposed match. Links nothing. */
+  async publishFindDraft(itemId: string, channelId: string): Promise<PublishResult<FindDraftResult>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishFindDraft(itemId, channelId);
+  }
+
+  /** Link the item to one YouTube video. Only ever on the operator's click. */
+  async publishLinkVideo(
+    itemId: string,
+    videoId: string,
+    channelId: string
+  ): Promise<PublishResult<ChosenMetadata>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishLinkVideo(itemId, videoId, channelId);
+  }
+
+  /** Remove the item's video link; the record drops back to ready. */
+  async publishUnlinkVideo(itemId: string): Promise<PublishResult<ChosenMetadata>> {
+    if (!this.ipcRenderer) return { success: false, error: 'Electron not available' };
+    return await this.ipcRenderer.publishUnlinkVideo(itemId);
   }
 
   /**

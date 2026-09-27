@@ -1505,6 +1505,78 @@ check('a card busy with ContentStudio\'s own work is not "AI work waits its turn
   eq(r('crucible@owens-pc', 'busy: bookforge, tts 62% done'), 'Crucible on crucible@owens-pc is ready (busy: bookforge, tts 62% done; AI work waits its turn).');
 });
 
+// ---------------------------------------------------------------- the Video row (LEDGER #230)
+//
+// u8 - pokemon chapter 12 (2026-09-26): the LINK tick opened nothing, and nothing on the
+// reports page could link a report to its YouTube upload. The report's own source file is
+// read off the run's record (a report without one has lost track of it — a fault), the
+// matcher goes by that file's name, and the tick says "not on YouTube yet", never "no video".
+const videoSource = require(path.join(ROOT, 'services/publish/video-source.js'));
+const matcher = require(path.join(ROOT, 'services/publish/video-matcher.js'));
+const videoLink = (() => {
+  const fs = require('fs');
+  const ts = require('typescript');
+  const src = path.join(__dirname, '..', 'frontend/src/app/features/publish/video-link.ts');
+  const out = ts.transpileModule(fs.readFileSync(src, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+    fileName: src,
+  });
+  const mod = { exports: {} };
+  new Function('exports', 'module', 'require', out.outputText)(mod.exports, mod, require);
+  return mod.exports;
+})();
+const U8 = '/Volumes/Callisto/Movies/FCPX/2026-09-20/complete/u8 - pokemon chapter 12.mov';
+
+check('a report\'s video is the path its run recorded; none recorded is a fault in plain words, never a picker', () => {
+  const onDisk = videoSource.describeVideoSource({ sourcePath: U8, sourcePathDeclared: true }, () => true);
+  eq([onDisk.path, onDisk.fileName, onDisk.onDisk, onDisk.problem, onDisk.notice], [U8, 'u8 - pokemon chapter 12.mov', true, null, null], 'recorded, on disk:');
+  const unplugged = videoSource.describeVideoSource({ sourcePath: U8, sourcePathDeclared: true }, () => false);
+  eq([unplugged.onDisk, unplugged.problem, /plug it in/.test(unplugged.notice)], [false, null, true], 'recorded, drive unplugged:');
+  const declaredNull = videoSource.describeVideoSource({ sourcePath: null, sourcePathDeclared: true }, () => true);
+  const absent = videoSource.describeVideoSource({ sourcePathDeclared: false }, () => true);
+  for (const lost of [declaredNull, absent]) {
+    eq([lost.path, lost.fileName, /^This report has lost track of the video it was made from/.test(lost.problem)], [null, null, true], 'lost:');
+  }
+});
+
+check('the matcher goes by the report\'s own file name when the publish record has none, and says why the length was not compared', () => {
+  const src = videoSource.describeVideoSource({ sourcePath: U8, sourcePathDeclared: true }, () => true);
+  eq(videoSource.matchFileName(null, src), 'u8 - pokemon chapter 12.mov', 'record empty (every record today):');
+  eq(videoSource.matchFileName('other.mov', src), 'other.mov', 'record set:');
+  const uploads = [
+    { videoId: 'aaa', title: 'u7 - something else', publishedAt: '2026-09-21T10:00:00Z', durationSec: 1200, privacyStatus: 'private', uploadStatus: 'processed', publishAt: null, descriptionLength: 0, tagCount: 0, categoryId: null },
+    { videoId: 'bbb', title: 'u8   pokemon chapter 12', publishedAt: '2026-09-22T10:00:00Z', durationSec: 2472, privacyStatus: 'private', uploadStatus: 'processed', publishAt: null, descriptionLength: 0, tagCount: 0, categoryId: null },
+  ];
+  const candidates = matcher.toFillCandidates(uploads, 'UCOB86WpguzlOEs4z93iZ7kA');
+  eq(candidates[1].publishedAt, '2026-09-22T10:00:00Z', 'the upload date rides on the candidate:');
+  const outcome = matcher.matchDraft({ sourceFilename: videoSource.matchFileName(null, src), sourceDurationSec: 2471 }, candidates);
+  eq([outcome.candidate && outcome.candidate.videoId, outcome.confidence], ['bbb', 'exact'], 'u8 found by name and length:');
+  eq(videoSource.durationNote(src, null), null, 'length read:');
+  eq(/could not be read \(boom\)/.test(videoSource.durationNote(src, 'boom')), true, 'probe failed:');
+  const unplugged = videoSource.describeVideoSource({ sourcePath: U8 }, () => false);
+  eq(/not on disk/.test(videoSource.durationNote(unplugged, null)), true, 'drive unplugged:');
+});
+
+check('LINK opens the Video row on YouTube and the audio row on Spreaker, and never says "no video"', () => {
+  eq([videoLink.linkFactFor(false), videoLink.linkFactFor(true)], ['video', 'audio']);
+  const src = { path: U8, fileName: 'u8 - pokemon chapter 12.mov', onDisk: true, problem: null, notice: null };
+  const unlinked = videoLink.youtubeLinkTick(null, src);
+  eq([unlinked.state, unlinked.value, unlinked.hint], ['unset', 'not on YouTube yet', 'Not linked to a YouTube upload yet. Open Video to find it on the channel.']);
+  eq([videoLink.youtubeLinkTick('bbb', src).state, videoLink.youtubeLinkTick('bbb', src).value], ['set', 'bbb']);
+  const lost = videoLink.youtubeLinkTick(null, { ...src, path: null, fileName: null, problem: 'This report has lost track of the video it was made from: x' });
+  eq([lost.state, lost.value], ['warn', 'video file lost'], 'a lost source is amber:');
+  eq(videoLink.youtubeLinkTick(null, null).state, 'unset', 'source not read yet:');
+});
+
+check('the uploads list puts the proposed match first, once, with privacy, upload date and length', () => {
+  const v = (id, extra) => ({ videoId: id, channelId: 'UC', title: id, privacyStatus: 'private', publishAt: null, publishedAt: '2026-09-22T10:00:00Z', durationSec: 2472, descriptionLength: 0, tagCount: 0, ...extra });
+  const rows = videoLink.uploadRows({ candidate: v('b'), confidence: 'exact', reason: 'r', state: 'draft', alternatives: [v('a', { privacyStatus: 'public', durationSec: null }), v('b'), v('c', { publishAt: '2026-10-06T20:00:00Z' })], sourceFilename: null, sourceDurationSec: null, durationNote: null, candidateCount: 3 });
+  eq(rows.map((r) => [r.video.videoId, r.proposed]), [['b', true], ['a', false], ['c', false]]);
+  eq(rows.map((r) => r.facts), ['Draft (private) · uploaded 2026-09-22 · 41:12', 'Public · uploaded 2026-09-22 · length unknown', 'Scheduled 2026-10-06 · uploaded 2026-09-22 · 41:12']);
+  eq(videoLink.uploadRows({ candidate: null, alternatives: [] }).length, 0, 'nothing on the channel:');
+  eq([videoLink.clockOf(3725), videoLink.clockOf(59)], ['1:02:05', '0:59']);
+});
+
 // ---------------------------------------------------------------- snap chaptering, wired (P8b)
 //
 // Stories, the in-queue split and the pipeline's chapter engine are the snap chaptering service

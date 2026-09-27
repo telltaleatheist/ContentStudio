@@ -39,7 +39,14 @@ import {
   formatBytes,
   formatDuration,
 } from '../../features/publish/publish-schedule';
-import type { AudioMeta } from '../../features/publish/publish.types';
+import type { AudioMeta, DraftCandidate } from '../../features/publish/publish.types';
+import {
+  linkFactFor,
+  studioUrl,
+  uploadRows,
+  youtubeLinkTick,
+  type UploadRow,
+} from '../../features/publish/video-link';
 import {
   describeProvenance,
   type ItemProvenance,
@@ -335,7 +342,7 @@ interface RowDot {
 }
 
 /** Which setup row a tick opens. `titles` is the titles list and opens nothing here. */
-type FactKey = 'destination' | 'money' | 'when' | 'thumb' | 'audio';
+type FactKey = 'destination' | 'money' | 'when' | 'thumb' | 'video' | 'audio';
 
 /**
  * Which setup row answers which tick, and back again.
@@ -350,9 +357,10 @@ const FACT_FOR_TICK: Readonly<Record<TickKey, FactKey | null>> = {
   money: 'money',
   when: 'when',
   thumb: 'thumb',
-  // The Spreaker link IS the episode audio; for a YouTube item there is no setup row that
-  // sets it, because nothing in this app uploads video or links a draft.
-  link: 'audio',
+  // A YouTube item's link is its upload, found and linked in the Video row. For a Spreaker
+  // item the link IS the episode audio — `factForTick` makes that switch, because this
+  // table cannot know the destination.
+  link: 'video',
 };
 
 const TICK_FOR_FACT: Readonly<Record<FactKey, TickKey | null>> = {
@@ -360,6 +368,7 @@ const TICK_FOR_FACT: Readonly<Record<FactKey, TickKey | null>> = {
   money: 'money',
   when: 'when',
   thumb: 'thumb',
+  video: 'link',
   audio: 'link',
 };
 
@@ -626,6 +635,7 @@ export class MetadataReports implements OnInit, OnDestroy {
   @ViewChild('scheduleRow') private scheduleRow?: ElementRef<HTMLElement>;
   @ViewChild('thumbnailRow') private thumbnailRow?: ElementRef<HTMLElement>;
   @ViewChild('podcastRow') private podcastRow?: ElementRef<HTMLElement>;
+  @ViewChild('videoRow') private videoRow?: ElementRef<HTMLElement>;
 
   /**
    * Where the drag started, so the pane tracks the pointer exactly rather than snapping
@@ -1520,20 +1530,12 @@ export class MetadataReports implements OnInit, OnDestroy {
               : 'No episode audio is chosen, and an episode is the audio.',
       });
     } else {
-      const videoId = this.publish.videoId();
-      // Unlinked is hollow, not amber (2026-08-24): the upload happens in the browser,
-      // so there is nothing on this page to do about it until dispatch time — and the
-      // disagreement check below still ambers this tick the moment it is the one thing
-      // refusing the button.
-      ticks.push({
-        key: 'link',
-        label: 'Link',
-        state: videoId ? 'set' : 'unset',
-        value: videoId ?? 'no video',
-        hint: videoId
-          ? `Writes to video ${videoId}. Nothing here uploads video.`
-          : 'Not linked to a YouTube video yet. Upload the draft in the browser and link it.',
-      });
+      // Unlinked is hollow, not amber (2026-08-24): nothing is wrong with an item whose
+      // upload has not happened yet, and the disagreement check below still ambers this
+      // tick the moment it is the one thing refusing the button. A report that has LOST
+      // its own video file is amber: every report is made from one (2026-09-26).
+      const link = youtubeLinkTick(this.publish.videoId(), this.publish.videoSource());
+      ticks.push({ key: 'link', label: 'Link', ...link });
     }
 
     // The meter and the dispatch button must never disagree. Every refusal the button can
@@ -1610,8 +1612,14 @@ export class MetadataReports implements OnInit, OnDestroy {
     if (this.dispatchDone()) return null;
     const tick = this.readinessTicks().find((t) => t.state === 'warn');
     if (!tick) return null;
-    return { tick, fact: FACT_FOR_TICK[tick.key] };
+    return { tick, fact: this.factForTick(tick.key) };
   });
+
+  /** FACT_FOR_TICK, with LINK sent to the row this item's destination has. */
+  private factForTick(key: TickKey): FactKey | null {
+    if (key === 'link') return linkFactFor(this.publish.isPodcast());
+    return FACT_FOR_TICK[key];
+  }
 
   /**
    * A tick is a jump target: it opens the setup row that sets that fact, scrolls the
@@ -1623,12 +1631,8 @@ export class MetadataReports implements OnInit, OnDestroy {
       setTimeout(() => this.titlesScroll?.nativeElement.focus());
       return;
     }
-    const fact = FACT_FOR_TICK[key];
+    const fact = this.factForTick(key);
     if (fact === null) return;
-    // LINK on a YouTube item has no setup row, because nothing in this app uploads a video
-    // or links a draft — that happens in the browser. Collapsing whatever the operator had
-    // open in order to show them nothing would be worse than doing nothing.
-    if (fact === 'audio' && !this.publish.isPodcast()) return;
     // The schedule is read-only here — the calendar sets it — so its tick only brings the
     // line that says so into view.
     if (fact === 'when') {
@@ -1643,7 +1647,9 @@ export class MetadataReports implements OnInit, OnDestroy {
           ? this.channelSelect?.nativeElement
           : fact === 'thumb'
             ? this.thumbnailRow?.nativeElement
-            : this.podcastRow?.nativeElement;
+            : fact === 'video'
+              ? this.videoRow?.nativeElement
+              : this.podcastRow?.nativeElement;
       if (!el) return;
       el.scrollIntoView({ block: 'nearest' });
       if (el instanceof HTMLSelectElement) el.focus();
@@ -1652,7 +1658,9 @@ export class MetadataReports implements OnInit, OnDestroy {
 
   // ------------------------------------------------------ the publish setup accordion
   //
-  // One block, four label/value rows and a read-only schedule line, one open at a time. The control that SETS a fact
+  // One block: label/value rows (destination, monetization, thumbnail, then the Video row for
+  // YouTube or the episode audio for Spreaker) and a read-only schedule line, one open at a
+  // time. The control that SETS a fact
   // lives inside the row that STATES it, so nothing has to be explained in advance —
   // which is what replaced the 41 resident paragraphs this panel used to carry.
 
@@ -1676,6 +1684,44 @@ export class MetadataReports implements OnInit, OnDestroy {
   /** True when this row is the one thing left to do — the single filled orange. */
   isNextAction(fact: FactKey): boolean {
     return this.nextAction()?.fact === fact;
+  }
+
+  // ------------------------------------------------------------ the Video row
+  //
+  // The report's own source video, and its YouTube upload. Linking is only ever a click
+  // on one upload's row; the search proposes and never links.
+
+  /** The channel's recent uploads, the proposed match first. Empty until Find is pressed. */
+  readonly uploadRows = computed<UploadRow[]>(() => {
+    const result = this.publish.draftSearch();
+    return result ? uploadRows(result) : [];
+  });
+
+  async showSourceInFolder(): Promise<void> {
+    const source = this.publish.videoSource();
+    if (!source?.path) return;
+    try {
+      await this.electron.showInFolder(source.path);
+    } catch (error) {
+      this.notificationService.error(
+        'Could not show the video',
+        `Finder could not show ${source.path}: ${(error as Error).message}`,
+      );
+    }
+  }
+
+  async openVideo(videoId: string): Promise<void> {
+    const res = await this.electron.openExternal(studioUrl(videoId));
+    if (!res.success) {
+      this.notificationService.error(
+        'Could not open the video',
+        `The browser could not be opened on video ${videoId}: ${res.error ?? 'no reason was given.'}`,
+      );
+    }
+  }
+
+  linkUpload(video: DraftCandidate): void {
+    void this.publish.linkVideo(video);
   }
 
   // ------------------------------------------------------ the A/B slate (§1.4)
