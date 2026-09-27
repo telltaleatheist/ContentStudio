@@ -1386,6 +1386,24 @@
     }
 
     // Where the Start button was while the queue runs: says it is running, and what waits.
+    // A job of this queue waits behind another app's work (LEDGER #234): grey, like a parked row.
+    .waiting-turn-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      min-height: 48px;
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+      border: 1px dashed var(--border-color, rgba(127, 127, 127, 0.4));
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      overflow-wrap: anywhere;
+
+      mat-icon {
+        flex: 0 0 auto;
+      }
+    }
+
     .queue-running-note {
       display: flex;
       align-items: center;

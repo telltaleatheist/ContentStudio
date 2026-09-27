@@ -491,7 +491,8 @@ async function startFakeCrucible(options = {}) {
         const ownRunning = jobs.filter((j) => j.status === 'running').map(ownJob);
         const ownQueued = jobs.filter((j) => j.status === 'queued').map(ownJob);
         const job = busy === undefined ? null : {
-            job_id: 'job-held',
+            // ContentStudio (#234): a named holder id, so a keeper can swap one holder for another.
+            job_id: busy.jobId ?? 'job-held',
             type: busy.type,
             model: busy.model ?? null,
             status: 'running',
@@ -868,7 +869,7 @@ async function startFakeCrucible(options = {}) {
     }
     function busyDetails(busy) {
         return {
-            holder: busy.client, job_id: 'job-held', type: busy.type, model: busy.model ?? null,
+            holder: busy.client, job_id: busy.jobId ?? 'job-held', type: busy.type, model: busy.model ?? null,
             status: 'running', since: '2026-09-23T01:00:01Z', progress: busy.progress, message: null,
         };
     }
