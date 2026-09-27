@@ -58,8 +58,8 @@ export class CrucibleRequiredError extends Error {
 }
 
 /**
- * The ready answer's sentence. A card held by ANOTHER app is named, and AI work waits its turn
- * behind it. A card held by ContentStudio's own work (probe.ts `busyLineOf` names the client
+ * The ready answer's sentence. A card held by ANOTHER app is named (LEDGER #233: no wait is
+ * claimed here; a job that really waits says so on its own row). A card held by ContentStudio's own work (probe.ts `busyLineOf` names the client
  * "contentstudio") is not something to wait for: it is the job on screen, transcribing or
  * running its model calls, and "AI work waits its turn" there read as the job itself being
  * stuck (Owen, 2026-09-26: "its waiting now"). It says whose work it is instead (LEDGER #225).
@@ -71,7 +71,16 @@ export function readyReason(server: string, busy: string | null): string {
     const what = own[1].replace(/^asr\b/, 'transcription').trim();
     return `Crucible on ${server} is ready (busy with ContentStudio's own work${what ? `: ${what}` : ''}).`;
   }
-  return `Crucible on ${server} is ready (${busy}; AI work waits its turn).`;
+  // Another app's work is named, and nothing more: whether any of OUR work waits behind it is
+  // the queue's to say, on the job that waits (lanes.ts parks it and the row reads "Starts when
+  // <server> is free"). Said here it claimed a wait with no job queued (Owen, 2026-09-26: "im
+  // not waiting for anything ... this should only appear if its waiting for a job").
+  return `Crucible on ${server} is ready (${busy}).`;
+}
+
+/** A view with its progress numbers taken out: what changed for the log, not the banner. */
+function logShapeOf(view: CrucibleReadinessView): string {
+  return `${view.state}|${view.server ?? ''}|${view.reason.replace(/\d+(\.\d+)?%/g, '#%')}`;
 }
 
 function sameView(a: CrucibleReadinessView, b: CrucibleReadinessView): boolean {
@@ -361,9 +370,14 @@ export class CrucibleReadiness {
 
   private publish(view: CrucibleReadinessView): void {
     const changed = !sameView(view, this.view);
+    const previous = this.view;
     this.view = view;
     if (!changed) return;
-    log.info(`[crucible] ${view.state}: ${view.reason}`);
+    // The banner gets every change, progress included; the log only a change of state or of
+    // who holds the card — a percentage ticking up is not a new fact every few minutes.
+    if (previous === null || previous === undefined || logShapeOf(previous) !== logShapeOf(view)) {
+      log.info(`[crucible] ${view.state}: ${view.reason}`);
+    }
     this.pushToRenderer(view);
     for (const listener of this.listeners) {
       try {
