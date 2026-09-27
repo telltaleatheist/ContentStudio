@@ -70,6 +70,7 @@ export function toFillCandidates(
         ? e.privacyStatus
         : 'private',
     publishAt: e.publishAt,
+    publishedAt: e.publishedAt || null,
     durationSec: e.durationSec || null,
     descriptionLength: e.descriptionLength,
     tagCount: e.tagCount,

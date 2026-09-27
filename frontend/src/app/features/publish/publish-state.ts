@@ -21,6 +21,8 @@ import {
   CarryReceipt,
   ChannelResolution,
   ChosenMetadata,
+  DraftCandidate,
+  FindDraftResult,
   MAX_AB_VARIANTS,
   MAX_TITLE_LENGTH,
   PushReceipt,
@@ -35,6 +37,7 @@ import {
   ThumbnailProposal,
   ThumbnailSource,
   UploadReceipt,
+  VideoSource,
 } from './publish.types';
 import { composePublishAt } from './publish-schedule';
 
@@ -245,6 +248,26 @@ export class PublishState {
    */
   private readonly _spreakerReceipt = signal<SpreakerReceipt | null>(null);
 
+  // -- The Video row (2026-09-26). The report's own source file, and the search that finds
+  // its YouTube upload. The search is only ever run on a click, and it never links.
+  private readonly _videoSource = signal<VideoSource | null>(null);
+  private readonly _draftSearch = signal<FindDraftResult | null>(null);
+  private readonly _findingDraft = signal(false);
+  /** A failed search, link or unlink, in the main process's own words, shown in the row. */
+  private readonly _videoError = signal<string | null>(null);
+  /** Titles of videos this sitting has seen, so a link just made can show its title. */
+  private readonly _videoTitles = signal<Record<string, string>>({});
+
+  readonly videoSource = this._videoSource.asReadonly();
+  readonly draftSearch = this._draftSearch.asReadonly();
+  readonly findingDraft = this._findingDraft.asReadonly();
+  readonly videoError = this._videoError.asReadonly();
+  /** The linked video's title when this sitting has seen it, else null (the id is shown). */
+  readonly linkedVideoTitle = computed(() => {
+    const id = this.videoId();
+    return id ? (this._videoTitles()[id] ?? null) : null;
+  });
+
   readonly selection = this._selection.asReadonly();
   readonly resolved = this._resolved.asReadonly();
   readonly saving = this._saving.asReadonly();
@@ -430,8 +453,8 @@ export class PublishState {
   readonly pushBlockedReason = computed<string | null>(() => {
     if (!this.hasTarget()) return 'No report is open.';
     if (!this.videoId()) {
-      return 'This item is not linked to a YouTube video yet. Upload the draft in the ' +
-        'browser and link it first — nothing here uploads video.';
+      return 'This item is not linked to a YouTube video yet. Find its upload in the Video ' +
+        'row and link it first.';
     }
     if (!this.channelId()) return 'This item is not routed to a channel yet.';
     if (!this.pushTitle()) return 'No title is chosen. Variant 1 is what goes on the video.';
@@ -729,6 +752,8 @@ export class PublishState {
     if (this._itemId() !== itemId) return;
     await this.refreshThumbnail(itemId);
     if (this._itemId() !== itemId) return;
+    await this.refreshVideoSource(itemId);
+    if (this._itemId() !== itemId) return;
     await this.refreshSpreaker(itemId);
     if (this._itemId() !== itemId) return;
     await this.refreshCarryForward(itemId);
@@ -851,6 +876,109 @@ export class PublishState {
     // belonged to that item's sitting.
     this._uploadReceipt.set(null);
     this._uploadProgress.set(null);
+    // The Video row: its file and its search both belong to the item they were about.
+    this._videoSource.set(null);
+    this._draftSearch.set(null);
+    this._findingDraft.set(false);
+    this._videoError.set(null);
+  }
+
+  /**
+   * Which video file this item's report was made from. Every report starts from a video,
+   * so a report that has lost track of its path comes back with `problem` set (and main
+   * logs it); a read that FAILS is reported like every other panel read.
+   */
+  private async refreshVideoSource(itemId: string): Promise<void> {
+    const res = await this.electron.publishVideoSource(itemId);
+    if (this._itemId() !== itemId) return;
+    if (!res.success || !res.data) {
+      this.reportError(res.error ?? 'Could not read which video this report was made from.');
+      return;
+    }
+    this._videoSource.set(res.data);
+  }
+
+  /** The channel the Video row searches and links on: the recorded one, else the suggested. */
+  readonly videoChannelId = computed(() => this.channelId() ?? this.selectedChannelId());
+
+  /**
+   * Look through the channel's recent uploads for this item's video. Proposes, never links.
+   * Every refusal is shown in the row in plain words.
+   */
+  async findDraft(): Promise<void> {
+    const t = this.target('look for the YouTube upload');
+    if (!t) return;
+    const channelId = this.videoChannelId();
+    if (!channelId) {
+      this._videoError.set(
+        'This item has no YouTube channel yet, so there is no channel to look in. Set its destination first.'
+      );
+      return;
+    }
+    this._findingDraft.set(true);
+    this._videoError.set(null);
+    this._draftSearch.set(null);
+    try {
+      const res = await this.electron.publishFindDraft(t, channelId);
+      if (this._itemId() !== t) return;
+      if (!res.success || !res.data) {
+        this._videoError.set(
+          `Could not read the channel's uploads: ${res.error ?? 'no reason was given.'}`
+        );
+        return;
+      }
+      this._draftSearch.set(res.data);
+      const titles = { ...this._videoTitles() };
+      for (const v of res.data.alternatives) titles[v.videoId] = v.title;
+      if (res.data.candidate) titles[res.data.candidate.videoId] = res.data.candidate.title;
+      this._videoTitles.set(titles);
+    } finally {
+      this._findingDraft.set(false);
+    }
+  }
+
+  /** Close the uploads list without linking anything. */
+  dismissDraftSearch(): void {
+    this._draftSearch.set(null);
+  }
+
+  /** Link this item to one upload. Only ever called from the operator's click on its row. */
+  async linkVideo(video: DraftCandidate): Promise<void> {
+    const t = this.target('link a YouTube video');
+    if (!t) return;
+    this._saving.set(true);
+    this._videoError.set(null);
+    try {
+      const res = await this.electron.publishLinkVideo(t, video.videoId, video.channelId);
+      if (!res.success || !res.data) {
+        this._videoError.set(`The video was not linked: ${res.error ?? 'no reason was given.'}`);
+        return;
+      }
+      this._selection.set(res.data);
+      this._draftSearch.set(null);
+      await this.refreshResolved();
+    } finally {
+      this._saving.set(false);
+    }
+  }
+
+  /** Remove the link. The record drops back to ready; nothing on YouTube changes. */
+  async unlinkVideo(): Promise<void> {
+    const t = this.target('unlink the YouTube video');
+    if (!t) return;
+    this._saving.set(true);
+    this._videoError.set(null);
+    try {
+      const res = await this.electron.publishUnlinkVideo(t);
+      if (!res.success || !res.data) {
+        this._videoError.set(`The video was not unlinked: ${res.error ?? 'no reason was given.'}`);
+        return;
+      }
+      this._selection.set(res.data);
+      await this.refreshResolved();
+    } finally {
+      this._saving.set(false);
+    }
   }
 
   /**

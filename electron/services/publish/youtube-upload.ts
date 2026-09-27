@@ -193,7 +193,7 @@ export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Pro
       throw new Error(
         `Item ${itemId} was generated from a text subject or as a compilation, not from a ` +
         `video file, so there is no file to upload. Upload the video in the browser and ` +
-        `link it to this item, or regenerate the item from the video file.`
+        `link it in the Video row of the reports page, or regenerate the item from the video file.`
       );
     }
     throw new Error(
@@ -204,7 +204,7 @@ export async function uploadItemToYouTube(itemId: string, deps: UploadDeps): Pro
   if (!fs.existsSync(sourcePath)) {
     throw new Error(
       `Item ${itemId}'s source file is gone: "${sourcePath}". If the volume is unmounted, ` +
-      `mount it; if the file moved, upload in the browser and link the video instead.`
+      `mount it; if the file moved, upload in the browser and link it in the Video row instead.`
     );
   }
   const sizeBytes = fs.statSync(sourcePath).size;

@@ -619,6 +619,8 @@ export interface DraftCandidate {
   privacyStatus: 'private' | 'unlisted' | 'public';
   /** Absent on a true draft; present means the video is SCHEDULED -- do not touch. */
   publishAt: string | null;
+  /** ISO. When it was uploaded, as the uploads playlist says; null when YouTube gave none. */
+  publishedAt: string | null;
   durationSec: number | null;
   descriptionLength: number;
   tagCount: number;

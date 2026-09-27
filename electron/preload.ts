@@ -286,6 +286,15 @@ const api = {
   // publish-set-thumbnail, the one door a thumbnail is validated and written through,
   // which is also where a drag-and-drop lands.
   publishChooseThumbnail: () => ipcRenderer.invoke('publish-choose-thumbnail'),
+  // The Video row. The report's own source file (never picked: the run recorded it), the
+  // channel's recent uploads with a proposed match (never linked on its own), and the
+  // explicit link/unlink that writes the record's videoId.
+  publishVideoSource: (itemId: string) => ipcRenderer.invoke('publish-video-source', itemId),
+  publishFindDraft: (itemId: string, channelId: string) =>
+    ipcRenderer.invoke('publish-find-draft', itemId, channelId),
+  publishLinkVideo: (itemId: string, videoId: string, channelId: string) =>
+    ipcRenderer.invoke('publish-link-video', itemId, videoId, channelId),
+  publishUnlinkVideo: (itemId: string) => ipcRenderer.invoke('publish-unlink-video', itemId),
   // Downscaled in the MAIN process (nativeImage) so the preview never needs a file://
   // read from the renderer — webSecurity stays on. `absPath` names a file that is NOT
   // the stored one, which is how a proposal is previewed before it is confirmed; omit it

@@ -564,6 +564,52 @@ export interface ResolvedMetadata {
 }
 
 /**
+ * The video file a report was made from. Mirror of VideoSource in
+ * electron/services/publish/video-source.ts.
+ */
+export interface VideoSource {
+  path: string | null;
+  fileName: string | null;
+  onDisk: boolean;
+  /** The report has lost track of its video. A fault, shown amber. */
+  problem: string | null;
+  /** The file is not on disk right now (drive unplugged). */
+  notice: string | null;
+}
+
+/** One recent upload on the channel. Mirror of DraftCandidate in publish-types.ts. */
+export interface DraftCandidate {
+  videoId: string;
+  channelId: string;
+  title: string;
+  privacyStatus: 'private' | 'unlisted' | 'public';
+  publishAt: string | null;
+  publishedAt: string | null;
+  durationSec: number | null;
+  descriptionLength: number;
+  tagCount: number;
+}
+
+export type MatchConfidence = 'exact' | 'filename' | 'duration' | 'none';
+export type VideoState = 'draft' | 'scheduled' | 'unlisted' | 'public';
+
+/** What publish-find-draft answers. Proposes only; linking is a separate click. */
+export interface FindDraftResult {
+  candidate: DraftCandidate | null;
+  confidence: MatchConfidence;
+  /** Why it matched (or did not), in plain words. */
+  reason: string;
+  state: VideoState | null;
+  /** Every recent upload on the channel, the proposed one included. */
+  alternatives: DraftCandidate[];
+  sourceFilename: string | null;
+  sourceDurationSec: number | null;
+  /** Why the video's length was not compared, or null when it was. */
+  durationNote: string | null;
+  candidateCount: number;
+}
+
+/**
  * Uniform envelope returned by every publish-* IPC channel.
  *
  * Modelled with optional payload fields rather than a discriminated union to match the
