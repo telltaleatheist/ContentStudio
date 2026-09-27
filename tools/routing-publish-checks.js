@@ -1498,11 +1498,11 @@ check('the running row\'s clock, and what a parked row and a lane chip say', () 
   eq(jobActivity.laneBusyText('busy: bookforge, tts 62% done'), 'busy: bookforge, tts 62% done');
 });
 
-check('a card busy with ContentStudio\'s own work is not "AI work waits its turn"; another app\'s is', () => {
+check('the ready sentence names who holds the card and never claims a wait (a waiting job says so on its own row)', () => {
   const r = readinessModule.readyReason;
   eq(r('crucible@owens-mac-studio', null), 'Crucible on crucible@owens-mac-studio is ready.');
   eq(r('crucible@owens-mac-studio', 'busy: contentstudio, asr 76% done'), 'Crucible on crucible@owens-mac-studio is ready (busy with ContentStudio\'s own work: transcription 76% done).');
-  eq(r('crucible@owens-pc', 'busy: bookforge, tts 62% done'), 'Crucible on crucible@owens-pc is ready (busy: bookforge, tts 62% done; AI work waits its turn).');
+  eq(r('crucible@owens-pc', 'busy: bookforge, tts 62% done'), 'Crucible on crucible@owens-pc is ready (busy: bookforge, tts 62% done).');
 });
 
 // ---------------------------------------------------------------- the Video row (LEDGER #230)
