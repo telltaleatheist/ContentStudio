@@ -2041,6 +2041,22 @@ export class PublishCalendar implements OnInit, OnDestroy {
       );
     }
 
+    // Ready videos this run never saw: the confirm panel is a snapshot taken when it opened,
+    // so anything that became ready after that (a date still being written when the button
+    // was pressed — how u8 and u5 were left behind on 2026-09-26) is named here rather than
+    // left to be discovered on the calendar later.
+    if (!endedByStop) {
+      const inRun = new Set(chips.map((c) => c.itemId));
+      const leftOver = this.uploadable().filter((c) => !inRun.has(c.itemId));
+      if (leftOver.length > 0) {
+        this.notify.warning(
+          `${leftOver.length} ready video${leftOver.length === 1 ? ' was' : 's were'} not in this run`,
+          `${leftOver.map((c) => c.title).join('; ')} became ready after the upload list was ` +
+            `taken. Press Upload again to send ${leftOver.length === 1 ? 'it' : 'them'}.`
+        );
+      }
+    }
+
     // The records now carry video ids, so the board must re-read them — and YouTube now
     // holds videos it did not a minute ago, so the mirror must too. AWAITED, unlike the
     // sweep on page load: the uploaded chips have just left the board, and until the
