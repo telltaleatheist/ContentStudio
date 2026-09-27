@@ -73,6 +73,8 @@ export function setupCrucibleIpc(context: CrucibleContext): void {
     throw new Error('setupCrucibleIpc requires a CrucibleContext.');
   }
   const { servers, probes, connect, settings, local, readiness, pairingHost, lanes } = context;
+  /** Windows that have reported a queue count (crucible:queue-count), so each is forgotten once when it closes. */
+  const countedWindows = new Set<string>();
 
   // ── the list ────────────────────────────────────────────────────────────
 
@@ -187,8 +189,38 @@ export function setupCrucibleIpc(context: CrucibleContext): void {
 
   // ── the queue (P3) ──────────────────────────────────────────────────────
 
-  /** The lanes strip: one chip per server. */
-  ipcMain.handle('crucible:lanes', () => guard('lanes', () => lanes.view()));
+  /**
+   * The lanes strip: one chip per server. Asked for (the queue page opening) while nothing is
+   * queued, the chips are read once now, on demand, since no preflight is running to keep them
+   * current (LEDGER #234); the new read arrives on the `crucible:lanes` push.
+   */
+  ipcMain.handle('crucible:lanes', () => guard('lanes', () => {
+    if (!readiness.isPolling()) void lanes.readAll();
+    return lanes.view();
+  }));
+
+  /**
+   * How many unfinished jobs this window's queue holds (pending, running, parked, held). THE
+   * POLLING RULE's input (readiness.ts `needsPolling`, LEDGER #234): Crucible is checked on a
+   * timer only while some window's count is above zero. Kept per window, and forgotten when the
+   * window goes, so an editor window's empty queue never cancels the main window's.
+   */
+  ipcMain.handle('crucible:queue-count', (event, count: unknown) => guard('queue-count', () => {
+    if (typeof count !== 'number' || !Number.isFinite(count) || count < 0) {
+      throw new CrucibleRoutingError('invalid_choice', 'The queue count must be a number of jobs, 0 or more.');
+    }
+    const sender = event.sender;
+    const key = `window-${sender.id}`;
+    if (!countedWindows.has(key)) {
+      countedWindows.add(key);
+      sender.once('destroyed', () => {
+        countedWindows.delete(key);
+        readiness.setQueued(key, 0);
+      });
+    }
+    readiness.setQueued(key, count);
+    return { polling: readiness.isPolling() };
+  }));
 
   /**
    * Which queue rows start now, which wait and why (plan section 13.2). Main

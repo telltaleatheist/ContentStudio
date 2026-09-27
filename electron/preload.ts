@@ -193,6 +193,7 @@ const api = {
   crucibleReadinessStart: () => ipcRenderer.invoke('crucible:readiness-start'),
   crucibleLanes: () => ipcRenderer.invoke('crucible:lanes'),
   crucibleQueuePlan: (candidates: Array<{ jobId: string; fast: boolean }>) => ipcRenderer.invoke('crucible:queue-plan', candidates),
+  crucibleQueueCount: (count: number) => ipcRenderer.invoke('crucible:queue-count', count),
   onCrucibleServersChanged: (callback: (change: any) => void) => {
     const listener = (_event: any, change: any) => callback(change);
     ipcRenderer.on('crucible:servers-changed', listener);

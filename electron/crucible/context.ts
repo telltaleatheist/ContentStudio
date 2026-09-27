@@ -9,10 +9,11 @@
  * recorders, so the same wiring is under test (plan section 0a: the "no
  * Crucible" suite boots the real services with no server at all).
  *
- * Nothing in here touches the network. `start()` begins the three background
- * loops (auto-connect, readiness and the lanes' 15 s preflight), all
- * fire-and-forget; `stop()` ends them on quit. None is ever awaited by
- * `app.whenReady`.
+ * Nothing in here touches the network. `start()` begins auto-connect and
+ * readiness's first derivation, fire-and-forget; readiness and the lanes' 15 s
+ * preflight then run on a timer only while work is queued (readiness.ts
+ * `needsPolling`, LEDGER #234). `stop()` ends them on quit. None is ever
+ * awaited by `app.whenReady`.
  *
  * P3 adds the queue's layer over the same state directory: the in-flight
  * ledger (`<userData>/crucible-in-flight.json`), the lanes, and the two sweeps.
@@ -145,6 +146,7 @@ function processReleaseSources(local: () => Promise<{ status(): Promise<{ state:
 }
 
 export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContext {
+  let readinessRef: CrucibleReadiness | null = null;
   const pairingHost = deps.pairingHost ?? processPairingFileHost();
   const push = deps.push ?? {};
   const servers = new CrucibleServers(deps.stateDir, push.serversChanged);
@@ -227,23 +229,34 @@ export function createCrucibleContext(deps: CrucibleContextDeps): CrucibleContex
     servers,
     autoConnect,
     { host, sources, bootstrap: deps.local?.bootstrap ?? loadBootstrap, runner, localControls, ...(home === undefined ? {} : { home }) },
-    push.installProgress,
+    (event) => {
+      push.installProgress?.(event);
+      // An install under way keeps readiness checking until it ends (LEDGER #234).
+      readinessRef?.installEvent(event.kind);
+    },
   );
   const readiness = new CrucibleReadiness(servers, probes, local, push.readiness);
+  readinessRef = readiness;
   const ledger = InFlightLedger.inDir(deps.stateDir, (line) => log.warn(`[crucible] ${line}`), deps.ledgerFile);
   const routingServer = (): string | null => deps.routingServer(servers.names());
   const lanes = new CrucibleLanes({
     servers: choice,
     routingServer,
     clientFor: (name, options) => factory.clientFor(name, options),
-    reach: async (name) => {
-      const answer = await probes.reach(name);
+    reach: async (name, maxAgeMs) => {
+      const answer = await probes.reach(name, maxAgeMs);
       return { reach: answer.reach, message: answer.probe.outcome === 'ok' ? answer.probe.facts.busyLine : answer.probe.message };
     },
     ledger,
     push: push.lanes,
+    // THE POLLING RULE's wiring (readiness.ts `needsPolling`, LEDGER #234): the lanes' work
+    // feeds it, and it switches the lanes' preflight. Admission asks readiness for a fresh answer.
+    onWorkChange: () => readiness.pollingMayHaveChanged(),
+    beforeAdmit: () => readiness.freshCheck(),
     ...deps.lanes,
   });
+  readiness.setLaneWork(() => lanes.workCount());
+  readiness.onPolling((on) => lanes.setPolling(on));
   const sweep = (reason: string, deadlineMs: number): Promise<SweepReport> =>
     sweepCrucibleInFlight({ ledger, clientFor: (name) => factory.clientFor(name) }, { reason, deadlineMs });
 

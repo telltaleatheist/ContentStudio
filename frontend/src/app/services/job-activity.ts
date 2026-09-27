@@ -187,3 +187,100 @@ export function laneBusyText(busyLine: string | null): string {
   const what = own[1].replace(/^asr\b/, 'transcription').trim();
   return `Busy with other ContentStudio work${what ? ` (${what})` : ''}`;
 }
+
+/**
+ * A lane chip's state words plus, when the read behind them is old and nothing is re-reading it
+ * (nothing queued, LEDGER #234), when it was read: "Idle (checked 3:14 PM)". A chip never looks
+ * live when it is not.
+ */
+export function laneReadAge(text: string, readAt: number | null, polling: boolean, now: number): string {
+  if (polling || readAt === null || now - readAt < 60_000) return text;
+  const time = new Date(readAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return `${text} (checked ${time})`;
+}
+
+// ── waiting its turn (LEDGER #234) ────────────────────────────────────────────
+
+/** Crucible job types in plain words. A type not listed is named as the server names it. */
+const JOB_TYPE_WORDS: Record<string, string> = {
+  rvc: 'a voice conversion (rvc)',
+  tts: 'a speech render (tts)',
+  asr: 'a transcription (asr)',
+  align: 'a word timing pass (align)',
+  denoise: 'a noise cleanup (denoise)',
+  'load-model': 'a model load',
+  'unload-model': 'a model unload',
+};
+
+/** Another client's hold on a card, as main's lane chip carries it (wire.ts `CardHolder`). */
+export interface HolderFacts {
+  kind: 'job' | 'lease' | 'claim' | 'card';
+  client: string | null;
+  what: string | null;
+  model: string | null;
+  id: string | null;
+  progress: number | null;
+  secondsLeft: number | null;
+  leftUnknown: 'no-progress' | 'measuring' | null;
+}
+
+/** "crucible-cli/1.0.43" → "crucible-cli": the app, without its version. */
+function clientName(client: string | null): string | null {
+  const name = (client ?? '').trim().split('/')[0].trim();
+  return name === '' ? null : name;
+}
+
+/** "about 12 min left", "less than a minute left", "about 1 h 5 min left". Null seconds say why. */
+export function timeLeftText(secondsLeft: number | null, leftUnknown: HolderFacts['leftUnknown']): string {
+  if (secondsLeft === null || !Number.isFinite(secondsLeft)) {
+    return leftUnknown === 'measuring' ? 'time left not known yet' : 'time left unknown';
+  }
+  if (secondsLeft < 60) return 'less than a minute left';
+  const minutes = Math.round(secondsLeft / 60);
+  if (minutes < 60) return `about ${minutes} min left`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m === 0 ? `about ${h} h left` : `about ${h} h ${m} min left`;
+}
+
+/**
+ * The row at the bottom of the queue while a job waits for another app's work: who is on the
+ * card, doing what, how far along, and about how long it has left (Owen, 2026-09-26: "itll show
+ * the job that's currently running on crucible and how long it has until it's done").
+ */
+export function holderWaitLine(server: string, holder: HolderFacts): string {
+  const who = clientName(holder.client);
+  let doing: string;
+  switch (holder.kind) {
+    case 'job': {
+      const what = holder.what === null ? 'a job' : (JOB_TYPE_WORDS[holder.what] ?? `a ${holder.what} job`);
+      doing = `${who ?? 'Another app'} is running ${what}`;
+      break;
+    }
+    case 'lease':
+      doing = `${who ?? 'Another app'} has ${holder.model ?? 'the model'} reserved${holder.what ? ` for ${holder.what} work` : ''}`;
+      break;
+    case 'claim':
+      doing = `${who ?? 'Another app'} is holding the card for a live session`;
+      break;
+    default:
+      doing = 'the card is not taking work, and the server does not say who has it';
+  }
+  const pct = holder.progress === null ? '' : ` — ${Math.round(holder.progress * 100)}%`;
+  return `Waiting for ${server}: ${doing}${pct} · ${timeLeftText(holder.secondsLeft, holder.leftUnknown)}`;
+}
+
+/**
+ * The waiting-its-turn rows: one per server that a PARKED job of this queue waits on while
+ * another client holds its card. None while nothing is parked, and none for a card our own work
+ * holds (main leaves `holder` null there: that is the running row).
+ */
+export function waitingTurnRows(
+  jobs: ReadonlyArray<{ status: string; venue?: string | null }>,
+  lanes: ReadonlyArray<{ server: string; holder: HolderFacts | null }>,
+): Array<{ server: string; line: string }> {
+  const waitedOn = new Set(jobs.filter((job) => job.status === 'parked' && job.venue).map((job) => job.venue as string));
+  return lanes
+    .filter((lane) => lane.holder !== null && waitedOn.has(lane.server))
+    .map((lane) => ({ server: lane.server, line: holderWaitLine(lane.server, lane.holder as HolderFacts) }));
+}

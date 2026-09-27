@@ -1505,6 +1505,60 @@ check('the ready sentence names who holds the card and never claims a wait (a wa
   eq(r('crucible@owens-pc', 'busy: bookforge, tts 62% done'), 'Crucible on crucible@owens-pc is ready (busy: bookforge, tts 62% done).');
 });
 
+// ---------------------------------------------------------------- waiting its turn (LEDGER #234)
+//
+// Owen, 2026-09-26: "ill hit the start queue button and itll show the job that's currently running
+// on crucible and how long it has until it's done at the bottom of the queue ... if something else
+// takes the lease first, it fills in that slot with the new running job it's waiting to finish".
+// The row's words and when it shows; the holder facts and the time-left measurement are main's
+// (card-holder.ts, checked in check:crucible's test-crucible-polling.js).
+const crucibleWords = (() => {
+  const fs = require('fs');
+  const ts = require('typescript');
+  const src = path.join(__dirname, '..', 'frontend/src/app/features/crucible/crucible-words.ts');
+  const out = ts.transpileModule(fs.readFileSync(src, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+    fileName: src,
+  });
+  const mod = { exports: {} };
+  new Function('exports', 'module', 'require', out.outputText)(mod.exports, mod, require);
+  return mod.exports;
+})();
+
+check('the waiting row names who is on the card, doing what, how far, and the time left — never an invented number', () => {
+  const job = (extra) => ({ kind: 'job', client: 'crucible-cli/1.0.43', what: 'rvc', model: null, id: 'a', progress: 0.43, secondsLeft: 720, leftUnknown: null, ...extra });
+  const line = jobActivity.holderWaitLine;
+  eq(line('mac', job()), 'Waiting for mac: crucible-cli is running a voice conversion (rvc) — 43% · about 12 min left');
+  eq(line('mac', job({ secondsLeft: null, leftUnknown: 'measuring' })), 'Waiting for mac: crucible-cli is running a voice conversion (rvc) — 43% · time left not known yet');
+  eq(line('pc', job({ client: null, what: 'mystery', progress: null, secondsLeft: null, leftUnknown: 'no-progress' })), 'Waiting for pc: Another app is running a mystery job · time left unknown');
+  eq(line('mac', { kind: 'lease', client: 'foundry/0.9', what: 'translate', model: 'qwen3.8-27b-4bit', id: 'L1', progress: null, secondsLeft: null, leftUnknown: 'no-progress' }),
+    'Waiting for mac: foundry has qwen3.8-27b-4bit reserved for translate work · time left unknown');
+  eq(line('mac', { kind: 'claim', client: 'bookforge', what: null, model: null, id: 's', progress: null, secondsLeft: null, leftUnknown: 'no-progress' }),
+    'Waiting for mac: bookforge is holding the card for a live session · time left unknown');
+  eq([30, 90, 3600, 3900].map((s) => jobActivity.timeLeftText(s, null)), ['less than a minute left', 'about 2 min left', 'about 1 h left', 'about 1 h 5 min left']);
+});
+
+check('the waiting row shows only under a PARKED job on that server, never for our own work or an empty queue', () => {
+  const holder = { kind: 'job', client: 'crucible-cli', what: 'rvc', model: null, id: 'a', progress: 0.5, secondsLeft: 60, leftUnknown: null };
+  const rows = jobActivity.waitingTurnRows;
+  const lanes = [{ server: 'mac', holder }, { server: 'pc', holder: null }];
+  eq(rows([], lanes), [], 'nothing queued:');
+  eq(rows([{ status: 'pending', venue: 'mac' }, { status: 'processing', venue: 'mac' }], lanes), [], 'nothing parked:');
+  eq(rows([{ status: 'parked', venue: 'pc' }], lanes), [], 'parked on a server whose card our own work holds (main sends no holder):');
+  eq(rows([{ status: 'parked', venue: 'mac' }, { status: 'parked', venue: 'mac' }], lanes).map((row) => row.server), ['mac'], 'one row per server:');
+});
+
+check('an old answer with nothing polling says when it was checked; a live one does not', () => {
+  const at = '2026-09-26T19:14:00.000Z';
+  const t = Date.parse(at);
+  eq(crucibleWords.readinessCheckedLine({ at, polling: true }, t + 3_600_000), null, 'polling:');
+  eq(crucibleWords.readinessCheckedLine({ at, polling: false }, t + 30_000), null, 'under a minute:');
+  const said = crucibleWords.readinessCheckedLine({ at, polling: false }, t + 3_600_000);
+  if (!/^Checked at .+\. Nothing is queued, so it is not checked again until you press Re-check or start work\.$/.test(said)) throw new Error(`said: ${said}`);
+  eq(jobActivity.laneReadAge('Idle', t, true, t + 3_600_000), 'Idle', 'a live chip:');
+  if (!/^Idle \(checked .+\)$/.test(jobActivity.laneReadAge('Idle', t, false, t + 3_600_000))) throw new Error('an old chip must say when it was read');
+});
+
 // ---------------------------------------------------------------- the Video row (LEDGER #230)
 //
 // u8 - pokemon chapter 12 (2026-09-26): the LINK tick opened nothing, and nothing on the

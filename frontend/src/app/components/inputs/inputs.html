@@ -587,6 +587,17 @@
           </mat-card>
         }
 
+        <!-- Waiting its turn (LEDGER #234): a job of this queue is parked behind ANOTHER app's work
+             on its server. The row is that app's job, how far along and about how long it has
+             left, updated on each read; it goes when our job takes the card, and follows whoever
+             takes it first instead. -->
+        @for (row of waitingTurn(); track row.server) {
+          <div class="waiting-turn-row">
+            <mat-icon>hourglass_top</mat-icon>
+            <span>{{ row.line }}</span>
+          </div>
+        }
+
         <!-- Start Queue Button as part of the list. Two stages: transcribe pending
              jobs first; once only held jobs remain, a press sends them to the AI. -->
         @if (jobQueue.queueStarted() || jobQueue.hasProcessingJob()) {

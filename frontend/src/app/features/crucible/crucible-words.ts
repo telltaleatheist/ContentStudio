@@ -88,6 +88,18 @@ export function readinessHeadline(view: Pick<CrucibleReadinessView, 'state'>): s
   }
 }
 
+/**
+ * When the banner's answer was checked, said only when nothing is re-checking it and it is more
+ * than a minute old (LEDGER #234: Crucible is checked on a timer only while work is queued), so
+ * an old answer never passes for a live one. Null otherwise.
+ */
+export function readinessCheckedLine(view: Pick<CrucibleReadinessView, 'at' | 'polling'>, now: number): string | null {
+  const at = Date.parse(view.at);
+  if (view.polling || !Number.isFinite(at) || now - at < 60_000) return null;
+  const time = new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return `Checked at ${time}. Nothing is queued, so it is not checked again until you press Re-check or start work.`;
+}
+
 /** The one door's label for a readiness action. */
 export function readinessDoor(action: CrucibleReadinessView['action']): string | null {
   switch (action) {

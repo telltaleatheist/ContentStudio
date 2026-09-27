@@ -21,6 +21,7 @@
           <strong>{{ readinessHeadline(r) }}</strong>
           <span>{{ r.reason }}</span>
           @if (r.progress) { <span class="cru-dim">{{ r.progress }}</span> }
+          @if (checkedLine(r); as checked) { <span class="cru-dim">{{ checked }}</span> }
           @if (r.declined) { <span class="cru-dim">You said "Not now" to bringing Crucible up. It stays that way until ContentStudio restarts, unless you press the door yourself.</span> }
         </div>
         @if (r.action === 'start' || r.action === 'install') {

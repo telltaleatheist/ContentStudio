@@ -1,4 +1,5 @@
-import { Injectable, signal, effect } from '@angular/core';
+import { Injectable, signal, effect, inject } from '@angular/core';
+import { CrucibleService } from './crucible';
 import { InputItem } from './inputs-state';
 import { ChapterPick, migrateChapterPick } from './chapter-pick';
 import type { ResumeStage } from '../features/crucible/crucible.types';
@@ -59,6 +60,8 @@ export interface QueuedJob {
 }
 
 const STORAGE_KEY = 'contentstudio-jobs';
+/** A job still in the queue: not finished. Only while one exists does ContentStudio poll Crucible (LEDGER #234). */
+const UNFINISHED: ReadonlySet<QueuedJob['status']> = new Set(['pending', 'processing', 'held', 'parked']);
 /** The queue run ({ started, target }), kept beside the jobs so a reloaded window keeps it. */
 const RUN_STORAGE_KEY = 'contentstudio-queue-run';
 
@@ -81,6 +84,9 @@ export class JobQueueService {
   set runTarget(target: 'pending' | 'held') { this.runTargetSignal.set(target); }
   /** A plan is being asked for. Shared, so two page instances can never start one job twice. */
   planning = false;
+  private readonly crucible = inject(CrucibleService);
+  /** The unfinished count main last heard from this window. */
+  private reportedCount: number | null = null;
 
   constructor() {
     // Load persisted jobs from localStorage
@@ -94,6 +100,18 @@ export class JobQueueService {
     // And the run: a window reloaded mid-run (⌘R) goes on running the queue it was running.
     effect(() => {
       sessionStorage.setItem(RUN_STORAGE_KEY, JSON.stringify({ started: this.queueStarted(), target: this.runTargetSignal() }));
+    });
+    // THE POLLING RULE's input (LEDGER #234; Owen, 2026-09-26: "it wont poll unless something is
+    // in the queue"): main checks Crucible on a timer only while some window's queue holds an
+    // unfinished job, so this window says how many it holds whenever that number changes.
+    effect(() => {
+      const count = this.jobs().filter(job => UNFINISHED.has(job.status)).length;
+      if (count === this.reportedCount) return;
+      this.reportedCount = count;
+      this.crucible.queueCount(count).catch((err: unknown) => {
+        this.reportedCount = null;
+        console.warn('[JobQueue] Could not tell main how many jobs are queued, so its Crucible checks may not follow the queue:', (err as Error).message);
+      });
     });
   }
 
